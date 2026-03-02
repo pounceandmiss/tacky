@@ -1,0 +1,233 @@
+snit::type app_type {
+    option -transient -default 0 -readonly yes
+    variable current ""
+
+    variable notebook ""
+    variable paned ""
+    variable chatpanel ""
+    variable inlineJid ""
+    variable chatModeVar "inline"
+
+    constructor args {
+        $self configurelist $args
+	tacky_init -transient $options(-transient)
+        ::tacky account list -command [mymethod OnAccountList]
+    }
+
+    destructor {
+        if {$current ne ""} {
+            catch {destroy $current}
+        }
+        catch {::tacky destroy}
+        foreach w [winfo children .] {
+            catch {destroy $w}
+        }
+    }
+
+    method OnAccountList {result} {
+        if {[llength $result] == 0} {
+            $self ShowSetup
+        } else {
+            $self BuildMainUI
+        }
+    }
+
+    method TeardownUI {} {
+        if {$current ne ""} {
+            destroy $current
+            set current ""
+        }
+        . configure -menu {}
+        if {[winfo exists .menubar]} {
+            destroy .menubar
+        }
+        set notebook ""
+        set paned ""
+        set chatpanel ""
+        set inlineJid ""
+    }
+
+    method ShowSetup {} {
+        $self TeardownUI
+        set current [initialsetup .setup \
+            -onsuccess [mymethod OnSetupDone]]
+        pack $current -expand yes -fill both
+    }
+
+    method OnSetupDone {jid} {
+        ::tacky account enable -acc $jid
+        $self TeardownUI
+        $self BuildMainUI
+    }
+
+    method BuildMainUI {} {
+        # TODO: replace with ::tacky setting get once setting module exists
+        set chatModeVar "inline"
+
+        # --- Menubar ---
+        menu .menubar -tearoff 0
+
+        # File menu
+        menu .menubar.file -tearoff 0
+        .menubar.file add command -label "XML Console..." \
+            -command [mymethod OpenXmlConsole] -accelerator "Ctrl+Shift+X"
+        .menubar.file add command -label "MAM Info..." \
+            -command [mymethod OpenMamInfo]
+        .menubar.file add command -label "Add Account..." \
+            -command [mymethod OpenAddAccount]
+        .menubar.file add command -label "Join Room..." \
+            -command [mymethod OpenJoinRoom]
+        .menubar.file add command -label "Create Room..." \
+            -command [mymethod OpenJoinRoom]
+        .menubar.file add separator
+        .menubar.file add command -label "Quit" \
+            -command [list destroy .] -accelerator "Ctrl+Q"
+        .menubar add cascade -label "File" -menu .menubar.file
+
+        # View menu
+        menu .menubar.view -tearoff 0
+        .menubar.view add radiobutton -label "Open chats inline" \
+            -variable [myvar chatModeVar] -value "inline" \
+            -command [mymethod OnChatModeChanged]
+        .menubar.view add radiobutton -label "Open chats in window" \
+            -variable [myvar chatModeVar] -value "window" \
+            -command [mymethod OnChatModeChanged]
+        .menubar add cascade -label "View" -menu .menubar.view
+
+        # Help menu
+        menu .menubar.help -tearoff 0
+        .menubar.help add command -label "About Tacky" \
+            -command [mymethod ShowAbout]
+        .menubar add cascade -label "Help" -menu .menubar.help
+
+        . configure -menu .menubar
+
+        # Global accelerators
+        bind . <Control-q> [list destroy .]
+        bind . <Control-Q> [list destroy .]
+        bind . <Control-Shift-X> [mymethod OpenXmlConsole]
+
+        # --- Paned layout ---
+        set paned [ttk::panedwindow .paned -orient horizontal]
+        set chatpanel [ttk::frame $paned.chatpanel]
+
+        set notebook [accountnotebook $paned.notebook \
+            -open-chat-command [mymethod OpenChat] \
+            -open-bookmark-command [mymethod OpenBookmark] \
+            -menubar .menubar]
+        $paned add $notebook -weight 0
+
+        set current $paned
+        pack $paned -expand yes -fill both
+    }
+
+    # --- Chat routing ---
+
+    method OpenChat {args} {
+        set acc [dict get $args -acc]
+        set jid [dict get $args -jid]
+        set client [::tacky client $acc]
+        if {$chatModeVar eq "inline"} {
+            $self OpenChatInline -client $client -jid $jid
+        } else {
+            $self Openchatwindow -client $client -jid $jid
+        }
+    }
+
+    method OpenChatInline {args} {
+        set client [dict get $args -client]
+        set contactJid [dict get $args -jid]
+        if {$inlineJid eq $contactJid} return
+
+        # Destroy previous inline chat content
+        foreach child [winfo children $chatpanel] {
+            destroy $child
+        }
+        set inlineJid $contactJid
+        # Create chat widgets in the panel
+        chatpanel $chatpanel.cp -client $client -jid $contactJid \
+            -menubar .menubar
+        pack $chatpanel.cp -expand yes -fill both
+
+        # Add panel to paned if not already there
+        if {$chatpanel ni [$paned panes]} {
+            $paned add $chatpanel -weight 1
+        }
+    }
+
+    method Openchatwindow {args} {
+        set client [dict get $args -client]
+        set contactJid [dict get $args -jid]
+        set safe [string map {@ _ . _ / _ ? _} $contactJid]
+        chatwindow open .chatwin_$safe -client $client -jid $contactJid
+    }
+
+    method OpenBookmark {args} {
+        set acc [dict get $args -acc]
+        set jid [dict get $args -jid]
+        set client [::tacky client $acc]
+        # TODO: join room / open MUC tab
+        puts "OpenBookmark: acc=$acc jid=$jid"
+    }
+
+    method CloseInlineChat {} {
+        if {$inlineJid eq ""} return
+        foreach child [winfo children $chatpanel] {
+            destroy $child
+        }
+        set inlineJid ""
+        if {$chatpanel in [$paned panes]} {
+            $paned forget $chatpanel
+        }
+    }
+
+    method OnChatModeChanged {} {
+        # TODO: persist with ::tacky setting set once setting module exists
+        if {$chatModeVar eq "window"} {
+            $self CloseInlineChat
+        }
+    }
+
+    # --- Menu actions ---
+
+    method OpenAddAccount {} {
+        if {[winfo exists .addaccount]} {
+            raise .addaccount
+            return
+        }
+        toplevel .addaccount
+        wm title .addaccount "Add Account"
+        initialsetup .addaccount.setup \
+            -onsuccess [mymethod OnAddAccountDone]
+        pack .addaccount.setup -expand yes -fill both
+    }
+
+    method OnAddAccountDone {jid} {
+        ::tacky account enable -acc $jid
+        destroy .addaccount
+    }
+
+    method OpenJoinRoom {} {
+        set jid [$notebook CurrentAccountJid]
+        if {$jid eq ""} return
+        set client [::tacky client $jid]
+        joinroomdialog show $client
+    }
+
+    method OpenXmlConsole {} {
+        set jid [$notebook CurrentAccountJid]
+        if {$jid eq ""} return
+        xmlconsole $jid
+    }
+
+    method OpenMamInfo {} {
+        set jid [$notebook CurrentAccountJid]
+        if {$jid eq ""} return
+        maminfo open $jid
+    }
+
+    method ShowAbout {} {
+        tk_messageBox -title "About Tacky" -icon info \
+            -message "Tacky XMPP Client"
+    }
+}
