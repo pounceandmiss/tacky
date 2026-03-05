@@ -560,21 +560,18 @@ test messagestore-get-after-at-exact-last {-after at exact last timestamp return
 	store get -chat alice@example.com -after 300
     } -result {}
 
-test messagestore-live-earlier-timestamp {store live with earlier timestamp: out-of-order goes behind hole} \
+test messagestore-live-earlier-timestamp {store live with earlier timestamp: hole moves down, both visible} \
     {*}$ms_common \
     -body {
 	set sid [store span begin alice@example.com]
 	store store batch [list [ms_msg timestamp 500 body late]] -span $sid
-	# Earlier timestamp arrives out of order — goes behind hole at 499
+	# Earlier timestamp — hole moves from 499 to 99, both visible
 	store store batch [list [ms_msg timestamp 100 body early]] -span $sid
 	store span end $sid
-	# Default get sees latest range (above hole at 499)
-	set latest [store get -chat alice@example.com]
-	# -before 499 sees the earlier message
-	set earlier [store get -chat alice@example.com -before 499]
-	list [llength $latest] [dict get [lindex $latest 0] body] \
-	     [llength $earlier] [dict get [lindex $earlier 0] body]
-    } -result {1 late 1 early}
+	set msgs [store get -chat alice@example.com]
+	list [llength $msgs] [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 1] body]
+    } -result {2 early late}
 
 test messagestore-batch-single-message {single-message batch works} \
     {*}$ms_common \
@@ -764,3 +761,76 @@ test messagestore-hole-not-in-proven-range {hole placed before deletion range is
 	}]
 	set holes
     } -result {49}
+
+# -- hole tracks lowest edge ---------------------------------------------------
+
+test messagestore-hole-moves-down {span moves hole down with each older batch} \
+    {*}$ms_common \
+    -body {
+	set sid [store span begin alice@example.com]
+	# Page 1 (newest)
+	store store batch [list \
+	    [ms_msg timestamp 1000 body p1a] \
+	    [ms_msg timestamp 1010 body p1b] \
+	    [ms_msg timestamp 1020 body p1c]] -span $sid
+	# Hole should be at 999
+	set h1 [testdb eval {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid='alice@example.com' AND hole=1
+	}]
+	# Page 2 (older) — hole should move to 969
+	store store batch [list \
+	    [ms_msg timestamp 970 body p2a] \
+	    [ms_msg timestamp 980 body p2b] \
+	    [ms_msg timestamp 990 body p2c]] -span $sid
+	set h2 [testdb eval {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid='alice@example.com' AND hole=1
+	}]
+	store span end $sid
+	list $h1 $h2
+    } -result {999 969}
+
+test messagestore-hole-move-all-visible {moved hole: all pages visible to GetBefore} \
+    {*}$ms_common \
+    -body {
+	set sid [store span begin alice@example.com]
+	store store batch [list \
+	    [ms_msg timestamp 1000 body p1a] \
+	    [ms_msg timestamp 1010 body p1b]] -span $sid
+	store store batch [list \
+	    [ms_msg timestamp 980 body p2a] \
+	    [ms_msg timestamp 990 body p2b]] -span $sid
+	store span end $sid
+	set msgs [store get -chat alice@example.com]
+	llength $msgs
+    } -result {4}
+
+test messagestore-hole-move-single-hole {only one hole after multiple older batches} \
+    {*}$ms_common \
+    -body {
+	set sid [store span begin alice@example.com]
+	store store batch [list [ms_msg timestamp 300 body c]] -span $sid
+	store store batch [list [ms_msg timestamp 200 body b]] -span $sid
+	store store batch [list [ms_msg timestamp 100 body a]] -span $sid
+	store span end $sid
+	set holes [testdb eval {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid='alice@example.com' AND hole=1
+	}]
+	set holes
+    } -result {99}
+
+test messagestore-hole-no-move-forward {hole stays when batch is above it} \
+    {*}$ms_common \
+    -body {
+	set sid [store span begin alice@example.com]
+	store store batch [list [ms_msg timestamp 100 body first]] -span $sid
+	store store batch [list [ms_msg timestamp 500 body second]] -span $sid
+	store span end $sid
+	set holes [testdb eval {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid='alice@example.com' AND hole=1
+	}]
+	set holes
+    } -result {99}

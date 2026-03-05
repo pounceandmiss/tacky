@@ -1,3 +1,8 @@
+if 0 {
+    tacky message history get ?-before $ts? ?-after $ts?
+    Will decide automatically when to fetch more:
+    if `-local yes` is supplied, will only return local history and will stop at hole. I think the nonlocal version can make use of the local version under the hood to make the code DRY
+}
 snit::type taco_message {
     variable PubSubHandlers
 

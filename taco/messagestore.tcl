@@ -104,7 +104,7 @@ snit::type taco_messagestore {
 
     method "span begin" {jid} {
 	set sid [incr SidCounter]
-	dict set Sessions $sid [dict create chat_jid $jid first_done 0]
+	dict set Sessions $sid [dict create chat_jid $jid hole_ts ""]
 	return $sid
     }
 
@@ -151,16 +151,26 @@ snit::type taco_messagestore {
 		set prevTs $ts
 	    }
 
-	    # Insert hole before first batch of session
+	    # Place or move the span's hole to track the lowest edge
 	    set anyInserted [expr {[llength $insertedTs] > 0}]
-	    if {$anyInserted && ![dict get $sess first_done]} {
-		set holeTs [$self BumpTs $jid [expr {$minTs - 1}] -1]
-		$options(-db) eval {
-		    INSERT INTO chat_message(timestamp, chat_jid, from_jid, body, server_id, origin_id, raw_xml, hole)
-		    VALUES($holeTs, $jid, '', '', '', '', '', 1)
+	    if {$anyInserted} {
+		set holeTs [dict get $sess hole_ts]
+
+		if {$holeTs eq "" || $minTs <= $holeTs} {
+		    if {$holeTs ne ""} {
+			$options(-db) eval {
+			    DELETE FROM chat_message
+			    WHERE chat_jid=$jid AND timestamp=$holeTs AND hole=1
+			}
+		    }
+		    set newHoleTs [$self BumpTs $jid [expr {$minTs - 1}] -1]
+		    $options(-db) eval {
+			INSERT INTO chat_message(timestamp, chat_jid, from_jid, body, server_id, origin_id, raw_xml, hole)
+			VALUES($newHoleTs, $jid, '', '', '', '', '', 1)
+		    }
+		    dict set sess hole_ts $newHoleTs
+		    dict set Sessions $sid $sess
 		}
-		dict set sess first_done 1
-		dict set Sessions $sid $sess
 	    }
 
 	    # Delete holes only when a duplicate proves
@@ -173,6 +183,12 @@ snit::type taco_messagestore {
 		    DELETE FROM chat_message
 		    WHERE chat_jid=$jid AND hole=1
 		      AND timestamp >= $rangeMin AND timestamp <= $rangeMax
+		}
+		# Clear hole_ts if overlap deleted our span's hole
+		set holeTs [dict get $sess hole_ts]
+		if {$holeTs ne "" && $holeTs >= $rangeMin && $holeTs <= $rangeMax} {
+		    dict set sess hole_ts ""
+		    dict set Sessions $sid $sess
 		}
 	    }
 	}
