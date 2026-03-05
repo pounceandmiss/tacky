@@ -21,11 +21,15 @@ proc ms_msg {args} {
     return [dict merge $defaults $args]
 }
 
-# Helper: store a batch with an auto-created span
+# Helper: store a batch with a fresh region
 proc ms_batch {messages {jid alice@example.com}} {
-    set sid [store span begin $jid]
-    store store batch $messages -span $sid
-    store span end $sid
+    store region new r
+    store store batch $messages r
+}
+
+# Helper: count distinct regions for a jid
+proc ms_regions {{jid alice@example.com}} {
+    testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid=$jid}
 }
 
 # -- basic --------------------------------------------------------------------
@@ -37,21 +41,20 @@ test messagestore-basic-store-and-get {store a batch, get it back in chronologic
 	    [ms_msg timestamp 100 body first] \
 	    [ms_msg timestamp 200 body second] \
 	    [ms_msg timestamp 300 body third]]
-	set msgs [store get -chat alice@example.com]
+	set msgs [store get alice@example.com]
 	list [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body] \
 	     [dict get [lindex $msgs 2] body]
     } -result {first second third}
 
-test messagestore-basic-timestamp-bump {identical timestamps are bumped +1µs preserving insertion order} \
+test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 preserving insertion order} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 100 body b] \
 	    [ms_msg timestamp 100 body c]]
-	set msgs [store get -chat alice@example.com]
-	# Ascending: a(100) b(101) c(102)
+	set msgs [store get alice@example.com]
 	list [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body] \
 	     [dict get [lindex $msgs 2] body]
@@ -66,7 +69,7 @@ test messagestore-dedup-server-id {duplicate server_id is not inserted twice} \
 	    [ms_msg timestamp 100 server_id sid1 body first]]
 	ms_batch [list \
 	    [ms_msg timestamp 200 server_id sid1 body duplicate]]
-	llength [store get -chat alice@example.com]
+	llength [store get alice@example.com]
     } -result {1}
 
 test messagestore-dedup-origin-id {duplicate origin_id is not inserted twice} \
@@ -76,7 +79,48 @@ test messagestore-dedup-origin-id {duplicate origin_id is not inserted twice} \
 	    [ms_msg timestamp 100 origin_id oid1 body first]]
 	ms_batch [list \
 	    [ms_msg timestamp 200 origin_id oid1 body duplicate]]
-	llength [store get -chat alice@example.com]
+	llength [store get alice@example.com]
+    } -result {1}
+
+test messagestore-dedup-no-dedup-empty-ids {no dedup when both server_id and origin_id are empty} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 server_id "" origin_id "" body hello] \
+	    [ms_msg timestamp 100 server_id "" origin_id "" body hello]]
+	llength [store get alice@example.com]
+    } -result {2}
+
+test messagestore-dedup-isolation-across-chats {same origin_id in different chats stored independently} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 chat_jid alice@example.com origin_id oid1 body hi]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 chat_jid bob@example.com origin_id oid1 body hi]] bob@example.com
+	set a [llength [store get alice@example.com]]
+	set b [llength [store get bob@example.com]]
+	list $a $b
+    } -result {1 1}
+
+test messagestore-dedup-both-ids-match-server {both IDs set, dedup fires on server_id match} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
+	ms_batch [list \
+	    [ms_msg timestamp 200 server_id sid1 origin_id oid_other body dup]]
+	llength [store get alice@example.com]
+    } -result {1}
+
+test messagestore-dedup-both-ids-match-origin {both IDs set, dedup fires on origin_id match} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
+	ms_batch [list \
+	    [ms_msg timestamp 200 server_id sid_other origin_id oid1 body dup]]
+	llength [store get alice@example.com]
     } -result {1}
 
 # -- pagination ---------------------------------------------------------------
@@ -88,7 +132,7 @@ test messagestore-pagination-before {-before returns messages older than timesta
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	set msgs [store get -chat alice@example.com -before 300]
+	set msgs [store get alice@example.com -before 300]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
@@ -101,176 +145,11 @@ test messagestore-pagination-limit {-limit caps result count} \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	set msgs [store get -chat alice@example.com -limit 2]
+	set msgs [store get alice@example.com -limit 2]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
     } -result {2 b c}
-
-test messagestore-pagination-hole-boundary {get stops at hole boundary between separate batches} \
-    {*}$ms_common \
-    -body {
-	# Two separate sessions create holes between them
-	ms_batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]]
-	ms_batch [list \
-	    [ms_msg timestamp 500 body c] \
-	    [ms_msg timestamp 600 body d]]
-	# -before 500: nearest hole below is at 499, so range (499,500) is empty
-	set empty [store get -chat alice@example.com -before 500]
-	# -before 499: nearest hole below is at 99, so range (99,499) = {100,200}
-	set msgs [store get -chat alice@example.com -before 499]
-	list [llength $empty] [llength $msgs] \
-	     [dict get [lindex $msgs 0] body] \
-	     [dict get [lindex $msgs 1] body]
-    } -result {0 2 a b}
-
-# -- hole creation -----------------------------------------------------------
-
-test messagestore-batch-creates-hole {store batch session creates a hole before first batch} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100] \
-	    [ms_msg timestamp 200] \
-	    [ms_msg timestamp 300]]
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {1}
-
-test messagestore-batch-hole-at-min-minus-one {hole is placed at minTs - 1} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100] \
-	    [ms_msg timestamp 200]]
-	testdb eval {SELECT timestamp FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {99}
-
-test messagestore-multi-page-session-no-extra-holes {multi-page session creates only one hole} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]] -span $sid
-	store store batch [list \
-	    [ms_msg timestamp 300 body c] \
-	    [ms_msg timestamp 400 body d]] -span $sid
-	store span end $sid
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {1}
-
-test messagestore-batch-overlapping-deletes-hole {overlapping batch session deletes hole in range} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100 server_id s1] \
-	    [ms_msg timestamp 200 server_id s2]]
-	# Second batch overlaps — its range [200,300] includes ts 200
-	# The new session's hole at 199 is in the first batch range
-	ms_batch [list \
-	    [ms_msg timestamp 200 server_id s2] \
-	    [ms_msg timestamp 300 server_id s3]]
-	# After both batches, there should be a hole at 99 and one at 199
-	# But the second batch deletes holes in [200,300], hole at 199 survives
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]
-	set holes
-    } -result {99 199}
-
-# -- live with sessions -------------------------------------------------------
-
-test messagestore-live-creates-hole {store live creates a hole before first message} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100]] -span $sid
-	store span end $sid
-	testdb eval {SELECT timestamp FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {99}
-
-test messagestore-live-extends-session {multiple live messages in one session create one hole} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100]] -span $sid
-	store store batch [list [ms_msg timestamp 200]] -span $sid
-	store store batch [list [ms_msg timestamp 300]] -span $sid
-	store span end $sid
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {1}
-
-test messagestore-live-reconnect {end+begin creates new hole on reconnect} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100]] -span $sid
-	store store batch [list [ms_msg timestamp 200]] -span $sid
-	store span end $sid
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 500]] -span $sid
-	store span end $sid
-	set holes [lsort -integer [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]]
-	set holes
-    } -result {99 499}
-
-# -- bridge -------------------------------------------------------------------
-
-test messagestore-bridge-deletes-holes {bridge removes holes between two ranges} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
-	ms_batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]]
-	# Holes at 99 and 499
-	store bridge -chat alice@example.com -from-ts 99 -to-ts 499
-	# Both holes should be deleted
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
-    } -result {0}
-
-test messagestore-bridge-enables-cross-range-get {after bridge, get crosses former boundary} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
-	ms_batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]]
-	store bridge -chat alice@example.com -from-ts 99 -to-ts 499
-	set msgs [store get -chat alice@example.com]
-	list [llength $msgs] \
-	     [dict get [lindex $msgs 0] body] \
-	     [dict get [lindex $msgs 3] body]
-    } -result {4 a d}
-
-# -- begin/end lifecycle -------------------------------------------------------
-
-test messagestore-begin-returns-unique-ids {begin returns incrementing session ids} \
-    {*}$ms_common \
-    -body {
-	set s1 [store span begin alice@example.com]
-	set s2 [store span begin alice@example.com]
-	store span end $s1
-	store span end $s2
-	expr {$s1 != $s2}
-    } -result {1}
-
-test messagestore-end-cleans-up {end removes session, begin works after} \
-    {*}$ms_common \
-    -body {
-	set s1 [store span begin alice@example.com]
-	store span end $s1
-	set s2 [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100]] -span $s2
-	store span end $s2
-	llength [store get -chat alice@example.com]
-    } -result {1}
-
-# -- pagination -after --------------------------------------------------------
 
 test messagestore-pagination-after {-after returns messages newer than timestamp, ascending} \
     {*}$ms_common \
@@ -279,7 +158,7 @@ test messagestore-pagination-after {-after returns messages newer than timestamp
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	set msgs [store get -chat alice@example.com -after 100]
+	set msgs [store get alice@example.com -after 100]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
@@ -292,12 +171,12 @@ test messagestore-pagination-after-limit {-after respects -limit} \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	set msgs [store get -chat alice@example.com -after 100 -limit 1]
+	set msgs [store get alice@example.com -after 100 -limit 1]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body]
     } -result {1 b}
 
-test messagestore-pagination-after-hole-boundary {-after stops at hole boundary} \
+test messagestore-pagination-region-boundary {-before crosses into previous region} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
@@ -306,69 +185,15 @@ test messagestore-pagination-after-hole-boundary {-after stops at hole boundary}
 	ms_batch [list \
 	    [ms_msg timestamp 500 body c] \
 	    [ms_msg timestamp 600 body d]]
-	# -after 200: within first range, hole at 499 stops it
-	set msgs [store get -chat alice@example.com -after 200]
-	# No messages above 200 before the next hole
-	llength $msgs
-    } -result {0}
-
-# -- edge cases: get ---------------------------------------------------------
-
-test messagestore-get-empty-chat {get on a jid with no messages returns {}} \
-    {*}$ms_common \
-    -body {
-	store get -chat nobody@example.com
-    } -result {}
-
-test messagestore-get-before-after-exclusive {-before and -after together raise error} \
-    {*}$ms_common \
-    -body {
-	list [catch {store get -chat alice@example.com -before 200 -after 100} err] $err
-    } -result {1 {-before and -after are mutually exclusive}}
-
-test messagestore-get-before-at-hole {-before at exact hole returns {}} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b] \
-	    [ms_msg timestamp 300 body c]]
-	# Hole is at 99; -before 100 has hole at 99 bounding it, nothing in (99,100)
-	store get -chat alice@example.com -before 100
-    } -result {}
-
-test messagestore-get-after-gap-between-ranges {-after in gap sees next range} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]]
-	ms_batch [list \
-	    [ms_msg timestamp 500 body c] \
-	    [ms_msg timestamp 600 body d]]
-	# -after 300 is in the gap between hole at 99 and hole at 499
-	# No hole between 300 and 499, but hole at 499 blocks
-	# Actually: 300 is between the two ranges. The next hole above 300 is at 499.
-	# Messages > 300 and < 499 with hole=0: none
-	set msgs [store get -chat alice@example.com -after 300]
-	llength $msgs
-    } -result {0}
-
-test messagestore-get-before-gap-between-ranges {-before in gap sees previous range} \
-    {*}$ms_common \
-    -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]]
-	ms_batch [list \
-	    [ms_msg timestamp 500 body c] \
-	    [ms_msg timestamp 600 body d]]
-	# -before 400: nearest hole below is at 99, so messages in (99, 400) with hole=0
-	set msgs [store get -chat alice@example.com -before 400]
-	list [llength $msgs] \
-	     [dict get [lindex $msgs 0] body] \
-	     [dict get [lindex $msgs 1] body]
-    } -result {2 a b}
+	set latest [store get alice@example.com]
+	set older [store get alice@example.com -before 500]
+	list [llength $latest] \
+	     [dict get [lindex $latest 0] body] \
+	     [dict get [lindex $latest 1] body] \
+	     [llength $older] \
+	     [dict get [lindex $older 0] body] \
+	     [dict get [lindex $older 1] body]
+    } -result {2 c d 2 a b}
 
 test messagestore-get-limit-larger-than-available {-limit larger than message count returns all} \
     {*}$ms_common \
@@ -377,7 +202,7 @@ test messagestore-get-limit-larger-than-available {-limit larger than message co
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	llength [store get -chat alice@example.com -limit 1000]
+	llength [store get alice@example.com -limit 1000]
     } -result {3}
 
 test messagestore-get-before-with-limit {-before combined with -limit returns correct slice} \
@@ -388,72 +213,224 @@ test messagestore-get-before-with-limit {-before combined with -limit returns co
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c] \
 	    [ms_msg timestamp 400 body d]]
-	# -before 400 -limit 2: the 2 messages just before 400, ascending
-	set msgs [store get -chat alice@example.com -before 400 -limit 2]
+	set msgs [store get alice@example.com -before 400 -limit 2]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
     } -result {2 b c}
 
-# -- edge cases: dedup -------------------------------------------------------
+# -- region assignment --------------------------------------------------------
 
-test messagestore-dedup-no-dedup-empty-ids {no dedup when both server_id and origin_id are empty} \
+test messagestore-batch-assigns-region {batch assigns all messages to one region} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
-	    [ms_msg timestamp 100 server_id "" origin_id "" body hello] \
-	    [ms_msg timestamp 100 server_id "" origin_id "" body hello]]
-	# Both inserted (second gets timestamp bumped), no dedup
-	llength [store get -chat alice@example.com]
+	    [ms_msg timestamp 100] \
+	    [ms_msg timestamp 200] \
+	    [ms_msg timestamp 300]]
+	ms_regions
+    } -result {1}
+
+test messagestore-multi-page-same-region {two batches with same region share one region} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list \
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b]] r
+	store store batch [list \
+	    [ms_msg timestamp 300 body c] \
+	    [ms_msg timestamp 400 body d]] r
+	ms_regions
+    } -result {1}
+
+test messagestore-batch-overlapping-merges {overlapping batch via server_id merges regions} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 server_id s1] \
+	    [ms_msg timestamp 200 server_id s2]]
+	ms_batch [list \
+	    [ms_msg timestamp 200 server_id s2] \
+	    [ms_msg timestamp 300 server_id s3]]
+	ms_regions
+    } -result {1}
+
+test messagestore-live-assigns-region {single batch assigns one region} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list [ms_msg timestamp 100]] r
+	ms_regions
+    } -result {1}
+
+test messagestore-live-same-region {multiple batches with same region var share one region} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list [ms_msg timestamp 100]] r
+	store store batch [list [ms_msg timestamp 200]] r
+	store store batch [list [ms_msg timestamp 300]] r
+	ms_regions
+    } -result {1}
+
+test messagestore-reconnect-different-regions {new region new creates separate region} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list [ms_msg timestamp 100]] r
+	store store batch [list [ms_msg timestamp 200]] r
+	store region new r
+	store store batch [list [ms_msg timestamp 500]] r
+	ms_regions
     } -result {2}
 
-test messagestore-dedup-isolation-across-chats {same origin_id in different chats stored independently} \
+test messagestore-region-new-unique {region new assigns distinct values} \
+    {*}$ms_common \
+    -body {
+	store region new r1
+	store region new r2
+	expr {$r1 != $r2}
+    } -result {1}
+
+# -- bridge -------------------------------------------------------------------
+
+test messagestore-bridge-merges-regions {bridge merges two regions into one} \
+    {*}$ms_common \
+    -body {
+	store region new r1
+	store store batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
+	store region new r2
+	store store batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
+	store bridge alice@example.com r1 r2
+	ms_regions
+    } -result {1}
+
+test messagestore-bridge-enables-cross-range-get {after bridge, get returns all messages} \
+    {*}$ms_common \
+    -body {
+	store region new r1
+	store store batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
+	store region new r2
+	store store batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
+	store bridge alice@example.com r1 r2
+	set msgs [store get alice@example.com]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 3] body]
+    } -result {4 a d}
+
+test messagestore-bridge-updates-upvar {bridge sets r2 to r1} \
+    {*}$ms_common \
+    -body {
+	store region new r1
+	store store batch [list [ms_msg timestamp 100 body a]] r1
+	store region new r2
+	store store batch [list [ms_msg timestamp 500 body b]] r2
+	set orig_r1 $r1
+	store bridge alice@example.com r1 r2
+	list [expr {$r2 == $orig_r1}] [expr {$r1 == $r2}]
+    } -result {1 1}
+
+test messagestore-bridge-noop-same-region {bridge with same region is no-op} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list [ms_msg timestamp 100 body a]] r
+	set r2 $r
+	store bridge alice@example.com r r2
+	ms_regions
+    } -result {1}
+
+# -- server_id driven region merging -----------------------------------------
+
+test messagestore-serverid-dup-merges-regions {server_id dup merges overlapping regions} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
-	    [ms_msg timestamp 100 chat_jid alice@example.com origin_id oid1 body hi]]
+	    [ms_msg timestamp 100 server_id s1 body a] \
+	    [ms_msg timestamp 200 server_id s2 body b]]
 	ms_batch [list \
-	    [ms_msg timestamp 100 chat_jid bob@example.com origin_id oid1 body hi]] bob@example.com
-	set a [llength [store get -chat alice@example.com]]
-	set b [llength [store get -chat bob@example.com]]
-	list $a $b
-    } -result {1 1}
+	    [ms_msg timestamp 500 server_id s5 body e] \
+	    [ms_msg timestamp 600 server_id s6 body f]]
+	ms_batch [list \
+	    [ms_msg timestamp 300 server_id s3 body c] \
+	    [ms_msg timestamp 400 server_id s4 body d] \
+	    [ms_msg timestamp 500 server_id s5 body dup]]
+	ms_regions
+    } -result {2}
 
-# -- edge cases: store batch / live ------------------------------------------
+test messagestore-no-serverid-separate-regions {batches without IDs stay separate} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b]]
+	ms_batch [list \
+	    [ms_msg timestamp 500 body e] \
+	    [ms_msg timestamp 600 body f]]
+	ms_batch [list \
+	    [ms_msg timestamp 300 body c] \
+	    [ms_msg timestamp 400 body d]]
+	ms_regions
+    } -result {3}
 
-test messagestore-batch-all-deduped-no-hole {all-deduped batch does not create extra hole} \
+test messagestore-all-deduped-no-extra {all-dup batch merges regions} \
     {*}$ms_common \
     -body {
 	ms_batch [list [ms_msg timestamp 100 origin_id oid1 body first]]
 	ms_batch [list [ms_msg timestamp 200 origin_id oid1 body duplicate]]
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=1}
+	ms_regions
     } -result {1}
 
-test messagestore-live-dedup-no-extend {deduped live message does not create extra messages} \
+test messagestore-overlap-merges-proven {batch with dup merges into existing region} \
     {*}$ms_common \
     -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100 origin_id oid1 body first]] -span $sid
-	store store batch [list [ms_msg timestamp 200 origin_id oid1 body duplicate]] -span $sid
-	store span end $sid
-	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com' AND hole=0}
+	ms_batch [list [ms_msg timestamp 50 server_id s1 body old]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 server_id s_new body new] \
+	    [ms_msg timestamp 200 server_id s1 body dup]]
+	ms_regions
     } -result {1}
 
-# -- multi-chat isolation -----------------------------------------------------
+test messagestore-merge-updates-upvar {dup-triggered merge unifies DB under caller region} \
+    {*}$ms_common \
+    -body {
+	store region new r1
+	store store batch [list [ms_msg timestamp 100 server_id s1 body a]] r1
+	store region new r2
+	store store batch [list \
+	    [ms_msg timestamp 200 server_id s_new body b] \
+	    [ms_msg timestamp 100 server_id s1 body dup]] r2
+	set msgs [store get alice@example.com]
+	list [llength $msgs] [ms_regions]
+    } -result {2 1}
 
-test messagestore-multi-chat-isolation {get only returns messages for requested chat} \
+# -- edge cases: get ---------------------------------------------------------
+
+test messagestore-get-empty-chat {get on a jid with no messages returns empty list} \
+    {*}$ms_common \
+    -body {
+	store get nobody@example.com
+    } -result {}
+
+test messagestore-get-before-after-exclusive {-before and -after together raise error} \
+    {*}$ms_common \
+    -body {
+	list [catch {store get alice@example.com -before 200 -after 100} err] $err
+    } -result {1 {-before and -after are mutually exclusive}}
+
+test messagestore-get-before-at-region-start {-before at first timestamp returns empty} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
-	    [ms_msg timestamp 100 chat_jid alice@example.com body alice-msg]]
-	ms_batch [list \
-	    [ms_msg timestamp 200 chat_jid bob@example.com body bob-msg]] bob@example.com
-	llength [store get -chat alice@example.com]
-    } -result {1}
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b] \
+	    [ms_msg timestamp 300 body c]]
+	store get alice@example.com -before 100
+    } -result {}
 
-# -- edge cases round 2 ------------------------------------------------------
-
-test messagestore-get-no-cursor-multiple-ranges {no cursor returns tail of latest range} \
+test messagestore-get-after-region-boundary {-after stays within region of nearest message} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
@@ -462,51 +439,82 @@ test messagestore-get-no-cursor-multiple-ranges {no cursor returns tail of lates
 	ms_batch [list \
 	    [ms_msg timestamp 500 body c] \
 	    [ms_msg timestamp 600 body d]]
-	# No -before/-after: picks latest contiguous range
-	set msgs [store get -chat alice@example.com]
+	set msgs [store get alice@example.com -after 100]
+	list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 b}
+
+test messagestore-get-after-gap {-after in gap crosses into next region} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b]]
+	ms_batch [list \
+	    [ms_msg timestamp 500 body c] \
+	    [ms_msg timestamp 600 body d]]
+	set msgs [store get alice@example.com -after 300]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
     } -result {2 c d}
 
-test messagestore-get-after-beyond-all-data {-after beyond all messages returns {}} \
+test messagestore-get-before-gap {-before in gap crosses into previous region} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b]]
-	store get -chat alice@example.com -after 9999
-    } -result {}
+	ms_batch [list \
+	    [ms_msg timestamp 500 body c] \
+	    [ms_msg timestamp 600 body d]]
+	set msgs [store get alice@example.com -before 400]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 1] body]
+    } -result {2 a b}
 
-test messagestore-get-before-below-all-data {-before below all messages returns {}} \
+test messagestore-get-no-cursor-multiple-ranges {no cursor returns latest region} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b]]
-	store get -chat alice@example.com -before 1
+	ms_batch [list \
+	    [ms_msg timestamp 500 body c] \
+	    [ms_msg timestamp 600 body d]]
+	set msgs [store get alice@example.com]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 1] body]
+    } -result {2 c d}
+
+test messagestore-get-after-beyond-all-data {-after beyond all messages returns empty} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b]]
+	store get alice@example.com -after 9999
     } -result {}
 
-test messagestore-dedup-both-ids-match-server {both IDs set, dedup fires on server_id match} \
+test messagestore-get-before-below-all-data {-before below all messages returns empty} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
-	    [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
-	# Same server_id, different origin_id — deduped via OR
-	ms_batch [list \
-	    [ms_msg timestamp 200 server_id sid1 origin_id oid_other body dup]]
-	llength [store get -chat alice@example.com]
-    } -result {1}
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b]]
+	store get alice@example.com -before 1
+    } -result {}
 
-test messagestore-dedup-both-ids-match-origin {both IDs set, dedup fires on origin_id match} \
+# -- edge cases: store batch / live ------------------------------------------
+
+test messagestore-live-dedup-no-extend {deduped message does not create extra rows} \
     {*}$ms_common \
     -body {
-	ms_batch [list \
-	    [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
-	# Different server_id, same origin_id — deduped via OR
-	ms_batch [list \
-	    [ms_msg timestamp 200 server_id sid_other origin_id oid1 body dup]]
-	llength [store get -chat alice@example.com]
+	store region new r
+	store store batch [list [ms_msg timestamp 100 origin_id oid1 body first]] r
+	store store batch [list [ms_msg timestamp 200 origin_id oid1 body duplicate]] r
+	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
     } -result {1}
 
 test messagestore-batch-out-of-order-timestamps {batch with non-chronological timestamps preserves caller order} \
@@ -516,7 +524,7 @@ test messagestore-batch-out-of-order-timestamps {batch with non-chronological ti
 	    [ms_msg timestamp 300 body c] \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b]]
-	set msgs [store get -chat alice@example.com]
+	set msgs [store get alice@example.com]
 	list [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body] \
 	     [dict get [lindex $msgs 2] body]
@@ -529,7 +537,7 @@ test messagestore-batch-decreasing-timestamps {batch with decreasing timestamps 
 	    [ms_msg timestamp 300 body x] \
 	    [ms_msg timestamp 200 body y] \
 	    [ms_msg timestamp 100 body z]]
-	set msgs [store get -chat alice@example.com]
+	set msgs [store get alice@example.com]
 	list [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body] \
 	     [dict get [lindex $msgs 2] body]
@@ -538,299 +546,131 @@ test messagestore-batch-decreasing-timestamps {batch with decreasing timestamps 
 test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
     {*}$ms_common \
     -body {
-	# All three share timestamp 100; after bumping: 100, 101, 102
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 100 body b] \
 	    [ms_msg timestamp 100 body c]]
-	# -after 100 must return the bumped messages (101, 102)
-	set msgs [store get -chat alice@example.com -after 100]
+	set msgs [store get alice@example.com -after 100]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body]
     } -result {2 b c}
 
-test messagestore-get-after-at-exact-last {-after at exact last timestamp returns {}} \
+test messagestore-get-after-at-exact-last {-after at exact last timestamp returns empty} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
 	    [ms_msg timestamp 200 body b] \
 	    [ms_msg timestamp 300 body c]]
-	store get -chat alice@example.com -after 300
+	store get alice@example.com -after 300
     } -result {}
-
-test messagestore-live-earlier-timestamp {store live with earlier timestamp: hole moves down, both visible} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 500 body late]] -span $sid
-	# Earlier timestamp — hole moves from 499 to 99, both visible
-	store store batch [list [ms_msg timestamp 100 body early]] -span $sid
-	store span end $sid
-	set msgs [store get -chat alice@example.com]
-	list [llength $msgs] [dict get [lindex $msgs 0] body] \
-	     [dict get [lindex $msgs 1] body]
-    } -result {2 early late}
 
 test messagestore-batch-single-message {single-message batch works} \
     {*}$ms_common \
     -body {
 	ms_batch [list [ms_msg timestamp 42 body only]]
-	set msgs [store get -chat alice@example.com]
+	set msgs [store get alice@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 only}
 
-# -- parallel sessions --------------------------------------------------------
-
-test messagestore-parallel-sessions-overlapping {two parallel sessions with overlapping timeframes} \
+test messagestore-empty-batch-noop {empty batch is a no-op} \
     {*}$ms_common \
     -body {
-	# Simulate: MAM catchup and live connection running concurrently
-	set mam [store span begin alice@example.com]
-	set live [store span begin alice@example.com]
+	store region new r
+	store store batch {} r
+	testdb eval {SELECT count(*) FROM chat_message}
+    } -result {0}
 
-	# Live message arrives first
-	store store batch [list [ms_msg timestamp 500 body live1]] -span $live
-	# MAM page 1 arrives (older history)
+test messagestore-live-earlier-timestamp {messages with earlier timestamp in same region are visible} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list [ms_msg timestamp 500 body late]] r
+	store store batch [list [ms_msg timestamp 100 body early]] r
+	set msgs [store get alice@example.com]
+	list [llength $msgs] [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 1] body]
+    } -result {2 early late}
+
+test messagestore-multi-batch-all-visible {multiple batches in same region all visible} \
+    {*}$ms_common \
+    -body {
+	store region new r
+	store store batch [list \
+	    [ms_msg timestamp 1000 body p1a] \
+	    [ms_msg timestamp 1010 body p1b]] r
+	store store batch [list \
+	    [ms_msg timestamp 980 body p2a] \
+	    [ms_msg timestamp 990 body p2b]] r
+	llength [store get alice@example.com]
+    } -result {4}
+
+# -- multi-chat isolation -----------------------------------------------------
+
+test messagestore-multi-chat-isolation {get only returns messages for requested chat} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 chat_jid alice@example.com body alice-msg]]
+	ms_batch [list \
+	    [ms_msg timestamp 200 chat_jid bob@example.com body bob-msg]] bob@example.com
+	llength [store get alice@example.com]
+    } -result {1}
+
+# -- parallel regions --------------------------------------------------------
+
+test messagestore-parallel-regions-overlapping {MAM and live regions stay separate} \
+    {*}$ms_common \
+    -body {
+	store region new mam
+	store region new live
+
+	store store batch [list [ms_msg timestamp 500 body live1]] live
 	store store batch [list \
 	    [ms_msg timestamp 100 server_id s1 body mam1] \
-	    [ms_msg timestamp 200 server_id s2 body mam2]] -span $mam
-	# Another live message
-	store store batch [list [ms_msg timestamp 600 body live2]] -span $live
-	# MAM page 2 overlaps into live range
+	    [ms_msg timestamp 200 server_id s2 body mam2]] mam
+	store store batch [list [ms_msg timestamp 600 body live2]] live
 	store store batch [list \
 	    [ms_msg timestamp 300 server_id s3 body mam3] \
-	    [ms_msg timestamp 400 server_id s4 body mam4]] -span $mam
+	    [ms_msg timestamp 400 server_id s4 body mam4]] mam
 
-	store span end $mam
-	store span end $live
+	set latest [store get alice@example.com]
+	set older [store get alice@example.com -before 500]
+	list [ms_regions] \
+	     [llength $latest] \
+	     [dict get [lindex $latest 0] body] \
+	     [dict get [lindex $latest 1] body] \
+	     [llength $older] \
+	     [dict get [lindex $older 0] body] \
+	     [dict get [lindex $older 3] body]
+    } -result {2 2 live1 live2 4 mam1 mam4}
 
-	# Each session created exactly one hole
-	set holes [lsort -integer [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]]
-	# MAM hole at 99, live hole at 499
-	set msgs_latest [store get -chat alice@example.com]
-	set msgs_old [store get -chat alice@example.com -before 499]
-	list holes $holes \
-	     latest_count [llength $msgs_latest] \
-	     latest_bodies [list \
-		 [dict get [lindex $msgs_latest 0] body] \
-		 [dict get [lindex $msgs_latest 1] body]] \
-	     old_count [llength $msgs_old] \
-	     old_bodies [list \
-		 [dict get [lindex $msgs_old 0] body] \
-		 [dict get [lindex $msgs_old 1] body] \
-		 [dict get [lindex $msgs_old 2] body] \
-		 [dict get [lindex $msgs_old 3] body]]
-    } -result {holes {99 499} latest_count 2 latest_bodies {live1 live2} old_count 4 old_bodies {mam1 mam2 mam3 mam4}}
-
-test messagestore-parallel-sessions-bridge-unifies {bridge after parallel sessions unifies ranges} \
+test messagestore-parallel-regions-bridge-unifies {bridge merges MAM and live regions} \
     {*}$ms_common \
     -body {
-	set mam [store span begin alice@example.com]
-	set live [store span begin alice@example.com]
+	store region new mam
+	store region new live
 
 	store store batch [list \
 	    [ms_msg timestamp 100 server_id s1 body a] \
-	    [ms_msg timestamp 200 server_id s2 body b]] -span $mam
-	store store batch [list [ms_msg timestamp 500 body c]] -span $live
-	store store batch [list [ms_msg timestamp 600 body d]] -span $live
+	    [ms_msg timestamp 200 server_id s2 body b]] mam
+	store store batch [list [ms_msg timestamp 500 body c]] live
+	store store batch [list [ms_msg timestamp 600 body d]] live
 
-	store span end $mam
-	store span end $live
-
-	# Bridge the gap (MAM catchup reached live data)
-	store bridge -chat alice@example.com -from-ts 99 -to-ts 499
-
-	set msgs [store get -chat alice@example.com]
+	store bridge alice@example.com mam live
+	set msgs [store get alice@example.com]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 3] body]
     } -result {4 a d}
 
-test messagestore-row-no-hole-key {message dicts do not contain hole key} \
+# -- row format ---------------------------------------------------------------
+
+test messagestore-row-no-region-key {message dicts do not contain region key} \
     {*}$ms_common \
     -body {
 	ms_batch [list [ms_msg timestamp 100 body test]]
-	set msg [lindex [store get -chat alice@example.com] 0]
-	dict exists $msg hole
+	set msg [lindex [store get alice@example.com] 0]
+	dict exists $msg region
     } -result {0}
-
-# -- server_id driven hole deletion ------------------------------------------
-
-test messagestore-batch-serverid-dup-deletes-hole {server_id dup proves overlap, deletes hole between ranges} \
-    {*}$ms_common \
-    -body {
-	# Range 1: ts 100-200, hole at 99
-	ms_batch [list \
-	    [ms_msg timestamp 100 server_id s1 body a] \
-	    [ms_msg timestamp 200 server_id s2 body b]]
-	# Range 2: ts 500-600, hole at 499
-	ms_batch [list \
-	    [ms_msg timestamp 500 server_id s5 body e] \
-	    [ms_msg timestamp 600 server_id s6 body f]]
-	# Range 3: ts 300-400, last msg is server_id dup of s5
-	# server_id s5 found at ts=500 → reachedTs={500}, insertedTs={300,400}
-	# hole deletion range [300,500] → kills hole at 499
-	ms_batch [list \
-	    [ms_msg timestamp 300 server_id s3 body c] \
-	    [ms_msg timestamp 400 server_id s4 body d] \
-	    [ms_msg timestamp 500 server_id s5 body dup]]
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]
-	# Hole at 499 deleted; holes at 99 and 299 remain
-	set holes
-    } -result {99 299}
-
-test messagestore-batch-no-serverid-no-hole-deletion {batch with no server_ids creates isolated island} \
-    {*}$ms_common \
-    -body {
-	# Range 1: ts 100-200, hole at 99
-	ms_batch [list \
-	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]]
-	# Range 2: ts 500-600, hole at 499
-	ms_batch [list \
-	    [ms_msg timestamp 500 body e] \
-	    [ms_msg timestamp 600 body f]]
-	# Range 3: ts 300-400, no server_ids → no proof of overlap
-	# reachedTs={}, so no holes deleted
-	ms_batch [list \
-	    [ms_msg timestamp 300 body c] \
-	    [ms_msg timestamp 400 body d]]
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]
-	# All three holes survive: 99, 299, 499
-	set holes
-    } -result {99 299 499}
-
-# -- edge cases: empty batch, hole collision, hole-before-delete ordering ----
-
-test messagestore-empty-batch-noop {empty batch is a no-op} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch {} -span $sid
-	store span end $sid
-	testdb eval {SELECT count(*) FROM chat_message}
-    } -result {0}
-
-test messagestore-hole-collision-bumps-down {hole bumps down when minTs-1 is occupied} \
-    {*}$ms_common \
-    -body {
-	# Plant a message at ts=99, exactly where the next batch's hole would go
-	ms_batch [list [ms_msg timestamp 99 body blocker]]
-	# New batch at ts=100 — hole wants 99, occupied → bumps to 98
-	ms_batch [list [ms_msg timestamp 100 body target]]
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]
-	set holes
-    } -result {97 98}
-
-test messagestore-hole-not-in-proven-range {hole placed before deletion range is not deleted} \
-    {*}$ms_common \
-    -body {
-	# Existing range: ts=50, server_id=s1
-	ms_batch [list [ms_msg timestamp 50 server_id s1 body old]]
-	# New batch: ts=100 (new) + ts=200 with server_id=s1 (dup of ts=50)
-	# reachedTs={50}, insertedTs={100}. Hole at 99.
-	# Deletion range [50,100] covers 99 — but hole must be placed
-	# before deletion, so it survives only if ordering is correct.
-	# Correct behavior: hole at 99 is deleted because [50,100] is proven
-	# contiguous via the s1 overlap.
-	ms_batch [list \
-	    [ms_msg timestamp 100 server_id s_new body new] \
-	    [ms_msg timestamp 200 server_id s1 body dup]]
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	    ORDER BY timestamp
-	}]
-	set holes
-    } -result {49}
-
-# -- hole tracks lowest edge ---------------------------------------------------
-
-test messagestore-hole-moves-down {span moves hole down with each older batch} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	# Page 1 (newest)
-	store store batch [list \
-	    [ms_msg timestamp 1000 body p1a] \
-	    [ms_msg timestamp 1010 body p1b] \
-	    [ms_msg timestamp 1020 body p1c]] -span $sid
-	# Hole should be at 999
-	set h1 [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	}]
-	# Page 2 (older) — hole should move to 969
-	store store batch [list \
-	    [ms_msg timestamp 970 body p2a] \
-	    [ms_msg timestamp 980 body p2b] \
-	    [ms_msg timestamp 990 body p2c]] -span $sid
-	set h2 [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	}]
-	store span end $sid
-	list $h1 $h2
-    } -result {999 969}
-
-test messagestore-hole-move-all-visible {moved hole: all pages visible to GetBefore} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list \
-	    [ms_msg timestamp 1000 body p1a] \
-	    [ms_msg timestamp 1010 body p1b]] -span $sid
-	store store batch [list \
-	    [ms_msg timestamp 980 body p2a] \
-	    [ms_msg timestamp 990 body p2b]] -span $sid
-	store span end $sid
-	set msgs [store get -chat alice@example.com]
-	llength $msgs
-    } -result {4}
-
-test messagestore-hole-move-single-hole {only one hole after multiple older batches} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 300 body c]] -span $sid
-	store store batch [list [ms_msg timestamp 200 body b]] -span $sid
-	store store batch [list [ms_msg timestamp 100 body a]] -span $sid
-	store span end $sid
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	}]
-	set holes
-    } -result {99}
-
-test messagestore-hole-no-move-forward {hole stays when batch is above it} \
-    {*}$ms_common \
-    -body {
-	set sid [store span begin alice@example.com]
-	store store batch [list [ms_msg timestamp 100 body first]] -span $sid
-	store store batch [list [ms_msg timestamp 500 body second]] -span $sid
-	store span end $sid
-	set holes [testdb eval {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid='alice@example.com' AND hole=1
-	}]
-	set holes
-    } -result {99}
