@@ -52,6 +52,7 @@ snit::type taco_caps {
     }
 
     method OnReady {} {}
+    method OnDisconnect {} {}
 
     # Register an additional disco feature (e.g. namespace+notify for PEP)
     method addFeature {feat} {

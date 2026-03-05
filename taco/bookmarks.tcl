@@ -38,6 +38,8 @@ snit::type taco_bookmarks {
 	$self request
     }
 
+    method OnDisconnect {} {}
+
     # Return full list of bookmarks from local store
     tackymethod get {args} {
 	set results {}

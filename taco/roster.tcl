@@ -55,6 +55,8 @@ snit::type taco_roster {
 	$self request
     }
 
+    method OnDisconnect {} {}
+
     # Return full roster from local store
     tackymethod get {args} {
 	set results {}

@@ -665,6 +665,84 @@ test messagestore-parallel-regions-bridge-unifies {bridge merges MAM and live re
 	     [dict get [lindex $msgs 3] body]
     } -result {4 a d}
 
+test messagestore-parallel-multi-chat-isolation {MAM backfill for one chat does not affect another chat} \
+    {*}$ms_common \
+    -body {
+	store region new alice_mam
+	store region new alice_live
+	store region new bob_live
+
+	# Alice: live message, then MAM backfill
+	store store batch [list [ms_msg timestamp 500 chat_jid alice@example.com body alice-live]] alice_live
+	store store batch [list \
+	    [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-mam1] \
+	    [ms_msg timestamp 200 chat_jid alice@example.com server_id as2 body alice-mam2]] alice_mam
+
+	# Bob: independent live messages
+	store store batch [list \
+	    [ms_msg timestamp 300 chat_jid bob@example.com body bob-live1] \
+	    [ms_msg timestamp 400 chat_jid bob@example.com body bob-live2]] bob_live
+
+	set alice_latest [store get alice@example.com]
+	set alice_older [store get alice@example.com -before 500]
+	set bob_msgs [store get bob@example.com]
+	list [llength $alice_latest] [dict get [lindex $alice_latest 0] body] \
+	     [llength $alice_older] [dict get [lindex $alice_older 0] body] \
+	     [llength $bob_msgs] [dict get [lindex $bob_msgs 0] body] [dict get [lindex $bob_msgs 1] body]
+    } -result {1 alice-live 2 alice-mam1 2 bob-live1 bob-live2}
+
+test messagestore-parallel-multi-chat-bridge-isolated {bridging one chat does not merge another chat's regions} \
+    {*}$ms_common \
+    -body {
+	store region new alice_mam
+	store region new alice_live
+	store region new bob_mam
+	store region new bob_live
+
+	# Both chats: MAM + live
+	store store batch [list \
+	    [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-old]] alice_mam
+	store store batch [list \
+	    [ms_msg timestamp 500 chat_jid alice@example.com body alice-new]] alice_live
+	store store batch [list \
+	    [ms_msg timestamp 100 chat_jid bob@example.com server_id bs1 body bob-old]] bob_mam
+	store store batch [list \
+	    [ms_msg timestamp 500 chat_jid bob@example.com body bob-new]] bob_live
+
+	# Bridge only alice
+	store bridge alice@example.com alice_mam alice_live
+
+	set alice_msgs [store get alice@example.com]
+	set bob_latest [store get bob@example.com]
+	set bob_older [store get bob@example.com -before 500]
+	list [llength $alice_msgs] \
+	     [dict get [lindex $alice_msgs 0] body] [dict get [lindex $alice_msgs 1] body] \
+	     [llength $bob_latest] [dict get [lindex $bob_latest 0] body] \
+	     [llength $bob_older] [dict get [lindex $bob_older 0] body]
+    } -result {2 alice-old alice-new 1 bob-new 1 bob-old}
+
+test messagestore-parallel-multi-chat-serverid-merge-isolated {server_id merge in one chat does not affect another} \
+    {*}$ms_common \
+    -body {
+	# Alice: two separate batches that will merge via server_id overlap
+	ms_batch [list \
+	    [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-a]]
+	ms_batch [list \
+	    [ms_msg timestamp 200 chat_jid alice@example.com server_id as2 body alice-b] \
+	    [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-dup]]
+
+	# Bob: separate batch that should stay independent
+	ms_batch [list \
+	    [ms_msg timestamp 300 chat_jid bob@example.com server_id bs1 body bob-x]] bob@example.com
+
+	set alice_msgs [store get alice@example.com]
+	set bob_msgs [store get bob@example.com]
+	set alice_regions [testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}]
+	set bob_regions [testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='bob@example.com'}]
+	list [llength $alice_msgs] $alice_regions \
+	     [llength $bob_msgs] $bob_regions
+    } -result {2 1 1 1}
+
 # -- row format ---------------------------------------------------------------
 
 test messagestore-row-no-region-key {message dicts do not contain region key} \

@@ -39,6 +39,7 @@ snit::type taco_avatar {
     }
 
     method OnReady {} {}
+    method OnDisconnect {} {}
 
     destructor {
 	catch {$client message pubsub unhandler urn:xmpp:avatar:metadata}

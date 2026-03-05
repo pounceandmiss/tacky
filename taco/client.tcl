@@ -1,9 +1,8 @@
 snit::type taco_client {
-    taco_modules roster bookmarks caps presence avatar
+    taco_modules message mam roster bookmarks caps presence avatar
 
     component conn -public conn
     component iq -public iq
-    component message -public message
 
     # Database handle (exposed as component for direct access: $client db eval {...})
     component db -public db
@@ -57,9 +56,6 @@ snit::type taco_client {
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write]
 
-        # Create message router
-        install message using taco_message $self.message
-
         # Create modules
         $self InitModules
     }
@@ -104,7 +100,7 @@ snit::type taco_client {
     }
 
     method OnDisconnect {msg} {
-        $presence OnDisconnect
+        $self NotifyModules OnDisconnect
     }
 
     method OnAuthError {msg} {
@@ -114,7 +110,11 @@ snit::type taco_client {
         set tag [dict get $stanza tag]
         switch -- $tag {
             iq       { $iq feed $stanza }
-            message  { $message OnMessage $stanza }
+            message  {
+                if {![$mam onResultMessage $stanza]} {
+                    $message OnMessage $stanza
+                }
+            }
             presence {
                 $caps OnPresence $stanza
                 set type_ [xsearch $stanza -get @type]
@@ -133,7 +133,6 @@ snit::type taco_client {
         }
         catch {$conn destroy}
         catch {$iq destroy}
-        catch {$message destroy}
         # Only destroy db if we created it
         if {[info commands $self.db] ne ""} {
             catch {$self.db close}
