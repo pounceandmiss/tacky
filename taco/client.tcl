@@ -1,5 +1,5 @@
 snit::type taco_client {
-    taco_modules message mam roster bookmarks caps presence avatar
+    taco_modules message mam roster bookmarks caps presence avatar muc
 
     component conn -public conn
     component iq -public iq
@@ -111,9 +111,16 @@ snit::type taco_client {
         switch -- $tag {
             iq       { $iq feed $stanza }
             message  {
-                if {![$mam onResultMessage $stanza]} {
-                    $message OnMessage $stanza
-                }
+                # Handler chain — first claimer wins:
+                #   mam:     MAM result stanzas → message.tcl backfill path
+                #   muc:     groupchat → store under room@muc?join
+                #            MUC PM    → store under room@muc/nick
+                #            invites, declines, voice requests, config changes
+                #   message: DM        → store under user@domain
+                #            PubSub event dispatch
+                if {[$mam onResultMessage $stanza]} return
+                if {[$muc OnMessage $stanza]} return
+                $message OnMessage $stanza
             }
             presence {
                 $caps OnPresence $stanza
@@ -121,6 +128,7 @@ snit::type taco_client {
                 if {$type_ in {subscribe subscribed unsubscribe unsubscribed}} {
                     $roster OnSubscription $stanza
                 } else {
+                    $muc OnPresence $stanza
                     $presence OnPresence $stanza
                 }
             }

@@ -63,13 +63,15 @@ oo::class create _tacky_router {
     }
 }
 
+set _tacky_taco_script [file join [file dirname [info script]] taco taco.tcl]
+
 oo::class create tacky_type {
     superclass _tacky_router
 
     constructor {args} {
 	next
 	if {[info commands taco_type] eq ""} {
-	    uplevel #0 source [file join [file dirname [info script]] taco taco.tcl]
+	    uplevel #0 source $::_tacky_taco_script
 	}
 	taco_type taco {*}$args
     }
@@ -83,8 +85,8 @@ oo::class create tacky_type {
     }
 
     # Forward all non-router methods directly to taco
-    method unknown {name args} {
-	taco $name {*}$args
+    method unknown {module method args} {
+	taco $module $method {*}$args
     }
 }
 
@@ -99,7 +101,7 @@ oo::class create tacky_threaded_type {
 	next
 	set TackyTid [thread::id]
 	set TacoTid [thread::create]
-	thread::send $TacoTid [list source [file join [file dirname [info script]] taco taco.tcl]]
+	thread::send $TacoTid [list source $::_tacky_taco_script]
 	thread::send $TacoTid [list taco_type create taco {*}$args]
 	thread::send $TacoTid {
 	    snit::type tacky_proxy {
@@ -122,14 +124,14 @@ oo::class create tacky_threaded_type {
 	thread::release $TacoTid
     }
     # Frontend will always use keyword arguments
-    method unknown {name args} {
+    method unknown {module method args} {
 	if {[dict exists $args -command]} {
 	    set origCmd [dict get $args -command]
 	    dict set args -command [list apply {{tid cmd result} {
 		thread::send -async $tid [list {*}$cmd $result]
 	    }} $TackyTid $origCmd]
 	}
-	thread::send -async $TacoTid [list taco $name {*}$args]
+	thread::send -async $TacoTid [list taco $module $method {*}$args]
     }
 
 }
@@ -319,6 +321,93 @@ if 0 {
     tacky debugtap off -tap $tapId
     # Inject a stanza into the stream via a tap (for debugging/testing).
     tacky debugtap write -tap $tapId -stanza $stanza
+
+    # -- Multi-User Chat (taco/muc.tcl, XEP-0045) --
+
+    # Join a MUC room.
+    tacky muc join -acc $jid -jid $room -nick $nick ?-password $pw? ?-history {maxstanzas 20}?
+    # Leave a MUC room.
+    tacky muc leave -acc $jid -jid $room ?-status $text?
+    # Change nickname in a room.
+    tacky muc nick -acc $jid -jid $room -nick $newNick
+    # Update availability in a room.
+    tacky muc status -acc $jid -jid $room ?-show $val? ?-status $text?
+    # Send a groupchat message.
+    tacky muc say -acc $jid -jid $room -body $text
+    # Send a private message to an occupant.
+    tacky muc pm -acc $jid -jid $occupantJid -body $text
+    # Set or clear the room subject.
+    tacky muc subject -acc $jid -jid $room -body $text
+    # Send a mediated invitation.
+    tacky muc invite -acc $jid -jid $room -to $invitee ?-reason $text?
+    # Decline a mediated invitation.
+    tacky muc decline -acc $jid -jid $room -to $inviter ?-reason $text?
+    # Request voice in a moderated room.
+    tacky muc requestVoice -acc $jid -jid $room
+    # Kick an occupant.
+    tacky muc kick -acc $jid -jid $room -nick $nick ?-reason $text? ?-command $cb?
+    # Set an occupant's role.
+    tacky muc role -acc $jid -jid $room -nick $nick -role $r ?-reason $t? ?-command $cb?
+    # Set a user's affiliation by bare JID.
+    tacky muc affiliation -acc $jid -jid $room -target $bare -affiliation $a ?-reason $t? ?-command $cb?
+    # Query a role or affiliation list.
+    tacky muc getList -acc $jid -jid $room -what members|outcasts|admins|owners|... ?-command $cb?
+    # Get room configuration form.
+    tacky muc configGet -acc $jid -jid $room ?-command $cb?
+    # Submit room configuration.
+    tacky muc configSet -acc $jid -jid $room -fields $formFields ?-command $cb?
+    # Cancel room configuration.
+    tacky muc configCancel -acc $jid -jid $room ?-command $cb?
+    # Accept default config (instant room).
+    tacky muc createInstant -acc $jid -jid $room ?-command $cb?
+    # Destroy a room.
+    tacky muc destroyRoom -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
+    # Get registration form from room.
+    tacky muc registerGet -acc $jid -jid $room ?-command $cb?
+    # Submit registration form.
+    tacky muc registerSet -acc $jid -jid $room -fields $formFields ?-command $cb?
+    # Discover rooms on a MUC service.
+    tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb?
+    # Discover reserved nickname in a room.
+    tacky muc reservedNick -acc $jid -jid $room ?-command $cb?
+    # Get room subject.
+    tacky muc getSubject -acc $jid -jid $room
+    # List occupant dicts.
+    tacky muc occupants -acc $jid -jid $room
+    # Get single occupant dict by nick.
+    tacky muc occupant -acc $jid -jid $room -nick $nick
+    # Get our nick in a room.
+    tacky muc myNick -acc $jid -jid $room
+    # Get our role (moderator, participant, visitor, none).
+    tacky muc myRole -acc $jid -jid $room
+    # Get our affiliation (owner, admin, member, none, outcast).
+    tacky muc myAffiliation -acc $jid -jid $room
+    # Check if we have voice (can send messages; false for visitors).
+    tacky muc haveVoice -acc $jid -jid $room
+    # Check if we're joined.
+    tacky muc isJoined -acc $jid -jid $room
+    # List joined room JIDs.
+    tacky muc rooms -acc $jid
+
+    # Events:
+    tacky listen muc <Joined> $cmd             ;# -acc -jid -nick
+    tacky listen muc <Left> $cmd               ;# -acc -jid -nick
+    tacky listen muc <Error> $cmd              ;# -acc -jid -error -stanza
+    tacky listen muc <Presence> $cmd           ;# -acc -jid -nick -occupant
+    tacky listen muc <Unavailable> $cmd        ;# -acc -jid -nick -reason -codes -occupant
+    tacky listen muc <Message> $cmd            ;# -acc -jid -nick -body -timestamp -stanza
+    tacky listen muc <Subject> $cmd            ;# -acc -jid -nick -subject
+    tacky listen muc <PrivateMessage> $cmd     ;# -acc -jid -nick -body -stanza
+    tacky listen muc <Invite> $cmd             ;# -acc -jid -from -reason -password -continue
+    tacky listen muc <Decline> $cmd            ;# -acc -jid -from -reason
+    tacky listen muc <NickChanged> $cmd        ;# -acc -jid -oldNick -newNick -self
+    tacky listen muc <Kicked> $cmd             ;# -acc -jid -nick -actor -reason
+    tacky listen muc <Banned> $cmd             ;# -acc -jid -nick -actor -reason
+    tacky listen muc <ConfigChanged> $cmd      ;# -acc -jid -codes
+    tacky listen muc <RoomCreated> $cmd        ;# -acc -jid
+    tacky listen muc <Destroyed> $cmd          ;# -acc -jid -altRoom -reason
+    tacky listen muc <VoiceRequest> $cmd       ;# -acc -jid -from -nick -form
+    tacky listen muc <AffiliationChanged> $cmd ;# -acc -jid -target -affiliation
 
     # -- Connection Events --
 

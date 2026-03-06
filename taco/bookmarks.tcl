@@ -142,14 +142,14 @@ snit::type taco_bookmarks {
 	set jid [dict get $args -jid]
 	set newNick [dict get $args -nick]
 	$self item -jid $jid -nick $newNick
-	$client muc nick $jid $newNick
+	$client muc nick -jid $jid -nick $newNick
     }
 
     # Leave a room and disable autojoin.
     method leave {args} {
 	set jid [dict get $args -jid]
 	$self item -jid $jid -autojoin 0
-	$client muc leave $jid
+	$client muc leave -jid $jid
     }
 
     # Query autojoin state for a single JID
@@ -259,15 +259,15 @@ snit::type taco_bookmarks {
 
     method AutojoinAll {} {
 	$client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
-	    if {[$client muc isJoined $row(jid)]} continue
+	    if {[$client muc isJoined -jid $row(jid)]} continue
 	    set nick $row(nick)
 	    if {$nick eq ""} {
 		set nick [jid username [$client cget -jid]]
 	    }
 	    if {$row(password) ne ""} {
-		$client muc join $row(jid) $nick -password $row(password)
+		$client muc join -jid $row(jid) -nick $nick -password $row(password)
 	    } else {
-		$client muc join $row(jid) $nick
+		$client muc join -jid $row(jid) -nick $nick
 	    }
 	}
     }
@@ -277,14 +277,14 @@ snit::type taco_bookmarks {
 	if {[llength $row] != 3} return
 	lassign $row autojoin nick password
 	if {!$autojoin} return
-	if {[$client muc isJoined $jid]} return
+	if {[$client muc isJoined -jid $jid]} return
 	if {$nick eq ""} {
 	    set nick [jid username [$client cget -jid]]
 	}
 	if {$password ne ""} {
-	    $client muc join $jid $nick -password $password
+	    $client muc join -jid $jid -nick $nick -password $password
 	} else {
-	    $client muc join $jid $nick
+	    $client muc join -jid $jid -nick $nick
 	}
     }
 

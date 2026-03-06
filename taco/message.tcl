@@ -21,7 +21,60 @@ snit::type taco_message {
 	catch {$messagestore destroy}
     }
 
-    method OnReady {} {}
+    method OnReady {} {
+	$self DoCatchup
+    }
+
+    method DoCatchup {} {
+	$client mam query -before {} -max 50 \
+	    -command [mymethod OnCatchup]
+    }
+
+    method OnCatchup {mamResult} {
+	if {[dict exists $mamResult error]} {
+	    $client emit message <CatchupDone> -count 0
+	    return
+	}
+
+	set myBareJid [jid bare [$client cget -jid]]
+	set groups [dict create]
+
+	foreach resultNode [dict get $mamResult messages] {
+	    set fwdNode [lindex [xsearch $resultNode forwarded \
+				    -ns urn:xmpp:forward:0] 0]
+	    set msgNode [lindex [xsearch $fwdNode message] 0]
+
+	    set fromBare [jid bare [xsearch $msgNode -get @from]]
+	    set toBare   [jid bare [xsearch $msgNode -get @to]]
+
+	    if {[string equal -nocase $fromBare $myBareJid]} {
+		set chatJid $toBare
+	    } else {
+		set chatJid $fromBare
+	    }
+
+	    set msg [$self ParseResultNode $resultNode $chatJid]
+	    if {[dict get $msg body] eq ""} continue
+
+	    dict lappend groups $chatJid $msg
+	}
+
+	$messagestore region new catchupRegion
+	set totalCount 0
+
+	dict for {chatJid messages} $groups {
+	    $messagestore store batch $messages catchupRegion
+	    incr totalCount [llength $messages]
+	    foreach msg $messages {
+		$client emit message <Received> \
+		    -jid $chatJid \
+		    -from [dict get $msg from_jid] \
+		    -body [dict get $msg body]
+	    }
+	}
+
+	$client emit message <CatchupDone> -count $totalCount
+    }
 
     method OnDisconnect {} {
 	array unset SyncedChats
@@ -39,43 +92,26 @@ snit::type taco_message {
 	    }
 	}
 
-	# Skip groupchat (MUC) for now
-	set type_ [xsearch $stanza -get @type]
-	if {$type_ eq "groupchat"} { return }
+	$self store [jid bare [xsearch $stanza -get @from]] $stanza
+    }
 
-	# Live chat message — must have a body
+    # Parse a live message stanza, store it, and emit message <Received>.
+    # Called directly by OnMessage (DMs) and by the MUC module
+    # (groupchat with room@muc?join, PMs with room@muc/nick).
+    method store {chatJid stanza} {
 	set body [xsearch $stanza body -get body]
-	if {$body eq ""} { return }
-
-	set msg [$self ParseLiveMessage $stanza]
-
-	# Lazy-allocate live region for this connection session
+	if {$body eq ""} return
+	set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
+	set ts [expr {$stamp ne "" ? [ParseTimestamp $stamp] : [clock microseconds]}]
+	set serverId [xsearch $stanza stanza-id -ns urn:xmpp:sid:0 -get @id]
+	set msg [$self ParseMessage $stanza \
+	    -chat_jid $chatJid -timestamp $ts -server_id $serverId]
 	if {$liveRegion eq ""} {
 	    $messagestore region new liveRegion
 	}
 	$messagestore store batch [list $msg] liveRegion
-
-	set chatJid [dict get $msg chat_jid]
-	set fromJid [dict get $msg from_jid]
 	$client emit message <Received> \
-	    -jid $chatJid -from $fromJid -body $body
-    }
-
-    method ParseLiveMessage {stanza} {
-	# Timestamp: use <delay> if present (offline/delayed), else now
-	set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
-	if {$stamp ne ""} {
-	    set ts [ParseTimestamp $stamp]
-	} else {
-	    set ts [clock microseconds]
-	}
-
-	set serverId [xsearch $stanza stanza-id -ns urn:xmpp:sid:0 -get @id]
-
-	$self ParseMessage $stanza \
-	    -chat_jid [jid bare [xsearch $stanza -get @from]] \
-	    -timestamp $ts \
-	    -server_id $serverId
+	    -jid $chatJid -from [xsearch $stanza -get @from] -body $body
     }
 
     method "pubsub handler" {node command} {
@@ -92,7 +128,6 @@ snit::type taco_message {
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
-	regsub {\?join$} $chatJid {} chatJid
 	set limit   [dict get $opts -limit]
 
 	# Build local query args

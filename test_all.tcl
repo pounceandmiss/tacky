@@ -1,4 +1,7 @@
 #!/usr/bin/env tclsh9.0
+# Usage: tclsh9.0 test_all.tcl
+#   NO_THREADED=1  - skip threaded (tacky_threaded_type) tests
+#   XMPP_SERVER=x  - run integration tests (requires SPOOF_SSL_CERT)
 package require tcltest
 package require control
 source [file join [file dirname [info script]] taco taco.tcl]

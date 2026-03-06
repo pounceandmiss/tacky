@@ -160,6 +160,7 @@ set common {
         set _tauth_err {}
         set _tdisconnect {}
         set _temitted {}
+        jlog configure -logproc {apply {{msg} {}}}
         conn c \
             -host test.example.com -port 5222 \
             -username user -password pass -resource res \
@@ -170,6 +171,7 @@ set common {
     }
     -cleanup {
         catch {c destroy}
+        jlog configure -logproc ""
         rename baseconn mockbaseconn
         rename _real_baseconn baseconn
     }

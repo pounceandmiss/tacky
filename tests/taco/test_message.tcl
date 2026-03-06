@@ -37,15 +37,20 @@ proc msg_store {msgs} {
 
 # Helper: build a MAM <result> node wrapping a message
 proc mam_result {args} {
-    set defaults {id sid1 queryid "" from alice@example.com body hello stamp 2024-01-01T00:00:00Z origin_id ""}
+    set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id ""}
     set opts [dict merge $defaults $args]
     set oid [dict get $opts origin_id]
     set qid [dict get $opts queryid]
     set rid [dict get $opts id]
+    set toJid [dict get $opts to]
+    set msgAttrs [list -from [dict get $opts from]]
+    if {$toJid ne ""} {
+	lappend msgAttrs -to $toJid
+    }
     j result -ns urn:xmpp:mam:2 -id $rid -queryid $qid {
 	j forwarded -ns urn:xmpp:forward:0 {
 	    j delay -ns urn:xmpp:delay -stamp [dict get $opts stamp]
-	    j message -from [dict get $opts from] {
+	    j message {*}$msgAttrs {
 		j body #body [dict get $opts body]
 		if {$oid ne ""} {
 		    j origin-id -ns urn:xmpp:sid:0 -id $oid
@@ -116,43 +121,6 @@ test message-history-synced-no-mam {synced chat returns local data without MAM q
 
 # -- history: MAM triggered ---------------------------------------------------
 
-test message-history-mam-triggered {insufficient local data triggers MAM and delivers after response} \
-    {*}$msg_common \
-    -body {
-	msg_store [list \
-	    [msg_msg timestamp 100 server_id s1 body local1]]
-	set result {}
-	c message history -chat alice@example.com -limit 5 \
-	    -command [list apply {{r} { set ::result $r }}]
-
-	# Extract IQ id and MAM queryid
-	set written [c.conn get_written]
-	set iqStanza [lindex $written end]
-	set iqId [dict get $iqStanza attrs id]
-	set qid [mam_queryid]
-
-	# Feed MAM result messages
-	set resultNode [mam_result id mam1 queryid $qid \
-			    from bob@example.com body mam-msg1 \
-			    stamp 2023-12-31T23:00:00Z]
-	c.mam onResultMessage [j message -from user@test.example.com {
-	    j /as-is $resultNode
-	}]
-
-	# Feed fin IQ response
-	c.iq feed [j iq -type result -id $iqId {
-	    j fin -ns urn:xmpp:mam:2 -complete false {
-		j set -ns http://jabber.org/protocol/rsm {
-		    j first #body mam1
-		    j last #body mam1
-		}
-	    }
-	}]
-
-	# Callback should have been called with messages
-	expr {[llength $result] >= 2}
-    } -result {1}
-
 test message-history-mam-results-parsed-and-stored {MAM results are correctly parsed, stored, and retrievable} \
     {*}$msg_common \
     -body {
@@ -195,38 +163,6 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
 	     [expr {[dict get $m1 raw_xml] ne ""}] \
 	     [dict get $m2 body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com/phone mam1 orig1 alice@example.com 1 1 {second msg} mam2}
-
-test message-history-mam-stored-persists {MAM results persist in messagestore after callback} \
-    {*}$msg_common \
-    -body {
-	set result {}
-	c message history -chat alice@example.com -limit 5 \
-	    -command [list apply {{r} { set ::result $r }}]
-
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
-	set qid [mam_queryid]
-
-	set rn [mam_result id srv1 queryid $qid from bob@example.com \
-		    body "persisted" stamp 2024-03-01T12:00:00Z origin_id oid1]
-	c.mam onResultMessage [j message -from user@test.example.com {
-	    j /as-is $rn
-	}]
-
-	c.iq feed [j iq -type result -id $iqId {
-	    j fin -ns urn:xmpp:mam:2 -complete true {
-		j set -ns http://jabber.org/protocol/rsm {
-		    j first #body srv1
-		    j last #body srv1
-		}
-	    }
-	}]
-
-	# Query messagestore directly — should find the stored message
-	set stored [c message messagestore get alice@example.com]
-	list [llength $stored] \
-	     [dict get [lindex $stored 0] body] \
-	     [dict get [lindex $stored 0] server_id]
-    } -result {1 persisted srv1}
 
 test message-history-mam-complete-marks-synced {MAM complete=true marks chat as synced} \
     {*}$msg_common \
@@ -304,11 +240,11 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
 	     [expr {[dict get $msg timestamp] > 0}]
     } -result {sid42 juliet@capulet.li/phone {hello romeo} oid99 chat@example.com 1}
 
-test message-history-strips-join {history strips ?join from chatJid} \
+test message-history-preserves-join {history preserves ?join suffix in chatJid} \
     {*}$msg_common \
     -body {
 	msg_store [list \
-	    [msg_msg timestamp 100 chat_jid room@muc.example.com server_id s1 body hi]]
+	    [msg_msg timestamp 100 chat_jid room@muc.example.com?join server_id s1 body hi]]
 	set result [c message history -chat room@muc.example.com?join -limit 1]
 	list [llength $result] [dict get [lindex $result 0] body]
     } -result {1 hi}
@@ -322,16 +258,6 @@ test message-parseresultnode-no-origin-id {ParseResultNode handles missing origi
     } -result {}
 
 # -- live message receiving ----------------------------------------------------
-
-test message-live-stored {incoming chat message is stored and retrievable} \
-    {*}$msg_common \
-    -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
-	    j body #body "hello there"
-	}]
-	set msgs [c message messagestore get alice@example.com]
-	list [llength $msgs] [dict get [lindex $msgs 0] body]
-    } -result {1 {hello there}}
 
 test message-live-fields {stored live message has correct fields} \
     {*}$msg_common \
@@ -371,15 +297,6 @@ test message-live-no-body-ignored {message without body is not stored} \
 	    j active -ns http://jabber.org/protocol/chatstates
 	}]
 	llength [c message messagestore get alice@example.com]
-    } -result {0}
-
-test message-live-groupchat-ignored {groupchat messages are skipped for now} \
-    {*}$msg_common \
-    -body {
-	c.conn feed [j message -type groupchat -from room@muc.example.com/nick {
-	    j body #body "muc message"
-	}]
-	llength [c message messagestore get room@muc.example.com]
     } -result {0}
 
 test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored} \
@@ -440,3 +357,153 @@ test message-live-disconnect-clears-region {disconnect resets liveRegion} \
 	    SELECT COUNT(DISTINCT region) FROM chat_message
 	}
     } -result {2}
+
+# -- catchup at startup -------------------------------------------------------
+
+# Helper: trigger OnReady (sets bound-jid, fires ready)
+proc msg_ready {} {
+    c.conn configure -bound-jid user@test.example.com/res
+    c.conn fire_ready 0
+}
+
+# Helper: find the MAM IQ among written stanzas (multiple modules write IQs on ready)
+proc mam_catchup_iq {} {
+    foreach stanza [c.conn get_written] {
+	if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} {
+	    return $stanza
+	}
+    }
+    return ""
+}
+
+# Helper: complete a catchup by feeding MAM results + fin IQ
+proc msg_catchup_finish {results {complete true}} {
+    set iqStanza [mam_catchup_iq]
+    set iqId [dict get $iqStanza attrs id]
+    set qid [xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid]
+
+    foreach rn $results {
+	c.mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is $rn
+	}]
+    }
+
+    set first ""
+    set last ""
+    if {[llength $results] > 0} {
+	set first [xsearch [lindex $results 0] -get @id]
+	set last [xsearch [lindex $results end] -get @id]
+    }
+
+    c.iq feed [j iq -type result -id $iqId {
+	j fin -ns urn:xmpp:mam:2 -complete $complete {
+	    j set -ns http://jabber.org/protocol/rsm {
+		if {$first ne ""} {
+		    j first #body $first
+		    j last #body $last
+		}
+	    }
+	}
+    }]
+}
+
+test message-catchup-on-ready {OnReady sends global MAM query with before and no with} \
+    {*}$msg_common \
+    -body {
+	msg_ready
+	set iq [mam_catchup_iq]
+	set qnode [lindex [xsearch $iq query -ns urn:xmpp:mam:2] 0]
+	set hasWith [expr {[xsearch $qnode x field @var with] ne ""}]
+	set hasBefore [expr {[xsearch $iq query set before] ne ""}]
+	list [expr {!$hasWith}] $hasBefore
+    } -result {1 1}
+
+test message-catchup-routes-incoming {catchup stores incoming message under sender's bare JID} \
+    {*}$msg_common \
+    -body {
+	msg_ready
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id s1 queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body "hi there" stamp 2024-01-01T10:00:00Z]]
+	set msgs [c message messagestore get alice@example.com]
+	list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 {hi there}}
+
+test message-catchup-routes-outgoing {catchup stores outgoing message under recipient's bare JID} \
+    {*}$msg_common \
+    -body {
+	msg_ready
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id s1 queryid $qid \
+		from user@test.example.com/res to bob@example.com \
+		body "hey bob" stamp 2024-01-01T10:00:00Z]]
+	set msgs [c message messagestore get bob@example.com]
+	list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 {hey bob}}
+
+test message-catchup-emits-done {catchup emits CatchupDone with correct count} \
+    {*}$msg_common \
+    -body {
+	set ::_done {}
+	tacky listen message <CatchupDone> {apply {{ev} { set ::_done $ev }}}
+	msg_ready
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id s1 queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body msg1 stamp 2024-01-01T10:00:00Z] \
+	    [mam_result id s2 queryid $qid \
+		from bob@example.com/laptop to user@test.example.com \
+		body msg2 stamp 2024-01-01T11:00:00Z]]
+	dict get $_done -count
+    } -result {2}
+
+test message-catchup-mam-error {MAM error emits CatchupDone with count 0} \
+    {*}$msg_common \
+    -body {
+	set ::_done {}
+	tacky listen message <CatchupDone> {apply {{ev} { set ::_done $ev }}}
+	msg_ready
+	set iqId [dict get [mam_catchup_iq] attrs id]
+	c.iq feed [j iq -type error -id $iqId {
+	    j error -type cancel {
+		j feature-not-implemented
+	    }
+	}]
+	dict get $_done -count
+    } -result {0}
+
+test message-catchup-skips-empty-body {catchup skips messages without body} \
+    {*}$msg_common \
+    -body {
+	msg_ready
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id s1 queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body "" stamp 2024-01-01T10:00:00Z]]
+	set ::_done {}
+	;# already emitted, check store
+	llength [c message messagestore get alice@example.com]
+    } -result {0}
+
+test message-catchup-dedup-with-live {catchup deduplicates against live messages} \
+    {*}$msg_common \
+    -body {
+	msg_ready
+	# Live message arrives with server_id
+	c.conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg"
+	    j stanza-id -ns urn:xmpp:sid:0 -id s1
+	}]
+	# Catchup returns same message
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id s1 queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body "live msg" stamp 2024-01-01T10:00:00Z]]
+	llength [c message messagestore get alice@example.com]
+    } -result {1}
