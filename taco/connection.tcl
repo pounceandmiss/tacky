@@ -126,7 +126,13 @@ snit::type baseconn {
         }
         set host $h
         set state connecting
-        set socket [socket -async $host $port]
+        if {[catch {
+            set socket [socket -async $host $port]
+        } err]} {
+            set state disconnected
+            after idle [list {*}$options(-error-command) "Connect failed: $err"]
+            return
+        }
         fconfigure $socket -blocking 0 -buffering full -translation binary
         fileevent $socket writable [list $self OnSocketConnected]
     }

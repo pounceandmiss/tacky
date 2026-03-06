@@ -110,6 +110,7 @@ snit::widgetadaptor signin {
 	$win.statuslabel configure -text ""
 	tacky listen -tag $win conn <Ready> -acc $jid [mymethod OnReady]
 	tacky listen -tag $win conn <AuthError> -acc $jid [mymethod OnAuthError]
+	tacky listen -tag $win conn <Disconnected> -acc $jid [mymethod OnDisconnected]
 	tacky account add -acc $jid -password $pw
 	tacky account enable -acc $jid
     }
@@ -137,6 +138,20 @@ snit::widgetadaptor signin {
     method OnAuthError {ev} {
 	tacky unlisten $win
 	set msg "Authentication failed"
+	if {[dict exists $ev -message]} {
+	    set msg [dict get $ev -message]
+	}
+	catch { tacky account disable -acc $jid }
+	catch { tacky account remove -acc $jid }
+	$win.progressbar stop
+	$win.progressbar configure -mode determinate -value 0
+	$win.proceed configure -text "Proceed" -command [mymethod Proceed]
+	$win.statuslabel configure -text $msg
+    }
+
+    method OnDisconnected {ev} {
+	tacky unlisten $win
+	set msg "Connection failed"
 	if {[dict exists $ev -message]} {
 	    set msg [dict get $ev -message]
 	}

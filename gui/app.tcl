@@ -25,10 +25,17 @@ snit::type app_type {
     }
 
     method OnAccountList {result} {
-        if {[llength $result] == 0} {
-            $self ShowSetup
-        } else {
+        set hasEnabled 0
+        foreach jid $result {
+            if {[::tacky account get -acc $jid -field enabled]} {
+                set hasEnabled 1
+                break
+            }
+        }
+        if {$hasEnabled} {
             $self BuildMainUI
+        } else {
+            $self ShowSetup
         }
     }
 
@@ -126,16 +133,15 @@ snit::type app_type {
     method OpenChat {args} {
         set acc [dict get $args -acc]
         set jid [dict get $args -jid]
-        set client [::tacky client $acc]
         if {$chatModeVar eq "inline"} {
-            $self OpenChatInline -client $client -jid $jid
+            $self OpenChatInline -acc $acc -jid $jid
         } else {
-            $self Openchatwindow -client $client -jid $jid
+            $self Openchatwindow -acc $acc -jid $jid
         }
     }
 
     method OpenChatInline {args} {
-        set client [dict get $args -client]
+        set acc [dict get $args -acc]
         set contactJid [dict get $args -jid]
         if {$inlineJid eq $contactJid} return
 
@@ -145,7 +151,7 @@ snit::type app_type {
         }
         set inlineJid $contactJid
         # Create chat widgets in the panel
-        chatpanel $chatpanel.cp -client $client -jid $contactJid \
+        chatpanel $chatpanel.cp -acc $acc -jid $contactJid \
             -menubar .menubar
         pack $chatpanel.cp -expand yes -fill both
 
@@ -156,10 +162,10 @@ snit::type app_type {
     }
 
     method Openchatwindow {args} {
-        set client [dict get $args -client]
+        set acc [dict get $args -acc]
         set contactJid [dict get $args -jid]
         set safe [string map {@ _ . _ / _ ? _} $contactJid]
-        chatwindow open .chatwin_$safe -client $client -jid $contactJid
+        chatwindow open .chatwin_$safe -acc $acc -jid $contactJid
     }
 
     method OpenBookmark {args} {
