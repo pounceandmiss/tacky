@@ -40,6 +40,10 @@ snit::type taco_account {
     }
 
     tackymethod list {args} {
+        if {[dict exists $args -enabled]} {
+            set enabled [dict get $args -enabled]
+            return [$options(-db) eval {SELECT jid FROM account WHERE enabled=$enabled}]
+        }
         $options(-db) eval {SELECT jid FROM account}
     }
 

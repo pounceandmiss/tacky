@@ -69,7 +69,8 @@ snit::type taco_message {
 		$client emit message <Received> \
 		    -jid $chatJid \
 		    -from [dict get $msg from_jid] \
-		    -body [dict get $msg body]
+		    -body [dict get $msg body] \
+		    -message $msg
 	    }
 	}
 
@@ -91,7 +92,6 @@ snit::type taco_message {
 		return
 	    }
 	}
-
 	$self store [jid bare [xsearch $stanza -get @from]] $stanza
     }
 
@@ -111,7 +111,8 @@ snit::type taco_message {
 	}
 	$messagestore store batch [list $msg] liveRegion
 	$client emit message <Received> \
-	    -jid $chatJid -from [xsearch $stanza -get @from] -body $body
+	    -jid $chatJid -from [xsearch $stanza -get @from] -body $body \
+	    -message $msg
     }
 
     method "pubsub handler" {node command} {
@@ -122,29 +123,30 @@ snit::type taco_message {
 	unset -nocomplain PubSubHandlers($node)
     }
 
-    # history -chat $chatJid ?-before $ts? ?-limit 50? -command $cb
-    tackymethod history {args} {
-	set defaults [dict create -before "" -limit 50 -command ""]
+    # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50? -command $cb
+    # Always async — calls -command with result list.
+    # Always queries the server unless the chat is already synchronized.
+    method history {args} {
+	set defaults [dict create -before "" -after "" -limit 50 -command ""]
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
 	set limit   [dict get $opts -limit]
-
-	# Build local query args
-	set getArgs [list -limit $limit]
+	set callback [dict get $opts -command]
 	set before [dict get $opts -before]
-	if {$before ne ""} {
-	    lappend getArgs -before $before
+	set after [dict get $opts -after]
+
+	if {[info exists SyncedChats($chatJid)]} {
+	    # Chat fully synced — serve from local store
+	    set getArgs [list -limit $limit]
+	    if {$before ne ""} { lappend getArgs -before $before }
+	    if {$after ne ""}  { lappend getArgs -after $after }
+	    set local [$messagestore get $chatJid {*}$getArgs]
+	    {*}$callback $local
+	    return
 	}
 
-	set local [$messagestore get $chatJid {*}$getArgs]
-
-	# Enough local data or chat fully synced — return immediately
-	if {[llength $local] >= $limit || [info exists SyncedChats($chatJid)]} {
-	    return $local
-	}
-
-	# Need MAM backfill
+	# Not synced — query the server
 	set cursor [$client db onecolumn {
 	    SELECT server_id FROM chat_message
 	    WHERE chat_jid=$chatJid AND server_id != ''
@@ -157,21 +159,15 @@ snit::type taco_message {
 	if {$cursor ne ""} {
 	    lappend mamArgs -before $cursor
 	}
-	set callback [dict get $opts -command]
 	lappend mamArgs -command [mymethod OnBackfill $chatJid $cursor \
 				      $before $limit $callback \
 				      $backfillRegion]
-
-	# Prevent tackymethod from auto-firing the callback;
-	# OnBackfill will call it after MAM completes.
-	dict unset args -command
 
 	$client mam queryChat $chatJid {*}$mamArgs
     }
 
     method OnBackfill {chatJid cursor before limit callback backfillRegion mamResult} {
 	if {[dict exists $mamResult error]} {
-	    # MAM failed — return whatever local data we had
 	    set getArgs [list -limit $limit]
 	    if {$before ne ""} {
 		lappend getArgs -before $before
@@ -219,7 +215,6 @@ snit::type taco_message {
 
     method ParseResultNode {resultNode chatJid} {
 	set serverId [xsearch $resultNode -get @id]
-
 	set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
 	set stamp [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]
 	set msgNode [lindex [xsearch $fwdNode message] 0]

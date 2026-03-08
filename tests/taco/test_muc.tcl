@@ -343,17 +343,17 @@ test muc-say-sends-groupchat {say sends groupchat message} \
 	     [xsearch $m body -get body]
     } -result {groupchat room@muc.example.com {hello room}}
 
-test muc-message-event {<Message> event fires for groupchat message} \
+test muc-message-event {groupchat message emits message <Received> only} \
     {*}$muc_common \
     -body {
 	muc_join room@muc.example.com me
 	set got {}
-	tacky listen muc <Message> {apply {{ev} { set ::got $ev }}}
+	tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
 	c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
 	    j body #body "hi all"
 	}]
-	list [dict get $got -jid] [dict get $got -nick] [dict get $got -body]
-    } -result {room@muc.example.com someone {hi all}}
+	list [dict get $got -jid] [dict get $got -body]
+    } -result {room@muc.example.com?join {hi all}}
 
 test muc-pm-sends-chat {pm sends chat message with muc#user marker} \
     {*}$muc_common \
@@ -366,17 +366,17 @@ test muc-pm-sends-chat {pm sends chat message with muc#user marker} \
 	     [expr {[xsearch $m x -ns http://jabber.org/protocol/muc#user] ne ""}]
     } -result {chat room@muc.example.com/someone psst 1}
 
-test muc-private-message-event {<PrivateMessage> event fires} \
+test muc-private-message-event {private message emits message <Received> only} \
     {*}$muc_common \
     -body {
 	muc_join room@muc.example.com me
 	set got {}
-	tacky listen muc <PrivateMessage> {apply {{ev} { set ::got $ev }}}
+	tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
 	c.conn feed [j message -type chat -from room@muc.example.com/someone {
 	    j body #body "secret"
 	}]
-	list [dict get $got -jid] [dict get $got -nick] [dict get $got -body]
-    } -result {room@muc.example.com someone secret}
+	list [dict get $got -jid] [dict get $got -body]
+    } -result {room@muc.example.com/someone secret}
 
 # -- Subject ------------------------------------------------------------------
 
@@ -661,13 +661,13 @@ test muc-disconnect-clears-rooms {disconnect clears all room state} \
 
 # -- tacky listen filtering ---------------------------------------------------
 
-test muc-listen-filters-by-jid {tacky listen filters events by -jid} \
+test muc-listen-filters-by-jid {tacky listen filters message <Received> by -jid} \
     {*}$muc_common \
     -body {
 	muc_join room1@muc.example.com me
 	muc_join room2@muc.example.com me
 	set got {}
-	tacky listen muc <Message> -jid room1@muc.example.com \
+	tacky listen message <Received> -jid room1@muc.example.com?join \
 	    {apply {{ev} { lappend ::got [dict get $ev -jid] }}}
 	c.conn feed [j message -type groupchat -from room1@muc.example.com/nick {
 	    j body #body "yes"
@@ -676,7 +676,7 @@ test muc-listen-filters-by-jid {tacky listen filters events by -jid} \
 	    j body #body "no"
 	}]
 	set got
-    } -result {room1@muc.example.com}
+    } -result {room1@muc.example.com?join}
 
 # -- Affiliation changed while not in room ------------------------------------
 

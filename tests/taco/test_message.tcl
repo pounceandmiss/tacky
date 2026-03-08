@@ -35,6 +35,26 @@ proc msg_store {msgs} {
     c message messagestore store batch $msgs r
 }
 
+# Helper: call history and collect result via -command
+proc msg_history {args} {
+    set ::_msg_hist_result {}
+    c message history {*}$args \
+	-command [list apply {{result} { set ::_msg_hist_result $result }}]
+    set ::_msg_hist_result
+}
+
+# Helper: mark a chat as synced by running a MAM query that returns complete=true
+proc msg_sync {chatJid} {
+    c message history -chat $chatJid -limit 1 \
+	-command [list apply {{r} {}}]
+    set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+    c.iq feed [j iq -type result -id $iqId {
+	j fin -ns urn:xmpp:mam:2 -complete true {
+	    j set -ns http://jabber.org/protocol/rsm
+	}
+    }]
+}
+
 # Helper: build a MAM <result> node wrapping a message
 proc mam_result {args} {
     set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id ""}
@@ -67,29 +87,31 @@ proc mam_queryid {} {
     xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid
 }
 
-# -- history: local sufficient -------------------------------------------------
+# -- history: synced chat returns local data ------------------------------------
 
-test message-history-local-sufficient {history returns local data when enough messages exist} \
+test message-history-synced-returns-local {synced chat returns local data via callback} \
     {*}$msg_common \
     -body {
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body a] \
 	    [msg_msg timestamp 200 server_id s2 body b] \
 	    [msg_msg timestamp 300 server_id s3 body c]]
-	set result [c message history -chat alice@example.com -limit 2]
+	msg_sync alice@example.com
+	set result [msg_history -chat alice@example.com -limit 2]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
 	     [dict get [lindex $result 1] body]
     } -result {2 b c}
 
-test message-history-local-sufficient-before {history with -before returns local data when enough} \
+test message-history-synced-before {synced chat with -before returns correct slice} \
     {*}$msg_common \
     -body {
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body a] \
 	    [msg_msg timestamp 200 server_id s2 body b] \
 	    [msg_msg timestamp 300 server_id s3 body c]]
-	set result [c message history -chat alice@example.com -before 300 -limit 2]
+	msg_sync alice@example.com
+	set result [msg_history -chat alice@example.com -before 300 -limit 2]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
 	     [dict get [lindex $result 1] body]
@@ -102,22 +124,15 @@ test message-history-synced-no-mam {synced chat returns local data without MAM q
     -body {
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body only]]
-	# Simulate a completed MAM backfill by directly setting SyncedChats
-	# We trigger this via a backfill that completes
-	set result {}
-	c message history -chat alice@example.com -limit 50 \
-	    -command [list apply {{r} { set ::result $r }} ]
-	# MAM query was sent — simulate MAM response with complete=true
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
-	c.iq feed [j iq -type result -id $iqId {
-	    j fin -ns urn:xmpp:mam:2 -complete true {
-		j set -ns http://jabber.org/protocol/rsm
-	    }
-	}]
-	# Now SyncedChats should be set. Query again synchronously.
-	set result2 [c message history -chat alice@example.com -limit 50]
-	list [llength $result2] [dict get [lindex $result2 0] body]
-    } -result {1 only}
+	msg_sync alice@example.com
+	# Now synced — should not send another MAM query
+	set written1 [c.conn get_written]
+	set result [msg_history -chat alice@example.com -limit 50]
+	set written2 [c.conn get_written]
+	list [llength $result] \
+	     [dict get [lindex $result 0] body] \
+	     [expr {[llength $written1] == [llength $written2]}]
+    } -result {1 only 1}
 
 # -- history: MAM triggered ---------------------------------------------------
 
@@ -182,9 +197,9 @@ test message-history-mam-complete-marks-synced {MAM complete=true marks chat as 
 	    }
 	}]
 
-	# Now a second query should return synchronously (no MAM)
+	# Now a second query should not send MAM
 	set written1 [c.conn get_written]
-	set result2 [c message history -chat bob@example.com -limit 50]
+	set result2 [msg_history -chat bob@example.com -limit 50]
 	set written2 [c.conn get_written]
 	# No new IQ should have been sent
 	list [llength $result2] [expr {[llength $written1] == [llength $written2]}]
@@ -207,8 +222,8 @@ test message-history-disconnect-clears-synced {disconnect clears SyncedChats sta
 	    }
 	}]
 
-	# Verify synced — synchronous return
-	set r [c message history -chat bob@example.com -limit 50]
+	# Verify synced
+	set r [msg_history -chat bob@example.com -limit 50]
 
 	# Disconnect
 	c.conn fire_disconnect "gone"
@@ -245,7 +260,8 @@ test message-history-preserves-join {history preserves ?join suffix in chatJid} 
     -body {
 	msg_store [list \
 	    [msg_msg timestamp 100 chat_jid room@muc.example.com?join server_id s1 body hi]]
-	set result [c message history -chat room@muc.example.com?join -limit 1]
+	msg_sync room@muc.example.com?join
+	set result [msg_history -chat room@muc.example.com?join -limit 1]
 	list [llength $result] [dict get [lindex $result 0] body]
     } -result {1 hi}
 
@@ -312,6 +328,67 @@ test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored}
 	}]
 	list $got [llength [c message messagestore get alice@example.com]]
     } -result {1 0}
+
+test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not the timestamp} \
+    {*}$msg_common \
+    -body {
+	c.conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body hi
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv42
+	    j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
+	}]
+	set db [c.message.messagestore cget -db]
+	$db eval {
+	    SELECT server_id, timestamp, raw_xml FROM chat_message
+	    WHERE chat_jid='alice@example.com'
+	} row {
+	    set sid $row(server_id)
+	    set ts  $row(timestamp)
+	    set xml $row(raw_xml)
+	}
+	list [expr {$sid eq "srv42"}] \
+	     [expr {$sid ne $ts}] \
+	     [string match {*<message*} $xml]
+    } -result {1 1 1}
+
+test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive ID, not timestamp} \
+    {*}$msg_common \
+    -body {
+	set result {}
+	c message history -chat alice@example.com -limit 5 \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	c.mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id archive-uuid-42 queryid $qid \
+		from alice@example.com/phone body "mam msg" \
+		stamp 2024-06-15T12:00:00Z]
+	}]
+
+	c.iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body archive-uuid-42
+		    j last #body archive-uuid-42
+		}
+	    }
+	}]
+
+	set db [c.message.messagestore cget -db]
+	$db eval {
+	    SELECT server_id, timestamp, raw_xml FROM chat_message
+	    WHERE chat_jid='alice@example.com'
+	} row {
+	    set sid $row(server_id)
+	    set ts  $row(timestamp)
+	    set xml $row(raw_xml)
+	}
+	list [expr {$sid eq "archive-uuid-42"}] \
+	     [expr {$sid ne $ts}] \
+	     [string match {*<message*} $xml]
+    } -result {1 1 1}
 
 test message-live-shared-region {messages to different chats share one live region} \
     {*}$msg_common \

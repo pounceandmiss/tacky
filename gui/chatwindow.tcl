@@ -1,5 +1,5 @@
 snit::widgetadaptor chatwindow {
-    option -client -readonly yes
+    option -acc -readonly yes
     option -jid -readonly yes
 
     typemethod open {w args} {
@@ -27,7 +27,7 @@ snit::widgetadaptor chatwindow {
         bind $win <Control-W> [list destroy $win]
 
         # Chat widgets
-        chatpanel $win.cp -client $options(-client) -jid $options(-jid) \
+        chatpanel $win.cp -acc $options(-acc) -jid $options(-jid) \
             -menubar $win.menubar
         pack $win.cp -expand yes -fill both
     }

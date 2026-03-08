@@ -96,7 +96,8 @@ snit::type xmppreader {
     variable Expat
     variable Cb
     variable NodeList
-    
+    variable AfterID ""
+
     constructor {args} {
 	install expat using expat $self.expat -namespace -final no \
 	    -elementstartcommand [mymethod OnElemStart]\
@@ -112,19 +113,24 @@ snit::type xmppreader {
     }
     
     method OnReadable {} {
-	if {[catch {set chunk [read $options(-channel)]}]} {
+	if {[catch {set chunk [read $options(-channel)]} 2048]} {
 	    jlog debug "Read error: $::errorInfo"
 	    {*}$options(-error-command) "Read error: $::errorInfo"
 	    $self pause
 	    return
 	}
-	
+
 	if {$chunk eq "" && [chan eof $options(-channel)]} {
 	    $self pause
 	    {*}$options(-error-command) -
 	    return
 	}
 	$self feed $chunk
+	# Yield to the event loop between reads so Tk can process
+	# paint/scroll events. Without this, back-to-back readable
+	# events (e.g. 1000+ MUC presences) starve the UI.
+	$self pause
+	set AfterID [after 1 [mymethod start]]
     }
     
     method start {} {
@@ -140,6 +146,7 @@ snit::type xmppreader {
     }
     
     destructor {
+	after cancel $AfterID
 	$self pause
 	catch {$Expat delete}
     }
@@ -194,11 +201,12 @@ snit::type xmppreader {
 	if {[dict get $node children] eq ""} {
 	    dict append node body $cdata
 	} else {
-	    dict with node {
-		set child [lpop children]
-		dict append child tail $cdata
-		lappend children $child
-	    }
+	    set children [dict get $node children]
+	    dict unset node children
+	    set child [lpop children end]
+	    dict append child tail $cdata
+	    lappend children $child
+	    dict set node children $children
 	}
 	lappend NodeList $node
     }

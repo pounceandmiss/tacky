@@ -86,9 +86,10 @@ proc collectIds {messageList} {
 # scrolls to the end.
 
 snit::widgetadaptor chatview {
-    variable Controller
+    # dict: old "" / new "" — prevents duplicate history requests
+    variable LoadToken
 
-    # dict: jid → callback command registered with avatar visible
+    # dict: jid → Tk image handle
     variable TrackedAvatars
 
     delegate method messages to hull
@@ -97,7 +98,7 @@ snit::widgetadaptor chatview {
     delegate method {highlight *} to hull
     delegate method system to hull
 
-    option -client -readonly yes
+    option -acc -readonly yes
     option -jid
     option -menubar -default ""
 
@@ -109,79 +110,160 @@ snit::widgetadaptor chatview {
 	$self configurelist $args
 	set WasAtEnd 1
 	set TrackedAvatars [dict create]
-	set Controller [chatctrl $self.ctrl \
-	    -client $options(-client) -jid $options(-jid)]
-	$Controller cell bind <Insert> $self [mymethod OnInsert]
-	$Controller cell bind <SeeEnd> $self [mymethod OnSeeEnd]
-	$Controller cell bind <Receipt> $self [mymethod OnReceipt]
-	$Controller cell bind <Clear> $self [mymethod OnClear]
-	$Controller cell bind <SeeMessage> $self [mymethod OnSeeMessage]
+	set LoadToken [dict create old "" new ""]
+	::tacky listen -tag $win message <Received> \
+	    -jid $options(-jid) [mymethod OnLiveMessage]
+	::tacky listen -tag $win avatar <Update> \
+	    -acc $options(-acc) [mymethod OnAvatarUpdate]
 	bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
 	if {$options(-menubar) ne ""} {
 	    $self InstallMenus
 	}
+	after idle [mymethod InitialLoad]
+    }
+
+    method InitialLoad {} {
+	if {[dict get $LoadToken new] ne ""} return
+	dict set LoadToken new pending
+	::tacky message history -acc $options(-acc) \
+	    -chat $options(-jid) -limit 50 \
+	    -command [mymethod OnLoadDone new]
     }
 
     destructor {
 	$self RemoveMenus
 	$self UntrackAllAvatars
-	catch {$Controller destroy}
+	::tacky unlisten $win
     }
 
     method OnThirst {directions thirsty oldest newest} {
-	$Controller thirst $directions $thirsty $oldest $newest
-    }
-
-    method OnInsert {payload} {
-	set where [dict get $payload where]
-	set messages [dict get $payload messages]
-	# Dedup: filter out messages already displayed (race between live + history)
-	set existingIds [$hull messages ids]
-	set filtered {}
-	foreach msg $messages {
-	    if {[dict get $msg id] ni $existingIds} {
-		lappend filtered $msg
+	if {$oldest eq "" && $newest eq ""} return
+	foreach dir $directions {
+	    if {$thirsty} {
+		if {[dict get $LoadToken $dir] ne ""} continue
+		dict set LoadToken $dir pending
+		if {$dir eq "old"} {
+		    ::tacky message history -acc $options(-acc) \
+			-chat $options(-jid) \
+			-before $oldest -limit 50 \
+			-command [mymethod OnLoadDone old]
+		} else {
+		    ::tacky message history -acc $options(-acc) \
+			-chat $options(-jid) \
+			-after $newest -limit 50 \
+			-command [mymethod OnLoadDone new]
+		}
+	    } else {
+		dict set LoadToken $dir ""
 	    }
 	}
-	if {[llength $filtered] == 0} return
-	# Snapshot scroll position before insert so OnSeeEnd knows
-	# whether to auto-scroll
-	if {$where eq "new"} {
+    }
+
+    method OnLoadDone {direction messages} {
+	dict set LoadToken $direction ""
+	set existingIds [$hull messages ids]
+	set enriched {}
+	foreach msg $messages {
+	    if {[dict get $msg timestamp] in $existingIds} continue
+	    lappend enriched [$self EnrichMessage $msg]
+	}
+	if {[llength $enriched] == 0} return
+	if {$direction eq "new"} {
 	    set WasAtEnd [$hull atEnd]
 	}
-	# Track avatars before insert so AvatarImages is populated
-	# when DrawMessage runs (avatar visible fires synchronously)
-	foreach msg $filtered {
+	foreach msg $enriched {
 	    set ajid [dict get $msg avatar_jid]
 	    if {$ajid ne ""} {
 		$self TrackAvatar $ajid
 	    }
 	}
-	$hull bulk insert $where $filtered
+	$hull bulk insert $direction $enriched
+	if {$direction eq "new" && $WasAtEnd} {
+	    $hull see end
+	}
+    }
+
+    method OnLiveMessage {ev} {
+	set msg [dict get $ev -message]
+	set enriched [$self EnrichMessage $msg]
+	set existingIds [$hull messages ids]
+	if {[dict get $enriched id] in $existingIds} return
+	set WasAtEnd [$hull atEnd]
+	set ajid [dict get $enriched avatar_jid]
+	if {$ajid ne ""} {
+	    $self TrackAvatar $ajid
+	}
+	$hull bulk insert new [list $enriched]
+	if {$WasAtEnd} {
+	    $hull see end
+	}
+    }
+
+    method EnrichMessage {storeDict} {
+	set fromJid [dict get $storeDict from_jid]
+	set res [jid resource $fromJid]
+	if {$res eq ""} {
+	    set res [jid bare $fromJid]
+	}
+	dict create \
+	    id           [dict get $storeDict timestamp] \
+	    display_name $res \
+	    avatar_jid   [jid bare $fromJid] \
+	    timestamp    [dict get $storeDict timestamp] \
+	    body         [dict get $storeDict body] \
+	    is_outgoing  0 \
+	    receipt_status ""
     }
 
     method TrackAvatar {jid} {
 	if {[dict exists $TrackedAvatars $jid]} return
-	set cmd [mymethod OnAvatar $jid]
-	dict set TrackedAvatars $jid $cmd
-	$options(-client) avatar visible $jid $cmd
+	::tacky avatar visible -acc $options(-acc) -jid $jid
+	set thumbResult [::tacky avatar thumb -acc $options(-acc) -jid $jid]
+	if {$thumbResult eq "" || $thumbResult eq "{}"} {
+	    dict set TrackedAvatars $jid ""
+	    return
+	}
+	set img [image create photo]
+	$img configure -data $thumbResult
+	dict set TrackedAvatars $jid $img
+	$hull avatar set $jid $img
     }
 
-    method OnAvatar {jid image} {
-	$hull avatar set $jid $image
+    method OnAvatarUpdate {ev} {
+	set jid [dict get $ev -jid]
+	if {![dict exists $TrackedAvatars $jid]} return
+	set oldImg [dict get $TrackedAvatars $jid]
+	if {$oldImg ne ""} {
+	    image delete $oldImg
+	}
+	set thumbResult [::tacky avatar thumb -acc $options(-acc) -jid $jid]
+	if {$thumbResult eq "" || $thumbResult eq "{}"} {
+	    dict set TrackedAvatars $jid ""
+	    return
+	}
+	set img [image create photo]
+	$img configure -data $thumbResult
+	dict set TrackedAvatars $jid $img
+	$hull avatar set $jid $img
     }
 
     method UntrackAllAvatars {} {
-	dict for {jid cmd} $TrackedAvatars {
-	    catch {$options(-client) avatar invisible $jid $cmd}
+	dict for {jid img} $TrackedAvatars {
+	    catch {::tacky avatar invisible -acc $options(-acc) -jid $jid}
+	    if {$img ne ""} {
+		catch {image delete $img}
+	    }
 	}
 	set TrackedAvatars [dict create]
     }
 
     method OnAvatarRelease {jid} {
 	if {![dict exists $TrackedAvatars $jid]} return
-	set cmd [dict get $TrackedAvatars $jid]
-	catch {$options(-client) avatar invisible $jid $cmd}
+	catch {::tacky avatar invisible -acc $options(-acc) -jid $jid}
+	set img [dict get $TrackedAvatars $jid]
+	if {$img ne ""} {
+	    catch {image delete $img}
+	}
 	dict unset TrackedAvatars $jid
     }
 
@@ -191,21 +273,7 @@ snit::widgetadaptor chatview {
 	    menu $m -tearoff 0
 	}
 	$m delete 0 end
-	$m add command -label "Show original XML" \
-	    -command [mymethod ShowXml $id]
 	tk_popup $m $rootX $rootY
-    }
-
-    method ShowXml {id} {
-	set db [$options(-client) getDb]
-	set rawXml [$db eval {SELECT raw_xml FROM chat_message WHERE id = $id}]
-	if {$rawXml eq ""} {
-	    tk_messageBox -icon error -title Error \
-		-message "No XML available for this message"
-	    return
-	}
-	set stanza [xmppreader string $rawXml]
-	xmlstanza show $stanza "Message #$id"
     }
 
     method OnSeeEnd {args} {
@@ -216,22 +284,6 @@ snit::widgetadaptor chatview {
 
     method OnReceipt {receiptDict} {
 	$hull receipt update [dict get $receiptDict id] [dict get $receiptDict receipt_status]
-    }
-
-    method OnClear {args} {
-	$hull clear
-    }
-
-    method OnSeeMessage {payload} {
-	set id [dict get $payload id]
-	if {$id in [$hull messages ids]} {
-	    $hull see message $id
-	} else {
-	    set msg [dict get $payload message]
-	    $hull clear
-	    $hull bulk insert new [list $msg]
-	    $hull see message $id
-	}
     }
 
     method InstallMenus {} {
@@ -255,10 +307,6 @@ snit::widgetadaptor chatview {
 	if {[winfo exists $mb.chat]} {
 	    destroy $mb.chat
 	}
-    }
-
-    method controller {} {
-	return $Controller
     }
 }
 

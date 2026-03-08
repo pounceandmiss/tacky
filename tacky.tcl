@@ -102,7 +102,6 @@ oo::class create tacky_threaded_type {
 	set TackyTid [thread::id]
 	set TacoTid [thread::create]
 	thread::send $TacoTid [list source $::_tacky_taco_script]
-	thread::send $TacoTid [list taco_type create taco {*}$args]
 	thread::send $TacoTid {
 	    snit::type tacky_proxy {
 		option -tid -readonly yes
@@ -114,6 +113,7 @@ oo::class create tacky_threaded_type {
 	    }
 	}
 	thread::send $TacoTid [list tacky_proxy tacky -tid $TackyTid -target [self]]
+	thread::send $TacoTid [list taco_type create taco {*}$args]
     }
 
     method emit {module event args} {

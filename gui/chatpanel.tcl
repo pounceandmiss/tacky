@@ -5,30 +5,24 @@
 # a right pane in a horizontal panedwindow.
 #
 # Usage:
-#   chatpanel $f.cp -client $client -jid $contactJid -menubar .menubar
+#   chatpanel $f.cp -acc $acc -jid $contactJid -menubar .menubar
 #   pack $f.cp -expand yes -fill both
 
 snit::widget chatpanel {
     hulltype ttk::frame
 
-    option -client -readonly yes
+    option -acc -readonly yes
     option -jid -readonly yes
     option -menubar -default ""
 
     variable cv
-    variable ctrl
     variable entry
-    variable searchbar
-    variable datebar
     variable paned
     variable leftFrame
     variable isMuc
     variable roomJid ""
     variable showParticipants 0
-    variable showJoinLeave 0
-    variable mucCtrl ""
     variable mucList ""
-    variable mucEventCtrl ""
 
     constructor args {
 	$self configurelist $args
@@ -42,25 +36,12 @@ snit::widget chatpanel {
 	set leftFrame [ttk::frame $paned.left]
 
 	set cv [chatview $leftFrame.cv \
-	    -client $options(-client) -jid $options(-jid)]
-	set ctrl [$cv controller]
+	    -acc $options(-acc) -jid $options(-jid)]
 	set entry [messageentry $leftFrame.entry \
-	    -send-command [list $ctrl send] \
+	    -send-command [mymethod Send] \
 	    -request-voice-command [mymethod RequestVoice]]
-	set searchbar [searchbar $leftFrame.search \
-	    -search-command [mymethod OnSearch] \
-	    -next-command   [list $ctrl search next] \
-	    -prev-command   [list $ctrl search prev] \
-	    -close-command  [mymethod HideSearch]]
-	set datebar [datebar $leftFrame.datebar \
-	    -goto-command  [mymethod OnGotoDate] \
-	    -close-command [mymethod HideDatebar]]
 	pack $cv -expand yes -fill both
 	pack $entry -fill x
-
-	$ctrl cell bind <SearchState> $self [mymethod OnSearchState]
-	bind $win <Control-f> [mymethod ShowSearch]
-	bind $win <Control-g> [mymethod ShowDatebar]
 
 	$paned add $leftFrame -weight 1
 	pack $paned -expand yes -fill both
@@ -69,31 +50,40 @@ snit::widget chatpanel {
 	    $self InstallMenus
 	}
 
-	set showParticipants [::tacky setting get show_participants 0]
-	set showJoinLeave [::tacky setting get show_join_leave 0]
+	set showParticipants [$self SettingGet show_participants 0]
 	if {$isMuc && $showParticipants} {
 	    $self ShowParticipants
 	}
 
 	if {$isMuc} {
-	    $self CreateEventCtrl
+	    ::tacky listen -tag $win muc <RoomCreated> \
+		-acc $options(-acc) [mymethod OnMucRoomCreated]
 	}
     }
 
     destructor {
-	catch {$ctrl cell unbind <SearchState> $self}
+	::tacky unlisten $win
 	$self RemoveMenus
 	$self DestroyParticipants
-	$self DestroyEventCtrl
+    }
+
+    method SettingGet {key default} {
+	set result [::tacky setting get -key $key]
+	set val [dict get $result -value]
+	if {$val eq ""} { return $default }
+	return $val
+    }
+
+    method Send {text} {
+	if {$isMuc} {
+	    ::tacky muc say -acc $options(-acc) -jid $roomJid -body $text
+	}
+	# TODO: 1:1 chat send
     }
 
     method InstallMenus {} {
 	set mb $options(-menubar)
 	menu $mb.chat -tearoff 0
-	$mb.chat add command -label "Find..." -accelerator "Ctrl+F" \
-	    -command [mymethod ShowSearch]
-	$mb.chat add command -label "Go to date..." -accelerator "Ctrl+G" \
-	    -command [mymethod ShowDatebar]
 	if {$isMuc} {
 	    $self RebuildMucMenu
 	}
@@ -108,11 +98,6 @@ snit::widget chatpanel {
 	$mb.chat add checkbutton -label "Participants" \
 	    -variable [myvar showParticipants] \
 	    -command [mymethod ToggleParticipants]
-	$mb.chat add checkbutton -label "Show Join/Leave" \
-	    -variable [myvar showJoinLeave] \
-	    -command [mymethod ToggleJoinLeave]
-	$mb.chat add command -label "Room Topic..." \
-	    -command [mymethod OpenRoomTopic]
 	$mb.chat add separator
 	$mb.chat add command -label "Invite User..." \
 	    -command [mymethod InviteUser]
@@ -120,18 +105,13 @@ snit::widget chatpanel {
 	    -command [mymethod ChangeNickname]
 
 	# Permission-gated items
-	set nick [$options(-client) muc myNick $roomJid]
+	set nick [::tacky muc myNick -acc $options(-acc) -jid $roomJid]
 	if {$nick ne ""} {
-	    set occ [$options(-client) muc occupant $roomJid $nick]
+	    set occ [::tacky muc occupant -acc $options(-acc) -jid $roomJid -nick $nick]
 	    if {$occ ne ""} {
 		set role [dict get $occ role]
 		set affil [dict get $occ affiliation]
 
-		if {$affil eq "owner" || $affil eq "admin"} {
-		    $mb.chat add separator
-		    $mb.chat add command -label "Room Settings..." \
-			-command [mymethod OpenRoomConfig]
-		}
 		if {$role eq "visitor"} {
 		    $mb.chat add separator
 		    $mb.chat add command -label "Request Voice" \
@@ -176,23 +156,13 @@ snit::widget chatpanel {
 	} else {
 	    $self HideParticipants
 	}
-	::tacky setting set show_participants $showParticipants
-    }
-
-    method ToggleJoinLeave {} {
-	if {$mucEventCtrl ne ""} {
-	    $mucEventCtrl configure -show-join-leave $showJoinLeave
-	}
-	::tacky setting set show_join_leave $showJoinLeave
+	::tacky setting set -key show_participants -value $showParticipants
     }
 
     method ShowParticipants {} {
 	if {$mucList ne ""} return
-	set mucCtrl [mucparticipantctrl $win.mucctrl \
-	    -client $options(-client) -jid $roomJid]
 	set mucList [mucparticipantlist $paned.plist \
-	    -controller $mucCtrl \
-	    -client $options(-client) -jid $roomJid]
+	    -acc $options(-acc) -jid $roomJid]
 	$paned add $mucList -weight 0
     }
 
@@ -205,117 +175,18 @@ snit::widget chatpanel {
 	    catch {destroy $mucList}
 	    set mucList ""
 	}
-	if {$mucCtrl ne ""} {
-	    catch {$mucCtrl destroy}
-	    set mucCtrl ""
-	}
-    }
-
-    method ShowSearch {} {
-	if {$searchbar in [pack slaves $leftFrame]} return
-	$self HideDatebar
-	pack $searchbar -fill x -before $cv
-	$searchbar focus
-    }
-
-    method HideSearch {} {
-	pack forget $searchbar
-	$ctrl search clear
-    }
-
-    method ShowDatebar {} {
-	if {$datebar in [pack slaves $leftFrame]} return
-	$self HideSearch
-	pack $datebar -fill x -before $cv
-	$datebar focus
-    }
-
-    method HideDatebar {} {
-	pack forget $datebar
-    }
-
-    method OnGotoDate {iso} {
-	$ctrl search start -start $iso
-	$self HideDatebar
-    }
-
-    method OnSearch {text local} {
-	set args [list -fulltext $text]
-	if {$local} { lappend args -local 1 }
-	$ctrl search start {*}$args
-    }
-
-    method OnSearchState {stateDict} {
-	if {$searchbar in [pack slaves $leftFrame]} {
-	    $searchbar updateState $stateDict
-	}
-    }
-
-    method CreateEventCtrl {} {
-	set mucEventCtrl [muceventctrl $win.evtctrl \
-	    -client $options(-client) -jid $roomJid \
-	    -show-join-leave $showJoinLeave]
-	$mucEventCtrl cell bind <SystemMessage> $self \
-	    [mymethod OnSystemMessage]
-	$mucEventCtrl cell bind <MyRoleChanged> $self \
-	    [mymethod OnMyRoleChanged]
-	# Bind MucRoomCreated to prompt for configuration
-	$options(-client) muc cell bind <MucRoomCreated> $self \
-	    [mymethod OnMucRoomCreated]
-	# Set initial voice state from controller
-	set r [$mucEventCtrl myRole]
-	if {$r ne ""} {
-	    if {$r eq "visitor"} {
-		$entry setVoiceState visitor
-	    } else {
-		$entry setVoiceState normal
-	    }
-	}
-    }
-
-    method DestroyEventCtrl {} {
-	catch {$options(-client) muc cell unbind <MucRoomCreated> $self}
-	if {$mucEventCtrl ne ""} {
-	    catch {$mucEventCtrl cell unbind <SystemMessage> $self}
-	    catch {$mucEventCtrl cell unbind <MyRoleChanged> $self}
-	    catch {$mucEventCtrl destroy}
-	    set mucEventCtrl ""
-	}
-    }
-
-    method OnSystemMessage {ev} {
-	$cv system insert [dict get $ev text]
     }
 
     method OnMucRoomCreated {ev} {
-	if {[dict get $ev room] ne $roomJid} return
+	if {[dict get $ev -jid] ne $roomJid} return
 	set answer [tk_messageBox -type yesno -icon question \
 	    -title "New Room Created" \
 	    -message "You created a new room. Configure it now?\n\nChoose No to accept default settings."]
 	if {$answer eq "yes"} {
-	    $self OpenRoomConfig
+	    # TODO: room config UI
 	} else {
-	    $options(-client) muc createInstant $roomJid
+	    ::tacky muc createInstant -acc $options(-acc) -jid $roomJid
 	}
-    }
-
-    method OnMyRoleChanged {ev} {
-	if {$options(-menubar) ne "" && [winfo exists $options(-menubar)]} {
-	    $self RebuildMucMenu
-	}
-	if {[dict get $ev role] eq "visitor"} {
-	    $entry setVoiceState visitor
-	} else {
-	    $entry setVoiceState normal
-	}
-    }
-
-    method OpenRoomTopic {} {
-	muctopicview show $options(-client) $roomJid
-    }
-
-    method OpenRoomConfig {} {
-	mucroomconfig show $options(-client) $roomJid
     }
 
     method InviteUser {} {
@@ -324,24 +195,24 @@ snit::widget chatpanel {
 	if {$jid eq ""} return
 	set reason [InputDialog .muc_invite_reason_dlg \
 	    -title "Invite User" -prompt "Reason (optional):"]
-	set args [list $roomJid $jid]
+	set args [list -acc $options(-acc) -jid $roomJid -to $jid]
 	if {$reason ne ""} {
 	    lappend args -reason $reason
 	}
-	$options(-client) muc invite {*}$args
+	::tacky muc invite {*}$args
     }
 
     method ChangeNickname {} {
-	set myNick [$options(-client) muc myNick $roomJid]
+	set myNick [::tacky muc myNick -acc $options(-acc) -jid $roomJid]
 	set newNick [InputDialog .muc_nick_dlg \
 	    -title "Change Nickname" -prompt "New nickname:" \
 	    -value $myNick]
 	if {$newNick eq "" || $newNick eq $myNick} return
-	$options(-client) bookmarks nick $roomJid $newNick
+	::tacky bookmarks nick -acc $options(-acc) -jid $roomJid -nick $newNick
     }
 
     method RequestVoice {} {
-	$options(-client) muc requestVoice $roomJid
+	::tacky muc requestVoice -acc $options(-acc) -jid $roomJid
     }
 
     method DestroyRoom {} {
@@ -349,14 +220,14 @@ snit::widget chatpanel {
 	    -title "Destroy Room" \
 	    -message "Are you sure you want to permanently destroy this room?\n\n$roomJid"]
 	if {$answer ne "yes"} return
-	$options(-client) muc destroyRoom $roomJid
+	::tacky muc destroyRoom -acc $options(-acc) -jid $roomJid
     }
 
     method LeaveRoom {} {
-	$options(-client) bookmarks leave $roomJid
+	::tacky bookmarks leave -acc $options(-acc) -jid $roomJid
     }
 
     method LeaveRoomKeepBookmark {} {
-	$options(-client) muc leave $roomJid
+	::tacky muc leave -acc $options(-acc) -jid $roomJid
     }
 }

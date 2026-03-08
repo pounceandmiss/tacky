@@ -646,15 +646,14 @@ snit::type taco_muc {
 	    }
 	}
 
-	# XEP-0153: check for vcard-temp:x:update hash in self-presence
-	$self CheckVCardHash $roomJid/$nick $stanza
-
+	$client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
 	$client emit muc <Presence> -jid $roomJid -nick $nick -occupant $occupant
     }
 
     method OnOccupantPresence {roomJid nick stanza mucX} {
 	set occupant [$self ParseItem $mucX $nick $stanza]
 	dict set Rooms($roomJid) occupants $nick $occupant
+	$client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
 	$client emit muc <Presence> -jid $roomJid -nick $nick -occupant $occupant
     }
 
@@ -829,25 +828,10 @@ snit::type taco_muc {
     }
 
     method OnGroupchatMessage {roomJid nick stanza} {
-	set bodyText [xsearch $stanza body -get body]
-
-	set timestamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
-	if {$timestamp eq ""} {
-	    set timestamp ""
-	}
-
-	$client emit muc <Message> \
-	    -jid $roomJid -nick $nick -body $bodyText \
-	    -timestamp $timestamp -stanza $stanza
-
 	$client message store ${roomJid}?join $stanza
     }
 
     method OnPrivateMessage {roomJid nick stanza} {
-	set bodyText [xsearch $stanza body -get body]
-	$client emit muc <PrivateMessage> \
-	    -jid $roomJid -nick $nick -body $bodyText -stanza $stanza
-
 	$client message store ${roomJid}/${nick} $stanza
     }
 
@@ -1022,16 +1006,6 @@ snit::type taco_muc {
 	    visitors   {return {role visitor}}
 	    default    {error "Unknown list type: $what"}
 	}
-    }
-
-    method CheckVCardHash {avatarJid stanza} {
-	set xUpdate [xsearch $stanza x -ns vcard-temp:x:update]
-	if {[llength $xUpdate] == 0} return
-	set xUpdate [lindex $xUpdate 0]
-	set photoNodes [xsearch $xUpdate photo]
-	if {[llength $photoNodes] == 0} return
-	set hash [xsearch $xUpdate photo -get body]
-	$client avatar onVCardHash $avatarJid $hash
     }
 
     method CleanupRoom {roomJid} {

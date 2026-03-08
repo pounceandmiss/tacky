@@ -139,9 +139,7 @@ snit::type taco_mam {
     # =================================================================
 
     method SendQuery {queryId opts} {
-	if {![info exists Callbacks($queryId)]} {
-	    return
-	}
+	if {![info exists Callbacks($queryId)]} return
 
 	set withJid  [dict get $opts -with]
 	set startVal [dict get $opts -start]
@@ -363,7 +361,9 @@ snit::type taco_mam {
 	if {$resultNode eq ""} { return 0 }
 	set resultNode [lindex $resultNode 0]
 	set queryId [xsearch $resultNode -get @queryid]
-	if {![info exists Results($queryId)]} { return 0 }
+	if {![info exists Results($queryId)]} {
+	    return 0
+	}
 
 	lappend Results($queryId) $resultNode
 	return 1
@@ -374,9 +374,7 @@ snit::type taco_mam {
     # =================================================================
 
     method OnFin {queryId stanza} {
-	if {![info exists Callbacks($queryId)]} {
-	    return
-	}
+	if {![info exists Callbacks($queryId)]} return
 
 	set callback $Callbacks($queryId)
 	set messages {}

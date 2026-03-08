@@ -2,6 +2,7 @@ package require sqlite3
 package require mtls
 package require base64
 package require snit
+package require control
 
 # Declare a set of modules as public components.
 # Usage:  taco_modules roster bookmarks muc ...
@@ -84,6 +85,7 @@ snit::type taco_type {
         foreach jid [$self account list] {
             $self emit account <Added> -acc $jid
         }
+        $self connect
     }
 
     destructor {

@@ -36,6 +36,10 @@ snit::type taco_client {
             sqlite3 $self.db $options(-db-path)
             set db $self.db
             set options(-db) $self.db
+            $db eval {
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+            }
         }
 
         # Create connection

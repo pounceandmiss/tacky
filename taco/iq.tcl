@@ -116,12 +116,13 @@ snit::type iq {
 	    set optionalTo [list -to $opts(-to)]
 	}
 	set ResponseHandlers($opts(-to),$opts(-id)) $opts(-command)
-	{*}$options(-send-command) [j iq \
-					{*}$optionalTo \
-					-type $opts(-type) \
-					-id $opts(-id) {
-					    j /as-is $opts(-payload)
-					}]
+	set _iq [j iq \
+				{*}$optionalTo \
+				-type $opts(-type) \
+				-id $opts(-id) {
+				    j /as-is $opts(-payload)
+				}]
+	{*}$options(-send-command) $_iq
     }
 
     # Use: $client iq respond result|error -for $stanza -payload $payload

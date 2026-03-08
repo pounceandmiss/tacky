@@ -175,6 +175,7 @@ snit::type taco_bookmarks {
     }
 
     method OnResult {stanza} {
+	$self AutojoinAll
 	set type_ [xsearch $stanza -get @type]
 	if {$type_ eq "error"} {
 	    return
@@ -191,7 +192,7 @@ snit::type taco_bookmarks {
 	$client db eval {COMMIT}
 
 	$client emit bookmarks <Changed> -action clear
-	$self AutojoinAll
+	
     }
 
     method OnNotification {stanza} {

@@ -19,11 +19,7 @@ snit::widgetadaptor accountnotebook {
         $tacky listen -tag $self account <Removed>  [mymethod OnAccountRemoved]
 
         # Populate tabs for already-enabled accounts
-        foreach jid [$tacky account list] {
-            if {[$tacky account get -acc $jid -field enabled]} {
-                $self AddTab $jid
-            }
-        }
+        $tacky account list -enabled 1 -command [mymethod OnInitialAccounts]
     }
 
     destructor {
@@ -31,6 +27,10 @@ snit::widgetadaptor accountnotebook {
         foreach {jid child} $tabs {
             catch {destroy $child}
         }
+    }
+
+    method OnInitialAccounts {result} {
+        foreach jid $result { $self AddTab $jid }
     }
 
     method OnAccountEnabled {ev} { $self AddTab [dict get $ev -acc] }

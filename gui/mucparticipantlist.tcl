@@ -8,15 +8,13 @@
 # permissions in the room.
 #
 # Usage:
-#   set ctrl [mucparticipantctrl %AUTO% -client $client -jid room@conf.local]
-#   mucparticipantlist .plist -controller $ctrl -client $client -jid room@conf.local
+#   mucparticipantlist .plist -acc $acc -jid room@conf.local
 #   pack .plist
 
 snit::widget mucparticipantlist {
     hulltype ttk::frame
 
-    option -controller -readonly yes
-    option -client -default ""
+    option -acc -default ""
     option -jid -default ""
 
     variable tree
@@ -55,12 +53,15 @@ snit::widget mucparticipantlist {
 	    set GroupIds($role) [$tree insert {} end -text "$label (0)" -open true]
 	}
 
-	# Bind to controller events
-	set ctrl $options(-controller)
-	$ctrl cell bind <OccupantJoined> $self [mymethod OnOccupantJoined]
-	$ctrl cell bind <OccupantLeft> $self [mymethod OnOccupantLeft]
-	$ctrl cell bind <OccupantNickChanged> $self [mymethod OnOccupantNickChanged]
-	$ctrl cell bind <RoomLeft> $self [mymethod OnRoomLeft]
+	# Listen to MUC events
+	::tacky listen -tag $win muc <Presence> \
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnPresence]
+	::tacky listen -tag $win muc <Unavailable> \
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnUnavailable]
+	::tacky listen -tag $win muc <NickChanged> \
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnOccupantNickChanged]
+	::tacky listen -tag $win muc <Left> \
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnRoomLeft]
 
 	# Context menu
 	bind $tree <Button-3> [mymethod OnRightClick %x %y %X %Y]
@@ -69,13 +70,7 @@ snit::widget mucparticipantlist {
     }
 
     destructor {
-	catch {
-	    set ctrl $options(-controller)
-	    $ctrl cell unbind <OccupantJoined> $self
-	    $ctrl cell unbind <OccupantLeft> $self
-	    $ctrl cell unbind <OccupantNickChanged> $self
-	    $ctrl cell unbind <RoomLeft> $self
-	}
+	::tacky unlisten $win
     }
 
     # ------------------------------------------------------------------
@@ -83,7 +78,7 @@ snit::widget mucparticipantlist {
     # ------------------------------------------------------------------
 
     method LoadOccupants {} {
-	foreach occ [$options(-controller) occupants] {
+	foreach occ [::tacky muc occupants -acc $options(-acc) -jid $options(-jid)] {
 	    $self UpsertOccupant $occ
 	}
 	$self UpdateGroupLabels
@@ -179,7 +174,7 @@ snit::widget mucparticipantlist {
     # ------------------------------------------------------------------
 
     method OnRightClick {x y X Y} {
-	if {$options(-client) eq "" || $options(-jid) eq ""} return
+	if {$options(-acc) eq "" || $options(-jid) eq ""} return
 
 	set item [$tree identify item $x $y]
 	if {$item eq ""} return
@@ -199,7 +194,7 @@ snit::widget mucparticipantlist {
 	set targetData $OccupantData($nick)
 
 	# Get our own data
-	set myNick [$options(-client) muc myNick $options(-jid)]
+	set myNick [::tacky muc myNick -acc $options(-acc) -jid $options(-jid)]
 	if {$myNick eq "" || $myNick eq $nick} return
 	if {![info exists OccupantData($myNick)]} return
 	set myData $OccupantData($myNick)
@@ -313,37 +308,36 @@ snit::widget mucparticipantlist {
 	set reason [InputDialog .muc_kick_dlg \
 	    -title "Kick $nick" \
 	    -prompt "Reason (optional):"]
+	set args [list -acc $options(-acc) -jid $options(-jid) -nick $nick]
 	if {$reason ne ""} {
-	    $options(-client) muc kick $options(-jid) $nick \
-		-reason $reason \
-		-command [mymethod OnActionError "Kick"]
-	} else {
-	    $options(-client) muc kick $options(-jid) $nick \
-		-command [mymethod OnActionError "Kick"]
+	    lappend args -reason $reason
 	}
+	lappend args -command [mymethod OnActionError "Kick"]
+	::tacky muc kick {*}$args
     }
 
     method DoBan {nick jid} {
 	set reason [InputDialog .muc_ban_dlg \
 	    -title "Ban $nick" \
 	    -prompt "Reason (optional):"]
+	set args [list -acc $options(-acc) -jid $options(-jid) \
+	    -target $jid -affiliation outcast]
 	if {$reason ne ""} {
-	    $options(-client) muc affiliation $options(-jid) $jid outcast \
-		-reason $reason \
-		-command [mymethod OnActionError "Ban"]
-	} else {
-	    $options(-client) muc affiliation $options(-jid) $jid outcast \
-		-command [mymethod OnActionError "Ban"]
+	    lappend args -reason $reason
 	}
+	lappend args -command [mymethod OnActionError "Ban"]
+	::tacky muc affiliation {*}$args
     }
 
     method DoRole {nick role} {
-	$options(-client) muc role $options(-jid) $nick $role \
+	::tacky muc role -acc $options(-acc) -jid $options(-jid) \
+	    -nick $nick -role $role \
 	    -command [mymethod OnActionError "Role change"]
     }
 
     method DoAffiliation {jid affiliation} {
-	$options(-client) muc affiliation $options(-jid) $jid $affiliation \
+	::tacky muc affiliation -acc $options(-acc) -jid $options(-jid) \
+	    -target $jid -affiliation $affiliation \
 	    -command [mymethod OnActionError "Affiliation change"]
     }
 
@@ -360,18 +354,18 @@ snit::widget mucparticipantlist {
     # Event handlers
     # ------------------------------------------------------------------
 
-    method OnOccupantJoined {ev} {
-	$self UpsertOccupant [dict get $ev occupant]
+    method OnPresence {ev} {
+	$self UpsertOccupant [dict get $ev -occupant]
 	$self UpdateGroupLabels
     }
 
-    method OnOccupantLeft {ev} {
-	$self RemoveOccupant [dict get $ev nick]
+    method OnUnavailable {ev} {
+	$self RemoveOccupant [dict get $ev -nick]
 	$self UpdateGroupLabels
     }
 
     method OnOccupantNickChanged {ev} {
-	set oldNick [dict get $ev oldNick]
+	set oldNick [dict get $ev -oldNick]
 	$self RemoveOccupant $oldNick
 	# The new nick's presence event will trigger UpsertOccupant
     }

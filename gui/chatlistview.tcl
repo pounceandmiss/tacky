@@ -34,6 +34,7 @@ snit::widget chatlistview {
     variable sortby "name"
     variable grouping 0
     variable prescolors 1
+    variable showAvatars 1
     variable bookmarkAutojoin 0
     variable avatarImages {}
 
@@ -46,6 +47,8 @@ snit::widget chatlistview {
 
 	::tacky setting get -key show_presence_colors \
 	    -command [mymethod OnPresenceColorsSetting]
+	::tacky setting get -key show_avatars \
+	    -command [mymethod OnShowAvatarsSetting]
 
 	# Search entry
 	install searchentry using ttk::entry $win.search \
@@ -138,6 +141,9 @@ snit::widget chatlistview {
 	$settingsmenu add checkbutton -label "Show presence colors" \
 	    -variable [myvar prescolors] \
 	    -command [mymethod OnPresenceColorsChanged]
+	$settingsmenu add checkbutton -label "Show avatars" \
+	    -variable [myvar showAvatars] \
+	    -command [mymethod OnShowAvatarsChanged]
 
 	# --- Bindings ---
 	bind $treeview <Double-1> [mymethod OnDoubleClick %x %y]
@@ -154,6 +160,8 @@ snit::widget chatlistview {
 	    [mymethod OnBookmarksChanged]
 	$t listen -tag $win setting <Changed> -key show_presence_colors \
 	    [mymethod OnPresenceColorsSetting]
+	$t listen -tag $win setting <Changed> -key show_avatars \
+	    [mymethod OnShowAvatarsSetting]
 	$t listen -tag $win avatar <Update> -acc $acc \
 	    [mymethod OnAvatarUpdate]
 
@@ -164,9 +172,18 @@ snit::widget chatlistview {
 
     destructor {
 	catch {$options(-tacky) unlisten $win}
+	$self InvisibleAllAvatars
+    }
+
+    method InvisibleAllAvatars {} {
 	dict for {jid img} $avatarImages {
-	    catch {image delete $img}
+	    catch {$options(-tacky) avatar invisible \
+		-acc $options(-acc) -jid $jid}
+	    if {$img ne ""} {
+		catch {image delete $img}
+	    }
 	}
+	set avatarImages {}
     }
 
     method RebuildRoster {} {
@@ -283,14 +300,15 @@ snit::widget chatlistview {
     }
 
     method OnRosterChanged {ev} {
-	$self RebuildRoster
+	$self RebuildAll
     }
 
     method OnBookmarksChanged {ev} {
-	$self RebuildBookmarks
+	$self RebuildAll
     }
 
     method RebuildAll {} {
+	$self InvisibleAllAvatars
 	$self RebuildRoster
 	$self RebuildBookmarks
     }
@@ -304,7 +322,7 @@ snit::widget chatlistview {
     }
 
     method OnGroupingChanged {} {
-	$self RebuildRoster
+	$self RebuildAll
     }
 
     method ConfigurePresenceTags {} {
@@ -331,6 +349,21 @@ snit::widget chatlistview {
 	if {$val ne ""} {
 	    set prescolors $val
 	    $self ConfigurePresenceTags
+	}
+    }
+
+    method OnShowAvatarsChanged {} {
+	::tacky setting set -key show_avatars -value $showAvatars
+	$self RebuildAll
+    }
+
+    method OnShowAvatarsSetting {ev} {
+	set val [dict get $ev -value]
+	if {$val ne ""} {
+	    set showAvatars $val
+	    if {[winfo exists $treeview]} {
+		$self RebuildAll
+	    }
 	}
     }
 
@@ -469,12 +502,19 @@ snit::widget chatlistview {
     }
 
     method GetAvatarImage {jid} {
-	if {[dict exists $avatarImages $jid]} {
-	    return [dict get $avatarImages $jid]
+	if {!$showAvatars} {
+	    return ""
 	}
+	if {[dict exists $avatarImages $jid]} {
+	    set img [dict get $avatarImages $jid]
+	    return [expr {$img ne "" ? $img : "chatlistview::defaultAvatar"}]
+	}
+	$options(-tacky) avatar visible \
+	    -acc $options(-acc) -jid $jid
 	set data [$options(-tacky) avatar thumb \
 	    -acc $options(-acc) -jid $jid]
 	if {$data eq ""} {
+	    dict set avatarImages $jid ""
 	    return chatlistview::defaultAvatar
 	}
 	set img [image create photo -data $data]

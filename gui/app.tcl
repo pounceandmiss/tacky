@@ -11,7 +11,7 @@ snit::type app_type {
     constructor args {
         $self configurelist $args
 	tacky_init -transient $options(-transient)
-        ::tacky account list -command [mymethod OnAccountList]
+        ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
@@ -25,14 +25,7 @@ snit::type app_type {
     }
 
     method OnAccountList {result} {
-        set hasEnabled 0
-        foreach jid $result {
-            if {[::tacky account get -acc $jid -field enabled]} {
-                set hasEnabled 1
-                break
-            }
-        }
-        if {$hasEnabled} {
+        if {[llength $result] > 0} {
             $self BuildMainUI
         } else {
             $self ShowSetup
@@ -171,9 +164,7 @@ snit::type app_type {
     method OpenBookmark {args} {
         set acc [dict get $args -acc]
         set jid [dict get $args -jid]
-        set client [::tacky client $acc]
-        # TODO: join room / open MUC tab
-        puts "OpenBookmark: acc=$acc jid=$jid"
+        $self OpenChat -acc $acc -jid ${jid}?join
     }
 
     method CloseInlineChat {} {

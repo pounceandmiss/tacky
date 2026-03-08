@@ -106,7 +106,6 @@ snit::type taco_messagestore {
 		    }
 		    continue
 		}
-
 		# Skip past slots this batch already filled
 		set ts $m(timestamp)
 		if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }

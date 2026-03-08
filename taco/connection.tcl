@@ -67,6 +67,8 @@ snit::type baseconn {
     variable state
     # Remote hostname, set on connect
     variable host
+    # Whether an "after idle" flush is already scheduled
+    variable flushPending
 
     # Callback when the transport (TCP + optional TLS) is ready for use
     option -ontransportready -default ""
@@ -88,6 +90,7 @@ snit::type baseconn {
         set socket ""
         set state disconnected
         set host ""
+        set flushPending 0
     }
 
     destructor {
@@ -106,15 +109,29 @@ snit::type baseconn {
         $self writeNow [jwrite $stanza]
     }
 
-    # Direct socket write (for protocol-level stuff)
+    # Direct socket write (for protocol-level stuff).
+    # Defers flush to "after idle" so burst writes (e.g. AutojoinAll)
+    # coalesce into a single TLS record / TCP send.
     method writeNow {data} {
         if {$state ne "connected"} {
             return
         }
         if {[catch {
             puts -nonewline $socket $data
-            flush $socket
+            if {!$flushPending} {
+                set flushPending 1
+                after idle [mymethod FlushWrite]
+            }
         } err]} {
+            $self close
+            {*}$options(-error-command) "Write error: $err"
+        }
+    }
+
+    method FlushWrite {} {
+        set flushPending 0
+        if {$state ne "connected"} return
+        if {[catch {flush $socket} err]} {
             $self close
             {*}$options(-error-command) "Write error: $err"
         }
@@ -194,6 +211,7 @@ snit::type baseconn {
     }
 
     method close {} {
+        set flushPending 0
         ::jab::cancelRead $socket
         if {$socket ne ""} {
             catch {close $socket}

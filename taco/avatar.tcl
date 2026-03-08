@@ -26,12 +26,18 @@ if 0 {
 snit::type taco_avatar {
 
     variable client
+    variable VisibleJids
+    variable PendingVCardHash
+    variable PendingPubSubHash
 
     option -client -readonly yes
 
     constructor args {
 	$self configurelist $args
 	set client $options(-client)
+	set VisibleJids [dict create]
+	set PendingVCardHash [dict create]
+	set PendingPubSubHash [dict create]
 	$self Migrate
 	$client message pubsub handler urn:xmpp:avatar:metadata \
 	    [mymethod OnMetadataNotification]
@@ -39,7 +45,11 @@ snit::type taco_avatar {
     }
 
     method OnReady {} {}
-    method OnDisconnect {} {}
+    method OnDisconnect {} {
+	set VisibleJids [dict create]
+	set PendingVCardHash [dict create]
+	set PendingPubSubHash [dict create]
+    }
 
     destructor {
 	catch {$client message pubsub unhandler urn:xmpp:avatar:metadata}
@@ -197,9 +207,109 @@ snit::type taco_avatar {
 	set cached [$client db eval {SELECT count(*) FROM avatar_data WHERE hash=$hash}]
 	if {$cached} {
 	    $client emit avatar <Update> -jid $from -hash $hash
-	} else {
+	} elseif {[$self IsVisible $from]} {
 	    $self FetchData $from $hash
+	} else {
+	    dict set PendingPubSubHash $from $hash
 	}
+    }
+
+    method visible {args} {
+	set jid [dict get $args -jid]
+	set count 0
+	if {[dict exists $VisibleJids $jid]} {
+	    set count [dict get $VisibleJids $jid]
+	}
+	dict set VisibleJids $jid [incr count]
+	if {$count == 1} {
+	    if {[dict exists $PendingVCardHash $jid]} {
+		dict unset PendingVCardHash $jid
+		$self FetchVCard $jid
+	    }
+	    if {[dict exists $PendingPubSubHash $jid]} {
+		set hash [dict get $PendingPubSubHash $jid]
+		dict unset PendingPubSubHash $jid
+		$self FetchData $jid $hash
+	    }
+	}
+    }
+
+    method invisible {args} {
+	set jid [dict get $args -jid]
+	if {![dict exists $VisibleJids $jid]} return
+	set count [dict get $VisibleJids $jid]
+	if {$count <= 1} {
+	    dict unset VisibleJids $jid
+	} else {
+	    dict set VisibleJids $jid [expr {$count - 1}]
+	}
+    }
+
+    method IsVisible {jid} {
+	dict exists $VisibleJids $jid
+    }
+
+    # XEP-0153: detect vCard avatar hash in presence.
+    # Compares to cached hash; triggers FetchVCard only if different.
+    # jid: bare JID for rooms, occupant JID (room@muc/nick) for participants.
+    method OnVCardPresence {jid stanza} {
+	set xNode [xsearch $stanza x -ns vcard-temp:x:update]
+	if {$xNode eq ""} return
+
+	set hash [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
+	if {$hash eq ""} {
+	    set existing [$client db onecolumn {
+		SELECT hash FROM avatar_metadata WHERE jid=$jid
+	    }]
+	    if {$existing ne ""} {
+		$client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
+		$client emit avatar <Update> -jid $jid -action disabled
+	    }
+	    return
+	}
+
+	set existing [$client db onecolumn {
+	    SELECT hash FROM avatar_metadata WHERE jid=$jid
+	}]
+	if {$existing eq $hash} return
+	if {[$self IsVisible $jid]} {
+	    $self FetchVCard $jid
+	} else {
+	    dict set PendingVCardHash $jid $hash
+	}
+    }
+
+    method FetchVCard {jid} {
+	$client iq request -to $jid -payload \
+	    [j vCard -ns vcard-temp] \
+	    -command [mymethod OnVCardResult $jid]
+    }
+
+    method OnVCardResult {jid stanza} {
+	if {[xsearch $stanza -get @type] eq "error"} return
+
+	set base64Data [xsearch $stanza vCard PHOTO BINVAL -get body]
+	if {$base64Data eq ""} return
+
+	set type_ [xsearch $stanza vCard PHOTO TYPE -get body]
+	if {$type_ eq ""} { set type_ "image/png" }
+
+	set base64Data [string map {\n "" \r "" " " "" \t ""} $base64Data]
+	set rawData [::base64::decode $base64Data]
+	set hash [::sha1::sha1 $rawData]
+
+	set thumbData [$self MakeThumb $rawData "OnVCardResult jid=$jid"]
+	set bytes [string length $rawData]
+	$client db eval {
+	    INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
+	    VALUES ($hash, $rawData, $thumbData)
+	}
+	$client db eval {
+	    INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
+	    VALUES ($jid, $hash, $type_, $bytes, 0, 0)
+	}
+
+	$client emit avatar <Update> -jid $jid -hash $hash
     }
 
     method FetchData {jid hash} {
@@ -226,7 +336,7 @@ snit::type taco_avatar {
 	set base64Data [string map {\n "" \r "" " " "" \t ""} $base64Data]
 	set rawData [::base64::decode $base64Data]
 
-	set thumbData [$self MakeThumb $rawData]
+	set thumbData [$self MakeThumb $rawData "OnDataResult jid=$jid hash=$hash"]
 	$client db eval {
 	    INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
 	    VALUES ($hash, $rawData, $thumbData)
@@ -235,7 +345,7 @@ snit::type taco_avatar {
 	$client emit avatar <Update> -jid $jid -hash $hash
     }
 
-    method MakeThumb {rawData} {
+    method MakeThumb {rawData caller} {
 	try {
 	    set pipe [open |[list magick - -thumbnail 32x32 png:-] r+]
 	    chan configure $pipe -translation binary
