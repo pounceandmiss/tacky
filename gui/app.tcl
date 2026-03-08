@@ -207,8 +207,7 @@ snit::type app_type {
     method OpenJoinRoom {} {
         set jid [$notebook CurrentAccountJid]
         if {$jid eq ""} return
-        set client [::tacky client $jid]
-        joinroomdialog show $client
+        joinroomdialog show $jid
     }
 
     method OpenXmlConsole {} {
