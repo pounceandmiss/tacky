@@ -2,11 +2,10 @@ snit::type taco_debugtap {
     option -taco -default ""
 
     variable TapId 0
-    variable Taps -array {}       ;# id -> {command, connKey, conn}
+    variable Taps -array {}       ;# id -> {connKey, conn}
     variable ConnTaps -array {}   ;# connKey -> list of tap IDs
 
     tackymethod on {args} {
-        set cmd [dict get $args -onstanza]
         set id [incr TapId]
 
         if {[dict exists $args -acc]} {
@@ -20,7 +19,7 @@ snit::type taco_debugtap {
             set connCmd [list $session conn]
         }
 
-        set Taps($id) [dict create command $cmd connKey $connKey conn $connCmd]
+        set Taps($id) [dict create connKey $connKey conn $connCmd]
         lappend ConnTaps($connKey) $id
         if {[llength $ConnTaps($connKey)] == 1} {
             {*}$connCmd configure -ondebugstanza \
@@ -56,7 +55,8 @@ snit::type taco_debugtap {
     method OnDebugStanza {connKey dir stanza} {
         if {![info exists ConnTaps($connKey)]} return
         foreach id $ConnTaps($connKey) {
-            {*}[dict get $Taps($id) command] -dir $dir -stanza $stanza
+            $options(-taco) emit debugtap <Stanza> \
+                -tap $id -dir $dir -stanza $stanza
         }
     }
 }

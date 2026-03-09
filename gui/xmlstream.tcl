@@ -26,6 +26,10 @@
 #   so they won't appear in copied text. Changing a filter re-evaluates
 #   all accumulated stanzas, drawing or removing them as needed.
 
+proc xesc {content} {
+    string map {< &lt; > &gt; & &amp; \" &quot; ' &apos;} $content
+}
+
 snit::widgetadaptor xmlstream {
     option -conn -default "" -configuremethod ConfigureConn
 
@@ -38,6 +42,7 @@ snit::widgetadaptor xmlstream {
 
     method ConfigureConn {o v} {
 	if {$tapId ne ""} {
+	    tacky unlisten $win
 	    catch {tacky debugtap off -tap $tapId}
 	    set tapId ""
 	    $hull configure -writecmd ""
@@ -47,11 +52,11 @@ snit::widgetadaptor xmlstream {
 	    lassign $v type id
 	    switch -- $type {
 		account {
-		    tacky debugtap on -acc $id -onstanza [mymethod onStanza] \
+		    tacky debugtap on -acc $id \
 			-command [mymethod OnTapReady $v]
 		}
 		register {
-		    tacky debugtap on -token $id -onstanza [mymethod onStanza] \
+		    tacky debugtap on -token $id \
 			-command [mymethod OnTapReady $v]
 		}
 	    }
@@ -64,18 +69,29 @@ snit::widgetadaptor xmlstream {
 	    return
 	}
 	set tapId $id
+	tacky listen -tag $win debugtap <Stanza> -tap $tapId \
+	    [mymethod onStanza]
 	$hull configure -writecmd [list tacky debugtap write -tap $tapId -stanza]
     }
 
     constructor args {
 	installhull using xmlstream_hull
-	array set filters {iq 1 presence 1 message 1 nonza 1
+	array set filters {iq 1 presence 0 message 1 nonza 0
 	    ns ""
 	}
 	$win.toolbar.filters configure -command [mymethod OnFilters]
 
 	$self configurelist $args
 	set stanzas {}
+	tacky setting get -key xmlconsole.filters \
+	    -command [mymethod OnLoadFilters]
+    }
+
+    method OnLoadFilters {result} {
+	set value [dict get $result -value]
+	if {$value ne ""} {
+	    $win.toolbar.filters setFilters $value
+	}
     }
 
     method clear {} {
@@ -84,11 +100,13 @@ snit::widgetadaptor xmlstream {
     }
 
     destructor {
+	tacky unlisten $win
 	catch {tacky debugtap off -tap $tapId}
     }
 
     method OnFilters {filters_} {
 	array set filters $filters_
+	tacky setting set -key xmlconsole.filters -value $filters_
 	set newStanzas {}
 	foreach entry $stanzas {
 	    set want [$self matches [dict get $entry stanza]]
@@ -107,9 +125,9 @@ snit::widgetadaptor xmlstream {
 	set stanzas $newStanzas
     }
 
-    method onStanza {args} {
-	set dir [dict get $args -dir]
-	set stanza [dict get $args -stanza]
+    method onStanza {ev} {
+	set dir [dict get $ev -dir]
+	set stanza [dict get $ev -stanza]
 	set timestamp [clock seconds]
 	set comment "$dir at [clock format $timestamp -f %H:%M:%S]"
 	set visible [$self matches $stanza]
@@ -416,7 +434,7 @@ snit::widget xmlstream_toolbar_filter {
     
     constructor args {
 	$self configurelist $args
-	array set filters {iq 1 presence 1 message 1 nonza 1
+	array set filters {iq 1 presence 0 message 1 nonza 0
 	    ns ""
 	}
 	foreach type {iq presence message nonza} {
@@ -424,15 +442,24 @@ snit::widget xmlstream_toolbar_filter {
 		-text $type -variable [myvar filters($type)]
 	    pack $win.$type -side left
 	}
-	install ns_label using ttk::label $win.ns_label -text "ns:" 
+	install ns_label using ttk::label $win.ns_label -text "ns:"
 	install ns using ttk::entry $win.ns\
 	    -textvariable [myvar filters(ns)]
 	pack $win.ns_label $win.ns  -side left
-	
+
 	trace add variable [myvar filters] write \
 	    [mymethod OnFiltersChange]
     }
-    
+
+    method setFilters {filterDict} {
+	trace remove variable [myvar filters] write \
+	    [mymethod OnFiltersChange]
+	array set filters $filterDict
+	trace add variable [myvar filters] write \
+	    [mymethod OnFiltersChange]
+	{*}$options(-command) [array get filters]
+    }
+
     method OnFiltersChange {name1 name2 op} {
 	{*}$options(-command) [array get filters]
     }
