@@ -10,8 +10,8 @@ snit::type app_type {
 
     constructor args {
         $self configurelist $args
-	tacky_init -transient $options(-transient)
-        ::tacky account list -enabled 1 -command [mymethod OnAccountList]
+	tacky_init_threaded -transient $options(-transient)
+        ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
@@ -115,6 +115,9 @@ snit::type app_type {
             -open-chat-command [mymethod OpenChat] \
             -open-bookmark-command [mymethod OpenBookmark] \
             -menubar .menubar]
+        # Tabs load async in threaded mode — request a width so the
+        # pane doesn't collapse before content arrives.
+        $notebook configure -width 200
         $paned add $notebook -weight 0
 
         set current $paned

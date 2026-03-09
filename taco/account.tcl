@@ -29,7 +29,7 @@ snit::type taco_account {
                 username,
                 domain,
                 password,
-                enabled DEFAULT 0
+                enabled INTEGER DEFAULT 0
             );
         }
     }
@@ -135,6 +135,7 @@ snit::type taco_account {
 
     method enable {args} {
         set jid [dict get $args -acc]
+        if {[$options(-db) eval {SELECT enabled FROM account WHERE jid=$jid}]} return
         set client [$options(-taco) client $jid]
         $client connect
         $options(-db) eval {UPDATE account SET enabled=1 WHERE jid=$jid}

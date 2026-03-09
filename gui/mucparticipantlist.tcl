@@ -78,7 +78,12 @@ snit::widget mucparticipantlist {
     # ------------------------------------------------------------------
 
     method LoadOccupants {} {
-	foreach occ [::tacky muc occupants -acc $options(-acc) -jid $options(-jid)] {
+	::tacky muc occupants -acc $options(-acc) -jid $options(-jid) \
+	    -command [mymethod OnOccupantsList]
+    }
+
+    method OnOccupantsList {occupants} {
+	foreach occ $occupants {
 	    $self UpsertOccupant $occ
 	}
 	$self UpdateGroupLabels
@@ -194,7 +199,12 @@ snit::widget mucparticipantlist {
 	set targetData $OccupantData($nick)
 
 	# Get our own data
-	set myNick [::tacky muc myNick -acc $options(-acc) -jid $options(-jid)]
+	::tacky muc myNick -acc $options(-acc) -jid $options(-jid) \
+	    -command [mymethod OnMyNickForMenu $nick $targetData $X $Y]
+    }
+
+    method OnMyNickForMenu {nick targetData X Y myNick} {
+	if {![winfo exists $win]} return
 	if {$myNick eq "" || $myNick eq $nick} return
 	if {![info exists OccupantData($myNick)]} return
 	set myData $OccupantData($myNick)

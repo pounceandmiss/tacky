@@ -40,20 +40,31 @@ snit::widgetadaptor xmlstream {
 	if {$tapId ne ""} {
 	    catch {tacky debugtap off -tap $tapId}
 	    set tapId ""
+	    $hull configure -writecmd ""
 	}
 	set options($o) $v
 	if {$v ne ""} {
 	    lassign $v type id
 	    switch -- $type {
 		account {
-		    set tapId [tacky debugtap on -acc $id -onstanza [mymethod onStanza]]
+		    tacky debugtap on -acc $id -onstanza [mymethod onStanza] \
+			-command [mymethod OnTapReady $v]
 		}
 		register {
-		    set tapId [tacky debugtap on -token $id -onstanza [mymethod onStanza]]
+		    tacky debugtap on -token $id -onstanza [mymethod onStanza] \
+			-command [mymethod OnTapReady $v]
 		}
 	    }
-	    $hull configure -writecmd [list tacky debugtap write -tap $tapId -stanza]
 	}
+    }
+
+    method OnTapReady {conn id} {
+	if {$options(-conn) ne $conn} {
+	    catch {tacky debugtap off -tap $id}
+	    return
+	}
+	set tapId $id
+	$hull configure -writecmd [list tacky debugtap write -tap $tapId -stanza]
     }
 
     constructor args {

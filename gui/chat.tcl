@@ -103,12 +103,14 @@ snit::widgetadaptor chatview {
     option -menubar -default ""
 
     variable WasAtEnd
+    variable IsMuc
 
     constructor args {
 	installhull using chatarea -thirst-command [mymethod OnThirst] \
 	    -avatar-release-command [mymethod OnAvatarRelease]
 	$self configurelist $args
 	set WasAtEnd 1
+	set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
 	set TrackedAvatars [dict create]
 	set LoadToken [dict create old "" new ""]
 	::tacky listen -tag $win message <Received> \
@@ -205,26 +207,40 @@ snit::widgetadaptor chatview {
 	if {$res eq ""} {
 	    set res [jid bare $fromJid]
 	}
+	if {$IsMuc} {
+	    set avatarJid $fromJid
+	} else {
+	    set avatarJid [jid bare $fromJid]
+	}
 	dict create \
 	    id           [dict get $storeDict timestamp] \
 	    display_name $res \
-	    avatar_jid   [jid bare $fromJid] \
+	    avatar_jid   $avatarJid \
 	    timestamp    [dict get $storeDict timestamp] \
 	    body         [dict get $storeDict body] \
 	    is_outgoing  0 \
 	    receipt_status ""
     }
 
+    # Avatar lifecycle: TrackAvatar is called when a message is drawn.
+    # It calls avatar visible (refcount) and fetches the thumb async.
+    # When all messages for a jid are culled by the scroll cleanup,
+    # OnAvatarRelease fires: calls avatar invisible, deletes the image.
+    # OnAvatarUpdate handles server-side changes by re-fetching.
+    # OnAvatarThumb guards against the jid being released before the
+    # async thumb arrives.
     method TrackAvatar {jid} {
 	if {[dict exists $TrackedAvatars $jid]} return
+	dict set TrackedAvatars $jid ""
 	::tacky avatar visible -acc $options(-acc) -jid $jid
-	set thumbResult [::tacky avatar thumb -acc $options(-acc) -jid $jid]
-	if {$thumbResult eq "" || $thumbResult eq "{}"} {
-	    dict set TrackedAvatars $jid ""
-	    return
-	}
-	set img [image create photo]
-	$img configure -data $thumbResult
+	::tacky avatar thumb -acc $options(-acc) -jid $jid \
+	    -command [mymethod OnAvatarThumb $jid]
+    }
+
+    method OnAvatarThumb {jid data} {
+	if {![dict exists $TrackedAvatars $jid]} return
+	if {$data eq ""} return
+	set img [image create photo -data $data]
 	dict set TrackedAvatars $jid $img
 	$hull avatar set $jid $img
     }
@@ -236,15 +252,9 @@ snit::widgetadaptor chatview {
 	if {$oldImg ne ""} {
 	    image delete $oldImg
 	}
-	set thumbResult [::tacky avatar thumb -acc $options(-acc) -jid $jid]
-	if {$thumbResult eq "" || $thumbResult eq "{}"} {
-	    dict set TrackedAvatars $jid ""
-	    return
-	}
-	set img [image create photo]
-	$img configure -data $thumbResult
-	dict set TrackedAvatars $jid $img
-	$hull avatar set $jid $img
+	dict set TrackedAvatars $jid ""
+	::tacky avatar thumb -acc $options(-acc) -jid $jid \
+	    -command [mymethod OnAvatarThumb $jid]
     }
 
     method UntrackAllAvatars {} {

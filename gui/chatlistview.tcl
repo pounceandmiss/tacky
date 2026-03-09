@@ -53,7 +53,7 @@ snit::widget chatlistview {
 	# Search entry
 	install searchentry using ttk::entry $win.search \
 	    -textvariable [myvar searchquery]
-	bind $searchentry <KeyRelease> [mymethod OnSearchChanged]
+	bind $searchentry <KeyRelease> [mymethod RebuildAll]
 
 	# Treeview
 	install treeview using ttk::treeview $win.tree \
@@ -96,7 +96,7 @@ snit::widget chatlistview {
 	# Bookmark item menu
 	install bookmarkmenu using menu $win.bookmarkmenu -tearoff 0
 	$bookmarkmenu add command -label "Join Room" \
-	    -command [mymethod OnOpenBookmark]
+	    -command [mymethod OnOpenChat]
 	$bookmarkmenu add command -label "Leave Room" \
 	    -command [mymethod OnLeaveBookmark]
 	$bookmarkmenu add separator
@@ -130,14 +130,14 @@ snit::widget chatlistview {
 	menu $win.settingsmenu.sort -tearoff 0
 	$win.settingsmenu.sort add radiobutton -label "Name" \
 	    -variable [myvar sortby] -value "name" \
-	    -command [mymethod OnSortChanged]
+	    -command [mymethod RebuildAll]
 	$win.settingsmenu.sort add radiobutton -label "JID" \
 	    -variable [myvar sortby] -value "jid" \
-	    -command [mymethod OnSortChanged]
+	    -command [mymethod RebuildAll]
 	$settingsmenu add separator
 	$settingsmenu add checkbutton -label "Group contacts" \
 	    -variable [myvar grouping] \
-	    -command [mymethod OnGroupingChanged]
+	    -command [mymethod RebuildAll]
 	$settingsmenu add checkbutton -label "Show presence colors" \
 	    -variable [myvar prescolors] \
 	    -command [mymethod OnPresenceColorsChanged]
@@ -195,10 +195,12 @@ snit::widget chatlistview {
 	    }
 	}
 
-	# Clear
-	$treeview delete [$treeview children Roster]
+	$options(-tacky) roster get -acc $options(-acc) \
+	    -command [mymethod OnRosterData $openGroups]
+    }
 
-	set items [$options(-tacky) roster get -acc $options(-acc)]
+    method OnRosterData {openGroups items} {
+	$treeview delete [$treeview children Roster]
 	set items [$self FilterBySearch $items]
 	set items [$self SortItems $items]
 
@@ -217,30 +219,38 @@ snit::widget chatlistview {
     }
 
     method RebuildBookmarks {} {
-	$treeview delete [$treeview children Bookmarks]
+	$options(-tacky) bookmarks get -acc $options(-acc) \
+	    -command [mymethod OnBookmarksData]
+    }
 
-	set items [$options(-tacky) bookmarks get -acc $options(-acc)]
+    method OnBookmarksData {items} {
+	$treeview delete [$treeview children Bookmarks]
 	set items [$self FilterBySearch $items]
 	set items [$self SortItems $items]
+	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 
 	foreach item $items {
 	    set jid  [dict get $item -jid]
 	    set text [$self DisplayText $item]
 	    $treeview insert Bookmarks end -id "Bookmarks/$jid" -text $text \
-		-image [$self GetAvatarImage $jid]
+		-image $defImg
+	    $self FetchAvatar $jid
 	}
     }
 
     method PopulateFlat {items} {
+	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 	foreach item $items {
 	    set jid  [dict get $item -jid]
 	    set text [$self DisplayText $item]
 	    $treeview insert Roster end -id "Roster/$jid" -text $text \
-		-image [$self GetAvatarImage $jid]
+		-image $defImg
+	    $self FetchAvatar $jid
 	}
     }
 
     method PopulateGrouped {items} {
+	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 	foreach item $items {
 	    set jid    [dict get $item -jid]
 	    set text   [$self DisplayText $item]
@@ -258,8 +268,9 @@ snit::widget chatlistview {
 		}
 		$treeview insert $gid end \
 		    -id "$gid/$jid" -text $text \
-		    -image [$self GetAvatarImage $jid]
+		    -image $defImg
 	    }
+	    $self FetchAvatar $jid
 	}
     }
 
@@ -311,18 +322,6 @@ snit::widget chatlistview {
 	$self InvisibleAllAvatars
 	$self RebuildRoster
 	$self RebuildBookmarks
-    }
-
-    method OnSearchChanged {} {
-	$self RebuildAll
-    }
-
-    method OnSortChanged {} {
-	$self RebuildAll
-    }
-
-    method OnGroupingChanged {} {
-	$self RebuildAll
     }
 
     method ConfigurePresenceTags {} {
@@ -394,13 +393,18 @@ snit::widget chatlistview {
 	    set section [$self GetSection $item]
 	    if {$section eq "Bookmarks"} {
 		set jid [$self ItemJid $item]
-		set bookmarkAutojoin [$options(-tacky) bookmarks autojoin \
-		    -acc $options(-acc) -jid $jid]
-		tk_popup $bookmarkmenu $X $Y
+		$options(-tacky) bookmarks autojoin \
+		    -acc $options(-acc) -jid $jid \
+		    -command [mymethod OnAutojoinResult $X $Y]
 	    } else {
 		tk_popup $contactmenu $X $Y
 	    }
 	}
+    }
+
+    method OnAutojoinResult {X Y value} {
+	set bookmarkAutojoin $value
+	tk_popup $bookmarkmenu $X $Y
     }
 
     method OnSettingsRightClick {X Y} {
@@ -453,13 +457,6 @@ snit::widget chatlistview {
 	}
     }
 
-    method OnOpenBookmark {} {
-	set item [$treeview selection]
-	if {$item ne "" && [$self IsLeaf $item]} {
-	    $self ActivateItem $item
-	}
-    }
-
     method OnLeaveBookmark {} {
 	set jid [$self SelectedLeafJid]
 	if {$jid eq ""} return
@@ -501,37 +498,46 @@ snit::widget chatlistview {
 	}
     }
 
-    method GetAvatarImage {jid} {
-	if {!$showAvatars} {
-	    return ""
-	}
+    method FetchAvatar {jid} {
+	if {!$showAvatars} return
 	if {[dict exists $avatarImages $jid]} {
 	    set img [dict get $avatarImages $jid]
-	    return [expr {$img ne "" ? $img : "chatlistview::defaultAvatar"}]
+	    if {$img ne ""} {
+		$self ApplyAvatar $jid $img
+	    }
+	    return
 	}
+	dict set avatarImages $jid ""
 	$options(-tacky) avatar visible \
 	    -acc $options(-acc) -jid $jid
-	set data [$options(-tacky) avatar thumb \
-	    -acc $options(-acc) -jid $jid]
-	if {$data eq ""} {
-	    dict set avatarImages $jid ""
-	    return chatlistview::defaultAvatar
-	}
+	$options(-tacky) avatar thumb \
+	    -acc $options(-acc) -jid $jid \
+	    -command [mymethod OnAvatarThumb $jid]
+    }
+
+    method OnAvatarThumb {jid data} {
+	if {$data eq ""} return
 	set img [image create photo -data $data]
 	dict set avatarImages $jid $img
-	return $img
+	$self ApplyAvatar $jid $img
+    }
+
+    method ApplyAvatar {jid img} {
+	foreach item [$self FindItemsByJid $jid] {
+	    $treeview item $item -image $img
+	}
     }
 
     method OnAvatarUpdate {ev} {
 	set jid [dict get $ev -jid]
 	if {[dict exists $avatarImages $jid]} {
-	    image delete [dict get $avatarImages $jid]
+	    set oldImg [dict get $avatarImages $jid]
+	    if {$oldImg ne ""} {
+		image delete $oldImg
+	    }
 	    dict unset avatarImages $jid
 	}
-	set img [$self GetAvatarImage $jid]
-	foreach item [$self FindItemsByJid $jid] {
-	    $treeview item $item -image $img
-	}
+	$self FetchAvatar $jid
     }
 
     method FindItemsByJid {jid} {

@@ -7,6 +7,7 @@ proc bgerror {message} {
 }
 
 source tacky.tcl
+source taco/jid.tcl
 
 foreach script [lsort [glob [file join ./ gui *.tcl]]] {
     source $script

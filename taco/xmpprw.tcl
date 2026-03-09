@@ -92,7 +92,15 @@ snit::type xmppreader {
     
     # (optional) channel that will be parsed when you call `start`
     option -channel
-    
+
+    # Internal note:
+    # Reader lifecycle: OnReadable yields to the event loop via pause
+    # + after idle to not hog cpu when we're in single threading mode
+    # (e.g. STARTTLS triggers CreateReader inside feed).  Two
+    # layers prevent a stale timer from firing on a dead reader:
+    #   pause  - cancels any pending after timer up front
+    #   start  - guards against a channel cleared by cancelRead
+
     variable Expat
     variable Cb
     variable NodeList
@@ -130,14 +138,17 @@ snit::type xmppreader {
 	# paint/scroll events. Without this, back-to-back readable
 	# events (e.g. 1000+ MUC presences) starve the UI.
 	$self pause
-	set AfterID [after 1 [mymethod start]]
+	set AfterID [after idle [mymethod start]]
     }
     
     method start {} {
+	if {$options(-channel) eq ""} return
 	fileevent  $options(-channel) readable [mymethod OnReadable]
     }
-    
+
     method pause {} {
+	after cancel $AfterID
+	set AfterID ""
 	catch {fileevent $options(-channel) readable {}}
     }
     

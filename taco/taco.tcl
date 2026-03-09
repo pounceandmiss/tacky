@@ -31,13 +31,14 @@ snit::macro tackymethod {name arglist body} {
                 }
                 return
             }
-            error $_result
+            return -options $_opts $_result
         }
+	
         if {[dict exists $args -command]} {
             {*}[dict get $args -command] $_result
             return
         }
-        return $_result
+        return -options $_opts $_result
     }]
 }
 

@@ -50,12 +50,9 @@ snit::widget chatpanel {
 	    $self InstallMenus
 	}
 
-	set showParticipants [$self SettingGet show_participants 0]
-	if {$isMuc && $showParticipants} {
-	    $self ShowParticipants
-	}
-
 	if {$isMuc} {
+	    ::tacky setting get -key show_participants \
+		-command [mymethod OnShowParticipantsSetting]
 	    ::tacky listen -tag $win muc <RoomCreated> \
 		-acc $options(-acc) [mymethod OnMucRoomCreated]
 	}
@@ -67,11 +64,12 @@ snit::widget chatpanel {
 	$self DestroyParticipants
     }
 
-    method SettingGet {key default} {
-	set result [::tacky setting get -key $key]
-	set val [dict get $result -value]
-	if {$val eq ""} { return $default }
-	return $val
+    method OnShowParticipantsSetting {ev} {
+	set val [dict get $ev -value]
+	if {$val ne "" && $val} {
+	    set showParticipants 1
+	    $self ShowParticipants
+	}
     }
 
     method Send {text} {
@@ -104,33 +102,48 @@ snit::widget chatpanel {
 	$mb.chat add command -label "Change Nickname..." \
 	    -command [mymethod ChangeNickname]
 
-	# Permission-gated items
-	set nick [::tacky muc myNick -acc $options(-acc) -jid $roomJid]
-	if {$nick ne ""} {
-	    set occ [::tacky muc occupant -acc $options(-acc) -jid $roomJid -nick $nick]
-	    if {$occ ne ""} {
-		set role [dict get $occ role]
-		set affil [dict get $occ affiliation]
-
-		if {$role eq "visitor"} {
-		    $mb.chat add separator
-		    $mb.chat add command -label "Request Voice" \
-			-command [mymethod RequestVoice]
-		}
-		if {$affil eq "owner"} {
-		    $mb.chat add separator
-		    $mb.chat add command -label "Destroy Room..." \
-			-command [mymethod DestroyRoom]
-		}
-	    }
-	}
-
 	# Always last
 	$mb.chat add separator
 	$mb.chat add command -label "Leave Room" \
 	    -command [mymethod LeaveRoom]
 	$mb.chat add command -label "Leave Room (Keep Bookmark)" \
 	    -command [mymethod LeaveRoomKeepBookmark]
+
+	# Permission-gated items — fetched asynchronously and inserted
+	::tacky muc myNick -acc $options(-acc) -jid $roomJid \
+	    -command [mymethod OnMyNickForMenu]
+    }
+
+    method OnMyNickForMenu {nick} {
+	if {$nick eq ""} return
+	::tacky muc occupant -acc $options(-acc) -jid $roomJid -nick $nick \
+	    -command [mymethod OnOccupantForMenu]
+    }
+
+    method OnOccupantForMenu {occ} {
+	if {$occ eq ""} return
+	set mb $options(-menubar)
+	if {![winfo exists $mb.chat]} return
+
+	set role [dict get $occ role]
+	set affil [dict get $occ affiliation]
+
+	# Insert permission-gated items before the trailing separator
+	# Static menu: Participants, sep, Invite, Change Nick = indices 0-3
+	set insertIdx 4
+	if {$role eq "visitor"} {
+	    $mb.chat insert $insertIdx separator
+	    incr insertIdx
+	    $mb.chat insert $insertIdx command -label "Request Voice" \
+		-command [mymethod RequestVoice]
+	    incr insertIdx
+	}
+	if {$affil eq "owner"} {
+	    $mb.chat insert $insertIdx separator
+	    incr insertIdx
+	    $mb.chat insert $insertIdx command -label "Destroy Room..." \
+		-command [mymethod DestroyRoom]
+	}
     }
 
     method RemoveMenus {} {
@@ -154,7 +167,7 @@ snit::widget chatpanel {
 	if {$showParticipants} {
 	    $self ShowParticipants
 	} else {
-	    $self HideParticipants
+	    $self DestroyParticipants
 	}
 	::tacky setting set -key show_participants -value $showParticipants
     }
@@ -164,10 +177,6 @@ snit::widget chatpanel {
 	set mucList [mucparticipantlist $paned.plist \
 	    -acc $options(-acc) -jid $roomJid]
 	$paned add $mucList -weight 0
-    }
-
-    method HideParticipants {} {
-	$self DestroyParticipants
     }
 
     method DestroyParticipants {} {
@@ -203,7 +212,11 @@ snit::widget chatpanel {
     }
 
     method ChangeNickname {} {
-	set myNick [::tacky muc myNick -acc $options(-acc) -jid $roomJid]
+	::tacky muc myNick -acc $options(-acc) -jid $roomJid \
+	    -command [mymethod OnMyNickForChange]
+    }
+
+    method OnMyNickForChange {myNick} {
 	set newNick [InputDialog .muc_nick_dlg \
 	    -title "Change Nickname" -prompt "New nickname:" \
 	    -value $myNick]

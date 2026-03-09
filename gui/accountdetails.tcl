@@ -375,8 +375,10 @@ snit::widget signup {
 	$pages.step1.proceed configure -text "Proceed" \
 	    -command [mymethod FetchForm]
 
-	set formdata [tacky register form -token $win]
+	tacky register form -token $win -command [mymethod OnFormData]
+    }
 
+    method OnFormData {formdata} {
 	# Destroy previous form widget if any
 	if {$formwidget ne "" && [winfo exists $formwidget]} {
 	    destroy $formwidget
@@ -399,7 +401,11 @@ snit::widget signup {
 
     method OnMediaReady {ev} {
 	set var [dict get $ev -var]
-	set data [tacky register media -token $win -var $var]
+	tacky register media -token $win -var $var \
+	    -command [mymethod OnMediaData $var]
+    }
+
+    method OnMediaData {var data} {
 	if {$data ne "" && $formwidget ne "" && [winfo exists $formwidget]} {
 	    $formwidget.form setMedia $var $data
 	}
