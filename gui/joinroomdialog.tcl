@@ -2,7 +2,7 @@
 #
 # Provides:
 # - Room JID entry
-# - Nick entry (pre-filled from bound JID username)
+# - Nick entry (pre-filled from bookmarks default nick)
 # - Password entry (optional)
 # - MUC service entry + "Discover" button
 # - Room list treeview (populated by discoverRooms)
@@ -26,7 +26,7 @@ snit::widget joinroomdialog {
     variable toplevelW
 
     typemethod show {accJid} {
-	set dlg .$self
+	set dlg .joinroomdialog
 	if {[winfo exists $dlg]} {
 	    raise $dlg
 	    return
@@ -43,9 +43,10 @@ snit::widget joinroomdialog {
 
 	set toplevelW [winfo toplevel $win]
 
-	# Derive defaults from the account JID
-	set nick [jid username $options(-acc)]
+	# Derive defaults
 	set service "conference.[jid domain $options(-acc)]"
+	::tacky bookmarks defaultNick -acc $options(-acc) \
+	    -command [mymethod OnDefaultNick]
 
 	# Listen for join success/error
 	::tacky listen -tag $self \
@@ -151,6 +152,12 @@ snit::widget joinroomdialog {
 	set sel [$roomlist selection]
 	if {$sel eq ""} return
 	set roomjid [lindex [$roomlist item $sel -values] 0]
+    }
+
+    method OnDefaultNick {result} {
+	if {$result ne ""} {
+	    set nick $result
+	}
     }
 
     method DoJoin {} {

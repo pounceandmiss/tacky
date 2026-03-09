@@ -237,10 +237,10 @@ snit::widget chatpanel {
     }
 
     method LeaveRoom {} {
-	::tacky bookmarks leave -acc $options(-acc) -jid $roomJid
+	::tacky bookmarks remove -acc $options(-acc) -jid $roomJid
     }
 
     method LeaveRoomKeepBookmark {} {
-	::tacky muc leave -acc $options(-acc) -jid $roomJid
+	::tacky bookmarks leave -acc $options(-acc) -jid $roomJid
     }
 }

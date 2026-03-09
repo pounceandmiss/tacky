@@ -11,6 +11,8 @@
 # tacky bookmarks nick -acc $jid -jid $roomJid -nick $nick
 # tacky bookmarks leave -acc $jid -jid $roomJid
 # tacky bookmarks autojoin -acc $jid -jid $roomJid
+# tacky bookmarks defaultNick -acc $jid ?-nick $newNick?
+# tacky bookmarks setNickAll -acc $jid -nick $nick
 #
 # tacky listen bookmarks <Changed> -acc $jid $command
 #   -action clear | add | update | remove
@@ -64,6 +66,7 @@ snit::type taco_bookmarks {
 
     # Add or update a bookmark
     # Omitted options are preserved from the DB if the bookmark exists.
+    # If -nick is omitted for a new bookmark, defaults to defaultNick.
     method item {args} {
 	set jid [dict get $args -jid]
 
@@ -77,6 +80,11 @@ snit::type taco_bookmarks {
 	}
 	array set opts $defaults
 	array set opts [dict remove $args -jid]
+
+	# Populate nick from default for new bookmarks without one
+	if {$opts(-nick) eq ""} {
+	    set opts(-nick) [$self defaultNick]
+	}
 
 	# Optimistic local update
 	set autojoinInt [expr {$opts(-autojoin) in {true 1} ? 1 : 0}]
@@ -152,6 +160,26 @@ snit::type taco_bookmarks {
 	$client muc leave -jid $jid
     }
 
+    # Get or set the default nickname for new bookmarks.
+    # Falls back to JID username if unset.
+    tackymethod defaultNick {args} {
+	if {[dict exists $args -nick]} {
+	    set newNick [dict get $args -nick]
+	    $client db eval {
+		INSERT OR REPLACE INTO bookmark_config(key, value)
+		VALUES('default_nick', $newNick)
+	    }
+	    return $newNick
+	}
+	set row [$client db eval {
+	    SELECT value FROM bookmark_config WHERE key='default_nick'
+	}]
+	if {[llength $row] > 0 && [lindex $row 0] ne ""} {
+	    return [lindex $row 0]
+	}
+	return [jid username [$client cget -jid]]
+    }
+
     # Query autojoin state for a single JID
     tackymethod autojoin {args} {
 	set jid [dict get $args -jid]
@@ -160,9 +188,12 @@ snit::type taco_bookmarks {
 	return [lindex $row 0]
     }
 
-    # Remove a bookmark
+    # Remove a bookmark and leave the room if joined
     method remove {args} {
 	set jid [dict get $args -jid]
+	if {[$client muc isJoined -jid $jid]} {
+	    $client muc leave -jid $jid
+	}
 	$client db eval {DELETE FROM bookmark WHERE jid=$jid}
 	$client emit bookmarks <Changed> -action remove -jid $jid
 
@@ -258,12 +289,24 @@ snit::type taco_bookmarks {
 	}
     }
 
+    # Update nickname on all bookmarks and optionally in joined rooms.
+    method setNickAll {args} {
+	set newNick [dict get $args -nick]
+	$self defaultNick -nick $newNick
+	$client db eval {SELECT jid FROM bookmark} row {
+	    $self item -jid $row(jid) -nick $newNick
+	    if {[$client muc isJoined -jid $row(jid)]} {
+		$client muc nick -jid $row(jid) -nick $newNick
+	    }
+	}
+    }
+
     method AutojoinAll {} {
 	$client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
 	    if {[$client muc isJoined -jid $row(jid)]} continue
 	    set nick $row(nick)
 	    if {$nick eq ""} {
-		set nick [jid username [$client cget -jid]]
+		set nick [$self defaultNick]
 	    }
 	    if {$row(password) ne ""} {
 		$client muc join -jid $row(jid) -nick $nick -password $row(password)
@@ -280,7 +323,7 @@ snit::type taco_bookmarks {
 	if {!$autojoin} return
 	if {[$client muc isJoined -jid $jid]} return
 	if {$nick eq ""} {
-	    set nick [jid username [$client cget -jid]]
+	    set nick [$self defaultNick]
 	}
 	if {$password ne ""} {
 	    $client muc join -jid $jid -nick $nick -password $password
@@ -298,6 +341,10 @@ snit::type taco_bookmarks {
 		nick TEXT,
 		password TEXT,
 		extensions_xml TEXT
+	    );
+	    CREATE TABLE IF NOT EXISTS bookmark_config(
+		key TEXT PRIMARY KEY,
+		value TEXT
 	    );
 	}
     }
