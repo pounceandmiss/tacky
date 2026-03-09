@@ -74,6 +74,16 @@ snit::type taco_avatar {
 	$client db onecolumn {SELECT data FROM avatar_data WHERE hash=$hash}
     }
 
+    # Fetch vCard avatar for a JID if not already cached.
+    method ensureVCard {jid} {
+	set has [$client db onecolumn {
+	    SELECT count(*) FROM avatar_metadata WHERE jid=$jid
+	}]
+	if {!$has} {
+	    $self FetchVCard $jid
+	}
+    }
+
     # Get pre-generated 32x32 thumbnail bytes for a JID; returns "" if none.
     tackymethod thumb {args} {
 	set jid [dict get $args -jid]

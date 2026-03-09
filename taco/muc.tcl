@@ -640,6 +640,9 @@ snit::type taco_muc {
 
 	    $client emit muc <Joined> -jid $roomJid -nick $nick
 
+	    # Fetch room avatar for bookmark display
+	    $client avatar ensureVCard $roomJid
+
 	    # Status 201 = room was just created, needs configuration
 	    if {201 in $codes} {
 		$client emit muc <RoomCreated> -jid $roomJid
