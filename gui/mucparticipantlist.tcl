@@ -70,7 +70,7 @@ snit::widget mucparticipantlist {
     }
 
     destructor {
-	::tacky unlisten $win
+	catch {::tacky unlisten $win}
     }
 
     # ------------------------------------------------------------------

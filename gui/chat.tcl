@@ -150,9 +150,9 @@ snit::widgetadaptor chatview {
     }
 
     destructor {
-	$self RemoveMenus
-	$self UntrackAllAvatars
-	::tacky unlisten $win
+	catch {::tacky unlisten $win}
+	catch {$self RemoveMenus}
+	catch {$self UntrackAllAvatars}
     }
 
     method goto {target} {

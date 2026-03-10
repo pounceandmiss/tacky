@@ -100,7 +100,7 @@ snit::widgetadaptor xmlstream {
     }
 
     destructor {
-	tacky unlisten $win
+	catch {tacky unlisten $win}
 	catch {tacky debugtap off -tap $tapId}
     }
 

@@ -59,9 +59,9 @@ snit::widget chatpanel {
     }
 
     destructor {
-	::tacky unlisten $win
-	$self RemoveMenus
-	$self DestroyParticipants
+	catch {::tacky unlisten $win}
+	catch {$self RemoveMenus}
+	catch {$self DestroyParticipants}
     }
 
     method OnShowParticipantsSetting {ev} {
