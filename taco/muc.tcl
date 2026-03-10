@@ -65,11 +65,14 @@ snit::type taco_muc {
     constructor args {
 	$self configurelist $args
 	set client $options(-client)
+	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
-    method OnReady {} {}
+    destructor {
+	catch {$client bus unsubscribe $self}
+    }
 
-    method OnDisconnect {} {
+    method OnDisconnect {args} {
 	array unset Rooms *
 	array unset JoinCallbacks *
     }

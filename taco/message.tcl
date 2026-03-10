@@ -113,13 +113,18 @@ snit::type taco_message {
 	array set PubSubHandlers {}
 	array set SyncedChats {}
 	array set PendingRetry {}
+	$client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
+	$client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
+	$client bus subscribe $self <Ready>      [mymethod OnReady]
+	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
     destructor {
+	catch {$client bus unsubscribe $self}
 	catch {$messagestore destroy}
     }
 
-    method OnReady {} {
+    method OnReady {args} {
 	$self DoCatchup
 	$self RetryPending
     }
@@ -169,7 +174,7 @@ snit::type taco_message {
 	$client emit message <CatchupDone> -count $totalCount
     }
 
-    method OnDisconnect {} {
+    method OnDisconnect {args} {
 	array unset SyncedChats
 	array unset PendingRetry
 	set liveRegion ""
@@ -273,7 +278,8 @@ snit::type taco_message {
 	$client write $stanza
     }
 
-    method OnSmAck {stanzas} {
+    method OnSmAck {args} {
+	set stanzas [dict get $args -stanzas]
 	set originIds {}
 	foreach stanza $stanzas {
 	    if {[dict get $stanza tag] ne "message"} continue
@@ -314,9 +320,10 @@ snit::type taco_message {
 	}
     }
 
-    # Called by client.emit when a MUC room is joined — flush pending
+    # Called via bus when a MUC room is joined — flush pending
     # retries for that room.
-    method OnMucJoined {roomJid} {
+    method OnMucJoined {args} {
+	set roomJid [dict get $args -jid]
 	if {![info exists PendingRetry($roomJid)]} return
 	set msgs $PendingRetry($roomJid)
 	unset PendingRetry($roomJid)

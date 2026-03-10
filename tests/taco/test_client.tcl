@@ -102,3 +102,45 @@ test client-stanza-routes-iq {OnStanza routes iq stanzas to iq component} \
         }]
         llength $received
     } -result {1}
+
+# -- Bus lifecycle ----------------------------------------------------------
+
+test client-bus-ready-fires {bus publishes <Ready> on non-resumed connect} \
+    {*}$common \
+    -body {
+        set got 0
+        c bus subscribe _ <Ready> {apply {{args} { incr ::got }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        set got
+    } -result {1}
+
+test client-bus-ready-skipped-on-resume {bus does not publish <Ready> on resume} \
+    {*}$common \
+    -body {
+        set got 0
+        c bus subscribe _ <Ready> {apply {{args} { incr ::got }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 1
+        set got
+    } -result {0}
+
+test client-bus-disconnect-fires {bus publishes <Disconnect> on disconnect} \
+    {*}$common \
+    -body {
+        set got 0
+        c bus subscribe _ <Disconnect> {apply {{args} { incr ::got }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c.conn fire_disconnect "gone"
+        set got
+    } -result {1}
+
+test client-bus-emit-publishes {emit publishes module:event on bus} \
+    {*}$common \
+    -body {
+        set got {}
+        c bus subscribe _ test:<Ping> {apply {{args} { set ::got $args }}}
+        c emit test <Ping> -data hello
+        set got
+    } -result {-data hello}

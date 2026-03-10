@@ -42,16 +42,17 @@ snit::type taco_avatar {
 	$client message pubsub handler urn:xmpp:avatar:metadata \
 	    [mymethod OnMetadataNotification]
 	catch {$client caps addFeature urn:xmpp:avatar:metadata+notify}
+	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
-    method OnReady {} {}
-    method OnDisconnect {} {
+    method OnDisconnect {args} {
 	set VisibleJids [dict create]
 	set PendingVCardHash [dict create]
 	set PendingPubSubHash [dict create]
     }
 
     destructor {
+	catch {$client bus unsubscribe $self}
 	catch {$client message pubsub unhandler urn:xmpp:avatar:metadata}
     }
 

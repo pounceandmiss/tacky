@@ -49,13 +49,16 @@ snit::type taco_roster {
 	set client $options(-client)
 	$self Migrate
 	$client iq handler set jabber:iq:roster [mymethod OnPush]
+	$client bus subscribe $self <Ready> [mymethod OnReady]
     }
 
-    method OnReady {} {
+    destructor {
+	catch {$client bus unsubscribe $self}
+    }
+
+    method OnReady {args} {
 	$self request
     }
-
-    method OnDisconnect {} {}
 
     # Return full roster from local store
     tackymethod get {args} {

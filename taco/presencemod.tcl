@@ -34,11 +34,14 @@ snit::type taco_presence {
     constructor args {
 	$self configurelist $args
 	set client $options(-client)
+	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
-    method OnReady {} {}
+    destructor {
+	catch {$client bus unsubscribe $self}
+    }
 
-    method OnDisconnect {} {
+    method OnDisconnect {args} {
 	array unset Presence *
 	$client emit presence <Changed> -action clear
     }

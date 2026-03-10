@@ -40,11 +40,14 @@ snit::type taco_mam {
 	array set Results {}
 	array set Callbacks {}
 	array set FieldCache {}
+	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
-    method OnReady {} {}
+    destructor {
+	catch {$client bus unsubscribe $self}
+    }
 
-    method OnDisconnect {} {
+    method OnDisconnect {args} {
 	array unset Results
 	array unset Callbacks
 	array unset FieldCache

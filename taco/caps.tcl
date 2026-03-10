@@ -51,9 +51,6 @@ snit::type taco_caps {
 	catch {$client iq unhandler get http://jabber.org/protocol/disco#info}
     }
 
-    method OnReady {} {}
-    method OnDisconnect {} {}
-
     # softwareVersion -to jid -command cmd
     # Queries XEP-0092 Software Version of a target entity.
     # Callback receives dict: name version os (or error 1 error_text msg).

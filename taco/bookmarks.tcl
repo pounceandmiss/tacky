@@ -30,17 +30,17 @@ snit::type taco_bookmarks {
 	$client message pubsub handler urn:xmpp:bookmarks:1 \
 	    [mymethod OnNotification]
 	catch {$client caps addFeature urn:xmpp:bookmarks:1+notify}
+	$client bus subscribe $self <Ready> [mymethod OnReady]
     }
 
     destructor {
+	catch {$client bus unsubscribe $self}
 	catch {$client message pubsub unhandler urn:xmpp:bookmarks:1}
     }
 
-    method OnReady {} {
+    method OnReady {args} {
 	$self request
     }
-
-    method OnDisconnect {} {}
 
     # Return full list of bookmarks from local store
     tackymethod get {args} {

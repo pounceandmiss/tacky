@@ -3,6 +3,7 @@ snit::type taco_client {
 
     component conn -public conn
     component iq -public iq
+    component bus -public bus
 
     # Database handle (exposed as component for direct access: $client db eval {...})
     component db -public db
@@ -60,6 +61,9 @@ snit::type taco_client {
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write]
 
+        # Create internal pub/sub bus
+        install bus using taco_client_bus $self.bus
+
         # Create modules
         $self InitModules
     }
@@ -67,12 +71,6 @@ snit::type taco_client {
     method InitModules {} {
         foreach mod $_modules {
             install $mod using taco_$mod $self.$mod -client $self
-        }
-    }
-
-    method NotifyModules {method args} {
-        foreach mod $_modules {
-            $self.$mod $method {*}$args
         }
     }
 
@@ -85,12 +83,7 @@ snit::type taco_client {
     }
 
     method emit {module event args} {
-        if {$module eq "sm" && $event eq "<Ack>"} {
-            $message OnSmAck [dict get $args -stanzas]
-        }
-        if {$module eq "muc" && $event eq "<Joined>"} {
-            $message OnMucJoined [dict get $args -jid]
-        }
+        $bus publish ${module}:${event} {*}$args
         set acc $options(-jid)
         if {$acc eq ""} {
             set acc "$options(-username)@$options(-host)"
@@ -105,12 +98,12 @@ snit::type taco_client {
     method OnReady {resumed} {
         set options(-jid) [$conn cget -bound-jid]
         if {!$resumed} {
-            $self NotifyModules OnReady
+            $bus publish <Ready>
         }
     }
 
     method OnDisconnect {msg} {
-        $self NotifyModules OnDisconnect
+        $bus publish <Disconnect>
     }
 
     method OnAuthError {msg} {
@@ -149,11 +142,51 @@ snit::type taco_client {
         foreach mod $_modules {
             catch {$self.$mod destroy}
         }
+        catch {$bus destroy}
         catch {$conn destroy}
         catch {$iq destroy}
         # Only destroy db if we created it
         if {[info commands $self.db] ne ""} {
             catch {$self.db close}
         }
+    }
+}
+
+# Internal pub/sub bus for backend module communication.
+# Modules subscribe in their constructors, unsubscribe in destructors.
+# Can't use the tacky event system here as it may be sending events
+# to another thread.
+snit::type taco_client_bus {
+    variable Subs       ;# dict: event -> list of {tag command}
+
+    constructor args {
+	set Subs [dict create]
+    }
+
+    method subscribe {tag event cmd} {
+	dict lappend Subs $event [list $tag $cmd]
+    }
+
+    method unsubscribe {tag} {
+	dict for {event entries} $Subs {
+	    set filtered {}
+	    foreach entry $entries {
+		if {[lindex $entry 0] ne $tag} {
+		    lappend filtered $entry
+		}
+	    }
+	    if {[llength $filtered] == 0} {
+		dict unset Subs $event
+	    } else {
+		dict set Subs $event $filtered
+	    }
+	}
+    }
+
+    method publish {event args} {
+	if {![dict exists $Subs $event]} return
+	foreach entry [dict get $Subs $event] {
+	    {*}[lindex $entry 1] {*}$args
+	}
     }
 }

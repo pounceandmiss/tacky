@@ -277,7 +277,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by origin_id} \
 	set stanza [j message -to room@muc.example.com -type groupchat -id $oid {
 	    j body #body "ack me"
 	}]
-	c message OnSmAck [list $stanza]
+	c message OnSmAck -stanzas [list $stanza]
 	set status [c db eval {
 	    SELECT server_status FROM chat_message
 	    WHERE chat_jid='room@muc.example.com?join'
@@ -453,7 +453,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
 	set stanza [j message -to room@muc.example.com -type groupchat -id $oid {
 	    j body #body "double"
 	}]
-	c message OnSmAck [list $stanza]
+	c message OnSmAck -stanzas [list $stanza]
 	set status [c db onecolumn {
 	    SELECT server_status FROM chat_message
 	    WHERE chat_jid='room@muc.example.com?join'
