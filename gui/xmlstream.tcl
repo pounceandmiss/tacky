@@ -173,9 +173,15 @@ snit::widget xmlstream_hull {
 	    -yscrollcommand [list $win.scroll set]
 	ttk::scrollbar $win.scroll -orient vertical \
 	    -command [list $win.text yview]
-	text $win.send -height 3 -wrap word
-	bind $win.send <Control-Return> "[mymethod Send]; break"
+	ttk::frame $win.sendbar
+	text $win.sendbar.input -height 3 -wrap word
+	ttk::button $win.sendbar.btn -text Send -command [mymethod Send]
+	pack $win.sendbar.btn -side right -fill y
+	pack $win.sendbar.input -side left -fill both -expand yes
+	bind $win.sendbar.input <Control-Return> "[mymethod Send]; break"
+	$win.sendbar.btn state disabled
 	pack $toolbar -fill x
+	pack $win.sendbar -side bottom -fill x
 	pack $win.scroll -side right -fill y
 	pack $text -fill both -expand yes
 	set Prefixes {
@@ -192,19 +198,25 @@ snit::widget xmlstream_hull {
     method ConfigureWritecmd {o v} {
 	set options($o) $v
 	if {$v ne ""} {
-	    pack $win.send -side bottom -fill x
+	    $win.sendbar.btn state !disabled
 	} else {
-	    catch {pack forget $win.send}
+	    $win.sendbar.btn state disabled
 	}
     }
 
     method Send {} {
-	set xml [string trim [$win.send get 1.0 end-1c]]
-	if {$xml ne "" && $options(-writecmd) ne ""} {
+	set w $win.sendbar.input
+	set xml [string trim [$w get 1.0 end-1c]]
+	if {$xml eq "" || $options(-writecmd) eq ""} return
+	try {
 	    set stanza [xmppreader string -zap yes $xml]
-	    {*}$options(-writecmd) $stanza
-	    $win.send delete 1.0 end
+	} on error {msg} {
+	    $w configure -background #ffcccc
+	    after 600 [list catch [list $w configure -background white]]
+	    return
 	}
+	{*}$options(-writecmd) $stanza
+	$w delete 1.0 end
     }
 
     method clear {} {
@@ -492,6 +504,7 @@ snit::widgetadaptor xmlstanza {
     constructor args {
 	installhull using xmlstream_hull
 	pack forget $win.toolbar
+	pack forget $win.sendbar
 	$self configurelist $args
     }
 
