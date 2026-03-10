@@ -36,6 +36,13 @@ snit::type sm {
     variable ackRequestTimer ""
     variable unackedCount 0
     option -ack-frequency -default 5  ;# Request ack every N stanzas
+    # Max unacked stanzas before we force an error.  A half-open TCP
+    # connection (network partition) can cause the queue to grow without
+    # bound because the server never ACKs.  When exceeded, outStanza
+    # raises "SM queue full"; the caller (conn) catches this and triggers
+    # a disconnect/reconnect.  The overflowing stanza is already in the
+    # queue at that point, so SM resumption will replay it.
+    option -max-queue-size -default 500
 
     constructor {args} {
         $self configurelist $args
@@ -272,6 +279,13 @@ snit::type sm {
         # Active SM mode
         lappend queue $stanza
         $self Incr out
+
+        # Guard against unbounded queue growth (e.g. half-open TCP).
+        # The stanza is already queued above so it survives into the
+        # reconnect → SM resumption replay.
+        if {[llength $queue] > $options(-max-queue-size)} {
+            error "SM queue full"
+        }
 
         switch -- $state {
             disconnected - connecting {

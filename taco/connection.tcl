@@ -499,15 +499,27 @@ snit::type conn {
             return
         }
         jlog debug "stanza out" -stanza $stanza
-        $sm outStanza $stanza
+        if {[catch {$sm outStanza $stanza} err]} {
+            jlog warn "SM write failed: $err"
+            $self OnTransportError $err
+            error $err
+        }
     }
 
     # Send all buffered stanzas through the normal write path.
+    # If a write triggers SM queue overflow (which fires OnTransportError +
+    # reconnect), we stop flushing and re-buffer the remaining stanzas so
+    # they survive into the next session.
     method FlushWriteBuffer {} {
         set buf $writeBuffer
         set writeBuffer [list]
+        set i 0
         foreach stanza $buf {
-            $self write $stanza
+            if {[catch {$self write $stanza}]} {
+                set writeBuffer [lrange $buf [expr {$i + 1}] end]
+                return
+            }
+            incr i
         }
     }
 
@@ -638,6 +650,9 @@ snit::type conn {
             set authState ready
             set reconnectAttempt 0
             $self FlushWriteBuffer
+            # FlushWriteBuffer may have triggered an SM overflow →
+            # OnTransportError → authState back to disconnected.
+            if {$authState ne "ready"} return
             $self SetConnState connected
 
             set resumed [dict get $info resumed]

@@ -496,3 +496,84 @@ test conn-write-buffer-flushed-after-ready {write buffer flushed when conn reach
         drive_to_ready "user@test.example.com/r" "sm-flush1"
         dict get [lindex [c.base get_written] end] tag
     } -result {message}
+
+# -- SM queue overflow -------------------------------------------------------
+
+test conn-sm-queue-overflow-triggers-reconnect {SM queue overflow triggers disconnect/reconnect} \
+    -setup {
+        rename baseconn _real_baseconn
+        rename mockbaseconn baseconn
+        set _tready_resumed ""
+        set _tauth_err {}
+        set _tdisconnect {}
+        set _temitted {}
+        jlog configure -logproc {apply {{msg} {}}}
+        conn c \
+            -host test.example.com -port 5222 \
+            -username user -password pass -resource res \
+            -autoreconnect 1 \
+            -emit         {apply {{args} {lappend ::_temitted $args}}} \
+            -onready      {apply {{resumed} {set ::_tready_resumed $resumed}}} \
+            -onautherror  {apply {{message} {lappend ::_tauth_err $message}}} \
+            -ondisconnect {apply {{message} {lappend ::_tdisconnect $message}}}
+        c.sm configure -max-queue-size 5
+    } \
+    -cleanup {
+        catch {c destroy}
+        jlog configure -logproc ""
+        rename baseconn mockbaseconn
+        rename _real_baseconn baseconn
+    } \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-overflow"
+        # Send stanzas without any server ACKs until queue overflows
+        set err ""
+        for {set i 0} {$i < 6} {incr i} {
+            if {[catch {c write [j message -to "friend@example.com" {j body #body "msg$i"}]} e]} {
+                set err $e
+                break
+            }
+        }
+        # Error raised to caller, and autoreconnect triggers waiting state
+        list $err [c state]
+    } -result {{SM queue full} waiting}
+
+test conn-sm-queue-overflow-during-flush {SM overflow during FlushWriteBuffer preserves stanzas and skips ready} \
+    -setup {
+        rename baseconn _real_baseconn
+        rename mockbaseconn baseconn
+        set _tready_resumed ""
+        set _tauth_err {}
+        set _tdisconnect {}
+        set _temitted {}
+        jlog configure -logproc {apply {{msg} {}}}
+        conn c \
+            -host test.example.com -port 5222 \
+            -username user -password pass -resource res \
+            -autoreconnect 1 \
+            -emit         {apply {{args} {lappend ::_temitted $args}}} \
+            -onready      {apply {{resumed} {set ::_tready_resumed $resumed}}} \
+            -onautherror  {apply {{message} {lappend ::_tauth_err $message}}} \
+            -ondisconnect {apply {{message} {lappend ::_tdisconnect $message}}}
+        c.sm configure -max-queue-size 3
+    } \
+    -cleanup {
+        catch {c destroy}
+        jlog configure -logproc ""
+        rename baseconn mockbaseconn
+        rename _real_baseconn baseconn
+    } \
+    -body {
+        c connect
+        # Buffer 5 stanzas before ready (goes to writeBuffer)
+        for {set i 0} {$i < 5} {incr i} {
+            c write [j message -to "friend@example.com" {j body #body "buf$i"}]
+        }
+        # Drive to ready — FlushWriteBuffer will overflow at stanza 4
+        drive_to_bind "user@test.example.com/r"
+        c.base inject [make_sm_enabled "sm-flush-overflow"]
+        # Should NOT have fired onready (overflow interrupted it)
+        # and conn should be in waiting state (autoreconnect)
+        list $_tready_resumed [c state]
+    } -result {{} waiting}
