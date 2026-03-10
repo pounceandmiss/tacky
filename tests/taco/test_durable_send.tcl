@@ -138,7 +138,7 @@ test ds-send-stores-pending {send stores message with pending status before writ
 	ds_muc_join room@muc.example.com me
 	c.conn clear
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "hello" -type groupchat
+	    -body "hello"
 	# Check DB
 	set status [c db eval {
 	    SELECT server_status FROM chat_message
@@ -162,7 +162,7 @@ test ds-send-emits-sent {send emits message <Sent> event} \
 	    -jid room@muc.example.com?join \
 	    {apply {{ev} { set ::got $ev }}}
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "hi" -type groupchat
+	    -body "hi"
 	list [dict get $got -jid] [dict get $got -body] \
 	     [dict get [dict get $got -message] server_status]
     } -result {room@muc.example.com?join hi pending}
@@ -172,7 +172,7 @@ test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
     -body {
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "test" -type groupchat
+	    -body "test"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	dict get [lindex $msgs 0] from_jid
     } -result {room@muc.example.com/me}
@@ -183,7 +183,7 @@ test ds-send-id-on-stanza {send sets message id matching DB origin_id} \
 	ds_muc_join room@muc.example.com me
 	c.conn clear
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "test" -type groupchat
+	    -body "test"
 	set m [lindex [c.conn get_written] end]
 	set stanzaId [xsearch $m -get @id]
 	set msgs [c message messagestore get room@muc.example.com?join]
@@ -199,7 +199,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
 	ds_muc_join room@muc.example.com me
 	# Send a message (stores as pending)
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "echo me" -type groupchat
+	    -body "echo me"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	# Simulate server echo with same origin_id
@@ -224,7 +224,7 @@ test ds-echo-no-received {echo of own message does not emit <Received>} \
     -body {
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "echo me" -type groupchat
+	    -body "echo me"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	set received {}
@@ -243,7 +243,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
     -body {
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "echo me" -type groupchat
+	    -body "echo me"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	c.conn feed [j message -type groupchat -id $oid \
@@ -266,7 +266,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by origin_id} \
 	ds_muc_join room@muc.example.com me
 	# Send a message
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "ack me" -type groupchat
+	    -body "ack me"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	# Simulate SM ack with the sent stanza
@@ -437,7 +437,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
     -body {
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "double" -type groupchat
+	    -body "double"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	set confirmed {}
@@ -496,7 +496,7 @@ test ds-origin-id-equals-timestamp {origin_id is same as timestamp} \
     -body {
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
-	    -body "test" -type groupchat
+	    -body "test"
 	set msgs [c message messagestore get room@muc.example.com?join]
 	set msg [lindex $msgs 0]
 	expr {[dict get $msg origin_id] == [dict get $msg timestamp]}

@@ -24,12 +24,13 @@
 # === Outgoing: send ===
 #
 #   GUI/muc.say
-#     → message.send
+#     → message.send -chat_jid $jid -body $text
 #       1. ts = clock microseconds; origin_id = ts
-#       2. Build stanza: <message to=$toJid type=$type id=$oid>
-#       3. Store to DB: server_status=pending, server_id=""
-#       4. Emit <Sent> → GUI displays immediately (optimistic)
-#       5. $client write $stanza → to server
+#       2. Derive type from chat_jid: ?join → groupchat, else → chat
+#       3. Build stanza: <message to=$toJid type=$type id=$oid>
+#       4. Store to DB: server_status=pending, server_id=""
+#       5. Emit <Sent> → GUI displays immediately (optimistic)
+#       6. $client write $stanza → to server
 #          (if write throws, message is safe in DB for retry)
 #
 # === Confirmation path A: MUC echo ===
@@ -233,12 +234,12 @@ snit::type taco_message {
     method send {args} {
 	set chatJid [dict get $args -chat_jid]
 	set body [dict get $args -body]
-	set type [dict get $args -type]
 
 	set ts [clock microseconds]
 	set oid $ts
 
-	if {$type eq "groupchat"} {
+	if {[string match "*?join" $chatJid]} {
+	    set type groupchat
 	    regsub {\?join$} $chatJid {} toJid
 	    set nick [$client muc myNick -jid $toJid]
 	    set fromJid $toJid/$nick

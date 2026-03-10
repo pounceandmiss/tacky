@@ -73,10 +73,8 @@ snit::widget chatpanel {
     }
 
     method Send {text} {
-	if {$isMuc} {
-	    ::tacky muc say -acc $options(-acc) -jid $roomJid -body $text
-	}
-	# TODO: 1:1 chat send
+	::tacky message send -acc $options(-acc) \
+	    -chat_jid $options(-jid) -body $text
     }
 
     method InstallMenus {} {

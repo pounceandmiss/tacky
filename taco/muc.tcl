@@ -167,7 +167,7 @@ snit::type taco_muc {
     method say {args} {
 	set jid [dict get $args -jid]
 	set body [dict get $args -body]
-	$client message send -chat_jid ${jid}?join -body $body -type groupchat
+	$client message send -chat_jid ${jid}?join -body $body
     }
 
     method pm {args} {
