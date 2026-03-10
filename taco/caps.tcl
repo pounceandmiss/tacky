@@ -54,6 +54,51 @@ snit::type taco_caps {
     method OnReady {} {}
     method OnDisconnect {} {}
 
+    # softwareVersion -to jid -command cmd
+    # Queries XEP-0092 Software Version of a target entity.
+    # Callback receives dict: name version os (or error 1 error_text msg).
+    method softwareVersion {args} {
+	set defaults [dict create -to "" -command ""]
+	set opts [dict merge $defaults $args]
+
+	set payload [j query -ns jabber:iq:version]
+	set iqArgs [list -type get -payload $payload \
+	    -command [mymethod OnSoftwareVersion [dict get $opts -command]]]
+	set toJid [dict get $opts -to]
+	if {$toJid ne ""} {
+	    lappend iqArgs -to $toJid
+	}
+	$client iq request {*}$iqArgs
+    }
+
+    method OnSoftwareVersion {callback stanza} {
+	set type_ [xsearch $stanza -get @type]
+	if {$type_ eq "error"} {
+	    set errText [xsearch $stanza error text -get body]
+	    if {$errText eq ""} {
+		set errChild [xsearch $stanza error 0 -get node]
+		if {$errChild ne ""} {
+		    set errText [dict get $errChild tag]
+		}
+	    }
+	    {*}$callback [dict create name "" version "" os "" \
+		error 1 error_text $errText]
+	    return
+	}
+
+	set queryNode [xsearch $stanza query -ns jabber:iq:version]
+	if {$queryNode eq ""} {
+	    {*}$callback [dict create name "" version "" os "" \
+		error 1 error_text "No version info"]
+	    return
+	}
+	set queryNode [lindex $queryNode 0]
+	set name    [xsearch $queryNode name -get body]
+	set version [xsearch $queryNode version -get body]
+	set os      [xsearch $queryNode os -get body]
+	{*}$callback [dict create name $name version $version os $os]
+    }
+
     # Register an additional disco feature (e.g. namespace+notify for PEP)
     method addFeature {feat} {
 	if {$feat ni $features} {
