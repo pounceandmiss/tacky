@@ -142,6 +142,14 @@ snit::type taco_account {
         $options(-taco) emit account <Enabled> -acc $jid
     }
 
+    # Server-side password change (XEP-0077), delegates to client.
+    # tacky account changePassword -acc $jid -password $new -command $cb
+    method changePassword {args} {
+	set jid [dict get $args -acc]
+	set client [$options(-taco) client $jid]
+	$client changePassword {*}[dict remove $args -acc]
+    }
+
     method disable {args} {
         set jid [dict get $args -acc]
         $options(-taco) emit account <Disabled> -acc $jid

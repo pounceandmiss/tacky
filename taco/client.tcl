@@ -1,5 +1,5 @@
 snit::type taco_client {
-    taco_modules message mam roster bookmarks caps presence avatar muc
+    taco_modules message mam roster bookmarks caps presence avatar muc vcard nick
 
     component conn -public conn
     component iq -public iq
@@ -107,6 +107,44 @@ snit::type taco_client {
     }
 
     method OnAuthError {msg} {
+    }
+
+    # XEP-0077 password change.
+    # -command callback: {*}$cmd ok "" | {*}$cmd error $msg
+    method changePassword {args} {
+	set newPassword [dict get $args -password]
+	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+
+	set payload [j query -ns jabber:iq:register {
+	    j username #body $options(-username)
+	    j password #body $newPassword
+	}]
+	$iq request -type set -to $options(-host) \
+	    -payload $payload \
+	    -command [mymethod OnPasswordChanged $newPassword $command]
+    }
+
+    method OnPasswordChanged {newPassword command stanza} {
+	if {$command eq ""} return
+	set type_ [xsearch $stanza -get @type]
+	if {$type_ eq "result"} {
+	    set options(-password) $newPassword
+	    $conn configure -password $newPassword
+	    set acc [jid bare $options(-jid)]
+	    $options(-taco) account set -acc $acc -password $newPassword
+	    {*}$command ok ""
+	} else {
+	    set errText [xsearch $stanza error text -get body]
+	    if {$errText eq ""} {
+		set errChild [xsearch $stanza error 0 -get node]
+		if {$errChild ne ""} {
+		    set errText [dict get $errChild tag]
+		} else {
+		    set errText "Password change failed"
+		}
+	    }
+	    {*}$command error $errText
+	}
     }
 
     method OnStanza {stanza} {

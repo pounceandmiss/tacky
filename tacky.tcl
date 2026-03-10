@@ -312,6 +312,23 @@ if 0 {
     #   -acc $jid -jid $contactJid -action disabled     (avatar removed)
     tacky listen avatar <Update> $command
 
+    # -- User Nickname (taco/nick.tcl, XEP-0172) --
+
+    # Set own nick via PEP, vcard-temp, and all bookmarks/joined rooms.
+    #   -bookmarks skip: only update the default nick, not existing bookmarks.
+    tacky nick set -acc $jid -nick $name ?-bookmarks skip? ?-command $cb?
+    # Get cached PEP nick for any JID (returns "" if unknown).
+    tacky nick get -acc $jid -jid $bareJid
+    # Publish own nick via PEP only (low-level).
+    tacky nick publish -acc $jid -nick $name ?-command $cb?
+    # Fetch a JID's nick from the server and cache it.
+    tacky nick fetch -acc $jid -jid $bareJid
+
+    # Events:
+    # Fired when a cached nick changes (own or contact).
+    #   -acc $jid -jid $bareJid
+    tacky listen nick <Changed> $command
+
     # -- XML Stream Debugging (taco/debugtap.tcl) --
 
     # Start capturing raw XML stanzas for an account; returns a tap ID.

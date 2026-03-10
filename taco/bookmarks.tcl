@@ -290,7 +290,7 @@ snit::type taco_bookmarks {
     }
 
     # Update nickname on all bookmarks and optionally in joined rooms.
-    method setNickAll {args} {
+    tackymethod setNickAll {args} {
 	set newNick [dict get $args -nick]
 	$self defaultNick -nick $newNick
 	$client db eval {SELECT jid FROM bookmark} row {

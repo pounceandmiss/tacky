@@ -32,7 +32,8 @@ snit::widget accountpanel {
 
 	profilebar $win.profile \
 	    -acc $options(-account) \
-	    -tacky $options(-tacky)
+	    -tacky $options(-tacky) \
+	    -command [list profilesettings open $options(-account)]
 	pack $win.profile -fill x
 
 	chatlistview $win.clv \
