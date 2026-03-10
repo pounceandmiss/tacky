@@ -82,13 +82,57 @@ test messagestore-dedup-origin-id {duplicate origin_id is not inserted twice} \
 	llength [store get alice@example.com]
     } -result {1}
 
-test messagestore-dedup-no-dedup-empty-ids {no dedup when both server_id and origin_id are empty} \
+test messagestore-dedup-content-same-batch {content dedup within batch when IDs empty} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 server_id "" origin_id "" body hello] \
 	    [ms_msg timestamp 100 server_id "" origin_id "" body hello]]
 	llength [store get alice@example.com]
+    } -result {1}
+
+test messagestore-dedup-content-across-batches {content dedup across batches when IDs empty} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body hello] \
+	    [ms_msg timestamp 200 body world]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 body hello] \
+	    [ms_msg timestamp 200 body world]]
+	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
+    } -result {2}
+
+test messagestore-dedup-content-merges-regions {content dedup merges regions like server_id dedup} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body hello] \
+	    [ms_msg timestamp 200 body world]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 body hello] \
+	    [ms_msg timestamp 200 body world]]
+	ms_regions
+    } -result {1}
+
+test messagestore-dedup-content-different-body-not-deduped {same timestamp different body not falsely deduped} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body hello]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 body goodbye]]
+	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
+    } -result {2}
+
+test messagestore-dedup-content-different-from-not-deduped {same timestamp+body different sender not falsely deduped} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 from_jid alice@example.com/phone body hello]]
+	ms_batch [list \
+	    [ms_msg timestamp 100 from_jid bob@example.com/phone body hello]]
+	testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
     } -result {2}
 
 test messagestore-dedup-isolation-across-chats {same origin_id in different chats stored independently} \

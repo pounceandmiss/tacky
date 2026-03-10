@@ -80,10 +80,26 @@ proc collectIds {messageList} {
 # Live incoming messages
 # ----------------------
 # New messages arriving from the network bypass the thirst mechanism.
-# chatctrl subscribes to <NewMessage:$jid> events and renders
+# chatview subscribes to <Received> events for its JID and renders
 # them immediately (no batching). Duplicates (from overlapping history
 # loads) are filtered by ID before insert. After insert, the view
 # scrolls to the end.
+#
+# Catchup and goto
+# -----------------
+# At connect, the backend runs a MAM catchup that silently syncs recent
+# messages into the local DB (no per-message <Received> events).  When
+# catchup completes it emits <CatchupDone>.  chatview listens for this
+# and calls `goto end`, which clears the widget and runs InitialLoad to
+# reload the newest messages from local store.
+#
+# `goto` supports two modes:
+#   goto end        — clear and reload from the bottom (InitialLoad).
+#   goto $timestamp — jump to a specific message.  If already loaded,
+#                     just scrolls to it.  Otherwise, clears and loads
+#                     50 messages before $timestamp (old direction);
+#                     the thirst mechanism then fills the new direction
+#                     automatically, picking up $timestamp and beyond.
 
 snit::widgetadaptor chatview {
     # dict: old "" / new "" — prevents duplicate history requests
@@ -115,6 +131,7 @@ snit::widgetadaptor chatview {
 	set LoadToken [dict create old "" new ""]
 	::tacky listen -tag $win message <Received> \
 	    -jid $options(-jid) [mymethod OnLiveMessage]
+	::tacky listen -tag $win message <CatchupDone> [mymethod OnCatchupDone]
 	::tacky listen -tag $win avatar <Update> \
 	    -acc $options(-acc) [mymethod OnAvatarUpdate]
 	bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
@@ -136,6 +153,35 @@ snit::widgetadaptor chatview {
 	$self RemoveMenus
 	$self UntrackAllAvatars
 	::tacky unlisten $win
+    }
+
+    method goto {target} {
+	if {$target eq "end"} {
+	    # Reset to "bottom of conversation" — same as initial open
+	    $hull clear
+	    set LoadToken [dict create old "" new ""]
+	    $self InitialLoad
+	    return
+	}
+
+	# Specific message ID (timestamp)
+	if {$target in [$hull messages ids]} {
+	    $hull see message $target
+	    return
+	}
+
+	# Not loaded — clear and load around target
+	$hull clear
+	set LoadToken [dict create old "" new ""]
+	dict set LoadToken old pending
+	::tacky message history -acc $options(-acc) \
+	    -chat $options(-jid) \
+	    -before $target -limit 50 \
+	    -command [mymethod OnLoadDone old]
+    }
+
+    method OnCatchupDone {ev} {
+	$self goto end
     }
 
     method OnThirst {directions thirsty oldest newest} {
@@ -360,16 +406,10 @@ snit::widget chatarea {
     option -pixelsabovevariable
     option -pixelsbelowvariable
 
-    # Obvious issue with the below two options: if a message appears
-    # that is greater in height than the different between
-    # -clean-threshold and -load-threshold, the chatarea will enter an
-    # endless loop of loading and cleaning, maybe even jumping around
-    # visually if these are small enough. These should be at least
-    # bigger than the viewport. TODO these should probably be figured
-    # out and adjusted automatically rather than hardcoded, like maybe
-    # -clean-threshold=viewportheight*10
-    # -load-threshold=viewportheight*5
-    
+    # These are minimum values; DoCleanup scales them up to
+    # viewport-relative multiples (2x for load, 10x/5x for clean)
+    # so fetching starts well before the user reaches the edge.
+
     # When the number of pixels in any direction exceeds
     # -clean-threshold, some messages will be erased
     option -clean-threshold -default 5000
@@ -604,19 +644,32 @@ snit::widget chatarea {
 	$self GetPixelsBelow
 	$self GetPixelsAbove
 
+	# Scale thresholds to viewport height so fetching starts
+	# well before the user reaches the edge of loaded content.
+	set vh [winfo height $text]
+	if {$vh > 0} {
+	    set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
+	    set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
+	    set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
+	} else {
+	    set loadTh      $options(-load-threshold)
+	    set cleanTh     $options(-clean-threshold)
+	    set cleanTarget $options(-clean-target)
+	}
+
 	set cleaned {}
 
-	if {$PixelsAbove > $options(-clean-threshold)} {
+	if {$PixelsAbove > $cleanTh} {
 	    lappend cleaned old
-	    while {$PixelsAbove > $options(-clean-target) && [llength $MessageIds] > 0} {
+	    while {$PixelsAbove > $cleanTarget && [llength $MessageIds] > 0} {
 		$self deleteByPos 0
 		$self GetPixelsAbove
 	    }
 	}
 
-	if {$PixelsBelow > $options(-clean-threshold)} {
+	if {$PixelsBelow > $cleanTh} {
 	    lappend cleaned new
-	    while {$PixelsBelow > $options(-clean-target) && [llength $MessageIds] > 0} {
+	    while {$PixelsBelow > $cleanTarget && [llength $MessageIds] > 0} {
 		$self deleteByPos end
 		$self GetPixelsBelow
 	    }
@@ -625,10 +678,10 @@ snit::widget chatarea {
 	# Don't fire thirst for a direction we just cleaned —
 	# that would cause a load→clean→load loop.
 	set thirstDirections ""
-	if {$PixelsAbove < $options(-load-threshold) && "old" ni $cleaned} {
+	if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
 	    lappend thirstDirections old
 	}
-	if {$PixelsBelow < $options(-load-threshold) && "new" ni $cleaned} {
+	if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
 	    lappend thirstDirections new
 	}
 	if {$thirstDirections ne "" } {

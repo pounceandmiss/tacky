@@ -65,13 +65,6 @@ snit::type taco_message {
 	dict for {chatJid messages} $groups {
 	    $messagestore store batch $messages catchupRegion
 	    incr totalCount [llength $messages]
-	    foreach msg $messages {
-		$client emit message <Received> \
-		    -jid $chatJid \
-		    -from [dict get $msg from_jid] \
-		    -body [dict get $msg body] \
-		    -message $msg
-	    }
 	}
 
 	$client emit message <CatchupDone> -count $totalCount
@@ -125,7 +118,12 @@ snit::type taco_message {
 
     # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50? -command $cb
     # Always async — calls -command with result list.
-    # Always queries the server unless the chat is already synchronized.
+    #
+    # Local-first: tries the local store before the server.
+    # messagestore get is region-scoped, so it only returns messages from
+    # the same contiguous region as the cursor.  When the region is
+    # exhausted (local returns empty) and the chat isn't fully synced,
+    # MAM backfill kicks in to fetch the next batch from the server.
     method history {args} {
 	set defaults [dict create -before "" -after "" -limit 50 -command ""]
 	set opts [dict merge $defaults $args]
@@ -136,17 +134,18 @@ snit::type taco_message {
 	set before [dict get $opts -before]
 	set after [dict get $opts -after]
 
-	if {[info exists SyncedChats($chatJid)]} {
-	    # Chat fully synced — serve from local store
-	    set getArgs [list -limit $limit]
-	    if {$before ne ""} { lappend getArgs -before $before }
-	    if {$after ne ""}  { lappend getArgs -after $after }
-	    set local [$messagestore get $chatJid {*}$getArgs]
+	# Try local store first
+	set getArgs [list -limit $limit]
+	if {$before ne ""} { lappend getArgs -before $before }
+	if {$after ne ""}  { lappend getArgs -after $after }
+	set local [$messagestore get $chatJid {*}$getArgs]
+
+	if {[llength $local] > 0 || [info exists SyncedChats($chatJid)]} {
 	    {*}$callback $local
 	    return
 	}
 
-	# Not synced — query the server
+	# No local data and not synced — query the server
 	set cursor [$client db onecolumn {
 	    SELECT server_id FROM chat_message
 	    WHERE chat_jid=$chatJid AND server_id != ''

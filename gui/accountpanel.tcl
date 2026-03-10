@@ -5,6 +5,8 @@ if 0 {
 
     Layout:
         ┌─────────────────────┐
+        │ profilebar          │  pack -fill x
+        ├─────────────────────┤
         │ chatlistview        │  pack -fill both -expand yes
         └─────────────────────┘
 
@@ -27,6 +29,11 @@ snit::widget accountpanel {
 	if {$options(-account) eq ""} {
 	    error "accountpanel requires -account"
 	}
+
+	profilebar $win.profile \
+	    -acc $options(-account) \
+	    -tacky $options(-tacky)
+	pack $win.profile -fill x
 
 	chatlistview $win.clv \
 	    -acc $options(-account) \

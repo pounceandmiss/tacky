@@ -140,6 +140,9 @@ snit::type taco_messagestore {
 	set r2 $r1
     }
 
+    # Returns messages from a single region only. The subqueries in
+    # GetBefore/GetAfter pin results to the region of the nearest
+    # message at the cursor, so gaps between regions are never bridged.
     method get {jid args} {
 	set limit [expr {[dict exists $args -limit] ? [dict get $args -limit] : 50}]
 	set hasBefore [dict exists $args -before]
@@ -204,16 +207,33 @@ snit::type taco_messagestore {
     method IsDuplicate {jid msg} {
 	set sid [dict get $msg server_id]
 	set oid [dict get $msg origin_id]
-	if {$sid eq "" && $oid eq ""} { return "" }
 	set result ""
-	$options(-db) eval {
-	    SELECT timestamp, region FROM chat_message
-	    WHERE chat_jid=$jid
-	      AND ( ($sid != '' AND server_id=$sid)
-		 OR ($oid != '' AND origin_id=$oid) )
-	    LIMIT 1
-	} row {
-	    set result [dict create timestamp $row(timestamp) region $row(region)]
+	if {$sid ne "" || $oid ne ""} {
+	    $options(-db) eval {
+		SELECT timestamp, region FROM chat_message
+		WHERE chat_jid=$jid
+		  AND ( ($sid != '' AND server_id=$sid)
+		     OR ($oid != '' AND origin_id=$oid) )
+		LIMIT 1
+	    } row {
+		set result [dict create timestamp $row(timestamp) region $row(region)]
+	    }
+	} else {
+	    # Content-based fallback for messages without server/origin IDs
+	    # (e.g. IRC bridge messages). Match on exact timestamp + sender +
+	    # body — the first copy keeps the original timestamp from MAM, so
+	    # it will always be found by the incoming message's timestamp.
+	    set ts   [dict get $msg timestamp]
+	    set from [dict get $msg from_jid]
+	    set body [dict get $msg body]
+	    $options(-db) eval {
+		SELECT timestamp, region FROM chat_message
+		WHERE chat_jid=$jid AND timestamp=$ts
+		  AND from_jid=$from AND body=$body
+		LIMIT 1
+	    } row {
+		set result [dict create timestamp $row(timestamp) region $row(region)]
+	    }
 	}
 	return $result
     }

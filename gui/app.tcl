@@ -10,7 +10,7 @@ snit::type app_type {
 
     constructor args {
         $self configurelist $args
-	tacky_init_threaded -transient $options(-transient)
+	tacky_init -transient $options(-transient)
         ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }
 

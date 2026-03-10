@@ -92,11 +92,11 @@ proc mam_queryid {} {
 test message-history-synced-returns-local {synced chat returns local data via callback} \
     {*}$msg_common \
     -body {
+	msg_sync alice@example.com
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body a] \
 	    [msg_msg timestamp 200 server_id s2 body b] \
 	    [msg_msg timestamp 300 server_id s3 body c]]
-	msg_sync alice@example.com
 	set result [msg_history -chat alice@example.com -limit 2]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
@@ -106,11 +106,11 @@ test message-history-synced-returns-local {synced chat returns local data via ca
 test message-history-synced-before {synced chat with -before returns correct slice} \
     {*}$msg_common \
     -body {
+	msg_sync alice@example.com
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body a] \
 	    [msg_msg timestamp 200 server_id s2 body b] \
 	    [msg_msg timestamp 300 server_id s3 body c]]
-	msg_sync alice@example.com
 	set result [msg_history -chat alice@example.com -before 300 -limit 2]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
@@ -122,9 +122,9 @@ test message-history-synced-before {synced chat with -before returns correct sli
 test message-history-synced-no-mam {synced chat returns local data without MAM query} \
     {*}$msg_common \
     -body {
+	msg_sync alice@example.com
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body only]]
-	msg_sync alice@example.com
 	# Now synced — should not send another MAM query
 	set written1 [c.conn get_written]
 	set result [msg_history -chat alice@example.com -limit 50]
@@ -133,6 +133,24 @@ test message-history-synced-no-mam {synced chat returns local data without MAM q
 	     [dict get [lindex $result 0] body] \
 	     [expr {[llength $written1] == [llength $written2]}]
     } -result {1 only 1}
+
+# -- history: local-first -----------------------------------------------------
+
+test message-history-local-first {history with local data returns local without MAM query} \
+    {*}$msg_common \
+    -body {
+	msg_store [list \
+	    [msg_msg timestamp 100 server_id s1 body a] \
+	    [msg_msg timestamp 200 server_id s2 body b]]
+	# Not synced, but has local data — should return local, no MAM
+	set written1 [c.conn get_written]
+	set result [msg_history -chat alice@example.com -limit 50]
+	set written2 [c.conn get_written]
+	list [llength $result] \
+	     [dict get [lindex $result 0] body] \
+	     [dict get [lindex $result 1] body] \
+	     [expr {[llength $written1] == [llength $written2]}]
+    } -result {2 a b 1}
 
 # -- history: MAM triggered ---------------------------------------------------
 
@@ -258,9 +276,9 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
 test message-history-preserves-join {history preserves ?join suffix in chatJid} \
     {*}$msg_common \
     -body {
+	msg_sync room@muc.example.com?join
 	msg_store [list \
 	    [msg_msg timestamp 100 chat_jid room@muc.example.com?join server_id s1 body hi]]
-	msg_sync room@muc.example.com?join
 	set result [msg_history -chat room@muc.example.com?join -limit 1]
 	list [llength $result] [dict get [lindex $result 0] body]
     } -result {1 hi}
@@ -584,3 +602,29 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
 		body "live msg" stamp 2024-01-01T10:00:00Z]]
 	llength [c message messagestore get alice@example.com]
     } -result {1}
+
+test message-catchup-dedup-no-ids {catchup deduplicates messages without server/origin IDs (IRC bridges)} \
+    {*}$msg_common \
+    -body {
+	# Pre-store messages without IDs (simulating previous catchup)
+	msg_store [list \
+	    [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
+		chat_jid alice@example.com from_jid alice@example.com/phone \
+		body "bridge msg" server_id "" origin_id ""] \
+	    [msg_msg timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
+		chat_jid alice@example.com from_jid alice@example.com/phone \
+		body "bridge msg 2" server_id "" origin_id ""]]
+	# Now catchup returns the same messages (no IDs, as IRC bridges do)
+	msg_ready
+	set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+	msg_catchup_finish [list \
+	    [mam_result id "" queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body "bridge msg" stamp 2024-01-01T10:00:00Z] \
+	    [mam_result id "" queryid $qid \
+		from alice@example.com/phone to user@test.example.com \
+		body "bridge msg 2" stamp 2024-01-01T11:00:00Z]]
+	set db [c.message.messagestore cget -db]
+	list [$db eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}] \
+	     [$db eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}]
+    } -result {2 1}
