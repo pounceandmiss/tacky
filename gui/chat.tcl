@@ -105,7 +105,7 @@ snit::widgetadaptor chatview {
     # dict: old "" / new "" — prevents duplicate history requests
     variable LoadToken
 
-    # dict: jid → Tk image handle
+    # set of jids tracked via avatarcache
     variable TrackedAvatars
 
     delegate method messages to hull
@@ -127,7 +127,7 @@ snit::widgetadaptor chatview {
 	$self configurelist $args
 	set WasAtEnd 1
 	set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
-	set TrackedAvatars [dict create]
+	set TrackedAvatars [list]
 	set LoadToken [dict create old "" new ""]
 	::tacky listen -tag $win message <Received> \
 	    -jid $options(-jid) [mymethod OnLiveMessage]
@@ -136,8 +136,6 @@ snit::widgetadaptor chatview {
 	::tacky listen -tag $win message <Confirmed> \
 	    -jid $options(-jid) [mymethod OnConfirmed]
 	::tacky listen -tag $win message <CatchupDone> [mymethod OnCatchupDone]
-	::tacky listen -tag $win avatar <Update> \
-	    -acc $options(-acc) [mymethod OnAvatarUpdate]
 	bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
 	if {$options(-menubar) ne ""} {
 	    $self InstallMenus
@@ -281,58 +279,34 @@ snit::widgetadaptor chatview {
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.
-    # It calls avatar visible (refcount) and fetches the thumb async.
-    # When all messages for a jid are culled by the scroll cleanup,
-    # OnAvatarRelease fires: calls avatar invisible, deletes the image.
-    # OnAvatarUpdate handles server-side changes by re-fetching.
-    # OnAvatarThumb guards against the jid being released before the
-    # async thumb arrives.
+    # It tracks via avatarcache which handles visibility, fetching, and
+    # image lifecycle.  When all messages for a jid are culled by the
+    # scroll cleanup, OnAvatarRelease fires and untracks from the cache.
     method TrackAvatar {jid} {
-	if {[dict exists $TrackedAvatars $jid]} return
-	dict set TrackedAvatars $jid ""
-	::tacky avatar visible -acc $options(-acc) -jid $jid
-	::tacky avatar thumb -acc $options(-acc) -jid $jid \
-	    -command [mymethod OnAvatarThumb $jid]
-    }
-
-    method OnAvatarThumb {jid data} {
-	if {![dict exists $TrackedAvatars $jid]} return
-	if {$data eq ""} return
-	set img [image create photo -data $data]
-	dict set TrackedAvatars $jid $img
+	if {$jid in $TrackedAvatars} return
+	lappend TrackedAvatars $jid
+	set img [avatarcache track \
+	    -acc $options(-acc) -jid $jid -tag $win/$jid \
+	    -command [mymethod OnAvatar $jid]]
 	$hull avatar set $jid $img
     }
 
-    method OnAvatarUpdate {ev} {
-	set jid [dict get $ev -jid]
-	if {![dict exists $TrackedAvatars $jid]} return
-	set oldImg [dict get $TrackedAvatars $jid]
-	if {$oldImg ne ""} {
-	    image delete $oldImg
-	}
-	dict set TrackedAvatars $jid ""
-	::tacky avatar thumb -acc $options(-acc) -jid $jid \
-	    -command [mymethod OnAvatarThumb $jid]
+    method OnAvatar {jid img} {
+	$hull avatar set $jid $img
     }
 
     method UntrackAllAvatars {} {
-	dict for {jid img} $TrackedAvatars {
-	    catch {::tacky avatar invisible -acc $options(-acc) -jid $jid}
-	    if {$img ne ""} {
-		catch {image delete $img}
-	    }
+	foreach jid $TrackedAvatars {
+	    catch {avatarcache untrack -tag $win/$jid}
 	}
-	set TrackedAvatars [dict create]
+	set TrackedAvatars [list]
     }
 
     method OnAvatarRelease {jid} {
-	if {![dict exists $TrackedAvatars $jid]} return
-	catch {::tacky avatar invisible -acc $options(-acc) -jid $jid}
-	set img [dict get $TrackedAvatars $jid]
-	if {$img ne ""} {
-	    catch {image delete $img}
-	}
-	dict unset TrackedAvatars $jid
+	if {$jid ni $TrackedAvatars} return
+	catch {avatarcache untrack -tag $win/$jid}
+	set idx [lsearch -exact $TrackedAvatars $jid]
+	set TrackedAvatars [lreplace $TrackedAvatars $idx $idx]
     }
 
     method OnMessageRightClick {id rootX rootY} {

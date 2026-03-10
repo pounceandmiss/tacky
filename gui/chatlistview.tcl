@@ -5,14 +5,6 @@ if 0 {
 
 ttk::style configure Chatlistview.Treeview -rowheight 32
 
-# Shared fallback avatar: try MATE 32x32 icon, else blank 32x32 photo.
-if {[catch {
-    image create photo chatlistview::defaultAvatar \
-	-file /usr/share/icons/mate/32x32/status/avatar-default.png
-}]} {
-    image create photo chatlistview::defaultAvatar -width 32 -height 32
-}
-
 snit::widget chatlistview {
     hulltype ttk::frame
 
@@ -36,7 +28,7 @@ snit::widget chatlistview {
     variable prescolors 1
     variable showAvatars 1
     variable bookmarkAutojoin 0
-    variable avatarImages {}
+    variable trackedAvatars {}
 
     constructor args {
 	$self configurelist $args
@@ -162,8 +154,6 @@ snit::widget chatlistview {
 	    [mymethod OnPresenceColorsSetting]
 	$t listen -tag $win setting <Changed> -key show_avatars \
 	    [mymethod OnShowAvatarsSetting]
-	$t listen -tag $win avatar <Update> -acc $acc \
-	    [mymethod OnAvatarUpdate]
 
 	# Populate from cache
 	$self RebuildRoster
@@ -172,18 +162,14 @@ snit::widget chatlistview {
 
     destructor {
 	catch {$options(-tacky) unlisten $win}
-	$self InvisibleAllAvatars
+	$self UntrackAllAvatars
     }
 
-    method InvisibleAllAvatars {} {
-	dict for {jid img} $avatarImages {
-	    catch {$options(-tacky) avatar invisible \
-		-acc $options(-acc) -jid $jid}
-	    if {$img ne ""} {
-		catch {image delete $img}
-	    }
+    method UntrackAllAvatars {} {
+	dict for {jid _img} $trackedAvatars {
+	    catch {avatarcache untrack -tag $win/$jid}
 	}
-	set avatarImages {}
+	set trackedAvatars {}
     }
 
     method RebuildRoster {} {
@@ -227,34 +213,32 @@ snit::widget chatlistview {
 	$treeview delete [$treeview children Bookmarks]
 	set items [$self FilterBySearch $items]
 	set items [$self SortItems $items]
-	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 
 	foreach item $items {
 	    set jid  [dict get $item -jid]
 	    set text [$self DisplayText $item]
+	    set img [$self TrackAvatar $jid]
 	    $treeview insert Bookmarks end -id "Bookmarks/$jid" -text $text \
-		-image $defImg
-	    $self FetchAvatar $jid
+		-image $img
 	}
     }
 
     method PopulateFlat {items} {
-	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 	foreach item $items {
 	    set jid  [dict get $item -jid]
 	    set text [$self DisplayText $item]
+	    set img [$self TrackAvatar $jid]
 	    $treeview insert Roster end -id "Roster/$jid" -text $text \
-		-image $defImg
-	    $self FetchAvatar $jid
+		-image $img
 	}
     }
 
     method PopulateGrouped {items} {
-	set defImg [expr {$showAvatars ? "chatlistview::defaultAvatar" : ""}]
 	foreach item $items {
 	    set jid    [dict get $item -jid]
 	    set text   [$self DisplayText $item]
 	    set groups [dict get $item -groups]
+	    set img [$self TrackAvatar $jid]
 
 	    if {[llength $groups] == 0} {
 		set groups [list "(ungrouped)"]
@@ -268,9 +252,8 @@ snit::widget chatlistview {
 		}
 		$treeview insert $gid end \
 		    -id "$gid/$jid" -text $text \
-		    -image $defImg
+		    -image $img
 	    }
-	    $self FetchAvatar $jid
 	}
     }
 
@@ -319,7 +302,7 @@ snit::widget chatlistview {
     }
 
     method RebuildAll {} {
-	$self InvisibleAllAvatars
+	$self UntrackAllAvatars
 	$self RebuildRoster
 	$self RebuildBookmarks
     }
@@ -498,46 +481,24 @@ snit::widget chatlistview {
 	}
     }
 
-    method FetchAvatar {jid} {
-	if {!$showAvatars} return
-	if {[dict exists $avatarImages $jid]} {
-	    set img [dict get $avatarImages $jid]
-	    if {$img ne ""} {
-		$self ApplyAvatar $jid $img
-	    }
-	    return
+    method TrackAvatar {jid} {
+	if {!$showAvatars} {
+	    return ""
 	}
-	dict set avatarImages $jid ""
-	$options(-tacky) avatar visible \
-	    -acc $options(-acc) -jid $jid
-	$options(-tacky) avatar thumb \
-	    -acc $options(-acc) -jid $jid \
-	    -command [mymethod OnAvatarThumb $jid]
+	if {[dict exists $trackedAvatars $jid]} {
+	    return [dict get $trackedAvatars $jid]
+	}
+	set img [avatarcache track \
+	    -acc $options(-acc) -jid $jid -tag $win/$jid \
+	    -command [mymethod OnAvatar $jid]]
+	dict set trackedAvatars $jid $img
+	return $img
     }
 
-    method OnAvatarThumb {jid data} {
-	if {$data eq ""} return
-	set img [image create photo -data $data]
-	dict set avatarImages $jid $img
-	$self ApplyAvatar $jid $img
-    }
-
-    method ApplyAvatar {jid img} {
+    method OnAvatar {jid img} {
 	foreach item [$self FindItemsByJid $jid] {
 	    $treeview item $item -image $img
 	}
-    }
-
-    method OnAvatarUpdate {ev} {
-	set jid [dict get $ev -jid]
-	if {[dict exists $avatarImages $jid]} {
-	    set oldImg [dict get $avatarImages $jid]
-	    if {$oldImg ne ""} {
-		image delete $oldImg
-	    }
-	    dict unset avatarImages $jid
-	}
-	$self FetchAvatar $jid
     }
 
     method FindItemsByJid {jid} {

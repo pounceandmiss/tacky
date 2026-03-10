@@ -136,13 +136,167 @@ oo::class create tacky_threaded_type {
 
 }
 
+if 0 {
+    avatarcache_base - shared avatar image cache with refcounting.
+
+    Frontend-agnostic base class: handles refcounting, tag management,
+    visibility tracking, thumb fetching, update listening, and
+    notification fanout.  Subclasses override three methods to provide
+    image primitives:
+
+        CreateImage $data   - create image from PNG bytes, return handle
+        DeleteImage $img    - destroy image handle
+        CreateDefault       - create a default/placeholder image, return handle
+
+    tk_avatarcache (gui/avatarcache.tcl) provides the Tk implementation.
+
+    API:
+        avatarcache track -acc $acc -jid $jid -tag $tag -command $cmd
+            Returns an image handle (default initially).
+            Calls {*}$cmd $img whenever the image changes.
+            -tag identifies this registration for untrack.
+
+        avatarcache untrack -tag $tag
+            Unregisters the callback and decrements refcount.
+            At zero the image is deleted and avatar invisible is called.
+
+        avatarcache default
+            Returns the shared default image handle.
+}
+
+oo::class create avatarcache_base {
+    variable Images
+    variable Refcounts
+    variable Tags
+    variable DefaultImage
+
+    constructor {} {
+	set Images [dict create]
+	set Refcounts [dict create]
+	set Tags [dict create]
+	set DefaultImage [my CreateDefault]
+	::tacky listen -tag [self] avatar <Update> \
+	    [namespace code {my OnUpdate}]
+    }
+
+    destructor {
+	catch {::tacky unlisten [self]}
+	dict for {key img} $Images {
+	    catch {my DeleteImage $img}
+	}
+	catch {my DeleteImage $DefaultImage}
+    }
+
+    method CreateImage {data} { error "abstract: subclass must override" }
+    method DeleteImage {img}  { error "abstract: subclass must override" }
+    method CreateDefault {}   { error "abstract: subclass must override" }
+
+    method default {} {
+	return $DefaultImage
+    }
+
+    method track {args} {
+	array set opts $args
+	set acc $opts(-acc)
+	set jid $opts(-jid)
+	set tag $opts(-tag)
+	set command $opts(-command)
+	set key "$acc\n$jid"
+
+	dict set Tags $tag [list $acc $jid $command]
+
+	if {[dict exists $Images $key]} {
+	    dict set Refcounts $key [expr {[dict get $Refcounts $key] + 1}]
+	    return [dict get $Images $key]
+	}
+
+	set img [my CreateDefault]
+
+	dict set Images $key $img
+	dict set Refcounts $key 1
+
+	::tacky avatar visible -acc $acc -jid $jid
+	::tacky avatar thumb -acc $acc -jid $jid \
+	    -command [namespace code [list my OnThumb $key]]
+
+	# Return current image — may have been replaced by a
+	# synchronous OnThumb callback during the thumb call above.
+	return [dict get $Images $key]
+    }
+
+    method untrack {args} {
+	array set opts $args
+	set tag $opts(-tag)
+	if {![dict exists $Tags $tag]} return
+
+	lassign [dict get $Tags $tag] acc jid _command
+	dict unset Tags $tag
+	set key "$acc\n$jid"
+
+	if {![dict exists $Refcounts $key]} return
+
+	set count [dict get $Refcounts $key]
+	if {$count <= 1} {
+	    ::tacky avatar invisible -acc $acc -jid $jid
+	    catch {my DeleteImage [dict get $Images $key]}
+	    dict unset Images $key
+	    dict unset Refcounts $key
+	} else {
+	    dict set Refcounts $key [expr {$count - 1}]
+	}
+    }
+
+    method OnThumb {key data} {
+	if {$data eq "" || ![dict exists $Images $key]} return
+	set oldImg [dict get $Images $key]
+	set newImg [my CreateImage $data]
+	dict set Images $key $newImg
+	catch {my DeleteImage $oldImg}
+	my Notify $key $newImg
+    }
+
+    method OnUpdate {ev} {
+	set acc [dict get $ev -acc]
+	set jid [dict get $ev -jid]
+	set key "$acc\n$jid"
+	if {![dict exists $Images $key]} return
+
+	if {[dict exists $ev -action] && [dict get $ev -action] eq "disabled"} {
+	    set oldImg [dict get $Images $key]
+	    set newImg [my CreateDefault]
+	    dict set Images $key $newImg
+	    catch {my DeleteImage $oldImg}
+	    my Notify $key $newImg
+	    return
+	}
+
+	::tacky avatar thumb -acc $acc -jid $jid \
+	    -command [namespace code [list my OnThumb $key]]
+    }
+
+    method Notify {key img} {
+	dict for {tag info} $Tags {
+	    lassign $info acc jid command
+	    if {"$acc\n$jid" eq $key} {
+		{*}$command $img
+	    }
+	}
+    }
+}
+
 proc tacky_init_threaded {args} {
     package require Thread
     tacky_threaded_type create tacky {*}$args
+    if {[info commands tk_avatarcache] ne ""} {
+	tk_avatarcache create avatarcache
+    }
 }
 
 proc tacky_init {args} {
     tacky_type create tacky {*}$args
+    if {[info commands tk_avatarcache] ne ""} {
+	tk_avatarcache create avatarcache
+    }
 }
 
 if 0 {

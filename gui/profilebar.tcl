@@ -8,22 +8,12 @@ if 0 {
         .bar configure -command [list puts "clicked"]
 }
 
-# Shared fallback avatar
-if {[catch {
-    image create photo profilebar::defaultAvatar \
-	-file /usr/share/icons/mate/32x32/status/avatar-default.png
-}]} {
-    image create photo profilebar::defaultAvatar -width 32 -height 32
-}
-
 snit::widget profilebar {
     hulltype ttk::frame
 
     option -acc -readonly yes
     option -tacky -default ::tacky -readonly yes
     option -command -default ""
-
-    variable currentAvatar ""
 
     constructor args {
 	$self configurelist $args
@@ -36,7 +26,10 @@ snit::widget profilebar {
 	set t $options(-tacky)
 
 	# Avatar label (32x32)
-	ttk::label $win.avatar -image profilebar::defaultAvatar -padding 2
+	ttk::label $win.avatar -image [avatarcache default] -padding 2
+	avatarcache track \
+	    -acc $acc -jid $acc -tag $win \
+	    -command [mymethod OnAvatar]
 	# Name label — default to JID username until we fetch the nick
 	ttk::label $win.name -text [jid username $acc] -padding {4 2}
 	# Connection status indicator
@@ -57,22 +50,11 @@ snit::widget profilebar {
 	# Fetch display name
 	$t bookmarks defaultNick -acc $acc \
 	    -command [mymethod OnDefaultNick]
-
-	# Own avatar
-	$t avatar visible -acc $acc -jid $acc
-	$t avatar thumb -acc $acc -jid $acc \
-	    -command [mymethod OnAvatarThumb]
-	$t listen -tag $win avatar <Update> -acc $acc -jid $acc \
-	    [mymethod OnAvatarUpdate]
     }
 
     destructor {
 	catch {$options(-tacky) unlisten $win}
-	if {$currentAvatar ne ""} {
-	    catch {$options(-tacky) avatar invisible \
-		-acc $options(-acc) -jid $options(-acc)}
-	    catch {image delete $currentAvatar}
-	}
+	catch {avatarcache untrack -tag $win}
     }
 
     # --- Event handlers ---
@@ -83,24 +65,8 @@ snit::widget profilebar {
 	}
     }
 
-    method OnAvatarThumb {data} {
-	if {$data eq ""} return
-	if {$currentAvatar ne ""} {
-	    image delete $currentAvatar
-	}
-	set currentAvatar [image create photo -data $data]
-	$win.avatar configure -image $currentAvatar
-    }
-
-    method OnAvatarUpdate {ev} {
-	if {$currentAvatar ne ""} {
-	    image delete $currentAvatar
-	    set currentAvatar ""
-	    $win.avatar configure -image profilebar::defaultAvatar
-	}
-	$options(-tacky) avatar thumb \
-	    -acc $options(-acc) -jid $options(-acc) \
-	    -command [mymethod OnAvatarThumb]
+    method OnAvatar {img} {
+	$win.avatar configure -image $img
     }
 
     method OnConnState {ev} {
