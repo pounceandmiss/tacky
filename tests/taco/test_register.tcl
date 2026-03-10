@@ -223,14 +223,23 @@ test reg-no-register-fires-error {missing register feature fires <Error>} \
 
 # -- Form parsing ----------------------------------------------------------
 
-test reg-form-event {drive_to_form fires <Form> event} \
+test reg-form-event {drive_to_form fires <Form> before <MediaReady>} \
     {*}$common \
     -body {
         tacky register connect -host example.com
         drive_to_form
-        set ev [lindex $::_events end]
-        list [lindex $ev 0] [dict get [lrange $ev 1 end] -token]
-    } -result {<Form> {}}
+        set found 0
+        foreach ev $::_events {
+            if {[lindex $ev 0] eq "<Form>"} {
+                set found 1
+                break
+            }
+            if {[lindex $ev 0] eq "<MediaReady>"} {
+                break
+            }
+        }
+        set found
+    } -result 1
 
 test reg-form-fields {form returns expected field list} \
     {*}$common \

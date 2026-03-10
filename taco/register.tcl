@@ -304,19 +304,27 @@ snit::type taco_register_session {
 	    catch {$oldForm destroy}
 	}
 
-	# Extract inline BOB <data> elements and push media data
+	# Extract inline BOB <data> elements and push media data.
+	# Collect media vars first, then emit <Form> before <MediaReady>
+	# so the GUI creates the form widget before requesting media data
+	# via async callbacks.
 	set mediaFields [$currentForm mediaFields]
+	set readyVars {}
 	foreach dataNode [xsearch $queryNode data -ns urn:xmpp:bob] {
 	    set cid [xsearch $dataNode -get @cid]
 	    if {[dict exists $mediaFields $cid]} {
 		set var [dict get $mediaFields $cid]
 		set base64data [string trim [dict get $dataNode body]]
 		$currentForm setMedia $var $base64data
-		$self FireEvent <MediaReady> -var $var
+		lappend readyVars $var
 	    }
 	}
 
 	$self FireEvent <Form>
+
+	foreach var $readyVars {
+	    $self FireEvent <MediaReady> -var $var
+	}
     }
 
     method LegacyToForm {queryNode} {

@@ -166,13 +166,14 @@ snit::widgetadaptor signin {
 
 snit::widget regform {
     hulltype ttk::frame
+    option -formdata -default {} -readonly yes
     variable FormData -array {}
     variable Widgets -array {}
     variable MediaImages -array {}
 
-    constructor {formdata args} {
-	array set FormData $formdata
+    constructor args {
 	$self configurelist $args
+	array set FormData $options(-formdata)
 
 	set row 0
 	if {[info exists FormData(instructions)] && $FormData(instructions) ne ""} {
@@ -384,7 +385,7 @@ snit::widget signup {
 	    destroy $formwidget
 	}
 	set scrollable [scrollable $pages.step2.formscroll]
-	set form [regform $scrollable.form $formdata]
+	set form [regform $scrollable.form -formdata $formdata]
 	$scrollable setwidget $form
 	set formwidget $scrollable
 
