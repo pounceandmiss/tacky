@@ -41,7 +41,7 @@ snit::type taco_avatar {
 	$self Migrate
 	$client message pubsub handler urn:xmpp:avatar:metadata \
 	    [mymethod OnMetadataNotification]
-	catch {$client caps addFeature urn:xmpp:avatar:metadata+notify}
+	$client caps addFeature urn:xmpp:avatar:metadata+notify
 	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
