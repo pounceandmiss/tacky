@@ -1,3 +1,98 @@
+# Durable message delivery
+# ========================
+#
+# Message dict keys:
+#   timestamp, chat_jid, from_jid, body, server_id, origin_id,
+#   raw_xml, server_status
+#
+# chat_jid assignment:
+#   MUC groupchat:  room@muc?join   (appended by muc.say / OnGroupchatMessage)
+#   MUC PM:         room@muc/nick   (set by OnPrivateMessage)
+#   1:1 DM:         bare JID        (set by OnMessage from stanza @from)
+#   MAM catchup:    derived from @from/@to vs own bare JID
+#
+# origin_id / dedup:
+#   Outgoing messages use origin_id = timestamp (= <message id="...">).
+#   Incoming messages get origin_id from the stanza's @id attribute.
+#   IsDuplicate matches by server_id or origin_id (or content fallback).
+#
+# server_status lifecycle:
+#   ""         incoming message (already delivered by definition)
+#   "pending"  outgoing, stored locally, not yet confirmed by server
+#   "received" server confirmed via MUC echo or SM ack
+#
+# === Outgoing: send ===
+#
+#   GUI/muc.say
+#     → message.send
+#       1. ts = clock microseconds; origin_id = ts
+#       2. Build stanza: <message to=$toJid type=$type id=$oid>
+#       3. Store to DB: server_status=pending, server_id=""
+#       4. Emit <Sent> → GUI displays immediately (optimistic)
+#       5. $client write $stanza → to server
+#          (if write throws, message is safe in DB for retry)
+#
+# === Confirmation path A: MUC echo ===
+#
+#   Server echoes <message> back with same @id
+#     → muc.OnGroupchatMessage
+#       → message.store
+#         → ParseMessage: extracts server_id from <stanza-id>
+#         → messagestore.store batch:
+#           IsDuplicate finds pending row by origin_id
+#           UPDATE server_status='received', captures server_id
+#           Returns confirmed list
+#         → Emit <Confirmed> (GUI shows checkmark)
+#         → No <Received> emitted (it's our own echo)
+#
+# === Confirmation path B: SM ack (1:1 and MUC) ===
+#
+#   Server sends <a h='N'/>
+#     → sm: extracts acked stanzas from queue
+#       → sm -ack-command
+#         → conn.OnSmAck
+#           → client.emit sm <Ack>
+#             → client.emit intercepts, calls message.OnSmAck
+#               → Extract @id from acked <message> stanzas
+#               → messagestore.confirmByOriginIds:
+#                 UPDATE server_status='received' WHERE pending
+#               → Emit <Confirmed> per confirmed message
+#
+#   For MUC, both paths may fire — confirmation is idempotent
+#   (second confirm finds no pending rows, does nothing).
+#
+# === Incoming ===
+#
+#   1:1: server stanza
+#     → message.OnMessage
+#       → message.store
+#         → store batch: INSERT (server_status="")
+#         → Emit <Received> → GUI displays
+#
+#   MUC: server stanza
+#     → muc.OnGroupchatMessage
+#       → message.store (same path as above)
+#
+# === Retry on reconnect ===
+#
+#   message.OnReady
+#     → RetryPending: SELECT WHERE server_status='pending'
+#       1:1 messages: resend immediately via RetrySend
+#       MUC messages: stash in PendingRetry($roomJid)
+#     → client.emit intercepts muc <Joined>
+#       → message.OnMucJoined: flush PendingRetry for that room
+#         → RetrySend: rebuild stanza with same origin_id, $client write
+#     → Echo/ack cycle confirms them normally
+#
+#   OnDisconnect clears PendingRetry (next OnReady re-queries DB).
+#
+# === GUI events ===
+#
+#   <Sent>      → OnLiveMessage: insert message (is_outgoing=1, no checkmark)
+#   <Received>  → OnLiveMessage: insert message (is_outgoing=0)
+#                  Dedup by timestamp/id — skips if already displayed
+#   <Confirmed> → OnConfirmed: $hull receipt update $ts delivered (checkmark)
+#
 snit::type taco_message {
     option -client -readonly yes
 
@@ -6,6 +101,7 @@ snit::type taco_message {
     variable client
     variable PubSubHandlers
     variable SyncedChats
+    variable PendingRetry
     variable liveRegion ""
 
     constructor {args} {
@@ -15,6 +111,7 @@ snit::type taco_message {
 	    -db [$client cget -db]
 	array set PubSubHandlers {}
 	array set SyncedChats {}
+	array set PendingRetry {}
     }
 
     destructor {
@@ -23,6 +120,7 @@ snit::type taco_message {
 
     method OnReady {} {
 	$self DoCatchup
+	$self RetryPending
     }
 
     method DoCatchup {} {
@@ -72,6 +170,7 @@ snit::type taco_message {
 
     method OnDisconnect {} {
 	array unset SyncedChats
+	array unset PendingRetry
 	set liveRegion ""
     }
 
@@ -102,10 +201,144 @@ snit::type taco_message {
 	if {$liveRegion eq ""} {
 	    $messagestore region new liveRegion
 	}
+	set confirmed [$messagestore store batch [list $msg] liveRegion]
+	if {[llength $confirmed] > 0} {
+	    foreach c $confirmed {
+		$client emit message <Confirmed> \
+		    -jid $chatJid -timestamp [dict get $c timestamp]
+	    }
+	} else {
+	    $client emit message <Received> \
+		-jid $chatJid -from [xsearch $stanza -get @from] -body $body \
+		-message $msg
+	}
+    }
+
+    # Durable message send — store before transmit, confirm on echo/ack.
+    #
+    # 1. Generate a unique ID, persist to DB with server_status='pending'.
+    # 2. Emit <Sent> so the GUI can display immediately (optimistic).
+    # 3. Write stanza to server (if this throws, message is safe in DB).
+    #
+    # Confirmation (pending → received) happens via two paths:
+    #   MUC:  server echoes the message back with our id; the echo hits
+    #         `store`, where `store batch` dedup finds the pending row
+    #         and flips it to 'received'.
+    #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
+    #         calls `confirmByOriginIds` on the messagestore.
+    # Both paths emit <Confirmed> so the GUI can show the checkmark.
+    #
+    # On reconnect, `RetryPending` resends any still-pending messages
+    # with the same id, so the echo/ack cycle can complete.
+    method send {args} {
+	set chatJid [dict get $args -chat_jid]
+	set body [dict get $args -body]
+	set type [dict get $args -type]
+
+	set ts [clock microseconds]
+	set oid $ts
+
+	if {$type eq "groupchat"} {
+	    regsub {\?join$} $chatJid {} toJid
+	    set nick [$client muc myNick -jid $toJid]
+	    set fromJid $toJid/$nick
+	} else {
+	    set toJid $chatJid
+	    set fromJid [$client cget -jid]
+	}
+
+	set stanza [j message -to $toJid -type $type -id $oid {
+	    j body #body $body
+	}]
+
+	set msg [dict create \
+	    timestamp $ts \
+	    chat_jid $chatJid \
+	    from_jid $fromJid \
+	    body $body \
+	    server_id "" \
+	    origin_id $oid \
+	    raw_xml [jwrite $stanza] \
+	    server_status pending]
+
+	if {$liveRegion eq ""} {
+	    $messagestore region new liveRegion
+	}
 	$messagestore store batch [list $msg] liveRegion
-	$client emit message <Received> \
-	    -jid $chatJid -from [xsearch $stanza -get @from] -body $body \
-	    -message $msg
+
+	$client emit message <Sent> \
+	    -jid $chatJid -body $body -message $msg
+
+	$client write $stanza
+    }
+
+    method OnSmAck {stanzas} {
+	set originIds {}
+	foreach stanza $stanzas {
+	    if {[dict get $stanza tag] ne "message"} continue
+	    set oid [xsearch $stanza -get @id]
+	    if {$oid ne ""} {
+		lappend originIds $oid
+	    }
+	}
+	if {[llength $originIds] == 0} return
+	set confirmed [$messagestore confirmByOriginIds $originIds]
+	foreach c $confirmed {
+	    $client emit message <Confirmed> \
+		-jid [dict get $c chat_jid] \
+		-timestamp [dict get $c timestamp]
+	}
+    }
+
+    method RetryPending {} {
+	set pending {}
+	$client db eval {
+	    SELECT chat_jid, body, origin_id FROM chat_message
+	    WHERE server_status='pending'
+	    ORDER BY timestamp
+	} row {
+	    lappend pending [dict create \
+		chat_jid $row(chat_jid) body $row(body) \
+		origin_id $row(origin_id)]
+	}
+	# Group by MUC vs 1:1 — MUC messages must wait for room join
+	foreach msg $pending {
+	    set chatJid [dict get $msg chat_jid]
+	    if {[string match "*?join" $chatJid]} {
+		regsub {\?join$} $chatJid {} roomJid
+		lappend PendingRetry($roomJid) $msg
+	    } else {
+		$self RetrySend $msg
+	    }
+	}
+    }
+
+    # Called by client.emit when a MUC room is joined — flush pending
+    # retries for that room.
+    method OnMucJoined {roomJid} {
+	if {![info exists PendingRetry($roomJid)]} return
+	set msgs $PendingRetry($roomJid)
+	unset PendingRetry($roomJid)
+	foreach msg $msgs {
+	    $self RetrySend $msg
+	}
+    }
+
+    method RetrySend {msg} {
+	set chatJid [dict get $msg chat_jid]
+	set body [dict get $msg body]
+	set oid [dict get $msg origin_id]
+	if {[string match "*?join" $chatJid]} {
+	    regsub {\?join$} $chatJid {} toJid
+	    set type groupchat
+	} else {
+	    set toJid $chatJid
+	    set type chat
+	}
+	set stanza [j message -to $toJid -type $type -id $oid {
+	    j body #body $body
+	}]
+	$client write $stanza
     }
 
     method "pubsub handler" {node command} {
@@ -234,7 +467,8 @@ snit::type taco_message {
 	    from_jid   [xsearch $msgNode -get @from] \
 	    body       [xsearch $msgNode body -get body] \
 	    server_id  [dict get $args -server_id] \
-	    origin_id  [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id] \
-	    raw_xml    [jwrite $msgNode]
+	    origin_id  [xsearch $msgNode -get @id] \
+	    raw_xml    [jwrite $msgNode] \
+	    server_status ""
     }
 }

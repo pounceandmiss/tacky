@@ -85,6 +85,12 @@ snit::type taco_client {
     }
 
     method emit {module event args} {
+        if {$module eq "sm" && $event eq "<Ack>"} {
+            $message OnSmAck [dict get $args -stanzas]
+        }
+        if {$module eq "muc" && $event eq "<Joined>"} {
+            $message OnMucJoined [dict get $args -jid]
+        }
         set acc $options(-jid)
         if {$acc eq ""} {
             set acc "$options(-username)@$options(-host)"

@@ -131,6 +131,10 @@ snit::widgetadaptor chatview {
 	set LoadToken [dict create old "" new ""]
 	::tacky listen -tag $win message <Received> \
 	    -jid $options(-jid) [mymethod OnLiveMessage]
+	::tacky listen -tag $win message <Sent> \
+	    -jid $options(-jid) [mymethod OnLiveMessage]
+	::tacky listen -tag $win message <Confirmed> \
+	    -jid $options(-jid) [mymethod OnConfirmed]
 	::tacky listen -tag $win message <CatchupDone> [mymethod OnCatchupDone]
 	::tacky listen -tag $win avatar <Update> \
 	    -acc $options(-acc) [mymethod OnAvatarUpdate]
@@ -247,6 +251,11 @@ snit::widgetadaptor chatview {
 	}
     }
 
+    method OnConfirmed {ev} {
+	set ts [dict get $ev -timestamp]
+	$hull receipt update $ts delivered
+    }
+
     method EnrichMessage {storeDict} {
 	set fromJid [dict get $storeDict from_jid]
 	set res [jid resource $fromJid]
@@ -258,14 +267,17 @@ snit::widgetadaptor chatview {
 	} else {
 	    set avatarJid [jid bare $fromJid]
 	}
+	set serverStatus [dict get $storeDict server_status]
+	set isOutgoing [expr {$serverStatus ne ""}]
+	set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
 	dict create \
 	    id           [dict get $storeDict timestamp] \
 	    display_name $res \
 	    avatar_jid   $avatarJid \
 	    timestamp    [dict get $storeDict timestamp] \
 	    body         [dict get $storeDict body] \
-	    is_outgoing  0 \
-	    receipt_status ""
+	    is_outgoing  $isOutgoing \
+	    receipt_status $receiptStatus
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.

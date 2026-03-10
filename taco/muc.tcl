@@ -37,9 +37,8 @@
 # tacky listen muc <Error> $cmd              ;# -jid $room -error $errorType -stanza $stanza
 # tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict
 # tacky listen muc <Unavailable> $cmd        ;# -jid $room -nick $nick -reason $r -codes $codes -occupant $dict
-# tacky listen muc <Message> $cmd            ;# -jid $room -nick $nick -body $text -timestamp $ts -stanza $stanza
 # tacky listen muc <Subject> $cmd            ;# -jid $room -nick $nick -subject $text
-# tacky listen muc <PrivateMessage> $cmd     ;# -jid $room -nick $nick -body $text -stanza $stanza
+# NOTE: MUC messages are delivered via message <Received>, not muc events.
 # tacky listen muc <Invite> $cmd             ;# -jid $room -from $inviterJid -reason $t -password $pw -continue $thread
 # tacky listen muc <Decline> $cmd            ;# -jid $room -from $declinerJid -reason $text
 # tacky listen muc <NickChanged> $cmd        ;# -jid $room -oldNick $old -newNick $new -self $bool
@@ -168,9 +167,7 @@ snit::type taco_muc {
     method say {args} {
 	set jid [dict get $args -jid]
 	set body [dict get $args -body]
-	$client write [j message -to $jid -type groupchat {
-	    j body #body $body
-	}]
+	$client message send -chat_jid ${jid}?join -body $body -type groupchat
     }
 
     method pm {args} {

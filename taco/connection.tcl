@@ -399,7 +399,8 @@ snit::type conn {
             -ontransportready [mymethod OnTransportReady] \
             -command [mymethod OnStanza] \
             -error-command [mymethod OnTransportError]
-        install sm using sm $self.sm -write [list $self.base writeStanza]
+        install sm using sm $self.sm -write [list $self.base writeStanza] \
+            -ack-command [mymethod OnSmAck]
         $self configurelist $args
     }
 
@@ -696,6 +697,12 @@ snit::type conn {
         }
         if {$options(-onautherror) ne ""} {
             {*}$options(-onautherror) $message
+        }
+    }
+
+    method OnSmAck {ackedStanzas} {
+        if {$options(-emit) ne ""} {
+            {*}$options(-emit) sm <Ack> -stanzas $ackedStanzas
         }
     }
 

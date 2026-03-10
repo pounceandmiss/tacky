@@ -68,6 +68,10 @@ snit::type taco_messagestore {
 		origin_id      TEXT,
 		raw_xml        TEXT,
 		region         INTEGER NOT NULL,
+		-- NULL/empty = incoming (already received);
+		-- 'pending' = stored, awaiting server confirmation;
+		-- 'received' = server confirmed via echo or SM ack
+		server_status  TEXT,
 		PRIMARY KEY(chat_jid, timestamp)
 	    );
 	    CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -77,6 +81,11 @@ snit::type taco_messagestore {
 	    CREATE INDEX IF NOT EXISTS idx_chat_message_region
 		ON chat_message(chat_jid, region, timestamp);
 	}
+	catch {
+	    $options(-db) eval {
+		ALTER TABLE chat_message ADD COLUMN server_status TEXT
+	    }
+	}
     }
 
     method "region new" {varName} {
@@ -85,12 +94,13 @@ snit::type taco_messagestore {
     }
 
     method "store batch" {messages regionVar} {
-	if {[llength $messages] == 0} { return }
+	if {[llength $messages] == 0} { return {} }
 
 	upvar $regionVar region
 	set jid [dict get [lindex $messages 0] chat_jid]
 
 	set mergedRegions {}
+	set confirmed {}
 	set prevTs -1
 
 	$options(-db) transaction {
@@ -104,6 +114,20 @@ snit::type taco_messagestore {
 		    if {$dupRegion != $region} {
 			dict set mergedRegions $dupRegion 1
 		    }
+		    # Confirm pending messages on server echo
+		    if {[dict get $dup server_status] eq "pending"} {
+			set dupTs [dict get $dup timestamp]
+			set sid $m(server_id)
+			$options(-db) eval {
+			    UPDATE chat_message
+			    SET server_status='received',
+				server_id = CASE WHEN $sid != ''
+				    THEN $sid ELSE server_id END
+			    WHERE chat_jid=$jid AND timestamp=$dupTs
+			}
+			lappend confirmed [dict create \
+			    origin_id $m(origin_id) timestamp $dupTs]
+		    }
 		    continue
 		}
 		# Skip past slots this batch already filled
@@ -111,11 +135,14 @@ snit::type taco_messagestore {
 		if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }
 		set ts [$self BumpTs $jid $ts 1]
 
+		set status [expr {[info exists m(server_status)] \
+		    ? $m(server_status) : ""}]
 		$options(-db) eval {
 		    INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
-			server_id, origin_id, raw_xml, region)
+			server_id, origin_id, raw_xml, region, server_status)
 		    VALUES($ts, $jid, $m(from_jid), $m(body),
-			$m(server_id), $m(origin_id), $m(raw_xml), $region)
+			$m(server_id), $m(origin_id), $m(raw_xml), $region,
+			$status)
 		}
 		set prevTs $ts
 	    }
@@ -127,6 +154,7 @@ snit::type taco_messagestore {
 		}
 	    }
 	}
+	return $confirmed
     }
 
     method bridge {jid r1Var r2Var} {
@@ -164,7 +192,8 @@ snit::type taco_messagestore {
 	set rows {}
 	$options(-db) eval {
 	    SELECT * FROM (
-		SELECT timestamp, chat_jid, from_jid, body, server_id, origin_id, raw_xml
+		SELECT timestamp, chat_jid, from_jid, body, server_id,
+		       origin_id, raw_xml, server_status
 		FROM chat_message
 		WHERE chat_jid=$jid AND timestamp < $cursor
 		  AND region = (
@@ -184,7 +213,8 @@ snit::type taco_messagestore {
     method GetAfter {jid cursor limit} {
 	set rows {}
 	$options(-db) eval {
-	    SELECT timestamp, chat_jid, from_jid, body, server_id, origin_id, raw_xml
+	    SELECT timestamp, chat_jid, from_jid, body, server_id,
+		   origin_id, raw_xml, server_status
 	    FROM chat_message
 	    WHERE chat_jid=$jid AND timestamp > $cursor
 	      AND region = (
@@ -200,6 +230,27 @@ snit::type taco_messagestore {
 	return $rows
     }
 
+    method confirmByOriginIds {originIds} {
+	set confirmed {}
+	$options(-db) transaction {
+	    foreach oid $originIds {
+		if {$oid eq ""} continue
+		$options(-db) eval {
+		    SELECT chat_jid, timestamp FROM chat_message
+		    WHERE origin_id=$oid AND server_status='pending'
+		} row {
+		    lappend confirmed [dict create \
+			chat_jid $row(chat_jid) timestamp $row(timestamp)]
+		}
+		$options(-db) eval {
+		    UPDATE chat_message SET server_status='received'
+		    WHERE origin_id=$oid AND server_status='pending'
+		}
+	    }
+	}
+	return $confirmed
+    }
+
     method RowToDict {row} {
 	set row
     }
@@ -210,13 +261,14 @@ snit::type taco_messagestore {
 	set result ""
 	if {$sid ne "" || $oid ne ""} {
 	    $options(-db) eval {
-		SELECT timestamp, region FROM chat_message
+		SELECT timestamp, region, server_status FROM chat_message
 		WHERE chat_jid=$jid
 		  AND ( ($sid != '' AND server_id=$sid)
 		     OR ($oid != '' AND origin_id=$oid) )
 		LIMIT 1
 	    } row {
-		set result [dict create timestamp $row(timestamp) region $row(region)]
+		set result [dict create timestamp $row(timestamp) \
+		    region $row(region) server_status $row(server_status)]
 	    }
 	} else {
 	    # Content-based fallback for messages without server/origin IDs
@@ -227,12 +279,13 @@ snit::type taco_messagestore {
 	    set from [dict get $msg from_jid]
 	    set body [dict get $msg body]
 	    $options(-db) eval {
-		SELECT timestamp, region FROM chat_message
+		SELECT timestamp, region, server_status FROM chat_message
 		WHERE chat_jid=$jid AND timestamp=$ts
 		  AND from_jid=$from AND body=$body
 		LIMIT 1
 	    } row {
-		set result [dict create timestamp $row(timestamp) region $row(region)]
+		set result [dict create timestamp $row(timestamp) \
+		    region $row(region) server_status $row(server_status)]
 	    }
 	}
 	return $result

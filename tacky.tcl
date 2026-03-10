@@ -315,12 +315,47 @@ if 0 {
     # -- XML Stream Debugging (taco/debugtap.tcl) --
 
     # Start capturing raw XML stanzas for an account; returns a tap ID.
-    #   callback receives: $tapId
-    tacky debugtap on -acc $jid -onstanza $callback -command $cb
+    #   Stanzas arrive via debugtap <Stanza> events.
+    tacky debugtap on -acc $jid
     # Stop capturing stanzas for the given tap.
     tacky debugtap off -tap $tapId
     # Inject a stanza into the stream via a tap (for debugging/testing).
     tacky debugtap write -tap $tapId -stanza $stanza
+
+    # Events:
+    # Fired when a stanza passes through an active tap.
+    #   -tap $tapId -dir in|out -stanza $stanza
+    tacky listen debugtap <Stanza> $command
+
+    # -- Messages (taco/message.tcl) --
+
+    # Fetch message history for a chat. Local-first with MAM backfill.
+    #   callback receives: list of message dicts
+    tacky message history -acc $jid -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50? -command $cb
+
+    # Events:
+    # Fired when a message is received (1-1, MUC groupchat, and MUC PMs).
+    #   -acc $jid -jid $chatJid -from $fullJid -body $text -message $msgDict
+    tacky listen message <Received> $command
+    # Fired when initial MAM catchup completes on connect.
+    #   -acc $jid -count $n
+    tacky listen message <CatchupDone> $command
+
+    # -- Presence (taco/presencemod.tcl) --
+
+    # Get best-resource presence for a contact.
+    #   returns: {show $s status $t priority $p}
+    tacky presence get -acc $jid -jid $bareJid
+    # Get full resource dict for a contact, or {}.
+    tacky presence resources -acc $jid -jid $bareJid
+    # Check if a contact has any available resource (returns 0 or 1).
+    tacky presence isOnline -acc $jid -jid $bareJid
+
+    # Events:
+    # Fired when a contact's presence changes or all presence is cleared.
+    #   -acc $jid -action clear                    (on disconnect)
+    #   -acc $jid -jid $bareJid                    (specific contact changed)
+    tacky listen presence <Changed> $command
 
     # -- Multi-User Chat (taco/muc.tcl, XEP-0045) --
 
@@ -395,9 +430,7 @@ if 0 {
     tacky listen muc <Error> $cmd              ;# -acc -jid -error -stanza
     tacky listen muc <Presence> $cmd           ;# -acc -jid -nick -occupant
     tacky listen muc <Unavailable> $cmd        ;# -acc -jid -nick -reason -codes -occupant
-    tacky listen muc <Message> $cmd            ;# -acc -jid -nick -body -timestamp -stanza
     tacky listen muc <Subject> $cmd            ;# -acc -jid -nick -subject
-    tacky listen muc <PrivateMessage> $cmd     ;# -acc -jid -nick -body -stanza
     tacky listen muc <Invite> $cmd             ;# -acc -jid -from -reason -password -continue
     tacky listen muc <Decline> $cmd            ;# -acc -jid -from -reason
     tacky listen muc <NickChanged> $cmd        ;# -acc -jid -oldNick -newNick -self

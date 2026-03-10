@@ -67,14 +67,14 @@ proc mam_result {args} {
     if {$toJid ne ""} {
 	lappend msgAttrs -to $toJid
     }
+    if {$oid ne ""} {
+	lappend msgAttrs -id $oid
+    }
     j result -ns urn:xmpp:mam:2 -id $rid -queryid $qid {
 	j forwarded -ns urn:xmpp:forward:0 {
 	    j delay -ns urn:xmpp:delay -stamp [dict get $opts stamp]
 	    j message {*}$msgAttrs {
 		j body #body [dict get $opts body]
-		if {$oid ne ""} {
-		    j origin-id -ns urn:xmpp:sid:0 -id $oid
-		}
 	    }
 	}
     }
@@ -296,10 +296,9 @@ test message-parseresultnode-no-origin-id {ParseResultNode handles missing origi
 test message-live-fields {stored live message has correct fields} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	c.conn feed [j message -type chat -id orig7 -from alice@example.com/phone {
 	    j body #body hi
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv42
-	    j origin-id -ns urn:xmpp:sid:0 -id orig7
 	}]
 	set msg [lindex [c message messagestore get alice@example.com] 0]
 	list [dict get $msg chat_jid] \

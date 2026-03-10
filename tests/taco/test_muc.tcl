@@ -333,15 +333,18 @@ test muc-nick-changed-updates-mynick {nick change updates myNick} \
 
 # -- Messaging ----------------------------------------------------------------
 
-test muc-say-sends-groupchat {say sends groupchat message} \
+test muc-say-sends-groupchat {say sends groupchat message with id} \
     {*}$muc_common \
     -body {
+	muc_join room@muc.example.com me
+	c.conn clear
 	c muc say -jid room@muc.example.com -body "hello room"
 	set m [lindex [c.conn get_written] end]
 	list [xsearch $m -get @type] \
 	     [xsearch $m -get @to] \
-	     [xsearch $m body -get body]
-    } -result {groupchat room@muc.example.com {hello room}}
+	     [xsearch $m body -get body] \
+	     [expr {[xsearch $m -get @id] ne ""}]
+    } -result {groupchat room@muc.example.com {hello room} 1}
 
 test muc-message-event {groupchat message emits message <Received> only} \
     {*}$muc_common \

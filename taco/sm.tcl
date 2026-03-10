@@ -31,6 +31,7 @@ snit::type sm {
 
     # Configuration
     option -write
+    option -ack-command -default ""
 
     # Ack request strategy
     variable ackRequestTimer ""
@@ -174,6 +175,10 @@ snit::type sm {
 
                 set ackedCount [$self Hdiff $h $serverh]
                 if {$ackedCount > 0} {
+                    if {$options(-ack-command) ne ""} {
+                        set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
+                        {*}$options(-ack-command) $ackedStanzas
+                    }
                     set queue [lrange $queue $ackedCount end]
                     set serverh $h
                     jlog debug "Removed $ackedCount acked stanzas, queue size now: [llength $queue]"
@@ -252,6 +257,10 @@ snit::type sm {
 
                 set ackedCount $diff
                 if {$ackedCount > 0} {
+                    if {$options(-ack-command) ne ""} {
+                        set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
+                        {*}$options(-ack-command) $ackedStanzas
+                    }
                     set queue [lrange $queue $ackedCount end]
                     jlog debug "Server acked $ackedCount stanzas (was $serverh, now $h), queue: [llength $queue]"
                     set serverh $h
