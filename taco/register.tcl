@@ -140,11 +140,13 @@ snit::type taco_register_session {
     }
 
     destructor {
-	if {$currentForm ne ""} {
-	    catch {$currentForm destroy}
+	if {[info commands $self.conn] ne ""} {
+	    $conn close
+	    $conn destroy
 	}
-	catch {$conn close}
-	catch {$conn destroy}
+	if {$currentForm ne "" && [info commands $currentForm] ne ""} {
+	    $currentForm destroy
+	}
     }
 
     method connect {} {
