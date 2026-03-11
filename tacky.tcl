@@ -125,11 +125,13 @@ oo::class create tacky_threaded_type {
     }
     # Frontend will always use keyword arguments
     method unknown {module method args} {
-	if {[dict exists $args -command]} {
-	    set origCmd [dict get $args -command]
-	    dict set args -command [list apply {{tid cmd result} {
-		thread::send -async $tid [list {*}$cmd $result]
-	    }} $TackyTid $origCmd]
+	foreach opt {-command -onerror} {
+	    if {[dict exists $args $opt]} {
+		set orig [dict get $args $opt]
+		dict set args $opt [list apply {{tid cmd result} {
+		    thread::send -async $tid [list {*}$cmd $result]
+		}} $TackyTid $orig]
+	    }
 	}
 	thread::send -async $TacoTid [list taco $module $method {*}$args]
     }
