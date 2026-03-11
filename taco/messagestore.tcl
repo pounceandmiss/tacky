@@ -272,15 +272,22 @@ snit::type taco_messagestore {
 	    }
 	} else {
 	    # Content-based fallback for messages without server/origin IDs
-	    # (e.g. IRC bridge messages). Match on exact timestamp + sender +
-	    # body — the first copy keeps the original timestamp from MAM, so
-	    # it will always be found by the incoming message's timestamp.
+	    # (e.g. IRC bridge messages). Match within the same second —
+	    # BumpTs may have shifted the stored timestamp by a few
+	    # microseconds, so an exact match would miss it.
+	    # Tradeoff: identical sender+body within the same second is
+	    # treated as a duplicate (false positive), but that's rare
+	    # and far better than the alternative of unbounded duplicates
+	    # on every reconnect.
 	    set ts   [dict get $msg timestamp]
 	    set from [dict get $msg from_jid]
 	    set body [dict get $msg body]
+	    set tsBase [expr {$ts / 1000000 * 1000000}]
+	    set tsEnd  [expr {$tsBase + 999999}]
 	    $options(-db) eval {
 		SELECT timestamp, region, server_status FROM chat_message
-		WHERE chat_jid=$jid AND timestamp=$ts
+		WHERE chat_jid=$jid
+		  AND timestamp BETWEEN $tsBase AND $tsEnd
 		  AND from_jid=$from AND body=$body
 		LIMIT 1
 	    } row {

@@ -322,10 +322,10 @@ test messagestore-reconnect-different-regions {new region new creates separate r
     {*}$ms_common \
     -body {
 	store region new r
-	store store batch [list [ms_msg timestamp 100]] r
-	store store batch [list [ms_msg timestamp 200]] r
+	store store batch [list [ms_msg timestamp 100 body a]] r
+	store store batch [list [ms_msg timestamp 200 body b]] r
 	store region new r
-	store store batch [list [ms_msg timestamp 500]] r
+	store store batch [list [ms_msg timestamp 500 body c]] r
 	ms_regions
     } -result {2}
 
