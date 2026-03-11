@@ -8,6 +8,7 @@ snit::widget showableentry {
     option -reveal -default 0
     option -showable -default 1 -readonly yes
     delegate option * to entry
+    delegate method * to entry
     delegate method instate to hull
     delegate method state to hull
 
