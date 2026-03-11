@@ -68,60 +68,43 @@ snit::type taco_bookmarks {
     # Omitted options are preserved from the DB if the bookmark exists.
     # If -nick is omitted for a new bookmark, defaults to defaultNick.
     method item {args} {
-	set jid [dict get $args -jid]
-
-	# Read existing values as defaults if bookmark exists
-	set defaults {-name "" -autojoin false -nick "" -password ""}
-	set row [$client db eval {SELECT name, autojoin, nick, password FROM bookmark WHERE jid=$jid}]
-	if {[llength $row] == 4} {
-	    lassign $row dbName dbAutojoin dbNick dbPassword
-	    set defaults [list -name $dbName -autojoin $dbAutojoin \
-		-nick $dbNick -password $dbPassword]
+	# Load existing bookmark or defaults
+	array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
+	set bm(jid) [dict get $args -jid]
+	set existed 0
+	$client db eval {
+	    SELECT name, autojoin, nick, password, extensions_xml
+	    FROM bookmark WHERE jid=$bm(jid)
+	} bm {
+	    set existed 1
 	}
-	array set opts $defaults
-	array set opts [dict remove $args -jid]
 
-	# Populate nick from default for new bookmarks without one
-	if {$opts(-nick) eq ""} {
-	    set opts(-nick) [$self defaultNick]
+	# Apply caller overrides
+	foreach {k v} $args {
+	    set bm([string range $k 1 end]) $v
+	}
+
+	if {$bm(nick) eq ""} {
+	    set bm(nick) [$self defaultNick]
 	}
 
 	# Optimistic local update
-	set autojoinInt [expr {$opts(-autojoin) in {true 1} ? 1 : 0}]
-	set existingRow [$client db eval {SELECT extensions_xml FROM bookmark WHERE jid=$jid}]
-	set existed [expr {[llength $existingRow] > 0}]
-	set extXml [lindex $existingRow 0]
+	set bm(autojoin) [expr {$bm(autojoin) in {true 1} ? 1 : 0}]
 	$client db eval {
 	    INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password, extensions_xml)
-	    VALUES ($jid, $opts(-name), $autojoinInt, $opts(-nick), $opts(-password), $extXml)
+	    VALUES ($bm(jid), $bm(name), $bm(autojoin), $bm(nick), $bm(password), $bm(extensions_xml))
 	}
 	if {$existed} {
-	    $client emit bookmarks <Changed> -action update -jid $jid
+	    $client emit bookmarks <Changed> -action update -jid $bm(jid)
 	} else {
-	    $client emit bookmarks <Changed> -action add -jid $jid
+	    $client emit bookmarks <Changed> -action add -jid $bm(jid)
 	}
-	$self AutojoinOne $jid
-
-	set autojoinVal [expr {$opts(-autojoin) in {true 1} ? "true" : "false"}]
-
-	set confAttrs [list -ns urn:xmpp:bookmarks:1 -autojoin $autojoinVal]
-	if {$opts(-name) ne ""} {
-	    lappend confAttrs -name $opts(-name)
-	}
+	$self AutojoinOne $bm(jid)
 
 	$client iq request -type set -payload \
 	    [j pubsub -ns http://jabber.org/protocol/pubsub {
 		j publish -node urn:xmpp:bookmarks:1 {
-		    j item -id $jid {
-			j conference {*}$confAttrs {
-			    if {$opts(-nick) ne ""} {
-				j nick #body $opts(-nick)
-			    }
-			    if {$opts(-password) ne ""} {
-				j password #body $opts(-password)
-			    }
-			}
-		    }
+		    j #as-is [$self BookmarkItemNode bm]
 		}
 		j publish-options {
 		    j x -ns jabber:x:data -type submit {
@@ -206,7 +189,6 @@ snit::type taco_bookmarks {
     }
 
     method OnResult {stanza} {
-	$self AutojoinAll
 	set type_ [xsearch $stanza -get @type]
 	if {$type_ eq "error"} {
 	    return
@@ -223,7 +205,7 @@ snit::type taco_bookmarks {
 	$client db eval {COMMIT}
 
 	$client emit bookmarks <Changed> -action clear
-	
+	$self AutojoinAll
     }
 
     method OnNotification {stanza} {
@@ -253,6 +235,28 @@ snit::type taco_bookmarks {
 
 	    $client db eval {DELETE FROM bookmark WHERE jid=$jid}
 	    $client emit bookmarks <Changed> -action remove -jid $jid
+	}
+    }
+
+    # Build a standalone <item><conference>...</conference></item> node.
+    # bmVar is the name of an array with keys: jid, name, autojoin, nick, password.
+    # Must be called outside a j context; insert with j #as-is.
+    method BookmarkItemNode {bmVar} {
+	upvar 1 $bmVar bm
+	set autojoinVal [expr {$bm(autojoin) in {true 1} ? "true" : "false"}]
+	set confAttrs [list -ns urn:xmpp:bookmarks:1 -autojoin $autojoinVal]
+	if {$bm(name) ne ""} {
+	    lappend confAttrs -name $bm(name)
+	}
+	j item -id $bm(jid) {
+	    j conference {*}$confAttrs {
+		if {$bm(nick) ne ""} {
+		    j nick #body $bm(nick)
+		}
+		if {$bm(password) ne ""} {
+		    j password #body $bm(password)
+		}
+	    }
 	}
     }
 
@@ -293,12 +297,28 @@ snit::type taco_bookmarks {
     tackymethod setNickAll {args} {
 	set newNick [dict get $args -nick]
 	$self defaultNick -nick $newNick
+
+	$client db eval {UPDATE bookmark SET nick=$newNick}
+
 	$client db eval {SELECT jid FROM bookmark} row {
-	    $self item -jid $row(jid) -nick $newNick
+	    $client emit bookmarks <Changed> -action update -jid $row(jid)
 	    if {[$client muc isJoined -jid $row(jid)]} {
 		$client muc nick -jid $row(jid) -nick $newNick
 	    }
 	}
+
+	# Single IQ with all items
+	$client iq request -type set -payload \
+	    [j pubsub -ns http://jabber.org/protocol/pubsub {
+		j publish -node urn:xmpp:bookmarks:1 {
+		    $client db eval {
+			SELECT jid, name, autojoin, nick, password
+			FROM bookmark
+		    } bm {
+			j #as-is [$self BookmarkItemNode bm]
+		    }
+		}
+	    }]
     }
 
     method AutojoinAll {} {
@@ -317,18 +337,19 @@ snit::type taco_bookmarks {
     }
 
     method AutojoinOne {jid} {
-	set row [$client db eval {SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid}]
-	if {[llength $row] != 3} return
-	lassign $row autojoin nick password
-	if {!$autojoin} return
-	if {[$client muc isJoined -jid $jid]} return
-	if {$nick eq ""} {
-	    set nick [$self defaultNick]
-	}
-	if {$password ne ""} {
-	    $client muc join -jid $jid -nick $nick -password $password
-	} else {
-	    $client muc join -jid $jid -nick $nick
+	$client db eval {
+	    SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid
+	} row {
+	    if {!$row(autojoin)} return
+	    if {[$client muc isJoined -jid $jid]} return
+	    if {$row(nick) eq ""} {
+		set row(nick) [$self defaultNick]
+	    }
+	    if {$row(password) ne ""} {
+		$client muc join -jid $jid -nick $row(nick) -password $row(password)
+	    } else {
+		$client muc join -jid $jid -nick $row(nick)
+	    }
 	}
     }
 
