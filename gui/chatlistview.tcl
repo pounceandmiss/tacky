@@ -147,9 +147,9 @@ snit::widget chatlistview {
 	set t $options(-tacky)
 	set acc $options(-acc)
 	$t listen -tag $win roster    <Changed> -acc $acc \
-	    [mymethod OnRosterChanged]
+	    [mymethod RebuildAll]
 	$t listen -tag $win bookmarks <Changed> -acc $acc \
-	    [mymethod OnBookmarksChanged]
+	    [mymethod RebuildAll]
 	$t listen -tag $win setting <Changed> -key show_presence_colors \
 	    [mymethod OnPresenceColorsSetting]
 	$t listen -tag $win setting <Changed> -key show_avatars \
@@ -193,7 +193,7 @@ snit::widget chatlistview {
 	if {$grouping} {
 	    $self PopulateGrouped $items
 	} else {
-	    $self PopulateFlat $items
+	    $self PopulateSection Roster $items
 	}
 
 	# Restore open state
@@ -213,22 +213,15 @@ snit::widget chatlistview {
 	$treeview delete [$treeview children Bookmarks]
 	set items [$self FilterBySearch $items]
 	set items [$self SortItems $items]
-
-	foreach item $items {
-	    set jid  [dict get $item -jid]
-	    set text [$self DisplayText $item]
-	    set img [$self TrackAvatar $jid]
-	    $treeview insert Bookmarks end -id "Bookmarks/$jid" -text $text \
-		-image $img
-	}
+	$self PopulateSection Bookmarks $items
     }
 
-    method PopulateFlat {items} {
+    method PopulateSection {parent items} {
 	foreach item $items {
 	    set jid  [dict get $item -jid]
 	    set text [$self DisplayText $item]
-	    set img [$self TrackAvatar $jid]
-	    $treeview insert Roster end -id "Roster/$jid" -text $text \
+	    set img  [$self TrackAvatar $jid]
+	    $treeview insert $parent end -id "$parent/$jid" -text $text \
 		-image $img
 	}
     }
@@ -293,15 +286,7 @@ snit::widget chatlistview {
 	return [string compare -nocase [dict get $a -jid] [dict get $b -jid]]
     }
 
-    method OnRosterChanged {ev} {
-	$self RebuildAll
-    }
-
-    method OnBookmarksChanged {ev} {
-	$self RebuildAll
-    }
-
-    method RebuildAll {} {
+    method RebuildAll {args} {
 	$self UntrackAllAvatars
 	$self RebuildRoster
 	$self RebuildBookmarks
@@ -527,38 +512,27 @@ snit::widget chatlistview {
     }
 
     method IsLeaf {item} {
-	expr {$item ni {Roster Bookmarks} && [$treeview children $item] eq ""}
+	expr {[$treeview parent $item] ne {} && [$treeview children $item] eq {}}
     }
 
+    # Section is always the first component of the item ID.
     method GetSection {item} {
-	set parent $item
-	while {$parent ne ""} {
-	    if {$parent in {Roster Bookmarks}} {
-		return $parent
-	    }
-	    set parent [$treeview parent $parent]
-	}
-	return ""
+	lindex [split $item /] 0
     }
 
-    # Extract JID from a treeview item ID.
-    # IDs are "{parent}/{jid}", so strip the parent prefix + slash.
+    # JID is always the last slash-separated component of the item ID.
     method ItemJid {item} {
-	set parent [$treeview parent $item]
-	return [string range $item [expr {[string length $parent] + 1}] end]
+	set idx [string last / $item]
+	string range $item $idx+1 end
     }
 
     method ActivateItem {item} {
 	set section [$self GetSection $item]
 	set jid [$self ItemJid $item]
-	if {$section eq "Bookmarks"} {
-	    if {$options(-open-bookmark-command) ne ""} {
-		{*}$options(-open-bookmark-command) -acc $options(-acc) -jid $jid
-	    }
-	} else {
-	    if {$options(-open-chat-command) ne ""} {
-		{*}$options(-open-chat-command) -acc $options(-acc) -jid $jid
-	    }
+	set opt [dict get {Roster -open-chat-command \
+	    Bookmarks -open-bookmark-command} $section]
+	if {$options($opt) ne ""} {
+	    {*}$options($opt) -acc $options(-acc) -jid $jid
 	}
     }
 }
