@@ -153,7 +153,15 @@ snit::type sm {
                 set serverh 0
                 set in 0
                 set out 0
+                # Replay any stanzas surviving from a failed resume
+                set replay $queue
                 set queue {}
+                if {[llength $replay] > 0} {
+                    jlog inform "Replaying [llength $replay] stanzas from failed resume"
+                    foreach s $replay {
+                        $self outStanza $s
+                    }
+                }
                 jlog inform "Stream management enabled: id=$streamId"
             }
 
@@ -206,17 +214,29 @@ snit::type sm {
                         set queue [lrange $queue $ackedCount end]
                     }
                 }
-                jlog warn "Stream management failed (h=$h), falling back to passthrough"
 
-                set streamId ""
-                set mode passthrough
-                set state running
-
-                # Resend remaining queued stanzas
-                foreach stanza $queue {
-                    {*}$options(-write) $stanza
+                if {$streamId ne ""} {
+                    # Resume failed — try fresh enable instead
+                    jlog inform "Resume failed (h=$h), attempting fresh SM enable"
+                    set streamId ""
+                    set in 0
+                    set out 0
+                    set serverh 0
+                    # Keep queue — replayed after <enabled/>
+                    {*}$options(-write) [j enable \
+                        -ns "urn:xmpp:sm:3" \
+                        -resume true]
+                } else {
+                    # Enable failed — genuinely can't do SM
+                    jlog warn "SM enable failed (h=$h), falling back to passthrough"
+                    set streamId ""
+                    set mode passthrough
+                    set state running
+                    foreach stanza $queue {
+                        {*}$options(-write) $stanza
+                    }
+                    set queue {}
                 }
-                set queue {}
             }
 
             default {

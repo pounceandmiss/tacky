@@ -486,6 +486,70 @@ test conn-sm-failed-resends-queued-stanzas {SM failed resends queued stanzas via
         dict get [lindex [c.base get_written] 0] tag
     } -result {message}
 
+test conn-sm-resume-failed-retries-enable {resume failed sends enable instead of passthrough} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-retry1"
+        set _tready_resumed ""
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        c.base clear
+        # Resume fails
+        c.base inject [make_sm_failed]
+        # Should have sent <enable/> not fallen back to passthrough
+        set written [c.base get_written]
+        set enableStanza [lindex $written end]
+        list [dict get $enableStanza tag] [dict get $enableStanza ns] [c isReady]
+    } -result {enable urn:xmpp:sm:3 0}
+
+test conn-sm-resume-failed-enable-reaches-ready {resume fail -> enable -> enabled reaches ready} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-retry2"
+        set _tready_resumed ""
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        c.base inject [make_sm_failed]
+        c.base inject [make_sm_enabled "sm-retry2-new"]
+        list $_tready_resumed [c isReady]
+    } -result {0 1}
+
+test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked stanzas} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-retry3"
+        # Send a stanza that won't be acked
+        c write [j message -to "friend@example.com" {j body #body "unacked"}]
+        set _tready_resumed ""
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        c.base inject [make_sm_failed]
+        c.base clear
+        c.base inject [make_sm_enabled "sm-retry3-new"]
+        # The unacked message should have been replayed
+        set written [c.base get_written]
+        set hasMessage 0
+        foreach s $written {
+            if {[dict get $s tag] eq "message"} { set hasMessage 1; break }
+        }
+        list [c isReady] $hasMessage
+    } -result {1 1}
+
 test conn-write-buffer-flushed-after-ready {write buffer flushed when conn reaches ready} \
     {*}$common \
     -body {
