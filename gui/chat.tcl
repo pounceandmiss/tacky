@@ -1,10 +1,6 @@
 package require control
 package require snit
 
-proc collectIds {messageList} {
-    lmap message $messageList {dict get $message id}
-}
-
 # Scroll-driven message loading algorithm
 # ========================================
 #
@@ -148,11 +144,12 @@ snit::widgetadaptor chatview {
 	dict set LoadToken new pending
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) -limit 50 \
-	    -command [mymethod OnLoadDone new]
+	    -tag $win -command [mymethod OnLoadDone new]
     }
 
     destructor {
 	catch {::tacky unlisten $win}
+	catch {::tacky message cancel $win}
 	catch {$self RemoveMenus}
 	catch {$self UntrackAllAvatars}
     }
@@ -179,7 +176,7 @@ snit::widgetadaptor chatview {
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) \
 	    -before $target -limit 50 \
-	    -command [mymethod OnLoadDone old]
+	    -tag $win -command [mymethod OnLoadDone old]
     }
 
     method OnCatchupDone {ev} {
@@ -196,12 +193,12 @@ snit::widgetadaptor chatview {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-before $oldest -limit 50 \
-			-command [mymethod OnLoadDone old]
+			-tag $win -command [mymethod OnLoadDone old]
 		} else {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-after $newest -limit 50 \
-			-command [mymethod OnLoadDone new]
+			-tag $win -command [mymethod OnLoadDone new]
 		}
 	    } else {
 		dict set LoadToken $dir ""
@@ -315,7 +312,17 @@ snit::widgetadaptor chatview {
 	    menu $m -tearoff 0
 	}
 	$m delete 0 end
+	$m add command -label "View XML" \
+	    -command [mymethod OnViewXml $id]
 	tk_popup $m $rootX $rootY
+    }
+
+    method OnViewXml {id} {
+	::tacky message rawxml -acc $options(-acc) \
+	    -chat $options(-jid) -timestamp $id \
+	    -command {apply {{xml} {
+		xmlstanza show [xmppreader string $xml]
+	    }}}
     }
 
     method OnSeeEnd {args} {
@@ -416,11 +423,6 @@ snit::widget chatarea {
     # displaying a given avatar JID. Called as: {*}$cmd $avatarJid
     option -avatar-release-command -default ""
 
-    # Only set when testing: will make sure message ids are all
-    # integers increasing sequentially by one (TODO: move this away
-    # into some test case)
-    option -test-run -default no
-
     # Virtual events
     # <<MessageRightClick>> — fired on the chatarea frame when a message
     #   is right-clicked. -data is the message ID. Standard event fields
@@ -482,19 +484,11 @@ snit::widget chatarea {
 	bind $win.text <<Yview>> [mymethod OnYview]
 	bind $win.text <Button-3> [mymethod OnRightClick %x %y %X %Y]
 
-	if {$options(-test-run)} {
-	    trace add variable MessageIds write [mymethod OnWriteMessageIds]
-	}
     }
-    
-    method OnWriteMessageIds {args} {
-	# Ordering is guaranteed by the history layer (timestamp, id).
-	# Ids are not necessarily consecutive.
-    }
-    
+
     method {bulk insert} {where messageDictList} {
 	$text mark set msgins [dict get {new end old 0.0} $where]
-	set newIds [collectIds $messageDictList]
+	set newIds [lmap m $messageDictList {dict get $m id}]
 	switch -- $where {
 	    old {
 		set MessageIds [concat $newIds $MessageIds]

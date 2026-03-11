@@ -291,6 +291,80 @@ test message-parseresultnode-no-origin-id {ParseResultNode handles missing origi
 	dict get $msg origin_id
     } -result {}
 
+# -- history: cancel -----------------------------------------------------------
+
+test message-history-cancel-suppresses-callback {cancel tag prevents backfill callback} \
+    {*}$msg_common \
+    -body {
+	set ::result UNTOUCHED
+	c message history -chat bob@example.com -limit 50 \
+	    -tag mytag \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	# Cancel before MAM response arrives
+	c message cancel mytag
+
+	# Feed a MAM result + fin
+	c.mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
+			  body "hello" stamp 2024-01-01T10:00:00Z]
+	}]
+	c.iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid1
+		}
+	    }
+	}]
+
+	# Callback should NOT have fired
+	set ::result
+    } -result UNTOUCHED
+
+test message-history-cancel-still-stores {cancel suppresses callback but stores messages} \
+    {*}$msg_common \
+    -body {
+	c message history -chat bob@example.com -limit 50 \
+	    -tag mytag \
+	    -command [list apply {{r} {}}]
+
+	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	c message cancel mytag
+
+	c.mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
+			  body "stored msg" stamp 2024-01-01T10:00:00Z]
+	}]
+	c.iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid1
+		}
+	    }
+	}]
+
+	# Messages should still be in local store
+	set local [c message messagestore get bob@example.com]
+	list [llength $local] [dict get [lindex $local 0] body]
+    } -result {1 {stored msg}}
+
+test message-history-no-tag-unaffected-by-cancel {cancel with unknown tag is harmless} \
+    {*}$msg_common \
+    -body {
+	c message cancel nonexistent
+	set result [msg_history -chat bob@example.com -limit 50]
+	# Should proceed normally (triggers MAM since not synced)
+	set written [c.conn get_written]
+	expr {[llength $written] > 0}
+    } -result 1
+
 # -- live message receiving ----------------------------------------------------
 
 test message-live-fields {stored live message has correct fields} \

@@ -104,6 +104,7 @@ snit::type taco_message {
     variable SyncedChats
     variable PendingRetry
     variable liveRegion ""
+    variable ActiveTags
 
     constructor {args} {
 	$self configurelist $args
@@ -113,6 +114,7 @@ snit::type taco_message {
 	array set PubSubHandlers {}
 	array set SyncedChats {}
 	array set PendingRetry {}
+	array set ActiveTags {}
 	$client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
 	$client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
 	$client bus subscribe $self <Ready>      [mymethod OnReady]
@@ -357,8 +359,20 @@ snit::type taco_message {
 	unset -nocomplain PubSubHandlers($node)
     }
 
-    # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50? -command $cb
+    # rawxml -chat $chatJid -timestamp $ts -command $cb
+    tackymethod rawxml {args} {
+	set chatJid [dict get $args -chat]
+	set ts [dict get $args -timestamp]
+	$client db onecolumn {
+	    SELECT raw_xml FROM chat_message
+	    WHERE chat_jid=$chatJid AND timestamp=$ts
+	}
+    }
+
+    # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50?
+    #         ?-tag $tag? -command $cb
     # Always async — calls -command with result list.
+    # -tag: if given, the callback can be cancelled via `cancel $tag`.
     #
     # Local-first: tries the local store before the server.
     # messagestore get is region-scoped, so it only returns messages from
@@ -366,7 +380,7 @@ snit::type taco_message {
     # exhausted (local returns empty) and the chat isn't fully synced,
     # MAM backfill kicks in to fetch the next batch from the server.
     method history {args} {
-	set defaults [dict create -before "" -after "" -limit 50 -command ""]
+	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
@@ -374,6 +388,11 @@ snit::type taco_message {
 	set callback [dict get $opts -command]
 	set before [dict get $opts -before]
 	set after [dict get $opts -after]
+	set tag [dict get $opts -tag]
+
+	if {$tag ne ""} {
+	    set ActiveTags($tag) 1
+	}
 
 	# Try local store first
 	set getArgs [list -limit $limit]
@@ -400,14 +419,15 @@ snit::type taco_message {
 	    lappend mamArgs -before $cursor
 	}
 	lappend mamArgs -command [mymethod OnBackfill $chatJid $cursor \
-				      $before $limit $callback \
+				      $before $limit $callback $tag \
 				      $backfillRegion]
 
 	$client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnBackfill {chatJid cursor before limit callback backfillRegion mamResult} {
+    method OnBackfill {chatJid cursor before limit callback tag backfillRegion mamResult} {
 	if {[dict exists $mamResult error]} {
+	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 	    set getArgs [list -limit $limit]
 	    if {$before ne ""} {
 		lappend getArgs -before $before
@@ -423,7 +443,7 @@ snit::type taco_message {
 	    lappend messages [$self ParseResultNode $resultNode $chatJid]
 	}
 
-	# Store the backfill batch
+	# Store the backfill batch (even if cancelled — data is still useful)
 	if {[llength $messages] > 0} {
 	    $messagestore store batch $messages backfillRegion
 	}
@@ -444,6 +464,8 @@ snit::type taco_message {
 	    set SyncedChats($chatJid) 1
 	}
 
+	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+
 	# Re-query local and deliver
 	set getArgs [list -limit $limit]
 	if {$before ne ""} {
@@ -451,6 +473,10 @@ snit::type taco_message {
 	}
 	set local [$messagestore get $chatJid {*}$getArgs]
 	{*}$callback $local
+    }
+
+    method cancel {tag} {
+	unset -nocomplain ActiveTags($tag)
     }
 
     method ParseResultNode {resultNode chatJid} {
