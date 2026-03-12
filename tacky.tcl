@@ -129,8 +129,8 @@ oo::class create tacky_threaded_type {
 	foreach opt {-command -onerror} {
 	    if {[dict exists $args $opt]} {
 		set orig [dict get $args $opt]
-		dict set args $opt [list apply {{tid cmd result} {
-		    thread::send -async $tid [list {*}$cmd $result]
+		dict set args $opt [list apply {{tid cmd args} {
+		    thread::send -async $tid [list {*}$cmd {*}$args]
 		}} $TackyTid $orig]
 	    }
 	}
