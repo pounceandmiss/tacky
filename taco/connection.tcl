@@ -211,7 +211,10 @@ snit::type baseconn {
     }
 
     method close {} {
-        set flushPending 0
+        if {$flushPending} {
+            after cancel [mymethod FlushWrite]
+            set flushPending 0
+        }
         ::jab::cancelRead $socket
         if {$socket ne ""} {
             catch {close $socket}
