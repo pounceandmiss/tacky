@@ -86,6 +86,8 @@ snit::widget profilesettings {
 	avatarcache track \
 	    -acc $acc -jid $acc -tag $win.avatar \
 	    -command [mymethod OnAvatar]
+	$t listen -tag $win avatar <Progress> -acc $acc \
+	    [mymethod OnProgress]
     }
 
     destructor {
@@ -93,7 +95,7 @@ snit::widget profilesettings {
 	    after cancel $statusAfter
 	}
 	catch {$options(-tacky) unlisten $win}
-	catch {$options(-tacky) avatar cancel $win}
+	catch {$options(-tacky) avatar cancel -acc $options(-acc) -tag $win}
 	catch {avatarcache untrack -tag $win.avatar}
     }
 
@@ -137,22 +139,16 @@ snit::widget profilesettings {
     }
 
     method ChangeAvatar {} {
-	set path [tk_getOpenFile -filetypes {
+	set path [tk_getOpenFile -parent [winfo toplevel $win] -filetypes {
 	    {{Images} {.png .jpg .jpeg .gif}}
 	    {{All files} *}
 	}]
 	if {$path eq ""} return
-	set ext [string tolower [file extension $path]]
-	switch -- $ext {
-	    .jpg - .jpeg { set mime image/jpeg }
-	    .gif         { set mime image/gif }
-	    default      { set mime image/png }
-	}
 	set fd [open $path rb]
 	set data [read $fd]
 	close $fd
 	$options(-tacky) avatar publish \
-	    -acc $options(-acc) -data $data -type $mime \
+	    -acc $options(-acc) -data $data -type image/png \
 	    -tag $win -command [mymethod OnResult "Avatar"]
     }
 
@@ -171,6 +167,14 @@ snit::widget profilesettings {
     }
 
     # --- Feedback ---
+
+    method OnProgress {ev} {
+	if {$statusAfter ne ""} {
+	    after cancel $statusAfter
+	    set statusAfter ""
+	}
+	$win.status configure -text [dict get $ev -message] -foreground ""
+    }
 
     method OnResult {what status msg} {
 	if {$statusAfter ne ""} {

@@ -16,13 +16,15 @@ if 0 {
             Publish own avatar
         tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb?
             Disable own avatar
-        tacky avatar cancel $tag
+        tacky avatar cancel -acc $acc -tag $tag
             Cancel a pending -command callback by tag
 
     Events:
         tacky listen avatar <Update> -acc ...
             Payload: -jid <bare-jid> -hash <sha1>
                   or -jid <bare-jid> -action disabled
+        tacky listen avatar <Progress> -acc ...
+            Payload: -acc <bare-jid> -message <status string>
 }
 
 snit::type taco_avatar {
@@ -106,10 +108,15 @@ snit::type taco_avatar {
     method publish {args} {
 	array set opts {-type image/png -width "" -height "" -command "" -tag ""}
 	array set opts $args
+	set acc [dict get $args -acc]
 	if {$opts(-tag) ne ""} {
 	    set ActiveTags($opts(-tag)) 1
 	}
-	set rawData $opts(-data)
+	$client emit avatar <Progress> -acc $acc -message "Resizing image..."
+	set rawData [$self ResizeForPublish $opts(-data)]
+	set opts(-type) image/png
+	set opts(-width) ""
+	set opts(-height) ""
 
 	# Compute SHA-1 from raw bytes
 	set hash [::sha1::sha1 -hex $rawData]
@@ -140,9 +147,10 @@ snit::type taco_avatar {
 	# causes races on ejabberd/MongooseIM where subscribers try to
 	# fetch data that isn't committed yet.
 	set publishCtx [list \
-	    acc [dict get $args -acc] hash $hash \
+	    acc $acc hash $hash \
 	    rawData $rawData type $opts(-type) bytes $bytes \
 	    width $opts(-width) height $opts(-height)]
+	$client emit avatar <Progress> -acc $acc -message "Uploading avatar data..."
 	$client iq request -type set -payload $dataPayload \
 	    -command [mymethod OnDataPublished $infoAttrs $hash $publishCtx $opts(-tag) $opts(-command)]
     }
@@ -157,6 +165,8 @@ snit::type taco_avatar {
 	    }
 	    return
 	}
+	set acc [dict get $publishCtx acc]
+	$client emit avatar <Progress> -acc $acc -message "Updating metadata..."
 	$client iq request -type set -payload \
 	    [j pubsub -ns http://jabber.org/protocol/pubsub {
 		j publish -node urn:xmpp:avatar:metadata {
@@ -232,8 +242,8 @@ snit::type taco_avatar {
 	    }]
     }
 
-    method cancel {tag} {
-	unset -nocomplain ActiveTags($tag)
+    method cancel {args} {
+	unset -nocomplain ActiveTags([dict get $args -tag])
     }
 
     method OnMetadataNotification {stanza} {
@@ -405,6 +415,21 @@ snit::type taco_avatar {
 	}
 
 	$client emit avatar <Update> -jid $jid -hash $hash
+    }
+
+    method ResizeForPublish {rawData} {
+	try {
+	    set pipe [open |[list magick - -resize 128x128> png:-] r+]
+	    chan configure $pipe -translation binary
+	    puts -nonewline $pipe $rawData
+	    chan close $pipe write
+	    set resized [chan read $pipe]
+	    chan close $pipe
+	    return $resized
+	} on error {err} {
+	    jlog warn "Avatar resize failed: $err"
+	    return $rawData
+	}
     }
 
     method MakeThumb {rawData caller} {
