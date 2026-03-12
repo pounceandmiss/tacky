@@ -121,6 +121,7 @@ oo::class create tacky_threaded_type {
     }
 
     destructor {
+	thread::send $TacoTid {taco destroy}
 	thread::release $TacoTid
     }
     # Frontend will always use keyword arguments
