@@ -1,20 +1,19 @@
 # Unit tests for taco_message
 
+set acc user@test.example.com
+
 set msg_common {
     -setup {
-	tacky_type create tacky
-
 	rename conn _real_conn
 	rename mock_conn conn
-
-	taco_client c \
-	    -host test.example.com -port 5222 \
-	    -username user -password pass -resource res
+	tacky_type create tacky
+	tacky account add -acc user@test.example.com
+	set ::_client [tacky client user@test.example.com]
     }
     -cleanup {
-	catch {c destroy}
 	rename conn mock_conn
 	rename _real_conn conn
+	unset -nocomplain ::_client
 	tacky destroy
     }
 }
@@ -31,24 +30,24 @@ proc msg_msg {args} {
 
 # Helper: store messages in a fresh region via the message module's messagestore
 proc msg_store {msgs} {
-    c message messagestore region new r
-    c message messagestore store batch $msgs r
+    $::_client message messagestore region new r
+    $::_client message messagestore store batch $msgs r
 }
 
 # Helper: call history and collect result via -command
 proc msg_history {args} {
     set ::_msg_hist_result {}
-    c message history {*}$args \
+    tacky message history -acc $::acc {*}$args \
 	-command [list apply {{result} { set ::_msg_hist_result $result }}]
     set ::_msg_hist_result
 }
 
 # Helper: mark a chat as synced by running a MAM query that returns complete=true
 proc msg_sync {chatJid} {
-    c message history -chat $chatJid -limit 1 \
+    tacky message history -acc $::acc -chat $chatJid -limit 1 \
 	-command [list apply {{r} {}}]
-    set iqId [dict get [lindex [c.conn get_written] end] attrs id]
-    c.iq feed [j iq -type result -id $iqId {
+    set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+    $::_client iq feed [j iq -type result -id $iqId {
 	j fin -ns urn:xmpp:mam:2 -complete true {
 	    j set -ns http://jabber.org/protocol/rsm
 	}
@@ -82,7 +81,7 @@ proc mam_result {args} {
 
 # Helper: extract the MAM queryid from the last written IQ
 proc mam_queryid {} {
-    set written [c.conn get_written]
+    set written [$::_client conn get_written]
     set iqStanza [lindex $written end]
     xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid
 }
@@ -126,9 +125,9 @@ test message-history-synced-no-mam {synced chat returns local data without MAM q
 	msg_store [list \
 	    [msg_msg timestamp 100 server_id s1 body only]]
 	# Now synced — should not send another MAM query
-	set written1 [c.conn get_written]
+	set written1 [$::_client conn get_written]
 	set result [msg_history -chat alice@example.com -limit 50]
-	set written2 [c.conn get_written]
+	set written2 [$::_client conn get_written]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
 	     [expr {[llength $written1] == [llength $written2]}]
@@ -143,9 +142,9 @@ test message-history-local-first {history with local data returns local without 
 	    [msg_msg timestamp 100 server_id s1 body a] \
 	    [msg_msg timestamp 200 server_id s2 body b]]
 	# Not synced, but has local data — should return local, no MAM
-	set written1 [c.conn get_written]
+	set written1 [$::_client conn get_written]
 	set result [msg_history -chat alice@example.com -limit 50]
-	set written2 [c.conn get_written]
+	set written2 [$::_client conn get_written]
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
 	     [dict get [lindex $result 1] body] \
@@ -158,10 +157,10 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
     {*}$msg_common \
     -body {
 	set result {}
-	c message history -chat alice@example.com -limit 5 \
+	tacky message history -acc $acc -chat alice@example.com -limit 5 \
 	    -command [list apply {{r} { set ::result $r }}]
 
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
 	set qid [mam_queryid]
 
 	# Feed two MAM result messages with full fields
@@ -171,12 +170,12 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
 	} {
 	    set rn [mam_result id $sid queryid $qid from $from body $body \
 			stamp $stamp origin_id $oid]
-	    c.mam onResultMessage [j message -from user@test.example.com {
+	    $::_client mam onResultMessage [j message -from user@test.example.com {
 		j /as-is $rn
 	    }]
 	}
 
-	c.iq feed [j iq -type result -id $iqId {
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm {
 		    j first #body mam1
@@ -201,24 +200,24 @@ test message-history-mam-complete-marks-synced {MAM complete=true marks chat as 
     {*}$msg_common \
     -body {
 	set result {}
-	c message history -chat bob@example.com -limit 50 \
+	tacky message history -acc $acc -chat bob@example.com -limit 50 \
 	    -command [list apply {{r} { set ::result $r }}]
 
-	set written [c.conn get_written]
+	set written [$::_client conn get_written]
 	set iqStanza [lindex $written end]
 	set iqId [dict get $iqStanza attrs id]
 
 	# Feed fin with complete=true (empty archive)
-	c.iq feed [j iq -type result -id $iqId {
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm
 	    }
 	}]
 
 	# Now a second query should not send MAM
-	set written1 [c.conn get_written]
+	set written1 [$::_client conn get_written]
 	set result2 [msg_history -chat bob@example.com -limit 50]
-	set written2 [c.conn get_written]
+	set written2 [$::_client conn get_written]
 	# No new IQ should have been sent
 	list [llength $result2] [expr {[llength $written1] == [llength $written2]}]
     } -result {0 1}
@@ -230,11 +229,11 @@ test message-history-disconnect-clears-synced {disconnect clears SyncedChats sta
     -body {
 	# Get chat synced
 	set result {}
-	c message history -chat bob@example.com -limit 50 \
+	tacky message history -acc $acc -chat bob@example.com -limit 50 \
 	    -command [list apply {{r} { set ::result $r }}]
 
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
-	c.iq feed [j iq -type result -id $iqId {
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm
 	    }
@@ -244,13 +243,13 @@ test message-history-disconnect-clears-synced {disconnect clears SyncedChats sta
 	set r [msg_history -chat bob@example.com -limit 50]
 
 	# Disconnect
-	c.conn fire_disconnect "gone"
+	$::_client conn fire_disconnect "gone"
 
 	# After disconnect, should trigger MAM again (async)
 	set result2 {}
-	c message history -chat bob@example.com -limit 50 \
+	tacky message history -acc $acc -chat bob@example.com -limit 50 \
 	    -command [list apply {{r} { set ::result2 $r }}]
-	set written [c.conn get_written]
+	set written [$::_client conn get_written]
 	# Should have sent a new MAM query
 	set lastIq [lindex $written end]
 	set hasQuery [expr {[xsearch $lastIq query -ns urn:xmpp:mam:2] ne ""}]
@@ -264,7 +263,7 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
     -body {
 	set rn [mam_result id sid42 from juliet@capulet.li/phone \
 		    body "hello romeo" stamp 2024-06-15T12:30:00Z origin_id oid99]
-	set msg [c.message ParseResultNode $rn chat@example.com]
+	set msg [$::_client message ParseResultNode $rn chat@example.com]
 	list [dict get $msg server_id] \
 	     [dict get $msg from_jid] \
 	     [dict get $msg body] \
@@ -287,7 +286,7 @@ test message-parseresultnode-no-origin-id {ParseResultNode handles missing origi
     {*}$msg_common \
     -body {
 	set rn [mam_result id sid1 from bob@example.com body test stamp 2024-01-01T00:00:00Z]
-	set msg [c.message ParseResultNode $rn bob@example.com]
+	set msg [$::_client message ParseResultNode $rn bob@example.com]
 	dict get $msg origin_id
     } -result {}
 
@@ -297,22 +296,22 @@ test message-history-cancel-suppresses-callback {cancel tag prevents backfill ca
     {*}$msg_common \
     -body {
 	set ::result UNTOUCHED
-	c message history -chat bob@example.com -limit 50 \
+	tacky message history -acc $acc -chat bob@example.com -limit 50 \
 	    -tag mytag \
 	    -command [list apply {{r} { set ::result $r }}]
 
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
 	set qid [mam_queryid]
 
 	# Cancel before MAM response arrives
-	c message cancel -tag mytag
+	tacky message cancel -acc $acc -tag mytag
 
 	# Feed a MAM result + fin
-	c.mam onResultMessage [j message -from user@test.example.com {
+	$::_client mam onResultMessage [j message -from user@test.example.com {
 	    j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
 			  body "hello" stamp 2024-01-01T10:00:00Z]
 	}]
-	c.iq feed [j iq -type result -id $iqId {
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm {
 		    j first #body sid1
@@ -328,20 +327,20 @@ test message-history-cancel-suppresses-callback {cancel tag prevents backfill ca
 test message-history-cancel-still-stores {cancel suppresses callback but stores messages} \
     {*}$msg_common \
     -body {
-	c message history -chat bob@example.com -limit 50 \
+	tacky message history -acc $acc -chat bob@example.com -limit 50 \
 	    -tag mytag \
 	    -command [list apply {{r} {}}]
 
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
 	set qid [mam_queryid]
 
-	c message cancel -tag mytag
+	tacky message cancel -acc $acc -tag mytag
 
-	c.mam onResultMessage [j message -from user@test.example.com {
+	$::_client mam onResultMessage [j message -from user@test.example.com {
 	    j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
 			  body "stored msg" stamp 2024-01-01T10:00:00Z]
 	}]
-	c.iq feed [j iq -type result -id $iqId {
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm {
 		    j first #body sid1
@@ -351,31 +350,30 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
 	}]
 
 	# Messages should still be in local store
-	set local [c message messagestore get bob@example.com]
+	set local [$::_client message messagestore get bob@example.com]
 	list [llength $local] [dict get [lindex $local 0] body]
     } -result {1 {stored msg}}
 
 test message-history-no-tag-unaffected-by-cancel {cancel with unknown tag is harmless} \
     {*}$msg_common \
     -body {
-	c message cancel -tag nonexistent
+	tacky message cancel -acc $acc -tag nonexistent
 	set result [msg_history -chat bob@example.com -limit 50]
 	# Should proceed normally (triggers MAM since not synced)
-	set written [c.conn get_written]
+	set written [$::_client conn get_written]
 	expr {[llength $written] > 0}
     } -result 1
-
 
 # -- live message receiving ----------------------------------------------------
 
 test message-live-fields {stored live message has correct fields} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -id orig7 -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -id orig7 -from alice@example.com/phone {
 	    j body #body hi
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv42
 	}]
-	set msg [lindex [c message messagestore get alice@example.com] 0]
+	set msg [lindex [$::_client message messagestore get alice@example.com] 0]
 	list [dict get $msg chat_jid] \
 	     [dict get $msg from_jid] \
 	     [dict get $msg body] \
@@ -388,11 +386,11 @@ test message-live-fields {stored live message has correct fields} \
 test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body "offline msg"
 	    j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
 	}]
-	set msg [lindex [c message messagestore get alice@example.com] 0]
+	set msg [lindex [$::_client message messagestore get alice@example.com] 0]
 	# ParseTimestamp of 2024-06-15T12:00:00Z
 	set expected [ParseTimestamp 2024-06-15T12:00:00Z]
 	expr {[dict get $msg timestamp] == $expected}
@@ -401,35 +399,35 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
 test message-live-no-body-ignored {message without body is not stored} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j active -ns http://jabber.org/protocol/chatstates
 	}]
-	llength [c message messagestore get alice@example.com]
+	llength [$::_client message messagestore get alice@example.com]
     } -result {0}
 
 test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored} \
     {*}$msg_common \
     -body {
 	set got 0
-	c.message pubsub handler urn:xmpp:avatar:metadata \
+	$::_client message pubsub handler urn:xmpp:avatar:metadata \
 	    [list apply {{stanza} { set ::got 1 }}]
-	c.conn feed [j message -from alice@example.com {
+	$::_client conn feed [j message -from alice@example.com {
 	    j event -ns http://jabber.org/protocol/pubsub#event {
 		j items -node urn:xmpp:avatar:metadata
 	    }
 	}]
-	list $got [llength [c message messagestore get alice@example.com]]
+	list $got [llength [$::_client message messagestore get alice@example.com]]
     } -result {1 0}
 
 test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not the timestamp} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body hi
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv42
 	    j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
 	}]
-	set db [c.message.messagestore cget -db]
+	set db [$::_client message messagestore cget -db]
 	$db eval {
 	    SELECT server_id, timestamp, raw_xml FROM chat_message
 	    WHERE chat_jid='alice@example.com'
@@ -447,19 +445,19 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
     {*}$msg_common \
     -body {
 	set result {}
-	c message history -chat alice@example.com -limit 5 \
+	tacky message history -acc $acc -chat alice@example.com -limit 5 \
 	    -command [list apply {{r} { set ::result $r }}]
 
-	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
 	set qid [mam_queryid]
 
-	c.mam onResultMessage [j message -from user@test.example.com {
+	$::_client mam onResultMessage [j message -from user@test.example.com {
 	    j /as-is [mam_result id archive-uuid-42 queryid $qid \
 		from alice@example.com/phone body "mam msg" \
 		stamp 2024-06-15T12:00:00Z]
 	}]
 
-	c.iq feed [j iq -type result -id $iqId {
+	$::_client iq feed [j iq -type result -id $iqId {
 	    j fin -ns urn:xmpp:mam:2 -complete true {
 		j set -ns http://jabber.org/protocol/rsm {
 		    j first #body archive-uuid-42
@@ -468,7 +466,7 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
 	    }
 	}]
 
-	set db [c.message.messagestore cget -db]
+	set db [$::_client message messagestore cget -db]
 	$db eval {
 	    SELECT server_id, timestamp, raw_xml FROM chat_message
 	    WHERE chat_jid='alice@example.com'
@@ -485,13 +483,13 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
 test message-live-shared-region {messages to different chats share one live region} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body "hi alice"
 	}]
-	c.conn feed [j message -type chat -from bob@example.com/laptop {
+	$::_client conn feed [j message -type chat -from bob@example.com/laptop {
 	    j body #body "hi bob"
 	}]
-	[c.message.messagestore cget -db] eval {
+	[$::_client message messagestore cget -db] eval {
 	    SELECT COUNT(DISTINCT region) FROM chat_message
 	}
     } -result {1}
@@ -503,7 +501,7 @@ test message-live-emits-event {incoming message emits message <Received>} \
 	tacky listen message <Received> {apply {{ev} {
 	    set ::_got $ev
 	}}}
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body "event test"
 	}]
 	list [dict get $_got -jid] \
@@ -514,15 +512,15 @@ test message-live-emits-event {incoming message emits message <Received>} \
 test message-live-disconnect-clears-region {disconnect resets liveRegion} \
     {*}$msg_common \
     -body {
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body msg1
 	}]
-	c.conn fire_disconnect "gone"
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn fire_disconnect "gone"
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body msg2
 	}]
 	# After disconnect, a new region should be allocated
-	[c.message.messagestore cget -db] eval {
+	[$::_client message messagestore cget -db] eval {
 	    SELECT COUNT(DISTINCT region) FROM chat_message
 	}
     } -result {2}
@@ -531,13 +529,13 @@ test message-live-disconnect-clears-region {disconnect resets liveRegion} \
 
 # Helper: trigger OnReady (sets bound-jid, fires ready)
 proc msg_ready {} {
-    c.conn configure -bound-jid user@test.example.com/res
-    c.conn fire_ready 0
+    $::_client conn configure -bound-jid user@test.example.com/res
+    $::_client conn fire_ready 0
 }
 
 # Helper: find the MAM IQ among written stanzas (multiple modules write IQs on ready)
 proc mam_catchup_iq {} {
-    foreach stanza [c.conn get_written] {
+    foreach stanza [$::_client conn get_written] {
 	if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} {
 	    return $stanza
 	}
@@ -552,7 +550,7 @@ proc msg_catchup_finish {results {complete true}} {
     set qid [xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid]
 
     foreach rn $results {
-	c.mam onResultMessage [j message -from user@test.example.com {
+	$::_client mam onResultMessage [j message -from user@test.example.com {
 	    j /as-is $rn
 	}]
     }
@@ -564,7 +562,7 @@ proc msg_catchup_finish {results {complete true}} {
 	set last [xsearch [lindex $results end] -get @id]
     }
 
-    c.iq feed [j iq -type result -id $iqId {
+    $::_client iq feed [j iq -type result -id $iqId {
 	j fin -ns urn:xmpp:mam:2 -complete $complete {
 	    j set -ns http://jabber.org/protocol/rsm {
 		if {$first ne ""} {
@@ -596,7 +594,7 @@ test message-catchup-routes-incoming {catchup stores incoming message under send
 	    [mam_result id s1 queryid $qid \
 		from alice@example.com/phone to user@test.example.com \
 		body "hi there" stamp 2024-01-01T10:00:00Z]]
-	set msgs [c message messagestore get alice@example.com]
+	set msgs [$::_client message messagestore get alice@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {hi there}}
 
@@ -609,7 +607,7 @@ test message-catchup-routes-outgoing {catchup stores outgoing message under reci
 	    [mam_result id s1 queryid $qid \
 		from user@test.example.com/res to bob@example.com \
 		body "hey bob" stamp 2024-01-01T10:00:00Z]]
-	set msgs [c message messagestore get bob@example.com]
+	set msgs [$::_client message messagestore get bob@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {hey bob}}
 
@@ -637,7 +635,7 @@ test message-catchup-mam-error {MAM error emits CatchupDone with count 0} \
 	tacky listen message <CatchupDone> {apply {{ev} { set ::_done $ev }}}
 	msg_ready
 	set iqId [dict get [mam_catchup_iq] attrs id]
-	c.iq feed [j iq -type error -id $iqId {
+	$::_client iq feed [j iq -type error -id $iqId {
 	    j error -type cancel {
 		j feature-not-implemented
 	    }
@@ -656,7 +654,7 @@ test message-catchup-skips-empty-body {catchup skips messages without body} \
 		body "" stamp 2024-01-01T10:00:00Z]]
 	set ::_done {}
 	;# already emitted, check store
-	llength [c message messagestore get alice@example.com]
+	llength [$::_client message messagestore get alice@example.com]
     } -result {0}
 
 test message-catchup-dedup-with-live {catchup deduplicates against live messages} \
@@ -664,7 +662,7 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
     -body {
 	msg_ready
 	# Live message arrives with server_id
-	c.conn feed [j message -type chat -from alice@example.com/phone {
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body "live msg"
 	    j stanza-id -ns urn:xmpp:sid:0 -id s1
 	}]
@@ -674,7 +672,7 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
 	    [mam_result id s1 queryid $qid \
 		from alice@example.com/phone to user@test.example.com \
 		body "live msg" stamp 2024-01-01T10:00:00Z]]
-	llength [c message messagestore get alice@example.com]
+	llength [$::_client message messagestore get alice@example.com]
     } -result {1}
 
 test message-catchup-dedup-no-ids {catchup deduplicates messages without server/origin IDs (IRC bridges)} \
@@ -698,7 +696,7 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
 	    [mam_result id "" queryid $qid \
 		from alice@example.com/phone to user@test.example.com \
 		body "bridge msg 2" stamp 2024-01-01T11:00:00Z]]
-	set db [c.message.messagestore cget -db]
+	set db [$::_client message messagestore cget -db]
 	list [$db eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}] \
 	     [$db eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}]
     } -result {2 1}
