@@ -509,6 +509,23 @@ test message-live-emits-event {incoming message emits message <Received>} \
 	     [dict get $_got -body]
     } -result {alice@example.com alice@example.com/phone {event test}}
 
+test message-live-dup-no-event {duplicate message does not emit <Received>} \
+    {*}$msg_common \
+    -body {
+	set ::_count 0
+	tacky listen message <Received> {apply {{ev} {
+	    incr ::_count
+	}}}
+	set stanza [j message -type chat -from alice@example.com/phone \
+	    -id dup-test {
+	    j body #body "dup test"
+	    j stanza-id -xmlns urn:xmpp:sid:0 -id sid-dup1
+	}]
+	$::_client conn feed $stanza
+	$::_client conn feed $stanza
+	set ::_count
+    } -result {1}
+
 test message-live-disconnect-clears-region {disconnect resets liveRegion} \
     {*}$msg_common \
     -body {
@@ -700,3 +717,64 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
 	list [$db eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}] \
 	     [$db eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}]
     } -result {2 1}
+
+# -- history: time-anchored MAM -----------------------------------------------
+
+test message-history-mam-before-timestamp {-before with empty local sends MAM with -end and empty -before} \
+    {*}$msg_common \
+    -body {
+	# Use a known timestamp (2024-06-15T12:00:00Z in microseconds)
+	set ts [ParseTimestamp 2024-06-15T12:00:00Z]
+	tacky message history -acc $acc -chat alice@example.com \
+	    -before $ts -limit 10 \
+	    -command [list apply {{r} { set ::result $r }}]
+	set iqStanza [lindex [$::_client conn get_written] end]
+	set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+	# Should have end field with ISO timestamp
+	set endVal [xsearch $qnode x field @var end value -get body]
+	# Should have empty before (request from end of archive)
+	set beforeVal [xsearch $qnode set before -get body]
+	# Should NOT have start field
+	set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
+	list [expr {$endVal eq "2024-06-15T12:00:00Z"}] \
+	     [expr {$beforeVal eq ""}] \
+	     $hasStart
+    } -result {1 1 0}
+
+test message-history-mam-after-timestamp {-after with empty local sends MAM with -start} \
+    {*}$msg_common \
+    -body {
+	set ts [ParseTimestamp 2024-06-15T12:00:00Z]
+	tacky message history -acc $acc -chat alice@example.com \
+	    -after $ts -limit 10 \
+	    -command [list apply {{r} { set ::result $r }}]
+	set iqStanza [lindex [$::_client conn get_written] end]
+	set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+	# Should have start field with ISO timestamp
+	set startVal [xsearch $qnode x field @var start value -get body]
+	# Should NOT have end field
+	set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
+	# Should NOT have before (no cursor)
+	set hasBefore [expr {[xsearch $qnode set before] ne ""}]
+	list [expr {$startVal eq "2024-06-15T12:00:00Z"}] \
+	     $hasEnd $hasBefore
+    } -result {1 0 0}
+
+test message-history-mam-default-cursor {default (no timestamp) uses cursor-based -before} \
+    {*}$msg_common \
+    -body {
+	# Pre-store a message so there's a cursor server_id
+	msg_store [list [msg_msg timestamp 100 chat_jid bob@example.com \
+	    server_id srv99 body old]]
+	# Mark as having local data, then clear so MAM triggers
+	# Actually: need no local data for the requested chat to trigger MAM
+	# Use a different chat that has no local data
+	tacky message history -acc $acc -chat carol@example.com -limit 10 \
+	    -command [list apply {{r} { set ::result $r }}]
+	set iqStanza [lindex [$::_client conn get_written] end]
+	set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+	# Should NOT have start or end fields
+	set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
+	set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
+	list $hasStart $hasEnd
+    } -result {0 0}

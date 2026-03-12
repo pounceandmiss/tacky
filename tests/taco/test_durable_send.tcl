@@ -52,8 +52,9 @@ test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to receiv
 	ds_batch [list \
 	    [ds_msg timestamp 100 origin_id oid1 body sent server_status pending]]
 	# Incoming echo with same origin_id — triggers confirmation
-	set confirmed [ds_batch [list \
+	set result [ds_batch [list \
 	    [ds_msg timestamp 200 origin_id oid1 body sent]]]
+	set confirmed [dict get $result confirmed]
 	# Check DB status changed
 	set status [testdb eval {
 	    SELECT server_status FROM chat_message WHERE origin_id='oid1'
@@ -70,9 +71,9 @@ test ds-ms-no-confirm-non-pending {duplicate without pending status is not confi
 	ds_batch [list \
 	    [ds_msg timestamp 100 origin_id oid1 body hello]]
 	# Feed same origin_id again
-	set confirmed [ds_batch [list \
+	set result [ds_batch [list \
 	    [ds_msg timestamp 200 origin_id oid1 body hello]]]
-	llength $confirmed
+	llength [dict get $result confirmed]
     } -result {0}
 
 test ds-ms-confirm-by-origin-ids {confirmByOriginIds updates pending to received} \

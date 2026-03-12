@@ -209,13 +209,14 @@ snit::type taco_message {
 	if {$liveRegion eq ""} {
 	    $messagestore region new liveRegion
 	}
-	set confirmed [$messagestore store batch [list $msg] liveRegion]
+	set result [$messagestore store batch [list $msg] liveRegion]
+	set confirmed [dict get $result confirmed]
 	if {[llength $confirmed] > 0} {
 	    foreach c $confirmed {
 		$client emit message <Confirmed> \
 		    -jid $chatJid -timestamp [dict get $c timestamp]
 	    }
-	} else {
+	} elseif {[dict get $result inserted] > 0} {
 	    $client emit message <Received> \
 		-jid $chatJid -from [xsearch $stanza -get @from] -body $body \
 		-message $msg
@@ -380,7 +381,7 @@ snit::type taco_message {
     # exhausted (local returns empty) and the chat isn't fully synced,
     # MAM backfill kicks in to fetch the next batch from the server.
     method history {args} {
-	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
+	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag "" -no-local 0]
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
@@ -389,48 +390,63 @@ snit::type taco_message {
 	set before [dict get $opts -before]
 	set after [dict get $opts -after]
 	set tag [dict get $opts -tag]
+	set noLocal [dict get $opts -no-local]
 
 	if {$tag ne ""} {
 	    set ActiveTags($tag) 1
 	}
 
-	# Try local store first
+	# Try local store first (unless caller opts out, e.g. goto-date)
 	set getArgs [list -limit $limit]
 	if {$before ne ""} { lappend getArgs -before $before }
 	if {$after ne ""}  { lappend getArgs -after $after }
 	set local [$messagestore get $chatJid {*}$getArgs]
 
 	if {[llength $local] > 0 || [info exists SyncedChats($chatJid)]} {
-	    {*}$callback $local
-	    return
+	    if {!$noLocal || [info exists SyncedChats($chatJid)]} {
+		{*}$callback $local
+		return
+	    }
 	}
 
 	# No local data and not synced — query the server
-	set cursor [$client db onecolumn {
-	    SELECT server_id FROM chat_message
-	    WHERE chat_jid=$chatJid AND server_id != ''
-	    ORDER BY timestamp ASC LIMIT 1
-	}]
-
 	$messagestore region new backfillRegion
 
 	set mamArgs [list -max $limit]
-	if {$cursor ne ""} {
-	    lappend mamArgs -before $cursor
+	if {$before ne ""} {
+	    # Time-anchored: fetch messages ending at this timestamp
+	    lappend mamArgs -end [FormatTimestampISO $before] -before {}
+	    set cursor ""
+	} elseif {$after ne ""} {
+	    # Time-anchored: fetch messages starting at this timestamp
+	    lappend mamArgs -start [FormatTimestampISO $after]
+	    set cursor ""
+	} else {
+	    # Cursor-based: page backwards from earliest known server_id
+	    set cursor [$client db onecolumn {
+		SELECT server_id FROM chat_message
+		WHERE chat_jid=$chatJid AND server_id != ''
+		ORDER BY timestamp ASC LIMIT 1
+	    }]
+	    if {$cursor ne ""} {
+		lappend mamArgs -before $cursor
+	    }
 	}
 	lappend mamArgs -command [mymethod OnBackfill $chatJid $cursor \
-				      $before $limit $callback $tag \
+				      $before $after $limit $callback $tag \
 				      $backfillRegion]
 
 	$client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnBackfill {chatJid cursor before limit callback tag backfillRegion mamResult} {
+    method OnBackfill {chatJid cursor before after limit callback tag backfillRegion mamResult} {
 	if {[dict exists $mamResult error]} {
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 	    set getArgs [list -limit $limit]
 	    if {$before ne ""} {
 		lappend getArgs -before $before
+	    } elseif {$after ne ""} {
+		lappend getArgs -after $after
 	    }
 	    set local [$messagestore get $chatJid {*}$getArgs]
 	    {*}$callback $local
@@ -470,6 +486,8 @@ snit::type taco_message {
 	set getArgs [list -limit $limit]
 	if {$before ne ""} {
 	    lappend getArgs -before $before
+	} elseif {$after ne ""} {
+	    lappend getArgs -after $after
 	}
 	set local [$messagestore get $chatJid {*}$getArgs]
 	{*}$callback $local

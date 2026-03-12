@@ -101,6 +101,7 @@ snit::type taco_messagestore {
 
 	set mergedRegions {}
 	set confirmed {}
+	set inserted 0
 	set prevTs -1
 
 	$options(-db) transaction {
@@ -145,6 +146,7 @@ snit::type taco_messagestore {
 			$status)
 		}
 		set prevTs $ts
+		incr inserted
 	    }
 
 	    dict for {oldRegion _} $mergedRegions {
@@ -154,7 +156,7 @@ snit::type taco_messagestore {
 		}
 	    }
 	}
-	return $confirmed
+	return [dict create confirmed $confirmed inserted $inserted]
     }
 
     method bridge {jid r1Var r2Var} {
