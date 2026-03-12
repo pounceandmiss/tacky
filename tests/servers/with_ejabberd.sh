@@ -209,7 +209,7 @@ until docker exec "${MYSQL_CONTAINER_NAME}" \
 done
 
 # Load ejabberd SQL schema
-docker run --rm --entrypoint cat \
+docker run --rm --network none --entrypoint cat \
   "${IMAGE}" /opt/ejabberd/sql/mysql.sql \
   | docker exec -i "${MYSQL_CONTAINER_NAME}" \
     mysql -u "${MYSQL_USER}" -p"${MYSQL_PASS}" "${MYSQL_DB}"
