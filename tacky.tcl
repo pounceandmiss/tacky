@@ -506,6 +506,8 @@ if 0 {
     # Fetch message history for a chat. Local-first with MAM backfill.
     #   callback receives: list of message dicts
     tacky message history -acc $jid -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50? -command $cb
+    # Cancel pending history callbacks registered with -tag.
+    tacky message cancel -acc $jid -tag $tag
 
     # Events:
     # Fired when a message is received (1-1, MUC groupchat, and MUC PMs).

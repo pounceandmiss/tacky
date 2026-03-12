@@ -305,7 +305,7 @@ test message-history-cancel-suppresses-callback {cancel tag prevents backfill ca
 	set qid [mam_queryid]
 
 	# Cancel before MAM response arrives
-	c message cancel mytag
+	c message cancel -tag mytag
 
 	# Feed a MAM result + fin
 	c.mam onResultMessage [j message -from user@test.example.com {
@@ -335,7 +335,7 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
 	set iqId [dict get [lindex [c.conn get_written] end] attrs id]
 	set qid [mam_queryid]
 
-	c message cancel mytag
+	c message cancel -tag mytag
 
 	c.mam onResultMessage [j message -from user@test.example.com {
 	    j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
@@ -358,12 +358,13 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
 test message-history-no-tag-unaffected-by-cancel {cancel with unknown tag is harmless} \
     {*}$msg_common \
     -body {
-	c message cancel nonexistent
+	c message cancel -tag nonexistent
 	set result [msg_history -chat bob@example.com -limit 50]
 	# Should proceed normally (triggers MAM since not synced)
 	set written [c.conn get_written]
 	expr {[llength $written] > 0}
     } -result 1
+
 
 # -- live message receiving ----------------------------------------------------
 

@@ -149,7 +149,7 @@ snit::widgetadaptor chatview {
 
     destructor {
 	catch {::tacky unlisten $win}
-	catch {::tacky message cancel $win}
+	catch {::tacky message cancel -acc $options(-acc) -tag $win}
 	catch {$self RemoveMenus}
 	catch {$self UntrackAllAvatars}
     }

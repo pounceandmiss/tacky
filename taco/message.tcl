@@ -372,7 +372,7 @@ snit::type taco_message {
     # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50?
     #         ?-tag $tag? -command $cb
     # Always async — calls -command with result list.
-    # -tag: if given, the callback can be cancelled via `cancel $tag`.
+    # -tag: if given, the callback can be cancelled via `cancel -tag $tag`.
     #
     # Local-first: tries the local store before the server.
     # messagestore get is region-scoped, so it only returns messages from
@@ -475,7 +475,8 @@ snit::type taco_message {
 	{*}$callback $local
     }
 
-    method cancel {tag} {
+    method cancel {args} {
+	set tag [dict get $args -tag]
 	unset -nocomplain ActiveTags($tag)
     }
 
