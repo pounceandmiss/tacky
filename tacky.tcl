@@ -90,12 +90,21 @@ oo::class create tacky_type {
     }
 }
 
+# Thread-based backend: runs taco in a separate thread, communicating
+# via thread::send. A tacky_proxy snit type in the backend thread
+# forwards events back to the GUI thread asynchronously.
+#
+# Callback round-trip:
+#   1. unknown wraps -command with a closure that does thread::send -async
+#      back to the GUI thread
+#   2. Command sent to backend thread via thread::send -async
+#   3. Backend executes; tackymethod calls the wrapped callback on success
+#   4. Closure fires thread::send -async back to GUI with the original
+#      script + result
 oo::class create tacky_threaded_type {
     superclass _tacky_router
-    # Daemon thread
-    variable TacoTid
-    # Our thread
-    variable TackyTid
+    variable TacoTid  ;# backend thread
+    variable TackyTid ;# GUI thread (self)
 
     constructor {args} {
 	next
@@ -137,6 +146,58 @@ oo::class create tacky_threaded_type {
 	thread::send -async $TacoTid [list taco $module $method {*}$args]
     }
 
+}
+
+set _tacky_lenpipe_script [file join [file dirname [info script]] taco lenpipe.tcl]
+set _tacky_backend_script [file join [file dirname [info script]] taco_process_backend.tcl]
+
+# Process-based backend: runs taco in a child process (taco_process_backend.tcl),
+# communicating over stdin/stdout with length-prefixed messages (lenpipe).
+#
+# Callback round-trip (same idea as tacky_threaded_type):
+#   1. unknown replaces -command {mymethod OnList} with {_tacky_cb {mymethod OnList}}
+#   2. Command + wrapped callback sent to child over pipe
+#   3. Child executes the command; tackymethod calls the callback on success
+#   4. _tacky_cb (in child) sends [list cb {mymethod OnList} $result] back
+#   5. GUI receives it and does {*}{mymethod OnList} {*}$result
+# No IDs or state — the original script is the token.
+oo::class create tacky_process_type {
+    superclass _tacky_router
+    variable Pipe
+
+    constructor {args} {
+	next
+	source $::_tacky_lenpipe_script
+	set fd [open |[list [info nameofexecutable] $::_tacky_backend_script {*}$args] r+]
+	set Pipe [lenpipe new $fd \
+	    -onmessage [namespace code {my _onMessage}] \
+	    -oneof [namespace code {my _onEof}]]
+    }
+
+    method emit {module event args} { my dispatch $module $event $args }
+
+    # close on |... pipe waits for child to exit.
+    destructor { catch {$Pipe destroy} }
+
+    # Wrap callbacks and send command to child.
+    method unknown {module method args} {
+	foreach opt {-command -onerror} {
+	    if {[dict exists $args $opt]} {
+		set orig [dict get $args $opt]
+		dict set args $opt [list _tacky_cb $orig]
+	    }
+	}
+	$Pipe send [list $module $method {*}$args]
+    }
+
+    method _onMessage {msg} {
+	switch [lindex $msg 0] {
+	    cb    { {*}[lindex $msg 1] {*}[lindex $msg 2] }
+	    event { my dispatch [lindex $msg 1] [lindex $msg 2] [lindex $msg 3] }
+	}
+    }
+
+    method _onEof {} { my dispatch error <ProcessExit> {} }
 }
 
 if 0 {
@@ -297,6 +358,13 @@ proc tacky_init_threaded {args} {
 
 proc tacky_init {args} {
     tacky_type create tacky {*}$args
+    if {[info commands tk_avatarcache] ne ""} {
+	tk_avatarcache create avatarcache
+    }
+}
+
+proc tacky_init_process {args} {
+    tacky_process_type create tacky {*}$args
     if {[info commands tk_avatarcache] ne ""} {
 	tk_avatarcache create avatarcache
     }

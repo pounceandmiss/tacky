@@ -4,7 +4,7 @@
 #   XMPP_SERVER=x  - run integration tests (requires SPOOF_SSL_CERT)
 package require tcltest
 package require control
-source [file join [file dirname [info script]] taco taco.tcl]
+package require snit
 source tacky.tcl
 namespace import ::tcltest::*
 set _server [expr {[info exists ::env(XMPP_SERVER)] ? $::env(XMPP_SERVER) : ""}]

@@ -5,6 +5,10 @@
     && !([info exists ::env(NO_THREADED)] && $::env(NO_THREADED))
 }]
 
+::tcltest::testConstraint hasProcess [expr {
+    !([info exists ::env(NO_PROCESS)] && $::env(NO_PROCESS))
+}]
+
 # Run a tacky command with -command callback, wait for result.
 # Works with both tacky_type (synchronous) and tacky_threaded_type (async).
 proc tacky_await {args} {
@@ -52,6 +56,7 @@ proc tacky_test {name desc args} {
     foreach {mode create constraint} {
         direct   {tacky_type create tacky}          {}
         threaded {tacky_threaded_type create tacky}  hasThread
+        process  {tacky_process_type create tacky}   hasProcess
     } {
         test $mode/$name $desc \
             -constraints $constraint \

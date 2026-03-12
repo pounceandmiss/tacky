@@ -1,6 +1,6 @@
 snit::type app_type {
     option -transient -default 0 -readonly yes
-    option -threaded -default 0 -readonly yes
+    option -backend -default direct -readonly yes
     variable current ""
 
     variable notebook ""
@@ -11,12 +11,18 @@ snit::type app_type {
 
     constructor args {
         $self configurelist $args
-	if {$options(-threaded)} {
-	    package require Thread
-	    uplevel #0 [list source [file join [file dirname [info script]] taco/xmpprw.tcl]]
-	    tacky_init_threaded -transient $options(-transient)
-	} else {
-	    tacky_init -transient $options(-transient)
+	switch $options(-backend) {
+	    process {
+		tacky_init_process -transient $options(-transient)
+	    }
+	    thread {
+		package require Thread
+		uplevel #0 [list source [file join [file dirname [info script]] taco/xmpprw.tcl]]
+		tacky_init_threaded -transient $options(-transient)
+	    }
+	    default {
+		tacky_init -transient $options(-transient)
+	    }
 	}
         ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }
