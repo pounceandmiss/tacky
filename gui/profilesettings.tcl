@@ -93,6 +93,7 @@ snit::widget profilesettings {
 	    after cancel $statusAfter
 	}
 	catch {$options(-tacky) unlisten $win}
+	catch {$options(-tacky) avatar cancel $win}
 	catch {avatarcache untrack -tag $win.avatar}
     }
 
@@ -141,18 +142,24 @@ snit::widget profilesettings {
 	    {{All files} *}
 	}]
 	if {$path eq ""} return
+	set ext [string tolower [file extension $path]]
+	switch -- $ext {
+	    .jpg - .jpeg { set mime image/jpeg }
+	    .gif         { set mime image/gif }
+	    default      { set mime image/png }
+	}
 	set fd [open $path rb]
 	set data [read $fd]
 	close $fd
 	$options(-tacky) avatar publish \
-	    -acc $options(-acc) -data $data \
-	    -command [mymethod OnResult "Avatar"]
+	    -acc $options(-acc) -data $data -type $mime \
+	    -tag $win -command [mymethod OnResult "Avatar"]
     }
 
     method RemoveAvatar {} {
 	$options(-tacky) avatar disable \
 	    -acc $options(-acc) \
-	    -command [mymethod OnResult "Avatar"]
+	    -tag $win -command [mymethod OnResult "Avatar"]
     }
 
     method SavePassword {} {

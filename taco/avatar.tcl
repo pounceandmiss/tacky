@@ -12,10 +12,12 @@ if 0 {
             Returns metadata dict: hash type bytes width height
         tacky avatar data -acc $acc -hash $hash
             Returns raw image bytes
-        tacky avatar publish -acc $acc -data $rawData ?-type image/png?
+        tacky avatar publish -acc $acc -data $rawData ?-type image/png? ?-tag $tag? ?-command $cb?
             Publish own avatar
-        tacky avatar disable -acc $acc
+        tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb?
             Disable own avatar
+        tacky avatar cancel $tag
+            Cancel a pending -command callback by tag
 
     Events:
         tacky listen avatar <Update> -acc ...
@@ -29,6 +31,7 @@ snit::type taco_avatar {
     variable VisibleJids
     variable PendingVCardHash
     variable PendingPubSubHash
+    variable ActiveTags
 
     option -client -readonly yes
 
@@ -38,6 +41,7 @@ snit::type taco_avatar {
 	set VisibleJids [dict create]
 	set PendingVCardHash [dict create]
 	set PendingPubSubHash [dict create]
+	array set ActiveTags {}
 	$self Migrate
 	$client message pubsub handler urn:xmpp:avatar:metadata \
 	    [mymethod OnMetadataNotification]
@@ -49,6 +53,7 @@ snit::type taco_avatar {
 	set VisibleJids [dict create]
 	set PendingVCardHash [dict create]
 	set PendingPubSubHash [dict create]
+	array unset ActiveTags
     }
 
     destructor {
@@ -99,8 +104,11 @@ snit::type taco_avatar {
     # Publish own avatar (rawData = raw image bytes)
     # Optional -command callback: {*}$command ok "" / {*}$command error $msg
     method publish {args} {
-	array set opts {-type image/png -width "" -height "" -command ""}
+	array set opts {-type image/png -width "" -height "" -command "" -tag ""}
 	array set opts $args
+	if {$opts(-tag) ne ""} {
+	    set ActiveTags($opts(-tag)) 1
+	}
 	set rawData $opts(-data)
 
 	# Compute SHA-1 from raw bytes
@@ -131,14 +139,18 @@ snit::type taco_avatar {
 	# Publishing metadata before the server confirms data storage
 	# causes races on ejabberd/MongooseIM where subscribers try to
 	# fetch data that isn't committed yet.
+	set publishCtx [list \
+	    acc [dict get $args -acc] hash $hash \
+	    rawData $rawData type $opts(-type) bytes $bytes \
+	    width $opts(-width) height $opts(-height)]
 	$client iq request -type set -payload $dataPayload \
-	    -command [mymethod OnDataPublished $infoAttrs $hash $opts(-command)]
+	    -command [mymethod OnDataPublished $infoAttrs $hash $publishCtx $opts(-tag) $opts(-command)]
     }
 
-    method OnDataPublished {infoAttrs hash command stanza} {
+    method OnDataPublished {infoAttrs hash publishCtx tag command stanza} {
 	set type_ [xsearch $stanza -get @type]
 	if {$type_ eq "error"} {
-	    if {$command ne ""} {
+	    if {$command ne "" && ($tag eq "" || [info exists ActiveTags($tag)])} {
 		set errText [xsearch $stanza error text -get body]
 		if {$errText eq ""} { set errText "Avatar data publish failed" }
 		{*}$command error $errText
@@ -154,30 +166,60 @@ snit::type taco_avatar {
 			}
 		    }
 		}
-	    }] -command [mymethod OnPublishComplete $command]
+	    }] -command [mymethod OnPublishComplete $publishCtx $tag $command]
     }
 
-    method OnPublishComplete {command stanza} {
-	if {$command eq ""} return
-	set type_ [xsearch $stanza -get @type]
-	if {$type_ eq "error"} {
-	    set errText [xsearch $stanza error text -get body]
-	    if {$errText eq ""} { set errText "Avatar publish failed" }
-	    {*}$command error $errText
+    method OnPublishComplete {publishCtx tag command stanza} {
+	set stype [xsearch $stanza -get @type]
+	if {$tag ne "" && ![info exists ActiveTags($tag)]} {
+	    set command ""
+	}
+	if {$stype ne "error"} {
+	    if {$publishCtx ne ""} {
+		# Cache locally and emit update so UI reflects the change
+		# immediately, without waiting for the server PEP echo.
+		set jid [dict get $publishCtx acc]
+		set hash [dict get $publishCtx hash]
+		set rawData [dict get $publishCtx rawData]
+		set type_ [dict get $publishCtx type]
+		set bytes [dict get $publishCtx bytes]
+		set width [dict get $publishCtx width]
+		set height [dict get $publishCtx height]
+		set thumbData [$self MakeThumb $rawData "publish jid=$jid"]
+		$client db eval {
+		    INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
+		    VALUES ($hash, $rawData, $thumbData)
+		}
+		$client db eval {
+		    INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
+		    VALUES ($jid, $hash, $type_, $bytes, $width, $height)
+		}
+		$client emit avatar <Update> -jid $jid -hash $hash
+	    }
+	    if {$command ne ""} {
+		{*}$command ok ""
+	    }
 	} else {
-	    {*}$command ok ""
+	    if {$command ne ""} {
+		set errText [xsearch $stanza error text -get body]
+		if {$errText eq ""} { set errText "Avatar publish failed" }
+		{*}$command error $errText
+	    }
 	}
     }
 
     # Disable own avatar
     # Optional -command callback: {*}$command ok "" / {*}$command error $msg
     method disable {args} {
-	array set opts {-command ""}
+	array set opts {-command "" -tag ""}
 	array set opts $args
+	if {$opts(-tag) ne ""} {
+	    set ActiveTags($opts(-tag)) 1
+	}
 
 	set cmdOpts [list]
 	if {$opts(-command) ne ""} {
-	    lappend cmdOpts -command [mymethod OnPublishComplete $opts(-command)]
+	    lappend cmdOpts -command [mymethod OnPublishComplete {} $opts(-tag) $opts(-command)]
 	}
 
 	$client iq request -type set {*}$cmdOpts -payload \
@@ -190,14 +232,23 @@ snit::type taco_avatar {
 	    }]
     }
 
+    method cancel {tag} {
+	unset -nocomplain ActiveTags($tag)
+    }
+
     method OnMetadataNotification {stanza} {
 	set from [jid bare [xsearch $stanza -get @from]]
 
 	# Check for empty metadata (avatar disabled)
 	set infoNodes [xsearch $stanza event items item metadata info]
 	if {[llength $infoNodes] == 0} {
+	    set had [$client db onecolumn {
+		SELECT count(*) FROM avatar_metadata WHERE jid=$from
+	    }]
 	    $client db eval {DELETE FROM avatar_metadata WHERE jid=$from}
-	    $client emit avatar <Update> -jid $from -action disabled
+	    if {$had} {
+		$client emit avatar <Update> -jid $from -action disabled
+	    }
 	    return
 	}
 

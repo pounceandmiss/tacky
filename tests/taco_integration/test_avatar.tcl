@@ -65,14 +65,19 @@ namespace eval ::test::avatar_int {
 
 	tacky account enable -acc $ROMEO
 	tacky account enable -acc $JULIET
-	tacky roster approve -acc $ROMEO -jid $JULIET
-	tacky roster approve -acc $JULIET -jid $ROMEO
+	::test::helpers::waitEvents {
+	    {conn <Ready> -acc romeo@example.local}
+	    {conn <Ready> -acc juliet@example.local}
+	}
 	tacky roster subscribe -acc $ROMEO -jid $JULIET
 	tacky roster subscribe -acc $JULIET -jid $ROMEO
+	tacky roster approve -acc $ROMEO -jid $JULIET
+	tacky roster approve -acc $JULIET -jid $ROMEO
 	::test::helpers::waitEvents {
 	    {presence <Changed> -acc romeo@example.local -jid juliet@example.local}
 	    {presence <Changed> -acc juliet@example.local -jid romeo@example.local}
 	}
+	tacky avatar visible -acc $JULIET -jid $ROMEO
     }
 
     proc cleanup {} {
