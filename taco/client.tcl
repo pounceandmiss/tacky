@@ -29,6 +29,7 @@ snit::type taco_client {
 
     constructor args {
         $self configurelist $args
+        set options(-jid) "$options(-username)@$options(-host)"
 
         # Initialize database if not provided externally
         if {$options(-db) ne ""} {
@@ -84,14 +85,11 @@ snit::type taco_client {
 
     method emit {module event args} {
         $bus publish ${module}:${event} {*}$args
-        set acc $options(-jid)
-        if {$acc eq ""} {
-            set acc "$options(-username)@$options(-host)"
-        }
-        tacky emit $module $event -acc [jid bare $acc] {*}$args
+        tacky emit $module $event -acc [jid bare $options(-jid)] {*}$args
     }
 
     method OnBound {} {
+        set options(-jid) [$conn cget -bound-jid]
         $conn writeImmediate [j presence {j /as-is [$caps cNode]}]
     }
 
