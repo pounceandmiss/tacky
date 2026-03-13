@@ -371,10 +371,11 @@ snit::type taco_message {
     # -tag: if given, the callback can be cancelled via `cancel -tag $tag`.
     #
     # Local-first: tries the local store before the server.
-    # messagestore get is region-scoped, so it only returns messages from
-    # the same contiguous region as the cursor.  When the region is
-    # exhausted (local returns empty) and the chat isn't fully synced,
-    # a MAM fetch kicks in to get the next batch from the server.
+    # messagestore get latest/before/after are region-scoped, so they
+    # only return messages from the same contiguous region as the cursor.
+    # When the region is exhausted (local returns empty) and the chat
+    # isn't fully synced, a MAM fetch kicks in to get the next batch
+    # from the server.
     method history {args} {
 	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
 	set opts [dict merge $defaults $args]
@@ -391,10 +392,13 @@ snit::type taco_message {
 	}
 
 	# Try local store first
-	set getArgs [list -limit $limit]
-	if {$before ne ""} { lappend getArgs -before $before }
-	if {$after ne ""}  { lappend getArgs -after $after }
-	set local [$messagestore get $chatJid {*}$getArgs]
+	if {$before ne ""} {
+	    set local [$messagestore get before $chatJid $before $limit]
+	} elseif {$after ne ""} {
+	    set local [$messagestore get after $chatJid $after $limit]
+	} else {
+	    set local [$messagestore get latest $chatJid $limit]
+	}
 
 	if {[llength $local] > 0} {
 	    {*}$callback $local
@@ -461,13 +465,13 @@ snit::type taco_message {
     method OnFetch {chatJid cursorSid before after limit callback tag fetchRegion mamResult} {
 	if {[dict exists $mamResult error]} {
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-	    set getArgs [list -limit $limit]
 	    if {$before ne ""} {
-		lappend getArgs -before $before
+		set local [$messagestore get before $chatJid $before $limit]
 	    } elseif {$after ne ""} {
-		lappend getArgs -after $after
+		set local [$messagestore get after $chatJid $after $limit]
+	    } else {
+		set local [$messagestore get latest $chatJid $limit]
 	    }
-	    set local [$messagestore get $chatJid {*}$getArgs]
 	    {*}$callback $local
 	    return
 	}
@@ -503,19 +507,19 @@ snit::type taco_message {
 	    set anchorRegion ""
 	}
 	if {$anchorRegion ne "" && $anchorRegion != $fetchRegion} {
-	    $messagestore bridge $chatJid anchorRegion fetchRegion
+	    $messagestore region bridge $chatJid anchorRegion fetchRegion
 	}
 
 	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
 	# Re-query local and deliver
-	set getArgs [list -limit $limit]
 	if {$before ne ""} {
-	    lappend getArgs -before $before
+	    set local [$messagestore get before $chatJid $before $limit]
 	} elseif {$after ne ""} {
-	    lappend getArgs -after $after
+	    set local [$messagestore get after $chatJid $after $limit]
+	} else {
+	    set local [$messagestore get latest $chatJid $limit]
 	}
-	set local [$messagestore get $chatJid {*}$getArgs]
 	{*}$callback $local
     }
 
@@ -527,8 +531,8 @@ snit::type taco_message {
     # goto -chat $jid -date $ts -source local|remote -limit 50
     #      ?-tag $tag? -command $cb
     # Jump to a point in time. Returns {messages $list anchor $ts}.
-    #   local:  getAround from local store
-    #   remote: MAM fetch from -start $date, store, then getAround
+    #   local:  get around from local store
+    #   remote: MAM fetch from -start $date, store, then get around
     method goto {args} {
 	set defaults [dict create -source local -limit 50 -tag ""]
 	set opts [dict merge $defaults $args]
@@ -545,12 +549,12 @@ snit::type taco_message {
 	}
 
 	if {$source eq "local"} {
-	    set result [$messagestore getAround $chatJid $date $limit]
+	    set result [$messagestore get around $chatJid $date $limit]
 	    {*}$callback $result
 	    return
 	}
 
-	# remote: fetch from server first, then getAround
+	# remote: fetch from server first, then get around
 	$messagestore region new fetchRegion
 	$client mam queryChat $chatJid \
 	    -start [FormatTimestampISO $date] -max $limit \
@@ -562,7 +566,7 @@ snit::type taco_message {
 	if {[dict exists $mamResult error]} {
 	    # Fall back to local
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-	    set result [$messagestore getAround $chatJid $date $limit]
+	    set result [$messagestore get around $chatJid $date $limit]
 	    {*}$callback $result
 	    return
 	}
@@ -578,7 +582,7 @@ snit::type taco_message {
 
 	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
-	set result [$messagestore getAround $chatJid $date $limit]
+	set result [$messagestore get around $chatJid $date $limit]
 	{*}$callback $result
     }
 

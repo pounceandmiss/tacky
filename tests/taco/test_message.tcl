@@ -322,7 +322,7 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
 	}]
 
 	# Messages should still be in local store
-	set local [$::_client message messagestore get bob@example.com]
+	set local [$::_client message messagestore get latest bob@example.com]
 	list [llength $local] [dict get [lindex $local 0] body]
     } -result {1 {stored msg}}
 
@@ -345,7 +345,7 @@ test message-live-fields {stored live message has correct fields} \
 	    j body #body hi
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv42
 	}]
-	set msg [lindex [$::_client message messagestore get alice@example.com] 0]
+	set msg [lindex [$::_client message messagestore get latest alice@example.com] 0]
 	list [dict get $msg chat_jid] \
 	     [dict get $msg from_jid] \
 	     [dict get $msg body] \
@@ -362,7 +362,7 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
 	    j body #body "offline msg"
 	    j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
 	}]
-	set msg [lindex [$::_client message messagestore get alice@example.com] 0]
+	set msg [lindex [$::_client message messagestore get latest alice@example.com] 0]
 	# ParseTimestamp of 2024-06-15T12:00:00Z
 	set expected [ParseTimestamp 2024-06-15T12:00:00Z]
 	expr {[dict get $msg timestamp] == $expected}
@@ -374,7 +374,7 @@ test message-live-no-body-ignored {message without body is not stored} \
 	$::_client conn feed [j message -type chat -from alice@example.com/phone {
 	    j active -ns http://jabber.org/protocol/chatstates
 	}]
-	llength [$::_client message messagestore get alice@example.com]
+	llength [$::_client message messagestore get latest alice@example.com]
     } -result {0}
 
 test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored} \
@@ -388,7 +388,7 @@ test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored}
 		j items -node urn:xmpp:avatar:metadata
 	    }
 	}]
-	list $got [llength [$::_client message messagestore get alice@example.com]]
+	list $got [llength [$::_client message messagestore get latest alice@example.com]]
     } -result {1 0}
 
 test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not the timestamp} \
@@ -583,7 +583,7 @@ test message-catchup-routes-incoming {catchup stores incoming message under send
 	    [mam_result id s1 queryid $qid \
 		from alice@example.com/phone to user@test.example.com \
 		body "hi there" stamp 2024-01-01T10:00:00Z]]
-	set msgs [$::_client message messagestore get alice@example.com]
+	set msgs [$::_client message messagestore get latest alice@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {hi there}}
 
@@ -596,7 +596,7 @@ test message-catchup-routes-outgoing {catchup stores outgoing message under reci
 	    [mam_result id s1 queryid $qid \
 		from user@test.example.com/res to bob@example.com \
 		body "hey bob" stamp 2024-01-01T10:00:00Z]]
-	set msgs [$::_client message messagestore get bob@example.com]
+	set msgs [$::_client message messagestore get latest bob@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {hey bob}}
 
@@ -643,7 +643,7 @@ test message-catchup-skips-empty-body {catchup skips messages without body} \
 		body "" stamp 2024-01-01T10:00:00Z]]
 	set ::_done {}
 	;# already emitted, check store
-	llength [$::_client message messagestore get alice@example.com]
+	llength [$::_client message messagestore get latest alice@example.com]
     } -result {0}
 
 test message-catchup-dedup-with-live {catchup deduplicates against live messages} \
@@ -661,7 +661,7 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
 	    [mam_result id s1 queryid $qid \
 		from alice@example.com/phone to user@test.example.com \
 		body "live msg" stamp 2024-01-01T10:00:00Z]]
-	llength [$::_client message messagestore get alice@example.com]
+	llength [$::_client message messagestore get latest alice@example.com]
     } -result {1}
 
 test message-catchup-dedup-no-ids {catchup deduplicates messages without server/origin IDs (IRC bridges)} \
@@ -765,7 +765,7 @@ test message-history-fetch-bridges-before {MAM fetch via -before bridges into an
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
 	}]
 	set liveTs [dict get \
-	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    [lindex [$::_client message messagestore get latest alice@example.com] 0] \
 	    timestamp]
 
 	# history -before $liveTs: local returns empty (only message IS the
@@ -814,7 +814,7 @@ test message-history-fetch-live-during {live message during fetch ends up in sam
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
 	}]
 	set liveTs [dict get \
-	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    [lindex [$::_client message messagestore get latest alice@example.com] 0] \
 	    timestamp]
 
 	# history -before triggers MAM
@@ -865,7 +865,7 @@ test message-history-fetch-live-after {live message after fetch lands in same re
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
 	}]
 	set liveTs [dict get \
-	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    [lindex [$::_client message messagestore get latest alice@example.com] 0] \
 	    timestamp]
 
 	# Backfill via -before
@@ -898,7 +898,7 @@ test message-history-fetch-live-after {live message after fetch lands in same re
 	}]
 
 	# GetLatest should see all 3 messages in one region
-	set all [$::_client message messagestore get alice@example.com]
+	set all [$::_client message messagestore get latest alice@example.com]
 	set db [$::_client message messagestore cget -db]
 	set regions [$db eval {
 	    SELECT COUNT(DISTINCT region) FROM chat_message

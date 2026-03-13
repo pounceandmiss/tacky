@@ -15,11 +15,11 @@ if 0 {
     via UPDATE. The caller's region variable is passed by name (upvar) so
     it stays current after merges.
 
-    `bridge` is still needed when MAM finishes just short of the live range —
-    the last MAM page contained no server_id already in the DB, so
-    `store batch` can't merge on its own. The caller knows the two ranges
-    meet from protocol state (MAM said "complete") and calls `bridge` to
-    merge the two regions.
+    `region bridge` is still needed when MAM finishes just short of the
+    live range — the last MAM page contained no server_id already in the
+    DB, so `store batch` can't merge on its own. The caller knows the two
+    ranges meet from protocol state (MAM said "complete") and calls
+    `region bridge` to merge the two regions.
 
     Concurrent catchup and live messages:
 
@@ -28,7 +28,7 @@ if 0 {
     1. MAM reaches a live message (server_id match) — `store batch` merges
        regions automatically.
     2. MAM reaches previously-stored old data — same mechanism.
-    3. MAM completes without overlap — caller calls `bridge` to merge.
+    3. MAM completes without overlap — caller calls `region bridge` to merge.
 
     In all cases the caller's region variables are updated via upvar,
     so subsequent inserts use the surviving region.
@@ -88,11 +88,16 @@ snit::type taco_messagestore {
 	}
     }
 
+    # Allocate a fresh region token and store it in the caller's variable.
     method "region new" {varName} {
 	upvar $varName v
 	set v [incr RegionCounter]
     }
 
+    # Insert messages into the DB under regionVar's region. Deduplicates
+    # by server_id/origin_id (or content fallback), merges regions on
+    # overlap, and confirms pending messages on echo. Returns dict with
+    # `confirmed` (list of {origin_id, timestamp}) and `inserted` count.
     method "store batch" {messages regionVar} {
 	if {[llength $messages] == 0} { return {} }
 
@@ -159,7 +164,9 @@ snit::type taco_messagestore {
 	return [dict create confirmed $confirmed inserted $inserted]
     }
 
-    method bridge {jid r1Var r2Var} {
+    # Merge r2's region into r1's region for jid. Updates the caller's
+    # r2 variable to match r1. No-op if already the same region.
+    method "region bridge" {jid r1Var r2Var} {
 	upvar $r1Var r1
 	upvar $r2Var r2
 	if {$r1 == $r2} { return }
@@ -170,29 +177,15 @@ snit::type taco_messagestore {
 	set r2 $r1
     }
 
-    # Returns messages from a single region only. GetBefore/GetAfter use
-    # a strict match (message at cursor) to pin the region, so gaps
-    # between regions are never bridged. GetLatest handles the no-cursor
-    # case by fetching from the most recent region.
-    method get {jid args} {
-	set limit [expr {[dict exists $args -limit] ? [dict get $args -limit] : 50}]
-	set hasBefore [dict exists $args -before]
-	set hasAfter [dict exists $args -after]
+    
 
-	if {($hasBefore + $hasAfter) > 1} {
-	    error "-before and -after are mutually exclusive"
-	}
-
-	if {$hasAfter} {
-	    return [$self GetAfter $jid [dict get $args -after] $limit]
-	} elseif {$hasBefore} {
-	    return [$self GetBefore $jid [dict get $args -before] $limit]
-	} else {
-	    return [$self GetLatest $jid $limit]
-	}
-    }
-
-    method GetBefore {jid cursor limit} {
+    # Messages older than cursor (an existing message's timestamp).
+    # The region is pinned by exact match on cursor, so a nonexistent
+    # cursor returns empty.
+    # returns a list of message dicts (keys: timestamp,
+    # chat_jid, from_jid, body, server_id, origin_id, raw_xml,
+    # server_status), chronological order, from a single region
+    method "get before" {jid cursor {limit 50}} {
 	set rows {}
 	$options(-db) eval {
 	    SELECT * FROM (
@@ -214,7 +207,9 @@ snit::type taco_messagestore {
 	return $rows
     }
 
-    method GetAfter {jid cursor limit} {
+    # Messages newer than cursor (an existing message's timestamp),
+    # chronological order. Otherwise same as "get before".
+    method "get after" {jid cursor {limit 50}} {
 	set rows {}
 	$options(-db) eval {
 	    SELECT timestamp, chat_jid, from_jid, body, server_id,
@@ -234,7 +229,9 @@ snit::type taco_messagestore {
 	return $rows
     }
 
-    method GetLatest {jid limit} {
+    # Most recent messages from the latest region. Otherwise same as
+    # "get before"
+    method "get latest" {jid {limit 50}} {
 	set rows {}
 	$options(-db) eval {
 	    SELECT * FROM (
@@ -256,7 +253,10 @@ snit::type taco_messagestore {
 	return $rows
     }
 
-    method getAround {jid timestamp limit} {
+    # Find the nearest message to timestamp and return context around
+    # it (limit/2 before + target + limit/2 after), region-scoped.
+    # Returns dict: {messages $list anchor $nearestTs}.
+    method "get around" {jid timestamp limit} {
 	set nearestTs ""
 	$options(-db) eval {
 	    SELECT timestamp FROM chat_message
@@ -269,8 +269,8 @@ snit::type taco_messagestore {
 	    return {messages {} anchor ""}
 	}
 	set halfLimit [expr {$limit / 2}]
-	set before [$self GetBefore $jid $nearestTs $halfLimit]
-	set after [$self GetAfter $jid $nearestTs $halfLimit]
+	set before [$self get before $jid $nearestTs $halfLimit]
+	set after [$self get after $jid $nearestTs $halfLimit]
 	set target {}
 	$options(-db) eval {
 	    SELECT timestamp, chat_jid, from_jid, body, server_id,
@@ -283,6 +283,8 @@ snit::type taco_messagestore {
 	return [list messages [concat $before $target $after] anchor $nearestTs]
     }
 
+    # Flip pending → received for each origin_id (SM ack path).
+    # Returns list of {chat_jid, timestamp} for confirmed messages.
     method confirmByOriginIds {originIds} {
 	set confirmed {}
 	$options(-db) transaction {

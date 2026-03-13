@@ -731,7 +731,7 @@ test muc-groupchat-stored {groupchat messages stored under room@muc?join} \
 	c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
 	    j body #body "stored msg"
 	}]
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {stored msg}}
 
@@ -754,7 +754,7 @@ test muc-pm-stored {private messages stored under room@muc/nick} \
 	c.conn feed [j message -type chat -from room@muc.example.com/someone {
 	    j body #body "secret msg"
 	}]
-	set msgs [c message messagestore get room@muc.example.com/someone]
+	set msgs [c message messagestore get latest room@muc.example.com/someone]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {secret msg}}
 
@@ -777,7 +777,7 @@ test muc-groupchat-not-in-message-module {groupchat messages don't reach message
 	c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
 	    j body #body "only in muc"
 	}]
-	llength [c message messagestore get room@muc.example.com]
+	llength [c message messagestore get latest room@muc.example.com]
     } -result {0}
 
 test muc-pm-not-in-message-module {MUC PMs don't reach message module} \
@@ -788,7 +788,7 @@ test muc-pm-not-in-message-module {MUC PMs don't reach message module} \
 	    j body #body "private"
 	}]
 	# message module would store under bare JID; should be empty
-	llength [c message messagestore get room@muc.example.com]
+	llength [c message messagestore get latest room@muc.example.com]
     } -result {0}
 
 test muc-dm-passes-through {DM from non-MUC contact passes through to message module} \
@@ -798,7 +798,7 @@ test muc-dm-passes-through {DM from non-MUC contact passes through to message mo
 	c.conn feed [j message -type chat -from alice@example.com/phone {
 	    j body #body "regular dm"
 	}]
-	set msgs [c message messagestore get alice@example.com]
+	set msgs [c message messagestore get latest alice@example.com]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {regular dm}}
 
@@ -810,7 +810,7 @@ test muc-store-delayed-uses-stamp {stored MUC message uses delay timestamp} \
 	    j body #body "old msg"
 	    j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
 	}]
-	set msg [lindex [c message messagestore get room@muc.example.com?join] 0]
+	set msg [lindex [c message messagestore get latest room@muc.example.com?join] 0]
 	set expected [ParseTimestamp 2024-06-15T12:00:00Z]
 	expr {[dict get $msg timestamp] == $expected}
     } -result {1}
@@ -823,6 +823,6 @@ test muc-store-extracts-stanza-id {stored MUC message extracts stanza-id} \
 	    j body #body "with sid"
 	    j stanza-id -ns urn:xmpp:sid:0 -id srv99
 	}]
-	set msg [lindex [c message messagestore get room@muc.example.com?join] 0]
+	set msg [lindex [c message messagestore get latest room@muc.example.com?join] 0]
 	dict get $msg server_id
     } -result {srv99}

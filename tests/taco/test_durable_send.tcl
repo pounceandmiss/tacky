@@ -32,7 +32,7 @@ test ds-ms-store-server-status {server_status is stored and returned in get} \
     -body {
 	ds_batch [list \
 	    [ds_msg timestamp 100 origin_id oid1 body sent server_status pending]]
-	set msgs [store get alice@example.com]
+	set msgs [store get latest alice@example.com]
 	dict get [lindex $msgs 0] server_status
     } -result {pending}
 
@@ -41,7 +41,7 @@ test ds-ms-store-null-status {messages without server_status default to empty} \
     -body {
 	ds_batch [list \
 	    [ds_msg timestamp 100 origin_id oid1 body incoming]]
-	set msgs [store get alice@example.com]
+	set msgs [store get latest alice@example.com]
 	dict get [lindex $msgs 0] server_status
     } -result {}
 
@@ -174,7 +174,7 @@ test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "test"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	dict get [lindex $msgs 0] from_jid
     } -result {room@muc.example.com/me}
 
@@ -187,7 +187,7 @@ test ds-send-id-on-stanza {send sets message id matching DB origin_id} \
 	    -body "test"
 	set m [lindex [c.conn get_written] end]
 	set stanzaId [xsearch $m -get @id]
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set dbOid [dict get [lindex $msgs 0] origin_id]
 	expr {$stanzaId eq $dbOid && $stanzaId ne ""}
     } -result {1}
@@ -201,7 +201,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
 	# Send a message (stores as pending)
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "echo me"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	# Simulate server echo with same origin_id
 	set confirmed {}
@@ -226,7 +226,7 @@ test ds-echo-no-received {echo of own message does not emit <Received>} \
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "echo me"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	set received {}
 	tacky listen message <Received> \
@@ -245,7 +245,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "echo me"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	c.conn feed [j message -type groupchat -id $oid \
 	    -from room@muc.example.com/me {
@@ -268,7 +268,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by origin_id} \
 	# Send a message
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "ack me"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	# Simulate SM ack with the sent stanza
 	set confirmed {}
@@ -439,7 +439,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "double"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set oid [dict get [lindex $msgs 0] origin_id]
 	set confirmed {}
 	tacky listen message <Confirmed> \
@@ -498,7 +498,7 @@ test ds-origin-id-equals-timestamp {origin_id is same as timestamp} \
 	ds_muc_join room@muc.example.com me
 	c message send -chat_jid room@muc.example.com?join \
 	    -body "test"
-	set msgs [c message messagestore get room@muc.example.com?join]
+	set msgs [c message messagestore get latest room@muc.example.com?join]
 	set msg [lindex $msgs 0]
 	expr {[dict get $msg origin_id] == [dict get $msg timestamp]}
     } -result {1}
