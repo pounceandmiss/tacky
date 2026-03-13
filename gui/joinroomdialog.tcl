@@ -46,7 +46,7 @@ snit::widget joinroomdialog {
 	# Derive defaults
 	set service "conference.[jid domain $options(-acc)]"
 	::tacky bookmarks defaultNick -acc $options(-acc) \
-	    -command [mymethod OnDefaultNick]
+	    -tag $self -command [mymethod OnDefaultNick]
 
 	# Listen for join success/error
 	::tacky listen -tag $self \
@@ -130,7 +130,7 @@ snit::widget joinroomdialog {
 	}
 	::tacky muc discoverRooms \
 	    -acc $options(-acc) -jid $service \
-	    -command [mymethod OnDiscoverResult]
+	    -tag $self -command [mymethod OnDiscoverResult]
     }
 
     method OnDiscoverResult {rooms} {

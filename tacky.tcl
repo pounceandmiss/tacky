@@ -1,7 +1,46 @@
+# tacky — event router bridging the GUI and the taco XMPP backend.
+#
+# Class hierarchy:
+#
+#   _tacky_router           Pub/sub event bus (listen, unlisten, dispatch).
+#       |                   Shared by all backends; knows nothing about
+#       |                   transport or callbacks.
+#       |
+#       +-- tacky_type      In-process backend.  Calls taco directly in the
+#       |                   same thread.  emit == dispatch; unknown forwards
+#       |                   to taco as-is.  No callback wrapping needed.
+#       |
+#       +-- _tacky_async    Abstract base for out-of-process backends.
+#               |           Adds the Callbacks dict and the callback
+#               |           round-trip plumbing (see below).  Subclasses
+#               |           only need to provide _send and a constructor.
+#               |
+#               +-- tacky_threaded_type   Thread backend (thread::send).
+#               +-- tacky_process_type    Child-process backend (lenpipe).
+#
+# Event flow (all backends):
+#   Backend fires:  tacky emit $module $event ...
+#   GUI side:       emit → dispatch → matching _listeners entries
+#
+# Callback flow (_tacky_async only):
+#   GUI calls:      tacky $module $method -command $cmd -tag $tag
+#   unknown:        stores $cmd in Callbacks(token), replaces -command with
+#                     {tacky emit callback <Result> -token $token -result}
+#   _send:          delivers rewritten command to backend
+#   Backend:        executes method, on success calls the rewritten -command
+#                     → tacky emit callback <Result> -token N -result $data
+#   Transport:      proxy (thread) or pipe routes emit back to GUI
+#   GUI emit:       sees module "callback", calls _callback
+#   _callback:      looks up token in Callbacks, removes entry, invokes
+#                   the original command with the result.  One-shot: no
+#                   dead listener accumulation.
+#
+# Cancellation:
+#   tacky unlisten $tag  →  removes _listeners entries (next/super),
+#                            then purges Callbacks entries tagged $tag.
+
 oo::class create _tacky_router {
-    # Dict: _listeners $event $tag $command
-    variable _listeners
-    # Assign values for tags when not specified
+    variable _listeners ;# dict: {module event} → list of {tag filters command}
     variable TagCounter
 
     constructor {} {
@@ -65,6 +104,8 @@ oo::class create _tacky_router {
 
 set _tacky_taco_script [file join [file dirname [info script]] taco taco.tcl]
 
+# In-process backend: taco lives in the same thread.
+# No callback wrapping — callers talk to taco directly.
 oo::class create tacky_type {
     superclass _tacky_router
 
@@ -84,85 +125,137 @@ oo::class create tacky_type {
 	my dispatch $module $event $args
     }
 
-    # Forward all non-router methods directly to taco
+    # No callback wrapping: taco calls -command directly in this thread.
     method unknown {module method args} {
 	taco $module $method {*}$args
     }
 }
 
-# Thread-based backend: runs taco in a separate thread, communicating
-# via thread::send. A tacky_proxy snit type in the backend thread
-# forwards events back to the GUI thread asynchronously.
-#
-# Callback round-trip:
-#   1. unknown wraps -command with a closure that does thread::send -async
-#      back to the GUI thread
-#   2. Command sent to backend thread via thread::send -async
-#   3. Backend executes; tackymethod calls the wrapped callback on success
-#   4. Closure fires thread::send -async back to GUI with the original
-#      script + result
-oo::class create tacky_threaded_type {
+# Abstract base for out-of-process backends (thread / child process).
+# Provides the callback round-trip so subclasses only need _send.
+oo::class create _tacky_async {
     superclass _tacky_router
-    variable TacoTid  ;# backend thread
-    variable TackyTid ;# GUI thread (self)
+    variable TokenCounter 0
+    variable Callbacks ;# dict: token → {tag command}
+
+    constructor {} {
+	next
+	set Callbacks [dict create]
+    }
+
+    # Route incoming messages: "callback" module → one-shot _callback,
+    # everything else → normal listener dispatch.
+    method emit {module event args} {
+	if {$module eq "callback"} {
+	    my _callback {*}$args
+	} else {
+	    my dispatch $module $event $args
+	}
+    }
+
+    # Look up token, remove entry (one-shot), invoke original command.
+    # Silently ignores unknown tokens (callback was cancelled).
+    method _callback {args} {
+	set token [dict get $args -token]
+	if {![dict exists $Callbacks $token]} return
+	set entry [dict get $Callbacks $token]
+	dict unset Callbacks $token
+	lassign $entry _tag cmd
+	{*}$cmd [dict get $args -result]
+    }
+
+    # Remove persistent listeners (super) and pending callbacks for $tag.
+    method unlisten {tag} {
+	next $tag
+	dict for {token entry} $Callbacks {
+	    if {[lindex $entry 0] eq $tag} {
+		dict unset Callbacks $token
+	    }
+	}
+    }
+
+    # Subclass must override: deliver command to backend.
+    method _send {module method args} {
+	error "abstract: subclass must override _send"
+    }
+
+    # Intercept outgoing calls: store -command/-onerror in Callbacks and
+    # replace them with {tacky emit callback <Result|Error> -token N -result}
+    # so the backend round-trips through emit on completion.
+    method unknown {module method args} {
+	if {[dict exists $args -command] || [dict exists $args -onerror]} {
+	    if {[dict exists $args -tag]} {
+		set tag [dict get $args -tag]
+	    } else {
+		set tag ""
+	    }
+	    foreach opt {-command -onerror} {
+		if {![dict exists $args $opt]} continue
+		set orig [dict get $args $opt]
+		set token [incr TokenCounter]
+		set event [dict get {-command <Result> -onerror <Error>} $opt]
+		dict set Callbacks $token [list $tag $orig]
+		dict set args $opt \
+		    [list tacky emit callback $event -token $token -result]
+	    }
+	}
+	my _send $module $method {*}$args
+    }
+}
+
+# Thread-based backend: taco runs in a dedicated thread.
+# A tacky_proxy snit type lives in the backend thread; when taco calls
+# tacky emit, the proxy bounces it to the GUI thread via thread::send -async,
+# landing in our emit method (which routes callbacks and events).
+oo::class create tacky_threaded_type {
+    superclass _tacky_async
+    variable TacoTid  ;# backend thread id
+    variable TackyTid ;# GUI thread id (for the proxy to target)
 
     constructor {args} {
 	next
 	set TackyTid [thread::id]
 	set TacoTid [thread::create]
 	thread::send $TacoTid [list source $::_tacky_taco_script]
+	# Define the proxy in the backend thread: it forwards every emit
+	# back to the GUI thread asynchronously.
 	thread::send $TacoTid {
 	    snit::type tacky_proxy {
 		option -tid -readonly yes
 		option -target -readonly yes
 		method emit {module event args} {
 		    thread::send -async $options(-tid) \
-			[list $options(-target) dispatch $module $event $args]
+			[list $options(-target) emit $module $event {*}$args]
 		}
 	    }
 	}
+	# Create proxy as "tacky" in backend so taco's emit calls reach us.
 	thread::send $TacoTid [list tacky_proxy tacky -tid $TackyTid -target [self]]
 	thread::send $TacoTid [list taco_type create taco {*}$args]
     }
 
-    method emit {module event args} {
-	my dispatch $module $event $args
-    }
-
     destructor {
+	# Replace proxy with no-op so events during teardown are discarded.
+	thread::send $TacoTid {tacky destroy; proc ::tacky {args} {}}
 	thread::send $TacoTid {taco destroy}
 	thread::release $TacoTid
     }
-    # Frontend will always use keyword arguments
-    method unknown {module method args} {
-	foreach opt {-command -onerror} {
-	    if {[dict exists $args $opt]} {
-		set orig [dict get $args $opt]
-		dict set args $opt [list apply {{tid cmd args} {
-		    thread::send -async $tid [list {*}$cmd {*}$args]
-		}} $TackyTid $orig]
-	    }
-	}
+
+    method _send {module method args} {
 	thread::send -async $TacoTid [list taco $module $method {*}$args]
     }
-
 }
 
 set _tacky_lenpipe_script [file join [file dirname [info script]] taco lenpipe.tcl]
 set _tacky_backend_script [file join [file dirname [info script]] taco_process_backend.tcl]
 
-# Process-based backend: runs taco in a child process (taco_process_backend.tcl),
-# communicating over stdin/stdout with length-prefixed messages (lenpipe).
-#
-# Callback round-trip (same idea as tacky_threaded_type):
-#   1. unknown replaces -command {mymethod OnList} with {_tacky_cb {mymethod OnList}}
-#   2. Command + wrapped callback sent to child over pipe
-#   3. Child executes the command; tackymethod calls the callback on success
-#   4. _tacky_cb (in child) sends [list cb {mymethod OnList} $result] back
-#   5. GUI receives it and does {*}{mymethod OnList} {*}$result
-# No IDs or state — the original script is the token.
+# Process-based backend: taco runs in a child process
+# (taco_process_backend.tcl), communicating over stdin/stdout with
+# length-prefixed messages (lenpipe).  The child's tacky object sends
+# {event $module $event $args} messages back, which _onMessage routes
+# through emit.
 oo::class create tacky_process_type {
-    superclass _tacky_router
+    superclass _tacky_async
     variable Pipe
 
     constructor {args} {
@@ -174,27 +267,17 @@ oo::class create tacky_process_type {
 	    -oneof [namespace code {my _onEof}]]
     }
 
-    method emit {module event args} { my dispatch $module $event $args }
-
-    # close on |... pipe waits for child to exit.
     destructor { catch {$Pipe destroy} }
 
-    # Wrap callbacks and send command to child.
-    method unknown {module method args} {
-	foreach opt {-command -onerror} {
-	    if {[dict exists $args $opt]} {
-		set orig [dict get $args $opt]
-		dict set args $opt [list _tacky_cb $orig]
-	    }
-	}
+    method _send {module method args} {
 	$Pipe send [list $module $method {*}$args]
     }
 
+    # Dispatch incoming messages from the child process.
+    # Format: {event $module $event $args}
     method _onMessage {msg} {
-	switch [lindex $msg 0] {
-	    cb    { {*}[lindex $msg 1] {*}[lindex $msg 2] }
-	    event { my dispatch [lindex $msg 1] [lindex $msg 2] [lindex $msg 3] }
-	}
+	lassign $msg type module event args
+	my emit $module $event {*}$args
     }
 
     method _onEof {} { my dispatch error <ProcessExit> {} }

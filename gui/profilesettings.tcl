@@ -78,7 +78,7 @@ snit::widget profilesettings {
 
 	# Nick: load + stay live
 	$t nick get -acc $acc -jid $acc \
-	    -command [mymethod OnNick]
+	    -tag $win -command [mymethod OnNick]
 	$t listen -tag $win nick <Changed> -acc $acc -jid $acc \
 	    [mymethod OnNickChanged]
 
@@ -111,7 +111,7 @@ snit::widget profilesettings {
     method OnNickChanged {ev} {
 	$options(-tacky) nick get \
 	    -acc $options(-acc) -jid $options(-acc) \
-	    -command [mymethod OnNick]
+	    -tag $win -command [mymethod OnNick]
     }
 
     method OnAvatar {img} {
@@ -124,7 +124,7 @@ snit::widget profilesettings {
 	set name [$win.nameentry get]
 	$options(-tacky) nick set \
 	    -acc $options(-acc) -nick $name \
-	    -command [mymethod OnNameSaved]
+	    -tag $win -command [mymethod OnNameSaved]
     }
 
     method OnNameSaved {stanza} {
@@ -163,7 +163,7 @@ snit::widget profilesettings {
 	if {$pass eq ""} return
 	$options(-tacky) account changePassword \
 	    -acc $options(-acc) -password $pass \
-	    -command [mymethod OnResult "Password"]
+	    -tag $win -command [mymethod OnResult "Password"]
     }
 
     # --- Feedback ---

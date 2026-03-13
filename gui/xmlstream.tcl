@@ -57,11 +57,11 @@ snit::widgetadaptor xmlstream {
 	    switch -- $type {
 		account {
 		    tacky debugtap on -acc $id \
-			-command [mymethod OnTapReady $v]
+			-tag $win -command [mymethod OnTapReady $v]
 		}
 		register {
 		    tacky debugtap on -token $id \
-			-command [mymethod OnTapReady $v]
+			-tag $win -command [mymethod OnTapReady $v]
 		}
 	    }
 	}
@@ -101,7 +101,7 @@ snit::widgetadaptor xmlstream {
 	$self configurelist $args
 	set stanzas {}
 	tacky setting get -key xmlconsole.filters \
-	    -command [mymethod OnLoadFilters]
+	    -tag $win -command [mymethod OnLoadFilters]
     }
 
     method OnLoadFilters {result} {

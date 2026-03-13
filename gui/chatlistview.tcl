@@ -42,9 +42,9 @@ snit::widget chatlistview {
 	}
 
 	::tacky setting get -key show_presence_colors \
-	    -command [mymethod OnPresenceColorsSetting]
+	    -tag $win -command [mymethod OnPresenceColorsSetting]
 	::tacky setting get -key show_avatars \
-	    -command [mymethod OnShowAvatarsSetting]
+	    -tag $win -command [mymethod OnShowAvatarsSetting]
 
 	# Search entry
 	install searchentry using ttk::entry $win.search \
@@ -168,7 +168,7 @@ snit::widget chatlistview {
 
 	# Load initial top chats
 	$options(-tacky) chats latest -acc $options(-acc) \
-	    -command [mymethod OnRecentChats]
+	    -tag $win -command [mymethod OnRecentChats]
     }
 
     destructor {
@@ -193,7 +193,7 @@ snit::widget chatlistview {
 	}
 
 	$options(-tacky) roster get -acc $options(-acc) \
-	    -command [mymethod OnRosterData $openGroups]
+	    -tag $win -command [mymethod OnRosterData $openGroups]
     }
 
     method OnRosterData {openGroups items} {
@@ -220,7 +220,7 @@ snit::widget chatlistview {
 
     method RebuildBookmarks {} {
 	$options(-tacky) bookmarks get -acc $options(-acc) \
-	    -command [mymethod OnBookmarksData]
+	    -tag $win -command [mymethod OnBookmarksData]
     }
 
     method OnBookmarksData {items} {
@@ -443,7 +443,7 @@ snit::widget chatlistview {
 		set jid [$self ItemJid $item]
 		$options(-tacky) bookmarks autojoin \
 		    -acc $options(-acc) -jid $jid \
-		    -command [mymethod OnAutojoinResult $X $Y]
+		    -tag $win -command [mymethod OnAutojoinResult $X $Y]
 	    } else {
 		tk_popup $contactmenu $X $Y
 	    }

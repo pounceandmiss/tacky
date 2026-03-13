@@ -4,8 +4,7 @@
 # stdin/stdout using length-prefixed messages (lenpipe).
 #
 # Incoming (stdin):  <module> <method> <kwarg>...
-# Outgoing (stdout): cb <callback_script> <args>       — callback result
-#                    event <module> <event> <args>      — event notification
+# Outgoing (stdout): event <module> <event> <args>
 
 proc pipesend {msg} {
     puts stdout [string length $msg]
@@ -19,11 +18,6 @@ namespace eval ::tacky_ns {
     namespace export emit
     namespace ensemble create -command ::tacky
     proc emit {module event args} { pipesend [list event $module $event $args] }
-}
-
-# Called when tackymethod invokes a wrapped -command/-onerror.
-proc _tacky_cb {cmd args} {
-    pipesend [list cb $cmd $args]
 }
 
 # Configure stdout for writing

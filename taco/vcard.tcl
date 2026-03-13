@@ -49,13 +49,12 @@ snit::type taco_vcard {
 
     # Update NICKNAME and republish the full vCard.
     method setNick {args} {
-	set nick [dict get $args -nick]
-	set command [expr {[dict exists $args -command] \
-	    ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 	if {$CachedVCard eq ""} {
-	    $self Fetch [mymethod DoSetNick $nick $command]
+	    $self Fetch [mymethod DoSetNick $opts(-nick) $opts(-command)]
 	} else {
-	    $self DoSetNick $nick $command
+	    $self DoSetNick $opts(-nick) $opts(-command)
 	}
     }
 

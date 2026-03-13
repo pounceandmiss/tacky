@@ -376,7 +376,7 @@ snit::widget signup {
 	$pages.step1.proceed configure -text "Proceed" \
 	    -command [mymethod FetchForm]
 
-	tacky register form -token $win -command [mymethod OnFormData]
+	tacky register form -token $win -tag $win -command [mymethod OnFormData]
     }
 
     method OnFormData {formdata} {
@@ -403,7 +403,7 @@ snit::widget signup {
     method OnMediaReady {ev} {
 	set var [dict get $ev -var]
 	tacky register media -token $win -var $var \
-	    -command [mymethod OnMediaData $var]
+	    -tag $win -command [mymethod OnMediaData $var]
     }
 
     method OnMediaData {var data} {

@@ -19,7 +19,7 @@ snit::widgetadaptor accountnotebook {
         $tacky listen -tag $self account <Removed>  [mymethod OnAccountRemoved]
 
         # Populate tabs for already-enabled accounts
-        $tacky account list -enabled 1 -command [mymethod OnInitialAccounts]
+        $tacky account list -enabled 1 -tag $self -command [mymethod OnInitialAccounts]
     }
 
     destructor {

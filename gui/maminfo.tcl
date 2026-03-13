@@ -76,7 +76,9 @@ snit::widget maminfo {
 	$win.target insert 0 [jid domain $options(-acc)]
     }
 
-    destructor {}
+    destructor {
+	catch {::tacky unlisten $win}
+    }
 
     method Query {} {
 	set version_text ""
@@ -93,7 +95,7 @@ snit::widget maminfo {
 	set versionTo [expr {$target ne "" ? $target
 	    : [jid domain $options(-acc)]}]
 	::tacky caps softwareVersion -acc $options(-acc) \
-	    -to $versionTo -command [mymethod OnVersion]
+	    -to $versionTo -tag $win -command [mymethod OnVersion]
 
 	# Metadata and form fields
 	set mamArgs [list -acc $options(-acc)]
@@ -101,9 +103,9 @@ snit::widget maminfo {
 	    lappend mamArgs -to $target
 	}
 	::tacky mam metadata {*}$mamArgs \
-	    -command [mymethod OnMetadata]
+	    -tag $win -command [mymethod OnMetadata]
 	::tacky mam formfields {*}$mamArgs \
-	    -command [mymethod OnFields]
+	    -tag $win -command [mymethod OnFields]
     }
 
     # --- Callbacks ---

@@ -49,7 +49,7 @@ snit::widget profilebar {
 
 	# Fetch display name
 	$t bookmarks defaultNick -acc $acc \
-	    -command [mymethod OnDefaultNick]
+	    -tag $win -command [mymethod OnDefaultNick]
     }
 
     destructor {

@@ -79,7 +79,7 @@ snit::widget mucparticipantlist {
 
     method LoadOccupants {} {
 	::tacky muc occupants -acc $options(-acc) -jid $options(-jid) \
-	    -command [mymethod OnOccupantsList]
+	    -tag $win -command [mymethod OnOccupantsList]
     }
 
     method OnOccupantsList {occupants} {
@@ -200,7 +200,7 @@ snit::widget mucparticipantlist {
 
 	# Get our own data
 	::tacky muc myNick -acc $options(-acc) -jid $options(-jid) \
-	    -command [mymethod OnMyNickForMenu $nick $targetData $X $Y]
+	    -tag $win -command [mymethod OnMyNickForMenu $nick $targetData $X $Y]
     }
 
     method OnMyNickForMenu {nick targetData X Y myNick} {
@@ -322,7 +322,7 @@ snit::widget mucparticipantlist {
 	if {$reason ne ""} {
 	    lappend args -reason $reason
 	}
-	lappend args -command [mymethod OnActionError "Kick"]
+	lappend args -tag $win -command [mymethod OnActionError "Kick"]
 	::tacky muc kick {*}$args
     }
 
@@ -335,20 +335,20 @@ snit::widget mucparticipantlist {
 	if {$reason ne ""} {
 	    lappend args -reason $reason
 	}
-	lappend args -command [mymethod OnActionError "Ban"]
+	lappend args -tag $win -command [mymethod OnActionError "Ban"]
 	::tacky muc affiliation {*}$args
     }
 
     method DoRole {nick role} {
 	::tacky muc role -acc $options(-acc) -jid $options(-jid) \
 	    -nick $nick -role $role \
-	    -command [mymethod OnActionError "Role change"]
+	    -tag $win -command [mymethod OnActionError "Role change"]
     }
 
     method DoAffiliation {jid affiliation} {
 	::tacky muc affiliation -acc $options(-acc) -jid $options(-jid) \
 	    -target $jid -affiliation $affiliation \
-	    -command [mymethod OnActionError "Affiliation change"]
+	    -tag $win -command [mymethod OnActionError "Affiliation change"]
     }
 
     method OnActionError {action stanza} {
