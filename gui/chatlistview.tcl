@@ -328,9 +328,19 @@ snit::widget chatlistview {
 	set count 0
 	foreach jid $recentJids {
 	    if {[dict exists $merged $jid]} {
-		set text [$self DisplayText [dict get $merged $jid]]
+		set item [dict get $merged $jid]
+		set text [$self DisplayText $item]
+		set name [dict get $item -name]
 	    } else {
 		set text $jid
+		set name $jid
+	    }
+	    if {$searchquery ne ""} {
+		set q [string tolower $searchquery]
+		if {[string first $q [string tolower $jid]] < 0 &&
+		    [string first $q [string tolower $name]] < 0} {
+		    continue
+		}
 	    }
 	    set img [$self TrackAvatar $jid]
 	    $treeview insert RecentChats end -id "RecentChats/$jid" \

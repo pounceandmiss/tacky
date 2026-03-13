@@ -170,23 +170,29 @@ snit::type taco_messagestore {
 	set r2 $r1
     }
 
-    # Returns messages from a single region only. The subqueries in
-    # GetBefore/GetAfter pin results to the region of the nearest
-    # message at the cursor, so gaps between regions are never bridged.
+    # Returns messages from a single region only. GetBefore/GetAfter use
+    # a strict match (message at cursor) to pin the region, so gaps
+    # between regions are never bridged. GetLatest handles the no-cursor
+    # case by fetching from the most recent region.
     method get {jid args} {
 	set limit [expr {[dict exists $args -limit] ? [dict get $args -limit] : 50}]
 	set hasBefore [dict exists $args -before]
 	set hasAfter [dict exists $args -after]
 
-	if {$hasBefore && $hasAfter} {
-	    error "-before and -after are mutually exclusive"
+	set hasAround [dict exists $args -around]
+
+	if {($hasBefore + $hasAfter + $hasAround) > 1} {
+	    error "-before, -after and -around are mutually exclusive"
 	}
 
-	if {$hasAfter} {
+	if {$hasAround} {
+	    return [$self GetAround $jid [dict get $args -around] $limit]
+	} elseif {$hasAfter} {
 	    return [$self GetAfter $jid [dict get $args -after] $limit]
+	} elseif {$hasBefore} {
+	    return [$self GetBefore $jid [dict get $args -before] $limit]
 	} else {
-	    set cursor [expr {$hasBefore ? [dict get $args -before] : 9223372036854775807}]
-	    return [$self GetBefore $jid $cursor $limit]
+	    return [$self GetLatest $jid $limit]
 	}
     }
 
@@ -200,8 +206,8 @@ snit::type taco_messagestore {
 		WHERE chat_jid=$jid AND timestamp < $cursor
 		  AND region = (
 		    SELECT region FROM chat_message
-		    WHERE chat_jid=$jid AND timestamp < $cursor
-		    ORDER BY timestamp DESC LIMIT 1
+		    WHERE chat_jid=$jid AND timestamp = $cursor
+		    LIMIT 1
 		  )
 		ORDER BY timestamp DESC
 		LIMIT $limit
@@ -221,8 +227,8 @@ snit::type taco_messagestore {
 	    WHERE chat_jid=$jid AND timestamp > $cursor
 	      AND region = (
 		SELECT region FROM chat_message
-		WHERE chat_jid=$jid AND timestamp > $cursor
-		ORDER BY timestamp ASC LIMIT 1
+		WHERE chat_jid=$jid AND timestamp = $cursor
+		LIMIT 1
 	      )
 	    ORDER BY timestamp ASC
 	    LIMIT $limit
@@ -230,6 +236,50 @@ snit::type taco_messagestore {
 	    lappend rows [$self RowToDict [array get row]]
 	}
 	return $rows
+    }
+
+    method GetLatest {jid limit} {
+	set rows {}
+	$options(-db) eval {
+	    SELECT * FROM (
+		SELECT timestamp, chat_jid, from_jid, body, server_id,
+		       origin_id, raw_xml, server_status
+		FROM chat_message
+		WHERE chat_jid=$jid
+		  AND region = (
+		    SELECT region FROM chat_message
+		    WHERE chat_jid=$jid
+		    ORDER BY timestamp DESC LIMIT 1
+		  )
+		ORDER BY timestamp DESC
+		LIMIT $limit
+	    ) ORDER BY timestamp ASC
+	} row {
+	    lappend rows [$self RowToDict [array get row]]
+	}
+	return $rows
+    }
+
+    method GetAround {jid timestamp limit} {
+	if {![$options(-db) exists {
+	    SELECT 1 FROM chat_message
+	    WHERE chat_jid=$jid AND timestamp=$timestamp
+	}]} {
+	    return {}
+	}
+	set halfLimit [expr {$limit / 2}]
+	set before [$self GetBefore $jid $timestamp $halfLimit]
+	set after [$self GetAfter $jid $timestamp $halfLimit]
+	set target {}
+	$options(-db) eval {
+	    SELECT timestamp, chat_jid, from_jid, body, server_id,
+		   origin_id, raw_xml, server_status
+	    FROM chat_message
+	    WHERE chat_jid=$jid AND timestamp=$timestamp
+	} row {
+	    set target [list [$self RowToDict [array get row]]]
+	}
+	return [concat $before $target $after]
     }
 
     method confirmByOriginIds {originIds} {

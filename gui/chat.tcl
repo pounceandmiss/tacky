@@ -144,7 +144,35 @@ snit::widgetadaptor chatview {
 	dict set LoadToken new pending
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) -limit 50 \
-	    -tag $win -command [mymethod OnLoadDone new]
+	    -tag $win -command [mymethod OnInitialLoadDone]
+    }
+
+    method OnInitialLoadDone {messages} {
+	$self OnLoadDone new $messages
+	$hull see end
+    }
+
+    method seeMessage {id} {
+	# Already on screen — just scroll + highlight
+	if {$id in [$hull messages ids]} {
+	    $hull see message $id
+	    return
+	}
+
+	# Clear and load context around this message from local store
+	$hull clear
+	set LoadToken [dict create old "" new ""]
+	::tacky message history -acc $options(-acc) \
+	    -chat $options(-jid) \
+	    -around $id -limit 50 \
+	    -tag $win -command [mymethod OnAroundLoadDone $id]
+    }
+
+    method OnAroundLoadDone {id messages} {
+	$self OnLoadDone new $messages
+	if {$id in [$hull messages ids]} {
+	    $hull see message $id
+	}
     }
 
     destructor {
@@ -163,20 +191,21 @@ snit::widgetadaptor chatview {
 	    return
 	}
 
-	# Specific message ID (timestamp)
-	if {$target in [$hull messages ids]} {
-	    $hull see message $target
-	    return
-	}
-
-	# Not loaded — clear and load around target
-	$hull clear
-	set LoadToken [dict create old "" new ""]
-	dict set LoadToken old pending
+	# Fetch one page from server after target date, then seeMessage
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) \
-	    -before $target -limit 50 \
-	    -tag $win -command [mymethod OnLoadDone old]
+	    -after $target -limit 50 -no-local 1 \
+	    -tag $win -command [mymethod OnGotoFetched]
+    }
+
+    method OnGotoFetched {messages} {
+	if {[llength $messages] == 0} return
+	set sid [dict get [lindex $messages 0] server_id]
+	set id [::tacky message lookup -acc $options(-acc) \
+	    -chat $options(-jid) -server-id $sid]
+	if {$id ne ""} {
+	    $self seeMessage $id
+	}
     }
 
     method OnCatchupDone {ev} {
@@ -225,9 +254,6 @@ snit::widgetadaptor chatview {
 	    }
 	}
 	$hull bulk insert $direction $enriched
-	if {$direction eq "new" && $WasAtEnd} {
-	    $hull see end
-	}
     }
 
     method OnLiveMessage {ev} {
@@ -551,7 +577,7 @@ snit::widget chatarea {
 
     method {see message} {id} {
 	$self highlight message $id
-	$text see item.$id.first
+	$text yview item.$id.first
     }
 
     method {highlight message} {id} {

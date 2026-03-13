@@ -292,7 +292,7 @@ test message-parseresultnode-no-origin-id {ParseResultNode handles missing origi
 
 # -- history: cancel -----------------------------------------------------------
 
-test message-history-cancel-suppresses-callback {cancel tag prevents backfill callback} \
+test message-history-cancel-suppresses-callback {cancel tag prevents fetch callback} \
     {*}$msg_common \
     -body {
 	set ::result UNTOUCHED
@@ -778,3 +778,188 @@ test message-history-mam-default-cursor {default (no timestamp) uses cursor-base
 	set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
 	list $hasStart $hasEnd
     } -result {0 0}
+
+# -- history: fetch bridges into anchor region ----------------------------------
+
+test message-history-fetch-bridges-before {MAM fetch via -before bridges into anchor region} \
+    {*}$msg_common \
+    -body {
+	# Live message arrives — stored in its own region
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg"
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
+	}]
+	set liveTs [dict get \
+	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    timestamp]
+
+	# history -before $liveTs: local returns empty (only message IS the
+	# cursor), so MAM fires.  Feed fetch results.
+	set ::_result {}
+	tacky message history -acc $acc -chat alice@example.com \
+	    -before $liveTs -limit 50 \
+	    -command [list apply {{r} { set ::_result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id mam1 queryid $qid \
+		from alice@example.com/phone body "old msg 1" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id mam2 queryid $qid \
+		from alice@example.com/phone body "old msg 2" \
+		stamp 2024-01-01T11:00:00Z]
+	}]
+
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body mam1
+		    j last #body mam2
+		}
+	    }
+	}]
+
+	# The callback should see the fetched messages (bridged into
+	# the live message's region, so the re-query finds them).
+	list [llength $::_result] \
+	     [dict get [lindex $::_result 0] body] \
+	     [dict get [lindex $::_result 1] body]
+    } -result {2 {old msg 1} {old msg 2}}
+
+test message-history-fetch-live-during {live message during fetch ends up in same region} \
+    {*}$msg_common \
+    -body {
+	# Live message arrives — stored in liveRegion
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg"
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
+	}]
+	set liveTs [dict get \
+	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    timestamp]
+
+	# history -before triggers MAM
+	set ::_result {}
+	tacky message history -acc $acc -chat alice@example.com \
+	    -before $liveTs -limit 50 \
+	    -command [list apply {{r} { set ::_result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	# Second live message arrives DURING the MAM query
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg 2"
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live2
+	}]
+
+	# MAM response arrives
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id mam1 queryid $qid \
+		from alice@example.com/phone body "old msg" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body mam1
+		    j last #body mam1
+		}
+	    }
+	}]
+
+	# All three messages (fetched + both live) should be in one region
+	set db [$::_client message messagestore cget -db]
+	set regions [$db eval {
+	    SELECT COUNT(DISTINCT region) FROM chat_message
+	    WHERE chat_jid='alice@example.com'
+	}]
+	list [llength $::_result] $regions
+    } -result {1 1}
+
+test message-history-fetch-live-after {live message after fetch lands in same region} \
+    {*}$msg_common \
+    -body {
+	# Live message arrives
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg"
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live
+	}]
+	set liveTs [dict get \
+	    [lindex [$::_client message messagestore get alice@example.com] 0] \
+	    timestamp]
+
+	# Backfill via -before
+	set ::_result {}
+	tacky message history -acc $acc -chat alice@example.com \
+	    -before $liveTs -limit 50 \
+	    -command [list apply {{r} { set ::_result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id mam1 queryid $qid \
+		from alice@example.com/phone body "old msg" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body mam1
+		    j last #body mam1
+		}
+	    }
+	}]
+
+	# NEW live message arrives AFTER fetch completes
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "live msg 2"
+	    j stanza-id -ns urn:xmpp:sid:0 -id srv-live2
+	}]
+
+	# GetLatest should see all 3 messages in one region
+	set all [$::_client message messagestore get alice@example.com]
+	set db [$::_client message messagestore cget -db]
+	set regions [$db eval {
+	    SELECT COUNT(DISTINCT region) FROM chat_message
+	    WHERE chat_jid='alice@example.com'
+	}]
+	list [llength $all] $regions
+    } -result {3 1}
+
+# -- history: -around -----------------------------------------------------------
+
+test message-history-around-local-only {-around returns local data without MAM} \
+    {*}$msg_common \
+    -body {
+	msg_store [list \
+	    [msg_msg timestamp 100 body a] \
+	    [msg_msg timestamp 200 body b] \
+	    [msg_msg timestamp 300 body c] \
+	    [msg_msg timestamp 400 body d] \
+	    [msg_msg timestamp 500 body e]]
+	set written1 [$::_client conn get_written]
+	set result [msg_history -chat alice@example.com -around 300 -limit 4]
+	set written2 [$::_client conn get_written]
+	list [llength $result] \
+	     [dict get [lindex $result 0] body] \
+	     [dict get [lindex $result 2] body] \
+	     [dict get [lindex $result end] body] \
+	     [expr {[llength $written1] == [llength $written2]}]
+    } -result {5 a c e 1}
+
+test message-history-around-missing {-around with missing message returns empty, no MAM} \
+    {*}$msg_common \
+    -body {
+	msg_store [list [msg_msg timestamp 100 body a]]
+	set written1 [$::_client conn get_written]
+	set result [msg_history -chat alice@example.com -around 999]
+	set written2 [$::_client conn get_written]
+	list [llength $result] \
+	     [expr {[llength $written1] == [llength $written2]}]
+    } -result {0 1}

@@ -379,9 +379,9 @@ snit::type taco_message {
     # messagestore get is region-scoped, so it only returns messages from
     # the same contiguous region as the cursor.  When the region is
     # exhausted (local returns empty) and the chat isn't fully synced,
-    # MAM backfill kicks in to fetch the next batch from the server.
+    # a MAM fetch kicks in to get the next batch from the server.
     method history {args} {
-	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag "" -no-local 0]
+	set defaults [dict create -before "" -after "" -around "" -limit 50 -command "" -tag "" -no-local 0]
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
@@ -389,11 +389,19 @@ snit::type taco_message {
 	set callback [dict get $opts -command]
 	set before [dict get $opts -before]
 	set after [dict get $opts -after]
+	set around [dict get $opts -around]
 	set tag [dict get $opts -tag]
 	set noLocal [dict get $opts -no-local]
 
 	if {$tag ne ""} {
 	    set ActiveTags($tag) 1
+	}
+
+	# -around: local-only lookup, no MAM
+	if {$around ne ""} {
+	    set local [$messagestore get $chatJid -around $around -limit $limit]
+	    {*}$callback $local
+	    return
 	}
 
 	# Try local store first (unless caller opts out, e.g. goto-date)
@@ -402,15 +410,13 @@ snit::type taco_message {
 	if {$after ne ""}  { lappend getArgs -after $after }
 	set local [$messagestore get $chatJid {*}$getArgs]
 
-	if {[llength $local] > 0 || [info exists SyncedChats($chatJid)]} {
-	    if {!$noLocal || [info exists SyncedChats($chatJid)]} {
-		{*}$callback $local
-		return
-	    }
+	if {!$noLocal && ([llength $local] > 0 || [info exists SyncedChats($chatJid)])} {
+	    {*}$callback $local
+	    return
 	}
 
 	# No local data and not synced — query the server
-	$messagestore region new backfillRegion
+	$messagestore region new fetchRegion
 
 	set mamArgs [list -max $limit]
 	if {$before ne ""} {
@@ -432,14 +438,14 @@ snit::type taco_message {
 		lappend mamArgs -before $cursor
 	    }
 	}
-	lappend mamArgs -command [mymethod OnBackfill $chatJid $cursor \
+	lappend mamArgs -command [mymethod OnFetch $chatJid $cursor \
 				      $before $after $limit $callback $tag \
-				      $backfillRegion]
+				      $fetchRegion $noLocal]
 
 	$client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnBackfill {chatJid cursor before after limit callback tag backfillRegion mamResult} {
+    method OnFetch {chatJid cursor before after limit callback tag fetchRegion noLocal mamResult} {
 	if {[dict exists $mamResult error]} {
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 	    set getArgs [list -limit $limit]
@@ -459,20 +465,34 @@ snit::type taco_message {
 	    lappend messages [$self ParseResultNode $resultNode $chatJid]
 	}
 
-	# Store the backfill batch (even if cancelled — data is still useful)
+	# Store the fetched batch (even if cancelled — data is still useful)
 	if {[llength $messages] > 0} {
-	    $messagestore store batch $messages backfillRegion
+	    $messagestore store batch $messages fetchRegion
 	}
 
-	# Bridge backfill region to live region if cursor came from local data
+	# Bridge fetch region into the local region it reached.
+	# Cursor-based: the MAM page ended at a known server_id.
+	# Time-based: the MAM page reached the message at $before/$after.
 	if {$cursor ne ""} {
-	    set liveRegion [$client db onecolumn {
+	    set anchorRegion [$client db onecolumn {
 		SELECT region FROM chat_message
 		WHERE chat_jid=$chatJid AND server_id=$cursor
 	    }]
-	    if {$liveRegion ne "" && $liveRegion != $backfillRegion} {
-		$messagestore bridge $chatJid backfillRegion liveRegion
-	    }
+	} elseif {$before ne ""} {
+	    set anchorRegion [$client db onecolumn {
+		SELECT region FROM chat_message
+		WHERE chat_jid=$chatJid AND timestamp=$before
+	    }]
+	} elseif {$after ne ""} {
+	    set anchorRegion [$client db onecolumn {
+		SELECT region FROM chat_message
+		WHERE chat_jid=$chatJid AND timestamp=$after
+	    }]
+	} else {
+	    set anchorRegion ""
+	}
+	if {$anchorRegion ne "" && $anchorRegion != $fetchRegion} {
+	    $messagestore bridge $chatJid anchorRegion fetchRegion
 	}
 
 	# Mark synced if MAM says archive start reached
@@ -481,6 +501,11 @@ snit::type taco_message {
 	}
 
 	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+
+	if {$noLocal} {
+	    {*}$callback $messages
+	    return
+	}
 
 	# Re-query local and deliver
 	set getArgs [list -limit $limit]
@@ -496,6 +521,15 @@ snit::type taco_message {
     method cancel {args} {
 	set tag [dict get $args -tag]
 	unset -nocomplain ActiveTags($tag)
+    }
+
+    method lookup {args} {
+	set chatJid [dict get $args -chat]
+	set serverId [dict get $args -server-id]
+	$client db onecolumn {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid=$chatJid AND server_id=$serverId
+	}
     }
 
     method ParseResultNode {resultNode chatJid} {

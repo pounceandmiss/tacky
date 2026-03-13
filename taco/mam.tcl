@@ -442,3 +442,14 @@ proc ParseTimestamp {stamp} {
     }
     return [expr {$result * 1000000 + $fracUs}]
 }
+
+# Inverse of ParseTimestamp: epoch microseconds → ISO 8601 string
+proc FormatTimestampISO {us} {
+    set secs [expr {$us / 1000000}]
+    set fracUs [expr {$us % 1000000}]
+    set base [clock format $secs -format "%Y-%m-%dT%H:%M:%S" -gmt 1]
+    if {$fracUs != 0} {
+	return "${base}.[format %06d $fracUs]Z"
+    }
+    return "${base}Z"
+}

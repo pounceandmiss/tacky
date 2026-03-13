@@ -80,6 +80,8 @@ snit::widget chatpanel {
     method InstallMenus {} {
 	set mb $options(-menubar)
 	menu $mb.chat -tearoff 0
+	$mb.chat add command -label "Jump to Date..." \
+	    -command [mymethod JumpToDate]
 	if {$isMuc} {
 	    $self RebuildMucMenu
 	}
@@ -89,6 +91,10 @@ snit::widget chatpanel {
     method RebuildMucMenu {} {
 	set mb $options(-menubar)
 	$mb.chat delete 0 end
+
+	$mb.chat add command -label "Jump to Date..." \
+	    -command [mymethod JumpToDate]
+	$mb.chat add separator
 
 	# Always-visible items
 	$mb.chat add checkbutton -label "Participants" \
@@ -127,8 +133,8 @@ snit::widget chatpanel {
 	set affil [dict get $occ affiliation]
 
 	# Insert permission-gated items before the trailing separator
-	# Static menu: Participants, sep, Invite, Change Nick = indices 0-3
-	set insertIdx 4
+	# Static menu: Jump to Date, sep, Participants, sep, Invite, Change Nick = indices 0-5
+	set insertIdx 6
 	if {$role eq "visitor"} {
 	    $mb.chat insert $insertIdx separator
 	    incr insertIdx
@@ -159,6 +165,18 @@ snit::widget chatpanel {
 	if {[winfo exists $mb.chat]} {
 	    destroy $mb.chat
 	}
+    }
+
+    method JumpToDate {} {
+	set dateStr [InputDialog .jump_date_dlg \
+	    -title "Jump to Date" -prompt "Date (YYYY-MM-DD):"]
+	if {$dateStr eq ""} return
+	if {[catch {clock scan $dateStr -format "%Y-%m-%d"} secs]} {
+	    tk_messageBox -icon error -title "Invalid Date" \
+		-message "Could not parse date: $dateStr\n\nExpected format: YYYY-MM-DD"
+	    return
+	}
+	$cv goto [expr {$secs * 1000000}]
     }
 
     method ToggleParticipants {} {
