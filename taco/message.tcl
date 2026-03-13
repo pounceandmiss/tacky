@@ -101,7 +101,6 @@ snit::type taco_message {
 
     variable client
     variable PubSubHandlers
-    variable SyncedChats
     variable PendingRetry
     variable liveRegion ""
     variable ActiveTags
@@ -112,7 +111,6 @@ snit::type taco_message {
 	install messagestore using taco_messagestore $self.messagestore \
 	    -db [$client cget -db]
 	array set PubSubHandlers {}
-	array set SyncedChats {}
 	array set PendingRetry {}
 	array set ActiveTags {}
 	$client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
@@ -177,7 +175,6 @@ snit::type taco_message {
     }
 
     method OnDisconnect {args} {
-	array unset SyncedChats
 	array unset PendingRetry
 	set liveRegion ""
     }
@@ -381,7 +378,7 @@ snit::type taco_message {
     # exhausted (local returns empty) and the chat isn't fully synced,
     # a MAM fetch kicks in to get the next batch from the server.
     method history {args} {
-	set defaults [dict create -before "" -after "" -around "" -limit 50 -command "" -tag "" -no-local 0]
+	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
 	set opts [dict merge $defaults $args]
 
 	set chatJid [dict get $opts -chat]
@@ -389,63 +386,81 @@ snit::type taco_message {
 	set callback [dict get $opts -command]
 	set before [dict get $opts -before]
 	set after [dict get $opts -after]
-	set around [dict get $opts -around]
 	set tag [dict get $opts -tag]
-	set noLocal [dict get $opts -no-local]
 
 	if {$tag ne ""} {
 	    set ActiveTags($tag) 1
 	}
 
-	# -around: local-only lookup, no MAM
-	if {$around ne ""} {
-	    set local [$messagestore get $chatJid -around $around -limit $limit]
-	    {*}$callback $local
-	    return
-	}
-
-	# Try local store first (unless caller opts out, e.g. goto-date)
+	# Try local store first
 	set getArgs [list -limit $limit]
 	if {$before ne ""} { lappend getArgs -before $before }
 	if {$after ne ""}  { lappend getArgs -after $after }
 	set local [$messagestore get $chatJid {*}$getArgs]
 
-	if {!$noLocal && ([llength $local] > 0 || [info exists SyncedChats($chatJid)])} {
+	if {[llength $local] > 0} {
 	    {*}$callback $local
 	    return
+	}
+
+	# For -after queries, skip MAM when cursor is at or past the
+	# latest stored message — there's nothing newer in the archive.
+	if {$after ne ""} {
+	    set latestTs [$client db onecolumn {
+		SELECT MAX(timestamp) FROM chat_message
+		WHERE chat_jid=$chatJid
+	    }]
+	    if {$latestTs eq "" || $after >= $latestTs} {
+		{*}$callback $local
+		return
+	    }
 	}
 
 	# No local data and not synced — query the server
 	$messagestore region new fetchRegion
 
 	set mamArgs [list -max $limit]
+	set cursorSid ""
 	if {$before ne ""} {
-	    # Time-anchored: fetch messages ending at this timestamp
-	    lappend mamArgs -end [FormatTimestampISO $before] -before {}
-	    set cursor ""
+	    # Try server_id at cursor for RSM pagination; time-based fallback
+	    set cursorSid [$client db onecolumn {
+		SELECT server_id FROM chat_message
+		WHERE chat_jid=$chatJid AND timestamp=$before AND server_id != ''
+	    }]
+	    if {$cursorSid ne ""} {
+		lappend mamArgs -before $cursorSid
+	    } else {
+		lappend mamArgs -end [FormatTimestampISO $before] -before {}
+	    }
 	} elseif {$after ne ""} {
-	    # Time-anchored: fetch messages starting at this timestamp
-	    lappend mamArgs -start [FormatTimestampISO $after]
-	    set cursor ""
+	    set cursorSid [$client db onecolumn {
+		SELECT server_id FROM chat_message
+		WHERE chat_jid=$chatJid AND timestamp=$after AND server_id != ''
+	    }]
+	    if {$cursorSid ne ""} {
+		lappend mamArgs -after $cursorSid
+	    } else {
+		lappend mamArgs -start [FormatTimestampISO $after]
+	    }
 	} else {
 	    # Cursor-based: page backwards from earliest known server_id
-	    set cursor [$client db onecolumn {
+	    set cursorSid [$client db onecolumn {
 		SELECT server_id FROM chat_message
 		WHERE chat_jid=$chatJid AND server_id != ''
 		ORDER BY timestamp ASC LIMIT 1
 	    }]
-	    if {$cursor ne ""} {
-		lappend mamArgs -before $cursor
+	    if {$cursorSid ne ""} {
+		lappend mamArgs -before $cursorSid
 	    }
 	}
-	lappend mamArgs -command [mymethod OnFetch $chatJid $cursor \
+	lappend mamArgs -command [mymethod OnFetch $chatJid $cursorSid \
 				      $before $after $limit $callback $tag \
-				      $fetchRegion $noLocal]
+				      $fetchRegion]
 
 	$client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnFetch {chatJid cursor before after limit callback tag fetchRegion noLocal mamResult} {
+    method OnFetch {chatJid cursorSid before after limit callback tag fetchRegion mamResult} {
 	if {[dict exists $mamResult error]} {
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 	    set getArgs [list -limit $limit]
@@ -471,12 +486,10 @@ snit::type taco_message {
 	}
 
 	# Bridge fetch region into the local region it reached.
-	# Cursor-based: the MAM page ended at a known server_id.
-	# Time-based: the MAM page reached the message at $before/$after.
-	if {$cursor ne ""} {
+	if {$cursorSid ne ""} {
 	    set anchorRegion [$client db onecolumn {
 		SELECT region FROM chat_message
-		WHERE chat_jid=$chatJid AND server_id=$cursor
+		WHERE chat_jid=$chatJid AND server_id=$cursorSid
 	    }]
 	} elseif {$before ne ""} {
 	    set anchorRegion [$client db onecolumn {
@@ -495,17 +508,7 @@ snit::type taco_message {
 	    $messagestore bridge $chatJid anchorRegion fetchRegion
 	}
 
-	# Mark synced if MAM says archive start reached
-	if {[dict get $mamResult complete]} {
-	    set SyncedChats($chatJid) 1
-	}
-
 	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-
-	if {$noLocal} {
-	    {*}$callback $messages
-	    return
-	}
 
 	# Re-query local and deliver
 	set getArgs [list -limit $limit]
@@ -523,13 +526,62 @@ snit::type taco_message {
 	unset -nocomplain ActiveTags($tag)
     }
 
-    method lookup {args} {
-	set chatJid [dict get $args -chat]
-	set serverId [dict get $args -server-id]
-	$client db onecolumn {
-	    SELECT timestamp FROM chat_message
-	    WHERE chat_jid=$chatJid AND server_id=$serverId
+    # goto -chat $jid -date $ts -source local|remote -limit 50
+    #      ?-tag $tag? -command $cb
+    # Jump to a point in time. Returns {messages $list anchor $ts}.
+    #   local:  getAround from local store
+    #   remote: MAM fetch from -start $date, store, then getAround
+    method goto {args} {
+	set defaults [dict create -source local -limit 50 -tag ""]
+	set opts [dict merge $defaults $args]
+
+	set chatJid  [dict get $opts -chat]
+	set date     [dict get $opts -date]
+	set source   [dict get $opts -source]
+	set limit    [dict get $opts -limit]
+	set tag      [dict get $opts -tag]
+	set callback [dict get $opts -command]
+
+	if {$tag ne ""} {
+	    set ActiveTags($tag) 1
 	}
+
+	if {$source eq "local"} {
+	    set result [$messagestore getAround $chatJid $date $limit]
+	    {*}$callback $result
+	    return
+	}
+
+	# remote: fetch from server first, then getAround
+	$messagestore region new fetchRegion
+	$client mam queryChat $chatJid \
+	    -start [FormatTimestampISO $date] -max $limit \
+	    -command [mymethod OnGoto $chatJid $date $limit $callback \
+			  $tag $fetchRegion]
+    }
+
+    method OnGoto {chatJid date limit callback tag fetchRegion mamResult} {
+	if {[dict exists $mamResult error]} {
+	    # Fall back to local
+	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+	    set result [$messagestore getAround $chatJid $date $limit]
+	    {*}$callback $result
+	    return
+	}
+
+	set messages {}
+	foreach resultNode [dict get $mamResult messages] {
+	    lappend messages [$self ParseResultNode $resultNode $chatJid]
+	}
+
+	if {[llength $messages] > 0} {
+	    $messagestore store batch $messages fetchRegion
+	}
+
+	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+
+	set result [$messagestore getAround $chatJid $date $limit]
+	{*}$callback $result
     }
 
     method ParseResultNode {resultNode chatJid} {

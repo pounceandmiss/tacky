@@ -460,7 +460,7 @@ test messagestore-get-before-after-exclusive {-before and -after together raise 
     {*}$ms_common \
     -body {
 	list [catch {store get alice@example.com -before 200 -after 100} err] $err
-    } -result {1 {-before, -after and -around are mutually exclusive}}
+    } -result {1 {-before and -after are mutually exclusive}}
 
 test messagestore-get-before-at-region-start {-before at first timestamp returns empty} \
     {*}$ms_common \
@@ -789,9 +789,9 @@ test messagestore-row-no-region-key {message dicts do not contain region key} \
 	dict exists $msg region
     } -result {0}
 
-# -- get -around ---------------------------------------------------------------
+# -- getAround ---------------------------------------------------------------
 
-test messagestore-getaround-happy {get -around returns target + context from same region} \
+test messagestore-getaround-nearest {getAround finds nearest message and returns context} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
@@ -800,16 +800,33 @@ test messagestore-getaround-happy {get -around returns target + context from sam
 	    [ms_msg timestamp 300 body c] \
 	    [ms_msg timestamp 400 body d] \
 	    [ms_msg timestamp 500 body e]]
-	set msgs [store get alice@example.com -around 300 -limit 4]
+	set result [store getAround alice@example.com 300 4]
+	set msgs [dict get $result messages]
+	set anchor [dict get $result anchor]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
-	     [dict get [lindex $msgs 1] body] \
 	     [dict get [lindex $msgs 2] body] \
-	     [dict get [lindex $msgs 3] body] \
-	     [dict get [lindex $msgs 4] body]
-    } -result {5 a b c d e}
+	     [dict get [lindex $msgs 4] body] \
+	     $anchor
+    } -result {5 a c e 300}
 
-test messagestore-getaround-region-scoped {get -around stays within cursor's region} \
+test messagestore-getaround-nearest-inexact {getAround snaps to nearest message when target is between messages} \
+    {*}$ms_common \
+    -body {
+	ms_batch [list \
+	    [ms_msg timestamp 100 body a] \
+	    [ms_msg timestamp 200 body b] \
+	    [ms_msg timestamp 500 body c]]
+	set result [store getAround alice@example.com 190 4]
+	set anchor [dict get $result anchor]
+	set msgs [dict get $result messages]
+	list $anchor [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 1] body] \
+	     [dict get [lindex $msgs 2] body]
+    } -result {200 3 a b c}
+
+test messagestore-getaround-region-scoped {getAround stays within nearest message's region} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
@@ -819,21 +836,33 @@ test messagestore-getaround-region-scoped {get -around stays within cursor's reg
 	    [ms_msg timestamp 500 body c] \
 	    [ms_msg timestamp 600 body d] \
 	    [ms_msg timestamp 700 body e]]
-	set msgs [store get alice@example.com -around 600 -limit 10]
+	set result [store getAround alice@example.com 600 10]
+	set msgs [dict get $result messages]
 	list [llength $msgs] \
 	     [dict get [lindex $msgs 0] body] \
 	     [dict get [lindex $msgs 1] body] \
-	     [dict get [lindex $msgs 2] body]
-    } -result {3 c d e}
+	     [dict get [lindex $msgs 2] body] \
+	     [dict get $result anchor]
+    } -result {3 c d e 600}
 
-test messagestore-getaround-missing {get -around returns empty for nonexistent message} \
+test messagestore-getaround-empty {getAround on empty chat returns empty messages and empty anchor} \
+    {*}$ms_common \
+    -body {
+	set result [store getAround nobody@example.com 500 10]
+	list [dict get $result messages] [dict get $result anchor]
+    } -result {{} {}}
+
+test messagestore-getaround-anchor-value {getAround anchor is the nearest message's timestamp} \
     {*}$ms_common \
     -body {
 	ms_batch [list \
 	    [ms_msg timestamp 100 body a] \
-	    [ms_msg timestamp 200 body b]]
-	store get alice@example.com -around 999 -limit 10
-    } -result {}
+	    [ms_msg timestamp 300 body b] \
+	    [ms_msg timestamp 500 body c]]
+	# Target 250 is closest to 300
+	set result [store getAround alice@example.com 250 4]
+	dict get $result anchor
+    } -result {300}
 
 # -- strict region: cursor must exist -----------------------------------------
 

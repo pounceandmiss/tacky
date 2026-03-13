@@ -196,64 +196,36 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
 	     [dict get $m2 body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com/phone mam1 orig1 alice@example.com 1 1 {second msg} mam2}
 
-test message-history-mam-complete-marks-synced {MAM complete=true marks chat as synced} \
+# -- history: -after at latest skips MAM ----------------------------------------
+
+test message-history-after-at-latest-no-mam {-after at latest message returns empty without MAM} \
     {*}$msg_common \
     -body {
-	set result {}
-	tacky message history -acc $acc -chat bob@example.com -limit 50 \
-	    -command [list apply {{r} { set ::result $r }}]
-
-	set written [$::_client conn get_written]
-	set iqStanza [lindex $written end]
-	set iqId [dict get $iqStanza attrs id]
-
-	# Feed fin with complete=true (empty archive)
-	$::_client iq feed [j iq -type result -id $iqId {
-	    j fin -ns urn:xmpp:mam:2 -complete true {
-		j set -ns http://jabber.org/protocol/rsm
-	    }
-	}]
-
-	# Now a second query should not send MAM
+	msg_store [list \
+	    [msg_msg timestamp 100 server_id s1 body a] \
+	    [msg_msg timestamp 200 server_id s2 body b]]
 	set written1 [$::_client conn get_written]
-	set result2 [msg_history -chat bob@example.com -limit 50]
+	# -after the latest timestamp — nothing newer exists
+	set result [msg_history -chat alice@example.com -after 200 -limit 50]
 	set written2 [$::_client conn get_written]
-	# No new IQ should have been sent
-	list [llength $result2] [expr {[llength $written1] == [llength $written2]}]
+	list [llength $result] \
+	     [expr {[llength $written1] == [llength $written2]}]
     } -result {0 1}
 
-# -- history: disconnect clears synced -----------------------------------------
+# -- history: -before with empty local still queries MAM -----------------------
 
-test message-history-disconnect-clears-synced {disconnect clears SyncedChats state} \
+test message-history-before-empty-queries-mam {-before with empty local still queries MAM} \
     {*}$msg_common \
     -body {
-	# Get chat synced
-	set result {}
-	tacky message history -acc $acc -chat bob@example.com -limit 50 \
-	    -command [list apply {{r} { set ::result $r }}]
-
-	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
-	$::_client iq feed [j iq -type result -id $iqId {
-	    j fin -ns urn:xmpp:mam:2 -complete true {
-		j set -ns http://jabber.org/protocol/rsm
-	    }
-	}]
-
-	# Verify synced
-	set r [msg_history -chat bob@example.com -limit 50]
-
-	# Disconnect
-	$::_client conn fire_disconnect "gone"
-
-	# After disconnect, should trigger MAM again (async)
-	set result2 {}
-	tacky message history -acc $acc -chat bob@example.com -limit 50 \
-	    -command [list apply {{r} { set ::result2 $r }}]
-	set written [$::_client conn get_written]
-	# Should have sent a new MAM query
-	set lastIq [lindex $written end]
-	set hasQuery [expr {[xsearch $lastIq query -ns urn:xmpp:mam:2] ne ""}]
-	list $hasQuery
+	# Store one message as the cursor anchor
+	msg_store [list [msg_msg timestamp 500 server_id s1 body anchor]]
+	set written1 [$::_client conn get_written]
+	# -before 500: no local data before the cursor → should trigger MAM
+	tacky message history -acc $acc -chat alice@example.com \
+	    -before 500 -limit 50 \
+	    -command [list apply {{r} {}}]
+	set written2 [$::_client conn get_written]
+	expr {[llength $written2] > [llength $written1]}
     } -result {1}
 
 # -- ParseResultNode ----------------------------------------------------------
@@ -745,6 +717,9 @@ test message-history-mam-after-timestamp {-after with empty local sends MAM with
     {*}$msg_common \
     -body {
 	set ts [ParseTimestamp 2024-06-15T12:00:00Z]
+	# Store a message newer than the cursor so MAM fires (latestTs > after)
+	msg_store [list [msg_msg timestamp [expr {$ts + 1000000}] \
+	    chat_jid alice@example.com server_id s-later body later]]
 	tacky message history -acc $acc -chat alice@example.com \
 	    -after $ts -limit 10 \
 	    -command [list apply {{r} { set ::result $r }}]
@@ -932,9 +907,17 @@ test message-history-fetch-live-after {live message after fetch lands in same re
 	list [llength $all] $regions
     } -result {3 1}
 
-# -- history: -around -----------------------------------------------------------
+# -- goto ----------------------------------------------------------------------
 
-test message-history-around-local-only {-around returns local data without MAM} \
+# Helper: call goto and collect result via -command
+proc msg_goto {args} {
+    set ::_msg_goto_result {}
+    tacky message goto -acc $::acc {*}$args \
+	-command [list apply {{result} { set ::_msg_goto_result $result }}]
+    set ::_msg_goto_result
+}
+
+test message-goto-local {goto -source local returns getAround result with anchor} \
     {*}$msg_common \
     -body {
 	msg_store [list \
@@ -944,22 +927,63 @@ test message-history-around-local-only {-around returns local data without MAM} 
 	    [msg_msg timestamp 400 body d] \
 	    [msg_msg timestamp 500 body e]]
 	set written1 [$::_client conn get_written]
-	set result [msg_history -chat alice@example.com -around 300 -limit 4]
+	set result [msg_goto -chat alice@example.com -date 300 -source local -limit 4]
 	set written2 [$::_client conn get_written]
-	list [llength $result] \
-	     [dict get [lindex $result 0] body] \
-	     [dict get [lindex $result 2] body] \
-	     [dict get [lindex $result end] body] \
+	set msgs [dict get $result messages]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 2] body] \
+	     [dict get [lindex $msgs end] body] \
+	     [dict get $result anchor] \
 	     [expr {[llength $written1] == [llength $written2]}]
-    } -result {5 a c e 1}
+    } -result {5 a c e 300 1}
 
-test message-history-around-missing {-around with missing message returns empty, no MAM} \
+test message-goto-remote {goto -source remote fetches MAM then returns getAround} \
     {*}$msg_common \
     -body {
-	msg_store [list [msg_msg timestamp 100 body a]]
-	set written1 [$::_client conn get_written]
-	set result [msg_history -chat alice@example.com -around 999]
-	set written2 [$::_client conn get_written]
-	list [llength $result] \
-	     [expr {[llength $written1] == [llength $written2]}]
-    } -result {0 1}
+	set result {}
+	tacky message goto -acc $acc -chat alice@example.com \
+	    -date [ParseTimestamp 2024-06-15T12:00:00Z] \
+	    -source remote -limit 50 \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid \
+		from alice@example.com/phone body "remote msg" \
+		stamp 2024-06-15T12:00:00Z]
+	}]
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid1
+		}
+	    }
+	}]
+
+	set msgs [dict get $result messages]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [expr {[dict get $result anchor] ne ""}]
+    } -result {1 {remote msg} 1}
+
+test message-goto-remote-error-falls-back {goto -source remote falls back to local on MAM error} \
+    {*}$msg_common \
+    -body {
+	msg_store [list [msg_msg timestamp 100 body local-only]]
+	set result {}
+	tacky message goto -acc $acc -chat alice@example.com \
+	    -date 100 -source remote -limit 50 \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	$::_client iq feed [j iq -type error -id $iqId {
+	    j error -type cancel { j feature-not-implemented }
+	}]
+
+	set msgs [dict get $result messages]
+	list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 local-only}

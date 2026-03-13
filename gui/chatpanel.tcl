@@ -176,7 +176,7 @@ snit::widget chatpanel {
 		-message "Could not parse date: $dateStr\n\nExpected format: YYYY-MM-DD"
 	    return
 	}
-	$cv goto [expr {$secs * 1000000}]
+	$cv goto [expr {$secs * 1000000}] -source remote
     }
 
     method ToggleParticipants {} {

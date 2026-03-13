@@ -179,15 +179,11 @@ snit::type taco_messagestore {
 	set hasBefore [dict exists $args -before]
 	set hasAfter [dict exists $args -after]
 
-	set hasAround [dict exists $args -around]
-
-	if {($hasBefore + $hasAfter + $hasAround) > 1} {
-	    error "-before, -after and -around are mutually exclusive"
+	if {($hasBefore + $hasAfter) > 1} {
+	    error "-before and -after are mutually exclusive"
 	}
 
-	if {$hasAround} {
-	    return [$self GetAround $jid [dict get $args -around] $limit]
-	} elseif {$hasAfter} {
+	if {$hasAfter} {
 	    return [$self GetAfter $jid [dict get $args -after] $limit]
 	} elseif {$hasBefore} {
 	    return [$self GetBefore $jid [dict get $args -before] $limit]
@@ -260,26 +256,31 @@ snit::type taco_messagestore {
 	return $rows
     }
 
-    method GetAround {jid timestamp limit} {
-	if {![$options(-db) exists {
-	    SELECT 1 FROM chat_message
-	    WHERE chat_jid=$jid AND timestamp=$timestamp
-	}]} {
-	    return {}
+    method getAround {jid timestamp limit} {
+	set nearestTs ""
+	$options(-db) eval {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid=$jid
+	    ORDER BY ABS(timestamp - $timestamp) LIMIT 1
+	} row {
+	    set nearestTs $row(timestamp)
+	}
+	if {$nearestTs eq ""} {
+	    return {messages {} anchor ""}
 	}
 	set halfLimit [expr {$limit / 2}]
-	set before [$self GetBefore $jid $timestamp $halfLimit]
-	set after [$self GetAfter $jid $timestamp $halfLimit]
+	set before [$self GetBefore $jid $nearestTs $halfLimit]
+	set after [$self GetAfter $jid $nearestTs $halfLimit]
 	set target {}
 	$options(-db) eval {
 	    SELECT timestamp, chat_jid, from_jid, body, server_id,
 		   origin_id, raw_xml, server_status
 	    FROM chat_message
-	    WHERE chat_jid=$jid AND timestamp=$timestamp
+	    WHERE chat_jid=$jid AND timestamp=$nearestTs
 	} row {
 	    set target [list [$self RowToDict [array get row]]]
 	}
-	return [concat $before $target $after]
+	return [list messages [concat $before $target $after] anchor $nearestTs]
     }
 
     method confirmByOriginIds {originIds} {

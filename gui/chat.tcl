@@ -89,13 +89,11 @@ package require snit
 # and calls `goto end`, which clears the widget and runs InitialLoad to
 # reload the newest messages from local store.
 #
-# `goto` supports two modes:
-#   goto end        — clear and reload from the bottom (InitialLoad).
-#   goto $timestamp — jump to a specific message.  If already loaded,
-#                     just scrolls to it.  Otherwise, clears and loads
-#                     50 messages before $timestamp (old direction);
-#                     the thirst mechanism then fills the new direction
-#                     automatically, picking up $timestamp and beyond.
+# `goto` supports three modes:
+#   goto end             — clear and reload from the bottom (InitialLoad).
+#   goto $ts             — local: getAround from local store, scroll to
+#                          nearest.  If anchor is already visible, just scrolls.
+#   goto $ts -source remote — MAM fetch from $ts, store, getAround, display.
 
 snit::widgetadaptor chatview {
     # dict: old "" / new "" — prevents duplicate history requests
@@ -152,29 +150,6 @@ snit::widgetadaptor chatview {
 	$hull see end
     }
 
-    method seeMessage {id} {
-	# Already on screen — just scroll + highlight
-	if {$id in [$hull messages ids]} {
-	    $hull see message $id
-	    return
-	}
-
-	# Clear and load context around this message from local store
-	$hull clear
-	set LoadToken [dict create old "" new ""]
-	::tacky message history -acc $options(-acc) \
-	    -chat $options(-jid) \
-	    -around $id -limit 50 \
-	    -tag $win -command [mymethod OnAroundLoadDone $id]
-    }
-
-    method OnAroundLoadDone {id messages} {
-	$self OnLoadDone new $messages
-	if {$id in [$hull messages ids]} {
-	    $hull see message $id
-	}
-    }
-
     destructor {
 	catch {::tacky unlisten $win}
 	catch {::tacky message cancel -acc $options(-acc) -tag $win}
@@ -182,7 +157,11 @@ snit::widgetadaptor chatview {
 	catch {$self UntrackAllAvatars}
     }
 
-    method goto {target} {
+    method goto {target args} {
+	set defaults [dict create -source local]
+	set opts [dict merge $defaults $args]
+	set source [dict get $opts -source]
+
 	if {$target eq "end"} {
 	    # Reset to "bottom of conversation" — same as initial open
 	    $hull clear
@@ -191,20 +170,30 @@ snit::widgetadaptor chatview {
 	    return
 	}
 
-	# Fetch one page from server after target date, then seeMessage
-	::tacky message history -acc $options(-acc) \
-	    -chat $options(-jid) \
-	    -after $target -limit 50 -no-local 1 \
-	    -tag $win -command [mymethod OnGotoFetched]
+	::tacky message goto -acc $options(-acc) \
+	    -chat $options(-jid) -date $target -source $source \
+	    -limit 50 -tag $win \
+	    -command [mymethod OnGotoDone]
     }
 
-    method OnGotoFetched {messages} {
+    method OnGotoDone {result} {
+	set messages [dict get $result messages]
+	set anchor [dict get $result anchor]
+
 	if {[llength $messages] == 0} return
-	set sid [dict get [lindex $messages 0] server_id]
-	set id [::tacky message lookup -acc $options(-acc) \
-	    -chat $options(-jid) -server-id $sid]
-	if {$id ne ""} {
-	    $self seeMessage $id
+
+	# If anchor is already visible, just scroll+highlight
+	if {$anchor in [$hull messages ids]} {
+	    $hull see message $anchor
+	    return
+	}
+
+	# Clear and reload around the anchor
+	$hull clear
+	set LoadToken [dict create old "" new ""]
+	$self OnLoadDone new $messages
+	if {$anchor ne "" && $anchor in [$hull messages ids]} {
+	    $hull see message $anchor
 	}
     }
 
