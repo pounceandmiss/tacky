@@ -691,15 +691,17 @@ snit::type conn {
     # Called on SASL failure or bind error. No reconnect — auth errors
     # are not transient.
     method OnAuthError {message} {
+        set emitCmd $options(-emit)
+        set authErrCmd $options(-onautherror)
         set authState disconnected
         $sm onDisconnect
         $base close
         $self SetConnState disconnected
-        if {$options(-emit) ne ""} {
-            {*}$options(-emit) conn <AuthError> -message $message
+        if {$emitCmd ne ""} {
+            {*}$emitCmd conn <AuthError> -message $message
         }
-        if {$options(-onautherror) ne ""} {
-            {*}$options(-onautherror) $message
+        if {$authErrCmd ne ""} {
+            {*}$authErrCmd $message
         }
     }
 
