@@ -98,6 +98,7 @@ package require snit
 snit::widgetadaptor chatview {
     # dict: old "" / new "" — prevents duplicate history requests
     variable LoadToken
+    variable LoadGeneration
 
     # set of jids tracked via avatarcache
     variable TrackedAvatars
@@ -123,6 +124,7 @@ snit::widgetadaptor chatview {
 	set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
 	set TrackedAvatars [list]
 	set LoadToken [dict create old "" new ""]
+	set LoadGeneration 0
 	::tacky listen -tag $win message <Received> \
 	    -jid $options(-jid) [mymethod OnLiveMessage]
 	::tacky listen -tag $win message <Sent> \
@@ -139,20 +141,23 @@ snit::widgetadaptor chatview {
 
     method InitialLoad {} {
 	if {[dict get $LoadToken new] ne ""} return
-	dict set LoadToken new pending
+	set token [incr LoadGeneration]
+	dict set LoadToken new $token
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) -limit 50 \
-	    -tag $win -command [mymethod OnInitialLoadDone]
+	    -tag $win/new -command [mymethod OnInitialLoadDone $token]
     }
 
-    method OnInitialLoadDone {messages} {
-	$self OnLoadDone new $messages
+    method OnInitialLoadDone {token messages} {
+	$self OnLoadDone new $token $messages
 	$hull see end
     }
 
     destructor {
-	catch {::tacky unlisten $win}
-	catch {::tacky message cancel -acc $options(-acc) -tag $win}
+	foreach tag [list $win $win/goto $win/old $win/new] {
+	    catch {::tacky unlisten $tag}
+	    catch {::tacky message cancel -acc $options(-acc) -tag $tag}
+	}
 	catch {$self RemoveMenus}
 	catch {$self UntrackAllAvatars}
     }
@@ -161,6 +166,11 @@ snit::widgetadaptor chatview {
 	set defaults [dict create -source local]
 	set opts [dict merge $defaults $args]
 	set source [dict get $opts -source]
+
+	foreach tag [list $win/goto $win/old $win/new] {
+	    ::tacky unlisten $tag
+	    ::tacky message cancel -acc $options(-acc) -tag $tag
+	}
 
 	if {$target eq "end"} {
 	    # Reset to "bottom of conversation" — same as initial open
@@ -172,7 +182,7 @@ snit::widgetadaptor chatview {
 
 	::tacky message goto -acc $options(-acc) \
 	    -chat $options(-jid) -date $target -source $source \
-	    -limit 50 -tag $win \
+	    -limit 50 -tag $win/goto \
 	    -command [mymethod OnGotoDone]
     }
 
@@ -190,8 +200,9 @@ snit::widgetadaptor chatview {
 
 	# Clear and reload around the anchor
 	$hull clear
-	set LoadToken [dict create old "" new ""]
-	$self OnLoadDone new $messages
+	set token [incr LoadGeneration]
+	set LoadToken [dict create old "" new $token]
+	$self OnLoadDone new $token $messages
 	if {$anchor ne "" && $anchor in [$hull messages ids]} {
 	    $hull see message $anchor
 	}
@@ -201,30 +212,50 @@ snit::widgetadaptor chatview {
 	$self goto end
     }
 
+    # Stale-cursor guard
+    # -------------------
+    # OnThirst receives the oldest/newest IDs at call time.  If the
+    # user scrolls away before the async response arrives, DoCleanup
+    # may remove messages around that cursor.  The response would
+    # then insert a batch whose edge doesn't meet the current display
+    # edge, leaving a permanent gap (the normal thirst cycle fetches
+    # further out, never back-filling).
+    #
+    # To prevent this, every request carries a monotonic token
+    # (LoadGeneration).  When DoCleanup cleans a direction it fires
+    # thirst-command with thirsty=no, which clears LoadToken for that
+    # direction.  OnLoadDone rejects any response whose token no
+    # longer matches, and the next thirst cycle re-requests with a
+    # fresh cursor.
+
     method OnThirst {directions thirsty oldest newest} {
-	if {$oldest eq "" && $newest eq ""} return
+	if {$thirsty && $oldest eq "" && $newest eq ""} return
 	foreach dir $directions {
 	    if {$thirsty} {
 		if {[dict get $LoadToken $dir] ne ""} continue
-		dict set LoadToken $dir pending
+		set token [incr LoadGeneration]
+		dict set LoadToken $dir $token
 		if {$dir eq "old"} {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-before $oldest -limit 50 \
-			-tag $win -command [mymethod OnLoadDone old]
+			-tag $win/$dir -command [mymethod OnLoadDone old $token]
 		} else {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-after $newest -limit 50 \
-			-tag $win -command [mymethod OnLoadDone new]
+			-tag $win/$dir -command [mymethod OnLoadDone new $token]
 		}
 	    } else {
 		dict set LoadToken $dir ""
+		catch {::tacky unlisten $win/$dir}
+		::tacky message cancel -acc $options(-acc) -tag $win/$dir
 	    }
 	}
     }
 
-    method OnLoadDone {direction messages} {
+    method OnLoadDone {direction token messages} {
+	if {[dict get $LoadToken $direction] ne $token} return
 	dict set LoadToken $direction ""
 	set existingIds [$hull messages ids]
 	set enriched {}
@@ -498,6 +529,10 @@ snit::widget chatarea {
 
     }
 
+    destructor {
+	after cancel [mymethod DoCleanup]
+    }
+
     method {bulk insert} {where messageDictList} {
 	$text mark set msgins [dict get {new end old 0.0} $where]
 	set newIds [lmap m $messageDictList {dict get $m id}]
@@ -665,6 +700,12 @@ snit::widget chatarea {
 		$self deleteByPos end
 		$self GetPixelsBelow
 	    }
+	}
+
+	# Invalidate in-flight loads whose cursors may now be stale.
+	if {[llength $cleaned] > 0} {
+	    {*}$options(-thirst-command) $cleaned no \
+		[lindex $MessageIds 0] [lindex $MessageIds end]
 	}
 
 	# Don't fire thirst for a direction we just cleaned —

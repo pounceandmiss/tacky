@@ -407,3 +407,121 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
 	list before=$countBefore pending=$countPending \
 	    after=$countAfter hasFirst=$hasFirst
     } -result {before=2 pending=2 after=3 hasFirst=1}
+
+# -- stale cursor guard ---------------------------------------------------------
+
+test chatview-stale-old-discarded {cleanup invalidation discards stale old-direction response} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+	# Initial load, incomplete archive → thirst fires for old
+	set mamIq [cv_find_mam_iq alice@example.com]
+	cv_complete_mam_with $mamIq {
+	    sid1 "msg 1" 2024-01-01T10:00:00Z
+	    sid2 "msg 2" 2024-01-01T11:00:00Z
+	    sid3 "msg 3" 2024-01-01T12:00:00Z
+	} false
+	$::_client conn clear
+	wait
+
+	set countBefore [llength [.cv messages ids]]
+
+	# Old-direction MAM query is now in flight
+	set mamIq2 [cv_find_mam_iq alice@example.com]
+	if {$mamIq2 eq ""} { error "no thirst MAM IQ" }
+
+	# Simulate DoCleanup cleaning the old direction while the
+	# response is in flight.  This clears LoadToken, unlistens
+	# the callback, and cancels the backend query — so the stale
+	# response should never reach OnLoadDone.
+	.cv OnThirst {old} no [.cv messages oldest] [.cv messages newest]
+
+	# Complete the now-stale MAM response
+	cv_complete_mam_with $mamIq2 {
+	    sid-old1 "older 1" 2024-01-01T08:00:00Z
+	    sid-old2 "older 2" 2024-01-01T09:00:00Z
+	}
+	wait
+
+	set countAfter [llength [.cv messages ids]]
+	list before=$countBefore after=$countAfter
+    } -result {before=3 after=3}
+
+test chatview-fresh-load-after-invalidation {new thirst re-requests and loads after invalidation} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+	# Initial load, incomplete
+	set mamIq [cv_find_mam_iq alice@example.com]
+	cv_complete_mam_with $mamIq {
+	    sid1 "msg 1" 2024-01-01T10:00:00Z
+	    sid2 "msg 2" 2024-01-01T11:00:00Z
+	    sid3 "msg 3" 2024-01-01T12:00:00Z
+	} false
+	$::_client conn clear
+	wait
+
+	# Old thirst in flight
+	set mamIq2 [cv_find_mam_iq alice@example.com]
+	if {$mamIq2 eq ""} { error "no first thirst MAM IQ" }
+
+	# Invalidate
+	.cv OnThirst {old} no [.cv messages oldest] [.cv messages newest]
+	$::_client conn clear
+
+	# Kick a new cleanup cycle — in real use the user is scrolling,
+	# but here the widget is idle so we nudge it.
+	event generate .cv.text <<Yview>>
+	wait
+
+	# Thirst should re-fire with a fresh cursor → new MAM query
+	set mamIq3 [cv_find_mam_iq alice@example.com]
+	if {$mamIq3 eq ""} { error "no re-requested MAM IQ after invalidation" }
+
+	# Complete the fresh request
+	cv_complete_mam_with $mamIq3 {
+	    sid-old1 "older 1" 2024-01-01T08:00:00Z
+	    sid-old2 "older 2" 2024-01-01T09:00:00Z
+	}
+	wait
+
+	llength [.cv messages ids]
+    } -result {5}
+
+test chatview-goto-cancels-inflight {goto end discards in-flight thirst response} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+	# Initial load, incomplete
+	set mamIq [cv_find_mam_iq alice@example.com]
+	cv_complete_mam_with $mamIq {
+	    sid1 "msg 1" 2024-01-01T10:00:00Z
+	    sid2 "msg 2" 2024-01-01T11:00:00Z
+	    sid3 "msg 3" 2024-01-01T12:00:00Z
+	} false
+	$::_client conn clear
+	wait
+
+	# Old thirst in flight
+	set mamIq2 [cv_find_mam_iq alice@example.com]
+	if {$mamIq2 eq ""} { error "no thirst MAM IQ" }
+
+	# goto end — cancels in-flight loads via unlisten + message cancel
+	.cv goto end
+	$::_client conn clear
+	wait
+	cv_complete_mam
+	wait
+
+	set countAfterGoto [llength [.cv messages ids]]
+
+	# Complete stale old-direction MAM
+	cv_complete_mam_with $mamIq2 {
+	    sid-old1 "older 1" 2024-01-01T08:00:00Z
+	    sid-old2 "older 2" 2024-01-01T09:00:00Z
+	}
+	wait
+
+	set countAfterStale [llength [.cv messages ids]]
+	list goto=$countAfterGoto stale=$countAfterStale
+    } -result {goto=3 stale=3}
