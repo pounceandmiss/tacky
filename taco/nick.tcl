@@ -38,15 +38,14 @@ snit::type taco_nick {
     # Set own nick via PEP, vcard-temp, and bookmarks.
     # Updates all existing bookmarks and joined rooms unless -bookmarks skip.
     method set {args} {
-	set nick [dict get $args -nick]
-	set command [expr {[dict exists $args -command] \
-	    ? [dict get $args -command] : ""}]
-	$self publish -nick $nick -command $command
-	$client vcard setNick -nick $nick
+	array set opts {-command ""}
+	array set opts $args
+	$self publish -nick $opts(-nick) -command $opts(-command)
+	$client vcard setNick -nick $opts(-nick)
 	if {[dict getdef $args -bookmarks ""] eq "skip"} {
-	    $client bookmarks defaultNick -nick $nick
+	    $client bookmarks defaultNick -nick $opts(-nick)
 	} else {
-	    $client bookmarks setNickAll -nick $nick
+	    $client bookmarks setNickAll -nick $opts(-nick)
 	}
     }
 
@@ -58,18 +57,17 @@ snit::type taco_nick {
 
     # Publish own nick via PubSub.
     method publish {args} {
-	set nick [dict get $args -nick]
-	set command [expr {[dict exists $args -command] \
-	    ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
 	$client iq request -type set \
-	    -command [mymethod OnPublishResult $nick $command] \
+	    -command [mymethod OnPublishResult $opts(-nick) $opts(-command)] \
 	    -payload \
 	    [j pubsub -ns http://jabber.org/protocol/pubsub {
 		j publish -node "http://jabber.org/protocol/nick" {
 		    j item {
 			j nick -ns "http://jabber.org/protocol/nick" \
-			    #body $nick
+			    #body $opts(-nick)
 		    }
 		}
 	    }]

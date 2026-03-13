@@ -130,10 +130,9 @@ snit::type taco_bookmarks {
 
     # Change nickname in a room and update the bookmark.
     method nick {args} {
-	set jid [dict get $args -jid]
-	set newNick [dict get $args -nick]
-	$self item -jid $jid -nick $newNick
-	$client muc nick -jid $jid -nick $newNick
+	array set opts $args
+	$self item -jid $opts(-jid) -nick $opts(-nick)
+	$client muc nick -jid $opts(-jid) -nick $opts(-nick)
     }
 
     # Leave a room and disable autojoin.

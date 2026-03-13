@@ -140,27 +140,25 @@ snit::type app_type {
     # --- Chat routing ---
 
     method OpenChat {args} {
-        set acc [dict get $args -acc]
-        set jid [dict get $args -jid]
+        array set opts $args
         if {$chatModeVar eq "inline"} {
-            $self OpenChatInline -acc $acc -jid $jid
+            $self OpenChatInline -acc $opts(-acc) -jid $opts(-jid)
         } else {
-            $self Openchatwindow -acc $acc -jid $jid
+            $self Openchatwindow -acc $opts(-acc) -jid $opts(-jid)
         }
     }
 
     method OpenChatInline {args} {
-        set acc [dict get $args -acc]
-        set contactJid [dict get $args -jid]
-        if {$inlineJid eq $contactJid} return
+        array set opts $args
+        if {$inlineJid eq $opts(-jid)} return
 
         # Destroy previous inline chat content
         foreach child [winfo children $chatpanel] {
             destroy $child
         }
-        set inlineJid $contactJid
+        set inlineJid $opts(-jid)
         # Create chat widgets in the panel
-        chatpanel $chatpanel.cp -acc $acc -jid $contactJid \
+        chatpanel $chatpanel.cp -acc $opts(-acc) -jid $opts(-jid) \
             -menubar .menubar
         pack $chatpanel.cp -expand yes -fill both
 
@@ -171,16 +169,14 @@ snit::type app_type {
     }
 
     method Openchatwindow {args} {
-        set acc [dict get $args -acc]
-        set contactJid [dict get $args -jid]
-        set safe [string map {@ _ . _ / _ ? _} $contactJid]
-        chatwindow open .chatwin_$safe -acc $acc -jid $contactJid
+        array set opts $args
+        set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
+        chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid)
     }
 
     method OpenBookmark {args} {
-        set acc [dict get $args -acc]
-        set jid [dict get $args -jid]
-        $self OpenChat -acc $acc -jid ${jid}?join
+        array set opts $args
+        $self OpenChat -acc $opts(-acc) -jid $opts(-jid)?join
     }
 
     method CloseInlineChat {} {

@@ -47,9 +47,8 @@ snit::type taco_debugtap {
     }
 
     method write {args} {
-        set tapId [dict get $args -tap]
-        set stanza [dict get $args -stanza]
-        {*}[dict get $Taps($tapId) conn] writeStanza $stanza
+        array set opts $args
+        {*}[dict get $Taps($opts(-tap)) conn] writeStanza $opts(-stanza)
     }
 
     method OnDebugStanza {connKey dir stanza} {

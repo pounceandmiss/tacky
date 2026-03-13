@@ -110,16 +110,16 @@ snit::type taco_client {
     # XEP-0077 password change.
     # -command callback: {*}$cmd ok "" | {*}$cmd error $msg
     method changePassword {args} {
-	set newPassword [dict get $args -password]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
 	set payload [j query -ns jabber:iq:register {
 	    j username #body $options(-username)
-	    j password #body $newPassword
+	    j password #body $opts(-password)
 	}]
 	$iq request -type set -to $options(-host) \
 	    -payload $payload \
-	    -command [mymethod OnPasswordChanged $newPassword $command]
+	    -command [mymethod OnPasswordChanged $opts(-password) $opts(-command)]
     }
 
     method OnPasswordChanged {newPassword command stanza} {

@@ -59,45 +59,46 @@ snit::type taco_register {
     }
 
     method connect {args} {
-	set host [dict get $args -host]
-	set port [expr {[dict exists $args -port] ? [dict get $args -port] : 5222}]
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
+	array set opts {-port 5222 -token ""}
+	array set opts $args
 
-	if {[info exists Sessions($token)]} {
-	    catch {$Sessions($token) destroy}
+	if {[info exists Sessions($opts(-token))]} {
+	    catch {$Sessions($opts(-token)) destroy}
 	}
 
-	set Sessions($token) [taco_register_session $self.session-[clock microseconds] \
-	    -host $host -port $port \
-	    -callback [mymethod OnSessionEvent $token]]
-	$Sessions($token) connect
+	set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
+	    -host $opts(-host) -port $opts(-port) \
+	    -callback [mymethod OnSessionEvent $opts(-token)]]
+	$Sessions($opts(-token)) connect
     }
 
     tackymethod form {args} {
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
-	$self RequireSession $token
-	$Sessions($token) form
+	array set opts {-token ""}
+	array set opts $args
+	$self RequireSession $opts(-token)
+	$Sessions($opts(-token)) form
     }
 
     tackymethod media {args} {
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
-	set var [dict get $args -var]
-	$self RequireSession $token
-	$Sessions($token) media -var $var
+	array set opts {-token ""}
+	array set opts $args
+	$self RequireSession $opts(-token)
+	$Sessions($opts(-token)) media -var $opts(-var)
     }
 
     method submit {args} {
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
-	set values [dict get $args -values]
-	$self RequireSession $token
-	$Sessions($token) submit -values $values
+	array set opts {-token ""}
+	array set opts $args
+	$self RequireSession $opts(-token)
+	$Sessions($opts(-token)) submit -values $opts(-values)
     }
 
     method cancel {args} {
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
-	if {[info exists Sessions($token)]} {
-	    $Sessions($token) destroy
-	    unset Sessions($token)
+	array set opts {-token ""}
+	array set opts $args
+	if {[info exists Sessions($opts(-token))]} {
+	    $Sessions($opts(-token)) destroy
+	    unset Sessions($opts(-token))
 	}
     }
 
@@ -108,9 +109,10 @@ snit::type taco_register {
     }
 
     method session {args} {
-	set token [expr {[dict exists $args -token] ? [dict get $args -token] : ""}]
-	$self RequireSession $token
-	return $Sessions($token)
+	array set opts {-token ""}
+	array set opts $args
+	$self RequireSession $opts(-token)
+	return $Sessions($opts(-token))
     }
 
     method OnSessionEvent {token event args} {

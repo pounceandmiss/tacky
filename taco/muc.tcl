@@ -82,34 +82,30 @@ snit::type taco_muc {
     # =====================================================================
 
     method join {args} {
-	set jid [dict get $args -jid]
-	set nick [dict get $args -nick]
-	set password [expr {[dict exists $args -password] ? [dict get $args -password] : ""}]
-	set history [expr {[dict exists $args -history] ? [dict get $args -history] : {}}]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
-
-	set jid [string tolower $jid]
+	array set opts {-password "" -history {} -command ""}
+	array set opts $args
+	set opts(-jid) [string tolower $opts(-jid)]
 
 	# Initialize room tracking state
-	set Rooms($jid) [dict create \
-	    nick $nick subject "" joined 0 occupants [dict create]]
+	set Rooms($opts(-jid)) [dict create \
+	    nick $opts(-nick) subject "" joined 0 occupants [dict create]]
 
-	if {$command ne ""} {
-	    set JoinCallbacks($jid) $command
+	if {$opts(-command) ne ""} {
+	    set JoinCallbacks($opts(-jid)) $opts(-command)
 	}
 
 	# Build <x xmlns='muc'> with optional children
 	set mucChildren {}
-	if {$password ne ""} {
-	    lappend mucChildren password $password
+	if {$opts(-password) ne ""} {
+	    lappend mucChildren password $opts(-password)
 	}
 
 	set historyAttrs {}
-	dict for {k v} $history {
+	dict for {k v} $opts(-history) {
 	    lappend historyAttrs -$k $v
 	}
 
-	$client write [j presence -to $jid/$nick {
+	$client write [j presence -to $opts(-jid)/$opts(-nick) {
 	    j x -ns http://jabber.org/protocol/muc {
 		if {$mucChildren ne ""} {
 		    foreach {ctag cval} $mucChildren {
@@ -124,41 +120,42 @@ snit::type taco_muc {
     }
 
     method leave {args} {
-	set jid [string tolower [dict get $args -jid]]
-	set status [expr {[dict exists $args -status] ? [dict get $args -status] : ""}]
+	array set opts {-status ""}
+	array set opts $args
+	set opts(-jid) [string tolower $opts(-jid)]
 
-	if {![info exists Rooms($jid)]} return
-	set nick [dict get $Rooms($jid) nick]
+	if {![info exists Rooms($opts(-jid))]} return
+	set nick [dict get $Rooms($opts(-jid)) nick]
 
-	if {$status ne ""} {
-	    $client write [j presence -to $jid/$nick -type unavailable {
-		j status #body $status
+	if {$opts(-status) ne ""} {
+	    $client write [j presence -to $opts(-jid)/$nick -type unavailable {
+		j status #body $opts(-status)
 	    }]
 	} else {
-	    $client write [j presence -to $jid/$nick -type unavailable]
+	    $client write [j presence -to $opts(-jid)/$nick -type unavailable]
 	}
     }
 
     method nick {args} {
-	set jid [string tolower [dict get $args -jid]]
-	set newNick [dict get $args -nick]
-	$client write [j presence -to $jid/$newNick]
+	array set opts $args
+	set opts(-jid) [string tolower $opts(-jid)]
+	$client write [j presence -to $opts(-jid)/$opts(-nick)]
     }
 
     method status {args} {
-	set jid [string tolower [dict get $args -jid]]
-	set show [expr {[dict exists $args -show] ? [dict get $args -show] : ""}]
-	set status [expr {[dict exists $args -status] ? [dict get $args -status] : ""}]
+	array set opts {-show "" -status ""}
+	array set opts $args
+	set opts(-jid) [string tolower $opts(-jid)]
 
-	if {![info exists Rooms($jid)]} return
-	set nick [dict get $Rooms($jid) nick]
+	if {![info exists Rooms($opts(-jid))]} return
+	set nick [dict get $Rooms($opts(-jid)) nick]
 
-	$client write [j presence -to $jid/$nick {
-	    if {$show ne ""} {
-		j show #body $show
+	$client write [j presence -to $opts(-jid)/$nick {
+	    if {$opts(-show) ne ""} {
+		j show #body $opts(-show)
 	    }
-	    if {$status ne ""} {
-		j status #body $status
+	    if {$opts(-status) ne ""} {
+		j status #body $opts(-status)
 	    }
 	}]
     }
@@ -168,25 +165,22 @@ snit::type taco_muc {
     # =====================================================================
 
     method say {args} {
-	set jid [dict get $args -jid]
-	set body [dict get $args -body]
-	$client message send -chat_jid ${jid}?join -body $body
+	array set opts $args
+	$client message send -chat_jid $opts(-jid)?join -body $opts(-body)
     }
 
     method pm {args} {
-	set jid [dict get $args -jid]
-	set body [dict get $args -body]
-	$client write [j message -to $jid -type chat {
-	    j body #body $body
+	array set opts $args
+	$client write [j message -to $opts(-jid) -type chat {
+	    j body #body $opts(-body)
 	    j x -ns http://jabber.org/protocol/muc#user
 	}]
     }
 
     method subject {args} {
-	set jid [dict get $args -jid]
-	set body [dict get $args -body]
-	$client write [j message -to $jid -type groupchat {
-	    j subject #body $body
+	array set opts $args
+	$client write [j message -to $opts(-jid) -type groupchat {
+	    j subject #body $opts(-body)
 	}]
     }
 
@@ -195,15 +189,14 @@ snit::type taco_muc {
     # =====================================================================
 
     method invite {args} {
-	set jid [dict get $args -jid]
-	set to [dict get $args -to]
-	set reason [expr {[dict exists $args -reason] ? [dict get $args -reason] : ""}]
+	array set opts {-reason ""}
+	array set opts $args
 
-	$client write [j message -to $jid {
+	$client write [j message -to $opts(-jid) {
 	    j x -ns http://jabber.org/protocol/muc#user {
-		j invite -to $to {
-		    if {$reason ne ""} {
-			j reason #body $reason
+		j invite -to $opts(-to) {
+		    if {$opts(-reason) ne ""} {
+			j reason #body $opts(-reason)
 		    }
 		}
 	    }
@@ -211,15 +204,14 @@ snit::type taco_muc {
     }
 
     method decline {args} {
-	set jid [dict get $args -jid]
-	set to [dict get $args -to]
-	set reason [expr {[dict exists $args -reason] ? [dict get $args -reason] : ""}]
+	array set opts {-reason ""}
+	array set opts $args
 
-	$client write [j message -to $jid {
+	$client write [j message -to $opts(-jid) {
 	    j x -ns http://jabber.org/protocol/muc#user {
-		j decline -to $to {
-		    if {$reason ne ""} {
-			j reason #body $reason
+		j decline -to $opts(-to) {
+		    if {$opts(-reason) ne ""} {
+			j reason #body $opts(-reason)
 		    }
 		}
 	    }
@@ -253,20 +245,17 @@ snit::type taco_muc {
     }
 
     method role {args} {
-	set jid [dict get $args -jid]
-	set nick [dict get $args -nick]
-	set role [dict get $args -role]
-	set reason [expr {[dict exists $args -reason] ? [dict get $args -reason] : ""}]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-reason "" -command ""}
+	array set opts $args
 
-	set itemAttrs [list -nick $nick -role $role]
+	set itemAttrs [list -nick $opts(-nick) -role $opts(-role)]
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#admin {
 		j item {*}$itemAttrs {
-		    if {$reason ne ""} {
-			j reason #body $reason
+		    if {$opts(-reason) ne ""} {
+			j reason #body $opts(-reason)
 		    }
 		}
 	    }]
@@ -277,24 +266,20 @@ snit::type taco_muc {
     # =====================================================================
 
     method affiliation {args} {
-	set jid [dict get $args -jid]
-	set target [dict get $args -target]
-	set affiliation [dict get $args -affiliation]
-	set reason [expr {[dict exists $args -reason] ? [dict get $args -reason] : ""}]
-	set nick [expr {[dict exists $args -nick] ? [dict get $args -nick] : ""}]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-reason "" -nick "" -command ""}
+	array set opts $args
 
-	set itemAttrs [list -jid $target -affiliation $affiliation]
-	if {$nick ne ""} {
-	    lappend itemAttrs -nick $nick
+	set itemAttrs [list -jid $opts(-target) -affiliation $opts(-affiliation)]
+	if {$opts(-nick) ne ""} {
+	    lappend itemAttrs -nick $opts(-nick)
 	}
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#admin {
 		j item {*}$itemAttrs {
-		    if {$reason ne ""} {
-			j reason #body $reason
+		    if {$opts(-reason) ne ""} {
+			j reason #body $opts(-reason)
 		    }
 		}
 	    }]
@@ -305,14 +290,13 @@ snit::type taco_muc {
     # =====================================================================
 
     method getList {args} {
-	set jid [dict get $args -jid]
-	set what [dict get $args -what]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	lassign [$self ListQuerySpec $what] attr val
+	lassign [$self ListQuerySpec $opts(-what)] attr val
 
-	$client iq request -type get -to $jid \
-	    -command [mymethod OnListResult $command] \
+	$client iq request -type get -to $opts(-jid) \
+	    -command [mymethod OnListResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#admin {
 		j item -$attr $val
 	    }]
@@ -323,27 +307,26 @@ snit::type taco_muc {
     # =====================================================================
 
     method configGet {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type get -to $jid \
-	    -command [mymethod OnConfigGetResult $command] \
+	$client iq request -type get -to $opts(-jid) \
+	    -command [mymethod OnConfigGetResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#owner]
     }
 
     method configSet {args} {
-	set jid [dict get $args -jid]
-	set formFields [dict get $args -fields]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#owner {
 		j x -ns jabber:x:data -type submit {
 		    j field -var FORM_TYPE -type hidden {
 			j value #body http://jabber.org/protocol/muc#roomconfig
 		    }
-		    foreach fieldSpec $formFields {
+		    foreach fieldSpec $opts(-fields) {
 			set var [lindex $fieldSpec 0]
 			set values [lrange $fieldSpec 1 end]
 			j field -var $var {
@@ -357,22 +340,22 @@ snit::type taco_muc {
     }
 
     method configCancel {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#owner {
 		j x -ns jabber:x:data -type cancel
 	    }]
     }
 
     method createInstant {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#owner {
 		j x -ns jabber:x:data -type submit
 	    }]
@@ -383,26 +366,23 @@ snit::type taco_muc {
     # =====================================================================
 
     method destroyRoom {args} {
-	set jid [dict get $args -jid]
-	set altRoom [expr {[dict exists $args -altRoom] ? [dict get $args -altRoom] : ""}]
-	set reason [expr {[dict exists $args -reason] ? [dict get $args -reason] : ""}]
-	set password [expr {[dict exists $args -password] ? [dict get $args -password] : ""}]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-altRoom "" -reason "" -password "" -command ""}
+	array set opts $args
 
 	set destroyAttrs {}
-	if {$altRoom ne ""} {
-	    set destroyAttrs [list -jid $altRoom]
+	if {$opts(-altRoom) ne ""} {
+	    set destroyAttrs [list -jid $opts(-altRoom)]
 	}
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/muc#owner {
 		j destroy {*}$destroyAttrs {
-		    if {$reason ne ""} {
-			j reason #body $reason
+		    if {$opts(-reason) ne ""} {
+			j reason #body $opts(-reason)
 		    }
-		    if {$password ne ""} {
-			j password #body $password
+		    if {$opts(-password) ne ""} {
+			j password #body $opts(-password)
 		    }
 		}
 	    }]
@@ -413,27 +393,26 @@ snit::type taco_muc {
     # =====================================================================
 
     method registerGet {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type get -to $jid \
-	    -command [mymethod OnConfigGetResult $command] \
+	$client iq request -type get -to $opts(-jid) \
+	    -command [mymethod OnConfigGetResult $opts(-command)] \
 	    -payload [j query -ns jabber:iq:register]
     }
 
     method registerSet {args} {
-	set jid [dict get $args -jid]
-	set formFields [dict get $args -fields]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type set -to $jid \
-	    -command [mymethod OnIqResult $command] \
+	$client iq request -type set -to $opts(-jid) \
+	    -command [mymethod OnIqResult $opts(-command)] \
 	    -payload [j query -ns jabber:iq:register {
 		j x -ns jabber:x:data -type submit {
 		    j field -var FORM_TYPE -type hidden {
 			j value #body http://jabber.org/protocol/muc#register
 		    }
-		    foreach fieldSpec $formFields {
+		    foreach fieldSpec $opts(-fields) {
 			set var [lindex $fieldSpec 0]
 			set values [lrange $fieldSpec 1 end]
 			j field -var $var {
@@ -451,20 +430,20 @@ snit::type taco_muc {
     # =====================================================================
 
     method discoverRooms {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type get -to $jid \
-	    -command [mymethod OnDiscoverRoomsResult $command] \
+	$client iq request -type get -to $opts(-jid) \
+	    -command [mymethod OnDiscoverRoomsResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/disco#items]
     }
 
     method reservedNick {args} {
-	set jid [dict get $args -jid]
-	set command [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+	array set opts {-command ""}
+	array set opts $args
 
-	$client iq request -type get -to $jid \
-	    -command [mymethod OnReservedNickResult $command] \
+	$client iq request -type get -to $opts(-jid) \
+	    -command [mymethod OnReservedNickResult $opts(-command)] \
 	    -payload [j query -ns http://jabber.org/protocol/disco#info \
 		-node x-roomuser-item]
     }
@@ -490,12 +469,12 @@ snit::type taco_muc {
     }
 
     tackymethod occupant {args} {
-	set jid [string tolower [dict get $args -jid]]
-	set nick [dict get $args -nick]
-	if {![info exists Rooms($jid)]} {return ""}
-	set occs [dict get $Rooms($jid) occupants]
-	if {[dict exists $occs $nick]} {
-	    return [dict get $occs $nick]
+	array set opts $args
+	set opts(-jid) [string tolower $opts(-jid)]
+	if {![info exists Rooms($opts(-jid))]} {return ""}
+	set occs [dict get $Rooms($opts(-jid)) occupants]
+	if {[dict exists $occs $opts(-nick)]} {
+	    return [dict get $occs $opts(-nick)]
 	}
 	return ""
     }

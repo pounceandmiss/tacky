@@ -237,31 +237,30 @@ snit::type taco_message {
     # On reconnect, `RetryPending` resends any still-pending messages
     # with the same id, so the echo/ack cycle can complete.
     method send {args} {
-	set chatJid [dict get $args -chat_jid]
-	set body [dict get $args -body]
+	array set opts $args
 
 	set ts [clock microseconds]
 	set oid $ts
 
-	if {[string match "*?join" $chatJid]} {
+	if {[string match "*?join" $opts(-chat_jid)]} {
 	    set type groupchat
-	    regsub {\?join$} $chatJid {} toJid
+	    regsub {\?join$} $opts(-chat_jid) {} toJid
 	    set nick [$client muc myNick -jid $toJid]
 	    set fromJid $toJid/$nick
 	} else {
-	    set toJid $chatJid
+	    set toJid $opts(-chat_jid)
 	    set fromJid [$client cget -jid]
 	}
 
 	set stanza [j message -to $toJid -type $type -id $oid {
-	    j body #body $body
+	    j body #body $opts(-body)
 	}]
 
 	set msg [dict create \
 	    timestamp $ts \
-	    chat_jid $chatJid \
+	    chat_jid $opts(-chat_jid) \
 	    from_jid $fromJid \
-	    body $body \
+	    body $opts(-body) \
 	    server_id "" \
 	    origin_id $oid \
 	    raw_xml [jwrite $stanza] \
@@ -273,7 +272,7 @@ snit::type taco_message {
 	$messagestore store batch [list $msg] liveRegion
 
 	$client emit message <Sent> \
-	    -jid $chatJid -body $body -message $msg
+	    -jid $opts(-chat_jid) -body $opts(-body) -message $msg
 
 	$client write $stanza
     }
@@ -359,11 +358,10 @@ snit::type taco_message {
 
     # rawxml -chat $chatJid -timestamp $ts -command $cb
     tackymethod rawxml {args} {
-	set chatJid [dict get $args -chat]
-	set ts [dict get $args -timestamp]
+	array set opts $args
 	$client db onecolumn {
 	    SELECT raw_xml FROM chat_message
-	    WHERE chat_jid=$chatJid AND timestamp=$ts
+	    WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
 	}
     }
 

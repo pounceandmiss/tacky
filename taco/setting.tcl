@@ -18,13 +18,12 @@ snit::type taco_setting {
     }
 
     method set {args} {
-        set key [dict get $args -key]
-        set value [dict get $args -value]
+        array set opts $args
         $options(-db) eval {
-            INSERT INTO setting(key, value) VALUES($key, $value)
-            ON CONFLICT(key) DO UPDATE SET value=$value;
+            INSERT INTO setting(key, value) VALUES($opts(-key), $opts(-value))
+            ON CONFLICT(key) DO UPDATE SET value=$opts(-value);
         }
-        $options(-taco) emit setting <Changed> -key $key -value $value
+        $options(-taco) emit setting <Changed> -key $opts(-key) -value $opts(-value)
     }
 
     tackymethod list {args} {
