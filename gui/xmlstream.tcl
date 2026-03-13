@@ -4,10 +4,12 @@
 # filtering by stanza type / namespace, and text search.
 #
 # Widget hierarchy:
-#   xmlstream (widgetadaptor)    — public API, stanza accumulation, filtering logic
-#     xmlstream_hull (widget)    — text rendering, pretty-printing, search
-#       xmlstream_toolbar        — clear button, search entry, filter checkboxes
-#         xmlstream_toolbar_filter — iq/presence/message/nonza checkboxes + ns entry
+#   xmltext (widget)             — text rendering, pretty-printing, search
+#   xmlstream (widgetadaptor)    — wraps xmltext; toolbar, sendbar, connection,
+#                                  stanza accumulation, filtering logic
+#     xmlstream_toolbar          — clear button, search entry, filter checkboxes
+#       xmlstream_toolbar_filter — iq/presence/message/nonza checkboxes + ns entry
+#   xmlstanza (widgetadaptor)    — wraps xmltext; single-stanza viewer
 #
 # Usage:
 #   xmlstream .xs -conn [list account $jid]
@@ -39,13 +41,15 @@ snit::widgetadaptor xmlstream {
 
     variable filters
     variable tapId ""
+    variable writecmd ""
 
     method ConfigureConn {o v} {
 	if {$tapId ne ""} {
 	    tacky unlisten $win
 	    catch {tacky debugtap off -tap $tapId}
 	    set tapId ""
-	    $hull configure -writecmd ""
+	    set writecmd ""
+	    $win.sendbar.btn state disabled
 	}
 	set options($o) $v
 	if {$v ne ""} {
@@ -71,15 +75,28 @@ snit::widgetadaptor xmlstream {
 	set tapId $id
 	tacky listen -tag $win debugtap <Stanza> -tap $tapId \
 	    [mymethod onStanza]
-	$hull configure -writecmd [list tacky debugtap write -tap $tapId -stanza]
+	set writecmd [list tacky debugtap write -tap $tapId -stanza]
+	$win.sendbar.btn state !disabled
     }
 
     constructor args {
-	installhull using xmlstream_hull
+	installhull using xmltext
 	array set filters {iq 1 presence 0 message 1 nonza 0
 	    ns ""
 	}
+
+	xmlstream_toolbar $win.toolbar -partof $self
 	$win.toolbar.filters configure -command [mymethod OnFilters]
+	pack $win.toolbar -fill x -before $win.scroll
+
+	ttk::frame $win.sendbar
+	text $win.sendbar.input -height 3 -wrap word
+	ttk::button $win.sendbar.btn -text Send -command [mymethod Send]
+	pack $win.sendbar.btn -side right -fill y
+	pack $win.sendbar.input -side left -fill both -expand yes
+	bind $win.sendbar.input <Control-Return> "[mymethod Send]; break"
+	$win.sendbar.btn state disabled
+	pack $win.sendbar -side bottom -fill x -before $win.scroll
 
 	$self configurelist $args
 	set stanzas {}
@@ -102,6 +119,21 @@ snit::widgetadaptor xmlstream {
     destructor {
 	catch {tacky unlisten $win}
 	catch {tacky debugtap off -tap $tapId}
+    }
+
+    method Send {} {
+	set w $win.sendbar.input
+	set xml [string trim [$w get 1.0 end-1c]]
+	if {$xml eq "" || $writecmd eq ""} return
+	try {
+	    set stanza [xmppreader string -zap yes $xml]
+	} on error {msg} {
+	    $w configure -background #ffcccc
+	    after 600 [list catch [list $w configure -background white]]
+	    return
+	}
+	{*}$writecmd $stanza
+	$w delete 1.0 end
     }
 
     method OnFilters {filters_} {
@@ -157,31 +189,17 @@ snit::widgetadaptor xmlstream {
     }
 }
 
-snit::widget xmlstream_hull {
+snit::widget xmltext {
     variable Prefixes
 
     hulltype ttk::frame
     component text
-    component toolbar
-
-    option -writecmd -default "" -configuremethod ConfigureWritecmd
 
     constructor args {
-	install toolbar using \
-	    xmlstream_toolbar $self.toolbar -partof $self
 	install text using text $win.text -wrap no \
 	    -yscrollcommand [list $win.scroll set]
 	ttk::scrollbar $win.scroll -orient vertical \
 	    -command [list $win.text yview]
-	ttk::frame $win.sendbar
-	text $win.sendbar.input -height 3 -wrap word
-	ttk::button $win.sendbar.btn -text Send -command [mymethod Send]
-	pack $win.sendbar.btn -side right -fill y
-	pack $win.sendbar.input -side left -fill both -expand yes
-	bind $win.sendbar.input <Control-Return> "[mymethod Send]; break"
-	$win.sendbar.btn state disabled
-	pack $toolbar -fill x
-	pack $win.sendbar -side bottom -fill x
 	pack $win.scroll -side right -fill y
 	pack $text -fill both -expand yes
 	set Prefixes {
@@ -194,29 +212,9 @@ snit::widget xmlstream_hull {
 	$win.text tag configure comment -foreground grey
 	$win.text tag configure found -background yellow
     }
-    
-    method ConfigureWritecmd {o v} {
-	set options($o) $v
-	if {$v ne ""} {
-	    $win.sendbar.btn state !disabled
-	} else {
-	    $win.sendbar.btn state disabled
-	}
-    }
 
-    method Send {} {
-	set w $win.sendbar.input
-	set xml [string trim [$w get 1.0 end-1c]]
-	if {$xml eq "" || $options(-writecmd) eq ""} return
-	try {
-	    set stanza [xmppreader string -zap yes $xml]
-	} on error {msg} {
-	    $w configure -background #ffcccc
-	    after 600 [list catch [list $w configure -background white]]
-	    return
-	}
-	{*}$options(-writecmd) $stanza
-	$w delete 1.0 end
+    method seeEnd {} {
+	$win.text see end
     }
 
     method clear {} {
@@ -227,7 +225,7 @@ snit::widget xmlstream_hull {
 	    }
 	}
     }
-    
+
     method find {what {start 1.0}} {
 	set dir -forwards
 	switch -- $start {
@@ -253,7 +251,7 @@ snit::widget xmlstream_hull {
 	}
     }
 
-    
+
     method Write {chars {tag {}}} {
 	$win.text ins end $chars $tag
     }
@@ -261,7 +259,7 @@ snit::widget xmlstream_hull {
     method drawComment {commentBody} {
 	$self Write <!--$commentBody-->\n comment
     }
-    
+
     method drawStanza {args} {
 	array set opts $args
 	if {![info exists opts(-id)]} {
@@ -277,7 +275,7 @@ snit::widget xmlstream_hull {
 
 	set opts(-id)
     }
-    
+
     method removeStanza {args} {
 	array set opts $args
 	set tag stanza-$opts(-id)
@@ -286,7 +284,7 @@ snit::widget xmlstream_hull {
 	}
 	$win.text tag delete $tag
     }
-    
+
     method drawNode {stanza {prevNs ""} {indentN 0}} {
 	set indent ""
 	if {$indentN > -1} {
@@ -298,9 +296,9 @@ snit::widget xmlstream_hull {
 	    set tag [dict get $Prefixes [dict get $stanza ns]\
 			]:[dict get $stanza tag]
 	}
-	
+
 	$self Write "$indent<$tag" xmltag
-	
+
 	set attrsIndentN -1
 
 	if {$indentN > -1} {
@@ -312,14 +310,14 @@ snit::widget xmlstream_hull {
 	    set prevNs [dict get $stanza ns]
 	    lappend virtualAttrs xmlns [dict get $stanza ns]
 	}
-	
-	
-	$self WriteAttrs $virtualAttrs $attrsIndentN 
+
+
+	$self WriteAttrs $virtualAttrs $attrsIndentN
 	# $self Write > xmltag
 	set closingNewline ""
 	if {[dict get $stanza body] ne ""
 	    || [dict get $stanza children] ne ""} {
-	    
+
 	    # append res >[xesc [dict get $stanza body]]
 	    $self Write > xmltag
 
@@ -332,13 +330,13 @@ snit::widget xmlstream_hull {
 		$self Write $bodyIndent
 		$self Write [xesc [dict get $stanza body]]
 	    }
-	    
+
 	    foreach child [dict get $stanza children] {
 		$self Write \n
 		$self drawNode $child [dict get $stanza ns] $indentN
 		set closingNewline \n$indent
 	    }
-	    
+
 	    $self Write $closingNewline</$tag> xmltag
 	    $self Write [xesc [dict get $stanza tail]]
 	} else {
@@ -385,7 +383,7 @@ snit::widget xmlstream_hull {
 	    $self Write "$k=" attrname
 	    $self Write '[xesc $v]' attrval
 	    if {$i < $nAttrs} {
-		$self Write \n[string repeat " " $indent]		
+		$self Write \n[string repeat " " $indent]
 	    }
 	}
     }
@@ -410,7 +408,7 @@ snit::widget xmlstream_toolbar {
 	    -command [list $options(-partof) clear]
 	install godown using ttk::button $win.godown \
 	    -image mate/22x22/actions/go-down \
-	    -command [list $options(-partof).text see end]
+	    -command [list $options(-partof) seeEnd]
 	install searchlabel using ttk::label $win.searchlabel \
 	    -image image/AdwaitaLegacy/22x22/legacy/system-search
 	install searchentry using ttk::entry $self.searchentry \
@@ -502,9 +500,7 @@ snit::widgetadaptor xmlstanza {
     }
 
     constructor args {
-	installhull using xmlstream_hull
-	pack forget $win.toolbar
-	pack forget $win.sendbar
+	installhull using xmltext
 	$self configurelist $args
     }
 
