@@ -243,6 +243,9 @@ snit::widgetadaptor chatview {
 	    }
 	}
 	$hull bulk insert $direction $enriched
+	if {$direction eq "new" && $WasAtEnd} {
+	    $hull see end
+	}
     }
 
     method OnLiveMessage {ev} {
@@ -338,12 +341,6 @@ snit::widgetadaptor chatview {
 	    -command {apply {{xml} {
 		xmlstanza show [xmppreader string $xml]
 	    }}}
-    }
-
-    method OnSeeEnd {args} {
-	if {$WasAtEnd} {
-	    $hull see end
-	}
     }
 
     method OnReceipt {receiptDict} {
