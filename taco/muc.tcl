@@ -321,22 +321,10 @@ snit::type taco_muc {
 
 	$client iq request -type set -to $opts(-jid) \
 	    -command [mymethod OnIqResult $opts(-command)] \
-	    -payload [j query -ns http://jabber.org/protocol/muc#owner {
-		j x -ns jabber:x:data -type submit {
-		    j field -var FORM_TYPE -type hidden {
-			j value #body http://jabber.org/protocol/muc#roomconfig
-		    }
-		    foreach fieldSpec $opts(-fields) {
-			set var [lindex $fieldSpec 0]
-			set values [lrange $fieldSpec 1 end]
-			j field -var $var {
-			    foreach v $values {
-				j value #body $v
-			    }
-			}
-		    }
-		}
-	    }]
+	    -payload [$self FormSubmitPayload \
+		http://jabber.org/protocol/muc#owner \
+		http://jabber.org/protocol/muc#roomconfig \
+		$opts(-fields)]
     }
 
     method configCancel {args} {
@@ -407,22 +395,10 @@ snit::type taco_muc {
 
 	$client iq request -type set -to $opts(-jid) \
 	    -command [mymethod OnIqResult $opts(-command)] \
-	    -payload [j query -ns jabber:iq:register {
-		j x -ns jabber:x:data -type submit {
-		    j field -var FORM_TYPE -type hidden {
-			j value #body http://jabber.org/protocol/muc#register
-		    }
-		    foreach fieldSpec $opts(-fields) {
-			set var [lindex $fieldSpec 0]
-			set values [lrange $fieldSpec 1 end]
-			j field -var $var {
-			    foreach v $values {
-				j value #body $v
-			    }
-			}
-		    }
-		}
-	    }]
+	    -payload [$self FormSubmitPayload \
+		jabber:iq:register \
+		http://jabber.org/protocol/muc#register \
+		$opts(-fields)]
     }
 
     # =====================================================================
@@ -486,35 +462,16 @@ snit::type taco_muc {
     }
 
     tackymethod myRole {args} {
-	set jid [string tolower [dict get $args -jid]]
-	if {![info exists Rooms($jid)]} {return ""}
-	set nick [dict get $Rooms($jid) nick]
-	set occs [dict get $Rooms($jid) occupants]
-	if {[dict exists $occs $nick]} {
-	    return [dict get [dict get $occs $nick] role]
-	}
-	return ""
+	$self MyOccupantField [string tolower [dict get $args -jid]] role
     }
 
     tackymethod myAffiliation {args} {
-	set jid [string tolower [dict get $args -jid]]
-	if {![info exists Rooms($jid)]} {return ""}
-	set nick [dict get $Rooms($jid) nick]
-	set occs [dict get $Rooms($jid) occupants]
-	if {[dict exists $occs $nick]} {
-	    return [dict get [dict get $occs $nick] affiliation]
-	}
-	return ""
+	$self MyOccupantField [string tolower [dict get $args -jid]] affiliation
     }
 
     tackymethod haveVoice {args} {
-	set jid [string tolower [dict get $args -jid]]
-	if {![info exists Rooms($jid)]} {return 0}
-	set nick [dict get $Rooms($jid) nick]
-	set occs [dict get $Rooms($jid) occupants]
-	if {![dict exists $occs $nick]} {return 0}
-	set role [dict get [dict get $occs $nick] role]
-	expr {$role ni {visitor none}}
+	set role [$self MyOccupantField [string tolower [dict get $args -jid]] role]
+	expr {$role ne "" && $role ni {visitor none}}
     }
 
     tackymethod isJoined {args} {
@@ -987,6 +944,35 @@ snit::type taco_muc {
 	    participants {return {role participant}}
 	    visitors   {return {role visitor}}
 	    default    {error "Unknown list type: $what"}
+	}
+    }
+
+    method MyOccupantField {jid field} {
+	if {![info exists Rooms($jid)]} {return ""}
+	set nick [dict get $Rooms($jid) nick]
+	set occs [dict get $Rooms($jid) occupants]
+	if {[dict exists $occs $nick]} {
+	    return [dict get [dict get $occs $nick] $field]
+	}
+	return ""
+    }
+
+    method FormSubmitPayload {queryNs formType fieldSpecs} {
+	j query -ns $queryNs {
+	    j x -ns jabber:x:data -type submit {
+		j field -var FORM_TYPE -type hidden {
+		    j value #body $formType
+		}
+		foreach fieldSpec $fieldSpecs {
+		    set var [lindex $fieldSpec 0]
+		    set values [lrange $fieldSpec 1 end]
+		    j field -var $var {
+			foreach v $values {
+			    j value #body $v
+			}
+		    }
+		}
+	    }
 	}
     }
 
