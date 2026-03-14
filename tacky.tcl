@@ -2,27 +2,19 @@
 #
 # Class hierarchy:
 #
-#   _tacky_router           Pub/sub event bus (listen, unlisten, dispatch).
-#       |                   Shared by all backends; knows nothing about
-#       |                   transport or callbacks.
+#   tacky_base              Pub/sub event bus + callback token plumbing.
+#       |                   Subclasses only need to provide _send and
+#       |                   a constructor.
 #       |
-#       +-- tacky_type      In-process backend.  Calls taco directly in the
-#       |                   same thread.  emit == dispatch; unknown forwards
-#       |                   to taco as-is.  No callback wrapping needed.
-#       |
-#       +-- _tacky_async    Abstract base for out-of-process backends.
-#               |           Adds the Callbacks dict and the callback
-#               |           round-trip plumbing (see below).  Subclasses
-#               |           only need to provide _send and a constructor.
-#               |
-#               +-- tacky_threaded_type   Thread backend (thread::send).
-#               +-- tacky_process_type    Child-process backend (lenpipe).
+#       +-- tacky_type              In-process backend.
+#       +-- tacky_threaded_type     Thread backend (thread::send).
+#       +-- tacky_process_type      Child-process backend (lenpipe).
 #
 # Event flow (all backends):
 #   Backend fires:  tacky emit $module $event ...
 #   GUI side:       emit → dispatch → matching _listeners entries
 #
-# Callback flow (_tacky_async only):
+# Callback flow:
 #   GUI calls:      tacky $module $method -command $cmd -tag $tag
 #   unknown:        stores $cmd in Callbacks(token), replaces -command with
 #                     {tacky emit callback <Result> -token $token -result}
@@ -36,16 +28,19 @@
 #                   dead listener accumulation.
 #
 # Cancellation:
-#   tacky unlisten $tag  →  removes _listeners entries (next/super),
+#   tacky unlisten $tag  →  removes _listeners entries,
 #                            then purges Callbacks entries tagged $tag.
 
-oo::class create _tacky_router {
+oo::class create tacky_base {
     variable _listeners ;# dict: {module event} → list of {tag filters command}
     variable TagCounter
+    variable TokenCounter 0
+    variable Callbacks ;# dict: token → {tag command}
 
     constructor {} {
 	set _listeners [dict create]
 	set TagCounter 0
+	set Callbacks [dict create]
     }
 
     # listen ?-tag $tag? module event ?-field $value ...? $command
@@ -66,6 +61,7 @@ oo::class create _tacky_router {
 	return $tag
     }
 
+    # Remove persistent listeners and pending callbacks for $tag.
     method unlisten {tag} {
 	dict for {key entries} $_listeners {
 	    set filtered {}
@@ -78,6 +74,11 @@ oo::class create _tacky_router {
 		dict unset _listeners $key
 	    } else {
 		dict set _listeners $key $filtered
+	    }
+	}
+	dict for {token entry} $Callbacks {
+	    if {[lindex $entry 0] eq $tag} {
+		dict unset Callbacks $token
 	    }
 	}
     }
@@ -100,48 +101,6 @@ oo::class create _tacky_router {
 	    }
 	}
     }
-}
-
-set _tacky_taco_script [file join [file dirname [info script]] taco taco.tcl]
-
-# In-process backend: taco lives in the same thread.
-# No callback wrapping — callers talk to taco directly.
-oo::class create tacky_type {
-    superclass _tacky_router
-
-    constructor {args} {
-	next
-	if {[info commands taco_type] eq ""} {
-	    uplevel #0 source $::_tacky_taco_script
-	}
-	taco_type taco {*}$args
-    }
-
-    destructor {
-	catch {taco destroy}
-    }
-
-    method emit {module event args} {
-	my dispatch $module $event $args
-    }
-
-    # No callback wrapping: taco calls -command directly in this thread.
-    method unknown {module method args} {
-	taco $module $method {*}$args
-    }
-}
-
-# Abstract base for out-of-process backends (thread / child process).
-# Provides the callback round-trip so subclasses only need _send.
-oo::class create _tacky_async {
-    superclass _tacky_router
-    variable TokenCounter 0
-    variable Callbacks ;# dict: token → {tag command}
-
-    constructor {} {
-	next
-	set Callbacks [dict create]
-    }
 
     # Route incoming messages: "callback" module → one-shot _callback,
     # everything else → normal listener dispatch.
@@ -162,16 +121,6 @@ oo::class create _tacky_async {
 	dict unset Callbacks $token
 	lassign $entry _tag cmd
 	{*}$cmd [dict get $args -result]
-    }
-
-    # Remove persistent listeners (super) and pending callbacks for $tag.
-    method unlisten {tag} {
-	next $tag
-	dict for {token entry} $Callbacks {
-	    if {[lindex $entry 0] eq $tag} {
-		dict unset Callbacks $token
-	    }
-	}
     }
 
     # Subclass must override: deliver command to backend.
@@ -203,12 +152,37 @@ oo::class create _tacky_async {
     }
 }
 
+set _tacky_taco_script [file join [file dirname [info script]] taco taco.tcl]
+
+# In-process backend: taco lives in the same thread.
+# Callbacks go through the token system like the async backends,
+# but the entire round-trip is synchronous (same stack, same thread).
+oo::class create tacky_type {
+    superclass tacky_base
+
+    constructor {args} {
+	next
+	if {[info commands taco_type] eq ""} {
+	    uplevel #0 source $::_tacky_taco_script
+	}
+	taco_type taco {*}$args
+    }
+
+    destructor {
+	catch {taco destroy}
+    }
+
+    method _send {module method args} {
+	taco $module $method {*}$args
+    }
+}
+
 # Thread-based backend: taco runs in a dedicated thread.
 # A tacky_proxy snit type lives in the backend thread; when taco calls
 # tacky emit, the proxy bounces it to the GUI thread via thread::send -async,
 # landing in our emit method (which routes callbacks and events).
 oo::class create tacky_threaded_type {
-    superclass _tacky_async
+    superclass tacky_base
     variable TacoTid  ;# backend thread id
     variable TackyTid ;# GUI thread id (for the proxy to target)
 
@@ -255,7 +229,7 @@ set _tacky_backend_script [file join [file dirname [info script]] taco_process_b
 # {event $module $event $args} messages back, which _onMessage routes
 # through emit.
 oo::class create tacky_process_type {
-    superclass _tacky_async
+    superclass tacky_base
     variable Pipe
 
     constructor {args} {
