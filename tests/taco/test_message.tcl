@@ -111,10 +111,11 @@ test message-history-synced-before {synced chat with -before returns correct sli
 	    [msg_msg timestamp 200 server_id s2 body b] \
 	    [msg_msg timestamp 300 server_id s3 body c]]
 	set result [msg_history -chat alice@example.com -before 300 -limit 2]
+	# result[0..1] are chronological, result[2] is hollow for cursor
 	list [llength $result] \
 	     [dict get [lindex $result 0] body] \
 	     [dict get [lindex $result 1] body]
-    } -result {2 a b}
+    } -result {3 a b}
 
 # -- history: synced prevents MAM -----------------------------------------------
 
@@ -800,10 +801,11 @@ test message-history-fetch-bridges-before {MAM fetch via -before bridges into an
 
 	# The callback should see the fetched messages (bridged into
 	# the live message's region, so the re-query finds them).
+	# result[0..1] are chronological, result[2] is hollow for cursor
 	list [llength $::_result] \
 	     [dict get [lindex $::_result 0] body] \
 	     [dict get [lindex $::_result 1] body]
-    } -result {2 {old msg 1} {old msg 2}}
+    } -result {3 {old msg 1} {old msg 2}}
 
 test message-history-fetch-live-during {live message during fetch ends up in same region} \
     {*}$msg_common \
@@ -848,13 +850,14 @@ test message-history-fetch-live-during {live message during fetch ends up in sam
 	}]
 
 	# All three messages (fetched + both live) should be in one region
+	# result includes hollow message for cursor + 1 real message
 	set db [$::_client message messagestore cget -db]
 	set regions [$db eval {
 	    SELECT COUNT(DISTINCT region) FROM chat_message
 	    WHERE chat_jid='alice@example.com'
 	}]
 	list [llength $::_result] $regions
-    } -result {1 1}
+    } -result {2 1}
 
 test message-history-fetch-live-after {live message after fetch lands in same region} \
     {*}$msg_common \
@@ -987,3 +990,101 @@ test message-goto-remote-error-falls-back {goto -source remote falls back to loc
 	set msgs [dict get $result messages]
 	list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 local-only}
+
+# -- prev on live messages -----------------------------------------------------
+
+test message-live-prev-first {first live message has empty prev} \
+    {*}$msg_common \
+    -body {
+	set ::_got {}
+	tacky listen message <Received> {apply {{ev} {
+	    set ::_got $ev
+	}}}
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "first"
+	}]
+	dict get [dict get $_got -message] prev
+    } -result {}
+
+test message-live-prev-chain {second live message prev points to first} \
+    {*}$msg_common \
+    -body {
+	set ::_events {}
+	tacky listen message <Received> {apply {{ev} {
+	    lappend ::_events $ev
+	}}}
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "first"
+	}]
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "second"
+	}]
+	set msg1 [dict get [lindex $::_events 0] -message]
+	set msg2 [dict get [lindex $::_events 1] -message]
+	expr {[dict get $msg2 prev] == [dict get $msg1 timestamp]}
+    } -result {1}
+
+test message-sent-prev {sent message has prev in event} \
+    {*}$msg_common \
+    -body {
+	# Pre-store a message so send has a predecessor
+	$::_client conn feed [j message -type chat -from alice@example.com/phone {
+	    j body #body "incoming"
+	}]
+	set ::_got {}
+	tacky listen message <Sent> {apply {{ev} {
+	    set ::_got $ev
+	}}}
+	tacky message send -acc $acc -chat_jid alice@example.com -body "reply"
+	set msg [dict get $_got -message]
+	# prev should point to the incoming message's timestamp
+	set stored [$::_client message messagestore get latest alice@example.com]
+	set incomingTs [dict get [lindex $stored 0] timestamp]
+	expr {[dict get $msg prev] == $incomingTs}
+    } -result {1}
+
+# -- hollow messages in backward pagination ------------------------------------
+
+test message-history-before-hollow {backward pagination prepends hollow message} \
+    {*}$msg_common \
+    -body {
+	msg_store [list \
+	    [msg_msg timestamp 100 server_id s1 body a] \
+	    [msg_msg timestamp 200 server_id s2 body b] \
+	    [msg_msg timestamp 300 server_id s3 body c]]
+	set result [msg_history -chat alice@example.com -before 300]
+	# Last entry should be hollow: timestamp=300 (cursor), prev=200 (last real msg)
+	set real1 [lindex $result 0]
+	set real2 [lindex $result 1]
+	set hollow [lindex $result 2]
+	list [dict get $hollow timestamp] \
+	     [dict get $hollow prev] \
+	     [dict get $hollow hollow] \
+	     [dict get $real1 body] \
+	     [dict get $real2 body]
+    } -result {300 200 1 a b}
+
+test message-history-after-no-hollow {forward pagination has no hollow message} \
+    {*}$msg_common \
+    -body {
+	msg_sync alice@example.com
+	msg_store [list \
+	    [msg_msg timestamp 100 server_id s1 body a] \
+	    [msg_msg timestamp 200 server_id s2 body b] \
+	    [msg_msg timestamp 300 server_id s3 body c]]
+	set result [msg_history -chat alice@example.com -after 100]
+	# All entries should be real messages (have body)
+	set allHaveBody 1
+	foreach msg $result {
+	    if {![dict exists $msg body]} { set allHaveBody 0 }
+	}
+	list [llength $result] $allHaveBody
+    } -result {2 1}
+
+test message-history-before-empty-no-hollow {backward pagination with no results has no hollow} \
+    {*}$msg_common \
+    -body {
+	msg_store [list [msg_msg timestamp 100 server_id s1 body only]]
+	set result [msg_history -chat alice@example.com -before 100]
+	llength $result
+    } -result {0}

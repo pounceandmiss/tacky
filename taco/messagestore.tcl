@@ -204,7 +204,7 @@ snit::type taco_messagestore {
 	} row {
 	    lappend rows [$self RowToDict [array get row]]
 	}
-	return $rows
+	return [$self AnnotatePrev $jid $rows]
     }
 
     # Messages newer than cursor (an existing message's timestamp),
@@ -226,7 +226,7 @@ snit::type taco_messagestore {
 	} row {
 	    lappend rows [$self RowToDict [array get row]]
 	}
-	return $rows
+	return [$self AnnotatePrev $jid $rows]
     }
 
     # Most recent messages from the latest region. Otherwise same as
@@ -250,7 +250,7 @@ snit::type taco_messagestore {
 	} row {
 	    lappend rows [$self RowToDict [array get row]]
 	}
-	return $rows
+	return [$self AnnotatePrev $jid $rows]
     }
 
     # Find the nearest message to timestamp and return context around
@@ -280,7 +280,8 @@ snit::type taco_messagestore {
 	} row {
 	    set target [list [$self RowToDict [array get row]]]
 	}
-	return [list messages [concat $before $target $after] anchor $nearestTs]
+	set all [$self AnnotatePrev $jid [concat $before $target $after]]
+	return [list messages $all anchor $nearestTs]
     }
 
     # Flip pending → received for each origin_id (SM ack path).
@@ -308,6 +309,31 @@ snit::type taco_messagestore {
 
     method RowToDict {row} {
 	set row
+    }
+
+    # Annotate each message in a chronological list with {prev $ts},
+    # the timestamp of the immediately preceding message.  The first
+    # message's predecessor is looked up in the DB (same region);
+    # subsequent messages chain from the previous element in the list.
+    method AnnotatePrev {jid messages} {
+	if {[llength $messages] == 0} { return {} }
+	set firstTs [dict get [lindex $messages 0] timestamp]
+	set prevTs [$options(-db) onecolumn {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid=$jid AND timestamp < $firstTs
+	      AND region = (
+		SELECT region FROM chat_message
+		WHERE chat_jid=$jid AND timestamp=$firstTs
+	      )
+	    ORDER BY timestamp DESC LIMIT 1
+	}]
+	set result {}
+	foreach msg $messages {
+	    dict set msg prev $prevTs
+	    set prevTs [dict get $msg timestamp]
+	    lappend result $msg
+	}
+	return $result
     }
 
     method IsDuplicate {jid msg} {

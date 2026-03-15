@@ -214,6 +214,12 @@ snit::type taco_message {
 		    -jid $chatJid -timestamp [dict get $c timestamp]
 	    }
 	} elseif {[dict get $result inserted] > 0} {
+	    set prevTs [$client db onecolumn {
+		SELECT timestamp FROM chat_message
+		WHERE chat_jid=$chatJid AND region=$liveRegion
+		ORDER BY timestamp DESC LIMIT 1 OFFSET 1
+	    }]
+	    dict set msg prev $prevTs
 	    $client emit message <Received> \
 		-jid $chatJid -from [xsearch $stanza -get @from] -body $body \
 		-message $msg
@@ -270,6 +276,14 @@ snit::type taco_message {
 	    $messagestore region new liveRegion
 	}
 	$messagestore store batch [list $msg] liveRegion
+
+	set chatJid $opts(-chat_jid)
+	set prevTs [$client db onecolumn {
+	    SELECT timestamp FROM chat_message
+	    WHERE chat_jid=$chatJid AND region=$liveRegion
+	    ORDER BY timestamp DESC LIMIT 1 OFFSET 1
+	}]
+	dict set msg prev $prevTs
 
 	$client emit message <Sent> \
 	    -jid $opts(-chat_jid) -body $opts(-body) -message $msg
@@ -376,6 +390,24 @@ snit::type taco_message {
     # When the region is exhausted (local returns empty) and the chat
     # isn't fully synced, a MAM fetch kicks in to get the next batch
     # from the server.
+
+    # Shared local-store query: dispatches to get before/after/latest
+    # and appends a hollow message for backward pagination.
+    method GetLocal {chatJid before after limit} {
+	if {$before ne ""} {
+	    set local [$messagestore get before $chatJid $before $limit]
+	} elseif {$after ne ""} {
+	    set local [$messagestore get after $chatJid $after $limit]
+	} else {
+	    set local [$messagestore get latest $chatJid $limit]
+	}
+	if {$before ne "" && [llength $local] > 0} {
+	    set lastTs [dict get [lindex $local end] timestamp]
+	    lappend local [dict create timestamp $before prev $lastTs hollow 1]
+	}
+	return $local
+    }
+
     method history {args} {
 	set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
 	set opts [dict merge $defaults $args]
@@ -392,15 +424,11 @@ snit::type taco_message {
 	}
 
 	# Try local store first
-	if {$before ne ""} {
-	    set local [$messagestore get before $chatJid $before $limit]
-	} elseif {$after ne ""} {
-	    set local [$messagestore get after $chatJid $after $limit]
-	} else {
-	    set local [$messagestore get latest $chatJid $limit]
-	}
+	set local [$self GetLocal $chatJid $before $after $limit]
 
+	puts "DBG history: chat=$chatJid before=$before after=$after local=[llength $local]"
 	if {[llength $local] > 0} {
+	    puts "DBG history: returning [llength $local] local results"
 	    {*}$callback $local
 	    return
 	}
@@ -413,12 +441,14 @@ snit::type taco_message {
 		WHERE chat_jid=$chatJid
 	    }]
 	    if {$latestTs eq "" || $after >= $latestTs} {
+		puts "DBG history: -after at latest, returning empty"
 		{*}$callback $local
 		return
 	    }
 	}
 
 	# No local data and not synced — query the server
+	puts "DBG history: falling through to MAM"
 	$messagestore region new fetchRegion
 
 	set mamArgs [list -max $limit]
@@ -465,14 +495,7 @@ snit::type taco_message {
     method OnFetch {chatJid cursorSid before after limit callback tag fetchRegion mamResult} {
 	if {[dict exists $mamResult error]} {
 	    if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-	    if {$before ne ""} {
-		set local [$messagestore get before $chatJid $before $limit]
-	    } elseif {$after ne ""} {
-		set local [$messagestore get after $chatJid $after $limit]
-	    } else {
-		set local [$messagestore get latest $chatJid $limit]
-	    }
-	    {*}$callback $local
+	    {*}$callback [$self GetLocal $chatJid $before $after $limit]
 	    return
 	}
 
@@ -513,14 +536,7 @@ snit::type taco_message {
 	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
 	# Re-query local and deliver
-	if {$before ne ""} {
-	    set local [$messagestore get before $chatJid $before $limit]
-	} elseif {$after ne ""} {
-	    set local [$messagestore get after $chatJid $after $limit]
-	} else {
-	    set local [$messagestore get latest $chatJid $limit]
-	}
-	{*}$callback $local
+	{*}$callback [$self GetLocal $chatJid $before $after $limit]
     }
 
     method cancel {args} {
