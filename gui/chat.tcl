@@ -49,21 +49,43 @@ package require snit
 #        -load-threshold AND that direction was NOT just cleaned,
 #        fire -thirst-command with {directions} and thirsty=yes.
 #        (The "not just cleaned" guard prevents load→clean→load loops.)
-#  4. chatview receives -thirst-command via its Thirst method:
+#  4. chatview receives -thirst-command via OnThirst:
 #     - If thirsty=yes and no load is already in flight for that
 #       direction, starts an async history request (oldest/newest
 #       message ID as the cursor).
 #     - If thirsty=no, cancels any in-flight load for that direction.
 #     - Duplicate calls while a load is in flight are ignored (the
-#       LoadToken dict tracks what's active).
-#  5. History results arrive via [load Done]:
+#       LoadToken dict tracks what's active as a boolean).
+#  5. History results arrive via OnLoadDone → ProcessBatch → apply:
 #     a. The LoadToken for that direction is cleared.
-#     b. Messages are bulk-inserted into chatarea at the appropriate
-#        edge (old=top, new=bottom).
-#     c. For old-direction inserts, [compensate] adjusts the text
-#        widget's yview so the viewport doesn't visually jump.
+#     b. Messages are inserted into chatarea via the prev-based rule
+#        (see "Universal insertion rule" below).
+#     c. [compensate] wraps the entire apply loop — it's a no-op for
+#        below-viewport inserts, adjusts for above-viewport inserts.
 #     d. The insert changes the text geometry, which triggers
 #        <<WidgetViewSync>> → back to step 2.
+#
+# Universal insertion rule (chatarea apply)
+# ------------------------------------------
+# Every batch of messages passes through one generic loop:
+#
+#   for each message:
+#     if already displayed → patch prev (hollow updates prev pointer)
+#     if no body           → skip (hollow targeting non-displayed msg)
+#     if some displayed message's prev == this id → insert before it
+#     if this message's prev is displayed → insert after it
+#     if widget empty → insert at end (bootstrap)
+#     otherwise → skip (can't connect — silently discarded)
+#
+# This handles all directions, dedup, and staleness uniformly.
+# A bidict (bidirectional map) tracks id→prev and prev→id for O(1)
+# lookups in both directions.
+#
+# Staleness is handled by the rule itself: if the user scrolled away
+# and the cursor message was cleaned, the batch can't connect to any
+# displayed message and is silently discarded — no generation tokens
+# or explicit guards needed.  Tag-based cancel (-tag $win/$dir) is
+# an optional optimization to save backend work.
 #
 # Steady state
 # ------------
@@ -76,10 +98,10 @@ package require snit
 # Live incoming messages
 # ----------------------
 # New messages arriving from the network bypass the thirst mechanism.
-# chatview subscribes to <Received> events for its JID and renders
-# them immediately (no batching). Duplicates (from overlapping history
-# loads) are filtered by ID before insert. After insert, the view
-# scrolls to the end.
+# chatview subscribes to <Received> events for its JID and feeds
+# them through ProcessBatch → apply. The prev rule handles dedup
+# (already-displayed → patch) and connectivity. After insert, the
+# view scrolls to the end if the user was already at the bottom.
 #
 # Catchup and goto
 # -----------------
@@ -96,15 +118,13 @@ package require snit
 #   goto $ts -source remote — MAM fetch from $ts, store, getAround, display.
 
 snit::widgetadaptor chatview {
-    # dict: old "" / new "" — prevents duplicate history requests
+    # dict: old 0 / new 0 — prevents duplicate history requests (boolean)
     variable LoadToken
-    variable LoadGeneration
 
     # set of jids tracked via avatarcache
     variable TrackedAvatars
 
     delegate method messages to hull
-    delegate method {bulk *} to hull
     delegate method {see *} to hull
     delegate method {highlight *} to hull
     delegate method system to hull
@@ -123,8 +143,7 @@ snit::widgetadaptor chatview {
 	set WasAtEnd 1
 	set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
 	set TrackedAvatars [list]
-	set LoadToken [dict create old "" new ""]
-	set LoadGeneration 0
+	set LoadToken [dict create old 0 new 0]
 	::tacky listen -tag $win message <Received> \
 	    -jid $options(-jid) [mymethod OnLiveMessage]
 	::tacky listen -tag $win message <Sent> \
@@ -140,16 +159,16 @@ snit::widgetadaptor chatview {
     }
 
     method InitialLoad {} {
-	if {[dict get $LoadToken new] ne ""} return
-	set token [incr LoadGeneration]
-	dict set LoadToken new $token
+	if {[dict get $LoadToken new]} return
+	dict set LoadToken new 1
 	::tacky message history -acc $options(-acc) \
 	    -chat $options(-jid) -limit 50 \
-	    -tag $win/new -command [mymethod OnInitialLoadDone $token]
+	    -tag $win/new -command [mymethod OnInitialLoadDone]
     }
 
-    method OnInitialLoadDone {token messages} {
-	$self OnLoadDone new $token $messages
+    method OnInitialLoadDone {messages} {
+	dict set LoadToken new 0
+	$self ProcessBatch $messages
 	$hull see end
     }
 
@@ -175,7 +194,7 @@ snit::widgetadaptor chatview {
 	if {$target eq "end"} {
 	    # Reset to "bottom of conversation" — same as initial open
 	    $hull clear
-	    set LoadToken [dict create old "" new ""]
+	    set LoadToken [dict create old 0 new 0]
 	    $self InitialLoad
 	    return
 	}
@@ -200,9 +219,8 @@ snit::widgetadaptor chatview {
 
 	# Clear and reload around the anchor
 	$hull clear
-	set token [incr LoadGeneration]
-	set LoadToken [dict create old "" new $token]
-	$self OnLoadDone new $token $messages
+	set LoadToken [dict create old 0 new 0]
+	$self ProcessBatch $messages
 	if {$anchor ne "" && $anchor in [$hull messages ids]} {
 	    $hull see message $anchor
 	}
@@ -212,87 +230,49 @@ snit::widgetadaptor chatview {
 	$self goto end
     }
 
-    # Stale-cursor guard
-    # -------------------
-    # OnThirst receives the oldest/newest IDs at call time.  If the
-    # user scrolls away before the async response arrives, DoCleanup
-    # may remove messages around that cursor.  The response would
-    # then insert a batch whose edge doesn't meet the current display
-    # edge, leaving a permanent gap (the normal thirst cycle fetches
-    # further out, never back-filling).
-    #
-    # To prevent this, every request carries a monotonic token
-    # (LoadGeneration).  When DoCleanup cleans a direction it fires
-    # thirst-command with thirsty=no, which clears LoadToken for that
-    # direction.  OnLoadDone rejects any response whose token no
-    # longer matches, and the next thirst cycle re-requests with a
-    # fresh cursor.
-
     method OnThirst {directions thirsty oldest newest} {
 	if {$thirsty && $oldest eq "" && $newest eq ""} return
 	foreach dir $directions {
 	    if {$thirsty} {
-		if {[dict get $LoadToken $dir] ne ""} continue
-		set token [incr LoadGeneration]
-		dict set LoadToken $dir $token
+		if {[dict get $LoadToken $dir]} continue
+		dict set LoadToken $dir 1
 		if {$dir eq "old"} {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-before $oldest -limit 50 \
-			-tag $win/$dir -command [mymethod OnLoadDone old $token]
+			-tag $win/$dir -command [mymethod OnLoadDone $dir]
 		} else {
 		    ::tacky message history -acc $options(-acc) \
 			-chat $options(-jid) \
 			-after $newest -limit 50 \
-			-tag $win/$dir -command [mymethod OnLoadDone new $token]
+			-tag $win/$dir -command [mymethod OnLoadDone $dir]
 		}
 	    } else {
-		dict set LoadToken $dir ""
+		dict set LoadToken $dir 0
 		catch {::tacky unlisten $win/$dir}
 		::tacky message cancel -acc $options(-acc) -tag $win/$dir
 	    }
 	}
     }
 
-    method OnLoadDone {direction token messages} {
-	if {[dict get $LoadToken $direction] ne $token} return
-	dict set LoadToken $direction ""
-	set existingIds [$hull messages ids]
-	set enriched {}
-	foreach msg $messages {
-	    if {[dict get $msg timestamp] in $existingIds} continue
-	    lappend enriched [$self EnrichMessage $msg]
+    method OnLoadDone {direction messages} {
+	dict set LoadToken $direction 0
+	if {$direction eq "old"} {
+	    set messages [lreverse $messages]
 	}
-	if {[llength $enriched] == 0} return
 	if {$direction eq "new"} {
 	    set WasAtEnd [$hull atEnd]
 	}
-	foreach msg $enriched {
-	    set ajid [dict get $msg avatar_jid]
-	    if {$ajid ne ""} {
-		$self TrackAvatar $ajid
-	    }
-	}
-	$hull bulk insert $direction $enriched
+	$self ProcessBatch $messages
 	if {$direction eq "new" && $WasAtEnd} {
 	    $hull see end
 	}
     }
 
     method OnLiveMessage {ev} {
-	set msg [dict get $ev -message]
-	set enriched [$self EnrichMessage $msg]
-	set existingIds [$hull messages ids]
-	if {[dict get $enriched id] in $existingIds} return
 	set WasAtEnd [$hull atEnd]
-	set ajid [dict get $enriched avatar_jid]
-	if {$ajid ne ""} {
-	    $self TrackAvatar $ajid
-	}
-	$hull bulk insert new [list $enriched]
-	if {$WasAtEnd} {
-	    $hull see end
-	}
+	$self ProcessBatch [list [dict get $ev -message]]
+	if {$WasAtEnd} { $hull see end }
     }
 
     method OnConfirmed {ev} {
@@ -314,6 +294,7 @@ snit::widgetadaptor chatview {
 	set serverStatus [dict get $storeDict server_status]
 	set isOutgoing [expr {$serverStatus ne ""}]
 	set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
+	set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
 	dict create \
 	    id           [dict get $storeDict timestamp] \
 	    display_name $res \
@@ -321,7 +302,28 @@ snit::widgetadaptor chatview {
 	    timestamp    [dict get $storeDict timestamp] \
 	    body         [dict get $storeDict body] \
 	    is_outgoing  $isOutgoing \
-	    receipt_status $receiptStatus
+	    receipt_status $receiptStatus \
+	    prev         $prev
+    }
+
+    method ProcessBatch {messages} {
+	set enriched {}
+	foreach msg $messages {
+	    if {[dict exists $msg hollow]} {
+		lappend enriched [dict create \
+		    id [dict get $msg timestamp] \
+		    prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}] \
+		    hollow 1]
+		continue
+	    }
+	    set emsg [$self EnrichMessage $msg]
+	    set ajid [dict get $emsg avatar_jid]
+	    if {$ajid ne ""} {
+		$self TrackAvatar $ajid
+	    }
+	    lappend enriched $emsg
+	}
+	$hull apply $enriched
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.
@@ -404,23 +406,12 @@ snit::widgetadaptor chatview {
 
 
 if 0 {
-    # Bulk inserts messages in direct order at position
-    # old=top, new=bottom
-    $chatview message bulk insert old|new $messagesList
+    # Insert messages using the universal prev-based rule.
+    # Each message must have id, prev, and body (or just id+prev for hollow).
+    $chatview apply $messageDictList
     $chatview message edit $id $messageDict
     $chatview message delete id $id
     $chatview message delete position $pos
-    
-    $chatview userinfo $jid -avatar $image -name $name
-
-    # Private method 
-    $chatview DrawMessage $mark $messageDict
-    # Public insert methods should abstract away there being text
-    # indexes or the text widget being used at all, rather only accept
-    # old|new. A message should never appear in between
-    # messages. Mostly "bulk insert" is going to be used I think.
-
-    So probably it shouldn't work with tacky representations directly
 }
 
 
@@ -476,6 +467,9 @@ snit::widget chatarea {
     # top to bottom, oldest to newest
     variable MessageIds
 
+    # bidict: id → prev (forward), prev → id (reverse)
+    variable Prevs
+
     # Whether a DoCleanup is already scheduled via after idle
     variable CleanupScheduled
 
@@ -512,6 +506,7 @@ snit::widget chatarea {
 	set AvatarImages [dict create]
 	set MessageAvatars [dict create]
 	set HighlightedId ""
+	bidict clear Prevs
 
 	if {$options(-pixelsbelowvariable) ne ""} {
 	    upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
@@ -533,34 +528,81 @@ snit::widget chatarea {
 	after cancel [mymethod DoCleanup]
     }
 
-    method {bulk insert} {where messageDictList} {
-	$text mark set msgins [dict get {new end old 0.0} $where]
-	set newIds [lmap m $messageDictList {dict get $m id}]
-	switch -- $where {
-	    old {
-		set MessageIds [concat $newIds $MessageIds]
-	    }
-	    new {
-		set MessageIds [concat $MessageIds $newIds]
-	    }
-	    default {
-		error "Must be old|new, got $where"
+    # Might-be pitfall about ordering:
+    # While timestamp+prev is the ultimate source of truth, here we
+    # just assume the backend also ordered the list correctly - which
+    # the backend indeed currently does and it's covered by tests. If
+    # the backend somehow sent messages out of order, we'd SILENTLY
+    # DROP a message - just something to keep in mind. If there ever
+    # arises a case where the backend could send the list out of order
+    # - we'd have to rework this.
+    method apply {messageDictList} {
+	set inserted {}
+	compensate $text {
+	    foreach msg $messageDictList {
+		set id [dict get $msg id]
+		set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
+
+		if {$id in $MessageIds} {
+		    # Already displayed — patch prev
+		    $self PatchMessage $id $prev
+		    continue
+		}
+
+		if {[dict exists $msg hollow]} {
+		    # Hollow targeting non-displayed msg — skip
+		    continue
+		}
+
+		if {[bidict rexists Prevs $id]} {
+		    # Some displayed message claims this id as its prev
+		    # → insert before that message
+		    set target [bidict rget Prevs $id]
+		    $self InsertAt $target before $msg
+		    lappend inserted $id
+		} elseif {$prev ne "" && $prev in $MessageIds} {
+		    # This message's prev is displayed → insert after it
+		    $self InsertAt $prev after $msg
+		    lappend inserted $id
+		} elseif {[llength $MessageIds] == 0} {
+		    # Bootstrap: empty widget
+		    $self InsertAt "" end $msg
+		    lappend inserted $id
+		}
+		# else: can't connect — silently skip
 	    }
 	}
 
-	set script {
-	    foreach messageDict $messageDictList {
-		$self DrawMessage msgins $messageDict
+	return $inserted
+    }
+
+    method PatchMessage {id newPrev} {
+	bidict set Prevs $id $newPrev
+    }
+
+    method InsertAt {targetId position msg} {
+	set id [dict get $msg id]
+	set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
+
+	switch -- $position {
+	    before {
+		set idx [lsearch -exact $MessageIds $targetId]
+		set MessageIds [linsert $MessageIds $idx $id]
+		$text mark set msgins item.$targetId.first
+	    }
+	    after {
+		set idx [lsearch -exact $MessageIds $targetId]
+		set MessageIds [linsert $MessageIds [expr {$idx + 1}] $id]
+		$text mark set msgins item.$targetId.last
+	    }
+	    end {
+		lappend MessageIds $id
+		$text mark set msgins end
 	    }
 	}
-	switch -- $where {
-	    old {
-		compensate $text $script
-	    }
-	    new {
-		eval $script
-	    }
-	}
+
+	bidict set Prevs $id $prev
+	$self DrawMessage msgins $msg
     }
     
     method OnYview {} {
@@ -739,6 +781,7 @@ snit::widget chatarea {
 	$text del 0.0 end
 	set MessageIds {}
 	set HighlightedId ""
+	bidict clear Prevs
 	if {$options(-avatar-release-command) ne ""} {
 	    set released {}
 	    dict for {mid ajid} $MessageAvatars {
@@ -841,15 +884,16 @@ snit::widget chatarea {
 	$text del $tag.first $tag.last
 	# Delete tag itself
 	$text tag delete item.$id
+	bidict unset Prevs $id
 	$self CheckAvatarRelease $id
     }
     
     method deleteByPos {idx} {
 	set id [lindex $MessageIds $idx]
-	# puts "deleting:$id (first few are [lrange $MessageIds 0 5])"
 	set MessageIds [lreplace $MessageIds $idx $idx]
 	$text del item.$id.first item.$id.last
 	$text tag delete item.$id
+	bidict unset Prevs $id
 	$self CheckAvatarRelease $id
     }
 

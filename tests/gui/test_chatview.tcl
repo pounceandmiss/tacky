@@ -525,3 +525,92 @@ test chatview-goto-cancels-inflight {goto end discards in-flight thirst response
 	set countAfterStale [llength [.cv messages ids]]
 	list goto=$countAfterGoto stale=$countAfterStale
     } -result {goto=3 stale=3}
+
+# -- chatarea apply tests -------------------------------------------------------
+
+# Helper: build a message dict suitable for chatarea apply
+proc ca_msg {id prev body} {
+    dict create id $id prev $prev body $body \
+	display_name test avatar_jid "" \
+	timestamp $id is_outgoing 0 receipt_status ""
+}
+
+proc ca_hollow {id prev} {
+    dict create id $id prev $prev hollow 1
+}
+
+set ca_common {
+    -setup   { chatarea .ca; update }
+    -cleanup { destroy .ca }
+}
+
+test chatarea-apply-forward {forward batch chains via prev} \
+    {*}$ca_common \
+    -body {
+	.ca apply [list \
+	    [ca_msg 100 "" "msg A"] \
+	    [ca_msg 200 100 "msg B"] \
+	    [ca_msg 300 200 "msg C"]]
+	.ca messages ids
+    } -result {100 200 300}
+
+test chatarea-apply-backward {reversed backward batch chains via rexists} \
+    {*}$ca_common \
+    -body {
+	# Bootstrap with one message
+	.ca apply [list [ca_msg 500 400 "msg E"]]
+	# Simulate reversed backward page: hollow + newest-first
+	.ca apply [list \
+	    [ca_hollow 500 400] \
+	    [ca_msg 400 300 "msg D"] \
+	    [ca_msg 300 200 "msg C"] \
+	    [ca_msg 200 "" "msg B"]]
+	.ca messages ids
+    } -result {200 300 400 500}
+
+test chatarea-apply-tombstone-in-chain {empty-body messages maintain prev chain} \
+    {*}$ca_common \
+    -body {
+	.ca apply [list \
+	    [ca_msg 100 "" "msg A"] \
+	    [ca_msg 200 100 ""] \
+	    [ca_msg 300 200 "msg C"] \
+	    [ca_msg 400 300 ""] \
+	    [ca_msg 500 400 "msg E"]]
+	.ca messages ids
+    } -result {100 200 300 400 500}
+
+test chatarea-apply-hollow-patches {hollow patches displayed message prev} \
+    {*}$ca_common \
+    -body {
+	.ca apply [list [ca_msg 500 "" "msg E"]]
+	# Hollow updates E's prev, then D chains via rexists
+	.ca apply [list \
+	    [ca_hollow 500 400] \
+	    [ca_msg 400 "" "msg D"]]
+	.ca messages ids
+    } -result {400 500}
+
+test chatarea-apply-hollow-skipped-when-not-displayed {hollow for non-displayed message is ignored} \
+    {*}$ca_common \
+    -body {
+	.ca apply [list [ca_msg 500 "" "msg E"]]
+	# Hollow targets 999 which isn't displayed — entire batch skipped
+	.ca apply [list \
+	    [ca_hollow 999 400] \
+	    [ca_msg 400 "" "msg D"]]
+	.ca messages ids
+    } -result {500}
+
+test chatarea-apply-dedup {already displayed message is patched not duplicated} \
+    {*}$ca_common \
+    -body {
+	.ca apply [list \
+	    [ca_msg 100 "" "msg A"] \
+	    [ca_msg 200 100 "msg B"]]
+	# Re-apply same messages
+	.ca apply [list \
+	    [ca_msg 100 "" "msg A"] \
+	    [ca_msg 200 100 "msg B"]]
+	.ca messages ids
+    } -result {100 200}

@@ -426,9 +426,7 @@ snit::type taco_message {
 	# Try local store first
 	set local [$self GetLocal $chatJid $before $after $limit]
 
-	puts "DBG history: chat=$chatJid before=$before after=$after local=[llength $local]"
 	if {[llength $local] > 0} {
-	    puts "DBG history: returning [llength $local] local results"
 	    {*}$callback $local
 	    return
 	}
@@ -441,14 +439,12 @@ snit::type taco_message {
 		WHERE chat_jid=$chatJid
 	    }]
 	    if {$latestTs eq "" || $after >= $latestTs} {
-		puts "DBG history: -after at latest, returning empty"
 		{*}$callback $local
 		return
 	    }
 	}
 
 	# No local data and not synced — query the server
-	puts "DBG history: falling through to MAM"
 	$messagestore region new fetchRegion
 
 	set mamArgs [list -max $limit]
