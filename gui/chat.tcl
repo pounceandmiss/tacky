@@ -266,6 +266,7 @@ snit::widgetadaptor chatview {
     }
 
     method OnCatchupDone {ev} {
+	if {$IsMuc} return
 	$self goto end
     }
 
