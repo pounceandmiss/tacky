@@ -239,7 +239,7 @@ test chatview-initial-load-shows-history {pre-seeded messages appear after const
 	cv_setup
 	cv_feed "seeded msg 1" seed1
 	cv_feed "seeded msg 2" seed2
-	cv_create
+	cv_create -pack
     } \
     -cleanup { cv_cleanup } \
     -body {
@@ -247,7 +247,7 @@ test chatview-initial-load-shows-history {pre-seeded messages appear after const
     } -result {2}
 
 test chatview-initial-load-mam {empty DB triggers MAM and results appear in widget} \
-    -setup { cv_setup; cv_create -nomam } \
+    -setup { cv_setup; cv_create -pack -nomam } \
     -cleanup { cv_cleanup } \
     -body {
 	set mamIq [cv_find_mam_iq alice@example.com]
