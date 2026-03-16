@@ -145,17 +145,28 @@ snit::widgetadaptor chatview {
 	set TrackedAvatars [list]
 	set LoadToken [dict create old 0 new 0]
 	::tacky listen -tag $win message <Received> \
-	    -jid $options(-jid) [mymethod OnLiveMessage]
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
 	::tacky listen -tag $win message <Sent> \
-	    -jid $options(-jid) [mymethod OnLiveMessage]
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
 	::tacky listen -tag $win message <Confirmed> \
-	    -jid $options(-jid) [mymethod OnConfirmed]
-	::tacky listen -tag $win message <CatchupDone> [mymethod OnCatchupDone]
+	    -acc $options(-acc) -jid $options(-jid) [mymethod OnConfirmed]
+	::tacky listen -tag $win message <CatchupDone> \
+	    -acc $options(-acc) [mymethod OnCatchupDone]
 	bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
 	if {$options(-menubar) ne ""} {
 	    $self InstallMenus
 	}
-	after idle [mymethod InitialLoad]
+	bind $win.text <Configure> [mymethod OnFirstConfigure]
+    }
+
+    method OnFirstConfigure {} {
+	# Calling InitialLoad directly glitched out on some chats
+	# (actually only one -#tcl%irc.libera.chat@irc.chinwag.im).
+	# PixelsAbove would get a weird value of ~58000, I figure
+	# because the widget didn't have real geometry yet, and
+	# cleanup would kick in erasing everything. No idea why it
+	# only happened with one chat.  bind $win.text <Configure> {}
+	$self InitialLoad
     }
 
     method InitialLoad {} {
