@@ -1,6 +1,7 @@
 snit::type app_type {
     option -transient -default 0 -readonly yes
     option -backend -default direct -readonly yes
+    option -debug-dir -default "" -readonly yes
     variable current ""
 
     variable notebook ""
@@ -23,6 +24,11 @@ snit::type app_type {
 	    default {
 		tacky_init -transient $options(-transient)
 	    }
+	}
+	if {$options(-debug-dir) ne ""} {
+	    file mkdir $options(-debug-dir)
+	    jlog configure -logproc [list jlog_file_writer $options(-debug-dir)] \
+		-defaultlevel debug
 	}
         ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }

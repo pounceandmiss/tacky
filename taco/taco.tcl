@@ -92,7 +92,7 @@ snit::type taco_type {
     destructor {
         catch {
             foreach jid [$db eval {SELECT jid FROM account}] {
-                set client $self.client-$jid
+                set client $self.client($jid)
                 if {[info commands $client] ne ""} {
                     catch {$client disconnect}
                     catch {$client destroy}
@@ -117,7 +117,7 @@ snit::type taco_type {
             error "Account does not exist: $jid"
         }
 
-        set client $self.client-$jid
+        set client $self.client($jid)
         if {[info commands $client] eq ""} {
             lassign [$db eval {SELECT username, password, domain FROM account WHERE jid=$jid}] \
                 username password domain

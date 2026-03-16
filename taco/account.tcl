@@ -123,7 +123,7 @@ snit::type taco_account {
         $options(-taco) emit account <Removed> -acc $jid
 
         # Clean up client object if it exists
-        set client $options(-taco).client-$jid
+        set client $options(-taco).client($jid)
         if {[info commands $client] ne ""} {
             catch {$client disconnect}
             catch {$client destroy}
@@ -165,7 +165,7 @@ snit::type taco_account {
     method disable {args} {
         set jid [dict get $args -acc]
         $options(-taco) emit account <Disabled> -acc $jid
-        set client $options(-taco).client-$jid
+        set client $options(-taco).client($jid)
         if {[info commands $client] ne ""} {
             catch {$client disconnect}
         }

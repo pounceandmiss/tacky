@@ -88,6 +88,25 @@ snit::type jlog_type {
 
 }
 
+proc jlog_file_writer {dir opts_list} {
+    array set opts {-obj "" -level debug -text ""}
+    array set opts $opts_list
+    # Extract account JID from object path
+    # e.g. ::tacky.taco.client(user@example.com).conn.sm → user@example.com
+    set filename "general"
+    if {[regexp {client\((.+?)\)} $opts(-obj) -> jid]} {
+        set filename $jid
+    }
+    set fd [open [file join $dir $filename] a]
+    set ts [clock format [clock seconds] -format %H:%M:%S]
+    puts $fd "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
+    if {[info exists opts(-stanza)]} {
+        puts $fd [jwrite -pretty $opts(-stanza)]
+    }
+    puts $fd ""
+    close $fd
+}
+
 if {[info commands jlog] eq ""} {
     jlog_type jlog
 }
