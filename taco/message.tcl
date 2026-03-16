@@ -598,6 +598,58 @@ snit::type taco_message {
 	{*}$callback $result
     }
 
+    # search -chat $jid -query "text" ?-before $serverId? ?-limit 20?
+    #        ?-tag $tag? -command $cb
+    #
+    # Full text search via MAM. Always server-side.
+    # Each result stored in its own region (sparse islands).
+    # Callback receives dict: messages, complete, last
+    method search {args} {
+	array set opts {-limit 20 -tag ""}
+	array set opts $args
+
+	set chatJid $opts(-chat)
+	set callback $opts(-command)
+	set tag $opts(-tag)
+
+	if {$tag ne ""} {
+	    set ActiveTags($tag) 1
+	}
+
+	set mamArgs [list -fulltext $opts(-query) -max $opts(-limit)]
+	if {[info exists opts(-before)]} {
+	    lappend mamArgs -before $opts(-before)
+	} else {
+	    lappend mamArgs -before {}
+	}
+
+	lappend mamArgs -command [mymethod OnSearch $chatJid $callback $tag]
+	$client mam queryChat $chatJid {*}$mamArgs
+    }
+
+    method OnSearch {chatJid callback tag mamResult} {
+	if {[dict exists $mamResult error]} {
+	    {*}$callback [dict create messages {} complete 0 last "" error 1]
+	    return
+	}
+
+	if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+
+	set messages {}
+	foreach resultNode [dict get $mamResult messages] {
+	    set msg [$self ParseResultNode $resultNode $chatJid]
+	    if {[dict get $msg body] eq ""} continue
+	    $messagestore region new r
+	    $messagestore store batch [list $msg] r
+	    lappend messages $msg
+	}
+
+	set complete [dict get $mamResult complete]
+	set last [dict get $mamResult last]
+
+	{*}$callback [dict create messages $messages complete $complete last $last]
+    }
+
     method ParseResultNode {resultNode chatJid} {
 	set serverId [xsearch $resultNode -get @id]
 	set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]

@@ -32,7 +32,7 @@ snit::type taco_mam {
 
     variable idCounter 0
 
-    typevariable KnownFulltextFields [list {{urn:xmpp:fulltext:0}fulltext} withtext]
+    typevariable KnownFulltextFields [list withtext {{urn:xmpp:fulltext:0}fulltext}]
 
     constructor {args} {
 	$self configurelist $args
@@ -158,7 +158,7 @@ snit::type taco_mam {
 	if {[info exists FieldCache($cacheKey)]} {
 	    set ftVar $FieldCache($cacheKey)
 	} else {
-	    set ftVar {{urn:xmpp:fulltext:0}fulltext}
+	    set ftVar [lindex $KnownFulltextFields 0]
 	}
 
 	set payload [j query -queryid $queryId -ns urn:xmpp:mam:2 {

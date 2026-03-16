@@ -1088,3 +1088,233 @@ test message-history-before-empty-no-hollow {backward pagination with no results
 	set result [msg_history -chat alice@example.com -before 100]
 	llength $result
     } -result {0}
+
+# -- search --------------------------------------------------------------------
+
+# Helper: prime MAM fulltext field cache (avoids formfields discovery IQ in search tests)
+proc msg_prime_search {{chatJid alice@example.com}} {
+    if {[regexp {(.*)\?join$} $chatJid -> mucjid]} {
+	$::_client mam discoverFields -to $mucjid
+    } else {
+	$::_client mam discoverFields
+    }
+    set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+    $::_client iq feed [j iq -type result -id $iqId {
+	j query -ns urn:xmpp:mam:2 {
+	    j x -ns jabber:x:data -type form {
+		j field -var FORM_TYPE -type hidden {
+		    j value #body urn:xmpp:mam:2
+		}
+		j field -var with
+		j field -var start
+		j field -var end
+		j field -var withtext
+	    }
+	}
+    }]
+}
+
+# Helper: call search and collect result via -command
+proc msg_search {args} {
+    set ::_msg_search_result {}
+    tacky message search -acc $::acc {*}$args \
+	-command [list apply {{result} { set ::_msg_search_result $result }}]
+    set ::_msg_search_result
+}
+
+test message-search-sends-mam-fulltext {search sends MAM query with fulltext field} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "hello world" -limit 10 \
+	    -command [list apply {{r} {}}]
+	set iqStanza [lindex [$::_client conn get_written] end]
+	set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+	# Should have withtext field with query text
+	set ftVal [xsearch $qnode x field @var withtext value -get body]
+	# Should have empty before (newest-first default)
+	set beforeVal [xsearch $qnode set before -get body]
+	list [expr {$ftVal eq "hello world"}] \
+	     [expr {$beforeVal eq ""}]
+    } -result {1 1}
+
+test message-search-results-parsed-and-stored {search results parsed and stored in DB} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	set result {}
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" -limit 10 \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid \
+		from alice@example.com/phone body "found it" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid2 queryid $qid \
+		from alice@example.com/phone body "found another" \
+		stamp 2024-06-15T12:00:00Z]
+	}]
+
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete false {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid2
+		}
+	    }
+	}]
+
+	set msgs [dict get $result messages]
+	set db [$::_client message messagestore cget -db]
+	set dbCount [$db eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}]
+	list [llength $msgs] \
+	     [dict get [lindex $msgs 0] body] \
+	     [dict get [lindex $msgs 0] server_id] \
+	     [dict get [lindex $msgs 1] body] \
+	     [dict get $result complete] \
+	     [dict get $result last] \
+	     $dbCount
+    } -result {2 {found it} sid1 {found another} 0 sid2 2}
+
+test message-search-results-separate-regions {search results stored in separate regions} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" -limit 10 \
+	    -command [list apply {{r} {}}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid \
+		from alice@example.com/phone body "msg one" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid2 queryid $qid \
+		from alice@example.com/phone body "msg two" \
+		stamp 2024-06-15T12:00:00Z]
+	}]
+
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid2
+		}
+	    }
+	}]
+
+	set db [$::_client message messagestore cget -db]
+	$db eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}
+    } -result {2}
+
+test message-search-pagination-before {search with -before sends RSM before element} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" -before "page-cursor-id" -limit 10 \
+	    -command [list apply {{r} {}}]
+	set iqStanza [lindex [$::_client conn get_written] end]
+	set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+	set beforeVal [xsearch $qnode set before -get body]
+	expr {$beforeVal eq "page-cursor-id"}
+    } -result {1}
+
+test message-search-cancel-suppresses-callback {cancel tag prevents search callback} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	set ::result UNTOUCHED
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" -tag searchtag \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	# Cancel before MAM response arrives
+	tacky message cancel -acc $acc -tag searchtag
+
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid \
+		from alice@example.com/phone body "found" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid1
+		}
+	    }
+	}]
+
+	set ::result
+    } -result UNTOUCHED
+
+test message-search-error-returns-error-dict {search error returns error dict} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	set result {}
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	$::_client iq feed [j iq -type error -id $iqId {
+	    j error -type cancel { j feature-not-implemented }
+	}]
+
+	list [dict get $result error] \
+	     [dict get $result messages] \
+	     [dict get $result complete]
+    } -result {1 {} 0}
+
+test message-search-skips-empty-body {search skips results with empty body} \
+    {*}$msg_common \
+    -body {
+	msg_prime_search
+	set result {}
+	tacky message search -acc $acc -chat alice@example.com \
+	    -query "test" \
+	    -command [list apply {{r} { set ::result $r }}]
+
+	set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+	set qid [mam_queryid]
+
+	# Feed one result with empty body and one with content
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid1 queryid $qid \
+		from alice@example.com/phone body "" \
+		stamp 2024-01-01T10:00:00Z]
+	}]
+	$::_client mam onResultMessage [j message -from user@test.example.com {
+	    j /as-is [mam_result id sid2 queryid $qid \
+		from alice@example.com/phone body "has content" \
+		stamp 2024-01-01T11:00:00Z]
+	}]
+
+	$::_client iq feed [j iq -type result -id $iqId {
+	    j fin -ns urn:xmpp:mam:2 -complete true {
+		j set -ns http://jabber.org/protocol/rsm {
+		    j first #body sid1
+		    j last #body sid2
+		}
+	    }
+	}]
+
+	set msgs [dict get $result messages]
+	list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 {has content}}
