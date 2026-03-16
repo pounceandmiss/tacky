@@ -77,6 +77,7 @@ snit::widget signinhull {
 snit::widgetadaptor signin {
     variable Data
     variable jid ""
+    variable succeeded 0
     option -onsuccess -default ""
     option -back -readonly yes
 
@@ -87,14 +88,21 @@ snit::widgetadaptor signin {
 	array set opts $args
 	set options(-onsuccess) $opts(-onsuccess)
 	set options(-back) $opts(-back)
+	set backCmd $opts(-back)
+	if {$backCmd ne ""} {
+	    set backCmd [mymethod OnBack]
+	}
 	installhull using signinhull \
 	    -array [myvar Data] \
 	    -proceed [mymethod Proceed] \
-	    -back $opts(-back)
+	    -back $backCmd
     }
 
     destructor {
 	tacky unlisten $win
+	if {!$succeeded && $jid ne ""} {
+	    catch { tacky account remove -acc $jid }
+	}
     }
 
     method Proceed {} {
@@ -117,7 +125,6 @@ snit::widgetadaptor signin {
 
     method Cancel {} {
 	tacky unlisten $win
-	catch { tacky account disable -acc $jid }
 	catch { tacky account remove -acc $jid }
 	$win.progressbar stop
 	$win.progressbar configure -mode determinate -value 0
@@ -125,7 +132,13 @@ snit::widgetadaptor signin {
 	$win.statuslabel configure -text ""
     }
 
+    method OnBack {} {
+	$self Cancel
+	{*}$options(-back)
+    }
+
     method OnReady {ev} {
+	set succeeded 1
 	tacky unlisten $win
 	$win.progressbar stop
 	$win.progressbar configure -mode determinate -value 0
@@ -141,8 +154,6 @@ snit::widgetadaptor signin {
 	if {[dict exists $ev -message]} {
 	    set msg [dict get $ev -message]
 	}
-	catch { tacky account disable -acc $jid }
-	catch { tacky account remove -acc $jid }
 	$win.progressbar stop
 	$win.progressbar configure -mode determinate -value 0
 	$win.proceed configure -text "Proceed" -command [mymethod Proceed]
@@ -155,8 +166,6 @@ snit::widgetadaptor signin {
 	if {[dict exists $ev -message]} {
 	    set msg [dict get $ev -message]
 	}
-	catch { tacky account disable -acc $jid }
-	catch { tacky account remove -acc $jid }
 	$win.progressbar stop
 	$win.progressbar configure -mode determinate -value 0
 	$win.proceed configure -text "Proceed" -command [mymethod Proceed]
