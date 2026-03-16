@@ -106,6 +106,10 @@ snit::type taco_type {
         tacky emit $module $event {*}$args
     }
 
+    method jlog {args} {
+        jlog {*}$args
+    }
+
     method connect {} {
         foreach jid [$db eval {SELECT jid FROM account WHERE enabled=1}] {
             [$self client $jid] connect

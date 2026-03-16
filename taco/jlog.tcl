@@ -5,7 +5,7 @@ snit::type jlog_type {
     option -logproc
     option -defaultlevel warn
     
-    typevariable LEVELS {debug error info warn}
+    typevariable LEVELS {debug info warn error}
     
     constructor args {
 	array set levels {}
@@ -94,7 +94,9 @@ proc jlog_file_writer {dir opts_list} {
     # Extract account JID from object path
     # e.g. ::tacky.taco.client(user@example.com).conn.sm → user@example.com
     set filename "general"
-    if {[regexp {client\((.+?)\)} $opts(-obj) -> jid]} {
+    if {[info exists opts(-acc)] && $opts(-acc) ne ""} {
+        set filename $opts(-acc)
+    } elseif {[regexp {client\((.+?)\)} $opts(-obj) -> jid]} {
         set filename $jid
     }
     set fd [open [file join $dir $filename] a]

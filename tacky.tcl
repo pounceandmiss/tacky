@@ -123,6 +123,19 @@ oo::class create tacky_base {
 	{*}$cmd [dict get $args -result]
     }
 
+    # Forward jlog calls to the backend thread where the jlog singleton lives.
+    # Auto-captures -obj and -acc from the caller's snit scope via uplevel.
+    method jlog {level text args} {
+	array set opts $args
+	if {![info exists opts(-obj)]} {
+	    catch {set opts(-obj) gui.[uplevel 1 {set self}]}
+	}
+	if {![info exists opts(-acc)]} {
+	    catch {set opts(-acc) [uplevel 1 {set options(-acc)}]}
+	}
+	my _send jlog $level $text {*}[array get opts]
+    }
+
     # Subclass must override: deliver command to backend.
     method _send {module method args} {
 	error "abstract: subclass must override _send"
