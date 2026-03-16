@@ -10,6 +10,7 @@ snit::widget maminfo {
     hulltype ttk::frame
 
     option -acc -readonly yes
+    option -target -default "" -readonly yes
 
     variable version_text ""
     variable version_error ""
@@ -18,7 +19,8 @@ snit::widget maminfo {
     variable fields_list {}
     variable pending 0
 
-    typemethod open {account} {
+    typemethod open {account args} {
+	array set opts $args
 	set top .maminfo_[string map {@ _ . _} $account]
 	if {[winfo exists $top]} {
 	    wm deiconify $top
@@ -28,7 +30,11 @@ snit::widget maminfo {
 	toplevel $top
 	wm title $top "MAM Archive Info"
 	wm resizable $top 1 0
-	pack [maminfo $top.mi -acc $account] \
+	set wargs [list -acc $account]
+	if {[info exists opts(-target)]} {
+	    lappend wargs -target $opts(-target)
+	}
+	pack [maminfo $top.mi {*}$wargs] \
 	    -expand yes -fill both -padx 10 -pady 10
     }
 
@@ -73,7 +79,11 @@ snit::widget maminfo {
 	$t tag configure error -foreground red
 	$t tag configure indent -lmargin1 14 -lmargin2 14
 
-	$win.target insert 0 [jid domain $options(-acc)]
+	if {$options(-target) ne "" && [jid query $options(-target)] eq "join"} {
+	    $win.target insert 0 [jid bare $options(-target)]
+	} else {
+	    $win.target insert 0 [jid domain $options(-acc)]
+	}
     }
 
     destructor {
@@ -91,9 +101,22 @@ snit::widget maminfo {
 
 	set target [string trim [$win.target get]]
 
-	# Version query — target entity, or own server if empty
-	set versionTo [expr {$target ne "" ? $target
-	    : [jid domain $options(-acc)]}]
+	# Version query — strip MUC subdomain (e.g. conference.example.com
+	# → example.com), use target itself for bare domains, or own server
+	if {$target ne "" && [jid username $target] ne ""} {
+	    set d [jid domain $target]
+	    set dot [string first . $d]
+	    set prefix [string range $d 0 $dot-1]
+	    if {$dot >= 0 && $prefix in {conference muc chat rooms}} {
+		set versionTo [string range $d $dot+1 end]
+	    } else {
+		set versionTo $target
+	    }
+	} elseif {$target ne ""} {
+	    set versionTo $target
+	} else {
+	    set versionTo [jid domain $options(-acc)]
+	}
 	::tacky caps softwareVersion -acc $options(-acc) \
 	    -to $versionTo -tag $win -command [mymethod OnVersion]
 

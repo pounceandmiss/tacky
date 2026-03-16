@@ -19,6 +19,9 @@ snit::widgetadaptor chatwindow {
         # Menubar
         menu $win.menubar -tearoff 0
         menu $win.menubar.file -tearoff 0
+        $win.menubar.file add command -label "MAM Info..." \
+            -command [list maminfo open $options(-acc) -target $options(-jid)]
+        $win.menubar.file add separator
         $win.menubar.file add command -label "Close" \
             -command [list destroy $win] -accelerator "Ctrl+W"
         $win.menubar add cascade -label "File" -menu $win.menubar.file

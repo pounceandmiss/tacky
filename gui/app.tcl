@@ -237,7 +237,11 @@ snit::type app_type {
     method OpenMamInfo {} {
         set jid [$notebook CurrentAccountJid]
         if {$jid eq ""} return
-        maminfo open $jid
+        if {$inlineJid ne ""} {
+            maminfo open $jid -target $inlineJid
+        } else {
+            maminfo open $jid
+        }
     }
 
     method ShowAbout {} {
