@@ -9,6 +9,7 @@ snit::type app_type {
     variable chatpanel ""
     variable inlineJid ""
     variable chatModeVar "inline"
+    variable accmenu ""
 
     constructor args {
         $self configurelist $args
@@ -56,6 +57,10 @@ snit::type app_type {
             destroy $current
             set current ""
         }
+        if {$accmenu ne ""} {
+            $accmenu destroy
+            set accmenu ""
+        }
         . configure -menu {}
         if {[winfo exists .menubar]} {
             destroy .menubar
@@ -92,16 +97,16 @@ snit::type app_type {
             -command [mymethod OpenXmlConsole] -accelerator "Ctrl+Shift+X"
         .menubar.file add command -label "MAM Info..." \
             -command [mymethod OpenMamInfo]
-        .menubar.file add command -label "Add Account..." \
-            -command [mymethod OpenAddAccount]
-        .menubar.file add command -label "Join Room..." \
-            -command [mymethod OpenJoinRoom]
-        .menubar.file add command -label "Create Room..." \
-            -command [mymethod OpenJoinRoom]
         .menubar.file add separator
         .menubar.file add command -label "Quit" \
             -command [list destroy .] -accelerator "Ctrl+Q"
         .menubar add cascade -label "File" -menu .menubar.file
+
+        # Accounts menu
+        set accmenu [accountsmenu %AUTO% \
+            -menubar .menubar \
+            -add-account-command [mymethod OpenAddAccount] \
+            -join-room-command [mymethod OpenJoinRoom]]
 
         # View menu
         menu .menubar.view -tearoff 0
