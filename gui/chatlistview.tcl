@@ -82,6 +82,8 @@ snit::widget chatlistview {
 
 	# Contact item menu
 	install contactmenu using menu $win.contactmenu -tearoff 0
+	$contactmenu add command -label "" -state disabled
+	$contactmenu add separator
 	$contactmenu add command -label "Open Chat" \
 	    -command [mymethod OnOpenChat]
 	$contactmenu add separator
@@ -89,9 +91,14 @@ snit::widget chatlistview {
 	    -command [mymethod OnRenameContact]
 	$contactmenu add command -label "Remove" \
 	    -command [mymethod OnRemoveContact]
+	$contactmenu add separator
+	$contactmenu add command -label "Copy JID" \
+	    -command [mymethod OnCopyJid]
 
 	# Bookmark item menu
 	install bookmarkmenu using menu $win.bookmarkmenu -tearoff 0
+	$bookmarkmenu add command -label "" -state disabled
+	$bookmarkmenu add separator
 	$bookmarkmenu add command -label "Join Room" \
 	    -command [mymethod OnOpenChat]
 	$bookmarkmenu add command -label "Leave Room" \
@@ -104,6 +111,9 @@ snit::widget chatlistview {
 	    -command [mymethod OnEditBookmark]
 	$bookmarkmenu add command -label "Remove Bookmark" \
 	    -command [mymethod OnRemoveBookmark]
+	$bookmarkmenu add separator
+	$bookmarkmenu add command -label "Copy JID" \
+	    -command [mymethod OnCopyJid]
 
 	# Roster root menu
 	install rosterrootmenu using menu $win.rosterrootmenu -tearoff 0
@@ -445,6 +455,8 @@ snit::widget chatlistview {
 		    -acc $options(-acc) -jid $jid \
 		    -tag $win -command [mymethod OnAutojoinResult $X $Y]
 	    } else {
+		set jid [$self ItemJid $item]
+		$contactmenu entryconfigure 0 -label [string range $jid 0 39]
 		tk_popup $contactmenu $X $Y
 	    }
 	}
@@ -452,7 +464,16 @@ snit::widget chatlistview {
 
     method OnAutojoinResult {X Y value} {
 	set bookmarkAutojoin $value
+	set jid [$self SelectedLeafJid]
+	$bookmarkmenu entryconfigure 0 -label [string range $jid 0 39]
 	tk_popup $bookmarkmenu $X $Y
+    }
+
+    method OnCopyJid {} {
+	set jid [$self SelectedLeafJid]
+	if {$jid eq ""} return
+	clipboard clear
+	clipboard append $jid
     }
 
     method OnSettingsRightClick {X Y} {
