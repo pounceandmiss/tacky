@@ -193,6 +193,7 @@ snit::widgetadaptor chatview {
     }
 
     method goto {target args} {
+	$self HideLoading
 	set defaults [dict create -source local]
 	set opts [dict merge $defaults $args]
 	set source [dict get $opts -source]
@@ -210,6 +211,9 @@ snit::widgetadaptor chatview {
 	    return
 	}
 
+	if {$source eq "remote"} {
+	    $self ShowLoading
+	}
 	::tacky message goto -acc $options(-acc) \
 	    -chat $options(-jid) -date $target -source $source \
 	    -limit 50 -tag $win/goto \
@@ -217,6 +221,7 @@ snit::widgetadaptor chatview {
     }
 
     method OnGotoDone {result} {
+	$self HideLoading
 	set messages [dict get $result messages]
 	set anchor [dict get $result anchor]
 
@@ -235,6 +240,29 @@ snit::widgetadaptor chatview {
 	if {$anchor ne "" && $anchor in [$hull messages ids]} {
 	    $hull see message $anchor
 	}
+    }
+
+    method ShowLoading {} {
+	set f $win.loading
+	if {[winfo exists $f]} return
+	ttk::frame $f
+	ttk::label $f.lbl -text "Loading\u2026"
+	ttk::button $f.cancel -text "Cancel" -style Toolbutton \
+	    -command [mymethod CancelGoto]
+	pack $f.lbl $f.cancel -side left -padx 4
+	place $f -in $win.text -relx 0.5 -y 8 -anchor n
+    }
+
+    method HideLoading {} {
+	if {[winfo exists $win.loading]} {
+	    destroy $win.loading
+	}
+    }
+
+    method CancelGoto {} {
+	::tacky unlisten $win/goto
+	::tacky message cancel -acc $options(-acc) -tag $win/goto
+	$self HideLoading
     }
 
     method OnCatchupDone {ev} {
