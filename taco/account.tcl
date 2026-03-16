@@ -4,7 +4,7 @@
 # taco account list ?-command $cmd?
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
-#   error: account already exists
+#   creates account if new; updates fields if it already exists
 # taco account remove -acc $jid
 #   error: account doesn't exist
 # taco account get -acc $jid ?-field $name? ?-command $cmd?
@@ -49,24 +49,28 @@ snit::type taco_account {
 
     method add {args} {
         set jid [dict get $args -acc]
-        if {[$self exists -acc $jid]} {
-            error "Account already exists: $jid"
-        }
+        set exists [$self exists -acc $jid]
 
-        $options(-db) eval {INSERT INTO account(jid) VALUES($jid)}
+        if {!$exists} {
+            $options(-db) eval {INSERT INTO account(jid) VALUES($jid)}
+        }
 
         set fields [dict remove $args -acc]
-        if {![dict exists $fields -domain]} {
-            dict set fields -domain [jid domain $jid]
-        }
-        if {![dict exists $fields -username]} {
-            dict set fields -username [jid username $jid]
+        if {!$exists} {
+            if {![dict exists $fields -domain]} {
+                dict set fields -domain [jid domain $jid]
+            }
+            if {![dict exists $fields -username]} {
+                dict set fields -username [jid username $jid]
+            }
         }
         if {[dict size $fields] > 0} {
             $self set -acc $jid {*}$fields
         }
 
-        $options(-taco) emit account <Added> -acc $jid
+        if {!$exists} {
+            $options(-taco) emit account <Added> -acc $jid
+        }
     }
 
     tackymethod get {args} {
@@ -135,11 +139,19 @@ snit::type taco_account {
 
     method enable {args} {
         set jid [dict get $args -acc]
-        if {[$options(-db) eval {SELECT enabled FROM account WHERE jid=$jid}]} return
         set client [$options(-taco) client $jid]
+
+        # Always propagate latest credentials from DB to client/conn
+        set pw [$options(-db) onecolumn {SELECT password FROM account WHERE jid=$jid}]
+        $client configure -password $pw
+
         $client connect
-        $options(-db) eval {UPDATE account SET enabled=1 WHERE jid=$jid}
-        $options(-taco) emit account <Enabled> -acc $jid
+
+        set was_enabled [$options(-db) eval {SELECT enabled FROM account WHERE jid=$jid}]
+        if {!$was_enabled} {
+            $options(-db) eval {UPDATE account SET enabled=1 WHERE jid=$jid}
+            $options(-taco) emit account <Enabled> -acc $jid
+        }
     }
 
     # Server-side password change (XEP-0077), delegates to client.

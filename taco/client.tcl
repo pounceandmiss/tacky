@@ -8,12 +8,12 @@ snit::type taco_client {
     # Database handle (exposed as component for direct access: $client db eval {...})
     component db -public db
 
-    # Connection options
-    option -host -default ""
-    option -port -default 5222
-    option -username -default ""
-    option -password -default ""
-    option -resource -default "tacky"
+    # Connection options (delegated to conn)
+    delegate option -host to conn
+    delegate option -port to conn
+    delegate option -username to conn
+    delegate option -password to conn
+    delegate option -resource to conn
 
     # Tacky singleton for account persistence
     option -taco -default ::taco
@@ -28,8 +28,18 @@ snit::type taco_client {
     delegate method connect to conn
 
     constructor args {
+        # Install conn first so delegated options (-host, -port, etc.) have a target
+        install conn using conn $self.conn \
+            -autoreconnect 1 \
+            -emit [mymethod emit] \
+            -onbound [mymethod OnBound] \
+            -onready [mymethod OnReady] \
+            -onautherror [mymethod OnAuthError] \
+            -ondisconnect [mymethod OnDisconnect] \
+            -onstanza [mymethod OnStanza]
+
         $self configurelist $args
-        set options(-jid) "$options(-username)@$options(-host)"
+        set options(-jid) "[$conn cget -username]@[$conn cget -host]"
 
         # Initialize database if not provided externally
         if {$options(-db) ne ""} {
@@ -43,21 +53,6 @@ snit::type taco_client {
                 PRAGMA synchronous = NORMAL;
             }
         }
-
-        # Create connection
-        install conn using conn $self.conn \
-            -host $options(-host) \
-            -port $options(-port) \
-            -username $options(-username) \
-            -password $options(-password) \
-            -resource $options(-resource) \
-            -autoreconnect 1 \
-            -emit [mymethod emit] \
-            -onbound [mymethod OnBound] \
-            -onready [mymethod OnReady] \
-            -onautherror [mymethod OnAuthError] \
-            -ondisconnect [mymethod OnDisconnect] \
-            -onstanza [mymethod OnStanza]
 
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write]
@@ -114,10 +109,10 @@ snit::type taco_client {
 	array set opts $args
 
 	set payload [j query -ns jabber:iq:register {
-	    j username #body $options(-username)
+	    j username #body [$conn cget -username]
 	    j password #body $opts(-password)
 	}]
-	$iq request -type set -to $options(-host) \
+	$iq request -type set -to [$conn cget -host] \
 	    -payload $payload \
 	    -command [mymethod OnPasswordChanged $opts(-password) $opts(-command)]
     }
@@ -126,7 +121,6 @@ snit::type taco_client {
 	if {$command eq ""} return
 	set type_ [xsearch $stanza -get @type]
 	if {$type_ eq "result"} {
-	    set options(-password) $newPassword
 	    $conn configure -password $newPassword
 	    set acc [jid bare $options(-jid)]
 	    $options(-taco) account set -acc $acc -password $newPassword
