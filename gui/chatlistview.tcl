@@ -74,6 +74,7 @@ snit::widget chatlistview {
         $treeview insert {} end -id Bookmarks -text "Bookmarks"  -open 1
 
         $self ConfigurePresenceTags
+        $treeview tag configure muc_error -foreground red3
 
         # --- Context menus ---
 
@@ -164,6 +165,8 @@ snit::widget chatlistview {
             [mymethod OnRecentTop]
         $t listen -tag $win chatlist <RecentDrop> -acc $acc \
             [mymethod OnRecentDrop]
+        $t listen -tag $win chatlist <MucStatus> -acc $acc \
+            [mymethod OnMucStatus]
         $t listen -tag $win setting <Changed> -key show_presence_colors \
             [mymethod OnPresenceColorsSetting]
         $t listen -tag $win setting <Changed> -key show_avatars \
@@ -289,6 +292,20 @@ snit::widget chatlistview {
         }
     }
 
+    method OnMucStatus {ev} {
+        array set opts {-jid "" -muc-status ""}
+        array set opts $ev
+        set jid $opts(-jid)
+        set status $opts(-muc-status)
+        foreach item [$self FindItemsByJid $jid] {
+            if {$status eq "error"} {
+                $treeview tag add muc_error $item
+            } else {
+                $treeview tag remove muc_error $item
+            }
+        }
+    }
+
     method MatchesQueryLocal {jid name} {
         if {$searchquery eq ""} { return 1 }
         set q [string tolower $searchquery]
@@ -302,8 +319,13 @@ snit::widget chatlistview {
             set jid  [dict get $item -jid]
             set text [$self DisplayText $item]
             set img  [$self TrackAvatar $jid]
+            set tags {}
+            if {[dict exists $item -muc-status] &&
+                [dict get $item -muc-status] eq "error"} {
+                set tags muc_error
+            }
             $treeview insert $parent end -id "$parent/$jid" -text $text \
-                -image $img
+                -image $img -tags $tags
         }
     }
 

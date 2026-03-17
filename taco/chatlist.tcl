@@ -10,6 +10,7 @@ snit::type taco_chatlist {
     variable client
     variable db
     variable RecentJids {}
+    variable mucStatus {}
 
     constructor args {
         $self configurelist $args
@@ -19,6 +20,10 @@ snit::type taco_chatlist {
         $client bus subscribe $self roster:<Changed> [mymethod OnDataChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnDataChanged]
         $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
+        $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
+        $client bus subscribe $self muc:<Error> [mymethod OnMucError]
+        $client bus subscribe $self muc:<Left> [mymethod OnMucLeft]
+        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
     destructor {
@@ -56,6 +61,31 @@ snit::type taco_chatlist {
         set RecentJids $newTop20
     }
 
+    method OnMucJoined {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) joined
+        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status joined
+    }
+
+    method OnMucError {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) error
+        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status error
+    }
+
+    method OnMucLeft {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) ""
+        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status ""
+    }
+
+    method OnDisconnect {args} {
+        set mucStatus {}
+    }
+
     method ResolveName {jid} {
         set name [$db onecolumn {
             SELECT name FROM roster_item WHERE jid=$jid
@@ -83,6 +113,13 @@ snit::type taco_chatlist {
         $db onecolumn {
             SELECT autojoin FROM bookmark WHERE jid=$jid
         }
+    }
+
+    method ResolveMucStatus {jid} {
+        if {[dict exists $mucStatus $jid]} {
+            return [dict get $mucStatus $jid]
+        }
+        return ""
     }
 
     tackymethod search {args} {
@@ -152,6 +189,7 @@ snit::type taco_chatlist {
             set entry [list -jid $jid -name $name -source $source]
             if {$source in {bookmark both}} {
                 lappend entry -autojoin [dict get $bmAutojoin $jid]
+                lappend entry -muc-status [$self ResolveMucStatus $jid]
             }
             lappend recent $entry
             if {[incr count] >= 20} break
@@ -185,6 +223,7 @@ snit::type taco_chatlist {
             # Replace name with resolved name for display
             set entry $item
             dict set entry -name $resolvedName
+            dict set entry -muc-status [$self ResolveMucStatus $jid]
             lappend bookmarks $entry
         }
         set bookmarks [$self SortItems $bookmarks $sort]

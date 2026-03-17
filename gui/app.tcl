@@ -130,6 +130,8 @@ snit::type app_type {
         bind . <Control-q> [list destroy .]
         bind . <Control-Q> [list destroy .]
         bind . <Control-Shift-X> [mymethod OpenXmlConsole]
+        bind . <Control-f> [mymethod InlineOpenFind]
+        bind . <Control-F> [mymethod InlineOpenFind]
 
         # --- Paned layout ---
         set paned [ttk::panedwindow .paned -orient horizontal]
@@ -198,6 +200,12 @@ snit::type app_type {
         set inlineJid ""
         if {$chatpanel in [$paned panes]} {
             $paned forget $chatpanel
+        }
+    }
+
+    method InlineOpenFind {} {
+        if {$inlineJid ne "" && [winfo exists $chatpanel.cp]} {
+            $chatpanel.cp OpenFind
         }
     }
 

@@ -312,3 +312,53 @@ test chatlist-roster-change-still-emits-changed {roster/bookmark changes emit <C
         c bus publish roster:<Changed> -action add -jid alice@example.com
         set got
     } -result {1}
+
+test chatlist-muc-status-default {bookmark items have -muc-status "" by default} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item -muc-status
+    } -result {}
+
+test chatlist-muc-status-joined {-muc-status is joined after muc:<Joined>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item -muc-status
+    } -result {joined}
+
+test chatlist-muc-status-error {-muc-status is error after muc:<Error>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item -muc-status
+    } -result {error}
+
+test chatlist-muc-status-event {chatlist <MucStatus> fires with correct args} \
+    {*}$chatlist_common \
+    -body {
+        set ev {}
+        tacky listen chatlist <MucStatus> \
+            {apply {{ev} { set ::ev $ev }}}
+        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
+        list [dict get $ev -jid] [dict get $ev -muc-status]
+    } -result {room@muc.example.com error}
+
+test chatlist-muc-status-recent {recent bookmark items include -muc-status} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert room@muc.example.com
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
+        set result [c chatlist search]
+        set item [lindex [dict get $result recent] 0]
+        dict get $item -muc-status
+    } -result {error}
