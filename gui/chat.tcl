@@ -321,33 +321,7 @@ snit::widgetadaptor chatview {
     }
 
     method EnrichMessage {storeDict} {
-        set fromJid [dict get $storeDict from_jid]
-        set res [jid resource $fromJid]
-        if {$res eq ""} {
-            set res [jid bare $fromJid]
-        }
-        if {$IsMuc} {
-            set avatarJid $fromJid
-        } else {
-            set avatarJid [jid bare $fromJid]
-        }
-        set serverStatus [dict get $storeDict server_status]
-        set isOutgoing [expr {$serverStatus ne ""}]
-        set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
-        set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
-        set d [dict create \
-            id           [dict get $storeDict timestamp] \
-            display_name $res \
-            avatar_jid   $avatarJid \
-            timestamp    [dict get $storeDict timestamp] \
-            body         [dict get $storeDict body] \
-            is_outgoing  $isOutgoing \
-            receipt_status $receiptStatus \
-            prev         $prev]
-        if {[dict exists $storeDict formatting]} {
-            dict set d formatting [dict get $storeDict formatting]
-        }
-        return $d
+        enrich_store_message $storeDict $IsMuc
     }
 
     method ProcessBatch {messages} {
@@ -953,6 +927,38 @@ snit::widget chatarea {
             {*}$options(-avatar-release-command) $ajid
         }
     }
+}
+
+# Shared enrichment: converts a store dict (from_jid, server_status,
+# timestamp, body, etc.) into the display dict that chatarea expects.
+proc enrich_store_message {storeDict isMuc} {
+    set fromJid [dict get $storeDict from_jid]
+    set res [jid resource $fromJid]
+    if {$res eq ""} {
+        set res [jid bare $fromJid]
+    }
+    if {$isMuc} {
+        set avatarJid $fromJid
+    } else {
+        set avatarJid [jid bare $fromJid]
+    }
+    set serverStatus [dict get $storeDict server_status]
+    set isOutgoing [expr {$serverStatus ne ""}]
+    set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
+    set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
+    set d [dict create \
+        id           [dict get $storeDict timestamp] \
+        display_name $res \
+        avatar_jid   $avatarJid \
+        timestamp    [dict get $storeDict timestamp] \
+        body         [dict get $storeDict body] \
+        is_outgoing  $isOutgoing \
+        receipt_status $receiptStatus \
+        prev         $prev]
+    if {[dict exists $storeDict formatting]} {
+        dict set d formatting [dict get $storeDict formatting]
+    }
+    return $d
 }
 
 proc list_remove_once_inplace {varName val} {
