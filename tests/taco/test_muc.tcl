@@ -747,6 +747,50 @@ test muc-groupchat-emits-received {groupchat message emits message <Received> wi
         list [dict get $got -jid] [dict get $got -body]
     } -result {room@muc.example.com?join {event msg}}
 
+test muc-groupchat-own-id-set-for-own-nick {own message via echo sets own_id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -id my-msg-id \
+            -from room@muc.example.com/me {
+            j body #body "my echo"
+        }]
+        set msg [lindex [c message messagestore get latest room@muc.example.com?join] 0]
+        dict get $msg own_id
+    } -result {my-msg-id}
+
+test muc-groupchat-own-id-empty-for-other-nick {other user message has empty own_id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -id some-id \
+            -from room@muc.example.com/someone {
+            j body #body "their msg"
+        }]
+        set msg [lindex [c message messagestore get latest room@muc.example.com?join] 0]
+        dict get $msg own_id
+    } -result {}
+
+test muc-groupchat-other-id-no-false-confirm {other user's @id matching pending own_id does not confirm} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        # Send a message (stores as pending with own_id)
+        c message send -chat_jid room@muc.example.com?join -body "test"
+        set msgs [c message messagestore get latest room@muc.example.com?join]
+        set oid [dict get [lindex $msgs 0] own_id]
+        # Someone else sends a message with that same @id
+        c.conn feed [j message -type groupchat -id $oid \
+            -from room@muc.example.com/someone {
+            j body #body "coincidence"
+        }]
+        # Pending message should still be pending
+        c db onecolumn {
+            SELECT server_status FROM chat_message
+            WHERE chat_jid='room@muc.example.com?join' AND own_id != ''
+        }
+    } -result {pending}
+
 test muc-pm-stored {private messages stored under room@muc/nick} \
     {*}$muc_common \
     -body {

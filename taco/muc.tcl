@@ -767,7 +767,8 @@ snit::type taco_muc {
     }
 
     method OnGroupchatMessage {roomJid nick stanza} {
-        $client message store ${roomJid}?join $stanza
+        set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+        $client message store ${roomJid}?join $stanza $isOwn
     }
 
     method OnPrivateMessage {roomJid nick stanza} {

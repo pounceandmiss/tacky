@@ -16,7 +16,7 @@ proc ms_msg {args} {
     set defaults {
         timestamp 1000000 chat_jid alice@example.com
         from_jid alice@example.com/phone body hello
-        server_id "" origin_id "" raw_xml ""
+        server_id "" own_id "" raw_xml ""
     }
     return [dict merge $defaults $args]
 }
@@ -72,13 +72,13 @@ test messagestore-dedup-server-id {duplicate server_id is not inserted twice} \
         llength [store get latest alice@example.com]
     } -result {1}
 
-test messagestore-dedup-origin-id {duplicate origin_id is not inserted twice} \
+test messagestore-dedup-own-id {duplicate own_id is not inserted twice} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 origin_id oid1 body first]]
+            [ms_msg timestamp 100 own_id oid1 body first]]
         ms_batch [list \
-            [ms_msg timestamp 200 origin_id oid1 body duplicate]]
+            [ms_msg timestamp 200 own_id oid1 body duplicate]]
         llength [store get latest alice@example.com]
     } -result {1}
 
@@ -86,8 +86,8 @@ test messagestore-dedup-content-same-batch {content dedup within batch when IDs 
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 server_id "" origin_id "" body hello] \
-            [ms_msg timestamp 100 server_id "" origin_id "" body hello]]
+            [ms_msg timestamp 100 server_id "" own_id "" body hello] \
+            [ms_msg timestamp 100 server_id "" own_id "" body hello]]
         llength [store get latest alice@example.com]
     } -result {1}
 
@@ -135,13 +135,13 @@ test messagestore-dedup-content-different-from-not-deduped {same timestamp+body 
         testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
     } -result {2}
 
-test messagestore-dedup-isolation-across-chats {same origin_id in different chats stored independently} \
+test messagestore-dedup-isolation-across-chats {same own_id in different chats stored independently} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 chat_jid alice@example.com origin_id oid1 body hi]]
+            [ms_msg timestamp 100 chat_jid alice@example.com own_id oid1 body hi]]
         ms_batch [list \
-            [ms_msg timestamp 100 chat_jid bob@example.com origin_id oid1 body hi]] bob@example.com
+            [ms_msg timestamp 100 chat_jid bob@example.com own_id oid1 body hi]] bob@example.com
         set a [llength [store get latest alice@example.com]]
         set b [llength [store get latest bob@example.com]]
         list $a $b
@@ -151,19 +151,19 @@ test messagestore-dedup-both-ids-match-server {both IDs set, dedup fires on serv
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
+            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
         ms_batch [list \
-            [ms_msg timestamp 200 server_id sid1 origin_id oid_other body dup]]
+            [ms_msg timestamp 200 server_id sid1 own_id oid_other body dup]]
         llength [store get latest alice@example.com]
     } -result {1}
 
-test messagestore-dedup-both-ids-match-origin {both IDs set, dedup fires on origin_id match} \
+test messagestore-dedup-both-ids-match-own {both IDs set, dedup fires on own_id match} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 server_id sid1 origin_id oid1 body first]]
+            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
         ms_batch [list \
-            [ms_msg timestamp 200 server_id sid_other origin_id oid1 body dup]]
+            [ms_msg timestamp 200 server_id sid_other own_id oid1 body dup]]
         llength [store get latest alice@example.com]
     } -result {1}
 
@@ -420,8 +420,8 @@ test messagestore-no-serverid-separate-regions {batches without IDs stay separat
 test messagestore-all-deduped-no-extra {all-dup batch merges regions} \
     {*}$ms_common \
     -body {
-        ms_batch [list [ms_msg timestamp 100 origin_id oid1 body first]]
-        ms_batch [list [ms_msg timestamp 200 origin_id oid1 body duplicate]]
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body first]]
+        ms_batch [list [ms_msg timestamp 200 own_id oid1 body duplicate]]
         ms_regions
     } -result {1}
 
@@ -542,8 +542,8 @@ test messagestore-live-dedup-no-extend {deduped message does not create extra ro
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100 origin_id oid1 body first]] r
-        store store batch [list [ms_msg timestamp 200 origin_id oid1 body duplicate]] r
+        store store batch [list [ms_msg timestamp 100 own_id oid1 body first]] r
+        store store batch [list [ms_msg timestamp 200 own_id oid1 body duplicate]] r
         testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
     } -result {1}
 

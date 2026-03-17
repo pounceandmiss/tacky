@@ -52,7 +52,7 @@ proc chatlist_chat_insert {chat_jid args} {
         from_jid "$chat_jid/someone" \
         body "hello" \
         server_id "" \
-        origin_id [expr {[clock microseconds]}] \
+        own_id "" \
         raw_xml "" \
         server_status ""]
     set msg [dict merge $defaults [dict create chat_jid $chat_jid] $args]
@@ -71,11 +71,11 @@ test chatlist-recent-order {recent section ordered by last message time} \
     -body {
         set ts [clock microseconds]
         chatlist_chat_insert alice@example.com \
-            timestamp $ts origin_id oid-a
+            timestamp $ts
         chatlist_chat_insert bob@example.com \
-            timestamp [expr {$ts + 1}] origin_id oid-b
+            timestamp [expr {$ts + 1}]
         chatlist_chat_insert carol@example.com \
-            timestamp [expr {$ts + 2}] origin_id oid-c
+            timestamp [expr {$ts + 2}]
         roster_insert alice@example.com name Alice
         roster_insert bob@example.com name Bob
         roster_insert carol@example.com name Carol
@@ -202,7 +202,7 @@ test chatlist-recent-limit {recent section capped at 20} \
         set ts [clock microseconds]
         for {set i 0} {$i < 25} {incr i} {
             chatlist_chat_insert user${i}@example.com \
-                timestamp [expr {$ts + $i}] origin_id "oid-$i"
+                timestamp [expr {$ts + $i}]
         }
         set result [c chatlist search]
         llength [dict get $result recent]

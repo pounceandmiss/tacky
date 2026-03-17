@@ -17,7 +17,7 @@ proc ds_msg {args} {
     set defaults {
         timestamp 1000000 chat_jid alice@example.com
         from_jid alice@example.com/phone body hello
-        server_id "" origin_id "" raw_xml "" server_status ""
+        server_id "" own_id "" raw_xml "" server_status ""
     }
     return [dict merge $defaults $args]
 }
@@ -31,7 +31,7 @@ test ds-ms-store-server-status {server_status is stored and returned in get} \
     {*}$ds_ms_common \
     -body {
         ds_batch [list \
-            [ds_msg timestamp 100 origin_id oid1 body sent server_status pending]]
+            [ds_msg timestamp 100 own_id oid1 body sent server_status pending]]
         set msgs [store get latest alice@example.com]
         dict get [lindex $msgs 0] server_status
     } -result {pending}
@@ -40,7 +40,7 @@ test ds-ms-store-null-status {messages without server_status default to empty} \
     {*}$ds_ms_common \
     -body {
         ds_batch [list \
-            [ds_msg timestamp 100 origin_id oid1 body incoming]]
+            [ds_msg timestamp 100 own_id oid1 body incoming]]
         set msgs [store get latest alice@example.com]
         dict get [lindex $msgs 0] server_status
     } -result {}
@@ -50,17 +50,17 @@ test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to receiv
     -body {
         # Store outgoing message as pending
         ds_batch [list \
-            [ds_msg timestamp 100 origin_id oid1 body sent server_status pending]]
-        # Incoming echo with same origin_id — triggers confirmation
+            [ds_msg timestamp 100 own_id oid1 body sent server_status pending]]
+        # Incoming echo with same own_id — triggers confirmation
         set result [ds_batch [list \
-            [ds_msg timestamp 200 origin_id oid1 body sent]]]
+            [ds_msg timestamp 200 own_id oid1 body sent]]]
         set confirmed [dict get $result confirmed]
         # Check DB status changed
         set status [testdb eval {
-            SELECT server_status FROM chat_message WHERE origin_id='oid1'
+            SELECT server_status FROM chat_message WHERE own_id='oid1'
         }]
         list $status [llength $confirmed] \
-             [dict get [lindex $confirmed 0] origin_id] \
+             [dict get [lindex $confirmed 0] own_id] \
              [dict get [lindex $confirmed 0] timestamp]
     } -result {received 1 oid1 100}
 
@@ -69,21 +69,21 @@ test ds-ms-no-confirm-non-pending {duplicate without pending status is not confi
     -body {
         # Store a received message (empty status)
         ds_batch [list \
-            [ds_msg timestamp 100 origin_id oid1 body hello]]
-        # Feed same origin_id again
+            [ds_msg timestamp 100 own_id oid1 body hello]]
+        # Feed same own_id again
         set result [ds_batch [list \
-            [ds_msg timestamp 200 origin_id oid1 body hello]]]
+            [ds_msg timestamp 200 own_id oid1 body hello]]]
         llength [dict get $result confirmed]
     } -result {0}
 
-test ds-ms-confirm-by-origin-ids {confirmByOriginIds updates pending to received} \
+test ds-ms-confirm-by-own-ids {confirmByOwnIds updates pending to received} \
     {*}$ds_ms_common \
     -body {
         ds_batch [list \
-            [ds_msg timestamp 100 origin_id oid1 body msg1 server_status pending] \
-            [ds_msg timestamp 200 origin_id oid2 body msg2 server_status pending] \
-            [ds_msg timestamp 300 origin_id oid3 body msg3]]
-        set confirmed [store confirmByOriginIds {oid1 oid2 oid3}]
+            [ds_msg timestamp 100 own_id oid1 body msg1 server_status pending] \
+            [ds_msg timestamp 200 own_id oid2 body msg2 server_status pending] \
+            [ds_msg timestamp 300 own_id oid3 body msg3]]
+        set confirmed [store confirmByOwnIds {oid1 oid2 oid3}]
         set statuses [testdb eval {
             SELECT server_status FROM chat_message ORDER BY timestamp
         }]
@@ -178,7 +178,7 @@ test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
         dict get [lindex $msgs 0] from_jid
     } -result {room@muc.example.com/me}
 
-test ds-send-id-on-stanza {send sets message id matching DB origin_id} \
+test ds-send-id-on-stanza {send sets message @id matching DB own_id} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
@@ -188,7 +188,7 @@ test ds-send-id-on-stanza {send sets message id matching DB origin_id} \
         set m [lindex [c.conn get_written] end]
         set stanzaId [xsearch $m -get @id]
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set dbOid [dict get [lindex $msgs 0] origin_id]
+        set dbOid [dict get [lindex $msgs 0] own_id]
         expr {$stanzaId eq $dbOid && $stanzaId ne ""}
     } -result {1}
 
@@ -202,8 +202,8 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
         c message send -chat_jid room@muc.example.com?join \
             -body "echo me"
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set oid [dict get [lindex $msgs 0] origin_id]
-        # Simulate server echo with same origin_id
+        set oid [dict get [lindex $msgs 0] own_id]
+        # Simulate server echo with same own_id
         set confirmed {}
         tacky listen message <Confirmed> \
             -jid room@muc.example.com?join \
@@ -227,7 +227,7 @@ test ds-echo-no-received {echo of own message does not emit <Received>} \
         c message send -chat_jid room@muc.example.com?join \
             -body "echo me"
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set oid [dict get [lindex $msgs 0] origin_id]
+        set oid [dict get [lindex $msgs 0] own_id]
         set received {}
         tacky listen message <Received> \
             -jid room@muc.example.com?join \
@@ -246,7 +246,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
         c message send -chat_jid room@muc.example.com?join \
             -body "echo me"
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set oid [dict get [lindex $msgs 0] origin_id]
+        set oid [dict get [lindex $msgs 0] own_id]
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
             j body #body "echo me"
@@ -261,7 +261,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
 
 # -- SM ack confirmation -------------------------------------------------------
 
-test ds-sm-ack-confirms {OnSmAck confirms pending messages by origin_id} \
+test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
@@ -269,7 +269,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by origin_id} \
         c message send -chat_jid room@muc.example.com?join \
             -body "ack me"
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set oid [dict get [lindex $msgs 0] origin_id]
+        set oid [dict get [lindex $msgs 0] own_id]
         # Simulate SM ack with the sent stanza
         set confirmed {}
         tacky listen message <Confirmed> \
@@ -296,7 +296,7 @@ test ds-retry-pending-on-ready {RetryPending defers MUC until room joined} \
         c message messagestore store batch [list [dict create \
             timestamp 100 chat_jid room@muc.example.com?join \
             from_jid room@muc.example.com/me body "retry me" \
-            server_id "" origin_id retry-oid1 raw_xml "" \
+            server_id "" own_id retry-oid1 raw_xml "" \
             server_status pending]] r
         c.conn clear
         # Trigger retry — MUC message should NOT be sent yet
@@ -325,7 +325,7 @@ test ds-retry-1to1-pending {RetryPending sends 1:1 pending as chat type} \
         c message messagestore store batch [list [dict create \
             timestamp 100 chat_jid bob@example.com \
             from_jid user@test.example.com/res body "retry dm" \
-            server_id "" origin_id retry-oid2 raw_xml "" \
+            server_id "" own_id retry-oid2 raw_xml "" \
             server_status pending]] r
         c.conn clear
         c message RetryPending
@@ -440,7 +440,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
         c message send -chat_jid room@muc.example.com?join \
             -body "double"
         set msgs [c message messagestore get latest room@muc.example.com?join]
-        set oid [dict get [lindex $msgs 0] origin_id]
+        set oid [dict get [lindex $msgs 0] own_id]
         set confirmed {}
         tacky listen message <Confirmed> \
             -jid room@muc.example.com?join \
@@ -473,7 +473,7 @@ test ds-disconnect-clears-pending-retry {OnDisconnect clears PendingRetry} \
         c message messagestore store batch [list [dict create \
             timestamp 100 chat_jid room@muc.example.com?join \
             from_jid room@muc.example.com/me body "stale" \
-            server_id "" origin_id stale-oid raw_xml "" \
+            server_id "" own_id stale-oid raw_xml "" \
             server_status pending]] r
         c message RetryPending
         # Disconnect clears stashed retries
@@ -490,9 +490,9 @@ test ds-disconnect-clears-pending-retry {OnDisconnect clears PendingRetry} \
         expr {$retried eq ""}
     } -result {1}
 
-# -- origin_id matches timestamp -----------------------------------------------
+# -- own_id matches timestamp -----------------------------------------------
 
-test ds-origin-id-equals-timestamp {origin_id is same as timestamp} \
+test ds-own-id-equals-timestamp {own_id is same as timestamp} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
@@ -500,5 +500,5 @@ test ds-origin-id-equals-timestamp {origin_id is same as timestamp} \
             -body "test"
         set msgs [c message messagestore get latest room@muc.example.com?join]
         set msg [lindex $msgs 0]
-        expr {[dict get $msg origin_id] == [dict get $msg timestamp]}
+        expr {[dict get $msg own_id] == [dict get $msg timestamp]}
     } -result {1}

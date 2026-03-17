@@ -23,7 +23,7 @@ proc msg_msg {args} {
     set defaults {
         timestamp 1000000 chat_jid alice@example.com
         from_jid alice@example.com/phone body hello
-        server_id "" origin_id "" raw_xml ""
+        server_id "" own_id "" raw_xml ""
     }
     return [dict merge $defaults $args]
 }
@@ -190,12 +190,12 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
         set m2 [lindex $result 1]
         list [llength $result] \
              [dict get $m1 body] [dict get $m1 from_jid] \
-             [dict get $m1 server_id] [dict get $m1 origin_id] \
+             [dict get $m1 server_id] [dict get $m1 own_id] \
              [dict get $m1 chat_jid] \
              [expr {[dict get $m1 timestamp] > 0}] \
              [expr {[dict get $m1 raw_xml] ne ""}] \
              [dict get $m2 body] [dict get $m2 server_id]
-    } -result {2 {first msg} bob@example.com/phone mam1 orig1 alice@example.com 1 1 {second msg} mam2}
+    } -result {2 {first msg} bob@example.com/phone mam1 {} alice@example.com 1 1 {second msg} mam2}
 
 # -- history: -after at latest skips MAM ----------------------------------------
 
@@ -240,10 +240,10 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
         list [dict get $msg server_id] \
              [dict get $msg from_jid] \
              [dict get $msg body] \
-             [dict get $msg origin_id] \
+             [dict get $msg own_id] \
              [dict get $msg chat_jid] \
              [expr {[dict get $msg timestamp] > 0}]
-    } -result {sid42 juliet@capulet.li/phone {hello romeo} oid99 chat@example.com 1}
+    } -result {sid42 juliet@capulet.li/phone {hello romeo} {} chat@example.com 1}
 
 test message-history-preserves-join {history preserves ?join suffix in chatJid} \
     {*}$msg_common \
@@ -255,12 +255,12 @@ test message-history-preserves-join {history preserves ?join suffix in chatJid} 
         list [llength $result] [dict get [lindex $result 0] body]
     } -result {1 hi}
 
-test message-parseresultnode-no-origin-id {ParseResultNode handles missing origin-id} \
+test message-parseresultnode-no-own-id {ParseResultNode returns empty own_id} \
     {*}$msg_common \
     -body {
         set rn [mam_result id sid1 from bob@example.com body test stamp 2024-01-01T00:00:00Z]
         set msg [$::_client message ParseResultNode $rn bob@example.com]
-        dict get $msg origin_id
+        dict get $msg own_id
     } -result {}
 
 # -- history: cancel -----------------------------------------------------------
@@ -351,10 +351,10 @@ test message-live-fields {stored live message has correct fields} \
              [dict get $msg from_jid] \
              [dict get $msg body] \
              [dict get $msg server_id] \
-             [dict get $msg origin_id] \
+             [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
              [expr {[dict get $msg raw_xml] ne ""}]
-    } -result {alice@example.com alice@example.com/phone hi srv42 orig7 1 1}
+    } -result {alice@example.com alice@example.com/phone hi srv42 {} 1 1}
 
 test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
     {*}$msg_common \
@@ -672,10 +672,10 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
         msg_store [list \
             [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
                 chat_jid alice@example.com from_jid alice@example.com/phone \
-                body "bridge msg" server_id "" origin_id ""] \
+                body "bridge msg" server_id "" own_id ""] \
             [msg_msg timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
                 chat_jid alice@example.com from_jid alice@example.com/phone \
-                body "bridge msg 2" server_id "" origin_id ""]]
+                body "bridge msg 2" server_id "" own_id ""]]
         # Now catchup returns the same messages (no IDs, as IRC bridges do)
         msg_ready
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]

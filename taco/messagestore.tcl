@@ -9,7 +9,7 @@ if 0 {
 
     Region merging via server_id overlap:
 
-    `store batch` checks every message for a server_id/origin_id duplicate
+    `store batch` checks every message for a server_id/own_id duplicate
     already in the DB. When a duplicate is found in a different region, the
     batch proves overlap — the old region is merged into the caller's region
     via UPDATE. The caller's region variable is passed by name (upvar) so
@@ -63,9 +63,9 @@ snit::type taco_messagestore {
                 -- server-assigned, for MAM pagination;
                 -- <stanza-id id='...' by='server.example.com'/>
                 server_id      TEXT,
-                -- client-assigned, for dedup and receipt matching;
-                -- <origin-id id='...'/>
-                origin_id      TEXT,
+                -- set only for outgoing messages; = <message id="...">
+                -- incoming messages have own_id=""
+                own_id      TEXT,
                 raw_xml        TEXT,
                 region         INTEGER NOT NULL,
                 -- NULL/empty = incoming (already received);
@@ -76,8 +76,8 @@ snit::type taco_messagestore {
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
                 ON chat_message(chat_jid, server_id) WHERE server_id != '';
-            CREATE INDEX IF NOT EXISTS idx_chat_message_origin_id
-                ON chat_message(chat_jid, origin_id) WHERE origin_id != '';
+            CREATE INDEX IF NOT EXISTS idx_chat_message_own_id
+                ON chat_message(chat_jid, own_id) WHERE own_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_region
                 ON chat_message(chat_jid, region, timestamp);
         }
@@ -95,9 +95,9 @@ snit::type taco_messagestore {
     }
 
     # Insert messages into the DB under regionVar's region. Deduplicates
-    # by server_id/origin_id (or content fallback), merges regions on
+    # by server_id/own_id (or content fallback), merges regions on
     # overlap, and confirms pending messages on echo. Returns dict with
-    # `confirmed` (list of {origin_id, timestamp}) and `inserted` count.
+    # `confirmed` (list of {own_id, timestamp}) and `inserted` count.
     method "store batch" {messages regionVar} {
         if {[llength $messages] == 0} { return {} }
 
@@ -132,7 +132,7 @@ snit::type taco_messagestore {
                             WHERE chat_jid=$jid AND timestamp=$dupTs
                         }
                         lappend confirmed [dict create \
-                            origin_id $m(origin_id) timestamp $dupTs]
+                            own_id $m(own_id) timestamp $dupTs]
                     }
                     continue
                 }
@@ -145,9 +145,9 @@ snit::type taco_messagestore {
                     ? $m(server_status) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
-                        server_id, origin_id, raw_xml, region, server_status)
+                        server_id, own_id, raw_xml, region, server_status)
                     VALUES($ts, $jid, $m(from_jid), $m(body),
-                        $m(server_id), $m(origin_id), $m(raw_xml), $region,
+                        $m(server_id), $m(own_id), $m(raw_xml), $region,
                         $status)
                 }
                 set prevTs $ts
@@ -183,14 +183,14 @@ snit::type taco_messagestore {
     # The region is pinned by exact match on cursor, so a nonexistent
     # cursor returns empty.
     # returns a list of message dicts (keys: timestamp,
-    # chat_jid, from_jid, body, server_id, origin_id, raw_xml,
+    # chat_jid, from_jid, body, server_id, own_id, raw_xml,
     # server_status), chronological order, from a single region
     method "get before" {jid cursor {limit 50}} {
         set rows {}
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, body, server_id,
-                       origin_id, raw_xml, server_status
+                       own_id, raw_xml, server_status
                 FROM chat_message
                 WHERE chat_jid=$jid AND timestamp < $cursor
                   AND region = (
@@ -213,7 +213,7 @@ snit::type taco_messagestore {
         set rows {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, body, server_id,
-                   origin_id, raw_xml, server_status
+                   own_id, raw_xml, server_status
             FROM chat_message
             WHERE chat_jid=$jid AND timestamp > $cursor
               AND region = (
@@ -236,7 +236,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, body, server_id,
-                       origin_id, raw_xml, server_status
+                       own_id, raw_xml, server_status
                 FROM chat_message
                 WHERE chat_jid=$jid
                   AND region = (
@@ -274,7 +274,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, body, server_id,
-                   origin_id, raw_xml, server_status
+                   own_id, raw_xml, server_status
             FROM chat_message
             WHERE chat_jid=$jid AND timestamp=$nearestTs
         } row {
@@ -284,23 +284,23 @@ snit::type taco_messagestore {
         return [list messages $all anchor $nearestTs]
     }
 
-    # Flip pending → received for each origin_id (SM ack path).
+    # Flip pending → received for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
-    method confirmByOriginIds {originIds} {
+    method confirmByOwnIds {ownIds} {
         set confirmed {}
         $options(-db) transaction {
-            foreach oid $originIds {
+            foreach oid $ownIds {
                 if {$oid eq ""} continue
                 $options(-db) eval {
                     SELECT chat_jid, timestamp FROM chat_message
-                    WHERE origin_id=$oid AND server_status='pending'
+                    WHERE own_id=$oid AND server_status='pending'
                 } row {
                     lappend confirmed [dict create \
                         chat_jid $row(chat_jid) timestamp $row(timestamp)]
                 }
                 $options(-db) eval {
                     UPDATE chat_message SET server_status='received'
-                    WHERE origin_id=$oid AND server_status='pending'
+                    WHERE own_id=$oid AND server_status='pending'
                 }
             }
         }
@@ -338,21 +338,21 @@ snit::type taco_messagestore {
 
     method IsDuplicate {jid msg} {
         set sid [dict get $msg server_id]
-        set oid [dict get $msg origin_id]
+        set oid [dict get $msg own_id]
         set result ""
         if {$sid ne "" || $oid ne ""} {
             $options(-db) eval {
                 SELECT timestamp, region, server_status FROM chat_message
                 WHERE chat_jid=$jid
                   AND ( ($sid != '' AND server_id=$sid)
-                     OR ($oid != '' AND origin_id=$oid) )
+                     OR ($oid != '' AND own_id=$oid) )
                 LIMIT 1
             } row {
                 set result [dict create timestamp $row(timestamp) \
                     region $row(region) server_status $row(server_status)]
             }
         } else {
-            # Content-based fallback for messages without server/origin IDs
+            # Content-based fallback for messages without server_id/own_id
             # (e.g. IRC bridge messages). Match within the same second —
             # BumpTs may have shifted the stored timestamp by a few
             # microseconds, so an exact match would miss it.

@@ -2,7 +2,7 @@
 # ========================
 #
 # Message dict keys:
-#   timestamp, chat_jid, from_jid, body, server_id, origin_id,
+#   timestamp, chat_jid, from_jid, body, server_id, own_id,
 #   raw_xml, server_status
 #
 # chat_jid assignment:
@@ -11,10 +11,10 @@
 #   1:1 DM:         bare JID        (set by OnMessage from stanza @from)
 #   MAM catchup:    derived from @from/@to vs own bare JID
 #
-# origin_id / dedup:
-#   Outgoing messages use origin_id = timestamp (= <message id="...">).
-#   Incoming messages get origin_id from the stanza's @id attribute.
-#   IsDuplicate matches by server_id or origin_id (or content fallback).
+# own_id:
+#   own_id is only set for our outgoing messages (= timestamp = <message id>).
+#   Incoming messages have own_id ""; MUC echo detected by nick match.
+#   IsDuplicate matches by server_id or own_id (or content fallback).
 #
 # server_status lifecycle:
 #   ""         incoming message (already delivered by definition)
@@ -25,7 +25,7 @@
 #
 #   GUI/muc.say
 #     → message.send -chat_jid $jid -body $text
-#       1. ts = clock microseconds; origin_id = ts
+#       1. ts = clock microseconds; own_id = ts
 #       2. Derive type from chat_jid: ?join → groupchat, else → chat
 #       3. Build stanza: <message to=$toJid type=$type id=$oid>
 #       4. Store to DB: server_status=pending, server_id=""
@@ -40,7 +40,7 @@
 #       → message.store
 #         → ParseMessage: extracts server_id from <stanza-id>
 #         → messagestore.store batch:
-#           IsDuplicate finds pending row by origin_id
+#           IsDuplicate finds pending row by own_id
 #           UPDATE server_status='received', captures server_id
 #           Returns confirmed list
 #         → Emit <Confirmed> (GUI shows checkmark)
@@ -55,7 +55,7 @@
 #           → client.emit sm <Ack>
 #             → client.emit intercepts, calls message.OnSmAck
 #               → Extract @id from acked <message> stanzas
-#               → messagestore.confirmByOriginIds:
+#               → messagestore.confirmByOwnIds:
 #                 UPDATE server_status='received' WHERE pending
 #               → Emit <Confirmed> per confirmed message
 #
@@ -82,7 +82,7 @@
 #       MUC messages: stash in PendingRetry($roomJid)
 #     → client.emit intercepts muc <Joined>
 #       → message.OnMucJoined: flush PendingRetry for that room
-#         → RetrySend: rebuild stanza with same origin_id, $client write
+#         → RetrySend: rebuild stanza with same own_id, $client write
 #     → Echo/ack cycle confirms them normally
 #
 #   OnDisconnect clears PendingRetry (next OnReady re-queries DB).
@@ -195,14 +195,17 @@ snit::type taco_message {
     # Parse a live message stanza, store it, and emit message <Received>.
     # Called directly by OnMessage (DMs) and by the MUC module
     # (groupchat with room@muc?join, PMs with room@muc/nick).
-    method store {chatJid stanza} {
+    method store {chatJid stanza {isOwn 0}} {
         set body [xsearch $stanza body -get body]
         if {$body eq ""} return
         set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
         set ts [expr {$stamp ne "" ? [ParseTimestamp $stamp] : [clock microseconds]}]
         set serverId [xsearch $stanza stanza-id -ns urn:xmpp:sid:0 -get @id]
-        set msg [$self ParseMessage $stanza \
-            -chat_jid $chatJid -timestamp $ts -server_id $serverId]
+        set parseArgs [list -chat_jid $chatJid -timestamp $ts -server_id $serverId]
+        if {$isOwn} {
+            lappend parseArgs -own_id [xsearch $stanza -get @id]
+        }
+        set msg [$self ParseMessage $stanza {*}$parseArgs]
         if {$liveRegion eq ""} {
             $messagestore region new liveRegion
         }
@@ -237,7 +240,7 @@ snit::type taco_message {
     #         `store`, where `store batch` dedup finds the pending row
     #         and flips it to 'received'.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
-    #         calls `confirmByOriginIds` on the messagestore.
+    #         calls `confirmByOwnIds` on the messagestore.
     # Both paths emit <Confirmed> so the GUI can show the checkmark.
     #
     # On reconnect, `RetryPending` resends any still-pending messages
@@ -268,7 +271,7 @@ snit::type taco_message {
             from_jid $fromJid \
             body $opts(-body) \
             server_id "" \
-            origin_id $oid \
+            own_id $oid \
             raw_xml [jwrite $stanza] \
             server_status pending]
 
@@ -293,16 +296,16 @@ snit::type taco_message {
 
     method OnSmAck {args} {
         set stanzas [dict get $args -stanzas]
-        set originIds {}
+        set ownIds {}
         foreach stanza $stanzas {
             if {[dict get $stanza tag] ne "message"} continue
             set oid [xsearch $stanza -get @id]
             if {$oid ne ""} {
-                lappend originIds $oid
+                lappend ownIds $oid
             }
         }
-        if {[llength $originIds] == 0} return
-        set confirmed [$messagestore confirmByOriginIds $originIds]
+        if {[llength $ownIds] == 0} return
+        set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
             $client emit message <Confirmed> \
                 -jid [dict get $c chat_jid] \
@@ -313,13 +316,13 @@ snit::type taco_message {
     method RetryPending {} {
         set pending {}
         $client db eval {
-            SELECT chat_jid, body, origin_id FROM chat_message
+            SELECT chat_jid, body, own_id FROM chat_message
             WHERE server_status='pending'
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
-                origin_id $row(origin_id)]
+                own_id $row(own_id)]
         }
         # Group by MUC vs 1:1 — MUC messages must wait for room join
         foreach msg $pending {
@@ -348,7 +351,7 @@ snit::type taco_message {
     method RetrySend {msg} {
         set chatJid [dict get $msg chat_jid]
         set body [dict get $msg body]
-        set oid [dict get $msg origin_id]
+        set oid [dict get $msg own_id]
         if {[string match "*?join" $chatJid]} {
             regsub {\?join$} $chatJid {} toJid
             set type groupchat
@@ -675,7 +678,7 @@ snit::type taco_message {
             from_jid   [xsearch $msgNode -get @from] \
             body       [xsearch $msgNode body -get body] \
             server_id  [dict get $args -server_id] \
-            origin_id  [xsearch $msgNode -get @id] \
+            own_id     [expr {[dict exists $args -own_id] ? [dict get $args -own_id] : ""}] \
             raw_xml    [jwrite $msgNode] \
             server_status ""
     }
