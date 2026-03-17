@@ -51,7 +51,7 @@ snit::type taco_nick {
 
     # Get cached nick for a JID.  Returns the nick string or "".
     tackymethod get {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client db onecolumn {SELECT nick FROM pep_nick WHERE jid=$jid}
     }
 
@@ -75,7 +75,7 @@ snit::type taco_nick {
 
     # Fetch nick from server (IQ get on the PEP node).
     method fetch {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client iq request -to $jid -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j items -node "http://jabber.org/protocol/nick"
@@ -85,7 +85,7 @@ snit::type taco_nick {
     method OnPublishResult {nick userCmd stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ ne "error"} {
-            set jid [jid bare [$client cget -jid]]
+        set jid [jid norm [jid bare [$client cget -jid]]]
             $client db eval {
                 INSERT OR REPLACE INTO pep_nick(jid, nick)
                 VALUES ($jid, $nick)
@@ -111,7 +111,7 @@ snit::type taco_nick {
     }
 
     method OnNotification {stanza} {
-        set from [jid bare [xsearch $stanza -get @from]]
+        set from [jid norm [jid bare [xsearch $stanza -get @from]]]
 
         set nick [xsearch $stanza event items item nick -get body]
 

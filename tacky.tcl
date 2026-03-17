@@ -331,8 +331,8 @@ oo::class create avatarcache_base {
 
     method track {args} {
         array set opts $args
-        set acc $opts(-acc)
-        set jid $opts(-jid)
+        set acc [jid norm $opts(-acc)]
+        set jid [jid norm $opts(-jid)]
         set tag $opts(-tag)
         set command $opts(-command)
         set key "$acc\n$jid"
@@ -390,8 +390,8 @@ oo::class create avatarcache_base {
     }
 
     method OnUpdate {ev} {
-        set acc [dict get $ev -acc]
-        set jid [dict get $ev -jid]
+        set acc [jid norm [dict get $ev -acc]]
+        set jid [jid norm [dict get $ev -jid]]
         set key "$acc\n$jid"
         if {![dict exists $Images $key]} return
 

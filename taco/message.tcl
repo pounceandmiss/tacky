@@ -148,8 +148,8 @@ snit::type taco_message {
                                     -ns urn:xmpp:forward:0] 0]
             set msgNode [lindex [xsearch $fwdNode message] 0]
 
-            set fromBare [jid bare [xsearch $msgNode -get @from]]
-            set toBare   [jid bare [xsearch $msgNode -get @to]]
+        set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
+        set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
 
             if {[string equal -nocase $fromBare $myBareJid]} {
                 set chatJid $toBare
@@ -189,7 +189,7 @@ snit::type taco_message {
                 return
             }
         }
-        $self store [jid bare [xsearch $stanza -get @from]] $stanza
+        $self store [jid norm [jid bare [xsearch $stanza -get @from]]] $stanza
     }
 
     # Parse a live message stanza, store it, and emit message <Received>.
@@ -605,7 +605,7 @@ snit::type taco_message {
     # Each result stored in its own region (sparse islands).
     # Callback receives dict: messages, complete, last
     method search {args} {
-    array set opts {-limit 20 -tag "" -field ""}
+        array set opts {-limit 20 -tag "" -field ""}
         array set opts $args
 
         set chatJid $opts(-chat)
@@ -617,9 +617,9 @@ snit::type taco_message {
         }
 
         set mamArgs [list -fulltext $opts(-query) -max $opts(-limit)]
-    if {$opts(-field) ne ""} {
-        lappend mamArgs -field-var $opts(-field)
-    }
+        if {$opts(-field) ne ""} {
+            lappend mamArgs -field-var $opts(-field)
+        }
         if {[info exists opts(-before)]} {
             lappend mamArgs -before $opts(-before)
         } else {

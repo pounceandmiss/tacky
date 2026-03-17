@@ -36,6 +36,10 @@ proc jid {cmd args} {
             return $e(domain)
         }
 
+        norm {lassign $args jid
+            string tolower $jid
+        }
+
         matches-bare {lassign $args a b
             string equal -nocase [jid bare $a] [jid bare $b]
         }

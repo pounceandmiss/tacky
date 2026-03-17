@@ -70,7 +70,7 @@ snit::type taco_bookmarks {
     method item {args} {
         # Load existing bookmark or defaults
         array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
-        set bm(jid) [dict get $args -jid]
+        set bm(jid) [jid norm [dict get $args -jid]]
         set existed 0
         $client db eval {
             SELECT name, autojoin, nick, password, extensions_xml
@@ -131,13 +131,14 @@ snit::type taco_bookmarks {
     # Change nickname in a room and update the bookmark.
     method nick {args} {
         array set opts $args
+        set opts(-jid) [jid norm $opts(-jid)]
         $self item -jid $opts(-jid) -nick $opts(-nick)
         $client muc nick -jid $opts(-jid) -nick $opts(-nick)
     }
 
     # Leave a room and disable autojoin.
     method leave {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $self item -jid $jid -autojoin 0
         $client muc leave -jid $jid
     }
@@ -164,7 +165,7 @@ snit::type taco_bookmarks {
 
     # Query autojoin state for a single JID
     tackymethod autojoin {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         set row [$client db eval {SELECT autojoin FROM bookmark WHERE jid=$jid}]
         if {[llength $row] == 0} { return 0 }
         return [lindex $row 0]
@@ -172,7 +173,7 @@ snit::type taco_bookmarks {
 
     # Remove a bookmark and leave the room if joined
     method remove {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         if {[$client muc isJoined -jid $jid]} {
             $client muc leave -jid $jid
         }
@@ -197,7 +198,7 @@ snit::type taco_bookmarks {
         $client db eval {DELETE FROM bookmark}
 
         xsearch $stanza pubsub items item -script itemNode {
-            set jid [xsearch $itemNode -get @id]
+        set jid [jid norm [xsearch $itemNode -get @id]]
             if {$jid eq ""} continue
             $self StoreItem $jid $itemNode
         }
@@ -214,7 +215,7 @@ snit::type taco_bookmarks {
 
         # Handle item publications
         xsearch $eventNode items item -script itemNode {
-            set jid [xsearch $itemNode -get @id]
+        set jid [jid norm [xsearch $itemNode -get @id]]
             if {$jid eq ""} continue
 
             set existed [$client db eval {SELECT count(*) FROM bookmark WHERE jid=$jid}]
@@ -229,7 +230,7 @@ snit::type taco_bookmarks {
 
         # Handle retractions
         xsearch $eventNode items retract -script retractNode {
-            set jid [xsearch $retractNode -get @id]
+        set jid [jid norm [xsearch $retractNode -get @id]]
             if {$jid eq ""} continue
 
             $client db eval {DELETE FROM bookmark WHERE jid=$jid}

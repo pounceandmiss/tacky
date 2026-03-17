@@ -93,7 +93,7 @@ snit::type taco_roster {
 
     # Add or update a roster item (atomic replace per RFC 6121 2.4)
     method item {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         set hasGroups [dict exists $args -groups]
         array set opts {-name "" -groups {}}
         array set opts [dict remove $args -jid]
@@ -121,13 +121,13 @@ snit::type taco_roster {
 
     # Return subscription state for a JID (none/to/from/both or "" if absent)
     tackymethod subscription {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client db onecolumn {SELECT subscription FROM roster_item WHERE jid=$jid}
     }
 
     # Remove a roster item
     method remove {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client iq request -type set -payload [j query -ns jabber:iq:roster {
             j item -jid $jid -subscription remove
         }]
@@ -195,7 +195,7 @@ snit::type taco_roster {
         $client iq respond -for $stanza -payload [j query -ns jabber:iq:roster]
 
         xsearch $stanza query item -script itemNode {
-            set jid [xsearch $itemNode -get @jid]
+        set jid [jid norm [xsearch $itemNode -get @jid]]
             set subscription [xsearch $itemNode -get @subscription]
             if {$subscription eq ""} {
                 set subscription none
@@ -224,22 +224,22 @@ snit::type taco_roster {
     }
 
     method subscribe {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type subscribe -to $jid]
     }
 
     method approve {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type subscribed -to $jid]
     }
 
     method unsubscribe {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type unsubscribe -to $jid]
     }
 
     method deny {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type unsubscribed -to $jid]
     }
 
@@ -254,12 +254,12 @@ snit::type taco_roster {
         set from [xsearch $stanza -get @from]
         if {$from eq ""} return
         set type_ [xsearch $stanza -get @type]
-        $client emit roster <Subscribe> -jid [jid bare $from] -type $type_
+        $client emit roster <Subscribe> -jid [jid norm [jid bare $from]] -type $type_
     }
 
     # Extract item XML node directly into SQL
     method StoreItem {itemNode} {
-        set jid [xsearch $itemNode -get @jid]
+        set jid [jid norm [xsearch $itemNode -get @jid]]
         set name [xsearch $itemNode -get @name]
         set subscription [xsearch $itemNode -get @subscription]
         set ask [xsearch $itemNode -get @ask]

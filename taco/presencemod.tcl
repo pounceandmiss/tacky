@@ -49,7 +49,7 @@ snit::type taco_presence {
     # Returns best-resource presence: {show $s status $t priority $p}
     # If no resources known, returns {show offline status "" priority 0}
     tackymethod get {args} {
-        set bareJid [dict get $args -jid]
+        set bareJid [jid norm [dict get $args -jid]]
         if {![info exists Presence($bareJid)]} {
             return {show offline status "" priority 0}
         }
@@ -71,7 +71,7 @@ snit::type taco_presence {
 
     # Returns full resource dict, or {}
     tackymethod resources {args} {
-        set bareJid [dict get $args -jid]
+        set bareJid [jid norm [dict get $args -jid]]
         if {![info exists Presence($bareJid)]} {
             return {}
         }
@@ -80,7 +80,7 @@ snit::type taco_presence {
 
     # Returns 1 if any resource is available, 0 otherwise
     tackymethod isOnline {args} {
-        set bareJid [dict get $args -jid]
+        set bareJid [jid norm [dict get $args -jid]]
         info exists Presence($bareJid)
     }
 
@@ -90,7 +90,7 @@ snit::type taco_presence {
 
         set type_ [xsearch $stanza -get @type]
 
-        set bare [jid bare $from]
+        set bare [jid norm [jid bare $from]]
         set resource [jid resource $from]
 
         if {$type_ eq "unavailable"} {

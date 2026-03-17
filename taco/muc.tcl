@@ -84,7 +84,7 @@ snit::type taco_muc {
     method join {args} {
         array set opts {-password "" -history {} -command ""}
         array set opts $args
-        set opts(-jid) [string tolower $opts(-jid)]
+        set opts(-jid) [jid norm $opts(-jid)]
 
         # Initialize room tracking state
         set Rooms($opts(-jid)) [dict create \
@@ -122,7 +122,7 @@ snit::type taco_muc {
     method leave {args} {
         array set opts {-status ""}
         array set opts $args
-        set opts(-jid) [string tolower $opts(-jid)]
+        set opts(-jid) [jid norm $opts(-jid)]
 
         if {![info exists Rooms($opts(-jid))]} return
         set nick [dict get $Rooms($opts(-jid)) nick]
@@ -138,14 +138,14 @@ snit::type taco_muc {
 
     method nick {args} {
         array set opts $args
-        set opts(-jid) [string tolower $opts(-jid)]
+        set opts(-jid) [jid norm $opts(-jid)]
         $client write [j presence -to $opts(-jid)/$opts(-nick)]
     }
 
     method status {args} {
         array set opts {-show "" -status ""}
         array set opts $args
-        set opts(-jid) [string tolower $opts(-jid)]
+        set opts(-jid) [jid norm $opts(-jid)]
 
         if {![info exists Rooms($opts(-jid))]} return
         set nick [dict get $Rooms($opts(-jid)) nick]
@@ -429,13 +429,13 @@ snit::type taco_muc {
     # =====================================================================
 
     tackymethod getSubject {args} {
-        set jid [string tolower [dict get $args -jid]]
+        set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return ""}
         return [dict get $Rooms($jid) subject]
     }
 
     tackymethod occupants {args} {
-        set jid [string tolower [dict get $args -jid]]
+        set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return {}}
         set result {}
         dict for {nick occ} [dict get $Rooms($jid) occupants] {
@@ -446,7 +446,7 @@ snit::type taco_muc {
 
     tackymethod occupant {args} {
         array set opts $args
-        set opts(-jid) [string tolower $opts(-jid)]
+        set opts(-jid) [jid norm $opts(-jid)]
         if {![info exists Rooms($opts(-jid))]} {return ""}
         set occs [dict get $Rooms($opts(-jid)) occupants]
         if {[dict exists $occs $opts(-nick)]} {
@@ -456,26 +456,26 @@ snit::type taco_muc {
     }
 
     tackymethod myNick {args} {
-        set jid [string tolower [dict get $args -jid]]
+        set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return ""}
         return [dict get $Rooms($jid) nick]
     }
 
     tackymethod myRole {args} {
-        $self MyOccupantField [string tolower [dict get $args -jid]] role
+        $self MyOccupantField [jid norm [dict get $args -jid]] role
     }
 
     tackymethod myAffiliation {args} {
-        $self MyOccupantField [string tolower [dict get $args -jid]] affiliation
+        $self MyOccupantField [jid norm [dict get $args -jid]] affiliation
     }
 
     tackymethod haveVoice {args} {
-        set role [$self MyOccupantField [string tolower [dict get $args -jid]] role]
+        set role [$self MyOccupantField [jid norm [dict get $args -jid]] role]
         expr {$role ne "" && $role ni {visitor none}}
     }
 
     tackymethod isJoined {args} {
-        set jid [string tolower [dict get $args -jid]]
+        set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return 0}
         return [dict get $Rooms($jid) joined]
     }
@@ -501,7 +501,7 @@ snit::type taco_muc {
         # MUC presence comes from room@service/nick
         if {![jid valid $from] || [jid resource $from] eq ""} return
 
-        set roomJid [string tolower [jid bare $from]]
+        set roomJid [jid norm [jid bare $from]]
         set nick [jid resource $from]
 
         # Only process if we're tracking this room
@@ -701,7 +701,7 @@ snit::type taco_muc {
         # Groupchat messages
         if {$type_ eq "groupchat"} {
             if {![jid valid $from]} { return 1 }
-            set roomJid [string tolower [jid bare $from]]
+        set roomJid [jid norm [jid bare $from]]
             set nick [jid resource $from]
 
             # Subject change: has <subject>, no <body>
@@ -731,7 +731,7 @@ snit::type taco_muc {
 
         # Private message (type=chat from occupant JID in a room we're in)
         if {$type_ eq "chat" && [jid valid $from] && [jid resource $from] ne ""} {
-            set roomJid [string tolower [jid bare $from]]
+        set roomJid [jid norm [jid bare $from]]
             if {[info exists Rooms($roomJid)] && [dict get $Rooms($roomJid) joined]} {
                 set nick [jid resource $from]
                 set bodyText [xsearch $stanza body -get body]
@@ -747,7 +747,7 @@ snit::type taco_muc {
             set mucXNode [lindex [xsearch $stanza x -ns http://jabber.org/protocol/muc#user] 0]
             set codes [$self ParseStatusCodes $mucXNode]
             if {101 in $codes} {
-                set roomJid [string tolower [jid bare $from]]
+        set roomJid [jid norm [jid bare $from]]
                 set itemAffil [xsearch $mucXNode item -get @affiliation]
                 set itemJid [xsearch $mucXNode item -get @jid]
                 $client emit muc <AffiliationChanged> \
@@ -775,7 +775,7 @@ snit::type taco_muc {
     }
 
     method OnInvite {stanza mucX} {
-        set roomJid [string tolower [jid bare [xsearch $stanza -get @from]]]
+        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
         set inviteNode [lindex [xsearch $mucX invite] 0]
         set inviterJid [xsearch $inviteNode -get @from]
         set reason [xsearch $inviteNode reason -get body]
@@ -789,7 +789,7 @@ snit::type taco_muc {
     }
 
     method OnDecline {stanza mucX} {
-        set roomJid [string tolower [jid bare [xsearch $stanza -get @from]]]
+        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
         set declineNode [lindex [xsearch $mucX decline] 0]
         set declinerJid [xsearch $declineNode -get @from]
         set reason [xsearch $declineNode reason -get body]
@@ -799,7 +799,7 @@ snit::type taco_muc {
     }
 
     method OnVoiceRequest {stanza xdataNode} {
-        set roomJid [string tolower [jid bare [xsearch $stanza -get @from]]]
+        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
         set reqJid [xsearch $xdataNode field @var muc#jid value -get body]
         set reqNick [xsearch $xdataNode field @var muc#roomnick value -get body]
 

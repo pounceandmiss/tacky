@@ -65,7 +65,7 @@ snit::type taco_avatar {
 
     # Return avatar metadata for a JID
     tackymethod metadata {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client db eval {
             SELECT hash, type, bytes, width, height
             FROM avatar_metadata WHERE jid=$jid
@@ -84,6 +84,7 @@ snit::type taco_avatar {
 
     # Fetch vCard avatar for a JID if not already cached.
     method ensureVCard {jid} {
+        set jid [jid norm $jid]
         set has [$client db onecolumn {
             SELECT count(*) FROM avatar_metadata WHERE jid=$jid
         }]
@@ -94,7 +95,7 @@ snit::type taco_avatar {
 
     # Get pre-generated 32x32 thumbnail bytes for a JID; returns "" if none.
     tackymethod thumb {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         $client db eval {
             SELECT d.thumb FROM avatar_metadata m
             JOIN avatar_data d ON d.hash = m.hash
@@ -247,7 +248,7 @@ snit::type taco_avatar {
     }
 
     method OnMetadataNotification {stanza} {
-        set from [jid bare [xsearch $stanza -get @from]]
+        set from [jid norm [jid bare [xsearch $stanza -get @from]]]
 
         # Check for empty metadata (avatar disabled)
         set infoNodes [xsearch $stanza event items item metadata info]
@@ -287,7 +288,7 @@ snit::type taco_avatar {
     }
 
     method visible {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         set count 0
         if {[dict exists $VisibleJids $jid]} {
             set count [dict get $VisibleJids $jid]
@@ -307,7 +308,7 @@ snit::type taco_avatar {
     }
 
     method invisible {args} {
-        set jid [dict get $args -jid]
+        set jid [jid norm [dict get $args -jid]]
         if {![dict exists $VisibleJids $jid]} return
         set count [dict get $VisibleJids $jid]
         if {$count <= 1} {
@@ -325,6 +326,7 @@ snit::type taco_avatar {
     # Compares to cached hash; triggers FetchVCard only if different.
     # jid: bare JID for rooms, occupant JID (room@muc/nick) for participants.
     method OnVCardPresence {jid stanza} {
+        set jid [jid norm $jid]
         set xNode [xsearch $stanza x -ns vcard-temp:x:update]
         if {$xNode eq ""} return
 
