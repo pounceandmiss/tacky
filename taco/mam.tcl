@@ -63,7 +63,7 @@ snit::type taco_mam {
     # -start/-end are XEP-0082 timestamps (e.g. 2020-01-01T00:00:00Z)
     method query {args} {
         set defaults [dict create -with "" -to "" -start "" -end "" -fulltext "" \
-                          -after "" -max "" -command ""]
+              -after "" -max "" -field-var "" -command ""]
         set opts [dict merge $defaults $args]
 
         set queryId mam[incr idCounter]
@@ -79,8 +79,12 @@ snit::type taco_mam {
 
         set ftVal [dict get $opts -fulltext]
         set cacheKey [dict get $opts -to]
+    set fieldVar [dict get $opts -field-var]
 
-        if {$ftVal ne "" && ![info exists FieldCache($cacheKey)]} {
+    if {$fieldVar ne ""} {
+        # Explicit field var — skip discovery
+        $self SendQuery $queryId $opts
+    } elseif {$ftVal ne "" && ![info exists FieldCache($cacheKey)]} {
             # Discover fulltext field before sending query
             set ffArgs [list -command [mymethod OnFieldsThenQuery $queryId $opts]]
             if {$cacheKey ne ""} {
@@ -153,9 +157,12 @@ snit::type taco_mam {
         set afterVal [dict get $opts -after]
         set maxVal   [dict get $opts -max]
 
-        # Resolve fulltext field name from cache
+    # Resolve fulltext field name
         set cacheKey [dict get $opts -to]
-        if {[info exists FieldCache($cacheKey)]} {
+    set fieldVar [dict get $opts -field-var]
+    if {$fieldVar ne ""} {
+        set ftVar $fieldVar
+    } elseif {[info exists FieldCache($cacheKey)]} {
             set ftVar $FieldCache($cacheKey)
         } else {
             set ftVar [lindex $KnownFulltextFields 0]

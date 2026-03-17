@@ -605,7 +605,7 @@ snit::type taco_message {
     # Each result stored in its own region (sparse islands).
     # Callback receives dict: messages, complete, last
     method search {args} {
-        array set opts {-limit 20 -tag ""}
+    array set opts {-limit 20 -tag "" -field ""}
         array set opts $args
 
         set chatJid $opts(-chat)
@@ -617,6 +617,9 @@ snit::type taco_message {
         }
 
         set mamArgs [list -fulltext $opts(-query) -max $opts(-limit)]
+    if {$opts(-field) ne ""} {
+        lappend mamArgs -field-var $opts(-field)
+    }
         if {[info exists opts(-before)]} {
             lappend mamArgs -before $opts(-before)
         } else {

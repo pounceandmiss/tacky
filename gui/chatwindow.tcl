@@ -28,6 +28,8 @@ snit::widgetadaptor chatwindow {
         $hull configure -menu $win.menubar
         bind $win <Control-w> [list destroy $win]
         bind $win <Control-W> [list destroy $win]
+        bind $win <Control-f> [list $win.cp OpenSearch]
+        bind $win <Control-F> [list $win.cp OpenSearch]
 
         # Chat widgets
         chatpanel $win.cp -acc $options(-acc) -jid $options(-jid) \

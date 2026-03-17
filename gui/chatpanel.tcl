@@ -82,6 +82,8 @@ snit::widget chatpanel {
         menu $mb.chat -tearoff 0
         $mb.chat add command -label "Jump to Date..." \
             -command [mymethod JumpToDate]
+    $mb.chat add command -label "Search..." \
+        -command [mymethod OpenSearch] -accelerator "Ctrl+F"
         if {$isMuc} {
             $self RebuildMucMenu
         }
@@ -94,6 +96,8 @@ snit::widget chatpanel {
 
         $mb.chat add command -label "Jump to Date..." \
             -command [mymethod JumpToDate]
+    $mb.chat add command -label "Search..." \
+        -command [mymethod OpenSearch] -accelerator "Ctrl+F"
         $mb.chat add separator
 
         # Always-visible items
@@ -133,8 +137,8 @@ snit::widget chatpanel {
         set affil [dict get $occ affiliation]
 
         # Insert permission-gated items before the trailing separator
-        # Static menu: Jump to Date, sep, Participants, sep, Invite, Change Nick = indices 0-5
-        set insertIdx 6
+    # Static menu: Jump to Date, Search, sep, Participants, sep, Invite, Change Nick = indices 0-6
+    set insertIdx 7
         if {$role eq "visitor"} {
             $mb.chat insert $insertIdx separator
             incr insertIdx
@@ -258,5 +262,19 @@ snit::widget chatpanel {
 
     method LeaveRoomKeepBookmark {} {
         ::tacky bookmarks leave -acc $options(-acc) -jid $roomJid
+    }
+
+    method OpenSearch {} {
+    if {[winfo exists $win.search]} {
+        wm deiconify $win.search
+        raise $win.search
+        return
+    }
+    searchwindow $win.search -acc $options(-acc) -jid $options(-jid) \
+        -goto-command [mymethod OnSearchGoto]
+    }
+
+    method OnSearchGoto {timestamp} {
+    $cv goto $timestamp -source remote
     }
 }
