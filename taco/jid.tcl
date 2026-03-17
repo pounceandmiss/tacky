@@ -37,7 +37,10 @@ proc jid {cmd args} {
         }
 
         norm {lassign $args jid
-            string tolower $jid
+            jid explode $jid e
+            set e(username) [string tolower $e(username)]
+            set e(domain) [string tolower $e(domain)]
+            jid assemble e
         }
 
         matches-bare {lassign $args a b
