@@ -347,7 +347,7 @@ snit::type taco_messagestore {
     # send, search) read back via get ids so live messages are
     # enriched too.
     method RowToDict {row} {
-        set row
+        messagestyling::enrich $row
     }
 
     # Annotate each message in a chronological list with {prev $ts},

@@ -335,7 +335,7 @@ snit::widgetadaptor chatview {
         set isOutgoing [expr {$serverStatus ne ""}]
         set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
         set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
-        dict create \
+        set d [dict create \
             id           [dict get $storeDict timestamp] \
             display_name $res \
             avatar_jid   $avatarJid \
@@ -343,7 +343,11 @@ snit::widgetadaptor chatview {
             body         [dict get $storeDict body] \
             is_outgoing  $isOutgoing \
             receipt_status $receiptStatus \
-            prev         $prev
+            prev         $prev]
+        if {[dict exists $storeDict formatting]} {
+            dict set d formatting [dict get $storeDict formatting]
+        }
+        return $d
     }
 
     method ProcessBatch {messages} {
