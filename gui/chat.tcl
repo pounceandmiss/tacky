@@ -552,7 +552,7 @@ snit::widget chatarea {
         set AvatarImages [dict create]
         set MessageAvatars [dict create]
         set HighlightedId ""
-        bidict clear Prevs
+        set Prevs [bidict new]
 
         if {$options(-pixelsbelowvariable) ne ""} {
             upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
@@ -600,10 +600,10 @@ snit::widget chatarea {
                     continue
                 }
 
-                if {[bidict rexists Prevs $id]} {
+                if {[bidict rexists $Prevs $id]} {
                     # Some displayed message claims this id as its prev
                     # → insert before that message
-                    set target [bidict rget Prevs $id]
+                    set target [bidict rget $Prevs $id]
                     $self InsertAt $target before $msg
                     lappend inserted $id
                 } elseif {$prev ne "" && $prev in $MessageIds} {
@@ -623,7 +623,7 @@ snit::widget chatarea {
     }
 
     method PatchMessage {id newPrev} {
-        bidict set Prevs $id $newPrev
+        set Prevs [bidict set $Prevs $id $newPrev]
     }
 
     method InsertAt {targetId position msg} {
@@ -647,7 +647,7 @@ snit::widget chatarea {
             }
         }
 
-        bidict set Prevs $id $prev
+        set Prevs [bidict set $Prevs $id $prev]
         $self DrawMessage msgins $msg
     }
     
@@ -827,7 +827,7 @@ snit::widget chatarea {
         $text del 0.0 end
         set MessageIds {}
         set HighlightedId ""
-        bidict clear Prevs
+        set Prevs [bidict new]
         if {$options(-avatar-release-command) ne ""} {
             set released {}
             dict for {mid ajid} $MessageAvatars {
@@ -930,16 +930,16 @@ snit::widget chatarea {
         $text del $tag.first $tag.last
         # Delete tag itself
         $text tag delete item.$id
-        bidict unset Prevs $id
+        set Prevs [bidict unset $Prevs $id]
         $self CheckAvatarRelease $id
     }
-    
+
     method deleteByPos {idx} {
         set id [lindex $MessageIds $idx]
         set MessageIds [lreplace $MessageIds $idx $idx]
         $text del item.$id.first item.$id.last
         $text tag delete item.$id
-        bidict unset Prevs $id
+        set Prevs [bidict unset $Prevs $id]
         $self CheckAvatarRelease $id
     }
 
