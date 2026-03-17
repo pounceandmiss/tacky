@@ -23,6 +23,10 @@ snit::widget chatpanel {
     variable roomJid ""
     variable showParticipants 0
     variable mucList ""
+    variable findBar ""
+    variable findMatches {}
+    variable findIndex -1
+    variable findQuery ""
 
     constructor args {
         $self configurelist $args
@@ -42,6 +46,8 @@ snit::widget chatpanel {
             -request-voice-command [mymethod RequestVoice]]
         pack $cv -expand yes -fill both
         pack $entry -fill x
+
+        bind $cv <<FindInChat>> [mymethod OpenFind]
 
         $paned add $leftFrame -weight 1
         pack $paned -expand yes -fill both
@@ -82,8 +88,10 @@ snit::widget chatpanel {
         menu $mb.chat -tearoff 0
         $mb.chat add command -label "Jump to Date..." \
             -command [mymethod JumpToDate]
-        $mb.chat add command -label "Search..." \
-            -command [mymethod OpenSearch] -accelerator "Ctrl+F"
+        $mb.chat add command -label "Find in Chat..." \
+            -command [mymethod OpenFind] -accelerator "Ctrl+F"
+        $mb.chat add command -label "Server Search..." \
+            -command [mymethod OpenSearch]
         if {$isMuc} {
             $self RebuildMucMenu
         }
@@ -96,8 +104,10 @@ snit::widget chatpanel {
 
         $mb.chat add command -label "Jump to Date..." \
             -command [mymethod JumpToDate]
-        $mb.chat add command -label "Search..." \
-            -command [mymethod OpenSearch] -accelerator "Ctrl+F"
+        $mb.chat add command -label "Find in Chat..." \
+            -command [mymethod OpenFind] -accelerator "Ctrl+F"
+        $mb.chat add command -label "Server Search..." \
+            -command [mymethod OpenSearch]
         $mb.chat add separator
 
         # Always-visible items
@@ -137,8 +147,8 @@ snit::widget chatpanel {
         set affil [dict get $occ affiliation]
 
         # Insert permission-gated items before the trailing separator
-        # Static menu: Jump to Date, Search, sep, Participants, sep, Invite, Change Nick = indices 0-6
-        set insertIdx 7
+        # Static menu: Jump to Date, Find in Chat, Server Search, sep, Participants, sep, Invite, Change Nick = indices 0-7
+        set insertIdx 8
         if {$role eq "visitor"} {
             $mb.chat insert $insertIdx separator
             incr insertIdx
@@ -262,6 +272,106 @@ snit::widget chatpanel {
 
     method LeaveRoomKeepBookmark {} {
         ::tacky bookmarks leave -acc $options(-acc) -jid $roomJid
+    }
+
+    method OpenFind {} {
+        if {$findBar ne "" && [winfo exists $findBar]} {
+            focus $findBar.entry
+            return
+        }
+        set findBar [ttk::frame $leftFrame.findbar]
+        ttk::label $findBar.lbl -text "Find:"
+        ttk::entry $findBar.entry -width 30
+        ttk::button $findBar.prev -text "Prev" -style Toolbutton \
+            -command [mymethod FindPrev]
+        ttk::button $findBar.next -text "Next" -style Toolbutton \
+            -command [mymethod FindNext]
+        ttk::label $findBar.status -text ""
+        ttk::button $findBar.close -text "\u00D7" -style Toolbutton \
+            -command [mymethod CloseFind]
+        pack $findBar.lbl $findBar.entry $findBar.prev $findBar.next \
+            $findBar.status -side left -padx 2
+        pack $findBar.close -side right -padx 2
+        pack $findBar -fill x -before $entry
+
+        bind $findBar.entry <Return> [mymethod OnFindReturn]
+        bind $findBar.entry <Shift-Return> [mymethod FindPrev]
+        bind $findBar.entry <Escape> [mymethod CloseFind]
+
+        set findMatches {}
+        set findIndex -1
+        set findQuery ""
+        focus $findBar.entry
+    }
+
+    method CloseFind {} {
+        if {$findBar ne "" && [winfo exists $findBar]} {
+            destroy $findBar
+        }
+        set findBar ""
+        set findMatches {}
+        set findIndex -1
+        set findQuery ""
+        $cv highlight clear
+    }
+
+    method OnFindReturn {} {
+        set query [$findBar.entry get]
+        if {$query eq ""} return
+        if {$query eq $findQuery && [llength $findMatches] > 0} {
+            $self FindNext
+        } else {
+            set findQuery $query
+            $self DoFind
+        }
+    }
+
+    method DoFind {} {
+        ::tacky message local_search -acc $options(-acc) \
+            -chat $options(-jid) -query $findQuery \
+            -command [mymethod OnFindResults]
+    }
+
+    method OnFindResults {timestamps} {
+        set findMatches $timestamps
+        if {[llength $findMatches] > 0} {
+            set findIndex 0
+            $self GotoFindMatch
+        } else {
+            set findIndex -1
+        }
+        $self UpdateFindStatus
+    }
+
+    method FindNext {} {
+        if {[llength $findMatches] == 0} return
+        set findIndex [expr {($findIndex + 1) % [llength $findMatches]}]
+        $self GotoFindMatch
+        $self UpdateFindStatus
+    }
+
+    method FindPrev {} {
+        if {[llength $findMatches] == 0} return
+        set findIndex [expr {
+            ($findIndex - 1 + [llength $findMatches]) % [llength $findMatches]
+        }]
+        $self GotoFindMatch
+        $self UpdateFindStatus
+    }
+
+    method GotoFindMatch {} {
+        set ts [lindex $findMatches $findIndex]
+        $cv goto $ts
+    }
+
+    method UpdateFindStatus {} {
+        if {![winfo exists $findBar.status]} return
+        if {[llength $findMatches] == 0} {
+            $findBar.status configure -text "No matches"
+        } else {
+            $findBar.status configure -text \
+                "[expr {$findIndex + 1}] of [llength $findMatches]"
+        }
     }
 
     method OpenSearch {} {

@@ -373,6 +373,15 @@ snit::type taco_message {
         unset -nocomplain PubSubHandlers($node)
     }
 
+    # local_search -chat $jid -query "text" -command $cb
+    # Synchronous LIKE search on local SQLite store.
+    # Invokes callback with list of timestamps (newest first).
+    method local_search {args} {
+        array set opts $args
+        set timestamps [$messagestore search $opts(-chat) $opts(-query)]
+        {*}$opts(-command) $timestamps
+    }
+
     # rawxml -chat $chatJid -timestamp $ts -command $cb
     tackymethod rawxml {args} {
         array set opts $args

@@ -253,6 +253,24 @@ snit::type taco_messagestore {
         return [$self AnnotatePrev $jid $rows]
     }
 
+    # Full-text search by LIKE match on body. Returns list of timestamps
+    # (newest first, capped at -limit).
+    method search {jid query args} {
+        array set opts {-limit 500}
+        array set opts $args
+        set limit $opts(-limit)
+        set pattern "%${query}%"
+        set timestamps {}
+        $options(-db) eval {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$jid AND body LIKE $pattern
+            ORDER BY timestamp DESC LIMIT $limit
+        } row {
+            lappend timestamps $row(timestamp)
+        }
+        return $timestamps
+    }
+
     # Find the nearest message to timestamp and return context around
     # it (limit/2 before + target + limit/2 after), region-scoped.
     # Returns dict: {messages $list anchor $nearestTs}.

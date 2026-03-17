@@ -250,9 +250,9 @@ snit::widget chatlistview {
         $self UntrackAvatars $displayed
     }
 
-    method OnRecentTop {args} {
+    method OnRecentTop {ev} {
         array set opts {-jid "" -name "" -source "none"}
-        array set opts $args
+        array set opts $ev
         set jid $opts(-jid)
         set name $opts(-name)
         set source $opts(-source)
@@ -272,9 +272,9 @@ snit::widget chatlistview {
         dict set itemSources $jid $source
     }
 
-    method OnRecentDrop {args} {
+    method OnRecentDrop {ev} {
         array set opts {-jid ""}
-        array set opts $args
+        array set opts $ev
         set jid $opts(-jid)
         set itemId "RecentChats/$jid"
         if {[$treeview exists $itemId]} {

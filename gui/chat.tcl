@@ -405,6 +405,8 @@ snit::widgetadaptor chatview {
         $m delete 0 end
         $m add command -label "View XML" \
             -command [mymethod OnViewXml $id]
+        $m add command -label "Find in Chat" \
+            -command [list event generate $win <<FindInChat>>]
         tk_popup $m $rootX $rootY
     }
 
