@@ -33,7 +33,7 @@ snit::macro tackymethod {name arglist body} {
             }
             return -options $_opts $_result
         }
-	
+        
         if {[dict exists $args -command]} {
             {*}[dict get $args -command] $_result
             return

@@ -18,10 +18,10 @@ set common {-setup {
 test iq-handler-register "handler registers request handler" {*}$common -body {
     set received {}
     .iq handler get jabber:iq:version {apply {{stanza} {
-	lappend ::received $stanza
+        lappend ::received $stanza
     }}}
     .iq feed [j iq -type get -id 1 -from user@example.org {
-	j query -ns jabber:iq:version
+        j query -ns jabber:iq:version
     }]
     llength $received
 } -result {1}
@@ -49,7 +49,7 @@ test iq-unhandler "unhandler removes request handler" {*}$common -body {
 
 test iq-feed-unknown-request "feed sends error for unknown request" {*}$common -body {
     .iq feed [j iq -type get -id 123 -from user@example.org {
-	j query -ns urn:unknown
+        j query -ns urn:unknown
     }]
     set sent [lindex $iq_test_sent 0]
     list [xsearch $sent -get @type] [xsearch $sent -get @to] [xsearch $sent -get @id]
@@ -66,10 +66,10 @@ test iq-feed-unknown-request-no-from "feed sends error without to when no from" 
 test iq-feed-response-result "feed calls response handler for result" {*}$common -body {
     set received {}
     .iq request -to user@example.org -payload [j query -ns urn:test] \
-	-command {apply {{stanza} { set ::received $stanza }}}
+        -command {apply {{stanza} { set ::received $stanza }}}
     set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
     .iq feed [j iq -type result -id $sentId -from user@example.org {
-	j query -ns urn:test
+        j query -ns urn:test
     }]
     expr {$received ne ""}
 } -result {1}
@@ -77,7 +77,7 @@ test iq-feed-response-result "feed calls response handler for result" {*}$common
 test iq-feed-response-error "feed calls response handler for error" {*}$common -body {
     set received_type {}
     .iq request -to user@example.org -payload [j query -ns urn:test] \
-	-command {apply {{stanza} { set ::received_type [xsearch $stanza -get @type] }}}
+        -command {apply {{stanza} { set ::received_type [xsearch $stanza -get @type] }}}
     set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
     .iq feed [j iq -type error -id $sentId -from user@example.org]
     set received_type
@@ -86,7 +86,7 @@ test iq-feed-response-error "feed calls response handler for error" {*}$common -
 test iq-feed-response-cleanup "feed removes response handler after call" {*}$common -body {
     set call_count 0
     .iq request -to user@example.org -payload [j query -ns urn:test] \
-	-command {apply {{stanza} { incr ::call_count }}}
+        -command {apply {{stanza} { incr ::call_count }}}
     set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
     .iq feed [j iq -type result -id $sentId -from user@example.org]
     .iq feed [j iq -type result -id $sentId -from user@example.org]
@@ -96,11 +96,11 @@ test iq-feed-response-cleanup "feed removes response handler after call" {*}$com
 test iq-feed-response-no-to-with-from "feed routes response with from when request had no to" {*}$common -body {
     set received {}
     .iq request -payload [j query -ns urn:test] \
-	-command {apply {{stanza} { set ::received $stanza }}}
+        -command {apply {{stanza} { set ::received $stanza }}}
     set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
     # Real servers include from= in responses to server-directed requests
     .iq feed [j iq -type result -id $sentId -from server.example.org {
-	j query -ns urn:test
+        j query -ns urn:test
     }]
     expr {$received ne ""}
 } -result {1}
@@ -108,7 +108,7 @@ test iq-feed-response-no-to-with-from "feed routes response with from when reque
 test iq-feed-response-no-to-no-from "feed routes response without from when request had no to" {*}$common -body {
     set received {}
     .iq request -payload [j query -ns urn:test] \
-	-command {apply {{stanza} { set ::received $stanza }}}
+        -command {apply {{stanza} { set ::received $stanza }}}
     set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
     .iq feed [j iq -type result -id $sentId {j query -ns urn:test}]
     expr {$received ne ""}
@@ -118,9 +118,9 @@ test iq-feed-response-exact-from-preferred "feed prefers exact from match over e
     set result_a {}
     set result_b {}
     .iq request -to user@example.org -payload [j query -ns urn:a] \
-	-command {apply {{stanza} { set ::result_a got }}}
+        -command {apply {{stanza} { set ::result_a got }}}
     .iq request -payload [j query -ns urn:b] \
-	-command {apply {{stanza} { set ::result_b got }}}
+        -command {apply {{stanza} { set ::result_b got }}}
     set sentA [lindex $iq_test_sent 0]
     set sentB [lindex $iq_test_sent 1]
     set idA [xsearch $sentA -get @id]

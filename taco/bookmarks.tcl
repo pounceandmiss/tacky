@@ -24,348 +24,348 @@ snit::type taco_bookmarks {
     option -client -readonly yes
 
     constructor args {
-	$self configurelist $args
-	set client $options(-client)
-	$self Migrate
-	$client message pubsub handler urn:xmpp:bookmarks:1 \
-	    [mymethod OnNotification]
-	$client caps addFeature urn:xmpp:bookmarks:1+notify
-	$client bus subscribe $self <Ready> [mymethod OnReady]
+        $self configurelist $args
+        set client $options(-client)
+        $self Migrate
+        $client message pubsub handler urn:xmpp:bookmarks:1 \
+            [mymethod OnNotification]
+        $client caps addFeature urn:xmpp:bookmarks:1+notify
+        $client bus subscribe $self <Ready> [mymethod OnReady]
     }
 
     destructor {
-	catch {$client bus unsubscribe $self}
-	catch {$client message pubsub unhandler urn:xmpp:bookmarks:1}
+        catch {$client bus unsubscribe $self}
+        catch {$client message pubsub unhandler urn:xmpp:bookmarks:1}
     }
 
     method OnReady {args} {
-	$self request
+        $self request
     }
 
     # Return full list of bookmarks from local store
     tackymethod get {args} {
-	set results {}
-	$client db eval {
-	    SELECT jid, name, autojoin, nick, password FROM bookmark
-	} row {
-	    set entry [list -jid $row(jid) -name $row(name) \
-		-autojoin $row(autojoin) -nick $row(nick) \
-		-password $row(password)]
-	    lappend results $entry
-	}
-	return $results
+        set results {}
+        $client db eval {
+            SELECT jid, name, autojoin, nick, password FROM bookmark
+        } row {
+            set entry [list -jid $row(jid) -name $row(name) \
+                -autojoin $row(autojoin) -nick $row(nick) \
+                -password $row(password)]
+            lappend results $entry
+        }
+        return $results
     }
 
     # Request all bookmarks from server
     method request {args} {
-	$client iq request -type get \
-	    -payload [j pubsub -ns http://jabber.org/protocol/pubsub {
-		j items -node urn:xmpp:bookmarks:1
-	    }] -command [mymethod OnResult]
+        $client iq request -type get \
+            -payload [j pubsub -ns http://jabber.org/protocol/pubsub {
+                j items -node urn:xmpp:bookmarks:1
+            }] -command [mymethod OnResult]
     }
 
     # Add or update a bookmark
     # Omitted options are preserved from the DB if the bookmark exists.
     # If -nick is omitted for a new bookmark, defaults to defaultNick.
     method item {args} {
-	# Load existing bookmark or defaults
-	array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
-	set bm(jid) [dict get $args -jid]
-	set existed 0
-	$client db eval {
-	    SELECT name, autojoin, nick, password, extensions_xml
-	    FROM bookmark WHERE jid=$bm(jid)
-	} bm {
-	    set existed 1
-	}
+        # Load existing bookmark or defaults
+        array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
+        set bm(jid) [dict get $args -jid]
+        set existed 0
+        $client db eval {
+            SELECT name, autojoin, nick, password, extensions_xml
+            FROM bookmark WHERE jid=$bm(jid)
+        } bm {
+            set existed 1
+        }
 
-	# Apply caller overrides
-	foreach {k v} $args {
-	    set bm([string range $k 1 end]) $v
-	}
+        # Apply caller overrides
+        foreach {k v} $args {
+            set bm([string range $k 1 end]) $v
+        }
 
-	if {$bm(nick) eq ""} {
-	    set bm(nick) [$self defaultNick]
-	}
+        if {$bm(nick) eq ""} {
+            set bm(nick) [$self defaultNick]
+        }
 
-	# Optimistic local update
-	set bm(autojoin) [expr {$bm(autojoin) in {true 1} ? 1 : 0}]
-	$client db eval {
-	    INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password, extensions_xml)
-	    VALUES ($bm(jid), $bm(name), $bm(autojoin), $bm(nick), $bm(password), $bm(extensions_xml))
-	}
-	if {$existed} {
-	    $client emit bookmarks <Changed> -action update -jid $bm(jid)
-	} else {
-	    $client emit bookmarks <Changed> -action add -jid $bm(jid)
-	}
-	$self AutojoinOne $bm(jid)
+        # Optimistic local update
+        set bm(autojoin) [expr {$bm(autojoin) in {true 1} ? 1 : 0}]
+        $client db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password, extensions_xml)
+            VALUES ($bm(jid), $bm(name), $bm(autojoin), $bm(nick), $bm(password), $bm(extensions_xml))
+        }
+        if {$existed} {
+            $client emit bookmarks <Changed> -action update -jid $bm(jid)
+        } else {
+            $client emit bookmarks <Changed> -action add -jid $bm(jid)
+        }
+        $self AutojoinOne $bm(jid)
 
-	$client iq request -type set -payload \
-	    [j pubsub -ns http://jabber.org/protocol/pubsub {
-		j publish -node urn:xmpp:bookmarks:1 {
-		    j #as-is [$self BookmarkItemNode bm]
-		}
-		j publish-options {
-		    j x -ns jabber:x:data -type submit {
-			j field -var FORM_TYPE -type hidden {
-			    j value #body "http://jabber.org/protocol/pubsub#publish-options"
-			}
-			j field -var pubsub#persist_items {
-			    j value #body true
-			}
-			j field -var pubsub#max_items {
-			    j value #body max
-			}
-			j field -var pubsub#send_last_published_item {
-			    j value #body never
-			}
-			j field -var pubsub#access_model {
-			    j value #body whitelist
-			}
-		    }
-		}
-	    }]
+        $client iq request -type set -payload \
+            [j pubsub -ns http://jabber.org/protocol/pubsub {
+                j publish -node urn:xmpp:bookmarks:1 {
+                    j #as-is [$self BookmarkItemNode bm]
+                }
+                j publish-options {
+                    j x -ns jabber:x:data -type submit {
+                        j field -var FORM_TYPE -type hidden {
+                            j value #body "http://jabber.org/protocol/pubsub#publish-options"
+                        }
+                        j field -var pubsub#persist_items {
+                            j value #body true
+                        }
+                        j field -var pubsub#max_items {
+                            j value #body max
+                        }
+                        j field -var pubsub#send_last_published_item {
+                            j value #body never
+                        }
+                        j field -var pubsub#access_model {
+                            j value #body whitelist
+                        }
+                    }
+                }
+            }]
     }
 
     # Change nickname in a room and update the bookmark.
     method nick {args} {
-	array set opts $args
-	$self item -jid $opts(-jid) -nick $opts(-nick)
-	$client muc nick -jid $opts(-jid) -nick $opts(-nick)
+        array set opts $args
+        $self item -jid $opts(-jid) -nick $opts(-nick)
+        $client muc nick -jid $opts(-jid) -nick $opts(-nick)
     }
 
     # Leave a room and disable autojoin.
     method leave {args} {
-	set jid [dict get $args -jid]
-	$self item -jid $jid -autojoin 0
-	$client muc leave -jid $jid
+        set jid [dict get $args -jid]
+        $self item -jid $jid -autojoin 0
+        $client muc leave -jid $jid
     }
 
     # Get or set the default nickname for new bookmarks.
     # Falls back to JID username if unset.
     tackymethod defaultNick {args} {
-	if {[dict exists $args -nick]} {
-	    set newNick [dict get $args -nick]
-	    $client db eval {
-		INSERT OR REPLACE INTO bookmark_config(key, value)
-		VALUES('default_nick', $newNick)
-	    }
-	    return $newNick
-	}
-	set row [$client db eval {
-	    SELECT value FROM bookmark_config WHERE key='default_nick'
-	}]
-	if {[llength $row] > 0 && [lindex $row 0] ne ""} {
-	    return [lindex $row 0]
-	}
-	return [jid username [$client cget -jid]]
+        if {[dict exists $args -nick]} {
+            set newNick [dict get $args -nick]
+            $client db eval {
+                INSERT OR REPLACE INTO bookmark_config(key, value)
+                VALUES('default_nick', $newNick)
+            }
+            return $newNick
+        }
+        set row [$client db eval {
+            SELECT value FROM bookmark_config WHERE key='default_nick'
+        }]
+        if {[llength $row] > 0 && [lindex $row 0] ne ""} {
+            return [lindex $row 0]
+        }
+        return [jid username [$client cget -jid]]
     }
 
     # Query autojoin state for a single JID
     tackymethod autojoin {args} {
-	set jid [dict get $args -jid]
-	set row [$client db eval {SELECT autojoin FROM bookmark WHERE jid=$jid}]
-	if {[llength $row] == 0} { return 0 }
-	return [lindex $row 0]
+        set jid [dict get $args -jid]
+        set row [$client db eval {SELECT autojoin FROM bookmark WHERE jid=$jid}]
+        if {[llength $row] == 0} { return 0 }
+        return [lindex $row 0]
     }
 
     # Remove a bookmark and leave the room if joined
     method remove {args} {
-	set jid [dict get $args -jid]
-	if {[$client muc isJoined -jid $jid]} {
-	    $client muc leave -jid $jid
-	}
-	$client db eval {DELETE FROM bookmark WHERE jid=$jid}
-	$client emit bookmarks <Changed> -action remove -jid $jid
+        set jid [dict get $args -jid]
+        if {[$client muc isJoined -jid $jid]} {
+            $client muc leave -jid $jid
+        }
+        $client db eval {DELETE FROM bookmark WHERE jid=$jid}
+        $client emit bookmarks <Changed> -action remove -jid $jid
 
-	$client iq request -type set -payload \
-	    [j pubsub -ns http://jabber.org/protocol/pubsub {
-		j retract -node urn:xmpp:bookmarks:1 -notify true {
-		    j item -id $jid
-		}
-	    }]
+        $client iq request -type set -payload \
+            [j pubsub -ns http://jabber.org/protocol/pubsub {
+                j retract -node urn:xmpp:bookmarks:1 -notify true {
+                    j item -id $jid
+                }
+            }]
     }
 
     method OnResult {stanza} {
-	set type_ [xsearch $stanza -get @type]
-	if {$type_ eq "error"} {
-	    return
-	}
+        set type_ [xsearch $stanza -get @type]
+        if {$type_ eq "error"} {
+            return
+        }
 
-	$client db eval {BEGIN}
-	$client db eval {DELETE FROM bookmark}
+        $client db eval {BEGIN}
+        $client db eval {DELETE FROM bookmark}
 
-	xsearch $stanza pubsub items item -script itemNode {
-	    set jid [xsearch $itemNode -get @id]
-	    if {$jid eq ""} continue
-	    $self StoreItem $jid $itemNode
-	}
-	$client db eval {COMMIT}
+        xsearch $stanza pubsub items item -script itemNode {
+            set jid [xsearch $itemNode -get @id]
+            if {$jid eq ""} continue
+            $self StoreItem $jid $itemNode
+        }
+        $client db eval {COMMIT}
 
-	$client emit bookmarks <Changed> -action clear
-	$self AutojoinAll
+        $client emit bookmarks <Changed> -action clear
+        $self AutojoinAll
     }
 
     method OnNotification {stanza} {
-	set eventNodes [xsearch $stanza event -ns http://jabber.org/protocol/pubsub#event]
-	if {[llength $eventNodes] == 0} return
-	set eventNode [lindex $eventNodes 0]
+        set eventNodes [xsearch $stanza event -ns http://jabber.org/protocol/pubsub#event]
+        if {[llength $eventNodes] == 0} return
+        set eventNode [lindex $eventNodes 0]
 
-	# Handle item publications
-	xsearch $eventNode items item -script itemNode {
-	    set jid [xsearch $itemNode -get @id]
-	    if {$jid eq ""} continue
+        # Handle item publications
+        xsearch $eventNode items item -script itemNode {
+            set jid [xsearch $itemNode -get @id]
+            if {$jid eq ""} continue
 
-	    set existed [$client db eval {SELECT count(*) FROM bookmark WHERE jid=$jid}]
-	    $self StoreItem $jid $itemNode
-	    if {$existed} {
-		$client emit bookmarks <Changed> -action update -jid $jid
-	    } else {
-		$client emit bookmarks <Changed> -action add -jid $jid
-		$self AutojoinOne $jid
-	    }
-	}
+            set existed [$client db eval {SELECT count(*) FROM bookmark WHERE jid=$jid}]
+            $self StoreItem $jid $itemNode
+            if {$existed} {
+                $client emit bookmarks <Changed> -action update -jid $jid
+            } else {
+                $client emit bookmarks <Changed> -action add -jid $jid
+                $self AutojoinOne $jid
+            }
+        }
 
-	# Handle retractions
-	xsearch $eventNode items retract -script retractNode {
-	    set jid [xsearch $retractNode -get @id]
-	    if {$jid eq ""} continue
+        # Handle retractions
+        xsearch $eventNode items retract -script retractNode {
+            set jid [xsearch $retractNode -get @id]
+            if {$jid eq ""} continue
 
-	    $client db eval {DELETE FROM bookmark WHERE jid=$jid}
-	    $client emit bookmarks <Changed> -action remove -jid $jid
-	}
+            $client db eval {DELETE FROM bookmark WHERE jid=$jid}
+            $client emit bookmarks <Changed> -action remove -jid $jid
+        }
     }
 
     # Build a standalone <item><conference>...</conference></item> node.
     # bmVar is the name of an array with keys: jid, name, autojoin, nick, password.
     # Must be called outside a j context; insert with j #as-is.
     method BookmarkItemNode {bmVar} {
-	upvar 1 $bmVar bm
-	set autojoinVal [expr {$bm(autojoin) in {true 1} ? "true" : "false"}]
-	set confAttrs [list -ns urn:xmpp:bookmarks:1 -autojoin $autojoinVal]
-	if {$bm(name) ne ""} {
-	    lappend confAttrs -name $bm(name)
-	}
-	j item -id $bm(jid) {
-	    j conference {*}$confAttrs {
-		if {$bm(nick) ne ""} {
-		    j nick #body $bm(nick)
-		}
-		if {$bm(password) ne ""} {
-		    j password #body $bm(password)
-		}
-	    }
-	}
+        upvar 1 $bmVar bm
+        set autojoinVal [expr {$bm(autojoin) in {true 1} ? "true" : "false"}]
+        set confAttrs [list -ns urn:xmpp:bookmarks:1 -autojoin $autojoinVal]
+        if {$bm(name) ne ""} {
+            lappend confAttrs -name $bm(name)
+        }
+        j item -id $bm(jid) {
+            j conference {*}$confAttrs {
+                if {$bm(nick) ne ""} {
+                    j nick #body $bm(nick)
+                }
+                if {$bm(password) ne ""} {
+                    j password #body $bm(password)
+                }
+            }
+        }
     }
 
     method StoreItem {jid itemNode} {
-	set confNodes [xsearch $itemNode conference -ns urn:xmpp:bookmarks:1]
-	if {[llength $confNodes] == 0} {
-	    set confNodes [xsearch $itemNode conference]
-	}
-	if {[llength $confNodes] == 0} {
-	    # No conference element — store bare entry
-	    $client db eval {
-		INSERT OR REPLACE INTO bookmark(jid) VALUES ($jid)
-	    }
-	    return
-	}
+        set confNodes [xsearch $itemNode conference -ns urn:xmpp:bookmarks:1]
+        if {[llength $confNodes] == 0} {
+            set confNodes [xsearch $itemNode conference]
+        }
+        if {[llength $confNodes] == 0} {
+            # No conference element — store bare entry
+            $client db eval {
+                INSERT OR REPLACE INTO bookmark(jid) VALUES ($jid)
+            }
+            return
+        }
 
-	set confNode [lindex $confNodes 0]
-	set name [xsearch $confNode -get @name]
-	set autojoinRaw [xsearch $confNode -get @autojoin]
-	set autojoin [expr {$autojoinRaw in {true 1} ? 1 : 0}]
-	set nick [xsearch $confNode nick -get body]
-	set password [xsearch $confNode password -get body]
+        set confNode [lindex $confNodes 0]
+        set name [xsearch $confNode -get @name]
+        set autojoinRaw [xsearch $confNode -get @autojoin]
+        set autojoin [expr {$autojoinRaw in {true 1} ? 1 : 0}]
+        set nick [xsearch $confNode nick -get body]
+        set password [xsearch $confNode password -get body]
 
-	# Preserve unknown extensions
-	set extNodes [xsearch $confNode extensions]
-	set extensionsXml ""
-	if {[llength $extNodes] > 0} {
-	    set extensionsXml [jwrite [lindex $extNodes 0]]
-	}
+        # Preserve unknown extensions
+        set extNodes [xsearch $confNode extensions]
+        set extensionsXml ""
+        if {[llength $extNodes] > 0} {
+            set extensionsXml [jwrite [lindex $extNodes 0]]
+        }
 
-	$client db eval {
-	    INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password, extensions_xml)
-	    VALUES ($jid, $name, $autojoin, $nick, $password, $extensionsXml)
-	}
+        $client db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password, extensions_xml)
+            VALUES ($jid, $name, $autojoin, $nick, $password, $extensionsXml)
+        }
     }
 
     # Update nickname on all bookmarks and optionally in joined rooms.
     tackymethod setNickAll {args} {
-	set newNick [dict get $args -nick]
-	$self defaultNick -nick $newNick
+        set newNick [dict get $args -nick]
+        $self defaultNick -nick $newNick
 
-	$client db eval {UPDATE bookmark SET nick=$newNick}
+        $client db eval {UPDATE bookmark SET nick=$newNick}
 
-	$client db eval {SELECT jid FROM bookmark} row {
-	    $client emit bookmarks <Changed> -action update -jid $row(jid)
-	    if {[$client muc isJoined -jid $row(jid)]} {
-		$client muc nick -jid $row(jid) -nick $newNick
-	    }
-	}
+        $client db eval {SELECT jid FROM bookmark} row {
+            $client emit bookmarks <Changed> -action update -jid $row(jid)
+            if {[$client muc isJoined -jid $row(jid)]} {
+                $client muc nick -jid $row(jid) -nick $newNick
+            }
+        }
 
-	# Single IQ with all items
-	$client iq request -type set -payload \
-	    [j pubsub -ns http://jabber.org/protocol/pubsub {
-		j publish -node urn:xmpp:bookmarks:1 {
-		    $client db eval {
-			SELECT jid, name, autojoin, nick, password
-			FROM bookmark
-		    } bm {
-			j #as-is [$self BookmarkItemNode bm]
-		    }
-		}
-	    }]
+        # Single IQ with all items
+        $client iq request -type set -payload \
+            [j pubsub -ns http://jabber.org/protocol/pubsub {
+                j publish -node urn:xmpp:bookmarks:1 {
+                    $client db eval {
+                        SELECT jid, name, autojoin, nick, password
+                        FROM bookmark
+                    } bm {
+                        j #as-is [$self BookmarkItemNode bm]
+                    }
+                }
+            }]
     }
 
     method AutojoinAll {} {
-	$client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
-	    if {[$client muc isJoined -jid $row(jid)]} continue
-	    set nick $row(nick)
-	    if {$nick eq ""} {
-		set nick [$self defaultNick]
-	    }
-	    if {$row(password) ne ""} {
-		$client muc join -jid $row(jid) -nick $nick -password $row(password)
-	    } else {
-		$client muc join -jid $row(jid) -nick $nick
-	    }
-	}
+        $client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
+            if {[$client muc isJoined -jid $row(jid)]} continue
+            set nick $row(nick)
+            if {$nick eq ""} {
+                set nick [$self defaultNick]
+            }
+            if {$row(password) ne ""} {
+                $client muc join -jid $row(jid) -nick $nick -password $row(password)
+            } else {
+                $client muc join -jid $row(jid) -nick $nick
+            }
+        }
     }
 
     method AutojoinOne {jid} {
-	$client db eval {
-	    SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid
-	} row {
-	    if {!$row(autojoin)} return
-	    if {[$client muc isJoined -jid $jid]} return
-	    if {$row(nick) eq ""} {
-		set row(nick) [$self defaultNick]
-	    }
-	    if {$row(password) ne ""} {
-		$client muc join -jid $jid -nick $row(nick) -password $row(password)
-	    } else {
-		$client muc join -jid $jid -nick $row(nick)
-	    }
-	}
+        $client db eval {
+            SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid
+        } row {
+            if {!$row(autojoin)} return
+            if {[$client muc isJoined -jid $jid]} return
+            if {$row(nick) eq ""} {
+                set row(nick) [$self defaultNick]
+            }
+            if {$row(password) ne ""} {
+                $client muc join -jid $jid -nick $row(nick) -password $row(password)
+            } else {
+                $client muc join -jid $jid -nick $row(nick)
+            }
+        }
     }
 
     method Migrate {} {
-	$client db eval {
-	    CREATE TABLE IF NOT EXISTS bookmark(
-		jid TEXT PRIMARY KEY,
-		name TEXT,
-		autojoin INTEGER DEFAULT 0,
-		nick TEXT,
-		password TEXT,
-		extensions_xml TEXT
-	    );
-	    CREATE TABLE IF NOT EXISTS bookmark_config(
-		key TEXT PRIMARY KEY,
-		value TEXT
-	    );
-	}
+        $client db eval {
+            CREATE TABLE IF NOT EXISTS bookmark(
+                jid TEXT PRIMARY KEY,
+                name TEXT,
+                autojoin INTEGER DEFAULT 0,
+                nick TEXT,
+                password TEXT,
+                extensions_xml TEXT
+            );
+            CREATE TABLE IF NOT EXISTS bookmark_config(
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        }
     }
 }

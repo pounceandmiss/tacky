@@ -62,65 +62,65 @@ if 0 {
 # Converts xml form version into more tcl-friendly, flat array format
 proc ::tacky::forms::tolist {formNode {formarray ""}} {
     if {$formarray ne ""} {
-	upvar $formarray form
+        upvar $formarray form
     }
 
     if {[xsearch $formNode instructions] ne ""} {
-	set form(instructions) [xsearch $formNode instructions -get body]
+        set form(instructions) [xsearch $formNode instructions -get body]
     }
 
     foreach fieldNode [xsearch $formNode field] {
-	set formVar [dict get $fieldNode attrs var]
-	lappend form(fields) $formVar
-	set pref field,$formVar
-	set form($pref,type) text-single
-	foreach k {var type label} {
-	    if {[dict exists $fieldNode attrs $k]} {
-		set form($pref,$k) [dict get $fieldNode attrs $k]
-	    }
-	}
-	# If no label supplied, display var name
-	if {![info exists form($pref,label)]} {
-	    set form($pref,label) $form($pref,var)
-	}
-	set form($pref,required) [expr {[xsearch $fieldNode required] ne ""}]
-	if {[xsearch $fieldNode value] ne ""} {
-	    if {$form($pref,type) eq "list-multi" || $form($pref,type) eq "jid-multi" || $form($pref,type) eq "text-multi"} {
-		# Collect all <value> children for multi-value types
-		set vals {}
-		xsearch $fieldNode value -script vnode {
-		    lappend vals [xsearch $vnode -get body]
-		}
-		set form($pref,value) $vals
-	    } else {
-		set form($pref,value) [xsearch $fieldNode value -get body]
-	    }
-	}
-	# Parse <option> children (for list-single and list-multi)
-	set optionNodes [xsearch $fieldNode option]
-	if {[llength $optionNodes] > 0} {
-	    set opts {}
-	    foreach optNode $optionNodes {
-		set optLabel [xsearch $optNode -get @label]
-		set optValue [xsearch $optNode value -get body]
-		if {$optLabel eq ""} {
-		    set optLabel $optValue
-		}
-		lappend opts [list label $optLabel value $optValue]
-	    }
-	    set form($pref,options) $opts
-	}
-	if {[set media [xsearch $fieldNode media -get node]] ne ""} {
-	    set uri [string trim [xsearch $media uri -get body]]
-	    regexp (.*):(.*) $uri -> uriPrefix uriBody
-	    if {$uriPrefix ne "cid"} {
-		error "Unknown uri: $uri"
-	    }
-	    set form($pref,media) $uriBody
-	}
+        set formVar [dict get $fieldNode attrs var]
+        lappend form(fields) $formVar
+        set pref field,$formVar
+        set form($pref,type) text-single
+        foreach k {var type label} {
+            if {[dict exists $fieldNode attrs $k]} {
+                set form($pref,$k) [dict get $fieldNode attrs $k]
+            }
+        }
+        # If no label supplied, display var name
+        if {![info exists form($pref,label)]} {
+            set form($pref,label) $form($pref,var)
+        }
+        set form($pref,required) [expr {[xsearch $fieldNode required] ne ""}]
+        if {[xsearch $fieldNode value] ne ""} {
+            if {$form($pref,type) eq "list-multi" || $form($pref,type) eq "jid-multi" || $form($pref,type) eq "text-multi"} {
+                # Collect all <value> children for multi-value types
+                set vals {}
+                xsearch $fieldNode value -script vnode {
+                    lappend vals [xsearch $vnode -get body]
+                }
+                set form($pref,value) $vals
+            } else {
+                set form($pref,value) [xsearch $fieldNode value -get body]
+            }
+        }
+        # Parse <option> children (for list-single and list-multi)
+        set optionNodes [xsearch $fieldNode option]
+        if {[llength $optionNodes] > 0} {
+            set opts {}
+            foreach optNode $optionNodes {
+                set optLabel [xsearch $optNode -get @label]
+                set optValue [xsearch $optNode value -get body]
+                if {$optLabel eq ""} {
+                    set optLabel $optValue
+                }
+                lappend opts [list label $optLabel value $optValue]
+            }
+            set form($pref,options) $opts
+        }
+        if {[set media [xsearch $fieldNode media -get node]] ne ""} {
+            set uri [string trim [xsearch $media uri -get body]]
+            regexp (.*):(.*) $uri -> uriPrefix uriBody
+            if {$uriPrefix ne "cid"} {
+                error "Unknown uri: $uri"
+            }
+            set form($pref,media) $uriBody
+        }
     }
     if {$formarray eq ""} {
-	array get form
+        array get form
     }
 }
 
@@ -129,25 +129,25 @@ proc ::tacky::forms::tonode {list} {
     array set form $list
 
     j x -ns jabber:x:data -type submit {
-	foreach f $form(fields) {
-	    if {$form(field,$f,type) eq "fixed"} {
-		continue
-	    }
-	    j field \
-		-type $form(field,$f,type) \
-		-var $f {
-		    if {[info exists form(field,$f,value)]} {
-			set ftype $form(field,$f,type)
-			if {$ftype in {list-multi jid-multi text-multi}} {
-			    foreach v $form(field,$f,value) {
-				j value .body $v
-			    }
-			} else {
-			    j value .body $form(field,$f,value)
-			}
-		    }
-		}
-	}
+        foreach f $form(fields) {
+            if {$form(field,$f,type) eq "fixed"} {
+                continue
+            }
+            j field \
+                -type $form(field,$f,type) \
+                -var $f {
+                    if {[info exists form(field,$f,value)]} {
+                        set ftype $form(field,$f,type)
+                        if {$ftype in {list-multi jid-multi text-multi}} {
+                            foreach v $form(field,$f,value) {
+                                j value .body $v
+                            }
+                        } else {
+                            j value .body $form(field,$f,value)
+                        }
+                    }
+                }
+        }
     }
 }
 
@@ -161,12 +161,12 @@ proc ::tacky::forms::restore {oldlist newlist} {
     array set new $newlist
 
     foreach f $old(fields) {
-	if {![info exists new(field,$f,var)]
-	    || [info exists new(field,$f,value)]
-	    || ![info exists old(field,$f,value)]} {
-	    continue
-	}
-	set new(field,$f,value) $old(field,$f,value)
+        if {![info exists new(field,$f,var)]
+            || [info exists new(field,$f,value)]
+            || ![info exists old(field,$f,value)]} {
+            continue
+        }
+        set new(field,$f,value) $old(field,$f,value)
     }
 
     array get new
@@ -180,19 +180,19 @@ snit::type formctrl {
     variable MediaData -array {}
 
     constructor {formList args} {
-	array set FormData $formList
-	foreach var $FormData(fields) {
-	    if {[info exists FormData(field,$var,media)]} {
-		set MediaCids($var) $FormData(field,$var,media)
-	    }
-	}
+        array set FormData $formList
+        foreach var $FormData(fields) {
+            if {[info exists FormData(field,$var,media)]} {
+                set MediaCids($var) $FormData(field,$var,media)
+            }
+        }
     }
 
     method fields {} { return $FormData(fields) }
 
     method instructions {} {
-	if {[info exists FormData(instructions)]} { return $FormData(instructions) }
-	return ""
+        if {[info exists FormData(instructions)]} { return $FormData(instructions) }
+        return ""
     }
 
     method field {var key} { return $FormData(field,$var,$key) }
@@ -200,10 +200,10 @@ snit::type formctrl {
     method hasField {var key} { return [info exists FormData(field,$var,$key)] }
 
     method options {var} {
-	if {[info exists FormData(field,$var,options)]} {
-	    return $FormData(field,$var,options)
-	}
-	return {}
+        if {[info exists FormData(field,$var,options)]} {
+            return $FormData(field,$var,options)
+        }
+        return {}
     }
 
     method setValue {var value} { set FormData(field,$var,value) $value }
@@ -211,24 +211,24 @@ snit::type formctrl {
     method setMedia {var data} { set MediaData($var) $data }
 
     method media {var} {
-	if {[info exists MediaData($var)]} { return $MediaData($var) }
-	return ""
+        if {[info exists MediaData($var)]} { return $MediaData($var) }
+        return ""
     }
 
     method mediaFields {} {
-	set result {}
-	foreach {var cid} [array get MediaCids] {
-	    lappend result $cid $var
-	}
-	return $result
+        set result {}
+        foreach {var cid} [array get MediaCids] {
+            lappend result $cid $var
+        }
+        return $result
     }
 
     method tonode {} {
-	::tacky::forms::tonode [array get FormData]
+        ::tacky::forms::tonode [array get FormData]
     }
 
     method restore {oldForm} {
-	array set FormData [::tacky::forms::restore [$oldForm dump] [array get FormData]]
+        array set FormData [::tacky::forms::restore [$oldForm dump] [array get FormData]]
     }
 
     method dump {} { array get FormData }

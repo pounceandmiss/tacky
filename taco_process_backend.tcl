@@ -28,11 +28,11 @@ source [file join [file dirname [info script]] taco taco.tcl]
 # Read commands from stdin via lenpipe
 lenpipe create _pipe stdin \
     -onmessage {apply {{msg} {
-	taco [lindex $msg 0] [lindex $msg 1] {*}[lrange $msg 2 end]
+        taco [lindex $msg 0] [lindex $msg 1] {*}[lrange $msg 2 end]
     }}} \
     -oneof {apply {{} {
-	taco destroy
-	exit 0
+        taco destroy
+        exit 0
     }}}
 
 taco_type create taco {*}$::argv

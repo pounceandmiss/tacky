@@ -201,7 +201,7 @@ snit::type baseconn {
     }
 
     method CreateReader {} {
-	::jab::cancelRead $socket
+        ::jab::cancelRead $socket
         fconfigure $socket -encoding utf-8 -translation lf
         ::jab::readChannel $socket \
             -command [mymethod OnStanzaIn] \

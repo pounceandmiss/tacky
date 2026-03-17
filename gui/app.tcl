@@ -13,24 +13,24 @@ snit::type app_type {
 
     constructor args {
         $self configurelist $args
-	switch $options(-backend) {
-	    process {
-		tacky_init_process -transient $options(-transient)
-	    }
-	    thread {
-		package require Thread
-		uplevel #0 [list source [file join [file dirname [info script]] taco/xmpprw.tcl]]
-		tacky_init_threaded -transient $options(-transient)
-	    }
-	    default {
-		tacky_init -transient $options(-transient)
-	    }
-	}
-	if {$options(-debug-dir) ne ""} {
-	    file mkdir $options(-debug-dir)
-	    jlog configure -logproc [list jlog_file_writer $options(-debug-dir)] \
-		-defaultlevel debug
-	}
+        switch $options(-backend) {
+            process {
+                tacky_init_process -transient $options(-transient)
+            }
+            thread {
+                package require Thread
+                uplevel #0 [list source [file join [file dirname [info script]] taco/xmpprw.tcl]]
+                tacky_init_threaded -transient $options(-transient)
+            }
+            default {
+                tacky_init -transient $options(-transient)
+            }
+        }
+        if {$options(-debug-dir) ne ""} {
+            file mkdir $options(-debug-dir)
+            jlog configure -logproc [list jlog_file_writer $options(-debug-dir)] \
+                -defaultlevel debug
+        }
         ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }
 

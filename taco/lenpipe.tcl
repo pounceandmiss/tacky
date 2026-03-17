@@ -20,67 +20,67 @@ oo::class create lenpipe {
     variable Expected  ;# character count expected for current payload
 
     constructor {fd args} {
-	set Fd $fd
-	set OnMessage {}
-	set OnEof {}
-	foreach {opt val} $args {
-	    switch $opt {
-		-onmessage { set OnMessage $val }
-		-oneof     { set OnEof $val }
-	    }
-	}
-	set State len
-	set Buf ""
-	set Expected 0
-	chan configure $Fd -translation lf -encoding utf-8 -buffering full -blocking 0
-	chan event $Fd readable [namespace code {my _onReadable}]
+        set Fd $fd
+        set OnMessage {}
+        set OnEof {}
+        foreach {opt val} $args {
+            switch $opt {
+                -onmessage { set OnMessage $val }
+                -oneof     { set OnEof $val }
+            }
+        }
+        set State len
+        set Buf ""
+        set Expected 0
+        chan configure $Fd -translation lf -encoding utf-8 -buffering full -blocking 0
+        chan event $Fd readable [namespace code {my _onReadable}]
     }
 
     destructor {
-	catch {close $Fd}
+        catch {close $Fd}
     }
 
     method send {msg} {
-	puts $Fd [string length $msg]
-	puts -nonewline $Fd $msg
-	flush $Fd
+        puts $Fd [string length $msg]
+        puts -nonewline $Fd $msg
+        flush $Fd
     }
 
     method _onReadable {} {
-	while 1 {
-	    if {$State eq "len"} {
-		if {[gets $Fd line] < 0} {
-		    if {[eof $Fd]} { my _eof }
-		    return
-		}
-		set Expected $line
-		set Buf ""
-		set State data
-	    }
-	    if {$State eq "data"} {
-		set need [expr {$Expected - [string length $Buf]}]
-		if {$need > 0} {
-		    append Buf [read $Fd $need]
-		    if {[string length $Buf] < $Expected} {
-			if {[eof $Fd]} { my _eof }
-			return
-		    }
-		}
-		set msg $Buf
-		set State len
-		set Buf ""
-		set Expected 0
-		if {$OnMessage ne {}} {
-		    {*}$OnMessage $msg
-		}
-	    }
-	}
+        while 1 {
+            if {$State eq "len"} {
+                if {[gets $Fd line] < 0} {
+                    if {[eof $Fd]} { my _eof }
+                    return
+                }
+                set Expected $line
+                set Buf ""
+                set State data
+            }
+            if {$State eq "data"} {
+                set need [expr {$Expected - [string length $Buf]}]
+                if {$need > 0} {
+                    append Buf [read $Fd $need]
+                    if {[string length $Buf] < $Expected} {
+                        if {[eof $Fd]} { my _eof }
+                        return
+                    }
+                }
+                set msg $Buf
+                set State len
+                set Buf ""
+                set Expected 0
+                if {$OnMessage ne {}} {
+                    {*}$OnMessage $msg
+                }
+            }
+        }
     }
 
     method _eof {} {
-	chan event $Fd readable {}
-	if {$OnEof ne {}} {
-	    {*}$OnEof
-	}
+        chan event $Fd readable {}
+        if {$OnEof ne {}} {
+            {*}$OnEof
+        }
     }
 }

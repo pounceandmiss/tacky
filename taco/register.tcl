@@ -53,70 +53,70 @@ snit::type taco_register {
     variable Sessions -array {}
 
     destructor {
-	foreach {tok session} [array get Sessions] {
-	    catch {$session destroy}
-	}
+        foreach {tok session} [array get Sessions] {
+            catch {$session destroy}
+        }
     }
 
     method connect {args} {
-	array set opts {-port 5222 -token ""}
-	array set opts $args
+        array set opts {-port 5222 -token ""}
+        array set opts $args
 
-	if {[info exists Sessions($opts(-token))]} {
-	    catch {$Sessions($opts(-token)) destroy}
-	}
+        if {[info exists Sessions($opts(-token))]} {
+            catch {$Sessions($opts(-token)) destroy}
+        }
 
-	set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
-	    -host $opts(-host) -port $opts(-port) \
-	    -callback [mymethod OnSessionEvent $opts(-token)]]
-	$Sessions($opts(-token)) connect
+        set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
+            -host $opts(-host) -port $opts(-port) \
+            -callback [mymethod OnSessionEvent $opts(-token)]]
+        $Sessions($opts(-token)) connect
     }
 
     tackymethod form {args} {
-	array set opts {-token ""}
-	array set opts $args
-	$self RequireSession $opts(-token)
-	$Sessions($opts(-token)) form
+        array set opts {-token ""}
+        array set opts $args
+        $self RequireSession $opts(-token)
+        $Sessions($opts(-token)) form
     }
 
     tackymethod media {args} {
-	array set opts {-token ""}
-	array set opts $args
-	$self RequireSession $opts(-token)
-	$Sessions($opts(-token)) media -var $opts(-var)
+        array set opts {-token ""}
+        array set opts $args
+        $self RequireSession $opts(-token)
+        $Sessions($opts(-token)) media -var $opts(-var)
     }
 
     method submit {args} {
-	array set opts {-token ""}
-	array set opts $args
-	$self RequireSession $opts(-token)
-	$Sessions($opts(-token)) submit -values $opts(-values)
+        array set opts {-token ""}
+        array set opts $args
+        $self RequireSession $opts(-token)
+        $Sessions($opts(-token)) submit -values $opts(-values)
     }
 
     method cancel {args} {
-	array set opts {-token ""}
-	array set opts $args
-	if {[info exists Sessions($opts(-token))]} {
-	    $Sessions($opts(-token)) destroy
-	    unset Sessions($opts(-token))
-	}
+        array set opts {-token ""}
+        array set opts $args
+        if {[info exists Sessions($opts(-token))]} {
+            $Sessions($opts(-token)) destroy
+            unset Sessions($opts(-token))
+        }
     }
 
     method RequireSession {token} {
-	if {![info exists Sessions($token)]} {
-	    error "No registration session for token \"$token\""
-	}
+        if {![info exists Sessions($token)]} {
+            error "No registration session for token \"$token\""
+        }
     }
 
     method session {args} {
-	array set opts {-token ""}
-	array set opts $args
-	$self RequireSession $opts(-token)
-	return $Sessions($opts(-token))
+        array set opts {-token ""}
+        array set opts $args
+        $self RequireSession $opts(-token)
+        return $Sessions($opts(-token))
     }
 
     method OnSessionEvent {token event args} {
-	$options(-taco) emit register $event -token $token {*}$args
+        $options(-taco) emit register $event -token $token {*}$args
     }
 }
 
@@ -138,234 +138,234 @@ snit::type taco_register_session {
     variable submitting 0
 
     constructor {args} {
-	$self configurelist $args
+        $self configurelist $args
     }
 
     destructor {
-	if {[info commands $self.conn] ne ""} {
-	    $conn close
-	    $conn destroy
-	}
-	if {$currentForm ne "" && [info commands $currentForm] ne ""} {
-	    $currentForm destroy
-	}
+        if {[info commands $self.conn] ne ""} {
+            $conn close
+            $conn destroy
+        }
+        if {$currentForm ne "" && [info commands $currentForm] ne ""} {
+            $currentForm destroy
+        }
     }
 
     method connect {} {
-	set headerSent 0
-	install conn using bareconn $self.conn \
-	    -onready [mymethod OnReady] \
-	    -header-command [mymethod OnHeader] \
-	    -onstanza [mymethod OnStanza] \
-	    -ondisconnect [mymethod OnError]
-	$conn connect $options(-host) $options(-port)
+        set headerSent 0
+        install conn using bareconn $self.conn \
+            -onready [mymethod OnReady] \
+            -header-command [mymethod OnHeader] \
+            -onstanza [mymethod OnStanza] \
+            -ondisconnect [mymethod OnError]
+        $conn connect $options(-host) $options(-port)
     }
 
     method form {} {
-	if {$currentForm eq ""} {
-	    error "No registration form available"
-	}
-	$currentForm dump
+        if {$currentForm eq ""} {
+            error "No registration form available"
+        }
+        $currentForm dump
     }
 
     method media {args} {
-	if {$currentForm eq ""} {
-	    error "No registration form available"
-	}
-	set var [dict get $args -var]
-	$currentForm media $var
+        if {$currentForm eq ""} {
+            error "No registration form available"
+        }
+        set var [dict get $args -var]
+        $currentForm media $var
     }
 
     method submit {args} {
-	set values [dict get $args -values]
-	if {$currentForm eq ""} {
-	    error "No registration form available"
-	}
-	foreach {var val} $values {
-	    $currentForm setValue $var $val
-	}
-	set submitting 1
-	set id [incr idCounter]
+        set values [dict get $args -values]
+        if {$currentForm eq ""} {
+            error "No registration form available"
+        }
+        foreach {var val} $values {
+            $currentForm setValue $var $val
+        }
+        set submitting 1
+        set id [incr idCounter]
 
-	# Check whether the original form was XEP-0004 (has FORM_TYPE)
-	array set form [$currentForm dump]
-	set useDataForm 0
-	if {[info exists form(fields)]} {
-	    foreach f $form(fields) {
-		if {$f eq "FORM_TYPE"} {
-		    set useDataForm 1
-		    break
-		}
-	    }
-	}
+        # Check whether the original form was XEP-0004 (has FORM_TYPE)
+        array set form [$currentForm dump]
+        set useDataForm 0
+        if {[info exists form(fields)]} {
+            foreach f $form(fields) {
+                if {$f eq "FORM_TYPE"} {
+                    set useDataForm 1
+                    break
+                }
+            }
+        }
 
-	if {$useDataForm} {
-	    set formNode [$currentForm tonode]
-	    $conn writeStanza [j iq -type set -id reg-$id {
-		j query -ns jabber:iq:register {
-		    j /as-is $formNode
-		}
-	    }]
-	} else {
-	    # Legacy submission — emit plain field elements
-	    $conn writeStanza [j iq -type set -id reg-$id {
-		j query -ns jabber:iq:register {
-		    foreach f $form(fields) {
-			if {[info exists form(field,$f,value)]} {
-			    j $f .body $form(field,$f,value)
-			} else {
-			    j $f
-			}
-		    }
-		}
-	    }]
-	}
+        if {$useDataForm} {
+            set formNode [$currentForm tonode]
+            $conn writeStanza [j iq -type set -id reg-$id {
+                j query -ns jabber:iq:register {
+                    j /as-is $formNode
+                }
+            }]
+        } else {
+            # Legacy submission — emit plain field elements
+            $conn writeStanza [j iq -type set -id reg-$id {
+                j query -ns jabber:iq:register {
+                    foreach f $form(fields) {
+                        if {[info exists form(field,$f,value)]} {
+                            j $f .body $form(field,$f,value)
+                        } else {
+                            j $f
+                        }
+                    }
+                }
+            }]
+        }
     }
 
     # --- Internal handlers ---
 
     method OnReady {} {
-	$conn write [::jab::header "" to $options(-host)]
-	set headerSent 1
+        $conn write [::jab::header "" to $options(-host)]
+        set headerSent 1
     }
 
     method OnHeader {header} {
-	# Stream header received; features stanza follows
+        # Stream header received; features stanza follows
     }
 
     method OnStanza {stanza} {
-	set tag [dict get $stanza tag]
-	switch -- $tag {
-	    features {
-		$self HandleFeatures $stanza
-	    }
-	    default {
-		$self HandleIqResponse $stanza
-	    }
-	}
+        set tag [dict get $stanza tag]
+        switch -- $tag {
+            features {
+                $self HandleFeatures $stanza
+            }
+            default {
+                $self HandleIqResponse $stanza
+            }
+        }
     }
 
     method HandleFeatures {stanza} {
-	set regFeature [xsearch $stanza register -get node]
-	if {$regFeature eq ""} {
-	    $self FireEvent <Error> -message "Server does not support in-band registration"
-	    return
-	}
-	set id [incr idCounter]
-	$conn writeStanza [j iq -type get -id reg-$id {
-	    j query -ns jabber:iq:register
-	}]
+        set regFeature [xsearch $stanza register -get node]
+        if {$regFeature eq ""} {
+            $self FireEvent <Error> -message "Server does not support in-band registration"
+            return
+        }
+        set id [incr idCounter]
+        $conn writeStanza [j iq -type get -id reg-$id {
+            j query -ns jabber:iq:register
+        }]
     }
 
     method HandleIqResponse {stanza} {
-	if {[dict get $stanza tag] ne "iq"} return
-	set type [xsearch $stanza -get @type]
+        if {[dict get $stanza tag] ne "iq"} return
+        set type [xsearch $stanza -get @type]
 
-	switch -- $type {
-	    result {
-		if {$submitting} {
-		    set submitting 0
-		    $self FireEvent <Success>
-		    return
-		}
-		set query [xsearch $stanza query -get node]
-		if {$query eq ""} {
-		    return
-		}
-		$self HandleRegForm $query
-	    }
-	    error {
-		set errText [xsearch $stanza error text -get body]
-		if {$errText eq ""} {
-		    set errChild [xsearch $stanza error 0 -get node]
-		    if {$errChild ne ""} {
-			set errText [dict get $errChild tag]
-		    } else {
-			set errText "Registration failed"
-		    }
-		}
-		$self FireEvent <Error> -message $errText
-	    }
-	}
+        switch -- $type {
+            result {
+                if {$submitting} {
+                    set submitting 0
+                    $self FireEvent <Success>
+                    return
+                }
+                set query [xsearch $stanza query -get node]
+                if {$query eq ""} {
+                    return
+                }
+                $self HandleRegForm $query
+            }
+            error {
+                set errText [xsearch $stanza error text -get body]
+                if {$errText eq ""} {
+                    set errChild [xsearch $stanza error 0 -get node]
+                    if {$errChild ne ""} {
+                        set errText [dict get $errChild tag]
+                    } else {
+                        set errText "Registration failed"
+                    }
+                }
+                $self FireEvent <Error> -message $errText
+            }
+        }
     }
 
     method HandleRegForm {queryNode} {
-	# Prefer XEP-0004 data form if present
-	set xForm [xsearch $queryNode x -get node]
-	if {$xForm ne ""} {
-	    set formList [::tacky::forms::tolist $xForm]
-	} else {
-	    # Legacy fields — synthesise a forms-compatible list
-	    set formList [::tacky::forms::tolist [$self LegacyToForm $queryNode]]
-	}
+        # Prefer XEP-0004 data form if present
+        set xForm [xsearch $queryNode x -get node]
+        if {$xForm ne ""} {
+            set formList [::tacky::forms::tolist $xForm]
+        } else {
+            # Legacy fields — synthesise a forms-compatible list
+            set formList [::tacky::forms::tolist [$self LegacyToForm $queryNode]]
+        }
 
-	set oldForm $currentForm
-	set currentForm [formctrl $self.form-[clock microseconds] $formList]
-	if {$oldForm ne ""} {
-	    $currentForm restore $oldForm
-	    catch {$oldForm destroy}
-	}
+        set oldForm $currentForm
+        set currentForm [formctrl $self.form-[clock microseconds] $formList]
+        if {$oldForm ne ""} {
+            $currentForm restore $oldForm
+            catch {$oldForm destroy}
+        }
 
-	# Extract inline BOB <data> elements and push media data.
-	# Collect media vars first, then emit <Form> before <MediaReady>
-	# so the GUI creates the form widget before requesting media data
-	# via async callbacks.
-	set mediaFields [$currentForm mediaFields]
-	set readyVars {}
-	foreach dataNode [xsearch $queryNode data -ns urn:xmpp:bob] {
-	    set cid [xsearch $dataNode -get @cid]
-	    if {[dict exists $mediaFields $cid]} {
-		set var [dict get $mediaFields $cid]
-		set base64data [string trim [dict get $dataNode body]]
-		$currentForm setMedia $var $base64data
-		lappend readyVars $var
-	    }
-	}
+        # Extract inline BOB <data> elements and push media data.
+        # Collect media vars first, then emit <Form> before <MediaReady>
+        # so the GUI creates the form widget before requesting media data
+        # via async callbacks.
+        set mediaFields [$currentForm mediaFields]
+        set readyVars {}
+        foreach dataNode [xsearch $queryNode data -ns urn:xmpp:bob] {
+            set cid [xsearch $dataNode -get @cid]
+            if {[dict exists $mediaFields $cid]} {
+                set var [dict get $mediaFields $cid]
+                set base64data [string trim [dict get $dataNode body]]
+                $currentForm setMedia $var $base64data
+                lappend readyVars $var
+            }
+        }
 
-	$self FireEvent <Form>
+        $self FireEvent <Form>
 
-	foreach var $readyVars {
-	    $self FireEvent <MediaReady> -var $var
-	}
+        foreach var $readyVars {
+            $self FireEvent <MediaReady> -var $var
+        }
     }
 
     method LegacyToForm {queryNode} {
-	set fields {}
-	set instructions ""
-	if {[xsearch $queryNode instructions -get node] ne ""} {
-	    set instructions [xsearch $queryNode instructions -get body]
-	}
+        set fields {}
+        set instructions ""
+        if {[xsearch $queryNode instructions -get node] ne ""} {
+            set instructions [xsearch $queryNode instructions -get body]
+        }
 
-	foreach child [dict get $queryNode children] {
-	    set ctag [dict get $child tag]
-	    if {$ctag in {instructions x}} continue
-	    lappend fields $child
-	}
+        foreach child [dict get $queryNode children] {
+            set ctag [dict get $child tag]
+            if {$ctag in {instructions x}} continue
+            lappend fields $child
+        }
 
-	j x -ns jabber:x:data -type form {
-	    if {$instructions ne ""} {
-		j instructions .body $instructions
-	    }
-	    foreach child $fields {
-		set ctag [dict get $child tag]
-		set ftype [expr {$ctag eq "password" ? "text-private" : "text-single"}]
-		set val [dict get $child body]
-		j field -var $ctag -type $ftype -label $ctag {
-		    if {$val ne ""} {
-			j value .body $val
-		    }
-		}
-	    }
-	}
+        j x -ns jabber:x:data -type form {
+            if {$instructions ne ""} {
+                j instructions .body $instructions
+            }
+            foreach child $fields {
+                set ctag [dict get $child tag]
+                set ftype [expr {$ctag eq "password" ? "text-private" : "text-single"}]
+                set val [dict get $child body]
+                j field -var $ctag -type $ftype -label $ctag {
+                    if {$val ne ""} {
+                        j value .body $val
+                    }
+                }
+            }
+        }
     }
 
     method OnError {msg} {
-	$self FireEvent <Error> -message $msg
+        $self FireEvent <Error> -message $msg
     }
 
     method FireEvent {event args} {
-	if {$options(-callback) ne ""} {
-	    {*}$options(-callback) $event {*}$args
-	}
+        if {$options(-callback) ne ""} {
+            {*}$options(-callback) $event {*}$args
+        }
     }
 }

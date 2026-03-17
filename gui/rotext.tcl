@@ -11,8 +11,8 @@
     method delete {args} {}
 
     method yview {args} {
-	event generate $win <<Yview>> -data $args
-	$hull yview {*}$args
+        event generate $win <<Yview>> -data $args
+        $hull yview {*}$args
     }
     
     # Enable ins and del as synonyms, so the program can insert and
@@ -33,25 +33,25 @@ snit::widgetadaptor chattext {
     
     constructor {args} {
         installhull using text -insertwidth 0 -width 50 -wrap word
-	set compensating no
+        set compensating no
         # Apply an options passed at creation time.
         $self configurelist $args
     }
     method OnMap {} {
-	
+        
     }
         
     method getPixelsAbove {} {
-	set pixelsAbove [$text count -ypixels 0.0 @0,0]
+        set pixelsAbove [$text count -ypixels 0.0 @0,0]
     }
     
     method getPixelsBelow {} {
-	set pixelsBelow [$text count -ypixels @0,[winfo height $text] end-1line]
+        set pixelsBelow [$text count -ypixels @0,[winfo height $text] end-1line]
     }
     method {viewport beyond} {} {
-	set pixelsAbove [$hull count -ypixels 0.0 @0,0]
-	set pixelsBelow [$hull count -ypixels @0,[winfo height $self] end-1line]
-	list $pixelsAbove $pixelsBelow
+        set pixelsAbove [$hull count -ypixels 0.0 @0,0]
+        set pixelsBelow [$hull count -ypixels @0,[winfo height $self] end-1line]
+        list $pixelsAbove $pixelsBelow
     }
     
     # Disable the insert and delete methods, to make this readonly.
@@ -59,13 +59,13 @@ snit::widgetadaptor chattext {
     method delete {args} {}
 
     method yview {args} {
-	event generate $win <<Yview>> -data $args
-	{*}$options(-on-yview) $args
-	$hull yview {*}$args
+        event generate $win <<Yview>> -data $args
+        {*}$options(-on-yview) $args
+        $hull yview {*}$args
     }
 
     method compensate {script} {
-	uplevel [list myinsertAt0 $win $script]
+        uplevel [list myinsertAt0 $win $script]
     }
 
     # Enable ins and del as synonyms, so the program can insert and
@@ -98,12 +98,12 @@ proc insertAndCompensate {text script} {
     uplevel $script
     $text sync
     if {[$text bbox msgInsert] ne ""} {
-	# puts l
-	set pixels [$text count -ypixels beforeMessages msgInsert]
-	# For some reason if we only insert 1 line (15 pixels),
-	# the text scrolls up nonetheless as if ignoring it
-	incr pixels
-	$text yview scroll $pixels pixels
+        # puts l
+        set pixels [$text count -ypixels beforeMessages msgInsert]
+        # For some reason if we only insert 1 line (15 pixels),
+        # the text scrolls up nonetheless as if ignoring it
+        incr pixels
+        $text yview scroll $pixels pixels
     }    
 }
 
@@ -115,13 +115,13 @@ proc myinsertAt0 {t script} {
     uplevel $script
     $t sync
     if {[$t bbox tmp] == ""} {
-	return
+        return
     }
     # puts sern
     set pixels [$t count -ypixels tmp msgins]
     set extra [expr {[$t cget -borderwidth] +
-		     [$t cget -pady] +
-		     [$t cget -highlightthickness] }]
+                     [$t cget -pady] +
+                     [$t cget -highlightthickness] }]
 
     $t yview scroll [expr {$pixels-$y+$extra}] pixels
 

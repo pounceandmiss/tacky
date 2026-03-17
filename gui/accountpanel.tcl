@@ -24,24 +24,24 @@ snit::widget accountpanel {
     option -menubar -default "" -readonly yes
 
     constructor args {
-	$self configurelist $args
+        $self configurelist $args
 
-	if {$options(-account) eq ""} {
-	    error "accountpanel requires -account"
-	}
+        if {$options(-account) eq ""} {
+            error "accountpanel requires -account"
+        }
 
-	profilebar $win.profile \
-	    -acc $options(-account) \
-	    -tacky $options(-tacky) \
-	    -command [list profilesettings open $options(-account)]
-	pack $win.profile -fill x
+        profilebar $win.profile \
+            -acc $options(-account) \
+            -tacky $options(-tacky) \
+            -command [list profilesettings open $options(-account)]
+        pack $win.profile -fill x
 
-	chatlistview $win.clv \
-	    -acc $options(-account) \
-	    -tacky $options(-tacky) \
-	    -open-chat-command $options(-open-chat-command) \
-	    -open-bookmark-command $options(-open-bookmark-command) \
-	    -menubar $options(-menubar)
-	pack $win.clv -fill both -expand yes
+        chatlistview $win.clv \
+            -acc $options(-account) \
+            -tacky $options(-tacky) \
+            -open-chat-command $options(-open-chat-command) \
+            -open-bookmark-command $options(-open-bookmark-command) \
+            -menubar $options(-menubar)
+        pack $win.clv -fill both -expand yes
     }
 }

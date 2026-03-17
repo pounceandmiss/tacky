@@ -32,98 +32,98 @@ snit::type taco_presence {
     option -client -readonly yes
 
     constructor args {
-	$self configurelist $args
-	set client $options(-client)
-	$client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $self configurelist $args
+        set client $options(-client)
+        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
     destructor {
-	catch {$client bus unsubscribe $self}
+        catch {$client bus unsubscribe $self}
     }
 
     method OnDisconnect {args} {
-	array unset Presence *
-	$client emit presence <Changed> -action clear
+        array unset Presence *
+        $client emit presence <Changed> -action clear
     }
 
     # Returns best-resource presence: {show $s status $t priority $p}
     # If no resources known, returns {show offline status "" priority 0}
     tackymethod get {args} {
-	set bareJid [dict get $args -jid]
-	if {![info exists Presence($bareJid)]} {
-	    return {show offline status "" priority 0}
-	}
-	set resDict $Presence($bareJid)
-	set bestRes ""
-	set bestPri -129
-	dict for {res info} $resDict {
-	    set pri [dict get $info priority]
-	    if {$pri > $bestPri} {
-		set bestPri $pri
-		set bestRes $res
-	    }
-	}
-	if {$bestRes eq ""} {
-	    return {show offline status "" priority 0}
-	}
-	return [dict get $resDict $bestRes]
+        set bareJid [dict get $args -jid]
+        if {![info exists Presence($bareJid)]} {
+            return {show offline status "" priority 0}
+        }
+        set resDict $Presence($bareJid)
+        set bestRes ""
+        set bestPri -129
+        dict for {res info} $resDict {
+            set pri [dict get $info priority]
+            if {$pri > $bestPri} {
+                set bestPri $pri
+                set bestRes $res
+            }
+        }
+        if {$bestRes eq ""} {
+            return {show offline status "" priority 0}
+        }
+        return [dict get $resDict $bestRes]
     }
 
     # Returns full resource dict, or {}
     tackymethod resources {args} {
-	set bareJid [dict get $args -jid]
-	if {![info exists Presence($bareJid)]} {
-	    return {}
-	}
-	return $Presence($bareJid)
+        set bareJid [dict get $args -jid]
+        if {![info exists Presence($bareJid)]} {
+            return {}
+        }
+        return $Presence($bareJid)
     }
 
     # Returns 1 if any resource is available, 0 otherwise
     tackymethod isOnline {args} {
-	set bareJid [dict get $args -jid]
-	info exists Presence($bareJid)
+        set bareJid [dict get $args -jid]
+        info exists Presence($bareJid)
     }
 
     method OnPresence {stanza} {
-	set from [xsearch $stanza -get @from]
-	if {$from eq ""} return
+        set from [xsearch $stanza -get @from]
+        if {$from eq ""} return
 
-	set type_ [xsearch $stanza -get @type]
+        set type_ [xsearch $stanza -get @type]
 
-	set bare [jid bare $from]
-	set resource [jid resource $from]
+        set bare [jid bare $from]
+        set resource [jid resource $from]
 
-	if {$type_ eq "unavailable"} {
-	    if {[info exists Presence($bare)]} {
-		if {$resource ne ""} {
-		    set d $Presence($bare)
-		    dict unset d $resource
-		    if {[dict size $d] == 0} {
-			unset Presence($bare)
-		    } else {
-			set Presence($bare) $d
-		    }
-		} else {
-		    unset Presence($bare)
-		}
-	    }
-	} else {
-	    # Available presence
-	    set show [xsearch $stanza show -get body]
-	    if {$show eq ""} { set show "available" }
-	    set status [xsearch $stanza status -get body]
-	    set priority [xsearch $stanza priority -get body]
-	    if {$priority eq ""} { set priority 0 }
+        if {$type_ eq "unavailable"} {
+            if {[info exists Presence($bare)]} {
+                if {$resource ne ""} {
+                    set d $Presence($bare)
+                    dict unset d $resource
+                    if {[dict size $d] == 0} {
+                        unset Presence($bare)
+                    } else {
+                        set Presence($bare) $d
+                    }
+                } else {
+                    unset Presence($bare)
+                }
+            }
+        } else {
+            # Available presence
+            set show [xsearch $stanza show -get body]
+            if {$show eq ""} { set show "available" }
+            set status [xsearch $stanza status -get body]
+            set priority [xsearch $stanza priority -get body]
+            if {$priority eq ""} { set priority 0 }
 
-	    set info [dict create show $show status $status priority $priority]
+            set info [dict create show $show status $status priority $priority]
 
-	    if {![info exists Presence($bare)]} {
-		set Presence($bare) [dict create $resource $info]
-	    } else {
-		dict set Presence($bare) $resource $info
-	    }
-	}
+            if {![info exists Presence($bare)]} {
+                set Presence($bare) [dict create $resource $info]
+            } else {
+                dict set Presence($bare) $resource $info
+            }
+        }
 
-	$client emit presence <Changed> -jid $bare
+        $client emit presence <Changed> -jid $bare
     }
 }

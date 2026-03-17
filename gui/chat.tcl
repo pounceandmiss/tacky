@@ -137,233 +137,233 @@ snit::widgetadaptor chatview {
     variable IsMuc
 
     constructor args {
-	installhull using chatarea -thirst-command [mymethod OnThirst] \
-	    -avatar-release-command [mymethod OnAvatarRelease]
-	$self configurelist $args
-	set WasAtEnd 1
-	set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
-	set TrackedAvatars [list]
-	set LoadToken [dict create old 0 new 0]
-	::tacky listen -tag $win message <Received> \
-	    -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
-	::tacky listen -tag $win message <Sent> \
-	    -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
-	::tacky listen -tag $win message <Confirmed> \
-	    -acc $options(-acc) -jid $options(-jid) [mymethod OnConfirmed]
-	::tacky listen -tag $win message <CatchupDone> \
-	    -acc $options(-acc) [mymethod OnCatchupDone]
-	bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
-	if {$options(-menubar) ne ""} {
-	    $self InstallMenus
-	}
-	bind $win.text <Configure> [mymethod OnFirstConfigure]
+        installhull using chatarea -thirst-command [mymethod OnThirst] \
+            -avatar-release-command [mymethod OnAvatarRelease]
+        $self configurelist $args
+        set WasAtEnd 1
+        set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
+        set TrackedAvatars [list]
+        set LoadToken [dict create old 0 new 0]
+        ::tacky listen -tag $win message <Received> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
+        ::tacky listen -tag $win message <Sent> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
+        ::tacky listen -tag $win message <Confirmed> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnConfirmed]
+        ::tacky listen -tag $win message <CatchupDone> \
+            -acc $options(-acc) [mymethod OnCatchupDone]
+        bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
+        if {$options(-menubar) ne ""} {
+            $self InstallMenus
+        }
+        bind $win.text <Configure> [mymethod OnFirstConfigure]
     }
 
     method OnFirstConfigure {} {
-	# Calling InitialLoad directly glitched out on some chats
-	# (actually only one -#tcl%irc.libera.chat@irc.chinwag.im).
-	# PixelsAbove would get a weird value of ~58000, I figure
-	# because the widget didn't have real geometry yet, and
-	# cleanup would kick in erasing everything. No idea why it
-	# only happened with one chat.  bind $win.text <Configure> {}
-	$self InitialLoad
+        # Calling InitialLoad directly glitched out on some chats
+        # (actually only one -#tcl%irc.libera.chat@irc.chinwag.im).
+        # PixelsAbove would get a weird value of ~58000, I figure
+        # because the widget didn't have real geometry yet, and
+        # cleanup would kick in erasing everything. No idea why it
+        # only happened with one chat.  bind $win.text <Configure> {}
+        $self InitialLoad
     }
 
     method InitialLoad {} {
-	if {[dict get $LoadToken new]} return
-	dict set LoadToken new 1
-	::tacky message history -acc $options(-acc) \
-	    -chat $options(-jid) -limit 50 \
-	    -tag $win/new -command [mymethod OnInitialLoadDone]
+        if {[dict get $LoadToken new]} return
+        dict set LoadToken new 1
+        ::tacky message history -acc $options(-acc) \
+            -chat $options(-jid) -limit 50 \
+            -tag $win/new -command [mymethod OnInitialLoadDone]
     }
 
     method OnInitialLoadDone {messages} {
-	dict set LoadToken new 0
-	$self ProcessBatch $messages
-	$hull see end
+        dict set LoadToken new 0
+        $self ProcessBatch $messages
+        $hull see end
     }
 
     destructor {
-	foreach tag [list $win $win/goto $win/old $win/new] {
-	    catch {::tacky unlisten $tag}
-	    catch {::tacky message cancel -acc $options(-acc) -tag $tag}
-	}
-	catch {$self RemoveMenus}
-	catch {$self UntrackAllAvatars}
+        foreach tag [list $win $win/goto $win/old $win/new] {
+            catch {::tacky unlisten $tag}
+            catch {::tacky message cancel -acc $options(-acc) -tag $tag}
+        }
+        catch {$self RemoveMenus}
+        catch {$self UntrackAllAvatars}
     }
 
     method goto {target args} {
-	$self HideLoading
-	set defaults [dict create -source local]
-	set opts [dict merge $defaults $args]
-	set source [dict get $opts -source]
+        $self HideLoading
+        set defaults [dict create -source local]
+        set opts [dict merge $defaults $args]
+        set source [dict get $opts -source]
 
-	foreach tag [list $win/goto $win/old $win/new] {
-	    ::tacky unlisten $tag
-	    ::tacky message cancel -acc $options(-acc) -tag $tag
-	}
+        foreach tag [list $win/goto $win/old $win/new] {
+            ::tacky unlisten $tag
+            ::tacky message cancel -acc $options(-acc) -tag $tag
+        }
 
-	if {$target eq "end"} {
-	    # Reset to "bottom of conversation" — same as initial open
-	    $hull clear
-	    set LoadToken [dict create old 0 new 0]
-	    $self InitialLoad
-	    return
-	}
+        if {$target eq "end"} {
+            # Reset to "bottom of conversation" — same as initial open
+            $hull clear
+            set LoadToken [dict create old 0 new 0]
+            $self InitialLoad
+            return
+        }
 
-	if {$source eq "remote"} {
-	    $self ShowLoading
-	}
-	::tacky message goto -acc $options(-acc) \
-	    -chat $options(-jid) -date $target -source $source \
-	    -limit 50 -tag $win/goto \
-	    -command [mymethod OnGotoDone]
+        if {$source eq "remote"} {
+            $self ShowLoading
+        }
+        ::tacky message goto -acc $options(-acc) \
+            -chat $options(-jid) -date $target -source $source \
+            -limit 50 -tag $win/goto \
+            -command [mymethod OnGotoDone]
     }
 
     method OnGotoDone {result} {
-	$self HideLoading
-	set messages [dict get $result messages]
-	set anchor [dict get $result anchor]
+        $self HideLoading
+        set messages [dict get $result messages]
+        set anchor [dict get $result anchor]
 
-	if {[llength $messages] == 0} return
+        if {[llength $messages] == 0} return
 
-	# If anchor is already visible, just scroll+highlight
-	if {$anchor in [$hull messages ids]} {
-	    $hull see message $anchor
-	    return
-	}
+        # If anchor is already visible, just scroll+highlight
+        if {$anchor in [$hull messages ids]} {
+            $hull see message $anchor
+            return
+        }
 
-	# Clear and reload around the anchor
-	$hull clear
-	set LoadToken [dict create old 0 new 0]
-	$self ProcessBatch $messages
-	if {$anchor ne "" && $anchor in [$hull messages ids]} {
-	    $hull see message $anchor
-	}
+        # Clear and reload around the anchor
+        $hull clear
+        set LoadToken [dict create old 0 new 0]
+        $self ProcessBatch $messages
+        if {$anchor ne "" && $anchor in [$hull messages ids]} {
+            $hull see message $anchor
+        }
     }
 
     method ShowLoading {} {
-	set f $win.loading
-	if {[winfo exists $f]} return
-	ttk::frame $f
-	ttk::label $f.lbl -text "Loading\u2026"
-	ttk::button $f.cancel -text "Cancel" -style Toolbutton \
-	    -command [mymethod CancelGoto]
-	pack $f.lbl $f.cancel -side left -padx 4
-	place $f -in $win.text -relx 0.5 -y 8 -anchor n
+        set f $win.loading
+        if {[winfo exists $f]} return
+        ttk::frame $f
+        ttk::label $f.lbl -text "Loading\u2026"
+        ttk::button $f.cancel -text "Cancel" -style Toolbutton \
+            -command [mymethod CancelGoto]
+        pack $f.lbl $f.cancel -side left -padx 4
+        place $f -in $win.text -relx 0.5 -y 8 -anchor n
     }
 
     method HideLoading {} {
-	if {[winfo exists $win.loading]} {
-	    destroy $win.loading
-	}
+        if {[winfo exists $win.loading]} {
+            destroy $win.loading
+        }
     }
 
     method CancelGoto {} {
-	::tacky unlisten $win/goto
-	::tacky message cancel -acc $options(-acc) -tag $win/goto
-	$self HideLoading
+        ::tacky unlisten $win/goto
+        ::tacky message cancel -acc $options(-acc) -tag $win/goto
+        $self HideLoading
     }
 
     method OnCatchupDone {ev} {
-	if {$IsMuc} return
-	$self goto end
+        if {$IsMuc} return
+        $self goto end
     }
 
     method OnThirst {directions thirsty oldest newest} {
-	if {$thirsty && $oldest eq "" && $newest eq ""} return
-	foreach dir $directions {
-	    if {$thirsty} {
-		if {[dict get $LoadToken $dir]} continue
-		dict set LoadToken $dir 1
-		if {$dir eq "old"} {
-		    ::tacky message history -acc $options(-acc) \
-			-chat $options(-jid) \
-			-before $oldest -limit 50 \
-			-tag $win/$dir -command [mymethod OnLoadDone $dir]
-		} else {
-		    ::tacky message history -acc $options(-acc) \
-			-chat $options(-jid) \
-			-after $newest -limit 50 \
-			-tag $win/$dir -command [mymethod OnLoadDone $dir]
-		}
-	    } else {
-		dict set LoadToken $dir 0
-		catch {::tacky unlisten $win/$dir}
-		::tacky message cancel -acc $options(-acc) -tag $win/$dir
-	    }
-	}
+        if {$thirsty && $oldest eq "" && $newest eq ""} return
+        foreach dir $directions {
+            if {$thirsty} {
+                if {[dict get $LoadToken $dir]} continue
+                dict set LoadToken $dir 1
+                if {$dir eq "old"} {
+                    ::tacky message history -acc $options(-acc) \
+                        -chat $options(-jid) \
+                        -before $oldest -limit 50 \
+                        -tag $win/$dir -command [mymethod OnLoadDone $dir]
+                } else {
+                    ::tacky message history -acc $options(-acc) \
+                        -chat $options(-jid) \
+                        -after $newest -limit 50 \
+                        -tag $win/$dir -command [mymethod OnLoadDone $dir]
+                }
+            } else {
+                dict set LoadToken $dir 0
+                catch {::tacky unlisten $win/$dir}
+                ::tacky message cancel -acc $options(-acc) -tag $win/$dir
+            }
+        }
     }
 
     method OnLoadDone {direction messages} {
-	dict set LoadToken $direction 0
-	if {$direction eq "old"} {
-	    set messages [lreverse $messages]
-	}
-	if {$direction eq "new"} {
-	    set WasAtEnd [$hull atEnd]
-	}
-	$self ProcessBatch $messages
-	if {$direction eq "new" && $WasAtEnd} {
-	    $hull see end
-	}
+        dict set LoadToken $direction 0
+        if {$direction eq "old"} {
+            set messages [lreverse $messages]
+        }
+        if {$direction eq "new"} {
+            set WasAtEnd [$hull atEnd]
+        }
+        $self ProcessBatch $messages
+        if {$direction eq "new" && $WasAtEnd} {
+            $hull see end
+        }
     }
 
     method OnLiveMessage {ev} {
-	set WasAtEnd [$hull atEnd]
-	$self ProcessBatch [list [dict get $ev -message]]
-	if {$WasAtEnd} { $hull see end }
+        set WasAtEnd [$hull atEnd]
+        $self ProcessBatch [list [dict get $ev -message]]
+        if {$WasAtEnd} { $hull see end }
     }
 
     method OnConfirmed {ev} {
-	set ts [dict get $ev -timestamp]
-	$hull receipt update $ts delivered
+        set ts [dict get $ev -timestamp]
+        $hull receipt update $ts delivered
     }
 
     method EnrichMessage {storeDict} {
-	set fromJid [dict get $storeDict from_jid]
-	set res [jid resource $fromJid]
-	if {$res eq ""} {
-	    set res [jid bare $fromJid]
-	}
-	if {$IsMuc} {
-	    set avatarJid $fromJid
-	} else {
-	    set avatarJid [jid bare $fromJid]
-	}
-	set serverStatus [dict get $storeDict server_status]
-	set isOutgoing [expr {$serverStatus ne ""}]
-	set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
-	set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
-	dict create \
-	    id           [dict get $storeDict timestamp] \
-	    display_name $res \
-	    avatar_jid   $avatarJid \
-	    timestamp    [dict get $storeDict timestamp] \
-	    body         [dict get $storeDict body] \
-	    is_outgoing  $isOutgoing \
-	    receipt_status $receiptStatus \
-	    prev         $prev
+        set fromJid [dict get $storeDict from_jid]
+        set res [jid resource $fromJid]
+        if {$res eq ""} {
+            set res [jid bare $fromJid]
+        }
+        if {$IsMuc} {
+            set avatarJid $fromJid
+        } else {
+            set avatarJid [jid bare $fromJid]
+        }
+        set serverStatus [dict get $storeDict server_status]
+        set isOutgoing [expr {$serverStatus ne ""}]
+        set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
+        set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
+        dict create \
+            id           [dict get $storeDict timestamp] \
+            display_name $res \
+            avatar_jid   $avatarJid \
+            timestamp    [dict get $storeDict timestamp] \
+            body         [dict get $storeDict body] \
+            is_outgoing  $isOutgoing \
+            receipt_status $receiptStatus \
+            prev         $prev
     }
 
     method ProcessBatch {messages} {
-	set enriched {}
-	foreach msg $messages {
-	    if {[dict exists $msg hollow]} {
-		lappend enriched [dict create \
-		    id [dict get $msg timestamp] \
-		    prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}] \
-		    hollow 1]
-		continue
-	    }
-	    set emsg [$self EnrichMessage $msg]
-	    set ajid [dict get $emsg avatar_jid]
-	    if {$ajid ne ""} {
-		$self TrackAvatar $ajid
-	    }
-	    lappend enriched $emsg
-	}
-	$hull apply $enriched
+        set enriched {}
+        foreach msg $messages {
+            if {[dict exists $msg hollow]} {
+                lappend enriched [dict create \
+                    id [dict get $msg timestamp] \
+                    prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}] \
+                    hollow 1]
+                continue
+            }
+            set emsg [$self EnrichMessage $msg]
+            set ajid [dict get $emsg avatar_jid]
+            if {$ajid ne ""} {
+                $self TrackAvatar $ajid
+            }
+            lappend enriched $emsg
+        }
+        $hull apply $enriched
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.
@@ -371,76 +371,76 @@ snit::widgetadaptor chatview {
     # image lifecycle.  When all messages for a jid are culled by the
     # scroll cleanup, OnAvatarRelease fires and untracks from the cache.
     method TrackAvatar {jid} {
-	if {$jid in $TrackedAvatars} return
-	lappend TrackedAvatars $jid
-	set img [avatarcache track \
-	    -acc $options(-acc) -jid $jid -tag $win/$jid \
-	    -command [mymethod OnAvatar $jid]]
-	$hull avatar set $jid $img
+        if {$jid in $TrackedAvatars} return
+        lappend TrackedAvatars $jid
+        set img [avatarcache track \
+            -acc $options(-acc) -jid $jid -tag $win/$jid \
+            -command [mymethod OnAvatar $jid]]
+        $hull avatar set $jid $img
     }
 
     method OnAvatar {jid img} {
-	$hull avatar set $jid $img
+        $hull avatar set $jid $img
     }
 
     method UntrackAllAvatars {} {
-	foreach jid $TrackedAvatars {
-	    catch {avatarcache untrack -tag $win/$jid}
-	}
-	set TrackedAvatars [list]
+        foreach jid $TrackedAvatars {
+            catch {avatarcache untrack -tag $win/$jid}
+        }
+        set TrackedAvatars [list]
     }
 
     method OnAvatarRelease {jid} {
-	if {$jid ni $TrackedAvatars} return
-	catch {avatarcache untrack -tag $win/$jid}
-	set idx [lsearch -exact $TrackedAvatars $jid]
-	set TrackedAvatars [lreplace $TrackedAvatars $idx $idx]
+        if {$jid ni $TrackedAvatars} return
+        catch {avatarcache untrack -tag $win/$jid}
+        set idx [lsearch -exact $TrackedAvatars $jid]
+        set TrackedAvatars [lreplace $TrackedAvatars $idx $idx]
     }
 
     method OnMessageRightClick {id rootX rootY} {
-	set m $win.__ctxmenu
-	if {![winfo exists $m]} {
-	    menu $m -tearoff 0
-	}
-	$m delete 0 end
-	$m add command -label "View XML" \
-	    -command [mymethod OnViewXml $id]
-	tk_popup $m $rootX $rootY
+        set m $win.__ctxmenu
+        if {![winfo exists $m]} {
+            menu $m -tearoff 0
+        }
+        $m delete 0 end
+        $m add command -label "View XML" \
+            -command [mymethod OnViewXml $id]
+        tk_popup $m $rootX $rootY
     }
 
     method OnViewXml {id} {
-	::tacky message rawxml -acc $options(-acc) \
-	    -chat $options(-jid) -timestamp $id \
-	    -command {apply {{xml} {
-		xmlstanza show [xmppreader string $xml]
-	    }}}
+        ::tacky message rawxml -acc $options(-acc) \
+            -chat $options(-jid) -timestamp $id \
+            -command {apply {{xml} {
+                xmlstanza show [xmppreader string $xml]
+            }}}
     }
 
     method OnReceipt {receiptDict} {
-	$hull receipt update [dict get $receiptDict id] [dict get $receiptDict receipt_status]
+        $hull receipt update [dict get $receiptDict id] [dict get $receiptDict receipt_status]
     }
 
     method InstallMenus {} {
-	set mb $options(-menubar)
-	menu $mb.chat -tearoff 0
-	$mb add cascade -label "Chat" -menu $mb.chat
+        set mb $options(-menubar)
+        menu $mb.chat -tearoff 0
+        $mb add cascade -label "Chat" -menu $mb.chat
     }
 
     method RemoveMenus {} {
-	set mb $options(-menubar)
-	if {$mb eq "" || ![winfo exists $mb]} return
-	set last [$mb index end]
-	if {$last ne "none"} {
-	    for {set i $last} {$i >= 0} {incr i -1} {
-		if {[$mb type $i] eq "cascade" && [$mb entrycget $i -label] eq "Chat"} {
-		    $mb delete $i
-		    break
-		}
-	    }
-	}
-	if {[winfo exists $mb.chat]} {
-	    destroy $mb.chat
-	}
+        set mb $options(-menubar)
+        if {$mb eq "" || ![winfo exists $mb]} return
+        set last [$mb index end]
+        if {$last ne "none"} {
+            for {set i $last} {$i >= 0} {incr i -1} {
+                if {[$mb type $i] eq "cascade" && [$mb entrycget $i -label] eq "Chat"} {
+                    $mb delete $i
+                    break
+                }
+            }
+        }
+        if {[winfo exists $mb.chat]} {
+            destroy $mb.chat
+        }
     }
 }
 
@@ -530,42 +530,42 @@ snit::widget chatarea {
     variable HighlightedId
     
     constructor args {
-	install text using chattext $win.text \
-	    -yscrollcommand [list $win.scrollbar set]
-	install scrollbar using ttk::scrollbar $win.scrollbar\
-	    -command [list $win.text yview]
-	
-	$self configurelist $args
-	
-	grid $win.text $win.scrollbar -sticky nsew
-	grid rowconfigure $win $win.text -weight 1
-	grid columnconfigure $win $win.text -weight 1
-	
-	set MessageIds {}
-	set CleanupScheduled 0
-	set AvatarImages [dict create]
-	set MessageAvatars [dict create]
-	set HighlightedId ""
-	bidict clear Prevs
+        install text using chattext $win.text \
+            -yscrollcommand [list $win.scrollbar set]
+        install scrollbar using ttk::scrollbar $win.scrollbar\
+            -command [list $win.text yview]
+        
+        $self configurelist $args
+        
+        grid $win.text $win.scrollbar -sticky nsew
+        grid rowconfigure $win $win.text -weight 1
+        grid columnconfigure $win $win.text -weight 1
+        
+        set MessageIds {}
+        set CleanupScheduled 0
+        set AvatarImages [dict create]
+        set MessageAvatars [dict create]
+        set HighlightedId ""
+        bidict clear Prevs
 
-	if {$options(-pixelsbelowvariable) ne ""} {
-	    upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
-	}
-	if {$options(-pixelsabovevariable) ne ""} {
-	    upvar #0 $options(-pixelsabovevariable) [myvar PixelsAbove]
-	}	
+        if {$options(-pixelsbelowvariable) ne ""} {
+            upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
+        }
+        if {$options(-pixelsabovevariable) ne ""} {
+            upvar #0 $options(-pixelsabovevariable) [myvar PixelsAbove]
+        }       
 
-	# Configure text tags and fonts
-	$self SetFont
-	# Track scrolling to load more messages
-	bind $win.text <<WidgetViewSync>> [mymethod OnWidgetViewSync %d]
-	bind $win.text <<Yview>> [mymethod OnYview]
-	bind $win.text <Button-3> [mymethod OnRightClick %x %y %X %Y]
+        # Configure text tags and fonts
+        $self SetFont
+        # Track scrolling to load more messages
+        bind $win.text <<WidgetViewSync>> [mymethod OnWidgetViewSync %d]
+        bind $win.text <<Yview>> [mymethod OnYview]
+        bind $win.text <Button-3> [mymethod OnRightClick %x %y %X %Y]
 
     }
 
     destructor {
-	after cancel [mymethod DoCleanup]
+        after cancel [mymethod DoCleanup]
     }
 
     # Might-be pitfall about ordering:
@@ -577,375 +577,375 @@ snit::widget chatarea {
     # arises a case where the backend could send the list out of order
     # - we'd have to rework this.
     method apply {messageDictList} {
-	set inserted {}
-	compensate $text {
-	    foreach msg $messageDictList {
-		set id [dict get $msg id]
-		set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
+        set inserted {}
+        compensate $text {
+            foreach msg $messageDictList {
+                set id [dict get $msg id]
+                set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
 
-		if {$id in $MessageIds} {
-		    # Already displayed — patch prev
-		    $self PatchMessage $id $prev
-		    continue
-		}
+                if {$id in $MessageIds} {
+                    # Already displayed — patch prev
+                    $self PatchMessage $id $prev
+                    continue
+                }
 
-		if {[dict exists $msg hollow]} {
-		    # Hollow targeting non-displayed msg — skip
-		    continue
-		}
+                if {[dict exists $msg hollow]} {
+                    # Hollow targeting non-displayed msg — skip
+                    continue
+                }
 
-		if {[bidict rexists Prevs $id]} {
-		    # Some displayed message claims this id as its prev
-		    # → insert before that message
-		    set target [bidict rget Prevs $id]
-		    $self InsertAt $target before $msg
-		    lappend inserted $id
-		} elseif {$prev ne "" && $prev in $MessageIds} {
-		    # This message's prev is displayed → insert after it
-		    $self InsertAt $prev after $msg
-		    lappend inserted $id
-		} elseif {[llength $MessageIds] == 0} {
-		    # Bootstrap: empty widget
-		    $self InsertAt "" end $msg
-		    lappend inserted $id
-		}
-		# else: can't connect — silently skip
-	    }
-	}
+                if {[bidict rexists Prevs $id]} {
+                    # Some displayed message claims this id as its prev
+                    # → insert before that message
+                    set target [bidict rget Prevs $id]
+                    $self InsertAt $target before $msg
+                    lappend inserted $id
+                } elseif {$prev ne "" && $prev in $MessageIds} {
+                    # This message's prev is displayed → insert after it
+                    $self InsertAt $prev after $msg
+                    lappend inserted $id
+                } elseif {[llength $MessageIds] == 0} {
+                    # Bootstrap: empty widget
+                    $self InsertAt "" end $msg
+                    lappend inserted $id
+                }
+                # else: can't connect — silently skip
+            }
+        }
 
-	return $inserted
+        return $inserted
     }
 
     method PatchMessage {id newPrev} {
-	bidict set Prevs $id $newPrev
+        bidict set Prevs $id $newPrev
     }
 
     method InsertAt {targetId position msg} {
-	set id [dict get $msg id]
-	set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
+        set id [dict get $msg id]
+        set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
 
-	switch -- $position {
-	    before {
-		set idx [lsearch -exact $MessageIds $targetId]
-		set MessageIds [linsert $MessageIds $idx $id]
-		$text mark set msgins item.$targetId.first
-	    }
-	    after {
-		set idx [lsearch -exact $MessageIds $targetId]
-		set MessageIds [linsert $MessageIds [expr {$idx + 1}] $id]
-		$text mark set msgins item.$targetId.last
-	    }
-	    end {
-		lappend MessageIds $id
-		$text mark set msgins end
-	    }
-	}
+        switch -- $position {
+            before {
+                set idx [lsearch -exact $MessageIds $targetId]
+                set MessageIds [linsert $MessageIds $idx $id]
+                $text mark set msgins item.$targetId.first
+            }
+            after {
+                set idx [lsearch -exact $MessageIds $targetId]
+                set MessageIds [linsert $MessageIds [expr {$idx + 1}] $id]
+                $text mark set msgins item.$targetId.last
+            }
+            end {
+                lappend MessageIds $id
+                $text mark set msgins end
+            }
+        }
 
-	bidict set Prevs $id $prev
-	$self DrawMessage msgins $msg
+        bidict set Prevs $id $prev
+        $self DrawMessage msgins $msg
     }
     
     method OnYview {} {
-	$self Cleanup
+        $self Cleanup
     }
 
     method OnWidgetViewSync synced {
-	if {!$synced} {
-	    return
-	}
-	$self Cleanup
+        if {!$synced} {
+            return
+        }
+        $self Cleanup
     }
 
     method OnRightClick {x y X Y} {
-	# Map widget-relative coords to text index, then find the item tag
-	set tags [$text tag names @$x,$y]
-	foreach tag $tags {
-	    if {[string match "item.*" $tag] && ![string match "item.*.*" $tag]} {
-		set messageId [string range $tag 5 end]
-		event generate $win <<MessageRightClick>> \
-		    -data $messageId -x $x -y $y -rootx $X -rooty $Y
-		return
-	    }
-	}
+        # Map widget-relative coords to text index, then find the item tag
+        set tags [$text tag names @$x,$y]
+        foreach tag $tags {
+            if {[string match "item.*" $tag] && ![string match "item.*.*" $tag]} {
+                set messageId [string range $tag 5 end]
+                event generate $win <<MessageRightClick>> \
+                    -data $messageId -x $x -y $y -rootx $X -rooty $Y
+                return
+            }
+        }
     }
 
     method {see end} {} {
-	$text see end
+        $text see end
     }
 
     method atEnd {} {
-	set below [$text count -ypixels @0,[winfo height $text] end-1line]
-	return [expr {$below < 10}]
+        set below [$text count -ypixels @0,[winfo height $text] end-1line]
+        return [expr {$below < 10}]
     }
 
     method {see message} {id} {
-	$self highlight message $id
-	$text yview item.$id.first
+        $self highlight message $id
+        $text yview item.$id.first
     }
 
     method {highlight message} {id} {
-	if {$HighlightedId ne ""} {
-	    $text tag configure item.$HighlightedId -background {}
-	}
-	$text tag configure item.$id -background yellow
-	set HighlightedId $id
+        if {$HighlightedId ne ""} {
+            $text tag configure item.$HighlightedId -background {}
+        }
+        $text tag configure item.$id -background yellow
+        set HighlightedId $id
     }
 
     method {highlight clear} {} {
-	if {$HighlightedId ne ""} {
-	    $text tag configure item.$HighlightedId -background {}
-	    set HighlightedId ""
-	}
+        if {$HighlightedId ne ""} {
+            $text tag configure item.$HighlightedId -background {}
+            set HighlightedId ""
+        }
     }
 
     method {system insert} {msg} {
-	$text ins end "$msg\n" system
-	$text see end
+        $text ins end "$msg\n" system
+        $text see end
     }
 
     method SetFont {{font {Helvetica 13}}} {
-	# Message body - bigger indent
-	$text tag configure body -lmargin1 40 -lmargin2 40
-	# Formatting gimmicks
-	$text tag configure entity.quote -foreground green -lmargin1 40 -lmargin2 55
-	$text tag configure entity.overstrike -overstrike yes
-	$text configure -font $font
-	$text tag configure entity.bold -font "$font bold"
-	$text tag configure entity.italic -font "$font italic"
-	$text tag configure entity.monospace -font "Courier 13"
-	$text tag configure entity.preformatted -font "Courier 13"
-	$text tag configure entity.bold.italic -font "$font bold italic"
-	$text tag configure entity.bold.monospace -font "Courier 13 bold"
-	$text tag configure entity.italic.monospace -font "Courier 13 italic"
-	$text tag configure entity.bold.italic.monospace -font "Courier 13 bold italic"
-	$text tag configure entity.bold.overstrike -font "$font bold" -overstrike yes
-	$text tag configure entity.italic.overstrike -font "$font italic" -overstrike yes
-	$text tag configure entity.bold.italic.overstrike -font "$font bold italic" -overstrike yes
-	$text tag configure entity.monospace.overstrike -font "Courier 13" -overstrike yes
-	$text tag configure entity.bold.monospace.overstrike -font "Courier 13 bold" -overstrike yes
-	$text tag configure entity.italic.monospace.overstrike -font "Courier 13 italic" -overstrike yes
-	$text tag configure entity.bold.italic.monospace.overstrike -font "Courier 13 bold italic" -overstrike yes
-	$text tag configure receipt -foreground #888888
-	$text tag configure timestamp -foreground #888888
-	$text tag configure system -foreground gray50 -font "$font italic" \
-	    -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
+        # Message body - bigger indent
+        $text tag configure body -lmargin1 40 -lmargin2 40
+        # Formatting gimmicks
+        $text tag configure entity.quote -foreground green -lmargin1 40 -lmargin2 55
+        $text tag configure entity.overstrike -overstrike yes
+        $text configure -font $font
+        $text tag configure entity.bold -font "$font bold"
+        $text tag configure entity.italic -font "$font italic"
+        $text tag configure entity.monospace -font "Courier 13"
+        $text tag configure entity.preformatted -font "Courier 13"
+        $text tag configure entity.bold.italic -font "$font bold italic"
+        $text tag configure entity.bold.monospace -font "Courier 13 bold"
+        $text tag configure entity.italic.monospace -font "Courier 13 italic"
+        $text tag configure entity.bold.italic.monospace -font "Courier 13 bold italic"
+        $text tag configure entity.bold.overstrike -font "$font bold" -overstrike yes
+        $text tag configure entity.italic.overstrike -font "$font italic" -overstrike yes
+        $text tag configure entity.bold.italic.overstrike -font "$font bold italic" -overstrike yes
+        $text tag configure entity.monospace.overstrike -font "Courier 13" -overstrike yes
+        $text tag configure entity.bold.monospace.overstrike -font "Courier 13 bold" -overstrike yes
+        $text tag configure entity.italic.monospace.overstrike -font "Courier 13 italic" -overstrike yes
+        $text tag configure entity.bold.italic.monospace.overstrike -font "Courier 13 bold italic" -overstrike yes
+        $text tag configure receipt -foreground #888888
+        $text tag configure timestamp -foreground #888888
+        $text tag configure system -foreground gray50 -font "$font italic" \
+            -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
     }
 
     method GetPixelsAbove {} {
-	set PixelsAbove [$text count -ypixels 0.0 @0,0]
+        set PixelsAbove [$text count -ypixels 0.0 @0,0]
     }
     
     method GetPixelsBelow {} {
-	set PixelsBelow [$text count -ypixels @0,[winfo height $text] end-1line]
+        set PixelsBelow [$text count -ypixels @0,[winfo height $text] end-1line]
     }
 
     method Cleanup {} {
-	if {$CleanupScheduled} {
-	    return
-	}
-	set CleanupScheduled 1
-	after idle [mymethod DoCleanup]
+        if {$CleanupScheduled} {
+            return
+        }
+        set CleanupScheduled 1
+        after idle [mymethod DoCleanup]
     }
 
     method DoCleanup {} {
-	if {![winfo exists $win]} return
-	set CleanupScheduled 0
-	$self GetPixelsBelow
-	$self GetPixelsAbove
+        if {![winfo exists $win]} return
+        set CleanupScheduled 0
+        $self GetPixelsBelow
+        $self GetPixelsAbove
 
-	# Scale thresholds to viewport height so fetching starts
-	# well before the user reaches the edge of loaded content.
-	set vh [winfo height $text]
-	if {$vh > 0} {
-	    set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
-	    set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
-	    set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
-	} else {
-	    set loadTh      $options(-load-threshold)
-	    set cleanTh     $options(-clean-threshold)
-	    set cleanTarget $options(-clean-target)
-	}
+        # Scale thresholds to viewport height so fetching starts
+        # well before the user reaches the edge of loaded content.
+        set vh [winfo height $text]
+        if {$vh > 0} {
+            set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
+            set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
+            set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
+        } else {
+            set loadTh      $options(-load-threshold)
+            set cleanTh     $options(-clean-threshold)
+            set cleanTarget $options(-clean-target)
+        }
 
-	set cleaned {}
+        set cleaned {}
 
-	if {$PixelsAbove > $cleanTh} {
-	    lappend cleaned old
-	    while {$PixelsAbove > $cleanTarget && [llength $MessageIds] > 0} {
-		$self deleteByPos 0
-		$self GetPixelsAbove
-	    }
-	}
+        if {$PixelsAbove > $cleanTh} {
+            lappend cleaned old
+            while {$PixelsAbove > $cleanTarget && [llength $MessageIds] > 0} {
+                $self deleteByPos 0
+                $self GetPixelsAbove
+            }
+        }
 
-	if {$PixelsBelow > $cleanTh} {
-	    lappend cleaned new
-	    while {$PixelsBelow > $cleanTarget && [llength $MessageIds] > 0} {
-		$self deleteByPos end
-		$self GetPixelsBelow
-	    }
-	}
+        if {$PixelsBelow > $cleanTh} {
+            lappend cleaned new
+            while {$PixelsBelow > $cleanTarget && [llength $MessageIds] > 0} {
+                $self deleteByPos end
+                $self GetPixelsBelow
+            }
+        }
 
-	# Invalidate in-flight loads whose cursors may now be stale.
-	if {[llength $cleaned] > 0} {
-	    {*}$options(-thirst-command) $cleaned no \
-		[lindex $MessageIds 0] [lindex $MessageIds end]
-	}
+        # Invalidate in-flight loads whose cursors may now be stale.
+        if {[llength $cleaned] > 0} {
+            {*}$options(-thirst-command) $cleaned no \
+                [lindex $MessageIds 0] [lindex $MessageIds end]
+        }
 
-	# Don't fire thirst for a direction we just cleaned —
-	# that would cause a load→clean→load loop.
-	set thirstDirections ""
-	if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
-	    lappend thirstDirections old
-	}
-	if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
-	    lappend thirstDirections new
-	}
-	if {$thirstDirections ne "" } {
-	    {*}$options(-thirst-command) $thirstDirections yes \
-		[lindex $MessageIds 0] [lindex $MessageIds end]
-	}
+        # Don't fire thirst for a direction we just cleaned —
+        # that would cause a load→clean→load loop.
+        set thirstDirections ""
+        if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
+            lappend thirstDirections old
+        }
+        if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
+            lappend thirstDirections new
+        }
+        if {$thirstDirections ne "" } {
+            {*}$options(-thirst-command) $thirstDirections yes \
+                [lindex $MessageIds 0] [lindex $MessageIds end]
+        }
     }
     
     method {messages oldest} {} {
-	lindex $MessageIds 0
+        lindex $MessageIds 0
     }
 
     method {messages newest} {} {
-	lindex $MessageIds end
+        lindex $MessageIds end
     }
 
     method {messages ids} {} {
-	set MessageIds
+        set MessageIds
     }
 
     method clear {} {
-	$text del 0.0 end
-	set MessageIds {}
-	set HighlightedId ""
-	bidict clear Prevs
-	if {$options(-avatar-release-command) ne ""} {
-	    set released {}
-	    dict for {mid ajid} $MessageAvatars {
-		if {$ajid ni $released} {
-		    lappend released $ajid
-		    {*}$options(-avatar-release-command) $ajid
-		}
-	    }
-	}
-	set MessageAvatars [dict create]
+        $text del 0.0 end
+        set MessageIds {}
+        set HighlightedId ""
+        bidict clear Prevs
+        if {$options(-avatar-release-command) ne ""} {
+            set released {}
+            dict for {mid ajid} $MessageAvatars {
+                if {$ajid ni $released} {
+                    lappend released $ajid
+                    {*}$options(-avatar-release-command) $ajid
+                }
+            }
+        }
+        set MessageAvatars [dict create]
     }
     
     method {avatar set} {jid image} {
-	dict set AvatarImages $jid $image
-	# Update all already-rendered avatars for this JID
-	foreach {start end} [$text tag ranges from.$jid] {
-	    $text image configure $start -image $image
-	}
+        dict set AvatarImages $jid $image
+        # Update all already-rendered avatars for this JID
+        foreach {start end} [$text tag ranges from.$jid] {
+            $text image configure $start -image $image
+        }
     }
 
     method ReceiptText {status} {
-	switch -- $status {
-	    delivered { return "\u2713" }
-	    read      { return "\u2713\u2713" }
-	    default   { return "" }
-	}
+        switch -- $status {
+            delivered { return "\u2713" }
+            read      { return "\u2713\u2713" }
+            default   { return "" }
+        }
     }
 
     method {receipt update} {id status} {
-	set tag item.$id.receipt
-	set ranges [$text tag ranges $tag]
-	if {[llength $ranges] == 0} return
-	lassign $ranges start end
-	set rt [$self ReceiptText $status]
-	$text replace $start $end " $rt" [list item.$id $tag receipt]
+        set tag item.$id.receipt
+        set ranges [$text tag ranges $tag]
+        if {[llength $ranges] == 0} return
+        lassign $ranges start end
+        set rt [$self ReceiptText $status]
+        $text replace $start $end " $rt" [list item.$id $tag receipt]
     }
 
     # Draws message, doesn't store info about it, doesn't adjust the
     # text accordingly. Internal use only!
     method DrawMessage {textIndex messageDict} {
-	array set message $messageDict
-	$text mark set msgins $textIndex
+        array set message $messageDict
+        $text mark set msgins $textIndex
 
-	# text tag that will be applied to the whole message
-	set tag item.$message(id)
+        # text tag that will be applied to the whole message
+        set tag item.$message(id)
 
-	# Hole marker: thick horizontal line indicating an archive gap
-	if {[info exists message(hole_above)] && $message(hole_above)} {
-	    set hf [frame $text._hole_$message(id) -height 3 -background #aaaaaa]
-	    $text window create msgins -window $hf -stretch 1 -padx 10 -pady 8
-	    $text tag add $tag "msgins - 1 chars"
-	    $text ins msgins \n $tag
-	}
+        # Hole marker: thick horizontal line indicating an archive gap
+        if {[info exists message(hole_above)] && $message(hole_above)} {
+            set hf [frame $text._hole_$message(id) -height 3 -background #aaaaaa]
+            $text window create msgins -window $hf -stretch 1 -padx 10 -pady 8
+            $text tag add $tag "msgins - 1 chars"
+            $text ins msgins \n $tag
+        }
 
-	eval {
-	    # Pick the avatar: per-JID if tracked, else default
-	    set avatarJid ""
-	    if {[info exists message(avatar_jid)]} {
-		set avatarJid $message(avatar_jid)
-	    }
-	    if {$avatarJid ne ""} {
-		dict set MessageAvatars $message(id) $avatarJid
-	    }
-	    if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
-		set avatarImg [dict get $AvatarImages $avatarJid]
-	    } else {
-		set avatarImg mate/32x32/status/avatar-default.png
-	    }
-	    set imageId [$text image create msgins -image $avatarImg]
-	    $text tag add $tag $imageId
-	    $text tag add $tag.avatar $imageId
-	    if {$avatarJid ne ""} {
-		$text tag add from.$avatarJid $imageId
-	    }
-	    $text ins msgins $message(display_name) [list $tag $tag.author author]
-	    $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
-	    $text ins msgins \n $tag
-	    
-	    $text ins msgins $message(body) [list $tag body message $tag.body]
-	    if {$message(is_outgoing)} {
-		set rt [$self ReceiptText $message(receipt_status)]
-		$text ins msgins " $rt" [list $tag $tag.receipt receipt]
-	    }
-	    $text ins msgins \n $tag
-	    
-	    if {[info exists message(formatting)]} {
-		foreach {type offset length} $message(formatting) {
-		    $text tag add entity.$type \
-			"$tag.body.first + $offset chars" \
-			"$tag.body.first + $offset chars + $length chars"
-		}
-	    }
-	}
+        eval {
+            # Pick the avatar: per-JID if tracked, else default
+            set avatarJid ""
+            if {[info exists message(avatar_jid)]} {
+                set avatarJid $message(avatar_jid)
+            }
+            if {$avatarJid ne ""} {
+                dict set MessageAvatars $message(id) $avatarJid
+            }
+            if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
+                set avatarImg [dict get $AvatarImages $avatarJid]
+            } else {
+                set avatarImg mate/32x32/status/avatar-default.png
+            }
+            set imageId [$text image create msgins -image $avatarImg]
+            $text tag add $tag $imageId
+            $text tag add $tag.avatar $imageId
+            if {$avatarJid ne ""} {
+                $text tag add from.$avatarJid $imageId
+            }
+            $text ins msgins $message(display_name) [list $tag $tag.author author]
+            $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
+            $text ins msgins \n $tag
+            
+            $text ins msgins $message(body) [list $tag body message $tag.body]
+            if {$message(is_outgoing)} {
+                set rt [$self ReceiptText $message(receipt_status)]
+                $text ins msgins " $rt" [list $tag $tag.receipt receipt]
+            }
+            $text ins msgins \n $tag
+            
+            if {[info exists message(formatting)]} {
+                foreach {type offset length} $message(formatting) {
+                    $text tag add entity.$type \
+                        "$tag.body.first + $offset chars" \
+                        "$tag.body.first + $offset chars + $length chars"
+                }
+            }
+        }
     }
 
     method deleteById {id} {
-	list_remove_once_inplace MessageIds $id
-	set tag item.$id
-	# Delete contents under that tag
-	$text del $tag.first $tag.last
-	# Delete tag itself
-	$text tag delete item.$id
-	bidict unset Prevs $id
-	$self CheckAvatarRelease $id
+        list_remove_once_inplace MessageIds $id
+        set tag item.$id
+        # Delete contents under that tag
+        $text del $tag.first $tag.last
+        # Delete tag itself
+        $text tag delete item.$id
+        bidict unset Prevs $id
+        $self CheckAvatarRelease $id
     }
     
     method deleteByPos {idx} {
-	set id [lindex $MessageIds $idx]
-	set MessageIds [lreplace $MessageIds $idx $idx]
-	$text del item.$id.first item.$id.last
-	$text tag delete item.$id
-	bidict unset Prevs $id
-	$self CheckAvatarRelease $id
+        set id [lindex $MessageIds $idx]
+        set MessageIds [lreplace $MessageIds $idx $idx]
+        $text del item.$id.first item.$id.last
+        $text tag delete item.$id
+        bidict unset Prevs $id
+        $self CheckAvatarRelease $id
     }
 
     method CheckAvatarRelease {id} {
-	if {$options(-avatar-release-command) eq ""} return
-	if {![dict exists $MessageAvatars $id]} return
-	set ajid [dict get $MessageAvatars $id]
-	dict unset MessageAvatars $id
-	# Check if any other messages still reference this avatar
-	if {[llength [$text tag ranges from.$ajid]] == 0} {
-	    {*}$options(-avatar-release-command) $ajid
-	}
+        if {$options(-avatar-release-command) eq ""} return
+        if {![dict exists $MessageAvatars $id]} return
+        set ajid [dict get $MessageAvatars $id]
+        dict unset MessageAvatars $id
+        # Check if any other messages still reference this avatar
+        if {[llength [$text tag ranges from.$ajid]] == 0} {
+            {*}$options(-avatar-release-command) $ajid
+        }
     }
 }
 

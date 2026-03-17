@@ -24,7 +24,7 @@ if 0 {
 
     # Process each node
     xsearch $xml level1 -script node {
-	puts [dict get $node attrs id]
+        puts [dict get $node attrs id]
     }
 
     # Filter then navigate
@@ -228,7 +228,7 @@ proc extractFields {node fields} {
 proc extractSingleField {node field} {
     switch -glob $field {
         "@*" {
-	    # Check if field is an attribute (@attr)
+            # Check if field is an attribute (@attr)
             set attrName [string range $field 1 end]
             set attrs [dict get $node attrs]
             if {[dict exists $attrs $attrName]} {
@@ -237,11 +237,11 @@ proc extractSingleField {node field} {
             return {}
         }
         "node" {
-	    # Return the whole node if field is "node"
+            # Return the whole node if field is "node"
             return $node
         }
         * {
-	    # Regular field from node dict
+            # Regular field from node dict
             if {[dict exists $node $field]} {
                 return [dict get $node $field]
             }

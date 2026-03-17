@@ -18,7 +18,7 @@ if {$_server ne ""} {
     ::tcltest::testConstraint notMongoose  [expr {$_server ne "mongoose"}]
     ::tcltest::testConstraint notEjabberd  [expr {$_server ne "ejabberd"}]
     foreach script [lsort [glob [file join ./ tests taco_integration *.tcl]]] {
-	source $script
+        source $script
     }    
 }
 

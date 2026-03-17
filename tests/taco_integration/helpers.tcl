@@ -45,7 +45,7 @@ proc ::test::helpers::WaitEventsCallback args {
     variable PendingEventsDone
     incr PendingEvents -1
     if {$PendingEvents == 0} {
-	set PendingEventsDone yes
+        set PendingEventsDone yes
     }
 }
 
@@ -53,8 +53,8 @@ proc ::test::helpers::waitEvents {specs {timeout 10000}} {
     set ::test::helpers::PendingEvents [llength $specs]
     set ::test::helpers::PendingEventsDone 0
     foreach spec $specs {
-	tacky listen -tag waitEvents {*}$spec \
-	    ::test::helpers::WaitEventsCallback
+        tacky listen -tag waitEvents {*}$spec \
+            ::test::helpers::WaitEventsCallback
     }
     waitVar ::test::helpers::PendingEventsDone $timeout
     tacky unlisten waitEvents

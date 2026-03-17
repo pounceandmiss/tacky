@@ -56,7 +56,7 @@ snit::widget messageentry {
     }
 
     method OnReturn {state} {
-	$self Send
+        $self Send
         # if {$state & 1} {
         #     $text insert insert \n
         # } else {

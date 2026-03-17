@@ -35,11 +35,11 @@ proc compensate {text script} {
     $text sync
 
     set delta [expr {
-	[$text count -ypixels 0.0 _comp_vtop]
-	- [$text count -ypixels 0.0 @0,0]
+        [$text count -ypixels 0.0 _comp_vtop]
+        - [$text count -ypixels 0.0 @0,0]
     }]
     if {$delta > 0} {
-	$text yview scroll $delta pixels
+        $text yview scroll $delta pixels
     }
     $text mark unset _comp_vtop
 }

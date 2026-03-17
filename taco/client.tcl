@@ -105,38 +105,38 @@ snit::type taco_client {
     # XEP-0077 password change.
     # -command callback: {*}$cmd ok "" | {*}$cmd error $msg
     method changePassword {args} {
-	array set opts {-command ""}
-	array set opts $args
+        array set opts {-command ""}
+        array set opts $args
 
-	set payload [j query -ns jabber:iq:register {
-	    j username #body [$conn cget -username]
-	    j password #body $opts(-password)
-	}]
-	$iq request -type set -to [$conn cget -host] \
-	    -payload $payload \
-	    -command [mymethod OnPasswordChanged $opts(-password) $opts(-command)]
+        set payload [j query -ns jabber:iq:register {
+            j username #body [$conn cget -username]
+            j password #body $opts(-password)
+        }]
+        $iq request -type set -to [$conn cget -host] \
+            -payload $payload \
+            -command [mymethod OnPasswordChanged $opts(-password) $opts(-command)]
     }
 
     method OnPasswordChanged {newPassword command stanza} {
-	if {$command eq ""} return
-	set type_ [xsearch $stanza -get @type]
-	if {$type_ eq "result"} {
-	    $conn configure -password $newPassword
-	    set acc [jid bare $options(-jid)]
-	    $options(-taco) account set -acc $acc -password $newPassword
-	    {*}$command ok ""
-	} else {
-	    set errText [xsearch $stanza error text -get body]
-	    if {$errText eq ""} {
-		set errChild [xsearch $stanza error 0 -get node]
-		if {$errChild ne ""} {
-		    set errText [dict get $errChild tag]
-		} else {
-		    set errText "Password change failed"
-		}
-	    }
-	    {*}$command error $errText
-	}
+        if {$command eq ""} return
+        set type_ [xsearch $stanza -get @type]
+        if {$type_ eq "result"} {
+            $conn configure -password $newPassword
+            set acc [jid bare $options(-jid)]
+            $options(-taco) account set -acc $acc -password $newPassword
+            {*}$command ok ""
+        } else {
+            set errText [xsearch $stanza error text -get body]
+            if {$errText eq ""} {
+                set errChild [xsearch $stanza error 0 -get node]
+                if {$errChild ne ""} {
+                    set errText [dict get $errChild tag]
+                } else {
+                    set errText "Password change failed"
+                }
+            }
+            {*}$command error $errText
+        }
     }
 
     method OnStanza {stanza} {
@@ -190,33 +190,33 @@ snit::type taco_client_bus {
     variable Subs       ;# dict: event -> list of {tag command}
 
     constructor args {
-	set Subs [dict create]
+        set Subs [dict create]
     }
 
     method subscribe {tag event cmd} {
-	dict lappend Subs $event [list $tag $cmd]
+        dict lappend Subs $event [list $tag $cmd]
     }
 
     method unsubscribe {tag} {
-	dict for {event entries} $Subs {
-	    set filtered {}
-	    foreach entry $entries {
-		if {[lindex $entry 0] ne $tag} {
-		    lappend filtered $entry
-		}
-	    }
-	    if {[llength $filtered] == 0} {
-		dict unset Subs $event
-	    } else {
-		dict set Subs $event $filtered
-	    }
-	}
+        dict for {event entries} $Subs {
+            set filtered {}
+            foreach entry $entries {
+                if {[lindex $entry 0] ne $tag} {
+                    lappend filtered $entry
+                }
+            }
+            if {[llength $filtered] == 0} {
+                dict unset Subs $event
+            } else {
+                dict set Subs $event $filtered
+            }
+        }
     }
 
     method publish {event args} {
-	if {![dict exists $Subs $event]} return
-	foreach entry [dict get $Subs $event] {
-	    {*}[lindex $entry 1] {*}$args
-	}
+        if {![dict exists $Subs $event]} return
+        foreach entry [dict get $Subs $event] {
+            {*}[lindex $entry 1] {*}$args
+        }
     }
 }

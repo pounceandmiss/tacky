@@ -13,25 +13,25 @@ snit::widget showableentry {
     delegate method state to hull
 
     constructor args {
-	install entry using ttk::entry $win.entry
-	$self configurelist $args
-	pack $entry -fill both -expand yes
-	if {$options(-showable)} {
-	    install checkbutton using ttk::checkbutton $win.checkbutton \
-		-text "Reveal" \
-		-command [mymethod ToggleShow] \
-		-variable [myvar options(-reveal)]
-	    pack $checkbutton -anchor w
-	}
-	$self ToggleShow
-	bind $win <FocusIn> [list focus $entry]
+        install entry using ttk::entry $win.entry
+        $self configurelist $args
+        pack $entry -fill both -expand yes
+        if {$options(-showable)} {
+            install checkbutton using ttk::checkbutton $win.checkbutton \
+                -text "Reveal" \
+                -command [mymethod ToggleShow] \
+                -variable [myvar options(-reveal)]
+            pack $checkbutton -anchor w
+        }
+        $self ToggleShow
+        bind $win <FocusIn> [list focus $entry]
     }
     
     method ToggleShow {} {
-	set character ""
-	if {!$options(-reveal)} {
-	    set character *
-	}
-	$entry configure -show $character
+        set character ""
+        if {!$options(-reveal)} {
+            set character *
+        }
+        $entry configure -show $character
     }
 }
