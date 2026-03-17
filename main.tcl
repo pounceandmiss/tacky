@@ -21,6 +21,7 @@ set argv [lmap arg $argv {
 }]
 
 package require Tk
+ttk::style theme use clam
 package require snit
 
 proc bgerror {message} {
