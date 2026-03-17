@@ -29,10 +29,7 @@ snit::widget chatlistview {
     variable showAvatars 1
     variable bookmarkAutojoin 0
     variable trackedAvatars {}
-    variable rosterItems {}
-    variable bookmarkItems {}
-    variable bookmarkJids {}
-    variable recentJids {}
+    variable itemSources {}
 
     constructor args {
         $self configurelist $args
@@ -49,7 +46,7 @@ snit::widget chatlistview {
         # Search entry
         install searchentry using ttk::entry $win.search \
             -textvariable [myvar searchquery]
-        bind $searchentry <KeyRelease> [mymethod RebuildAll]
+        bind $searchentry <KeyRelease> [mymethod Rebuild]
 
         # Treeview
         install treeview using ttk::treeview $win.tree \
@@ -137,14 +134,14 @@ snit::widget chatlistview {
         menu $win.settingsmenu.sort -tearoff 0
         $win.settingsmenu.sort add radiobutton -label "Name" \
             -variable [myvar sortby] -value "name" \
-            -command [mymethod RebuildAll]
+            -command [mymethod Rebuild]
         $win.settingsmenu.sort add radiobutton -label "JID" \
             -variable [myvar sortby] -value "jid" \
-            -command [mymethod RebuildAll]
+            -command [mymethod Rebuild]
         $settingsmenu add separator
         $settingsmenu add checkbutton -label "Group contacts" \
             -variable [myvar grouping] \
-            -command [mymethod RebuildAll]
+            -command [mymethod Rebuild]
         $settingsmenu add checkbutton -label "Show presence colors" \
             -variable [myvar prescolors] \
             -command [mymethod OnPresenceColorsChanged]
@@ -161,39 +158,38 @@ snit::widget chatlistview {
         # Listen for data changes
         set t $options(-tacky)
         set acc $options(-acc)
-        $t listen -tag $win roster    <Changed> -acc $acc \
-            [mymethod RebuildAll]
-        $t listen -tag $win bookmarks <Changed> -acc $acc \
-            [mymethod RebuildAll]
+        $t listen -tag $win chatlist <Changed> -acc $acc \
+            [mymethod Rebuild]
         $t listen -tag $win setting <Changed> -key show_presence_colors \
             [mymethod OnPresenceColorsSetting]
         $t listen -tag $win setting <Changed> -key show_avatars \
             [mymethod OnShowAvatarsSetting]
-        $t listen -tag $win chats <Updated> -acc $acc \
-            [mymethod OnChatsUpdated]
 
-        # Populate from cache
-        $self RebuildRoster
-        $self RebuildBookmarks
-
-        # Load initial top chats
-        $options(-tacky) chats latest -acc $options(-acc) \
-            -tag $win -command [mymethod OnRecentChats]
+        # Initial load
+        $self Rebuild
     }
 
     destructor {
         catch {$options(-tacky) unlisten $win}
-        $self UntrackAllAvatars
+        $self UntrackAvatars {}
     }
 
-    method UntrackAllAvatars {} {
-        dict for {jid _img} $trackedAvatars {
-            catch {avatarcache untrack -tag $win/$jid}
+    method UntrackAvatars {displayed} {
+        dict for {jid _} $trackedAvatars {
+            if {![dict exists $displayed $jid]} {
+                catch {avatarcache untrack -tag $win/$jid}
+                dict unset trackedAvatars $jid
+            }
         }
-        set trackedAvatars {}
     }
 
-    method RebuildRoster {} {
+    method Rebuild {args} {
+        $options(-tacky) chatlist search -acc $options(-acc) \
+            -query $searchquery -sort $sortby \
+            -tag $win -command [mymethod OnData]
+    }
+
+    method OnData {data} {
         # Remember which group nodes are open
         set openGroups {}
         foreach child [$treeview children Roster] {
@@ -202,21 +198,31 @@ snit::widget chatlistview {
             }
         }
 
-        $options(-tacky) roster get -acc $options(-acc) \
-            -tag $win -command [mymethod OnRosterData $openGroups]
-    }
-
-    method OnRosterData {openGroups items} {
+        # Clear all sections
+        $treeview delete [$treeview children RecentChats]
         $treeview delete [$treeview children Roster]
-        set items [$self FilterBySearch $items]
-        set items [$self SortItems $items]
-        set rosterItems $items
+        $treeview delete [$treeview children Bookmarks]
 
-        if {$grouping} {
-            $self PopulateGrouped $items
-        } else {
-            $self PopulateSection Roster $items
+        # Populate RecentChats
+        set recentItems [dict get $data recent]
+        $self PopulateSection RecentChats $recentItems
+
+        # Build itemSources from recent items
+        set itemSources {}
+        foreach item $recentItems {
+            dict set itemSources [dict get $item -jid] [dict get $item -source]
         }
+
+        # Populate Roster
+        set rosterItems [dict get $data roster]
+        if {$grouping} {
+            $self PopulateGrouped $rosterItems
+        } else {
+            $self PopulateSection Roster $rosterItems
+        }
+
+        # Populate Bookmarks
+        $self PopulateSection Bookmarks [dict get $data bookmarks]
 
         # Restore open state
         foreach gid $openGroups {
@@ -225,25 +231,19 @@ snit::widget chatlistview {
             }
         }
 
-        $self RebuildRecentChats
-    }
-
-    method RebuildBookmarks {} {
-        $options(-tacky) bookmarks get -acc $options(-acc) \
-            -tag $win -command [mymethod OnBookmarksData]
-    }
-
-    method OnBookmarksData {items} {
-        $treeview delete [$treeview children Bookmarks]
-        set items [$self FilterBySearch $items]
-        set items [$self SortItems $items]
-        set bookmarkItems $items
-        set bookmarkJids {}
-        foreach item $items {
-            dict set bookmarkJids [dict get $item -jid] 1
+        # Untrack avatars for JIDs no longer displayed
+        set displayed [dict create]
+        foreach root {RecentChats Roster Bookmarks} {
+            foreach child [$treeview children $root] {
+                if {[string match "*/*" $child]} {
+                    dict set displayed [$self ItemJid $child] 1
+                }
+                foreach grandchild [$treeview children $child] {
+                    dict set displayed [$self ItemJid $grandchild] 1
+                }
+            }
         }
-        $self PopulateSection Bookmarks $items
-        $self RebuildRecentChats
+        $self UntrackAvatars $displayed
     }
 
     method PopulateSection {parent items} {
@@ -280,101 +280,6 @@ snit::widget chatlistview {
         }
     }
 
-    method FilterBySearch {items} {
-        if {$searchquery eq ""} {
-            return $items
-        }
-        set q [string tolower $searchquery]
-        set result {}
-        foreach item $items {
-            set jid  [string tolower [dict get $item -jid]]
-            set name [string tolower [dict get $item -name]]
-            if {[string first $q $jid] >= 0 ||
-                [string first $q $name] >= 0} {
-                lappend result $item
-            }
-        }
-        return $result
-    }
-
-    method SortItems {items} {
-        if {$sortby eq "jid"} {
-            return [lsort -command [mymethod CmpJid] $items]
-        }
-        return [lsort -command [mymethod CmpName] $items]
-    }
-
-    method CmpName {a b} {
-        set na [dict get $a -name]
-        set nb [dict get $b -name]
-        if {$na eq ""} { set na [dict get $a -jid] }
-        if {$nb eq ""} { set nb [dict get $b -jid] }
-        return [string compare -nocase $na $nb]
-    }
-
-    method CmpJid {a b} {
-        return [string compare -nocase [dict get $a -jid] [dict get $b -jid]]
-    }
-
-    method RebuildAll {args} {
-        $self UntrackAllAvatars
-        $self RebuildRoster
-        $self RebuildBookmarks
-    }
-
-    method RebuildRecentChats {} {
-        $treeview delete [$treeview children RecentChats]
-
-        # Merge roster + bookmark items into jid→item dict
-        set merged [dict create]
-        foreach item [concat $rosterItems $bookmarkItems] {
-            set jid [dict get $item -jid]
-            if {![dict exists $merged $jid]} {
-                dict set merged $jid $item
-            }
-        }
-
-        # Populate in order, cap at 20
-        set count 0
-        foreach jid $recentJids {
-            if {[dict exists $merged $jid]} {
-                set item [dict get $merged $jid]
-                set text [$self DisplayText $item]
-                set name [dict get $item -name]
-            } else {
-                set text $jid
-                set name $jid
-            }
-            if {$searchquery ne ""} {
-                set q [string tolower $searchquery]
-                if {[string first $q [string tolower $jid]] < 0 &&
-                    [string first $q [string tolower $name]] < 0} {
-                    continue
-                }
-            }
-            set img [$self TrackAvatar $jid]
-            $treeview insert RecentChats end -id "RecentChats/$jid" \
-                -text $text -image $img
-            if {[incr count] >= 20} break
-        }
-    }
-
-    method OnChatsUpdated {ev} {
-        set jid [dict get $ev -jid]
-        # Move JID to front of the list
-        set idx [lsearch -exact $recentJids $jid]
-        if {$idx >= 0} {
-            set recentJids [lreplace $recentJids $idx $idx]
-        }
-        set recentJids [linsert $recentJids 0 $jid]
-        $self RebuildRecentChats
-    }
-
-    method OnRecentChats {jids} {
-        set recentJids $jids
-        $self RebuildRecentChats
-    }
-
     method ConfigurePresenceTags {} {
         if {$prescolors} {
             $treeview tag configure available -foreground green4
@@ -404,7 +309,7 @@ snit::widget chatlistview {
 
     method OnShowAvatarsChanged {} {
         ::tacky setting set -key show_avatars -value $showAvatars
-        $self RebuildAll
+        $self Rebuild
     }
 
     method OnShowAvatarsSetting {ev} {
@@ -412,7 +317,7 @@ snit::widget chatlistview {
         if {$val ne ""} {
             set showAvatars $val
             if {[winfo exists $treeview]} {
-                $self RebuildAll
+                $self Rebuild
             }
         }
     }
@@ -446,7 +351,11 @@ snit::widget chatlistview {
             set section [$self GetSection $item]
             if {$section eq "RecentChats"} {
                 set jid [$self ItemJid $item]
-                set section [expr {[dict exists $bookmarkJids $jid] \
+                set source ""
+                if {[dict exists $itemSources $jid]} {
+                    set source [dict get $itemSources $jid]
+                }
+                set section [expr {$source in {bookmark both} \
                     ? "Bookmarks" : "Roster"}]
             }
             if {$section eq "Bookmarks"} {
@@ -487,7 +396,7 @@ snit::widget chatlistview {
     }
 
     method OnRefresh {} {
-        $self RebuildAll
+        $self Rebuild
         $options(-tacky) roster request -acc $options(-acc)
         $options(-tacky) bookmarks request -acc $options(-acc)
     }
@@ -584,8 +493,7 @@ snit::widget chatlistview {
     method OnAvatar {jid img} {
         # Keep cache in sync — avatarcache deletes the old Tk image when
         # a real avatar arrives, so the handle in trackedAvatars would be
-        # stale.  RebuildRecentChats reuses cached handles without a full
-        # UntrackAllAvatars cycle, so it needs the current image.
+        # stale.
         dict set trackedAvatars $jid $img
         foreach item [$self FindItemsByJid $jid] {
             $treeview item $item -image $img
@@ -636,7 +544,11 @@ snit::widget chatlistview {
         set section [$self GetSection $item]
         set jid [$self ItemJid $item]
         if {$section eq "RecentChats"} {
-            set section [expr {[dict exists $bookmarkJids $jid] \
+            set source ""
+            if {[dict exists $itemSources $jid]} {
+                set source [dict get $itemSources $jid]
+            }
+            set section [expr {$source in {bookmark both} \
                 ? "Bookmarks" : "Roster"}]
         }
         set opt [dict get {Roster -open-chat-command \

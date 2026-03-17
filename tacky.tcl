@@ -559,6 +559,17 @@ if 0 {
     #   -acc $jid -action add|update|remove -jid $roomJid
     tacky listen bookmarks <Changed> $command
 
+    # -- Chat List (taco/chatlist.tcl) --
+
+    # Aggregated contact list (roster + bookmarks + recent chats).
+    # Returns dict with keys: recent, roster, bookmarks.
+    tacky chatlist search -acc $jid ?-query $text? -command $cb
+
+    # Events:
+    # Fired when any underlying data source changes.
+    #   -acc $jid
+    tacky listen chatlist <Changed> -acc $acc $command
+
     # -- In-Band Registration (taco/register.tcl, XEP-0077) --
 
     # Start a registration handshake with an XMPP server.
