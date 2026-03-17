@@ -97,7 +97,8 @@ snit::type taco_messagestore {
     # Insert messages into the DB under regionVar's region. Deduplicates
     # by server_id/own_id (or content fallback), merges regions on
     # overlap, and confirms pending messages on echo. Returns dict with
-    # `confirmed` (list of {own_id, timestamp}) and `inserted` count.
+    # `confirmed` (list of {own_id, timestamp}) and `inserted` (list
+    # of stored timestamps, which may differ from input due to BumpTs).
     method "store batch" {messages regionVar} {
         if {[llength $messages] == 0} { return {} }
 
@@ -106,7 +107,7 @@ snit::type taco_messagestore {
 
         set mergedRegions {}
         set confirmed {}
-        set inserted 0
+        set insertedTimestamps {}
         set prevTs -1
 
         $options(-db) transaction {
@@ -151,7 +152,7 @@ snit::type taco_messagestore {
                         $status)
                 }
                 set prevTs $ts
-                incr inserted
+                lappend insertedTimestamps $ts
             }
 
             dict for {oldRegion _} $mergedRegions {
@@ -161,7 +162,7 @@ snit::type taco_messagestore {
                 }
             }
         }
-        return [dict create confirmed $confirmed inserted $inserted]
+        return [dict create confirmed $confirmed inserted $insertedTimestamps]
     }
 
     # Merge r2's region into r1's region for jid. Updates the caller's
@@ -302,6 +303,22 @@ snit::type taco_messagestore {
         return [list messages $all anchor $nearestTs]
     }
 
+    # Fetch rows by exact timestamps, applying RowToDict + AnnotatePrev.
+    method "get ids" {jid timestamps} {
+        set rows {}
+        foreach ts $timestamps {
+            $options(-db) eval {
+                SELECT timestamp, chat_jid, from_jid, body, server_id,
+                       own_id, raw_xml, server_status
+                FROM chat_message
+                WHERE chat_jid=$jid AND timestamp=$ts
+            } row {
+                lappend rows [$self RowToDict [array get row]]
+            }
+        }
+        return [$self AnnotatePrev $jid $rows]
+    }
+
     # Flip pending → received for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
     method confirmByOwnIds {ownIds} {
@@ -325,6 +342,10 @@ snit::type taco_messagestore {
         return $confirmed
     }
 
+    # Single enrichment point for DB rows → message dicts.
+    # All get methods funnel through here; event emitters (store,
+    # send, search) read back via get ids so live messages are
+    # enriched too.
     method RowToDict {row} {
         set row
     }

@@ -216,16 +216,14 @@ snit::type taco_message {
                 $client emit message <Confirmed> \
                     -jid $chatJid -timestamp [dict get $c timestamp]
             }
-        } elseif {[dict get $result inserted] > 0} {
-            set prevTs [$client db onecolumn {
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$chatJid AND region=$liveRegion
-                ORDER BY timestamp DESC LIMIT 1 OFFSET 1
-            }]
-            dict set msg prev $prevTs
-            $client emit message <Received> \
-                -jid $chatJid -from [xsearch $stanza -get @from] -body $body \
-                -message $msg
+        } else {
+            set inserted [dict get $result inserted]
+            if {[llength $inserted] > 0} {
+                set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
+                $client emit message <Received> \
+                    -jid $chatJid -from [xsearch $stanza -get @from] \
+                    -body [dict get $dbMsg body] -message $dbMsg
+            }
         }
     }
 
@@ -278,18 +276,12 @@ snit::type taco_message {
         if {$liveRegion eq ""} {
             $messagestore region new liveRegion
         }
-        $messagestore store batch [list $msg] liveRegion
-
-        set chatJid $opts(-chat_jid)
-        set prevTs [$client db onecolumn {
-            SELECT timestamp FROM chat_message
-            WHERE chat_jid=$chatJid AND region=$liveRegion
-            ORDER BY timestamp DESC LIMIT 1 OFFSET 1
-        }]
-        dict set msg prev $prevTs
+        set result [$messagestore store batch [list $msg] liveRegion]
+        set inserted [dict get $result inserted]
+        set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
         $client emit message <Sent> \
-            -jid $opts(-chat_jid) -body $opts(-body) -message $msg
+            -jid $opts(-chat_jid) -body $opts(-body) -message $dbMsg
 
         $client write $stanza
     }
@@ -655,8 +647,11 @@ snit::type taco_message {
             set msg [$self ParseResultNode $resultNode $chatJid]
             if {[dict get $msg body] eq ""} continue
             $messagestore region new r
-            $messagestore store batch [list $msg] r
-            lappend messages $msg
+            set result [$messagestore store batch [list $msg] r]
+            set ins [dict get $result inserted]
+            if {[llength $ins] > 0} {
+                lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]
+            }
         }
 
         set complete [dict get $mamResult complete]
