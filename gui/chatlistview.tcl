@@ -160,6 +160,10 @@ snit::widget chatlistview {
         set acc $options(-acc)
         $t listen -tag $win chatlist <Changed> -acc $acc \
             [mymethod Rebuild]
+        $t listen -tag $win chatlist <RecentTop> -acc $acc \
+            [mymethod OnRecentTop]
+        $t listen -tag $win chatlist <RecentDrop> -acc $acc \
+            [mymethod OnRecentDrop]
         $t listen -tag $win setting <Changed> -key show_presence_colors \
             [mymethod OnPresenceColorsSetting]
         $t listen -tag $win setting <Changed> -key show_avatars \
@@ -244,6 +248,53 @@ snit::widget chatlistview {
             }
         }
         $self UntrackAvatars $displayed
+    }
+
+    method OnRecentTop {args} {
+        array set opts {-jid "" -name "" -source "none"}
+        array set opts $args
+        set jid $opts(-jid)
+        set name $opts(-name)
+        set source $opts(-source)
+
+        if {![$self MatchesQueryLocal $jid $name]} return
+
+        set itemId "RecentChats/$jid"
+        if {[$treeview exists $itemId]} {
+            $treeview move $itemId RecentChats 0
+        } else {
+            set text $name
+            if {$text eq ""} { set text $jid }
+            set img [$self TrackAvatar $jid]
+            $treeview insert RecentChats 0 -id $itemId -text $text \
+                -image $img
+        }
+        dict set itemSources $jid $source
+    }
+
+    method OnRecentDrop {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        set jid $opts(-jid)
+        set itemId "RecentChats/$jid"
+        if {[$treeview exists $itemId]} {
+            $treeview delete $itemId
+            catch {avatarcache untrack -tag $win/$jid}
+            if {[dict exists $trackedAvatars $jid]} {
+                dict unset trackedAvatars $jid
+            }
+        }
+        if {[dict exists $itemSources $jid]} {
+            dict unset itemSources $jid
+        }
+    }
+
+    method MatchesQueryLocal {jid name} {
+        if {$searchquery eq ""} { return 1 }
+        set q [string tolower $searchquery]
+        if {[string first $q [string tolower $jid]] >= 0} { return 1 }
+        if {[string first $q [string tolower $name]] >= 0} { return 1 }
+        return 0
     }
 
     method PopulateSection {parent items} {

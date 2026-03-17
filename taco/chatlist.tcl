@@ -9,6 +9,7 @@ snit::type taco_chatlist {
 
     variable client
     variable db
+    variable RecentJids {}
 
     constructor args {
         $self configurelist $args
@@ -17,7 +18,7 @@ snit::type taco_chatlist {
 
         $client bus subscribe $self roster:<Changed> [mymethod OnDataChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnDataChanged]
-        $client bus subscribe $self chats:<Updated> [mymethod OnDataChanged]
+        $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
     }
 
     destructor {
@@ -26,6 +27,62 @@ snit::type taco_chatlist {
 
     method OnDataChanged {args} {
         $client emit chatlist <Changed>
+    }
+
+    method OnChatUpdated {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        set jid $opts(-jid)
+
+        set allJids [$client chats latest]
+        set newTop20 [lrange $allJids 0 19]
+
+        set name [$self ResolveName $jid]
+        set source [$self ResolveSource $jid]
+        set ev [list -jid $jid -name $name -source $source]
+        set aj [$self ResolveAutojoin $jid]
+        if {$aj ne ""} {
+            lappend ev -autojoin $aj
+        }
+        $client emit chatlist <RecentTop> {*}$ev
+
+        # Check if a JID fell off the old top-20
+        foreach old $RecentJids {
+            if {$old ni $newTop20} {
+                $client emit chatlist <RecentDrop> -jid $old
+            }
+        }
+
+        set RecentJids $newTop20
+    }
+
+    method ResolveName {jid} {
+        set name [$db onecolumn {
+            SELECT name FROM roster_item WHERE jid=$jid
+        }]
+        if {$name ne ""} { return $name }
+        $db onecolumn {
+            SELECT name FROM bookmark WHERE jid=$jid
+        }
+    }
+
+    method ResolveSource {jid} {
+        set inRoster [$db onecolumn {
+            SELECT count(*) FROM roster_item WHERE jid=$jid
+        }]
+        set inBookmark [$db onecolumn {
+            SELECT count(*) FROM bookmark WHERE jid=$jid
+        }]
+        if {$inRoster && $inBookmark} { return "both" }
+        if {$inRoster} { return "roster" }
+        if {$inBookmark} { return "bookmark" }
+        return "none"
+    }
+
+    method ResolveAutojoin {jid} {
+        $db onecolumn {
+            SELECT autojoin FROM bookmark WHERE jid=$jid
+        }
     }
 
     tackymethod search {args} {
@@ -99,6 +156,9 @@ snit::type taco_chatlist {
             lappend recent $entry
             if {[incr count] >= 20} break
         }
+
+        # Sync RecentJids from unfiltered top-20 for incremental updates
+        set RecentJids [lrange $chatJids 0 19]
 
         # 6. Roster section
         set roster {}

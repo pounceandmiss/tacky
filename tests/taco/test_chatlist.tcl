@@ -229,15 +229,21 @@ test chatlist-changed-on-bookmarks {chatlist <Changed> fires on bookmarks change
         set got
     } -result {1}
 
-test chatlist-changed-on-chats {chatlist <Changed> fires on chats update} \
+test chatlist-changed-on-chats {chats:<Updated> emits <RecentTop> not <Changed>} \
     {*}$chatlist_common \
     -body {
-        set got 0
+        # Initialize RecentJids state
+        c chatlist search
+        set gotTop 0
+        set gotChanged 0
+        tacky listen chatlist <RecentTop> \
+            {apply {{args} { set ::gotTop 1 }}}
         tacky listen chatlist <Changed> \
-            {apply {{args} { set ::got 1 }}}
+            {apply {{args} { set ::gotChanged 1 }}}
+        chatlist_chat_insert alice@example.com
         c bus publish chats:<Updated> -jid alice@example.com
-        set got
-    } -result {1}
+        list $gotTop $gotChanged
+    } -result {1 0}
 
 test chatlist-bookmark-autojoin {recent items from bookmarks include -autojoin} \
     {*}$chatlist_common \
@@ -258,3 +264,51 @@ test chatlist-bookmarks-roster-name {bookmarks section uses roster name when ava
         set item [lindex [dict get $result bookmarks] 0]
         dict get $item -name
     } -result {Roster Name}
+
+test chatlist-recent-top-metadata {<RecentTop> carries correct name and source} \
+    {*}$chatlist_common \
+    -body {
+        c chatlist search ;# init RecentJids
+        roster_insert alice@example.com name "Alice"
+        bookmark_insert alice@example.com name "Alice BM" autojoin 1
+        set ev {}
+        tacky listen chatlist <RecentTop> \
+            {apply {{ev} { set ::ev $ev }}}
+        chatlist_chat_insert alice@example.com
+        c bus publish chats:<Updated> -jid alice@example.com
+        list [dict get $ev -jid] [dict get $ev -name] \
+            [dict get $ev -source] [dict get $ev -autojoin]
+    } -result {alice@example.com Alice both 1}
+
+test chatlist-recent-drop {<RecentDrop> fires when JID falls off top-20} \
+    {*}$chatlist_common \
+    -body {
+        set ts [clock microseconds]
+        # Insert 20 chats so RecentJids is full
+        for {set i 0} {$i < 20} {incr i} {
+            chatlist_chat_insert user${i}@example.com \
+                timestamp [expr {$ts + $i}]
+        }
+        c chatlist search ;# init RecentJids
+
+        set dropped {}
+        tacky listen chatlist <RecentDrop> \
+            {apply {{ev} {
+                lappend ::dropped [dict get $ev -jid]
+            }}}
+        # Insert a 21st chat — user0 (oldest) should drop
+        chatlist_chat_insert new@example.com \
+            timestamp [expr {$ts + 100}]
+        c bus publish chats:<Updated> -jid new@example.com
+        set dropped
+    } -result {user0@example.com}
+
+test chatlist-roster-change-still-emits-changed {roster/bookmark changes emit <Changed>} \
+    {*}$chatlist_common \
+    -body {
+        set got 0
+        tacky listen chatlist <Changed> \
+            {apply {{args} { set ::got 1 }}}
+        c bus publish roster:<Changed> -action add -jid alice@example.com
+        set got
+    } -result {1}
