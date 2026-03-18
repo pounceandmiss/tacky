@@ -170,7 +170,8 @@ snit::widgetadaptor chatview {
         # PixelsAbove would get a weird value of ~58000, I figure
         # because the widget didn't have real geometry yet, and
         # cleanup would kick in erasing everything. No idea why it
-        # only happened with one chat.  bind $win.text <Configure> {}
+        # only happened with one chat.
+        bind $win.text <Configure> {}
         $self InitialLoad
     }
 
