@@ -135,12 +135,14 @@ snit::widgetadaptor chatview {
 
     variable WasAtEnd
     variable IsMuc
+    variable ScrollBtnVisible
 
     constructor args {
         installhull using chatarea -thirst-command [mymethod OnThirst] \
             -avatar-release-command [mymethod OnAvatarRelease]
         $self configurelist $args
         set WasAtEnd 1
+        set ScrollBtnVisible 0
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set TrackedAvatars [list]
         set LoadToken [dict create old 0 new 0]
@@ -156,6 +158,9 @@ snit::widgetadaptor chatview {
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
+        ttk::button $win.scrollbtn -image mate/22x22/actions/go-down \
+            -style Toolbutton -command [mymethod ScrollToBottom]
+        bind $win.text <<Yview>> +[mymethod OnScroll]
         bind $win.text <Configure> [mymethod OnFirstConfigure]
     }
 
@@ -180,6 +185,7 @@ snit::widgetadaptor chatview {
     method OnInitialLoadDone {messages} {
         dict set LoadToken new 0
         $self ProcessBatch $messages
+        $self UpdateWasAtEnd
         $hull see end
     }
 
@@ -237,6 +243,7 @@ snit::widgetadaptor chatview {
         $hull clear
         set LoadToken [dict create old 0 new 0]
         $self ProcessBatch $messages
+        $self UpdateWasAtEnd
         if {$anchor ne "" && $anchor in [$hull messages ids]} {
             $hull see message $anchor
         }
@@ -300,24 +307,53 @@ snit::widgetadaptor chatview {
         if {$direction eq "old"} {
             set messages [lreverse $messages]
         }
-        if {$direction eq "new"} {
-            set WasAtEnd [$hull atEnd]
-        }
+        set atEnd [$hull atEnd]
         $self ProcessBatch $messages
-        if {$direction eq "new" && $WasAtEnd} {
+        $self UpdateWasAtEnd
+        if {$direction eq "new" && $atEnd} {
             $hull see end
         }
     }
 
     method OnLiveMessage {ev} {
-        set WasAtEnd [$hull atEnd]
+        set atEnd [$hull atEnd]
         $self ProcessBatch [list [dict get $ev -message]]
-        if {$WasAtEnd} { $hull see end }
+        $self UpdateWasAtEnd
+        if {$atEnd} { $hull see end }
     }
 
     method OnConfirmed {ev} {
         set ts [dict get $ev -timestamp]
         $hull receipt update $ts delivered
+    }
+
+    method OnScroll {} {
+        $self UpdateWasAtEnd
+    }
+
+    method UpdateWasAtEnd {} {
+        set newest [$hull messages newest]
+        set dbNewest [::tacky chats maxTimestamp \
+            -acc $options(-acc) -chat $options(-jid)]
+        set hasNewest [expr {$newest ne "" && $newest eq $dbNewest}]
+        set WasAtEnd [expr {$hasNewest && [$hull atEnd]}]
+        $self UpdateScrollBtn
+    }
+
+    method UpdateScrollBtn {} {
+        if {!$WasAtEnd == $ScrollBtnVisible} return
+        set ScrollBtnVisible [expr {!$WasAtEnd}]
+        if {$ScrollBtnVisible} {
+            place $win.scrollbtn -in $win.text \
+                -relx 1.0 -rely 1.0 -anchor se -x -24 -y -8
+            raise $win.scrollbtn
+        } else {
+            place forget $win.scrollbtn
+        }
+    }
+
+    method ScrollToBottom {} {
+        $self goto end
     }
 
     method EnrichMessage {storeDict} {
