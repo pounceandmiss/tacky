@@ -160,6 +160,9 @@ snit::widgetadaptor chatview {
         }
         ttk::button $win.scrollbtn -image mate/22x22/actions/go-down \
             -style Toolbutton -command [mymethod ScrollToBottom]
+        bind $win.scrollbtn <Button-4> [list event generate $win.text <Button-4>]
+        bind $win.scrollbtn <Button-5> [list event generate $win.text <Button-5>]
+        bind $win.scrollbtn <MouseWheel> [list event generate $win.text <MouseWheel> -delta %D]
         bind $win.text <<Yview>> +[mymethod OnScroll]
         bind $win.text <Configure> [mymethod OnFirstConfigure]
     }
