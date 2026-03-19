@@ -80,6 +80,15 @@ snit::type taco_chats {
         }
     }
 
+    tackymethod maxTimestamp {args} {
+        array set opts $args
+        set jid $opts(-chat)
+        if {[dict exists $MaxTimestamps $jid]} {
+            return [dict get $MaxTimestamps $jid]
+        }
+        return ""
+    }
+
     # latest — returns ordered list of bare JIDs, most recent message first.
     tackymethod latest {args} {
         set seen [dict create]

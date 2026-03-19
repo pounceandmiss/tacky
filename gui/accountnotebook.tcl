@@ -1,24 +1,34 @@
-snit::widgetadaptor accountnotebook {
+snit::widget accountnotebook {
+    hulltype ttk::frame
+
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
     option -open-bookmark-command -default ""
     option -menubar -default "" -readonly yes
 
-    variable tabs {}
+    delegate option -width to hull
+    delegate option -height to hull
 
-    delegate method * to hull
-    delegate option * to hull
+    variable tabs {}
+    variable combo ""
+    variable pages_w ""
+    variable jidList {}
 
     constructor args {
-        installhull using ttk::notebook
         $self configurelist $args
+
+        set combo [ttk::combobox $win.combo -state readonly]
+        pack $combo -fill x
+        bind $combo <<ComboboxSelected>> [mymethod OnSelect]
+
+        set pages_w [pages $win.pages]
+        pack $pages_w -fill both -expand yes
 
         set tacky $options(-tacky)
         $tacky listen -tag $self account <Enabled>  [mymethod OnAccountEnabled]
         $tacky listen -tag $self account <Disabled> [mymethod OnAccountDisabled]
         $tacky listen -tag $self account <Removed>  [mymethod OnAccountRemoved]
 
-        # Populate tabs for already-enabled accounts
         $tacky account list -enabled 1 -tag $self -command [mymethod OnInitialAccounts]
     }
 
@@ -41,30 +51,58 @@ snit::widgetadaptor accountnotebook {
         if {[dict exists $tabs $jid]} return
         set safe [string map {@ _ . _} $jid]
 
-        set panel [accountpanel $win.$safe \
+        set panel [accountpanel $pages_w.$safe \
             -account $jid \
             -tacky $options(-tacky) \
             -open-chat-command $options(-open-chat-command) \
             -open-bookmark-command $options(-open-bookmark-command) \
             -menubar $options(-menubar)]
 
-        $hull add $panel -text $jid
+        $pages_w add $panel
         dict set tabs $jid $panel
+        lappend jidList $jid
+        $combo configure -values $jidList
+
+        # Auto-select first account
+        if {[llength $jidList] == 1} {
+            $combo set $jid
+            $pages_w raise $panel
+        }
     }
 
     method CurrentAccountJid {} {
-        set sel [$hull select]
-        if {$sel eq ""} { return "" }
-        dict for {jid child} $tabs {
-            if {$child eq $sel} { return $jid }
-        }
-        return ""
+        return [$combo get]
     }
 
     method RemoveTab {jid} {
         if {![dict exists $tabs $jid]} return
         set child [dict get $tabs $jid]
+        set wasSelected [expr {[$combo get] eq $jid}]
+
         destroy $child
         dict unset tabs $jid
+
+        set idx [lsearch -exact $jidList $jid]
+        if {$idx >= 0} {
+            set jidList [lreplace $jidList $idx $idx]
+        }
+        $combo configure -values $jidList
+
+        if {$wasSelected} {
+            if {[llength $jidList] > 0} {
+                set newJid [lindex $jidList 0]
+                $combo set $newJid
+                $pages_w raise [dict get $tabs $newJid]
+            } else {
+                $combo set ""
+            }
+        }
+    }
+
+    method OnSelect {} {
+        set jid [$combo get]
+        if {$jid ne "" && [dict exists $tabs $jid]} {
+            $pages_w raise [dict get $tabs $jid]
+        }
     }
 }
