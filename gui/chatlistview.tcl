@@ -217,7 +217,7 @@ snit::widget chatlistview {
         # Build itemSources from recent items
         set itemSources {}
         foreach item $recentItems {
-            dict set itemSources [dict get $item -jid] [dict get $item -source]
+            dict set itemSources [dict get $item jid] [dict get $item source]
         }
 
         # Populate Roster
@@ -316,12 +316,12 @@ snit::widget chatlistview {
 
     method PopulateSection {parent items} {
         foreach item $items {
-            set jid  [dict get $item -jid]
+            set jid  [dict get $item jid]
             set text [$self DisplayText $item]
             set img  [$self TrackAvatar $jid]
             set tags {}
-            if {[dict exists $item -muc-status] &&
-                [dict get $item -muc-status] eq "error"} {
+            if {[dict exists $item muc-status] &&
+                [dict get $item muc-status] eq "error"} {
                 set tags muc_error
             }
             $treeview insert $parent end -id "$parent/$jid" -text $text \
@@ -331,9 +331,9 @@ snit::widget chatlistview {
 
     method PopulateGrouped {items} {
         foreach item $items {
-            set jid    [dict get $item -jid]
+            set jid    [dict get $item jid]
             set text   [$self DisplayText $item]
-            set groups [dict get $item -groups]
+            set groups [dict get $item groups]
             set img [$self TrackAvatar $jid]
 
             if {[llength $groups] == 0} {
@@ -593,9 +593,9 @@ snit::widget chatlistview {
     }
 
     method DisplayText {item} {
-        set name [dict get $item -name]
+        set name [dict get $item name]
         if {$name ne ""} { return $name }
-        return [dict get $item -jid]
+        return [dict get $item jid]
     }
 
     method IsLeaf {item} {

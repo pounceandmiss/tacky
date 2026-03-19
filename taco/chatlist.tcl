@@ -137,15 +137,15 @@ snit::type taco_chatlist {
         # 2. Build JID→name map (roster name wins over bookmark name)
         set jidName [dict create]
         foreach item $bookmarkItems {
-            set jid [dict get $item -jid]
-            set name [dict get $item -name]
+            set jid [dict get $item jid]
+            set name [dict get $item name]
             if {$name ne ""} {
                 dict set jidName $jid $name
             }
         }
         foreach item $rosterItems {
-            set jid [dict get $item -jid]
-            set name [dict get $item -name]
+            set jid [dict get $item jid]
+            set name [dict get $item name]
             if {$name ne ""} {
                 dict set jidName $jid $name
             }
@@ -154,11 +154,11 @@ snit::type taco_chatlist {
         # 3. Build JID→source map
         set jidSource [dict create]
         foreach item $rosterItems {
-            set jid [dict get $item -jid]
+            set jid [dict get $item jid]
             dict set jidSource $jid roster
         }
         foreach item $bookmarkItems {
-            set jid [dict get $item -jid]
+            set jid [dict get $item jid]
             if {[dict exists $jidSource $jid]} {
                 dict set jidSource $jid both
             } else {
@@ -169,7 +169,7 @@ snit::type taco_chatlist {
         # 4. Build bookmark autojoin lookup
         set bmAutojoin [dict create]
         foreach item $bookmarkItems {
-            dict set bmAutojoin [dict get $item -jid] [dict get $item -autojoin]
+            dict set bmAutojoin [dict get $item jid] [dict get $item autojoin]
         }
 
         # 5. Recent section
@@ -186,10 +186,10 @@ snit::type taco_chatlist {
             if {[dict exists $jidSource $jid]} {
                 set source [dict get $jidSource $jid]
             }
-            set entry [list -jid $jid -name $name -source $source]
+            set entry [list jid $jid name $name source $source]
             if {$source in {bookmark both}} {
-                lappend entry -autojoin [dict get $bmAutojoin $jid]
-                lappend entry -muc-status [$self ResolveMucStatus $jid]
+                lappend entry autojoin [dict get $bmAutojoin $jid]
+                lappend entry muc-status [$self ResolveMucStatus $jid]
             }
             lappend recent $entry
             if {[incr count] >= 20} break
@@ -201,8 +201,8 @@ snit::type taco_chatlist {
         # 6. Roster section
         set roster {}
         foreach item $rosterItems {
-            set jid [dict get $item -jid]
-            set name [dict get $item -name]
+            set jid [dict get $item jid]
+            set name [dict get $item name]
             if {![$self MatchesQuery $jid $name $query]} continue
             lappend roster $item
         }
@@ -211,9 +211,9 @@ snit::type taco_chatlist {
         # 7. Bookmarks section
         set bookmarks {}
         foreach item $bookmarkItems {
-            set jid [dict get $item -jid]
+            set jid [dict get $item jid]
             # Use roster name if available, else bookmark name
-            set name [dict get $item -name]
+            set name [dict get $item name]
             if {[dict exists $jidName $jid]} {
                 set resolvedName [dict get $jidName $jid]
             } else {
@@ -222,8 +222,8 @@ snit::type taco_chatlist {
             if {![$self MatchesQuery $jid $resolvedName $query]} continue
             # Replace name with resolved name for display
             set entry $item
-            dict set entry -name $resolvedName
-            dict set entry -muc-status [$self ResolveMucStatus $jid]
+            dict set entry name $resolvedName
+            dict set entry muc-status [$self ResolveMucStatus $jid]
             lappend bookmarks $entry
         }
         set bookmarks [$self SortItems $bookmarks $sort]
@@ -247,14 +247,14 @@ snit::type taco_chatlist {
     }
 
     method CmpName {a b} {
-        set na [dict get $a -name]
-        set nb [dict get $b -name]
-        if {$na eq ""} { set na [dict get $a -jid] }
-        if {$nb eq ""} { set nb [dict get $b -jid] }
+        set na [dict get $a name]
+        set nb [dict get $b name]
+        if {$na eq ""} { set na [dict get $a jid] }
+        if {$nb eq ""} { set nb [dict get $b jid] }
         string compare -nocase $na $nb
     }
 
     method CmpJid {a b} {
-        string compare -nocase [dict get $a -jid] [dict get $b -jid]
+        string compare -nocase [dict get $a jid] [dict get $b jid]
     }
 }

@@ -82,7 +82,7 @@ test chatlist-recent-order {recent section ordered by last message time} \
         set result [c chatlist search]
         set jids {}
         foreach item [dict get $result recent] {
-            lappend jids [dict get $item -jid]
+            lappend jids [dict get $item jid]
         }
         set jids
     } -result {carol@example.com bob@example.com alice@example.com}
@@ -94,7 +94,7 @@ test chatlist-source-roster-only {source is roster when only in roster} \
         roster_insert alice@example.com name Alice
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -source
+        dict get $item source
     } -result {roster}
 
 test chatlist-source-bookmark-only {source is bookmark when only in bookmarks} \
@@ -104,7 +104,7 @@ test chatlist-source-bookmark-only {source is bookmark when only in bookmarks} \
         bookmark_insert room@muc.example.com name "My Room"
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -source
+        dict get $item source
     } -result {bookmark}
 
 test chatlist-source-both {source is both when in roster and bookmarks} \
@@ -115,7 +115,7 @@ test chatlist-source-both {source is both when in roster and bookmarks} \
         bookmark_insert alice@example.com name "Alice BM"
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -source
+        dict get $item source
     } -result {both}
 
 test chatlist-source-none {source is none when not in roster or bookmarks} \
@@ -124,7 +124,7 @@ test chatlist-source-none {source is none when not in roster or bookmarks} \
         chatlist_chat_insert stranger@example.com
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -source
+        dict get $item source
     } -result {none}
 
 test chatlist-name-resolution {roster name wins over bookmark name} \
@@ -135,7 +135,7 @@ test chatlist-name-resolution {roster name wins over bookmark name} \
         bookmark_insert alice@example.com name "Alice B"
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -name
+        dict get $item name
     } -result {Alice R}
 
 test chatlist-search-filter {search filters by name and JID case-insensitively} \
@@ -147,7 +147,7 @@ test chatlist-search-filter {search filters by name and JID case-insensitively} 
         set result [c chatlist search -query "ali"]
         set jids {}
         foreach item [dict get $result roster] {
-            lappend jids [dict get $item -jid]
+            lappend jids [dict get $item jid]
         }
         set jids
     } -result {alice@example.com}
@@ -160,13 +160,13 @@ test chatlist-search-jid-match {search matches JID even when name differs} \
         llength [dict get $result roster]
     } -result {1}
 
-test chatlist-roster-groups {roster items include -groups field} \
+test chatlist-roster-groups {roster items include groups field} \
     {*}$chatlist_common \
     -body {
         roster_insert alice@example.com name Alice groups {Friends Work}
         set result [c chatlist search]
         set item [lindex [dict get $result roster] 0]
-        dict get $item -groups
+        dict get $item groups
     } -result {Friends Work}
 
 test chatlist-sort-by-name {roster and bookmarks sorted by name} \
@@ -178,7 +178,7 @@ test chatlist-sort-by-name {roster and bookmarks sorted by name} \
         set result [c chatlist search]
         set names {}
         foreach item [dict get $result roster] {
-            lappend names [dict get $item -name]
+            lappend names [dict get $item name]
         }
         set names
     } -result {Alice Bob Carol}
@@ -191,7 +191,7 @@ test chatlist-sort-fallback-jid {items with no name sort by JID} \
         set result [c chatlist search]
         set jids {}
         foreach item [dict get $result roster] {
-            lappend jids [dict get $item -jid]
+            lappend jids [dict get $item jid]
         }
         set jids
     } -result {alice@example.com carol@example.com}
@@ -245,14 +245,14 @@ test chatlist-changed-on-chats {chats:<Updated> emits <RecentTop> not <Changed>}
         list $gotTop $gotChanged
     } -result {1 0}
 
-test chatlist-bookmark-autojoin {recent items from bookmarks include -autojoin} \
+test chatlist-bookmark-autojoin {recent items from bookmarks include autojoin} \
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert room@muc.example.com
         bookmark_insert room@muc.example.com name "My Room" autojoin 1
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -autojoin
+        dict get $item autojoin
     } -result {1}
 
 test chatlist-bookmarks-roster-name {bookmarks section uses roster name when available} \
@@ -262,7 +262,7 @@ test chatlist-bookmarks-roster-name {bookmarks section uses roster name when ava
         bookmark_insert room@muc.example.com name "Bookmark Name"
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item -name
+        dict get $item name
     } -result {Roster Name}
 
 test chatlist-recent-top-metadata {<RecentTop> carries correct name and source} \
@@ -313,33 +313,33 @@ test chatlist-roster-change-still-emits-changed {roster/bookmark changes emit <C
         set got
     } -result {1}
 
-test chatlist-muc-status-default {bookmark items have -muc-status "" by default} \
+test chatlist-muc-status-default {bookmark items have muc-status "" by default} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item -muc-status
+        dict get $item muc-status
     } -result {}
 
-test chatlist-muc-status-joined {-muc-status is joined after muc:<Joined>} \
+test chatlist-muc-status-joined {muc-status is joined after muc:<Joined>} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         c bus publish muc:<Joined> -jid room@muc.example.com -nick me
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item -muc-status
+        dict get $item muc-status
     } -result {joined}
 
-test chatlist-muc-status-error {-muc-status is error after muc:<Error>} \
+test chatlist-muc-status-error {muc-status is error after muc:<Error>} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item -muc-status
+        dict get $item muc-status
     } -result {error}
 
 test chatlist-muc-status-event {chatlist <MucStatus> fires with correct args} \
@@ -352,7 +352,7 @@ test chatlist-muc-status-event {chatlist <MucStatus> fires with correct args} \
         list [dict get $ev -jid] [dict get $ev -muc-status]
     } -result {room@muc.example.com error}
 
-test chatlist-muc-status-recent {recent bookmark items include -muc-status} \
+test chatlist-muc-status-recent {recent bookmark items include muc-status} \
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert room@muc.example.com
@@ -360,5 +360,5 @@ test chatlist-muc-status-recent {recent bookmark items include -muc-status} \
         c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item -muc-status
+        dict get $item muc-status
     } -result {error}

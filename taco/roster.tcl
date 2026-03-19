@@ -66,15 +66,15 @@ snit::type taco_roster {
         $client db eval {
             SELECT jid, name, subscription, ask, approved FROM roster_item
         } row {
-            set entry [list -jid $row(jid) -name $row(name) \
-                -subscription $row(subscription) -ask $row(ask) \
-                -approved $row(approved)]
+            set entry [list jid $row(jid) name $row(name) \
+                subscription $row(subscription) ask $row(ask) \
+                approved $row(approved)]
             # Gather groups for this item
             set groups [$client db eval {
                 SELECT group_name FROM roster_item_group
                 WHERE roster_item_jid=$row(jid) ORDER BY group_name
             }]
-            lappend entry -groups $groups
+            lappend entry groups $groups
             lappend results $entry
         }
         return $results

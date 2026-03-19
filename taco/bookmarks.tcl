@@ -48,9 +48,9 @@ snit::type taco_bookmarks {
         $client db eval {
             SELECT jid, name, autojoin, nick, password FROM bookmark
         } row {
-            set entry [list -jid $row(jid) -name $row(name) \
-                -autojoin $row(autojoin) -nick $row(nick) \
-                -password $row(password)]
+            set entry [list jid $row(jid) name $row(name) \
+                autojoin $row(autojoin) nick $row(nick) \
+                password $row(password)]
             lappend results $entry
         }
         return $results

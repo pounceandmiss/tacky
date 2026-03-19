@@ -13,17 +13,17 @@ Callback receives a dict with three keys:
 Ordered by last message time, capped at 20.
 
 ```tcl
--jid $jid -name $resolvedName -source roster|bookmark|both|none
+jid $jid name $resolvedName source roster|bookmark|both|none
 ```
 
-Items with source `bookmark` or `both` also include `-autojoin 0|1`.
+Items with source `bookmark` or `both` also include `autojoin 0|1`.
 
 ### roster
 
 Sorted by `-sort` (default: name, fallback to JID when unnamed).
 
 ```tcl
--jid $jid -name $name -subscription $sub -ask $ask -approved $bool -groups {g1 g2}
+jid $jid name $name subscription $sub ask $ask approved $bool groups {g1 g2}
 ```
 
 ### bookmarks
@@ -31,7 +31,7 @@ Sorted by `-sort` (default: name, fallback to JID when unnamed).
 Same sort order as roster. Name resolved (roster name wins).
 
 ```tcl
--jid $jid -name $resolvedName -autojoin $bool -nick $nick -password $pw
+jid $jid name $resolvedName autojoin $bool nick $nick password $pw
 ```
 
 ## Events
