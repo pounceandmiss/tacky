@@ -39,7 +39,20 @@ proc _test_on_error {id errmsg} {
         [json::write string $errmsg]]
 }
 
+proc strip_dashes {d} {
+    set out {}
+    dict for {k v} $d { lappend out [string trimleft $k -] $v }
+    return $out
+}
+
+proc add_dashes {d} {
+    set out {}
+    dict for {k v} $d { lappend out -$k $v }
+    return $out
+}
+
 proc _test_emit {module event args} {
+    set args [strip_dashes $args]
     set json_args [jsonify convert $module/$event $args]
     _test_pipesend [json::write array \
         [json::write string event] \
@@ -81,16 +94,16 @@ test json-backend-callback-bool {callback with scalar bool} -setup {
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 3 true]
 
-test json-backend-callback-roster {roster items keep dashed keys} -setup {
+test json-backend-callback-roster {roster items use dashless keys} -setup {
     _test_clear
 } -body {
-    set items [list [dict create -jid a@b -approved 1 -groups {x}]]
+    set items [list [dict create jid a@b approved 1 groups {x}]]
     _test_on_result 2 roster/get $items
     lindex [_test_sent] 0
 } -result [json::write array \
     {"result"} 2 \
     [json::write array \
-        [json::write object -jid {"a@b"} -approved true -groups [json::write array {"x"}]]]]
+        [json::write object jid {"a@b"} approved true groups [json::write array {"x"}]]]]
 
 # -- _on_error tests ---------------------------------------------------------
 
@@ -112,7 +125,7 @@ test json-backend-error-special-chars {error with special chars} -setup {
 
 # -- emit tests --------------------------------------------------------------
 
-test json-backend-emit-event {emit event with schema, keys keep dashes} -setup {
+test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit message <Received> \
@@ -122,23 +135,23 @@ test json-backend-emit-event {emit event with schema, keys keep dashes} -setup {
 } -result [json::write array \
     {"event"} {"message"} {"<Received>"} \
     [json::write object \
-        -message [json::write object timestamp 100 body {"hello"} hollow false] \
-        -timestamp 100]]
+        message [json::write object timestamp 100 body {"hello"} hollow false] \
+        timestamp 100]]
 
-test json-backend-emit-no-schema {emit event without schema, keys keep dashes} -setup {
+test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit account <Added> -acc user@example.com
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"account"} {"<Added>"} \
-    [json::write object -acc {"user@example.com"}]]
+    [json::write object acc {"user@example.com"}]]
 
 # -- dispatch (JSON parsing) tests ------------------------------------------
 
-test json-backend-parse-with-id {parse array request with id} -body {
-    set parts [::json::json2dict {["message","search",{"-acc":"user@srv","-chat":"room@muc"},1]}]
-    set args [lindex $parts 2]
+test json-backend-parse-with-id {parse request, add_dashes produces dashed dict} -body {
+    set parts [::json::json2dict {["message","search",{"acc":"user@srv","chat":"room@muc"},1]}]
+    set args [add_dashes [lindex $parts 2]]
     list [lindex $parts 0] [lindex $parts 1] $args [lindex $parts 3]
 } -result {message search {-acc user@srv -chat room@muc} 1}
 
@@ -147,9 +160,9 @@ test json-backend-parse-no-id {parse array request without id} -body {
     list [lindex $parts 0] [lindex $parts 1] [llength $parts]
 } -result {account list 3}
 
-test json-backend-parse-with-args {args pass through with dashes} -body {
-    set parts [::json::json2dict {["chatlist","search",{"-acc":"a@b.c","-query":"hello"}]}]
-    set args [lindex $parts 2]
+test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -body {
+    set parts [::json::json2dict {["chatlist","search",{"acc":"a@b.c","query":"hello"}]}]
+    set args [add_dashes [lindex $parts 2]]
     list [dict get $args -acc] [dict get $args -query]
 } -result {a@b.c hello}
 

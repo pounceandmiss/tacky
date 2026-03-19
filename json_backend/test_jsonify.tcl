@@ -69,10 +69,10 @@ test jsonify-named-message {message named type} -body {
     timestamp 1000 body {"hi"} hollow true from_jid {"a@b"}]
 
 test jsonify-named-roster {roster_item with bool and list fields} -body {
-    jsonify to_json {-jid a@b -name Alice -approved 1 -groups {work friends}} roster_item
+    jsonify to_json {jid a@b name Alice approved 1 groups {work friends}} roster_item
 } -result [json::write object \
-    -jid {"a@b"} -name {"Alice"} -approved true \
-    -groups [json::write array {"work"} {"friends"}]]
+    jid {"a@b"} name {"Alice"} approved true \
+    groups [json::write array {"work"} {"friends"}]]
 
 # -- Schema-based convert ------------------------------------------------------
 
@@ -99,23 +99,23 @@ test jsonify-convert-search {message/search → dict with list and bool} -body {
 
 test jsonify-convert-presence {event with nested occupant dict} -body {
     set args [dict create \
-        -jid room@muc \
-        -occupant [dict create nick Bob jid bob@server role moderator]]
+        jid room@muc \
+        occupant [dict create nick Bob jid bob@server role moderator]]
     jsonify convert muc/<Presence> $args
 } -result [json::write object \
-    -jid {"room@muc"} \
-    -occupant [json::write object nick {"Bob"} jid {"bob@server"} role {"moderator"}]]
+    jid {"room@muc"} \
+    occupant [json::write object nick {"Bob"} jid {"bob@server"} role {"moderator"}]]
 
 test jsonify-convert-unavailable {list of ints + nested dict} -body {
     set args [dict create \
-        -jid room@muc \
-        -codes {301 307} \
-        -occupant [dict create nick Eve role none]]
+        jid room@muc \
+        codes {301 307} \
+        occupant [dict create nick Eve role none]]
     jsonify convert muc/<Unavailable> $args
 } -result [json::write object \
-    -jid {"room@muc"} \
-    -codes [json::write array 301 307] \
-    -occupant [json::write object nick {"Eve"} role {"none"}]]
+    jid {"room@muc"} \
+    codes [json::write array 301 307] \
+    occupant [json::write object nick {"Eve"} role {"none"}]]
 
 test jsonify-convert-bool {scalar bool via schema} -body {
     jsonify convert presence/isOnline 1
@@ -131,9 +131,9 @@ test jsonify-convert-unknown {unknown schema → dict of strings} -body {
 
 test jsonify-convert-roster {list of named types via schema} -body {
     set items [list \
-        [dict create -jid a@b -approved 1 -groups {x}] \
-        [dict create -jid c@d -approved 0 -groups {}]]
+        [dict create jid a@b approved 1 groups {x}] \
+        [dict create jid c@d approved 0 groups {}]]
     jsonify convert roster/get $items
 } -result [json::write array \
-    [json::write object -jid {"a@b"} -approved true -groups [json::write array {"x"}]] \
-    [json::write object -jid {"c@d"} -approved false -groups [json::write array]]]
+    [json::write object jid {"a@b"} approved true groups [json::write array {"x"}]] \
+    [json::write object jid {"c@d"} approved false groups [json::write array]]]

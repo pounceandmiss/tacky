@@ -90,8 +90,8 @@ jsonify_type jsonify \
     -types {
         message     {timestamp int prev int hollow bool}
         occupant    {}
-        roster_item {-approved bool -groups list}
-        bookmark    {-autojoin bool}
+        roster_item {approved bool groups list}
+        bookmark    {autojoin bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int}
     } \
@@ -122,13 +122,13 @@ jsonify_type jsonify \
             bookmarks {list bookmark}
         }}
 
-        message/<Received>      {dict {-message message -timestamp int}}
-        message/<Sent>          {dict {-message message}}
-        message/<Confirmed>     {dict {-timestamp int}}
-        message/<CatchupDone>   {dict {-count int}}
-        muc/<Presence>          {dict {-occupant occupant}}
-        muc/<Unavailable>       {dict {-codes {list int} -occupant occupant}}
-        muc/<NickChanged>       {dict {-self bool}}
-        muc/<ConfigChanged>     {dict {-codes {list int}}}
-        chatlist/<RecentTop>    {dict {-autojoin bool}}
+        message/<Received>      {dict {message message timestamp int}}
+        message/<Sent>          {dict {message message}}
+        message/<Confirmed>     {dict {timestamp int}}
+        message/<CatchupDone>   {dict {count int}}
+        muc/<Presence>          {dict {occupant occupant}}
+        muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
+        muc/<NickChanged>       {dict {self bool}}
+        muc/<ConfigChanged>     {dict {codes {list int}}}
+        chatlist/<RecentTop>    {dict {autojoin bool}}
     }

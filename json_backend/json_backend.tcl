@@ -7,13 +7,23 @@
 #                    ["result",token,data]                success reply
 #                    ["error",token,message]              error reply
 #
-# JSON keys keep the Tcl "-" prefix: {"-acc":"a@b"} maps to -acc a@b.
-
 package require json
 package require json::write
 json::write indented false
 
 source [file join [file dirname [info script]] jsonify.tcl]
+
+proc strip_dashes {d} {
+    set out {}
+    dict for {k v} $d { lappend out [string trimleft $k -] $v }
+    return $out
+}
+
+proc add_dashes {d} {
+    set out {}
+    dict for {k v} $d { lappend out -$k $v }
+    return $out
+}
 
 proc pipesend {msg} {
     puts stdout [string length $msg]
@@ -55,6 +65,7 @@ namespace eval ::tacky_ns {
             return
         }
         # Broadcast events → ["event", module, "<Event>", {args}]
+        set args [strip_dashes $args]
         set json_args [jsonify convert $module/$event $args]
         pipesend [json::write array \
             [json::write string event] \
@@ -78,6 +89,7 @@ lenpipe create _pipe stdin \
         set module [lindex $parts 0]
         set method [lindex $parts 1]
         set args [lindex $parts 2]
+        set args [add_dashes $args]
         # Optional token (4th element) → wire up -command/-onerror internally.
         set token [lindex $parts 3]
         if {$token ne ""} {

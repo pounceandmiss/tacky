@@ -28,15 +28,15 @@ Without a token, the request is fire-and-forget — the client only
 receives broadcast events. With a token (any integer), the backend
 sends a result or error reply keyed to that token.
 
-Argument keys use the same `-` prefix as the Tcl API.
+The JSON API uses clean keys without Tcl's `-` prefix.
 
 ### Examples
 
 ```json
-["account", "add", {"-acc": "user@example.com", "-password": "secret", "-domain": "example.com", "-username": "user"}]
-["muc", "join", {"-acc": "user@example.com", "-jid": "room@muc.example.com", "-nick": "me"}]
+["account", "add", {"acc": "user@example.com", "password": "secret", "domain": "example.com", "username": "user"}]
+["muc", "join", {"acc": "user@example.com", "jid": "room@muc.example.com", "nick": "me"}]
 ["account", "list", {}, 1]
-["roster", "get", {"-acc": "user@example.com"}, 2]
+["roster", "get", {"acc": "user@example.com"}, 2]
 ```
 
 ## Responses (backend → client)
@@ -50,10 +50,10 @@ Pushed whenever something happens in the backend. Not tied to a request.
 ```
 
 ```json
-["event", "account", "<Added>", {"-acc": "user@example.com"}]
-["event", "message", "<Received>", {"-acc": "user@example.com", "-jid": "room@muc", "-body": "hello", "-message": {"-timestamp": 1700000000, "-body": "hello", "-hollow": false}}]
-["event", "conn", "<State>", {"-acc": "user@example.com", "-state": "connected"}]
-["event", "muc", "<Joined>", {"-acc": "user@example.com", "-jid": "room@muc", "-nick": "me"}]
+["event", "account", "<Added>", {"acc": "user@example.com"}]
+["event", "message", "<Received>", {"acc": "user@example.com", "jid": "room@muc", "body": "hello", "message": {"timestamp": 1700000000, "body": "hello", "hollow": false}}]
+["event", "conn", "<State>", {"acc": "user@example.com", "state": "connected"}]
+["event", "muc", "<Joined>", {"acc": "user@example.com", "jid": "room@muc", "nick": "me"}]
 ```
 
 ### Request/response
@@ -67,7 +67,7 @@ result or error message for that token.
 ```
 
 ```json
-["result", 2, [{"-jid": "alice@example.com", "-name": "Alice"}]]
+["result", 2, [{"jid": "alice@example.com", "name": "Alice"}]]
 ["error", 2, "Account doesn't exist: nobody@example.com"]
 ```
 
