@@ -1,4 +1,11 @@
-# jsonify is sourced via tacky.tcl → taco.tcl
+# Unit tests for jsonify.tcl
+
+package require json::write
+json::write indented false
+
+if {[info commands ::jsonify] eq ""} {
+    source [file join [file dirname [info script]] jsonify.tcl]
+}
 
 # -- Primitives ---------------------------------------------------------------
 

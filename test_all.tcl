@@ -28,4 +28,8 @@ foreach script [lsort [glob [file join ./ tests taco *.tcl]]] {
     source $script
 }
 
+foreach script [lsort [glob [file join ./ json_backend test_*.tcl]]] {
+    source $script
+}
+
 cleanupTests

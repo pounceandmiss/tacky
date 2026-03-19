@@ -1,3 +1,4 @@
+package require snit
 package require json::write
 json::write indented false
 
@@ -79,7 +80,6 @@ snit::type jsonify_type {
         if {[dict exists $schemas $schema_key]} {
             set hint [dict get $schemas $schema_key]
         } else {
-            # No schema → treat as dict of strings
             set hint {dict {}}
         }
         return [$self to_json $value $hint]
@@ -106,6 +106,9 @@ jsonify_type jsonify \
         roster/get              {list roster_item}
         bookmarks/get           {list bookmark}
         bookmarks/autojoin      bool
+        account/list            list
+        account/exists          bool
+        account/get             {dict {enabled bool}}
         chats/latest            list
         presence/get            presence
         presence/isOnline       bool
