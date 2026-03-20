@@ -41,6 +41,11 @@ snit::widget accountnotebook {
 
     method OnInitialAccounts {result} {
         foreach jid $result { $self AddTab $jid }
+        # Re-raise selected panel so it sits on top of the grid stack
+        set sel [$combo get]
+        if {$sel ne ""} {
+            $pages_w raise [dict get $tabs $sel]
+        }
     }
 
     method OnAccountEnabled {ev} { $self AddTab [dict get $ev -acc] }
