@@ -1,0 +1,3 @@
+[submodule "zippy"]
+	path = zippy
+	url = https://github.com/pounceandmiss/zippy.git
