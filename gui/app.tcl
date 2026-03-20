@@ -19,7 +19,7 @@ snit::type app_type {
             }
             thread {
                 package require Thread
-                uplevel #0 [list source [file join [file dirname [info script]] taco/xmpprw.tcl]]
+                uplevel #0 [list source [file join [file dirname [info script]] .. libtacky taco xmpprw.tcl]]
                 tacky_init_threaded -transient $options(-transient)
             }
             default {

@@ -1,6 +1,5 @@
 # Unit tests for json_backend.tcl JSON formatting and dispatch logic.
 
-source [file join [file dirname [info script]] jsonify.tcl]
 package require json
 package require json::write
 json::write indented false
@@ -170,7 +169,7 @@ test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -b
 
 test json-backend-process-roundtrip {spawn json backend, send request, get response} \
     -constraints hasProcess -setup {
-    set backend [file join [file dirname [info script]] json_backend.tcl]
+    set backend [file join [file dirname [info script]] .. .. libtacky tackyd-json.tcl]
     set fd [open |[list [info nameofexecutable] $backend] r+]
     chan configure $fd -translation binary -buffering full -blocking 0
 } -body {

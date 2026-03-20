@@ -79,7 +79,7 @@ namespace eval ::tacky_ns {
 # Configure stdout for writing
 chan configure stdout -translation binary -buffering full
 
-source [file join [file dirname [info script]] .. taco taco.tcl]
+source [file join [file dirname [info script]] taco taco.tcl]
 
 # Read JSON commands from stdin via lenpipe.
 # json2dict turns a JSON array into a Tcl list:

@@ -5,7 +5,9 @@
 package require tcltest
 package require control
 package require snit
-source tacky.tcl
+set dir [file dirname [info script]]
+lappend auto_path [file join $dir libtacky]
+package require libtacky
 namespace import ::tcltest::*
 set _server [expr {[info exists ::env(XMPP_SERVER)] ? $::env(XMPP_SERVER) : ""}]
 
@@ -17,18 +19,20 @@ if {$_server ne ""} {
     ::tcltest::testConstraint notProsody   [expr {$_server ne "prosody"}]
     ::tcltest::testConstraint notMongoose  [expr {$_server ne "mongoose"}]
     ::tcltest::testConstraint notEjabberd  [expr {$_server ne "ejabberd"}]
-    foreach script [lsort [glob [file join ./ tests taco_integration *.tcl]]] {
+    foreach script [lsort [glob [file join $dir tests taco_integration *.tcl]]] {
         source $script
-    }    
+    }
 }
 
 
 
-foreach script [lsort [glob [file join ./ tests taco *.tcl]]] {
+foreach script [lsort [glob [file join $dir tests taco *.tcl]]] {
     source $script
 }
 
-foreach script [lsort [glob [file join ./ json_backend test_*.tcl]]] {
+source [file join $dir libtacky jsonify.tcl]
+
+foreach script [lsort [glob [file join $dir tests json_backend test_*.tcl]]] {
     source $script
 }
 

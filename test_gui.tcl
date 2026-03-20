@@ -7,11 +7,11 @@ proc bgerror {message} {
 package require tcltest
 package require control
 package require snit
-source tacky.tcl
-source taco/jid.tcl
-source taco/xsearch.tcl
+set dir [file dirname [info script]]
+lappend auto_path [file join $dir libtacky]
+package require libtacky
 
-foreach script [lsort [glob [file join ./ gui *.tcl]]] {
+foreach script [lsort [glob [file join $dir gui *.tcl]]] {
     source $script
 }
 
@@ -19,7 +19,7 @@ foreach script [lsort [glob [file join ./ gui *.tcl]]] {
 tacky_type create _bootstrap
 _bootstrap destroy
 
-source tests/taco/mock_conn.tcl
+source [file join $dir tests taco mock_conn.tcl]
 
 namespace import ::tcltest::*
 
@@ -30,7 +30,7 @@ proc wait {{ms 300}} {
     vwait ::_wait_done
 }
 
-foreach script [lsort [glob [file join ./ tests gui *.tcl]]] {
+foreach script [lsort [glob [file join $dir tests gui *.tcl]]] {
     source $script
 }
 

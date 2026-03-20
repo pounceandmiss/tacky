@@ -3,9 +3,6 @@
 package require json::write
 json::write indented false
 
-if {[info commands ::jsonify] eq ""} {
-    source [file join [file dirname [info script]] jsonify.tcl]
-}
 
 # -- Primitives ---------------------------------------------------------------
 

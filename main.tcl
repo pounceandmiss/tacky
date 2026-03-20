@@ -28,11 +28,11 @@ proc bgerror {message} {
     puts stderr $::errorInfo
 }
 
-source tacky.tcl
-source taco/jid.tcl
-source taco/xsearch.tcl
+set dir [file dirname [info script]]
+lappend auto_path [file join $dir libtacky]
+package require libtacky
 
-foreach script [lsort [glob [file join ./ gui *.tcl]]] {
+foreach script [lsort [glob [file join $dir gui *.tcl]]] {
     source $script
 }
 
