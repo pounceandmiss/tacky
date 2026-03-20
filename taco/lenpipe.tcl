@@ -1,14 +1,16 @@
 # lenpipe — length-prefixed message framing over a non-blocking channel.
 #
 # Protocol (both directions):
-#   <char_length>\n<payload>     (repeating, no separator after payload)
+#   <byte_length>\n<payload>     (repeating, no separator after payload)
 #
 # Usage:
 #   lenpipe create name $fd -onmessage $cmd -oneof $cmd
 #   $name send $msg
 #   $name destroy
 #
-# The channel is configured non-blocking with UTF-8 encoding.
+# The channel is configured non-blocking with binary encoding so that
+# lengths and read counts refer to bytes, not characters.  Payloads are
+# UTF-8 on the wire; conversion happens at the message boundary.
 # Partial reads are handled via a two-state machine (len / data).
 
 oo::class create lenpipe {
@@ -17,7 +19,7 @@ oo::class create lenpipe {
     variable OnEof     ;# callback script invoked on EOF
     variable State     ;# "len" = reading length line, "data" = reading payload
     variable Buf       ;# accumulated payload bytes for current message
-    variable Expected  ;# character count expected for current payload
+    variable Expected  ;# byte count expected for current payload
 
     constructor {fd args} {
         set Fd $fd
@@ -32,7 +34,7 @@ oo::class create lenpipe {
         set State len
         set Buf ""
         set Expected 0
-        chan configure $Fd -translation lf -encoding utf-8 -buffering full -blocking 0
+        chan configure $Fd -translation binary -buffering full -blocking 0
         chan event $Fd readable [namespace code {my _onReadable}]
     }
 
@@ -41,8 +43,9 @@ oo::class create lenpipe {
     }
 
     method send {msg} {
-        puts $Fd [string length $msg]
-        puts -nonewline $Fd $msg
+        set bytes [encoding convertto utf-8 $msg]
+        puts $Fd [string length $bytes]
+        puts -nonewline $Fd $bytes
         flush $Fd
     }
 
@@ -66,7 +69,7 @@ oo::class create lenpipe {
                         return
                     }
                 }
-                set msg $Buf
+                set msg [encoding convertfrom utf-8 $Buf]
                 set State len
                 set Buf ""
                 set Expected 0

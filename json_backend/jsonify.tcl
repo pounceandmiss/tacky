@@ -113,6 +113,8 @@ jsonify_type jsonify \
         presence/get            presence
         presence/isOnline       bool
         avatar/metadata         avatar_meta
+        avatar/thumb            base64
+        avatar/data             base64
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list

@@ -7,8 +7,9 @@
 # Outgoing (stdout): event <module> <event> <args>
 
 proc pipesend {msg} {
-    puts stdout [string length $msg]
-    puts -nonewline stdout $msg
+    set bytes [encoding convertto utf-8 $msg]
+    puts stdout [string length $bytes]
+    puts -nonewline stdout $bytes
     flush stdout
 }
 
@@ -21,7 +22,7 @@ namespace eval ::tacky_ns {
 }
 
 # Configure stdout for writing
-chan configure stdout -translation lf -encoding utf-8 -buffering full
+chan configure stdout -translation binary -buffering full
 
 source [file join [file dirname [info script]] taco taco.tcl]
 

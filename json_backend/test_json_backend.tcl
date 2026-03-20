@@ -172,18 +172,18 @@ test json-backend-process-roundtrip {spawn json backend, send request, get respo
     -constraints hasProcess -setup {
     set backend [file join [file dirname [info script]] json_backend.tcl]
     set fd [open |[list [info nameofexecutable] $backend] r+]
-    chan configure $fd -translation lf -encoding utf-8 -buffering full -blocking 0
+    chan configure $fd -translation binary -buffering full -blocking 0
 } -body {
-    set req {["account","list",{},1]}
+    set req [encoding convertto utf-8 {["account","list",{},1]}]
     puts $fd [string length $req]
     puts -nonewline $fd $req
     flush $fd
-    chan configure $fd -blocking 1
+    chan configure $fd -blocking 0
     after 3000 {set ::_timeout 1}
     fileevent $fd readable {set ::_readable 1}
     vwait ::_readable
     set len [gets $fd]
-    set response [read $fd $len]
+    set response [encoding convertfrom utf-8 [read $fd $len]]
     set parts [::json::json2dict $response]
     list [lindex $parts 0] [lindex $parts 1]
 } -cleanup {
