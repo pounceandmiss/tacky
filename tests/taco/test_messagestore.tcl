@@ -2,14 +2,12 @@
 
 set ms_common {
     -setup {
-	tacky_type create tacky
         sqlite3 testdb :memory:
         taco_messagestore create store -db testdb
     }
     -cleanup {
         store destroy
         testdb close
-	tacky destroy
     }
 }
 

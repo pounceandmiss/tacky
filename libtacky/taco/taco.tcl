@@ -1,3 +1,5 @@
+package provide taco 0.1
+
 package require sqlite3
 package require mtls
 package require base64

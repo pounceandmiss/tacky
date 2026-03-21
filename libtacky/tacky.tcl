@@ -167,8 +167,6 @@ oo::class create tacky_base {
     }
 }
 
-set _tacky_taco_script [file join [file dirname [info script]] taco taco.tcl]
-
 # In-process backend: taco lives in the same thread.
 # Callbacks go through the token system like the async backends,
 # but the entire round-trip is synchronous (same stack, same thread).
@@ -177,9 +175,7 @@ oo::class create tacky_type {
 
     constructor {args} {
         next
-        if {[info commands taco_type] eq ""} {
-            uplevel #0 source $::_tacky_taco_script
-        }
+        package require taco
         taco_type taco {*}$args
     }
 
@@ -205,7 +201,8 @@ oo::class create tacky_threaded_type {
         next
         set TackyTid [thread::id]
         set TacoTid [thread::create]
-        thread::send $TacoTid [list source $::_tacky_taco_script]
+        thread::send $TacoTid [list set auto_path $::auto_path]
+        thread::send $TacoTid {package require taco}
         # Define the proxy in the backend thread: it forwards every emit
         # back to the GUI thread asynchronously.
         thread::send $TacoTid {
