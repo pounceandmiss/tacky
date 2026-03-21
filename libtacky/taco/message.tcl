@@ -281,10 +281,8 @@ snit::type taco_message {
             raw_xml [jwrite $stanza] \
             server_status pending]
 
-        if {$liveRegion eq ""} {
-            $messagestore region new liveRegion
-        }
-        set result [$messagestore store batch [list $msg] liveRegion]
+        set outgoing [$messagestore region outgoing]
+        set result [$messagestore store batch [list $msg] outgoing]
         set inserted [dict get $result inserted]
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 

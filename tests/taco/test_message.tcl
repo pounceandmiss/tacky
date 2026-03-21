@@ -1045,21 +1045,24 @@ test message-sent-prev {sent message has prev in event} \
 
 # -- send then receive ordering ------------------------------------------------
 
-test message-send-then-receive-same-region {send then receive lands in same liveRegion} \
+test message-send-uses-outgoing-region {sent message uses outgoing region, incoming uses liveRegion} \
     {*}$msg_common \
     -body {
-        # Send a message (allocates liveRegion)
         tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
-        # Incoming message arrives (should reuse same liveRegion)
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body #body "incoming"
         }]
         set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT COUNT(DISTINCT region) FROM chat_message
-            WHERE chat_jid='alice@example.com'
-        }
-    } -result {1}
+        set sentRegion [$db onecolumn {
+            SELECT region FROM chat_message
+            WHERE chat_jid='alice@example.com' AND own_id != ''
+        }]
+        set recvRegion [$db onecolumn {
+            SELECT region FROM chat_message
+            WHERE chat_jid='alice@example.com' AND own_id = ''
+        }]
+        list [expr {$sentRegion == -1}] [expr {$recvRegion > 0}]
+    } -result {1 1}
 
 test message-send-then-receive-prev-chain {incoming after send has prev pointing to sent message} \
     {*}$msg_common \
@@ -1125,6 +1128,53 @@ test message-send-then-receive-earlier-ts-event-prev {Received event for earlier
         # The earlier message's prev should be empty (nothing before it)
         dict get $recvMsg prev
     } -result {}
+
+# -- outgoing region cross-region queries ---------------------------------------
+
+test message-send-prev-crosses-region {sent message prev crosses into prior real region} \
+    {*}$msg_common \
+    -body {
+        # Store history in a real region
+        msg_store [list \
+            [msg_msg timestamp 100 server_id s1 body a] \
+            [msg_msg timestamp 200 server_id s2 body b]]
+        set ::_got {}
+        tacky listen message <Sent> {apply {{ev} { set ::_got $ev }}}
+        tacky message send -acc $acc -chat_jid alice@example.com -body "reply"
+        set msg [dict get $_got -message]
+        # prev should point to message b (ts=200), even though it's in a
+        # different region
+        expr {[dict get $msg prev] == 200}
+    } -result {1}
+
+test message-get-latest-outgoing-plus-real {get latest returns real region + outgoing mixed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 server_id s1 body a] \
+            [msg_msg timestamp 200 server_id s2 body b]]
+        tacky message send -acc $acc -chat_jid alice@example.com -body "sent"
+        set all [$::_client message messagestore get latest alice@example.com]
+        list [llength $all] \
+             [dict get [lindex $all 0] body] \
+             [dict get [lindex $all 1] body] \
+             [dict get [lindex $all 2] body]
+    } -result {3 a b sent}
+
+test message-get-before-from-outgoing-cursor {get before from outgoing cursor finds real region} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 server_id s1 body a] \
+            [msg_msg timestamp 200 server_id s2 body b]]
+        tacky message send -acc $acc -chat_jid alice@example.com -body "sent"
+        set latest [$::_client message messagestore get latest alice@example.com]
+        set sentTs [dict get [lindex $latest end] timestamp]
+        set before [$::_client message messagestore get before alice@example.com $sentTs]
+        list [llength $before] \
+             [dict get [lindex $before 0] body] \
+             [dict get [lindex $before 1] body]
+    } -result {2 a b}
 
 # -- hollow messages in backward pagination ------------------------------------
 
