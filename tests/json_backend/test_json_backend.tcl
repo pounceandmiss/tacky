@@ -128,14 +128,12 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit message <Received> \
-        -message [dict create timestamp 100 body hello hollow 0] \
-        -timestamp 100
+        -message [dict create timestamp 100 body hello hollow 0]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<Received>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"hello"} hollow false] \
-        timestamp 100]]
+        message [json::write object timestamp 100 body {"hello"} hollow false]]]
 
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear

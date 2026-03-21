@@ -198,23 +198,26 @@ test chatview-sent-appears {sent message appears in chatview} \
         llength [.cv messages ids]
     } -result {1}
 
-test chatview-confirmed-updates-receipt {server echo triggers receipt update} \
+test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
     {*}$cv_common \
     -body {
         tacky message send -acc $::acc -chat_jid alice@example.com \
             -body "outgoing msg"
         wait
         set sentId [.cv messages newest]
+        # Check no checkmark yet (pending)
+        set tag item.$sentId.receipt
+        set ranges [.cv.text tag ranges $tag]
+        set before [.cv.text get {*}$ranges]
+        # Trigger SM ack
         set sentStanza [lindex [$::_client conn get_written] end]
-        set oid [xsearch $sentStanza -get @id]
-        $::_client conn feed [j message -type chat \
-            -from alice@example.com/phone -id $oid {
-            j body #body "outgoing msg"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-1
-        }]
+        $::_client message OnSmAck \
+            -stanzas [list $sentStanza]
         wait
-        expr {$sentId in [.cv messages ids]}
-    } -result {1}
+        set ranges [.cv.text tag ranges $tag]
+        set after [.cv.text get {*}$ranges]
+        list before=$before after=$after
+    } -result "{before= } {after= \u2713}"
 
 # -- catchup reload --------------------------------------------------------------
 
@@ -532,7 +535,13 @@ test chatview-goto-cancels-inflight {goto end discards in-flight thirst response
 proc ca_msg {id prev body} {
     dict create id $id prev $prev body $body \
         display_name test avatar_jid "" \
-        timestamp $id is_outgoing 0 receipt_status ""
+        timestamp $id is_outgoing 0 server_status ""
+}
+
+proc ca_outgoing {id prev body {status pending}} {
+    dict create id $id prev $prev body $body \
+        display_name test avatar_jid "" \
+        timestamp $id is_outgoing 1 server_status $status
 }
 
 proc ca_hollow {id prev} {
@@ -614,3 +623,20 @@ test chatarea-apply-dedup {already displayed message is patched not duplicated} 
             [ca_msg 200 100 "msg B"]]
         .ca messages ids
     } -result {100 200}
+
+test chatarea-patch-receipt {Patch with server_status updates receipt checkmark} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_outgoing 100 "" "hello"]]
+        # Receipt tag should exist but show no checkmark (pending)
+        set tag item.100.receipt
+        set ranges [.ca.text tag ranges $tag]
+        set before [expr {[llength $ranges] > 0
+            ? [.ca.text get {*}$ranges] : "MISSING"}]
+        # Patch: server confirms receipt
+        .ca apply [list [dict create id 100 server_status received]]
+        set ranges [.ca.text tag ranges $tag]
+        set after [expr {[llength $ranges] > 0
+            ? [.ca.text get {*}$ranges] : "MISSING"}]
+        list before=$before after=$after
+    } -result "{before= } {after= \u2713}"

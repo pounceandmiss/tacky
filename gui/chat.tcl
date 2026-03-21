@@ -150,8 +150,8 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
         ::tacky listen -tag $win message <Sent> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
-        ::tacky listen -tag $win message <Confirmed> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnConfirmed]
+        ::tacky listen -tag $win message <Patch> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnLivePatch]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
@@ -320,15 +320,18 @@ snit::widgetadaptor chatview {
     }
 
     method OnLiveMessage {ev} {
+        set m [dict get $ev -message]
         set atEnd [$hull atEnd]
-        $self ProcessBatch [list [dict get $ev -message]]
+        $self ProcessBatch [list $m]
         $self UpdateWasAtEnd
         if {$atEnd} { $hull see end }
     }
 
-    method OnConfirmed {ev} {
-        set ts [dict get $ev -timestamp]
-        $hull receipt update $ts delivered
+    method OnLivePatch {ev} {
+        set msg [dict get $ev -message]
+        dict set msg id [dict get $msg timestamp]
+        set id [dict get $msg id]
+        $hull apply [list $msg]
     }
 
     method OnScroll {} {
@@ -437,7 +440,7 @@ snit::widgetadaptor chatview {
     }
 
     method OnReceipt {receiptDict} {
-        $hull receipt update [dict get $receiptDict id] [dict get $receiptDict receipt_status]
+        $hull receipt update [dict get $receiptDict id] [dict get $receiptDict server_status]
     }
 
     method InstallMenus {} {
@@ -604,8 +607,8 @@ snit::widget chatarea {
                 set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
 
                 if {$id in $MessageIds} {
-                    # Already displayed — patch prev
-                    $self PatchMessage $id $prev
+                    # Already displayed — patch fields
+                    $self PatchMessage $id $msg
                     continue
                 }
 
@@ -628,16 +631,22 @@ snit::widget chatarea {
                     # Bootstrap: empty widget
                     $self InsertAt "" end $msg
                     lappend inserted $id
+                } else {
+                    # can't connect — silently skip
                 }
-                # else: can't connect — silently skip
             }
         }
 
         return $inserted
     }
 
-    method PatchMessage {id newPrev} {
-        set Prevs [bidict set $Prevs $id $newPrev]
+    method PatchMessage {id patchDict} {
+        if {[dict exists $patchDict prev]} {
+            set Prevs [bidict set $Prevs $id [dict get $patchDict prev]]
+        }
+        if {[dict exists $patchDict server_status]} {
+            $self receipt update $id [dict get $patchDict server_status]
+        }
     }
 
     method InsertAt {targetId position msg} {
@@ -864,8 +873,8 @@ snit::widget chatarea {
 
     method ReceiptText {status} {
         switch -- $status {
-            delivered { return "\u2713" }
-            read      { return "\u2713\u2713" }
+            received { return "\u2713" }
+            read     { return "\u2713\u2713" }
             default   { return "" }
         }
     }
@@ -922,7 +931,7 @@ snit::widget chatarea {
             
             $text ins msgins $message(body) [list $tag body message $tag.body]
             if {$message(is_outgoing)} {
-                set rt [$self ReceiptText $message(receipt_status)]
+                set rt [$self ReceiptText $message(server_status)]
                 $text ins msgins " $rt" [list $tag $tag.receipt receipt]
             }
             $text ins msgins \n $tag
@@ -984,7 +993,6 @@ proc enrich_store_message {storeDict isMuc} {
     }
     set serverStatus [dict get $storeDict server_status]
     set isOutgoing [expr {$serverStatus ne ""}]
-    set receiptStatus [expr {$serverStatus eq "received" ? "delivered" : ""}]
     set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
@@ -993,7 +1001,7 @@ proc enrich_store_message {storeDict isMuc} {
         timestamp    [dict get $storeDict timestamp] \
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
-        receipt_status $receiptStatus \
+        server_status $serverStatus \
         prev         $prev]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]

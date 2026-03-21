@@ -43,7 +43,7 @@
 #           IsDuplicate finds pending row by own_id
 #           UPDATE server_status='received', captures server_id
 #           Returns confirmed list
-#         → Emit <Confirmed> (GUI shows checkmark)
+#         → Emit <Patch> (GUI shows checkmark)
 #         → No <Received> emitted (it's our own echo)
 #
 # === Confirmation path B: SM ack (1:1 and MUC) ===
@@ -57,7 +57,7 @@
 #               → Extract @id from acked <message> stanzas
 #               → messagestore.confirmByOwnIds:
 #                 UPDATE server_status='received' WHERE pending
-#               → Emit <Confirmed> per confirmed message
+#               → Emit <Patch> per confirmed message
 #
 #   For MUC, both paths may fire — confirmation is idempotent
 #   (second confirm finds no pending rows, does nothing).
@@ -92,7 +92,7 @@
 #   <Sent>      → OnLiveMessage: insert message (is_outgoing=1, no checkmark)
 #   <Received>  → OnLiveMessage: insert message (is_outgoing=0)
 #                  Dedup by timestamp/id — skips if already displayed
-#   <Confirmed> → OnConfirmed: $hull receipt update $ts delivered (checkmark)
+#   <Patch>     → OnLivePatch: $hull apply patch dict (checkmark)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -189,7 +189,15 @@ snit::type taco_message {
                 return
             }
         }
-        $self store [jid norm [jid bare [xsearch $stanza -get @from]]] $stanza
+        set fromBare [jid norm [jid bare [xsearch $stanza -get @from]]]
+        set myBare [jid bare [$client cget -jid]]
+        set isOwn [expr {$fromBare eq $myBare}]
+        if {$isOwn} {
+            set chatJid [jid norm [jid bare [xsearch $stanza -get @to]]]
+        } else {
+            set chatJid $fromBare
+        }
+        $self store $chatJid $stanza $isOwn
     }
 
     # Parse a live message stanza, store it, and emit message <Received>.
@@ -213,16 +221,16 @@ snit::type taco_message {
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
             foreach c $confirmed {
-                $client emit message <Confirmed> \
-                    -jid $chatJid -timestamp [dict get $c timestamp]
+                $client emit message <Patch> -jid $chatJid \
+                    -message [dict create timestamp [dict get $c timestamp] \
+                        server_status received]
             }
         } else {
             set inserted [dict get $result inserted]
             if {[llength $inserted] > 0} {
                 set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
                 $client emit message <Received> \
-                    -jid $chatJid -from [xsearch $stanza -get @from] \
-                    -body [dict get $dbMsg body] -message $dbMsg
+                    -jid $chatJid -message $dbMsg
             }
         }
     }
@@ -239,7 +247,7 @@ snit::type taco_message {
     #         and flips it to 'received'.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
     #         calls `confirmByOwnIds` on the messagestore.
-    # Both paths emit <Confirmed> so the GUI can show the checkmark.
+    # Both paths emit <Patch> so the GUI can show the checkmark.
     #
     # On reconnect, `RetryPending` resends any still-pending messages
     # with the same id, so the echo/ack cycle can complete.
@@ -281,7 +289,7 @@ snit::type taco_message {
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
         $client emit message <Sent> \
-            -jid $opts(-chat_jid) -body $opts(-body) -message $dbMsg
+            -jid $opts(-chat_jid) -message $dbMsg
 
         $client write $stanza
     }
@@ -299,9 +307,9 @@ snit::type taco_message {
         if {[llength $ownIds] == 0} return
         set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
-            $client emit message <Confirmed> \
-                -jid [dict get $c chat_jid] \
-                -timestamp [dict get $c timestamp]
+            $client emit message <Patch> -jid [dict get $c chat_jid] \
+                -message [dict create timestamp [dict get $c timestamp] \
+                    server_status received]
         }
     }
 

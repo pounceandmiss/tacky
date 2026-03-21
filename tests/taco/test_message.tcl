@@ -478,8 +478,8 @@ test message-live-emits-event {incoming message emits message <Received>} \
             j body #body "event test"
         }]
         list [dict get $_got -jid] \
-             [dict get $_got -from] \
-             [dict get $_got -body]
+             [dict get $_got -message from_jid] \
+             [dict get $_got -message body]
     } -result {alice@example.com alice@example.com/phone {event test}}
 
 test message-live-dup-no-event {duplicate message does not emit <Received>} \
@@ -1043,6 +1043,89 @@ test message-sent-prev {sent message has prev in event} \
         expr {[dict get $msg prev] == $incomingTs}
     } -result {1}
 
+# -- send then receive ordering ------------------------------------------------
+
+test message-send-then-receive-same-region {send then receive lands in same liveRegion} \
+    {*}$msg_common \
+    -body {
+        # Send a message (allocates liveRegion)
+        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        # Incoming message arrives (should reuse same liveRegion)
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "incoming"
+        }]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT COUNT(DISTINCT region) FROM chat_message
+            WHERE chat_jid='alice@example.com'
+        }
+    } -result {1}
+
+test message-send-then-receive-prev-chain {incoming after send has prev pointing to sent message} \
+    {*}$msg_common \
+    -body {
+        set ::_sent {}
+        set ::_recv {}
+        tacky listen message <Sent> {apply {{ev} { set ::_sent $ev }}}
+        tacky listen message <Received> {apply {{ev} { set ::_recv $ev }}}
+        # Send
+        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        set sentTs [dict get [dict get $_sent -message] timestamp]
+        # Receive
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "incoming"
+        }]
+        set recvMsg [dict get $_recv -message]
+        # Incoming message's prev should point to our sent message
+        expr {[dict get $recvMsg prev] == $sentTs}
+    } -result {1}
+
+test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
+    {*}$msg_common \
+    -body {
+        # Send a message — gets a clock microseconds timestamp
+        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        set sentTs [dict get \
+            [lindex [$::_client message messagestore get latest alice@example.com] 0] \
+            timestamp]
+        # Incoming message with delay stamp placing it 1 second before our send
+        set earlyTs [expr {$sentTs - 1000000}]
+        set earlyStamp [FormatTimestampISO $earlyTs]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "earlier"
+            j delay -ns urn:xmpp:delay -stamp $earlyStamp
+        }]
+        # Both messages should be in DB
+        set all [$::_client message messagestore get latest alice@example.com]
+        # Chronological order: earlier first, then our sent
+        list [llength $all] \
+             [dict get [lindex $all 0] body] \
+             [dict get [lindex $all 1] body] \
+             [expr {[dict get [lindex $all 1] prev] == [dict get [lindex $all 0] timestamp]}]
+    } -result {2 earlier outgoing 1}
+
+test message-send-then-receive-earlier-ts-event-prev {Received event for earlier msg has correct prev} \
+    {*}$msg_common \
+    -body {
+        set ::_recv {}
+        tacky listen message <Received> {apply {{ev} { set ::_recv $ev }}}
+        # Send a message
+        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        set sentTs [dict get \
+            [lindex [$::_client message messagestore get latest alice@example.com] 0] \
+            timestamp]
+        # Incoming with timestamp before our send
+        set earlyTs [expr {$sentTs - 1000000}]
+        set earlyStamp [FormatTimestampISO $earlyTs]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "earlier"
+            j delay -ns urn:xmpp:delay -stamp $earlyStamp
+        }]
+        set recvMsg [dict get $_recv -message]
+        # The earlier message's prev should be empty (nothing before it)
+        dict get $recvMsg prev
+    } -result {}
+
 # -- hollow messages in backward pagination ------------------------------------
 
 test message-history-before-hollow {backward pagination prepends hollow message} \
@@ -1281,6 +1364,47 @@ test message-search-error-returns-error-dict {search error returns error dict} \
              [dict get $result messages] \
              [dict get $result complete]
     } -result {1 {} 0}
+
+# -- 1:1 self-echo (carbon/reflection) -----------------------------------------
+
+test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not Received} \
+    {*}$msg_common \
+    -body {
+        # Send a 1:1 message (stores as pending with own_id)
+        tacky message send -acc $acc -chat_jid alice@example.com -body "echo me"
+        set msgs [$::_client message messagestore get latest alice@example.com]
+        set oid [dict get [lindex $msgs 0] own_id]
+
+        set patches {}
+        set received {}
+        tacky listen -tag selfecho message <Patch> -jid alice@example.com \
+            {apply {{ev} { lappend ::patches $ev }}}
+        tacky listen -tag selfecho message <Received> -jid alice@example.com \
+            {apply {{ev} { lappend ::received $ev }}}
+
+        # Server reflects the message back: from=self, to=contact, same @id
+        $::_client conn feed [j message -type chat \
+            -from user@test.example.com/res \
+            -to alice@example.com \
+            -id $oid {
+            j body #body "echo me"
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo1
+        }]
+
+        tacky unlisten selfecho
+
+        # DB should have exactly one row, now confirmed
+        set dbRows [$::_client db eval {
+            SELECT count(*) FROM chat_message
+            WHERE chat_jid='alice@example.com'
+        }]
+        set status [$::_client db onecolumn {
+            SELECT server_status FROM chat_message
+            WHERE chat_jid='alice@example.com'
+        }]
+        list $dbRows $status [llength $patches] [llength $received] \
+             [dict get [lindex $patches 0] -message server_status]
+    } -result {1 received 1 0 received}
 
 test message-search-skips-empty-body {search skips results with empty body} \
     {*}$msg_common \

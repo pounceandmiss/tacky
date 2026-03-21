@@ -164,8 +164,8 @@ test ds-send-emits-sent {send emits message <Sent> event} \
             {apply {{ev} { set ::got $ev }}}
         c message send -chat_jid room@muc.example.com?join \
             -body "hi"
-        list [dict get $got -jid] [dict get $got -body] \
-             [dict get [dict get $got -message] server_status]
+        list [dict get $got -jid] [dict get $got -message body] \
+             [dict get $got -message server_status]
     } -result {room@muc.example.com?join hi pending}
 
 test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
@@ -204,10 +204,10 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
         set msgs [c message messagestore get latest room@muc.example.com?join]
         set oid [dict get [lindex $msgs 0] own_id]
         # Simulate server echo with same own_id
-        set confirmed {}
-        tacky listen message <Confirmed> \
+        set patches {}
+        tacky listen message <Patch> \
             -jid room@muc.example.com?join \
-            {apply {{ev} { lappend ::confirmed $ev }}}
+            {apply {{ev} { lappend ::patches $ev }}}
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
             j body #body "echo me"
@@ -217,8 +217,9 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
             SELECT server_status FROM chat_message
             WHERE chat_jid='room@muc.example.com?join'
         }]
-        list $status [llength $confirmed]
-    } -result {received 1}
+        list $status [llength $patches] \
+             [dict get [lindex $patches 0] -message server_status]
+    } -result {received 1 received}
 
 test ds-echo-no-received {echo of own message does not emit <Received>} \
     {*}$ds_msg_common \
@@ -271,10 +272,10 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
         set msgs [c message messagestore get latest room@muc.example.com?join]
         set oid [dict get [lindex $msgs 0] own_id]
         # Simulate SM ack with the sent stanza
-        set confirmed {}
-        tacky listen message <Confirmed> \
+        set patches {}
+        tacky listen message <Patch> \
             -jid room@muc.example.com?join \
-            {apply {{ev} { lappend ::confirmed $ev }}}
+            {apply {{ev} { lappend ::patches $ev }}}
         set stanza [j message -to room@muc.example.com -type groupchat -id $oid {
             j body #body "ack me"
         }]
@@ -283,8 +284,9 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
             SELECT server_status FROM chat_message
             WHERE chat_jid='room@muc.example.com?join'
         }]
-        list $status [llength $confirmed]
-    } -result {received 1}
+        list $status [llength $patches] \
+             [dict get [lindex $patches 0] -message server_status]
+    } -result {received 1 received}
 
 # -- retry on connect ----------------------------------------------------------
 
@@ -414,8 +416,8 @@ test ds-incoming-emits-received {incoming 1:1 message emits <Received>} \
         c.conn feed [j message -from alice@example.com/phone {
             j body #body "hey"
         }]
-        list [dict get $got -jid] [dict get $got -body] \
-             [dict get [dict get $got -message] server_status]
+        list [dict get $got -jid] [dict get $got -message body] \
+             [dict get $got -message server_status]
     } -result {alice@example.com hey {}}
 
 test ds-incoming-stores-empty-status {incoming message stored with empty server_status} \
@@ -441,10 +443,10 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
             -body "double"
         set msgs [c message messagestore get latest room@muc.example.com?join]
         set oid [dict get [lindex $msgs 0] own_id]
-        set confirmed {}
-        tacky listen message <Confirmed> \
+        set patches {}
+        tacky listen message <Patch> \
             -jid room@muc.example.com?join \
-            {apply {{ev} { lappend ::confirmed $ev }}}
+            {apply {{ev} { lappend ::patches $ev }}}
         # First: MUC echo confirms
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
@@ -459,8 +461,8 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
             SELECT server_status FROM chat_message
             WHERE chat_jid='room@muc.example.com?join'
         }]
-        # Only one <Confirmed> — SM ack finds no pending rows
-        list $status [llength $confirmed]
+        # Only one <Patch> — SM ack finds no pending rows
+        list $status [llength $patches]
     } -result {received 1}
 
 # -- disconnect clears retry state ---------------------------------------------

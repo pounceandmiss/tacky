@@ -124,9 +124,9 @@ jsonify_type jsonify \
             bookmarks {list bookmark}
         }}
 
-        message/<Received>      {dict {message message timestamp int}}
+        message/<Received>      {dict {message message}}
         message/<Sent>          {dict {message message}}
-        message/<Confirmed>     {dict {timestamp int}}
+        message/<Patch>         {dict {message message}}
         message/<CatchupDone>   {dict {count int}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
