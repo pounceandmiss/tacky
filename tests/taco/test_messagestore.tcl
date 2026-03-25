@@ -1,4 +1,4 @@
-# Unit tests for taco_messagestore
+package require taco
 
 set ms_common {
     -setup {
@@ -30,6 +30,11 @@ proc ms_batch {messages {jid alice@example.com}} {
 # Helper: count distinct regions for a jid
 proc ms_regions {{jid alice@example.com}} {
     testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid=$jid}
+}
+
+# Helper: get the region of a message by timestamp
+proc ms_region_of {ts {jid alice@example.com}} {
+    testdb onecolumn {SELECT region FROM chat_message WHERE chat_jid=$jid AND timestamp=$ts}
 }
 
 # -- basic --------------------------------------------------------------------
@@ -176,7 +181,7 @@ test messagestore-pagination-before {-before returns messages older than timesta
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get before alice@example.com 300]
+        set msgs [store get before alice@example.com 300 [ms_region_of 300]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
@@ -202,7 +207,7 @@ test messagestore-pagination-after {-after returns messages newer than timestamp
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get after alice@example.com 100]
+        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
@@ -215,7 +220,7 @@ test messagestore-pagination-after-limit {-after respects -limit} \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get after alice@example.com 100 1]
+        set msgs [store get after alice@example.com 100 [ms_region_of 100] 1]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body]
     } -result {1 b}
@@ -230,7 +235,7 @@ test messagestore-pagination-region-boundary {-before stays in cursor region, do
             [ms_msg timestamp 500 body c] \
             [ms_msg timestamp 600 body d]]
         set latest [store get latest alice@example.com]
-        set older [store get before alice@example.com 500]
+        set older [store get before alice@example.com 500 [ms_region_of 500]]
         list [llength $latest] \
              [dict get [lindex $latest 0] body] \
              [dict get [lindex $latest 1] body] \
@@ -255,7 +260,7 @@ test messagestore-get-before-with-limit {-before combined with -limit returns co
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c] \
             [ms_msg timestamp 400 body d]]
-        set msgs [store get before alice@example.com 400 2]
+        set msgs [store get before alice@example.com 400 [ms_region_of 400] 2]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
@@ -463,10 +468,10 @@ test messagestore-get-before-at-region-start {-before at first timestamp returns
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        store get before alice@example.com 100
+        store get before alice@example.com 100 [ms_region_of 100]
     } -result {}
 
-test messagestore-get-after-region-boundary {-after stays within region of nearest message} \
+test messagestore-get-after-region-boundary {-after stays within region, does not cross gap} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -475,11 +480,11 @@ test messagestore-get-after-region-boundary {-after stays within region of neare
         ms_batch [list \
             [ms_msg timestamp 500 body c] \
             [ms_msg timestamp 600 body d]]
-        set msgs [store get after alice@example.com 100]
+        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
         list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 b}
 
-test messagestore-get-after-gap {-after in gap returns empty (no message at cursor)} \
+test messagestore-get-after-gap {-after with region stays in region even if gap exists} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -488,10 +493,11 @@ test messagestore-get-after-gap {-after in gap returns empty (no message at curs
         ms_batch [list \
             [ms_msg timestamp 500 body c] \
             [ms_msg timestamp 600 body d]]
-        store get after alice@example.com 300
+        # Use region of first batch — no messages after 200 in that region
+        store get after alice@example.com 200 [ms_region_of 200]
     } -result {}
 
-test messagestore-get-before-gap {-before in gap returns empty (no message at cursor)} \
+test messagestore-get-before-gap {-before with region stays in region even if gap exists} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -500,7 +506,8 @@ test messagestore-get-before-gap {-before in gap returns empty (no message at cu
         ms_batch [list \
             [ms_msg timestamp 500 body c] \
             [ms_msg timestamp 600 body d]]
-        store get before alice@example.com 400
+        # Use region of second batch — no messages before 500 in that region
+        store get before alice@example.com 500 [ms_region_of 500]
     } -result {}
 
 test messagestore-get-no-cursor-multiple-ranges {no cursor returns latest region} \
@@ -524,7 +531,7 @@ test messagestore-get-after-beyond-all-data {-after beyond all messages returns 
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b]]
-        store get after alice@example.com 9999
+        store get after alice@example.com 200 [ms_region_of 200]
     } -result {}
 
 test messagestore-get-before-below-all-data {-before below all messages returns empty} \
@@ -533,7 +540,7 @@ test messagestore-get-before-below-all-data {-before below all messages returns 
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b]]
-        store get before alice@example.com 1
+        store get before alice@example.com 100 [ms_region_of 100]
     } -result {}
 
 # -- edge cases: store batch / live ------------------------------------------
@@ -580,7 +587,7 @@ test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 100 body b] \
             [ms_msg timestamp 100 body c]]
-        set msgs [store get after alice@example.com 100]
+        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
@@ -593,7 +600,7 @@ test messagestore-get-after-at-exact-last {-after at exact last timestamp return
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        store get after alice@example.com 300
+        store get after alice@example.com 300 [ms_region_of 300]
     } -result {}
 
 test messagestore-batch-single-message {single-message batch works} \
@@ -666,7 +673,7 @@ test messagestore-parallel-regions-overlapping {MAM and live regions stay separa
             [ms_msg timestamp 400 server_id s4 body mam4]] mam
 
         set latest [store get latest alice@example.com]
-        set mam_after [store get after alice@example.com 100]
+        set mam_after [store get after alice@example.com 100 [ms_region_of 100]]
         list [ms_regions] \
              [llength $latest] \
              [dict get [lindex $latest 0] body] \
@@ -714,7 +721,7 @@ test messagestore-parallel-multi-chat-isolation {MAM backfill for one chat does 
             [ms_msg timestamp 400 chat_jid bob@example.com body bob-live2]] bob_live
 
         set alice_latest [store get latest alice@example.com]
-        set alice_mam [store get before alice@example.com 200]
+        set alice_mam [store get before alice@example.com 200 [ms_region_of 200 alice@example.com]]
         set bob_msgs [store get latest bob@example.com]
         list [llength $alice_latest] [dict get [lindex $alice_latest 0] body] \
              [llength $alice_mam] [dict get [lindex $alice_mam 0] body] \
@@ -775,13 +782,13 @@ test messagestore-parallel-multi-chat-serverid-merge-isolated {server_id merge i
 
 # -- row format ---------------------------------------------------------------
 
-test messagestore-row-no-region-key {message dicts do not contain region key} \
+test messagestore-row-has-region-key {message dicts contain region field} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 body test]]
         set msg [lindex [store get latest alice@example.com] 0]
-        dict exists $msg region
-    } -result {0}
+        expr {[dict exists $msg region] && [dict get $msg region] != -1}
+    } -result {1}
 
 # -- get around --------------------------------------------------------------
 
@@ -869,20 +876,24 @@ test messagestore-strict-before-no-cross {-before cursor in region A does not pu
         ms_batch [list \
             [ms_msg timestamp 500 body c]]
         # cursor 500 is in region B — no messages before 500 in region B
-        store get before alice@example.com 500
+        store get before alice@example.com 500 [ms_region_of 500]
     } -result {}
 
-test messagestore-strict-missing-cursor-empty {-before/-after with missing cursor returns empty} \
+test messagestore-strict-region-scoped {-before/-after only return messages from given region} \
     {*}$ms_common \
     -body {
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set b [store get before alice@example.com 999]
-        set a [store get after alice@example.com 999]
-        list $b $a
-    } -result {{} {}}
+        ms_batch [list \
+            [ms_msg timestamp 500 body d]]
+        # Before 300 in region of batch 2 — no results (500 is not < 300)
+        set b [store get before alice@example.com 300 [ms_region_of 500]]
+        # After 200 in region of batch 1 — only 300 (same region)
+        set a [store get after alice@example.com 200 [ms_region_of 200]]
+        list $b [llength $a] [dict get [lindex $a 0] body]
+    } -result {{} 1 c}
 
 # -- prev annotation ----------------------------------------------------------
 
@@ -907,7 +918,7 @@ test messagestore-prev-before-chain {get before annotates prev with DB predecess
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c] \
             [ms_msg timestamp 400 body d]]
-        set msgs [store get before alice@example.com 400 2]
+        set msgs [store get before alice@example.com 400 [ms_region_of 400] 2]
         # batch is [b, c]; b's prev should be a(100), c's prev should be b(200)
         list [dict get [lindex $msgs 0] prev] \
              [dict get [lindex $msgs 1] prev]
@@ -920,7 +931,7 @@ test messagestore-prev-after-chain {get after annotates prev correctly} \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get after alice@example.com 100]
+        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
         # batch is [b, c]; b's prev is a(100), c's prev is b(200)
         list [dict get [lindex $msgs 0] prev] \
              [dict get [lindex $msgs 1] prev]

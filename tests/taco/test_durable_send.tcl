@@ -218,7 +218,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
             WHERE chat_jid='room@muc.example.com?join'
         }]
         list $status [llength $patches] \
-             [dict get [lindex $patches 0] -message server_status]
+             [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
     } -result {received 1 received}
 
 test ds-echo-no-received {echo of own message does not emit <Received>} \
@@ -285,7 +285,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
             WHERE chat_jid='room@muc.example.com?join'
         }]
         list $status [llength $patches] \
-             [dict get [lindex $patches 0] -message server_status]
+             [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
     } -result {received 1 received}
 
 # -- retry on connect ----------------------------------------------------------

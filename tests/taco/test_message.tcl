@@ -1170,7 +1170,8 @@ test message-get-before-from-outgoing-cursor {get before from outgoing cursor fi
         tacky message send -acc $acc -chat_jid alice@example.com -body "sent"
         set latest [$::_client message messagestore get latest alice@example.com]
         set sentTs [dict get [lindex $latest end] timestamp]
-        set before [$::_client message messagestore get before alice@example.com $sentTs]
+        set reg [$::_client message messagestore region resolve alice@example.com $sentTs -backward]
+        set before [$::_client message messagestore get before alice@example.com $sentTs $reg]
         list [llength $before] \
              [dict get [lindex $before 0] body] \
              [dict get [lindex $before 1] body]
@@ -1453,7 +1454,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
             WHERE chat_jid='alice@example.com'
         }]
         list $dbRows $status [llength $patches] [llength $received] \
-             [dict get [lindex $patches 0] -message server_status]
+             [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
     } -result {1 received 1 0 received}
 
 test message-search-skips-empty-body {search skips results with empty body} \

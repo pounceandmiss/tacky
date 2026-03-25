@@ -221,9 +221,27 @@ snit::type taco_message {
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
             foreach c $confirmed {
+                set oldTs [dict get $c timestamp]
+                set newTs [dict get $c newtimestamp]
+                if {$oldTs != $newTs} {
+                    # Timestamp changed — build compound patch with
+                    # moved message and affected followers
+                    set moveInfo [$messagestore ComputeMovePatch \
+                        $chatJid $oldTs $newTs $liveRegion]
+                    set patchMessages [list [dict create \
+                        timestamp $oldTs newtimestamp $newTs \
+                        server_status received \
+                        region $liveRegion \
+                        prev [dict get $moveInfo prev]]]
+                    foreach entry [dict get $moveInfo entries] {
+                        lappend patchMessages $entry
+                    }
+                } else {
+                    set patchMessages [list [dict create \
+                        timestamp $oldTs server_status received]]
+                }
                 $client emit message <Patch> -jid $chatJid \
-                    -message [dict create timestamp [dict get $c timestamp] \
-                        server_status received]
+                    -messages $patchMessages
             }
         } else {
             set inserted [dict get $result inserted]
@@ -306,8 +324,9 @@ snit::type taco_message {
         set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
             $client emit message <Patch> -jid [dict get $c chat_jid] \
-                -message [dict create timestamp [dict get $c timestamp] \
-                    server_status received]
+                -messages [list [dict create \
+                    timestamp [dict get $c timestamp] \
+                    server_status received]]
         }
     }
 
@@ -403,11 +422,19 @@ snit::type taco_message {
 
     # Shared local-store query: dispatches to get before/after/latest
     # and appends a hollow message for backward pagination.
-    method GetLocal {chatJid before after limit} {
+    method GetLocal {chatJid before after limit region} {
         if {$before ne ""} {
-            set local [$messagestore get before $chatJid $before $limit]
+            if {$region eq ""} {
+                set region [$messagestore region resolve $chatJid $before -backward]
+                if {$region eq ""} { return {} }
+            }
+            set local [$messagestore get before $chatJid $before $region $limit]
         } elseif {$after ne ""} {
-            set local [$messagestore get after $chatJid $after $limit]
+            if {$region eq ""} {
+                set region [$messagestore region resolve $chatJid $after -forward]
+                if {$region eq ""} { return {} }
+            }
+            set local [$messagestore get after $chatJid $after $region $limit]
         } else {
             set local [$messagestore get latest $chatJid $limit]
         }
@@ -419,7 +446,7 @@ snit::type taco_message {
     }
 
     method history {args} {
-        set defaults [dict create -before "" -after "" -limit 50 -command "" -tag ""]
+        set defaults [dict create -before "" -after "" -limit 50 -command "" -tag "" -region ""]
         set opts [dict merge $defaults $args]
 
         set chatJid [dict get $opts -chat]
@@ -428,13 +455,14 @@ snit::type taco_message {
         set before [dict get $opts -before]
         set after [dict get $opts -after]
         set tag [dict get $opts -tag]
+        set region [dict get $opts -region]
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
         }
 
         # Try local store first
-        set local [$self GetLocal $chatJid $before $after $limit]
+        set local [$self GetLocal $chatJid $before $after $limit $region]
 
         if {[llength $local] > 0} {
             {*}$callback $local
@@ -501,7 +529,7 @@ snit::type taco_message {
     method OnFetch {chatJid cursorSid before after limit callback tag fetchRegion mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-            {*}$callback [$self GetLocal $chatJid $before $after $limit]
+            {*}$callback [$self GetLocal $chatJid $before $after $limit ""]
             return
         }
 
@@ -541,8 +569,10 @@ snit::type taco_message {
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
-        # Re-query local and deliver
-        {*}$callback [$self GetLocal $chatJid $before $after $limit]
+        # Re-query local: use bridged region for the re-query
+        set reRegion $fetchRegion
+        if {$anchorRegion ne ""} { set reRegion $anchorRegion }
+        {*}$callback [$self GetLocal $chatJid $before $after $limit $reRegion]
     }
 
     method cancel {args} {

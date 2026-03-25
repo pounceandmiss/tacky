@@ -287,15 +287,16 @@ snit::widgetadaptor chatview {
             if {$thirsty} {
                 if {[dict get $LoadToken $dir]} continue
                 dict set LoadToken $dir 1
+                set region [$hull messages regionForDirection $dir]
                 if {$dir eq "old"} {
                     ::tacky message history -acc $options(-acc) \
                         -chat $options(-jid) \
-                        -before $oldest -limit 50 \
+                        -before $oldest -region $region -limit 50 \
                         -tag $win/$dir -command [mymethod OnLoadDone $dir]
                 } else {
                     ::tacky message history -acc $options(-acc) \
                         -chat $options(-jid) \
-                        -after $newest -limit 50 \
+                        -after $newest -region $region -limit 50 \
                         -tag $win/$dir -command [mymethod OnLoadDone $dir]
                 }
             } else {
@@ -328,10 +329,28 @@ snit::widgetadaptor chatview {
     }
 
     method OnLivePatch {ev} {
-        set msg [dict get $ev -message]
-        dict set msg id [dict get $msg timestamp]
-        set id [dict get $msg id]
-        $hull apply [list $msg]
+        set messages [dict get $ev -messages]
+        foreach msg $messages {
+            set ts [dict get $msg timestamp]
+            if {[dict exists $msg newtimestamp]} {
+                # Timestamp change: grab stored dict, update, re-insert
+                set newTs [dict get $msg newtimestamp]
+                if {$ts in [$hull messages ids]} {
+                    set storeDict [$hull messages get $ts]
+                    $hull deleteById $ts
+                    dict set storeDict timestamp $newTs
+                    dict set storeDict server_status [dict get $msg server_status]
+                    dict set storeDict prev [dict get $msg prev]
+                    if {[dict exists $msg region]} {
+                        dict set storeDict region [dict get $msg region]
+                    }
+                    $self ProcessBatch [list $storeDict]
+                }
+            } else {
+                dict set msg id $ts
+                $hull apply [list $msg]
+            }
+        }
     }
 
     method OnScroll {} {
@@ -382,6 +401,7 @@ snit::widgetadaptor chatview {
             if {$ajid ne ""} {
                 $self TrackAvatar $ajid
             }
+            $hull messages store [dict get $emsg id] $msg
             lappend enriched $emsg
         }
         $hull apply $enriched
@@ -542,6 +562,9 @@ snit::widget chatarea {
     # dict: message_id → avatar_jid (tracks which avatar each message uses)
     variable MessageAvatars
 
+    # dict of dicts: message_id → store dict (from backend)
+    variable Messages
+
     # Viewport = what's currently visible on screen
     
     # How many pixels are above the viewport
@@ -568,6 +591,7 @@ snit::widget chatarea {
         set CleanupScheduled 0
         set AvatarImages [dict create]
         set MessageAvatars [dict create]
+        set Messages [dict create]
         set HighlightedId ""
         set Prevs [bidict new]
 
@@ -846,11 +870,41 @@ snit::widget chatarea {
         set MessageIds
     }
 
+    method {messages store} {id storeDict} {
+        dict set Messages $id $storeDict
+    }
+
+    method {messages get} {id} {
+        dict get $Messages $id
+    }
+
+    # Find region for pagination: scan displayed messages for the
+    # first (old) or last (new) non-outgoing region.
+    method {messages regionForDirection} {dir} {
+        if {$dir eq "old"} {
+            foreach id $MessageIds {
+                if {[dict exists $Messages $id]} {
+                    set r [dict get [dict get $Messages $id] region]
+                    if {$r != -1} { return $r }
+                }
+            }
+        } else {
+            foreach id [lreverse $MessageIds] {
+                if {[dict exists $Messages $id]} {
+                    set r [dict get [dict get $Messages $id] region]
+                    if {$r != -1} { return $r }
+                }
+            }
+        }
+        return -1
+    }
+
     method clear {} {
         $text del 0.0 end
         set MessageIds {}
         set HighlightedId ""
         set Prevs [bidict new]
+        set Messages [dict create]
         if {$options(-avatar-release-command) ne ""} {
             set released {}
             dict for {mid ajid} $MessageAvatars {
@@ -954,6 +1008,9 @@ snit::widget chatarea {
         # Delete tag itself
         $text tag delete item.$id
         set Prevs [bidict unset $Prevs $id]
+        if {[dict exists $Messages $id]} {
+            dict unset Messages $id
+        }
         $self CheckAvatarRelease $id
     }
 
@@ -963,6 +1020,9 @@ snit::widget chatarea {
         $text del item.$id.first item.$id.last
         $text tag delete item.$id
         set Prevs [bidict unset $Prevs $id]
+        if {[dict exists $Messages $id]} {
+            dict unset Messages $id
+        }
         $self CheckAvatarRelease $id
     }
 
@@ -994,6 +1054,7 @@ proc enrich_store_message {storeDict isMuc} {
     set serverStatus [dict get $storeDict server_status]
     set isOutgoing [expr {$serverStatus ne ""}]
     set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
+    set region [expr {[dict exists $storeDict region] ? [dict get $storeDict region] : -1}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
         display_name $res \
@@ -1002,7 +1063,8 @@ proc enrich_store_message {storeDict isMuc} {
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
         server_status $serverStatus \
-        prev         $prev]
+        prev         $prev \
+        region       $region]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
     }

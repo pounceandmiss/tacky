@@ -7,19 +7,49 @@ if 0 {
     protocol semantics and connection state. The caller allocates regions
     via `region new` and passes them to `store batch`.
 
+    Outgoing messages (sent but not yet confirmed by server) are stored
+    with region = -1 (OUTGOING_REGION). They are never assigned a real
+    region until confirmed via MUC echo or MAM dedup.
+
+    Query structure (UNION):
+
+    All region-scoped queries (get before, get after, get latest) use
+    UNION ALL with two arms:
+    - Real-region arm: scoped to the caller's region, with LIMIT
+    - Outgoing arm: all outgoing messages in range, no LIMIT
+    This ensures outgoing messages never bridge gaps between regions
+    and LIMIT only counts real-region messages.
+
+    get before / get after take a mandatory -region argument from the
+    caller (the GUI derives it from displayed messages). get latest
+    and get around resolve region internally (bootstrap methods).
+
+    Region is included as a field in every returned message dict so
+    the caller can derive -region for pagination.
+
     Region merging via server_id overlap:
 
     `store batch` checks every message for a server_id/own_id duplicate
-    already in the DB. When a duplicate is found in a different region, the
-    batch proves overlap — the old region is merged into the caller's region
-    via UPDATE. The caller's region variable is passed by name (upvar) so
-    it stays current after merges.
+    already in the DB. When a duplicate is found in a different region,
+    the batch proves overlap — the old region is merged into the caller's
+    region via UPDATE. The caller's region variable is passed by name
+    (upvar) so it stays current after merges.
 
     `region bridge` is still needed when MAM finishes just short of the
     live range — the last MAM page contained no server_id already in the
     DB, so `store batch` can't merge on its own. The caller knows the two
     ranges meet from protocol state (MAM said "complete") and calls
     `region bridge` to merge the two regions.
+
+    Outgoing confirmation (pending → received):
+
+    When `store batch` finds a pending message by own_id (MUC echo),
+    it moves the message from outgoing region (-1) to the caller's
+    region and updates the timestamp to the server's authoritative
+    value. The caller emits a compound <Patch> with the moved message
+    and any affected followers (prev chain fixups).
+
+    SM ack only flips server_status — no region or timestamp change.
 
     Concurrent catchup and live messages:
 
@@ -32,12 +62,6 @@ if 0 {
 
     In all cases the caller's region variables are updated via upvar,
     so subsequent inserts use the surviving region.
-
-    Initially I thought of other approaches, such as sentinel rows
-    indicating a hole or a separate table maintaining region ranges -
-    those proved to be much more complex to implement properly, with
-    this region token approach by far the most robust out of the ideas
-    tried.
 }
 
 snit::type taco_messagestore {
@@ -121,22 +145,34 @@ snit::type taco_messagestore {
                 set dup [$self IsDuplicate $jid $msg]
                 if {$dup ne ""} {
                     set dupRegion [dict get $dup region]
-                    if {$dupRegion != $region} {
-                        dict set mergedRegions $dupRegion 1
-                    }
-                    # Confirm pending messages on server echo
+                    # Confirm pending messages on server echo.
+                    # Move from outgoing region to caller's region and
+                    # update timestamp to server's authoritative value.
+                    # Don't bulk-merge outgoing — the UPDATE below moves
+                    # only this message; adding -1 to mergedRegions would
+                    # drag ALL outgoing messages into liveRegion.
                     if {[dict get $dup server_status] eq "pending"} {
                         set dupTs [dict get $dup timestamp]
                         set sid $m(server_id)
+                        if {$m(timestamp) == $dupTs} {
+                            set newTs $dupTs
+                        } else {
+                            set newTs [$self BumpTs $jid $m(timestamp) 1]
+                        }
                         $options(-db) eval {
                             UPDATE chat_message
-                            SET server_status='received',
+                            SET timestamp=$newTs,
+                                region=$region,
+                                server_status='received',
                                 server_id = CASE WHEN $sid != ''
                                     THEN $sid ELSE server_id END
                             WHERE chat_jid=$jid AND timestamp=$dupTs
                         }
                         lappend confirmed [dict create \
-                            own_id $m(own_id) timestamp $dupTs]
+                            own_id $m(own_id) timestamp $dupTs \
+                            newtimestamp $newTs]
+                    } elseif {$dupRegion != $region} {
+                        dict set mergedRegions $dupRegion 1
                     }
                     continue
                 }
@@ -216,57 +252,101 @@ snit::type taco_messagestore {
 
 
 
-    # Messages older than cursor (an existing message's timestamp).
-    # The region is pinned by exact match on cursor, so a nonexistent
-    # cursor returns empty.
-    # returns a list of message dicts (keys: timestamp,
-    # chat_jid, from_jid, body, server_id, own_id, raw_xml,
-    # server_status), chronological order, from a single region
-    method "get before" {jid cursor {limit 50}} {
-        set reg [$self region resolve $jid $cursor -backward]
-        if {$reg eq ""} { return {} }
+    # Messages older than cursor, region-scoped via UNION.
+    # Real-region arm is limited; outgoing rides alongside unlimited.
+    # Returns message dicts in chronological order with region field.
+    method "get before" {jid cursor region {limit 50}} {
+        set reg $region
         set out $OUTGOING_REGION
         set rows {}
-        $options(-db) eval {
-            SELECT * FROM (
-                SELECT timestamp, chat_jid, from_jid, body, server_id,
-                       own_id, raw_xml, server_status
-                FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $cursor
-                  AND (region = $reg OR region = $out)
-                ORDER BY timestamp DESC
-                LIMIT $limit
-            ) ORDER BY timestamp ASC
-        } row {
-            lappend rows [$self RowToDict [array get row]]
+        if {$reg == $OUTGOING_REGION} {
+            $options(-db) eval {
+                SELECT * FROM (
+                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                           own_id, raw_xml, server_status, region
+                    FROM chat_message
+                    WHERE chat_jid=$jid AND timestamp < $cursor
+                      AND region = $out
+                    ORDER BY timestamp DESC
+                    LIMIT $limit
+                ) ORDER BY timestamp ASC
+            } row {
+                lappend rows [$self RowToDict [array get row]]
+            }
+        } else {
+            $options(-db) eval {
+                SELECT * FROM (
+                    SELECT * FROM (
+                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                               own_id, raw_xml, server_status, region
+                        FROM chat_message
+                        WHERE chat_jid=$jid AND timestamp < $cursor
+                          AND region = $reg
+                        ORDER BY timestamp DESC
+                        LIMIT $limit
+                    )
+                    UNION ALL
+                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                           own_id, raw_xml, server_status, region
+                    FROM chat_message
+                    WHERE chat_jid=$jid AND timestamp < $cursor
+                      AND region = $out
+                ) ORDER BY timestamp ASC
+            } row {
+                lappend rows [$self RowToDict [array get row]]
+            }
         }
-        return [$self AnnotatePrev $jid $rows]
+        return [$self AnnotatePrev $jid $rows $reg]
     }
 
-    # Messages newer than cursor (an existing message's timestamp),
-    # chronological order. Otherwise same as "get before".
-    method "get after" {jid cursor {limit 50}} {
-        set reg [$self region resolve $jid $cursor -forward]
-        if {$reg eq ""} { return {} }
+    # Messages newer than cursor, region-scoped via UNION.
+    # Real-region arm is limited; outgoing rides alongside unlimited.
+    # Returns message dicts in chronological order with region field.
+    method "get after" {jid cursor region {limit 50}} {
+        set reg $region
         set out $OUTGOING_REGION
         set rows {}
-        $options(-db) eval {
-            SELECT timestamp, chat_jid, from_jid, body, server_id,
-                   own_id, raw_xml, server_status
-            FROM chat_message
-            WHERE chat_jid=$jid AND timestamp > $cursor
-              AND (region = $reg OR region = $out)
-            ORDER BY timestamp ASC
-            LIMIT $limit
-        } row {
-            lappend rows [$self RowToDict [array get row]]
+        if {$reg == $OUTGOING_REGION} {
+            $options(-db) eval {
+                SELECT timestamp, chat_jid, from_jid, body, server_id,
+                       own_id, raw_xml, server_status, region
+                FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $cursor
+                  AND region = $out
+                ORDER BY timestamp ASC
+                LIMIT $limit
+            } row {
+                lappend rows [$self RowToDict [array get row]]
+            }
+        } else {
+            $options(-db) eval {
+                SELECT * FROM (
+                    SELECT * FROM (
+                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                               own_id, raw_xml, server_status, region
+                        FROM chat_message
+                        WHERE chat_jid=$jid AND timestamp > $cursor
+                          AND region = $reg
+                        ORDER BY timestamp ASC
+                        LIMIT $limit
+                    )
+                    UNION ALL
+                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                           own_id, raw_xml, server_status, region
+                    FROM chat_message
+                    WHERE chat_jid=$jid AND timestamp > $cursor
+                      AND region = $out
+                ) ORDER BY timestamp ASC
+            } row {
+                lappend rows [$self RowToDict [array get row]]
+            }
         }
-        return [$self AnnotatePrev $jid $rows]
+        return [$self AnnotatePrev $jid $rows $reg]
     }
 
     # Most recent messages from the latest non-outgoing region, plus
     # any outgoing messages. Falls back to outgoing-only if no real
-    # regions exist.
+    # regions exist. Region resolved internally (bootstrap method).
     method "get latest" {jid {limit 50}} {
         set maxTs [$options(-db) onecolumn {
             SELECT MAX(timestamp) FROM chat_message
@@ -281,7 +361,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, body, server_id,
-                           own_id, raw_xml, server_status
+                           own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND region = $out
                     ORDER BY timestamp DESC
@@ -293,19 +373,25 @@ snit::type taco_messagestore {
         } else {
             $options(-db) eval {
                 SELECT * FROM (
+                    SELECT * FROM (
+                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                               own_id, raw_xml, server_status, region
+                        FROM chat_message
+                        WHERE chat_jid=$jid AND region = $reg
+                        ORDER BY timestamp DESC
+                        LIMIT $limit
+                    )
+                    UNION ALL
                     SELECT timestamp, chat_jid, from_jid, body, server_id,
-                           own_id, raw_xml, server_status
+                           own_id, raw_xml, server_status, region
                     FROM chat_message
-                    WHERE chat_jid=$jid
-                      AND (region = $reg OR region = $out)
-                    ORDER BY timestamp DESC
-                    LIMIT $limit
+                    WHERE chat_jid=$jid AND region = $out
                 ) ORDER BY timestamp ASC
             } row {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return [$self AnnotatePrev $jid $rows]
+        return [$self AnnotatePrev $jid $rows $reg]
     }
 
     # Full-text search by LIKE match on body. Returns list of timestamps
@@ -328,6 +414,7 @@ snit::type taco_messagestore {
 
     # Find the nearest message to timestamp and return context around
     # it (limit/2 before + target + limit/2 after), region-scoped.
+    # Region resolved internally (bootstrap method).
     # Returns dict: {messages $list anchor $nearestTs}.
     method "get around" {jid timestamp limit} {
         set nearestTs ""
@@ -341,13 +428,15 @@ snit::type taco_messagestore {
         if {$nearestTs eq ""} {
             return {messages {} anchor ""}
         }
+        set reg [$self region resolve $jid $nearestTs -backward]
+        if {$reg eq ""} { set reg $OUTGOING_REGION }
         set halfLimit [expr {$limit / 2}]
-        set before [$self get before $jid $nearestTs $halfLimit]
-        set after [$self get after $jid $nearestTs $halfLimit]
+        set before [$self get before $jid $nearestTs $reg $halfLimit]
+        set after [$self get after $jid $nearestTs $reg $halfLimit]
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, body, server_id,
-                   own_id, raw_xml, server_status
+                   own_id, raw_xml, server_status, region
             FROM chat_message
             WHERE chat_jid=$jid AND timestamp=$nearestTs
         } row {
@@ -363,7 +452,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, body, server_id,
-                       own_id, raw_xml, server_status
+                       own_id, raw_xml, server_status, region
                 FROM chat_message
                 WHERE chat_jid=$jid AND timestamp=$ts
             } row {
@@ -406,14 +495,21 @@ snit::type taco_messagestore {
 
     # Annotate each message in a chronological list with {prev $ts},
     # the timestamp of the immediately preceding message.  The first
-    # message's predecessor is looked up in the DB (same region +
-    # outgoing); subsequent messages chain from the previous element.
-    method AnnotatePrev {jid messages} {
+    # message's predecessor is looked up in the DB via UNION (same
+    # region + outgoing); subsequent messages chain from the previous
+    # element.  When callerReg is supplied, it pins the region for the
+    # prev lookup — this prevents outgoing messages from bridging
+    # across region gaps.
+    method AnnotatePrev {jid messages {callerReg ""}} {
         if {[llength $messages] == 0} { return {} }
         set firstTs [dict get [lindex $messages 0] timestamp]
-        set reg [$self region resolve $jid $firstTs -backward]
+        if {$callerReg ne ""} {
+            set reg $callerReg
+        } else {
+            set reg [$self region resolve $jid $firstTs -backward]
+        }
         set out $OUTGOING_REGION
-        if {$reg eq ""} {
+        if {$reg eq "" || $reg == $OUTGOING_REGION} {
             # Only outgoing messages — no region constraint
             set prevTs [$options(-db) onecolumn {
                 SELECT timestamp FROM chat_message
@@ -422,10 +518,15 @@ snit::type taco_messagestore {
             }]
         } else {
             set prevTs [$options(-db) onecolumn {
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $firstTs
-                  AND (region = $reg OR region = $out)
-                ORDER BY timestamp DESC LIMIT 1
+                SELECT timestamp FROM (
+                    SELECT timestamp FROM chat_message
+                    WHERE chat_jid=$jid AND timestamp < $firstTs
+                      AND region = $reg
+                    UNION ALL
+                    SELECT timestamp FROM chat_message
+                    WHERE chat_jid=$jid AND timestamp < $firstTs
+                      AND region = $out
+                ) ORDER BY timestamp DESC LIMIT 1
             }]
         }
         set result {}
@@ -435,6 +536,82 @@ snit::type taco_messagestore {
             lappend result $msg
         }
         return $result
+    }
+
+    # Compute patch entries for a message that moved from oldTs to
+    # newTs (after MUC echo confirmation). Returns a list of dicts
+    # suitable for inclusion in a compound <Patch> -messages list.
+    # The moved message's new prev and any affected followers are
+    # included.
+    method ComputeMovePatch {jid oldTs newTs region} {
+        set reg $region
+        set out $OUTGOING_REGION
+        set entries {}
+
+        # Predecessor query helper: find the message just before $ts
+        # considering both the real region and outgoing.
+        set prevOfNew [$options(-db) onecolumn {
+            SELECT timestamp FROM (
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp < $newTs
+                  AND region = $reg
+                UNION ALL
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp < $newTs
+                  AND region = $out
+            ) ORDER BY timestamp DESC LIMIT 1
+        }]
+
+        # Old follower: message that was immediately after the old
+        # position. Its prev now points to oldTs's predecessor.
+        set oldFollower [$options(-db) onecolumn {
+            SELECT timestamp FROM (
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $oldTs
+                  AND region = $reg
+                UNION ALL
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $oldTs
+                  AND region = $out
+            ) ORDER BY timestamp ASC LIMIT 1
+        }]
+        set prevOfOld [$options(-db) onecolumn {
+            SELECT timestamp FROM (
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp < $oldTs
+                  AND region = $reg
+                UNION ALL
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp < $oldTs
+                  AND region = $out
+            ) ORDER BY timestamp DESC LIMIT 1
+        }]
+
+        # New follower: message immediately after the new position.
+        # Its prev should become newTs.
+        set newFollower [$options(-db) onecolumn {
+            SELECT timestamp FROM (
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $newTs
+                  AND region = $reg
+                UNION ALL
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $newTs
+                  AND region = $out
+            ) ORDER BY timestamp ASC LIMIT 1
+        }]
+
+        # Emit old follower entry (if it exists and isn't the same as
+        # new follower — that case is handled by the new follower entry)
+        if {$oldFollower ne "" && $oldFollower != $newFollower} {
+            lappend entries [dict create timestamp $oldFollower prev $prevOfOld]
+        }
+        # Emit new follower entry
+        if {$newFollower ne ""} {
+            lappend entries [dict create timestamp $newFollower prev $newTs]
+        }
+
+        return [dict create prev $prevOfNew entries $entries]
     }
 
     method IsDuplicate {jid msg} {

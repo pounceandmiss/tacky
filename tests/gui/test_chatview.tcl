@@ -139,6 +139,22 @@ proc cv_create {args} {
     }
 }
 
+# Simulate a server echo (MUC-style) for a previously sent message.
+# sentTs: the timestamp (= own_id) of the sent message
+# echoSid: server_id for the echo
+# echoStamp: ISO timestamp for the echo (defaults to same as sentTs)
+proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
+    if {$echoStamp eq ""} {
+        set echoStamp [FormatTimestampISO $sentTs]
+    }
+    $::_client message store alice@example.com [j message -type chat \
+        -from alice@example.com/phone -id $sentTs {
+        j body #body "echo"
+        j stanza-id -ns urn:xmpp:sid:0 -id $echoSid
+        j delay -ns urn:xmpp:delay -stamp $echoStamp
+    }] 1
+}
+
 # -- common setup: tacky + empty chatview ready for live messages ---------------
 
 set cv_common {
@@ -218,6 +234,278 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         set after [.cv.text get {*}$ranges]
         list before=$before after=$after
     } -result "{before= } {after= \u2713}"
+
+test chatview-multiple-outgoing-order {multiple outgoing messages appear in send order} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "one"
+        wait
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "two"
+        wait
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "three"
+        wait
+        llength [.cv messages ids]
+    } -result {3}
+
+test chatview-outgoing-interleaved {outgoing interleaved with incoming in correct order} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "out1"
+        wait
+        set ts1 [.cv messages newest]
+        cv_feed "incoming" srv-in
+        wait
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "out2"
+        wait
+        set ids [.cv messages ids]
+        list [llength $ids] [expr {[lindex $ids 0] == $ts1}]
+    } -result {3 1}
+
+test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "hello"
+        wait
+        set sentId [.cv messages newest]
+        cv_muc_echo $sentId echo-sid1
+        wait
+        set tag item.$sentId.receipt
+        set ranges [.cv.text tag ranges $tag]
+        set receipt [.cv.text get {*}$ranges]
+        list [llength [.cv messages ids]] receipt=$receipt
+    } -result "1 {receipt= \u2713}"
+
+test chatview-muc-echo-different-ts {echo with different timestamp moves message} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "hello"
+        wait
+        set sentId [.cv messages newest]
+        # Echo at 1 second later
+        set echoTs [expr {$sentId + 1000000}]
+        set echoStamp [FormatTimestampISO $echoTs]
+        cv_muc_echo $sentId echo-sid2 $echoStamp
+        wait
+        set ids [.cv messages ids]
+        set newId [lindex $ids 0]
+        # Old id should be gone, new id should be present
+        set tag item.$newId.receipt
+        set ranges [.cv.text tag ranges $tag]
+        set receipt [.cv.text get {*}$ranges]
+        list [llength $ids] [expr {$sentId ni $ids}] \
+            [expr {$newId == $echoTs}] receipt=$receipt
+    } -result "1 1 1 {receipt= \u2713}"
+
+test chatview-muc-echo-reorders {echo reorders message among interleaved messages} \
+    {*}$cv_common \
+    -body {
+        cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
+        wait
+        set tsA [.cv messages newest]
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "X"
+        wait
+        set tsX [.cv messages newest]
+        cv_feed "B" srv-b
+        wait
+        set tsB [.cv messages newest]
+        set countBefore [llength [.cv messages ids]]
+        # Echo X at timestamp after B
+        set echoTs [expr {$tsB + 1000000}]
+        cv_muc_echo $tsX echo-reorder [FormatTimestampISO $echoTs]
+        wait
+        set ids [.cv messages ids]
+        # Expected: A, B, X' — X moved after B
+        list count=$countBefore \
+            [llength $ids] \
+            [expr {[lindex $ids 0] == $tsA}] \
+            [expr {[lindex $ids 1] == $tsB}] \
+            [expr {[lindex $ids 2] == $echoTs}]
+    } -result {count=3 3 1 1 1}
+
+test chatview-muc-echo-reorders-4msg {compound Patch with old and new follower prev updates} \
+    {*}$cv_common \
+    -body {
+        # Setup: A(100) → X(200,pending) → B(300) → C(400)
+        cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
+        wait
+        set tsA [.cv messages newest]
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "X"
+        wait
+        set tsX [.cv messages newest]
+        cv_feed "B" srv-b
+        wait
+        set tsB [.cv messages newest]
+        cv_feed "C" srv-c
+        wait
+        set tsC [.cv messages newest]
+        # Verify initial order: A, X, B, C
+        set before [.cv messages ids]
+        # Echo X at timestamp between B and C
+        set echoTs [expr {$tsB + ($tsC - $tsB) / 2}]
+        cv_muc_echo $tsX echo-4msg [FormatTimestampISO $echoTs]
+        wait
+        set after [.cv messages ids]
+        # Expected: A, B, X', C — X moved between B and C
+        # Compound Patch updates: B's prev (was X → now A), C's prev (was B → now X')
+        list [llength $before] [llength $after] \
+            [expr {[lindex $after 0] == $tsA}] \
+            [expr {[lindex $after 1] == $tsB}] \
+            [expr {[lindex $after 2] == $echoTs}] \
+            [expr {[lindex $after 3] == $tsC}]
+    } -result {4 4 1 1 1 1}
+
+test chatview-outgoing-region-is-negative {outgoing-only chat has region -1} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "out"
+        wait
+        list old=[.cv messages regionForDirection old] \
+            new=[.cv messages regionForDirection new]
+    } -result {old=-1 new=-1}
+
+test chatview-mixed-region-derivation {region derivation skips outgoing messages} \
+    {*}$cv_common \
+    -body {
+        cv_feed "incoming" srv1
+        wait
+        # With only incoming, region must be real (not -1)
+        set regionBefore [.cv messages regionForDirection old]
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "out"
+        wait
+        # After adding outgoing, region should still resolve to the real one
+        set regionAfter [.cv messages regionForDirection old]
+        list [expr {$regionBefore != -1}] [expr {$regionAfter == $regionBefore}]
+    } -result {1 1}
+
+test chatview-outgoing-survives-catchup {outgoing still visible after CatchupDone reload} \
+    {*}$cv_common \
+    -body {
+        tacky message send -acc $::acc -chat_jid alice@example.com -body "pending"
+        wait
+        set countBefore [llength [.cv messages ids]]
+        tacky emit message <CatchupDone> -count 5
+        wait
+        cv_complete_mam
+        wait
+        set countAfter [llength [.cv messages ids]]
+        list before=$countBefore after=$countAfter
+    } -result {before=1 after=1}
+
+# -- scroll-to-bottom on outgoing ------------------------------------------------
+
+test chatview-outgoing-scrolls-when-at-end {sending while at bottom auto-scrolls} \
+    -setup {
+        cv_setup
+        # Pre-seed messages so the view overflows when packed
+        for {set i 0} {$i < 15} {incr i} {
+            tacky message send -acc $::acc -chat_jid alice@example.com \
+                -body "fill $i"
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        tacky message send -acc $::acc -chat_jid alice@example.com \
+            -body "one more"
+        wait
+        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list before=$atEndBefore after=$atEndAfter
+    } -result {before=1 after=1}
+
+test chatview-outgoing-no-scroll-when-scrolled-up {sending while scrolled up does not scroll} \
+    -setup {
+        cv_setup
+        for {set i 0} {$i < 15} {incr i} {
+            tacky message send -acc $::acc -chat_jid alice@example.com \
+                -body "fill $i"
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        # Scroll to top
+        .cv.text yview moveto 0
+        wait
+        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        tacky message send -acc $::acc -chat_jid alice@example.com \
+            -body "one more"
+        wait
+        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list before=$atEndBefore after=$atEndAfter
+    } -result {before=0 after=0}
+
+test chatview-incoming-scrolls-when-at-end {incoming while at bottom auto-scrolls} \
+    -setup {
+        cv_setup
+        for {set i 0} {$i < 15} {incr i} {
+            cv_feed "fill $i" seed$i
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        cv_feed "new msg" srv-new
+        wait
+        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list before=$atEndBefore after=$atEndAfter
+    } -result {before=1 after=1}
+
+test chatview-incoming-no-scroll-when-scrolled-up {incoming while scrolled up does not scroll} \
+    -setup {
+        cv_setup
+        for {set i 0} {$i < 15} {incr i} {
+            cv_feed "fill $i" seed$i
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        .cv.text yview moveto 0
+        wait
+        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        cv_feed "new msg" srv-new
+        wait
+        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list before=$atEndBefore after=$atEndAfter
+    } -result {before=0 after=0}
+
+# -- scroll button visibility ----------------------------------------------------
+
+test chatview-scrollbtn-hidden-at-end {scroll button hidden when at bottom} \
+    -setup {
+        cv_setup
+        for {set i 0} {$i < 15} {incr i} {
+            cv_feed "fill $i" seed$i
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        expr {[place info .cv.scrollbtn] eq ""}
+    } -result {1}
+
+test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrolled up and hides on return} \
+    -setup {
+        cv_setup
+        for {set i 0} {$i < 15} {incr i} {
+            cv_feed "fill $i" seed$i
+        }
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        .cv.text yview moveto 0
+        event generate .cv.text <<Yview>>
+        wait
+        set shownAfterScroll [expr {[place info .cv.scrollbtn] ne ""}]
+        .cv.text see end
+        event generate .cv.text <<Yview>>
+        wait
+        set hiddenAfterReturn [expr {[place info .cv.scrollbtn] eq ""}]
+        list shown=$shownAfterScroll hidden=$hiddenAfterReturn
+    } -result {shown=1 hidden=1}
 
 # -- catchup reload --------------------------------------------------------------
 
@@ -640,3 +928,40 @@ test chatarea-patch-receipt {Patch with server_status updates receipt checkmark}
             ? [.ca.text get {*}$ranges] : "MISSING"}]
         list before=$before after=$after
     } -result "{before= } {after= \u2713}"
+
+# -- highlight / system ---------------------------------------------------------
+
+test chatarea-highlight-message {highlight applies yellow and clears previous} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list \
+            [ca_msg 100 "" "msg A"] \
+            [ca_msg 200 100 "msg B"]]
+        .ca highlight message 100
+        set bg1 [.ca.text tag cget item.100 -background]
+        .ca highlight message 200
+        set bg1after [.ca.text tag cget item.100 -background]
+        set bg2 [.ca.text tag cget item.200 -background]
+        list first=$bg1 first_after=$bg1after second=$bg2
+    } -result {first=yellow first_after= second=yellow}
+
+test chatarea-highlight-clear {highlight clear removes background} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 "" "msg A"]]
+        .ca highlight message 100
+        set before [.ca.text tag cget item.100 -background]
+        .ca highlight clear
+        set after [.ca.text tag cget item.100 -background]
+        list before=$before after=$after
+    } -result {before=yellow after=}
+
+test chatarea-system-insert {system message is inserted with system tag} \
+    {*}$ca_common \
+    -body {
+        .ca system insert "Connection lost"
+        set content [.ca.text get 1.0 end-1c]
+        set tags [.ca.text tag names 1.0]
+        list [string match *Connection\ lost* $content] \
+            [expr {"system" in $tags}]
+    } -result {1 1}
