@@ -125,8 +125,8 @@ snit::widgetadaptor chatview {
     variable TrackedAvatars
 
     delegate method messages to hull
-    delegate method {see *} to hull
-    delegate method {highlight *} to hull
+    delegate method {see *} to hull using {%c see %m}
+    delegate method {highlight *} to hull using {%c highlight %m}
     delegate method system to hull
 
     option -acc -readonly yes
@@ -803,6 +803,7 @@ snit::widget chatarea {
     method DoCleanup {} {
         if {![winfo exists $win]} return
         set CleanupScheduled 0
+
         $self GetPixelsBelow
         $self GetPixelsAbove
 
