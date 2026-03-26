@@ -1,3 +1,5 @@
+package require xmpprw
+
 # xmlstream.tcl - XML stanza debugger/viewer
 #
 # Displays live XMPP stanzas (incoming + outgoing) with syntax highlighting,
@@ -481,6 +483,10 @@ snit::widgetadaptor xmlstanza {
 
     delegate method * to hull
     delegate option * to hull
+
+    typemethod showxml {xml {title "XML Stanza"}} {
+        xmlstanza show [xmppreader string $xml] $title
+    }
 
     typemethod show {stanza {title "XML Stanza"}} {
         set w .xml_stanza_viewer

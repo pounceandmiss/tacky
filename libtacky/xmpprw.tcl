@@ -1,5 +1,6 @@
 package require tdom
 package require snit
+package provide xmpprw 0.1
 namespace eval ::jab {}
 # Public API:
 #

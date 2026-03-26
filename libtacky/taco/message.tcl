@@ -246,9 +246,16 @@ snit::type taco_message {
         } else {
             set inserted [dict get $result inserted]
             if {[llength $inserted] > 0} {
+                set newTs [lindex $inserted 0]
                 set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
+                set batch [list $dbMsg]
+                set follower [$messagestore outgoingFollower $chatJid $newTs]
+                if {$follower ne ""} {
+                    lappend batch [dict create \
+                        timestamp $follower prev $newTs hollow 1]
+                }
                 $client emit message <Received> \
-                    -jid $chatJid -message $dbMsg
+                    -jid $chatJid -messages $batch
             }
         }
     }
@@ -305,7 +312,7 @@ snit::type taco_message {
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
         $client emit message <Sent> \
-            -jid $opts(-chat_jid) -message $dbMsg
+            -jid $opts(-chat_jid) -messages [list $dbMsg]
 
         $client write $stanza
     }

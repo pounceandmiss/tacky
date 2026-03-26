@@ -1,3 +1,5 @@
+package provide jid 0.1
+
 proc jid {cmd args} {
     set pattern {^(?:([^@/?]+)@)?([^/@?]+)(?:/([^?]+))?(?:\?(.+))?$}
 

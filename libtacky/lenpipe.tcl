@@ -1,3 +1,5 @@
+package provide lenpipe 0.1
+
 # lenpipe — length-prefixed message framing over a non-blocking channel.
 #
 # Protocol (both directions):

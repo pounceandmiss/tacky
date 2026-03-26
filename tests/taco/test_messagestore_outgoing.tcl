@@ -516,3 +516,33 @@ test messagestore-outgoing-move-patch-no-neighbors {ComputeMovePatch with no nei
         list [dict get $result prev] [llength $entries] \
              [dict get [lindex $entries 0] timestamp]
     } -result {{} 1 400}
+
+# -- outgoingFollower ----------------------------------------------------------
+
+test messagestore-outgoing-follower {outgoingFollower returns first pending after timestamp} \
+    {*}$ms_out_common \
+    -body {
+        store region new live
+        store store batch [list [ms_msg timestamp 100 body a]] live
+        ms_outgoing [ms_msg timestamp 200 body x own_id oid1 server_status pending]
+        ms_outgoing [ms_msg timestamp 300 body y own_id oid2 server_status pending]
+        store outgoingFollower alice@example.com 100
+    } -result {200}
+
+test messagestore-outgoing-follower-none {outgoingFollower returns empty when no pending after} \
+    {*}$ms_out_common \
+    -body {
+        store region new live
+        store store batch [list [ms_msg timestamp 100 body a]] live
+        store outgoingFollower alice@example.com 100
+    } -result {}
+
+test messagestore-outgoing-follower-skips-earlier {outgoingFollower skips outgoing before timestamp} \
+    {*}$ms_out_common \
+    -body {
+        ms_outgoing [ms_msg timestamp 50 body x own_id oid1 server_status pending]
+        store region new live
+        store store batch [list [ms_msg timestamp 100 body a]] live
+        ms_outgoing [ms_msg timestamp 200 body y own_id oid2 server_status pending]
+        store outgoingFollower alice@example.com 100
+    } -result {200}

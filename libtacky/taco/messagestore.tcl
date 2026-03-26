@@ -538,6 +538,16 @@ snit::type taco_messagestore {
         return $result
     }
 
+    # Return the first pending outgoing message after $ts, or "".
+    method outgoingFollower {jid ts} {
+        return [$options(-db) onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$jid AND timestamp > $ts
+              AND region = $OUTGOING_REGION
+            ORDER BY timestamp ASC LIMIT 1
+        }]
+    }
+
     # Compute patch entries for a message that moved from oldTs to
     # newTs (after MUC echo confirmation). Returns a list of dicts
     # suitable for inclusion in a compound <Patch> -messages list.

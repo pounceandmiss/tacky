@@ -5,6 +5,7 @@ package require mtls
 package require base64
 package require snit
 package require control
+package require jid
 
 # Declare a set of modules as public components.
 # Usage:  taco_modules roster bookmarks muc ...
@@ -44,13 +45,13 @@ snit::macro tackymethod {name arglist body} {
     }]
 }
 
-set _taco_dir [file dirname [info script]]
+set _taco_dir [file join [file dirname [info script]] taco]
 foreach script [lsort [glob [file join $_taco_dir *.tcl]]] {
-    if {$script ne [info script]} {
-        source $script
-    }
+    source $script
 }
 unset _taco_dir
+
+package require xmpprw
 
 snit::type taco_type {
     component db

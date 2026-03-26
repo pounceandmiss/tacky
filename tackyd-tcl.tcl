@@ -6,6 +6,10 @@
 # Incoming (stdin):  <module> <method> <kwarg>...
 # Outgoing (stdout): event <module> <event> <args>
 
+lappend auto_path [file join [file dirname [info script]] libtacky]
+package require taco
+package require lenpipe
+
 proc pipesend {msg} {
     set bytes [encoding convertto utf-8 $msg]
     puts stdout [string length $bytes]
@@ -23,8 +27,6 @@ namespace eval ::tacky_ns {
 
 # Configure stdout for writing
 chan configure stdout -translation binary -buffering full
-
-source [file join [file dirname [info script]] taco taco.tcl]
 
 # Read commands from stdin via lenpipe
 lenpipe create _pipe stdin \

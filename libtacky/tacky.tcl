@@ -1,4 +1,5 @@
 package provide libtacky 0.1
+package require jid
 
 # tacky — event router bridging the GUI and the taco XMPP backend.
 #
@@ -232,8 +233,7 @@ oo::class create tacky_threaded_type {
     }
 }
 
-set _tacky_lenpipe_script [file join [file dirname [info script]] taco lenpipe.tcl]
-set _tacky_backend_script [file join [file dirname [info script]] tackyd-tcl.tcl]
+set _tacky_backend_script [file join [file dirname [info script]] .. tackyd-tcl.tcl]
 
 # Process-based backend: taco runs in a child process
 # (taco_process_backend.tcl), communicating over stdin/stdout with
@@ -246,7 +246,7 @@ oo::class create tacky_process_type {
 
     constructor {args} {
         next
-        source $::_tacky_lenpipe_script
+        package require lenpipe
         set fd [open |[list [info nameofexecutable] $::_tacky_backend_script {*}$args] r+]
         set Pipe [lenpipe new $fd \
             -onmessage [namespace code {my _onMessage}] \

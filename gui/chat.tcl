@@ -321,9 +321,9 @@ snit::widgetadaptor chatview {
     }
 
     method OnLiveMessage {ev} {
-        set m [dict get $ev -message]
+        set messages [dict get $ev -messages]
         set atEnd [$hull atEnd]
-        $self ProcessBatch [list $m]
+        $self ProcessBatch $messages
         $self UpdateWasAtEnd
         if {$atEnd} { $hull see end }
     }
@@ -455,7 +455,7 @@ snit::widgetadaptor chatview {
         ::tacky message rawxml -acc $options(-acc) \
             -chat $options(-jid) -timestamp $id \
             -command {apply {{xml} {
-                xmlstanza show [xmppreader string $xml]
+                xmlstanza showxml $xml
             }}}
     }
 

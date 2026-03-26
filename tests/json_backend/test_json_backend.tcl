@@ -1,8 +1,6 @@
 # Unit tests for json_backend.tcl JSON formatting and dispatch logic.
 
-package require json
-package require json::write
-json::write indented false
+source [file join [file dirname [info script]] .. .. tackyd-json.tcl]
 
 # -- Helpers: capture pipesend output ----------------------------------------
 
@@ -128,12 +126,13 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit message <Received> \
-        -message [dict create timestamp 100 body hello hollow 0]
+        -messages [list [dict create timestamp 100 body hello hollow 0]]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<Received>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"hello"} hollow false]]]
+        messages [json::write array \
+            [json::write object timestamp 100 body {"hello"} hollow false]]]]
 
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
@@ -167,7 +166,7 @@ test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -b
 
 test json-backend-process-roundtrip {spawn json backend, send request, get response} \
     -constraints hasProcess -setup {
-    set backend [file join [file dirname [info script]] .. .. libtacky tackyd-json.tcl]
+    set backend [file join [file dirname [info script]] .. .. tackyd-json.tcl]
     set fd [open |[list [info nameofexecutable] $backend] r+]
     chan configure $fd -translation binary -buffering full -blocking 0
 } -body {

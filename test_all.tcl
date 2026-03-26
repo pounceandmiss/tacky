@@ -30,8 +30,6 @@ foreach script [lsort [glob [file join $dir tests taco *.tcl]]] {
     source $script
 }
 
-source [file join $dir libtacky jsonify.tcl]
-
 foreach script [lsort [glob [file join $dir tests json_backend test_*.tcl]]] {
     source $script
 }
