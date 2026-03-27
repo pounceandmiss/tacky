@@ -137,8 +137,8 @@ jsonify_type jsonify \
             bookmarks {list bookmark}
         }}
 
-        message/<Received>      {dict {messages {list message}}}
-        message/<Sent>          {dict {messages {list message}}}
+        message/<Received>      {dict {message message}}
+        message/<Sent>          {dict {message message}}
         message/<Patch>         {dict {message message}}
         message/<CatchupDone>   {dict {count int}}
         muc/<Presence>          {dict {occupant occupant}}

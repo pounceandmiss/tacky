@@ -538,28 +538,23 @@ snit::type taco_messagestore {
         return $result
     }
 
-    # Return the first pending outgoing message after $ts, or "".
-    method outgoingFollower {jid ts} {
+    # Return the region of the nearest non-outgoing predecessor, or "".
+    method predecessorRegion {jid ts} {
         return [$options(-db) onecolumn {
-            SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid AND timestamp > $ts
-              AND region = $OUTGOING_REGION
-            ORDER BY timestamp ASC LIMIT 1
+            SELECT region FROM chat_message
+            WHERE chat_jid=$jid AND timestamp < $ts
+              AND region != $OUTGOING_REGION
+            ORDER BY timestamp DESC LIMIT 1
         }]
     }
 
-    # Compute patch entries for a message that moved from oldTs to
-    # newTs (after MUC echo confirmation). Returns a list of dicts
-    # suitable for inclusion in a compound <Patch> -messages list.
-    # The moved message's new prev and any affected followers are
-    # included.
+    # Compute the moved message's new prev after a MUC echo confirmation
+    # that changed its timestamp from oldTs to newTs. Follower prev
+    # updates are handled by the GUI's displaced-prev rule during
+    # re-insertion, so only the moved message's own prev is returned.
     method ComputeMovePatch {jid oldTs newTs region} {
         set reg $region
         set out $OUTGOING_REGION
-        set entries {}
-
-        # Predecessor query helper: find the message just before $ts
-        # considering both the real region and outgoing.
         set prevOfNew [$options(-db) onecolumn {
             SELECT timestamp FROM (
                 SELECT timestamp FROM chat_message
@@ -571,57 +566,7 @@ snit::type taco_messagestore {
                   AND region = $out
             ) ORDER BY timestamp DESC LIMIT 1
         }]
-
-        # Old follower: message that was immediately after the old
-        # position. Its prev now points to oldTs's predecessor.
-        set oldFollower [$options(-db) onecolumn {
-            SELECT timestamp FROM (
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $oldTs
-                  AND region = $reg
-                UNION ALL
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $oldTs
-                  AND region = $out
-            ) ORDER BY timestamp ASC LIMIT 1
-        }]
-        set prevOfOld [$options(-db) onecolumn {
-            SELECT timestamp FROM (
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $oldTs
-                  AND region = $reg
-                UNION ALL
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $oldTs
-                  AND region = $out
-            ) ORDER BY timestamp DESC LIMIT 1
-        }]
-
-        # New follower: message immediately after the new position.
-        # Its prev should become newTs.
-        set newFollower [$options(-db) onecolumn {
-            SELECT timestamp FROM (
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $newTs
-                  AND region = $reg
-                UNION ALL
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $newTs
-                  AND region = $out
-            ) ORDER BY timestamp ASC LIMIT 1
-        }]
-
-        # Emit old follower entry (if it exists and isn't the same as
-        # new follower — that case is handled by the new follower entry)
-        if {$oldFollower ne "" && $oldFollower != $newFollower} {
-            lappend entries [dict create timestamp $oldFollower prev $prevOfOld]
-        }
-        # Emit new follower entry
-        if {$newFollower ne ""} {
-            lappend entries [dict create timestamp $newFollower prev $newTs]
-        }
-
-        return [dict create prev $prevOfNew entries $entries]
+        return [dict create prev $prevOfNew entries {}]
     }
 
     method IsDuplicate {jid msg} {

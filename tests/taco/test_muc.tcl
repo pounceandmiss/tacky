@@ -355,7 +355,7 @@ test muc-message-event {groupchat message emits message <Received> only} \
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "hi all"
         }]
-        list [dict get $got -jid] [dict get [lindex [dict get $got -messages] 0] body]
+        list [dict get $got -jid] [dict get $got -message body]
     } -result {room@muc.example.com?join {hi all}}
 
 test muc-pm-sends-chat {pm sends chat message with muc#user marker} \
@@ -378,7 +378,7 @@ test muc-private-message-event {private message emits message <Received> only} \
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret"
         }]
-        list [dict get $got -jid] [dict get [lindex [dict get $got -messages] 0] body]
+        list [dict get $got -jid] [dict get $got -message body]
     } -result {room@muc.example.com/someone secret}
 
 # -- Subject ------------------------------------------------------------------
@@ -744,7 +744,7 @@ test muc-groupchat-emits-received {groupchat message emits message <Received> wi
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "event msg"
         }]
-        list [dict get $got -jid] [dict get [lindex [dict get $got -messages] 0] body]
+        list [dict get $got -jid] [dict get $got -message body]
     } -result {room@muc.example.com?join {event msg}}
 
 test muc-groupchat-own-id-set-for-own-nick {own message via echo sets own_id} \
@@ -811,7 +811,7 @@ test muc-pm-emits-received {private message emits message <Received> with full o
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret event"
         }]
-        list [dict get $got -jid] [dict get [lindex [dict get $got -messages] 0] body]
+        list [dict get $got -jid] [dict get $got -message body]
     } -result {room@muc.example.com/someone {secret event}}
 
 test muc-groupchat-not-in-message-module {groupchat messages don't reach message module} \

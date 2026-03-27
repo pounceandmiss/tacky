@@ -1,9 +1,4 @@
-# Chat view contract
-
-This document specifies what a chat view must do. It is a protocol
-contract between the view and the tacky message backend. It does not
-prescribe GUI layout, toolkit, or language. See `chat.md` for the
-message dict format, event definitions, and API signatures.
+# Chat view guide
 
 ---
 
@@ -213,30 +208,33 @@ compound patch handles this.
 
 SM-acked messages stay at region -1 (SM doesn't prove contiguity). They move to a real region only on MUC echo or MAM dedup.
 
-### Incoming messages while outgoing is pending
+### Displaced-prev rule
 
-When an incoming message arrives, `message store` bundles a hollow for
-the first pending outgoing follower into the `<Received>` event's
-`-messages` list. The hollow carries the updated `prev` so the GUI's
-ts-prev chain stays intact.
+When `apply` inserts message C with prev=B, and some displayed message
+E already claims B as its prev, `apply` updates E.prev=C before
+inserting. This keeps the prev chain intact for all interleaving
+cases: incoming between displayed messages, incoming before pending
+outgoing, delayed messages, and MUC echo reorders.
 
 ```
-Before:    [A, B, C, X(pending), Y(pending)]   X.prev=C, Y.prev=X
-D arrives: <Received> -messages [D, hollow(X, prev=D)]
-After:     [A, B, C, D, X(pending), Y(pending)]  X.prev=D
+Before:    [A, B, E]          E.prev=B
+C arrives: apply inserts C after B, displaces E.prev → C
+After:     [A, B, C, E]       E.prev=C
 ```
+
+### Live message region bridging
+
+Live messages go into `liveRegion`. On the very first live message
+(before any disconnect), `message store` bridges `liveRegion` into
+the predecessor's region so `AnnotatePrev` finds cross-region
+predecessors. After disconnect, `liveRegion` is pre-allocated (not
+reset to empty), so the bridge does not fire and regions stay separate.
 
 ---
 
 ## 7. Goto and search
 
-### `goto end`
-
-Clear the display, reset pagination state, re-run the initial load.
-Used after `<CatchupDone>` and for "scroll to bottom."
-
-### `goto $timestamp`
-
+Jumping to date:
 ```
 tacky message goto -acc $acc -chat $jid -date $ts -source local -limit 50 ...
 ```
@@ -248,7 +246,7 @@ Callback returns `{messages $list anchor $nearestTs}`.
   the anchor.
 
 `-source remote` fetches from the server (MAM) first, then returns
-local results. Useful for jump-to-date.
+local results. 
 
 ### Search
 
@@ -260,14 +258,4 @@ Server-side (MAM) full-text search. Returns `{messages $list complete $bool last
 
 To navigate to a search result, use `goto $timestamp -source remote`.
 
-### Cancel
-
-All goto/search requests should use their own sub-tag (e.g.
-`$tag/goto`). Cancel in-flight requests before starting a new one.
-
----
-
-### "New messages" indicator
-
-When a live message (`<Received>` or `<Sent>`) can't be inserted by the
-prev rule (user is viewing older history), it's a good idea to show a "new messages" indicator so that user can scroll to the end of history
+These results should be handled displayed specially - perhaps in a separate window that makes it clear that its's not a real piece of history. The messages returned come from different points in history, disjointed in practice, but they are artificially prev-ts linked so the view can use the same logic.

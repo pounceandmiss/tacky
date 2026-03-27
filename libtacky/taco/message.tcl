@@ -171,12 +171,13 @@ snit::type taco_message {
             incr totalCount [llength $messages]
         }
 
+        set liveRegion $catchupRegion
         $client emit message <CatchupDone> -count $totalCount
     }
 
     method OnDisconnect {args} {
         array unset PendingRetry
-        set liveRegion ""
+        $messagestore region new liveRegion
     }
 
     method OnMessage {stanza} {
@@ -214,7 +215,8 @@ snit::type taco_message {
             lappend parseArgs -own_id [xsearch $stanza -get @id]
         }
         set msg [$self ParseMessage $stanza {*}$parseArgs]
-        if {$liveRegion eq ""} {
+        set freshRegion [expr {$liveRegion eq ""}]
+        if {$freshRegion} {
             $messagestore region new liveRegion
         }
         set result [$messagestore store batch [list $msg] liveRegion]
@@ -247,15 +249,23 @@ snit::type taco_message {
             set inserted [dict get $result inserted]
             if {[llength $inserted] > 0} {
                 set newTs [lindex $inserted 0]
-                set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
-                set batch [list $dbMsg]
-                set follower [$messagestore outgoingFollower $chatJid $newTs]
-                if {$follower ne ""} {
-                    lappend batch [dict create \
-                        timestamp $follower prev $newTs hollow 1]
+                # On first-ever liveRegion, bridge into the existing
+                # history region so AnnotatePrev finds predecessors.
+                # After disconnect liveRegion is pre-allocated, so
+                # freshRegion is false and we don't bridge (gap).
+                if {$freshRegion} {
+                    set predRegion [$messagestore predecessorRegion \
+                        $chatJid $newTs]
+                    if {$predRegion ne "" \
+                            && $predRegion != $liveRegion} {
+                        $messagestore region bridge \
+                            $chatJid predRegion liveRegion
+                    }
                 }
+                set dbMsg [lindex \
+                    [$messagestore get ids $chatJid $inserted] 0]
                 $client emit message <Received> \
-                    -jid $chatJid -messages $batch
+                    -jid $chatJid -message $dbMsg
             }
         }
     }
@@ -312,7 +322,7 @@ snit::type taco_message {
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
         $client emit message <Sent> \
-            -jid $opts(-chat_jid) -messages [list $dbMsg]
+            -jid $opts(-chat_jid) -message $dbMsg
 
         $client write $stanza
     }

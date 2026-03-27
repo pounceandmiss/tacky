@@ -468,7 +468,7 @@ test messagestore-outgoing-reorder-end-to-end {confirmed message reorders correc
 
 # -- ComputeMovePatch ---------------------------------------------------------
 
-test messagestore-outgoing-move-patch-followers {ComputeMovePatch computes correct follower entries} \
+test messagestore-outgoing-move-patch-prev {ComputeMovePatch computes correct prev for moved message} \
     {*}$ms_out_common \
     -body {
         store region new live
@@ -476,8 +476,6 @@ test messagestore-outgoing-move-patch-followers {ComputeMovePatch computes corre
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 300 body b] \
             [ms_msg timestamp 500 body c]] live
-        # Simulate: message moved from 200 to 400 (already in DB at 400)
-        # We just test the query logic
         testdb eval {
             INSERT INTO chat_message(timestamp,chat_jid,from_jid,body,
                 server_id,own_id,raw_xml,region,server_status)
@@ -485,24 +483,15 @@ test messagestore-outgoing-move-patch-followers {ComputeMovePatch computes corre
                 '','','', $live, 'received')
         }
         set result [store ComputeMovePatch alice@example.com 200 400 $live]
-        set prev [dict get $result prev]
-        set entries [dict get $result entries]
         # moved msg prev = 300 (b is before 400)
-        # old follower (after 200) = 300 (b), new prev = 100 (a)
-        # new follower (after 400) = 500 (c), new prev = 400
-        list $prev \
-             [llength $entries] \
-             [dict get [lindex $entries 0] timestamp] \
-             [dict get [lindex $entries 0] prev] \
-             [dict get [lindex $entries 1] timestamp] \
-             [dict get [lindex $entries 1] prev]
-    } -result {300 2 300 100 500 400}
+        # follower entries are empty — GUI handles displaced prev
+        list [dict get $result prev] [llength [dict get $result entries]]
+    } -result {300 0}
 
-test messagestore-outgoing-move-patch-no-neighbors {ComputeMovePatch with no neighbors returns only self-referential follower} \
+test messagestore-outgoing-move-patch-no-predecessor {ComputeMovePatch with no predecessor returns empty prev} \
     {*}$ms_out_common \
     -body {
         store region new live
-        # Only the moved message exists at newTs
         testdb eval {
             INSERT INTO chat_message(timestamp,chat_jid,from_jid,body,
                 server_id,own_id,raw_xml,region,server_status)
@@ -510,39 +499,32 @@ test messagestore-outgoing-move-patch-no-neighbors {ComputeMovePatch with no nei
                 '','','', $live, 'received')
         }
         set result [store ComputeMovePatch alice@example.com 200 400 $live]
-        # prev is empty (no predecessor), moved message is its own
-        # "new follower" (after oldTs=200) — harmless redundancy
-        set entries [dict get $result entries]
-        list [dict get $result prev] [llength $entries] \
-             [dict get [lindex $entries 0] timestamp]
-    } -result {{} 1 400}
+        list [dict get $result prev] [llength [dict get $result entries]]
+    } -result {{} 0}
 
-# -- outgoingFollower ----------------------------------------------------------
+# -- predecessorRegion ---------------------------------------------------------
 
-test messagestore-outgoing-follower {outgoingFollower returns first pending after timestamp} \
+test messagestore-predecessor-region {predecessorRegion returns region of nearest predecessor} \
     {*}$ms_out_common \
     -body {
-        store region new live
-        store store batch [list [ms_msg timestamp 100 body a]] live
-        ms_outgoing [ms_msg timestamp 200 body x own_id oid1 server_status pending]
-        ms_outgoing [ms_msg timestamp 300 body y own_id oid2 server_status pending]
-        store outgoingFollower alice@example.com 100
-    } -result {200}
+        store region new r1
+        store store batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b]] r1
+        store predecessorRegion alice@example.com 300
+    } -result {1}
 
-test messagestore-outgoing-follower-none {outgoingFollower returns empty when no pending after} \
+test messagestore-predecessor-region-none {predecessorRegion returns empty when no predecessor} \
     {*}$ms_out_common \
     -body {
-        store region new live
-        store store batch [list [ms_msg timestamp 100 body a]] live
-        store outgoingFollower alice@example.com 100
+        store predecessorRegion alice@example.com 100
     } -result {}
 
-test messagestore-outgoing-follower-skips-earlier {outgoingFollower skips outgoing before timestamp} \
+test messagestore-predecessor-region-skips-outgoing {predecessorRegion skips outgoing region} \
     {*}$ms_out_common \
     -body {
-        ms_outgoing [ms_msg timestamp 50 body x own_id oid1 server_status pending]
-        store region new live
-        store store batch [list [ms_msg timestamp 100 body a]] live
-        ms_outgoing [ms_msg timestamp 200 body y own_id oid2 server_status pending]
-        store outgoingFollower alice@example.com 100
-    } -result {200}
+        store region new r1
+        store store batch [list [ms_msg timestamp 100 body a]] r1
+        ms_outgoing [ms_msg timestamp 200 body x own_id oid1 server_status pending]
+        store predecessorRegion alice@example.com 300
+    } -result {1}

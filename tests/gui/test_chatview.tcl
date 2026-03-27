@@ -537,6 +537,39 @@ test chatview-initial-load-shows-history {pre-seeded messages appear after const
         llength [.cv messages ids]
     } -result {2}
 
+test chatview-live-after-history {live message appears when history is already displayed} \
+    -setup {
+        cv_setup
+        cv_feed "seeded 1" seed1
+        cv_feed "seeded 2" seed2
+        cv_create -pack
+    } \
+    -cleanup { cv_cleanup } \
+    -body {
+        set countBefore [llength [.cv messages ids]]
+        cv_feed "live msg" srv-live
+        wait
+        set countAfter [llength [.cv messages ids]]
+        list before=$countBefore after=$countAfter
+    } -result {before=2 after=3}
+
+test chatview-live-after-mam-history {live message appears when MAM history is displayed} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+        set mamIq [cv_find_mam_iq alice@example.com]
+        cv_complete_mam_with $mamIq {
+            sid1 "mam 1" 2024-01-01T10:00:00Z
+            sid2 "mam 2" 2024-01-01T11:00:00Z
+        }
+        wait
+        set countBefore [llength [.cv messages ids]]
+        cv_feed "live msg" srv-live
+        wait
+        set countAfter [llength [.cv messages ids]]
+        list before=$countBefore after=$countAfter
+    } -result {before=2 after=3}
+
 test chatview-initial-load-mam {empty DB triggers MAM and results appear in widget} \
     -setup { cv_setup; cv_create -pack -nomam } \
     -cleanup { cv_cleanup } \
@@ -965,3 +998,49 @@ test chatarea-system-insert {system message is inserted with system tag} \
         list [string match *Connection\ lost* $content] \
             [expr {"system" in $tags}]
     } -result {1 1}
+
+# -- displaced-prev rule -------------------------------------------------------
+
+test chatarea-displaced-prev-incoming {incoming between displayed msgs updates follower prev} \
+    {*}$ca_common \
+    -body {
+        # Display B(100) and E(400)
+        .ca apply [list \
+            [ca_msg 100 "" "B"] \
+            [ca_msg 400 100 "E"]]
+        # C(200) arrives with prev=B — E should be displaced from prev=B to prev=C
+        .ca apply [list [ca_msg 200 100 "C"]]
+        # Verify order AND that a new msg with prev=E connects (proves E.prev was updated)
+        .ca apply [list [ca_msg 500 400 "F"]]
+        .ca messages ids
+    } -result {100 200 400 500}
+
+test chatarea-displaced-prev-outgoing {incoming before outgoing updates outgoing prev} \
+    {*}$ca_common \
+    -body {
+        # Display C(100) and X(200, outgoing pending)
+        .ca apply [list \
+            [ca_msg 100 "" "C"] \
+            [ca_outgoing 200 100 "X"]]
+        # D(150) arrives with prev=C — X should be displaced from prev=C to prev=D
+        .ca apply [list [ca_msg 150 100 "D"]]
+        # Verify: msg with prev=X connects (proves X is still in prev chain)
+        .ca apply [list [ca_msg 300 200 "E"]]
+        .ca messages ids
+    } -result {100 150 200 300}
+
+test chatarea-displaced-prev-series {two insertions update follower prev chain correctly} \
+    {*}$ca_common \
+    -body {
+        # Display B(100) and E(400)
+        .ca apply [list \
+            [ca_msg 100 "" "B"] \
+            [ca_msg 400 100 "E"]]
+        # C(200) arrives — E displaced to prev=C
+        .ca apply [list [ca_msg 200 100 "C"]]
+        # D(300) arrives — E displaced to prev=D
+        .ca apply [list [ca_msg 300 200 "D"]]
+        # Verify: msg with prev=E connects (proves E stayed in chain)
+        .ca apply [list [ca_msg 500 400 "F"]]
+        .ca messages ids
+    } -result {100 200 300 400 500}

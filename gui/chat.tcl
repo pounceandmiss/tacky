@@ -321,9 +321,9 @@ snit::widgetadaptor chatview {
     }
 
     method OnLiveMessage {ev} {
-        set messages [dict get $ev -messages]
+        set m [dict get $ev -message]
         set atEnd [$hull atEnd]
-        $self ProcessBatch $messages
+        $self ProcessBatch [list $m]
         $self UpdateWasAtEnd
         if {$atEnd} { $hull see end }
     }
@@ -649,6 +649,14 @@ snit::widget chatarea {
                     lappend inserted $id
                 } elseif {$prev ne "" && $prev in $MessageIds} {
                     # This message's prev is displayed → insert after it
+                    # If another message already claims this prev, update
+                    # it to point to the new message (displaced-prev rule).
+                    # Must happen before InsertAt — bidict enforces 1:1 and
+                    # would evict the displaced entry on reverse collision.
+                    if {[bidict rexists $Prevs $prev]} {
+                        set displaced [bidict rget $Prevs $prev]
+                        set Prevs [bidict set $Prevs $displaced $id]
+                    }
                     $self InsertAt $prev after $msg
                     lappend inserted $id
                 } elseif {[llength $MessageIds] == 0} {

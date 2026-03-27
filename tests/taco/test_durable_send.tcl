@@ -164,9 +164,8 @@ test ds-send-emits-sent {send emits message <Sent> event} \
             {apply {{ev} { set ::got $ev }}}
         c message send -chat_jid room@muc.example.com?join \
             -body "hi"
-        set msg [lindex [dict get $got -messages] 0]
-        list [dict get $got -jid] [dict get $msg body] \
-             [dict get $msg server_status]
+        list [dict get $got -jid] [dict get $got -message body] \
+             [dict get $got -message server_status]
     } -result {room@muc.example.com?join hi pending}
 
 test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
@@ -404,7 +403,7 @@ test ds-parse-message-has-server-status {ParseMessage includes server_status in 
         c.conn feed [j message -from alice@example.com/phone {
             j body #body "incoming"
         }]
-        dict get [lindex [dict get $got -messages] 0] server_status
+        dict get [dict get $got -message] server_status
     } -result {}
 
 test ds-incoming-emits-received {incoming 1:1 message emits <Received>} \
@@ -417,9 +416,8 @@ test ds-incoming-emits-received {incoming 1:1 message emits <Received>} \
         c.conn feed [j message -from alice@example.com/phone {
             j body #body "hey"
         }]
-        set msg [lindex [dict get $got -messages] 0]
-        list [dict get $got -jid] [dict get $msg body] \
-             [dict get $msg server_status]
+        list [dict get $got -jid] [dict get $got -message body] \
+             [dict get $got -message server_status]
     } -result {alice@example.com hey {}}
 
 test ds-incoming-stores-empty-status {incoming message stored with empty server_status} \
