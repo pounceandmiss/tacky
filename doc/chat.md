@@ -224,11 +224,15 @@ After:     [A, B, C, E]       E.prev=C
 
 ### Live message region bridging
 
-Live messages go into `liveRegion`. On the very first live message
-(before any disconnect), `message store` bridges `liveRegion` into
-the predecessor's region so `AnnotatePrev` finds cross-region
-predecessors. After disconnect, `liveRegion` is pre-allocated (not
-reset to empty), so the bridge does not fire and regions stay separate.
+Live messages are stored in `liveRegion`, which starts empty and is
+created on the first incoming message. Since MAM history lives in a
+different region, the first live message bridges `liveRegion` into
+the predecessor's region so they share a single contiguous region.
+
+On disconnect, a fresh `liveRegion` is pre-allocated (rather than
+reset to empty) so the bridge does not fire again — post-disconnect
+messages correctly land in a separate region. On reconnect,
+`OnCatchup` sets `liveRegion` to the catchup region.
 
 ---
 
