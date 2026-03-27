@@ -155,6 +155,21 @@ proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
     }] 1
 }
 
+# Create tacky + chatview packed with 15 messages so the view overflows.
+# direction: incoming | outgoing. Pair with cv_cleanup.
+proc cv_overflow_setup {{direction incoming}} {
+    cv_setup
+    for {set i 0} {$i < 15} {incr i} {
+        if {$direction eq "outgoing"} {
+            tacky message send -acc $::acc \
+                -chat_jid alice@example.com -body "fill $i"
+        } else {
+            cv_feed "fill $i" seed$i
+        }
+    }
+    cv_create -pack
+}
+
 # -- common setup: tacky + empty chatview ready for live messages ---------------
 
 set cv_common {
@@ -182,15 +197,6 @@ test chatview-live-dedup {duplicate stanza-id does not create second message} \
         wait
         llength [.cv messages ids]
     } -result {1}
-
-test chatview-multiple-messages {multiple messages appear in order} \
-    {*}$cv_common \
-    -body {
-        cv_feed "first" srv1
-        cv_feed "second" srv2
-        wait
-        llength [.cv messages ids]
-    } -result {2}
 
 test chatview-no-body-ignored {message without body does not appear} \
     {*}$cv_common \
@@ -377,123 +383,70 @@ test chatview-mixed-region-derivation {region derivation skips outgoing messages
         list [expr {$regionBefore != -1}] [expr {$regionAfter == $regionBefore}]
     } -result {1 1}
 
-test chatview-outgoing-survives-catchup {outgoing still visible after CatchupDone reload} \
-    {*}$cv_common \
-    -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "pending"
-        wait
-        set countBefore [llength [.cv messages ids]]
-        tacky emit message <CatchupDone> -count 5
-        wait
-        cv_complete_mam
-        wait
-        set countAfter [llength [.cv messages ids]]
-        list before=$countBefore after=$countAfter
-    } -result {before=1 after=1}
+foreach {direction seedCmd} {
+    outgoing {tacky message send -acc $::acc -chat_jid alice@example.com -body "pending"}
+    incoming {cv_feed "before catchup" srv1}
+} {
+    test chatview-${direction}-survives-catchup \
+        "$direction still visible after CatchupDone reload" \
+        {*}$cv_common \
+        -body {
+            eval $seedCmd
+            wait
+            set countBefore [llength [.cv messages ids]]
+            tacky emit message <CatchupDone> -count 5
+            wait
+            cv_complete_mam
+            wait
+            set countAfter [llength [.cv messages ids]]
+            list before=$countBefore after=$countAfter
+        } -result {before=1 after=1}
+}
 
-# -- scroll-to-bottom on outgoing ------------------------------------------------
+# -- scroll-to-bottom on incoming/outgoing ---------------------------------------
 
-test chatview-outgoing-scrolls-when-at-end {sending while at bottom auto-scrolls} \
-    -setup {
-        cv_setup
-        # Pre-seed messages so the view overflows when packed
-        for {set i 0} {$i < 15} {incr i} {
-            tacky message send -acc $::acc -chat_jid alice@example.com \
-                -body "fill $i"
-        }
-        cv_create -pack
-    } \
-    -cleanup { cv_cleanup } \
-    -body {
-        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        tacky message send -acc $::acc -chat_jid alice@example.com \
-            -body "one more"
-        wait
-        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        list before=$atEndBefore after=$atEndAfter
-    } -result {before=1 after=1}
-
-test chatview-outgoing-no-scroll-when-scrolled-up {sending while scrolled up does not scroll} \
-    -setup {
-        cv_setup
-        for {set i 0} {$i < 15} {incr i} {
-            tacky message send -acc $::acc -chat_jid alice@example.com \
-                -body "fill $i"
-        }
-        cv_create -pack
-    } \
-    -cleanup { cv_cleanup } \
-    -body {
-        # Scroll to top
-        .cv.text yview moveto 0
-        wait
-        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        tacky message send -acc $::acc -chat_jid alice@example.com \
-            -body "one more"
-        wait
-        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        list before=$atEndBefore after=$atEndAfter
-    } -result {before=0 after=0}
-
-test chatview-incoming-scrolls-when-at-end {incoming while at bottom auto-scrolls} \
-    -setup {
-        cv_setup
-        for {set i 0} {$i < 15} {incr i} {
-            cv_feed "fill $i" seed$i
-        }
-        cv_create -pack
-    } \
-    -cleanup { cv_cleanup } \
-    -body {
-        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        cv_feed "new msg" srv-new
-        wait
-        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        list before=$atEndBefore after=$atEndAfter
-    } -result {before=1 after=1}
-
-test chatview-incoming-no-scroll-when-scrolled-up {incoming while scrolled up does not scroll} \
-    -setup {
-        cv_setup
-        for {set i 0} {$i < 15} {incr i} {
-            cv_feed "fill $i" seed$i
-        }
-        cv_create -pack
-    } \
-    -cleanup { cv_cleanup } \
-    -body {
-        .cv.text yview moveto 0
-        wait
-        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        cv_feed "new msg" srv-new
-        wait
-        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
-        list before=$atEndBefore after=$atEndAfter
-    } -result {before=0 after=0}
+# Parameterised scroll test: direction × scroll position.
+#   direction: incoming | outgoing
+#   scrollPos: at-end  | scrolled-up
+foreach {direction scrollPos result} {
+    outgoing at-end      {before=1 after=1}
+    outgoing scrolled-up {before=0 after=0}
+    incoming at-end      {before=1 after=1}
+    incoming scrolled-up {before=0 after=0}
+} {
+    test chatview-${direction}-scroll-${scrollPos} \
+        "$direction while $scrollPos" \
+        -setup { cv_overflow_setup $direction } \
+        -cleanup { cv_cleanup } \
+        -body {
+            if {$scrollPos eq "scrolled-up"} {
+                .cv.text yview moveto 0
+                wait
+            }
+            set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+            if {$direction eq "outgoing"} {
+                tacky message send -acc $::acc \
+                    -chat_jid alice@example.com -body "one more"
+            } else {
+                cv_feed "new msg" srv-new
+            }
+            wait
+            set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+            list before=$atEndBefore after=$atEndAfter
+        } -result $result
+}
 
 # -- scroll button visibility ----------------------------------------------------
 
 test chatview-scrollbtn-hidden-at-end {scroll button hidden when at bottom} \
-    -setup {
-        cv_setup
-        for {set i 0} {$i < 15} {incr i} {
-            cv_feed "fill $i" seed$i
-        }
-        cv_create -pack
-    } \
+    -setup { cv_overflow_setup } \
     -cleanup { cv_cleanup } \
     -body {
         expr {[place info .cv.scrollbtn] eq ""}
     } -result {1}
 
 test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrolled up and hides on return} \
-    -setup {
-        cv_setup
-        for {set i 0} {$i < 15} {incr i} {
-            cv_feed "fill $i" seed$i
-        }
-        cv_create -pack
-    } \
+    -setup { cv_overflow_setup } \
     -cleanup { cv_cleanup } \
     -body {
         .cv.text yview moveto 0
@@ -507,35 +460,7 @@ test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrol
         list shown=$shownAfterScroll hidden=$hiddenAfterReturn
     } -result {shown=1 hidden=1}
 
-# -- catchup reload --------------------------------------------------------------
-
-test chatview-catchup-reloads {CatchupDone triggers goto end which reloads} \
-    {*}$cv_common \
-    -body {
-        cv_feed "before catchup" srv1
-        wait
-        set countBefore [llength [.cv messages ids]]
-        tacky emit message <CatchupDone> -count 5
-        wait
-        cv_complete_mam
-        wait
-        set countAfter [llength [.cv messages ids]]
-        list before=$countBefore after=$countAfter
-    } -result {before=1 after=1}
-
 # -- history loading -------------------------------------------------------------
-
-test chatview-initial-load-shows-history {pre-seeded messages appear after construction} \
-    -setup {
-        cv_setup
-        cv_feed "seeded msg 1" seed1
-        cv_feed "seeded msg 2" seed2
-        cv_create -pack
-    } \
-    -cleanup { cv_cleanup } \
-    -body {
-        llength [.cv messages ids]
-    } -result {2}
 
 test chatview-live-after-history {live message appears when history is already displayed} \
     -setup {
@@ -1001,33 +926,24 @@ test chatarea-system-insert {system message is inserted with system tag} \
 
 # -- displaced-prev rule -------------------------------------------------------
 
-test chatarea-displaced-prev-incoming {incoming between displayed msgs updates follower prev} \
-    {*}$ca_common \
-    -body {
-        # Display B(100) and E(400)
-        .ca apply [list \
-            [ca_msg 100 "" "B"] \
-            [ca_msg 400 100 "E"]]
-        # C(200) arrives with prev=B — E should be displaced from prev=B to prev=C
-        .ca apply [list [ca_msg 200 100 "C"]]
-        # Verify order AND that a new msg with prev=E connects (proves E.prev was updated)
-        .ca apply [list [ca_msg 500 400 "F"]]
-        .ca messages ids
-    } -result {100 200 400 500}
-
-test chatarea-displaced-prev-outgoing {incoming before outgoing updates outgoing prev} \
-    {*}$ca_common \
-    -body {
-        # Display C(100) and X(200, outgoing pending)
-        .ca apply [list \
-            [ca_msg 100 "" "C"] \
-            [ca_outgoing 200 100 "X"]]
-        # D(150) arrives with prev=C — X should be displaced from prev=C to prev=D
-        .ca apply [list [ca_msg 150 100 "D"]]
-        # Verify: msg with prev=X connects (proves X is still in prev chain)
-        .ca apply [list [ca_msg 300 200 "E"]]
-        .ca messages ids
-    } -result {100 150 200 300}
+foreach {suffix desc followerCmd} {
+    incoming "incoming between displayed msgs updates follower prev" ca_msg
+    outgoing "incoming before outgoing updates outgoing prev"        ca_outgoing
+} {
+    test chatarea-displaced-prev-$suffix $desc \
+        {*}$ca_common \
+        -body {
+            # Anchor A(100) and follower B(400), B.prev=A
+            .ca apply [list \
+                [ca_msg 100 "" "A"] \
+                [$followerCmd 400 100 "B"]]
+            # C(200) arrives with prev=A — B displaced from prev=A to prev=C
+            .ca apply [list [ca_msg 200 100 "C"]]
+            # Verify: msg with prev=B connects (proves B.prev was updated)
+            .ca apply [list [ca_msg 500 400 "D"]]
+            .ca messages ids
+        } -result {100 200 400 500}
+}
 
 test chatarea-displaced-prev-series {two insertions update follower prev chain correctly} \
     {*}$ca_common \

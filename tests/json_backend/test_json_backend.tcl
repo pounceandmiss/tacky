@@ -133,6 +133,20 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     [json::write object \
         message [json::write object timestamp 100 body {"hello"} hollow false]]]
 
+test json-backend-emit-formatting {emit message with formatting entities} -setup {
+    _test_clear
+} -body {
+    _test_emit message <Received> \
+        -message [dict create timestamp 100 body {hello bold world} \
+                      formatting {bold 6 4}]
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"event"} {"message"} {"<Received>"} \
+    [json::write object \
+        message [json::write object timestamp 100 body {"hello bold world"} \
+            formatting [json::write array \
+                [json::write object type {"bold"} offset 6 length 4]]]]]
+
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
 } -body {

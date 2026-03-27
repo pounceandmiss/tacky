@@ -25,6 +25,7 @@ json::write indented false
 #   {list T}       -> JSON array of T
 #   {dict S}       -> JSON object, S is {field type ...}, unlisted fields -> string
 #   base64         -> binary data encoded as base64 JSON string
+#   {tuples S}     -> flat list grouped by fields of S into JSON array of objects
 #   <name>         -> named type lookup (always a dict schema)
 #
 # Usage:
@@ -58,6 +59,19 @@ snit::type jsonify_type {
             }
             base64 {
                 return [json::write string [binary encode base64 $value]]
+            }
+            tuples {
+                set schema [lindex $hint 1]
+                set keys [dict keys $schema]
+                set items {}
+                foreach $keys $value {
+                    set d {}
+                    foreach k $keys {
+                        dict set d $k [set $k]
+                    }
+                    lappend items [$self to_json $d [list dict $schema]]
+                }
+                return [json::write array {*}$items]
             }
             list {
                 set subhint [lindex $hint 1]
@@ -101,7 +115,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int prev int hollow bool}
+        message     {timestamp int prev int hollow bool formatting {tuples {type string offset int length int}}}
         occupant    {}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
