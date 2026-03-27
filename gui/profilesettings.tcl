@@ -176,7 +176,8 @@ snit::widget profilesettings {
         $win.status configure -text [dict get $ev -message] -foreground ""
     }
 
-    method OnResult {what status msg} {
+    method OnResult {what result} {
+        lassign $result status msg
         if {$statusAfter ne ""} {
             after cancel $statusAfter
         }

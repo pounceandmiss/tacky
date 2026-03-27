@@ -105,7 +105,7 @@ snit::type taco_avatar {
     }
 
     # Publish own avatar (rawData = raw image bytes)
-    # Optional -command callback: {*}$command ok "" / {*}$command error $msg
+    # Optional -command callback: {*}$command [list ok ""] / {*}$command [list error $msg]
     method publish {args} {
         array set opts {-type image/png -width "" -height "" -command "" -tag ""}
         array set opts $args
@@ -162,7 +162,7 @@ snit::type taco_avatar {
             if {$command ne "" && ($tag eq "" || [info exists ActiveTags($tag)])} {
                 set errText [xsearch $stanza error text -get body]
                 if {$errText eq ""} { set errText "Avatar data publish failed" }
-                {*}$command error $errText
+                {*}$command [list error $errText]
             }
             return
         }
@@ -208,19 +208,19 @@ snit::type taco_avatar {
                 $client emit avatar <Update> -jid $jid -hash $hash
             }
             if {$command ne ""} {
-                {*}$command ok ""
+                {*}$command [list ok ""]
             }
         } else {
             if {$command ne ""} {
                 set errText [xsearch $stanza error text -get body]
                 if {$errText eq ""} { set errText "Avatar publish failed" }
-                {*}$command error $errText
+                {*}$command [list error $errText]
             }
         }
     }
 
     # Disable own avatar
-    # Optional -command callback: {*}$command ok "" / {*}$command error $msg
+    # Optional -command callback: {*}$command [list ok ""] / {*}$command [list error $msg]
     method disable {args} {
         array set opts {-command "" -tag ""}
         array set opts $args

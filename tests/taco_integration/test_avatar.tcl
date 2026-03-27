@@ -1,3 +1,6 @@
+package require base64
+package require sha1
+
 namespace eval ::test::avatar_int {
 
     variable HOST "example.local"
@@ -87,7 +90,7 @@ namespace eval ::test::avatar_int {
         catch {
             set var [namespace current]::_disableDone
             set $var 0
-            tacky avatar disable -acc $ROMEO -command [list apply {{var status msg} {
+            tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
                 set $var 1
             }} $var]
             ::test::helpers::waitVar $var $TIMEOUT
@@ -114,7 +117,7 @@ namespace eval ::test::avatar_int {
             set pubVar [namespace current]::_pubDone
             set $pubVar 0
             tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
-                -command [list apply {{var status msg} {
+                -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
             ::test::helpers::waitVar $pubVar 5000
@@ -136,7 +139,7 @@ namespace eval ::test::avatar_int {
             set pubVar [namespace current]::_pubDone
             set $pubVar 0
             tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
-                -command [list apply {{var status msg} {
+                -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
             ::test::helpers::waitVar $pubVar 5000
@@ -158,7 +161,7 @@ namespace eval ::test::avatar_int {
             set pubVar [namespace current]::_pubDone
             set $pubVar 0
             tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
-                -command [list apply {{var status msg} {
+                -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
             ::test::helpers::waitVar $pubVar 5000
@@ -182,7 +185,7 @@ namespace eval ::test::avatar_int {
             set pubVar [namespace current]::_pubDone
             set $pubVar 0
             tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
-                -command [list apply {{var status msg} {
+                -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
             ::test::helpers::waitVar $pubVar 5000
@@ -192,7 +195,7 @@ namespace eval ::test::avatar_int {
         set eventArgs [awaitEvent avatar <Update> -acc $JULIET -action disabled {
             set disVar [namespace current]::_disDone
             set $disVar 0
-            tacky avatar disable -acc $ROMEO -command [list apply {{var status msg} {
+            tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
                 set $var 1
             }} $disVar]
             ::test::helpers::waitVar $disVar 5000
