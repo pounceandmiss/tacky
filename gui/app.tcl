@@ -84,6 +84,8 @@ snit::type app_type {
     }
 
     method BuildMainUI {} {
+        wm title . "Tacky"
+
         # TODO: replace with ::tacky setting get once setting module exists
         set chatModeVar "inline"
 
