@@ -119,12 +119,6 @@ snit::type app_type {
             -command [mymethod OnChatModeChanged]
         .menubar add cascade -label "View" -menu .menubar.view
 
-        # Help menu
-        menu .menubar.help -tearoff 0
-        .menubar.help add command -label "About Tacky" \
-            -command [mymethod ShowAbout]
-        .menubar add cascade -label "Help" -menu .menubar.help
-
         . configure -menu .menubar
 
         # Global accelerators
@@ -258,8 +252,4 @@ snit::type app_type {
         }
     }
 
-    method ShowAbout {} {
-        tk_messageBox -title "About Tacky" -icon info \
-            -message "Tacky XMPP Client"
-    }
 }
