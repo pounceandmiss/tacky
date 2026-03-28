@@ -639,12 +639,6 @@ pJYHICcuNeEtOUF2gLiY+D5LgBgAYiVaE4CR+G8lADqJ5wbaLzz8/jfxGy8F5CKm2AAAAABJRU5E
 rkJggg==}
 
 
-image create photo image/mate/48x48/emblems/emblem-downloads.png -file /usr/share/icons/mate/22x22/emblems/emblem-downloads.png
-
-image create photo mate/22x22/status/avatar-default.png -file /usr/share/icons/mate/22x22/status/avatar-default.png
-image create photo mate/32x32/status/avatar-default.png -file /usr/share/icons/mate/32x32/status/avatar-default.png
-
-image create photo mate/32x32/status/stock_lock.png -file /usr/share/icons/mate/32x32/status/stock_lock.png
 
 proc xmlconsole {jid} {
     set safe [string map {@ _ . _} $jid]

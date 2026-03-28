@@ -4,14 +4,6 @@ if 0 {
     See avatarcache_base in tacky.tcl for the full API.
 }
 
-# Shared fallback avatar (32x32)
-if {[catch {
-    image create photo avatarcache::defaultAvatar \
-        -file /usr/share/icons/mate/32x32/status/avatar-default.png
-}]} {
-    image create photo avatarcache::defaultAvatar -width 32 -height 32
-}
-
 oo::class create tk_avatarcache {
     superclass avatarcache_base
 
