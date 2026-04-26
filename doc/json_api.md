@@ -55,7 +55,7 @@ Example:
   {"acc": "user@example.com", "jid": "room@muc",
    "body": "hello",
    "message": {"timestamp": 1700000000,
-               "body": "hello", "hollow": false}}]
+               "body": "hello", "patch": false}}]
 ["event", "conn", "<State>",
   {"acc": "user@example.com", "state": "connected"}]
 ["event", "muc", "<Joined>",

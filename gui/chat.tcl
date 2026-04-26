@@ -70,8 +70,8 @@ package require snit
 # Every batch of messages passes through one generic loop:
 #
 #   for each message:
-#     if already displayed → patch prev (hollow updates prev pointer)
-#     if no body           → skip (hollow targeting non-displayed msg)
+#     if already displayed → patch fields (e.g. prev, server_status)
+#     if patch entry       → skip (patch targeting non-displayed msg)
 #     if some displayed message's prev == this id → insert before it
 #     if this message's prev is displayed → insert after it
 #     if widget empty → insert at end (bootstrap)
@@ -389,11 +389,11 @@ snit::widgetadaptor chatview {
     method ProcessBatch {messages} {
         set enriched {}
         foreach msg $messages {
-            if {[dict exists $msg hollow]} {
+            if {[dict exists $msg patch]} {
                 lappend enriched [dict create \
                     id [dict get $msg timestamp] \
                     prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}] \
-                    hollow 1]
+                    patch 1]
                 continue
             }
             set emsg [$self EnrichMessage $msg]
@@ -490,7 +490,8 @@ snit::widgetadaptor chatview {
 
 if 0 {
     # Insert messages using the universal prev-based rule.
-    # Each message must have id, prev, and body (or just id+prev for hollow).
+    # Each message must have id, prev, and body (or id+prev+patch for a
+    # patch entry).
     $chatview apply $messageDictList
     $chatview message edit $id $messageDict
     $chatview message delete id $id
@@ -630,8 +631,8 @@ snit::widget chatarea {
                     continue
                 }
 
-                if {[dict exists $msg hollow]} {
-                    # Hollow targeting non-displayed msg — skip
+                if {[dict exists $msg patch]} {
+                    # Patch entry targeting non-displayed msg — skip
                     continue
                 }
 

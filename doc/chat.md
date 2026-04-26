@@ -41,22 +41,28 @@ map (id <-> prev) for O(1) forward and reverse lookup.
 For each message in a batch:
 
 1. **Already displayed?** Patch fields (`prev`, `server_status`).
-2. **Hollow and not displayed?** Skip (field update for off-screen
-   message).
+2. **Patch entry and not displayed?** Skip (field update for
+   off-screen message).
 3. **Some displayed message's prev == this ID?** Insert *before* it.
 4. **This message's prev is displayed?** Insert *after* prev.
 5. **Display empty?** Insert (bootstrap).
 6. **None of the above?** Skip (can't connect — stale response).
 
-This handles forward/backward pagination, live messages, prev-patches,
+A **patch entry** is a dict carrying `{patch 1}` instead of a body.
+It only ever updates an already-displayed message; rule 2 ensures it
+is dropped if the target isn't on screen. Patches arrive on two
+channels: inline at the edge of backward history pages (§3) and via
+`<Patch>` events (§4).
+
+This handles forward/backward pagination, live messages, patches,
 dedup, and staleness in one loop.
 
 ### Notes
 
 - The view can process messages sequentially in returned order.
-- **Backward pages** are reversed before applying so the hollow is
-  processed first (updating the edge message's prev), then the rest
-  chain via rule 3.
+- **Backward pages** are reversed before applying so the edge patch
+  is processed first (updating the edge message's prev), then the
+  rest chain via rule 3.
 - **Forward pages** are applied in order; each message's prev points
   to the previous one, chaining via rule 4.
 - **Live messages** connect via rule 4 or are skipped if the user
@@ -99,18 +105,19 @@ would mask gaps.
 Guard against duplicate in-flight requests with a boolean per
 direction. Set on fire, clear on callback.
 
-### Backward pagination and hollows
+### Backward pagination edge patch
 
-The backend appends a **hollow message** to backward pages:
-`{timestamp $edgeTs prev $newPrev hollow 1}`. This updates the edge
+The backend appends a **patch entry** to backward pages:
+`{timestamp $edgeTs prev $newPrev patch 1}`. This updates the edge
 message's prev to connect the new page to the existing display.
 
-A hollow carries no body and must never be inserted. In the algorithm,
-it needs no special treatment beyond rule 2 (skip if not displayed)
-and rule 1 (patch if displayed).
+It uses the same `{patch 1}` marker as `<Patch>` events (§4) — the
+flag tells the algorithm "update fields if the target is displayed,
+otherwise drop." Rule 1 (patch if displayed) and rule 2 (skip if not
+displayed) handle it without special-casing.
 
-Reverse backward pages before applying so the hollow is processed
-first.
+Reverse backward pages before applying so the edge patch is
+processed first.
 
 ### Forward pagination
 
@@ -131,15 +138,18 @@ rule.
 Carries `-messages`: a list of update dicts, each with a `timestamp`
 identifying the target.
 
-**Simple patch** (in-place): `{timestamp $ts server_status received}`
-Updates the receipt indicator.
+**Simple patch** (in-place):
+`{timestamp $ts server_status received patch 1}`
+Updates the receipt indicator. The `patch 1` flag routes it through
+rule 1/2 (patch if displayed, drop otherwise).
 
 **Timestamp-change patch**:
-`{timestamp $oldTs newtimestamp $newTs server_status received prev $newPrev}`
+`{timestamp $oldTs newtimestamp $newTs server_status received prev $newPrev region $reg}`
 The message moved to a new timestamp (server assigned a different
 time on MUC echo). Delete by `$oldTs`, re-insert with new timestamp,
-status, and prev. The displaced-prev rule handles any affected
-followers automatically during re-insertion.
+status, and prev. Untagged: it's a delete+reinsert, not a field
+update, and so doesn't carry `patch 1`. The displaced-prev rule
+handles any affected followers automatically during re-insertion.
 
 ### `<CatchupDone>`
 
