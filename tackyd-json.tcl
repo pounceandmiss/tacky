@@ -115,7 +115,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int prev int hollow bool formatting {tuples {type string offset int length int}}}
+        message     {timestamp int prev int patch bool formatting {tuples {type string offset int length int}}}
         occupant    {}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}

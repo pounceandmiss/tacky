@@ -64,7 +64,7 @@ test json-backend-callback-search {callback result with schema} -setup {
     _test_clear
 } -body {
     set result [dict create \
-        messages [list [dict create timestamp 100 body hi hollow 0]] \
+        messages [list [dict create timestamp 100 body hi patch 0]] \
         complete 1]
     _test_on_result 42 message/search $result
     lindex [_test_sent] 0
@@ -72,7 +72,7 @@ test json-backend-callback-search {callback result with schema} -setup {
     {"result"} 42 \
     [json::write object \
         messages [json::write array \
-            [json::write object timestamp 100 body {"hi"} hollow false]] \
+            [json::write object timestamp 100 body {"hi"} patch false]] \
         complete true]]
 
 test json-backend-callback-list {callback with list of ints} -setup {
@@ -126,12 +126,12 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit message <Received> \
-        -message [dict create timestamp 100 body hello hollow 0]
+        -message [dict create timestamp 100 body hello patch 0]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<Received>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"hello"} hollow false]]]
+        message [json::write object timestamp 100 body {"hello"} patch false]]]
 
 test json-backend-emit-formatting {emit message with formatting entities} -setup {
     _test_clear

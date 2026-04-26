@@ -236,11 +236,13 @@ snit::type taco_message {
                         region $liveRegion \
                         prev [dict get $moveInfo prev]]]
                     foreach entry [dict get $moveInfo entries] {
+                        dict set entry patch 1
                         lappend patchMessages $entry
                     }
                 } else {
                     set patchMessages [list [dict create \
-                        timestamp $oldTs server_status received]]
+                        timestamp $oldTs server_status received \
+                        patch 1]]
                 }
                 $client emit message <Patch> -jid $chatJid \
                     -messages $patchMessages
@@ -343,7 +345,8 @@ snit::type taco_message {
             $client emit message <Patch> -jid [dict get $c chat_jid] \
                 -messages [list [dict create \
                     timestamp [dict get $c timestamp] \
-                    server_status received]]
+                    server_status received \
+                    patch 1]]
         }
     }
 
@@ -438,7 +441,8 @@ snit::type taco_message {
     # from the server.
 
     # Shared local-store query: dispatches to get before/after/latest
-    # and appends a hollow message for backward pagination.
+    # and appends a patch entry for backward pagination (updates the
+    # cursor message's prev to bridge into the new page).
     method GetLocal {chatJid before after limit region} {
         if {$before ne ""} {
             if {$region eq ""} {
@@ -457,7 +461,7 @@ snit::type taco_message {
         }
         if {$before ne "" && [llength $local] > 0} {
             set lastTs [dict get [lindex $local end] timestamp]
-            lappend local [dict create timestamp $before prev $lastTs hollow 1]
+            lappend local [dict create timestamp $before prev $lastTs patch 1]
         }
         return $local
     }

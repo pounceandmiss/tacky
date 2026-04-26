@@ -790,8 +790,8 @@ proc ca_outgoing {id prev body {status pending}} {
         timestamp $id is_outgoing 1 server_status $status
 }
 
-proc ca_hollow {id prev} {
-    dict create id $id prev $prev hollow 1
+proc ca_patch {id prev} {
+    dict create id $id prev $prev patch 1
 }
 
 set ca_common {
@@ -814,9 +814,9 @@ test chatarea-apply-backward {reversed backward batch chains via rexists} \
     -body {
         # Bootstrap with one message
         .ca apply [list [ca_msg 500 400 "msg E"]]
-        # Simulate reversed backward page: hollow + newest-first
+        # Simulate reversed backward page: edge patch + newest-first
         .ca apply [list \
-            [ca_hollow 500 400] \
+            [ca_patch 500 400] \
             [ca_msg 400 300 "msg D"] \
             [ca_msg 300 200 "msg C"] \
             [ca_msg 200 "" "msg B"]]
@@ -835,24 +835,24 @@ test chatarea-apply-tombstone-in-chain {empty-body messages maintain prev chain}
         .ca messages ids
     } -result {100 200 300 400 500}
 
-test chatarea-apply-hollow-patches {hollow patches displayed message prev} \
+test chatarea-apply-patch-updates-prev {patch entry updates displayed message prev} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg 500 "" "msg E"]]
-        # Hollow updates E's prev, then D chains via rexists
+        # Patch updates E's prev, then D chains via rexists
         .ca apply [list \
-            [ca_hollow 500 400] \
+            [ca_patch 500 400] \
             [ca_msg 400 "" "msg D"]]
         .ca messages ids
     } -result {400 500}
 
-test chatarea-apply-hollow-skipped-when-not-displayed {hollow for non-displayed message is ignored} \
+test chatarea-apply-patch-skipped-when-not-displayed {patch entry for non-displayed message is ignored} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg 500 "" "msg E"]]
-        # Hollow targets 999 which isn't displayed — entire batch skipped
+        # Patch targets 999 which isn't displayed — entire batch skipped
         .ca apply [list \
-            [ca_hollow 999 400] \
+            [ca_patch 999 400] \
             [ca_msg 400 "" "msg D"]]
         .ca messages ids
     } -result {500}

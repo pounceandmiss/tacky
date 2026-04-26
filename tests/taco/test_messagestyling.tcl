@@ -59,9 +59,9 @@ test ms-enrich-plain {enrich with plain text has no formatting key} -body {
 } -result {hello 0}
 
 test ms-enrich-no-body {enrich skips dict without body} -body {
-    set msg [dict create hollow 1 timestamp 1]
+    set msg [dict create patch 1 timestamp 1]
     messagestyling::enrich $msg
-} -result {hollow 1 timestamp 1}
+} -result {patch 1 timestamp 1}
 
 test ms-enrich-empty-body {enrich skips empty body} -body {
     set msg [dict create body "" from_jid foo@bar timestamp 1]
