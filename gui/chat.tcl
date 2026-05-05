@@ -138,7 +138,9 @@ snit::widgetadaptor chatview {
     variable ScrollBtnVisible
 
     constructor args {
-        installhull using chatarea -thirst-command [mymethod OnThirst] \
+        installhull using chatarea \
+            -thirst-command [mymethod OnThirsty] \
+            -cull-command [mymethod OnCulled] \
             -avatar-release-command [mymethod OnAvatarRelease]
         $self configurelist $args
         set WasAtEnd 1
@@ -281,29 +283,30 @@ snit::widgetadaptor chatview {
         $self goto end
     }
 
-    method OnThirst {directions thirsty oldest newest} {
-        if {$thirsty && $oldest eq "" && $newest eq ""} return
+    method OnThirsty {direction edgeId} {
+        if {[dict get $LoadToken $direction]} return
+        dict set LoadToken $direction 1
+        set region [$hull messages regionForDirection $direction]
+        if {$direction eq "old"} {
+            ::tacky message history -acc $options(-acc) \
+                -chat $options(-jid) \
+                -before $edgeId -region $region -limit 50 \
+                -tag $win/$direction \
+                -command [mymethod OnLoadDone $direction]
+        } else {
+            ::tacky message history -acc $options(-acc) \
+                -chat $options(-jid) \
+                -after $edgeId -region $region -limit 50 \
+                -tag $win/$direction \
+                -command [mymethod OnLoadDone $direction]
+        }
+    }
+
+    method OnCulled {directions} {
         foreach dir $directions {
-            if {$thirsty} {
-                if {[dict get $LoadToken $dir]} continue
-                dict set LoadToken $dir 1
-                set region [$hull messages regionForDirection $dir]
-                if {$dir eq "old"} {
-                    ::tacky message history -acc $options(-acc) \
-                        -chat $options(-jid) \
-                        -before $oldest -region $region -limit 50 \
-                        -tag $win/$dir -command [mymethod OnLoadDone $dir]
-                } else {
-                    ::tacky message history -acc $options(-acc) \
-                        -chat $options(-jid) \
-                        -after $newest -region $region -limit 50 \
-                        -tag $win/$dir -command [mymethod OnLoadDone $dir]
-                }
-            } else {
-                dict set LoadToken $dir 0
-                catch {::tacky unlisten $win/$dir}
-                ::tacky message cancel -acc $options(-acc) -tag $win/$dir
-            }
+            dict set LoadToken $dir 0
+            catch {::tacky unlisten $win/$dir}
+            ::tacky message cancel -acc $options(-acc) -tag $win/$dir
         }
     }
 
@@ -505,7 +508,7 @@ snit::widget chatarea {
     hulltype ttk::frame
     component text
     component scrollbar
-    
+
     # Might be useful for debugging: Global vars that will be set to
     # latest calculated numbers of pixels above and below the viewport
     option -pixelsabovevariable
@@ -527,12 +530,25 @@ snit::widget chatarea {
     # (midpoint between load and clean thresholds)
     option -clean-target -default 2500
 
-    # Callback invoked whenever there's less pixels above or below the
-    # viewport than -load-threshold
+    # Fires when the buffer in $direction ("old"/"new") fell below the
+    # load threshold. Called as: {*}$cmd $direction $edgeId — $edgeId
+    # is the id of the oldest (for "old") or newest (for "new") displayed
+    # message, i.e. the cursor the controller should fetch from. Fires
+    # once per thirsty direction per DoCleanup pass. Not fired if the
+    # display is empty (no edge to fetch from), nor for a direction that
+    # was just culled in the same pass (avoids load→clean→load).
     option -thirst-command -default control::no-op
 
-    # Callback invoked when a culled/deleted message was the last one
-    # displaying a given avatar JID. Called as: {*}$cmd $avatarJid
+    # Fires after chatarea culled messages from one or both edges.
+    # Called as: {*}$cmd $directions — $directions is a list containing
+    # "old" and/or "new". The controller should invalidate any in-flight
+    # loads for those directions; their cursors no longer connect to
+    # displayed content. Fires once per DoCleanup pass that culled.
+    option -cull-command -default control::no-op
+
+    # Fires when the last message displaying a given avatar JID was just
+    # removed. Called as: {*}$cmd $avatarJid. Lets the controller release
+    # its avatar tracking for that JID.
     option -avatar-release-command -default ""
 
     # Virtual events
@@ -843,22 +859,22 @@ snit::widget chatarea {
 
         # Invalidate in-flight loads whose cursors may now be stale.
         if {[llength $cleaned] > 0} {
-            {*}$options(-thirst-command) $cleaned no \
-                [lindex $MessageIds 0] [lindex $MessageIds end]
+            {*}$options(-cull-command) $cleaned
         }
+
+        # Need an edge id to fetch from; if the display ended up empty
+        # there is nothing to be thirsty about. Initial load comes
+        # through a different path (chatview::InitialLoad), so the
+        # controller's LoadToken guard would not catch this.
+        if {[llength $MessageIds] == 0} return
 
         # Don't fire thirst for a direction we just cleaned —
         # that would cause a load→clean→load loop.
-        set thirstDirections ""
         if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
-            lappend thirstDirections old
+            {*}$options(-thirst-command) old [lindex $MessageIds 0]
         }
         if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
-            lappend thirstDirections new
-        }
-        if {$thirstDirections ne "" } {
-            {*}$options(-thirst-command) $thirstDirections yes \
-                [lindex $MessageIds 0] [lindex $MessageIds end]
+            {*}$options(-thirst-command) new [lindex $MessageIds end]
         }
     }
     
