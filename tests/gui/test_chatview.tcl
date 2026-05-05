@@ -683,7 +683,7 @@ test chatview-stale-old-discarded {cleanup invalidation discards stale old-direc
         # response is in flight.  This clears LoadToken, unlistens
         # the callback, and cancels the backend query — so the stale
         # response should never reach OnLoadDone.
-        .cv OnThirst {old} no [.cv messages oldest] [.cv messages newest]
+        .cv OnCulled {old}
 
         # Complete the now-stale MAM response
         cv_complete_mam_with $mamIq2 {
@@ -715,7 +715,7 @@ test chatview-fresh-load-after-invalidation {new thirst re-requests and loads af
         if {$mamIq2 eq ""} { error "no first thirst MAM IQ" }
 
         # Invalidate
-        .cv OnThirst {old} no [.cv messages oldest] [.cv messages newest]
+        .cv OnCulled {old}
         $::_client conn clear
 
         # Kick a new cleanup cycle — in real use the user is scrolling,
@@ -774,6 +774,21 @@ test chatview-goto-cancels-inflight {goto end discards in-flight thirst response
         set countAfterStale [llength [.cv messages ids]]
         list goto=$countAfterGoto stale=$countAfterStale
     } -result {goto=3 stale=3}
+
+test chatview-live-dropped-when-tail-culled {live message ignored after new-direction cull} \
+    {*}$cv_common \
+    -body {
+        cv_feed "anchor" srv-anchor
+        wait
+        set countBefore [llength [.cv messages ids]]
+        # Simulate chatarea culling the tail. AtTail flips false, so
+        # subsequent live <Received> events should be dropped.
+        .cv OnCulled {new}
+        cv_feed "while-paused" srv-paused
+        wait
+        set countAfter [llength [.cv messages ids]]
+        list before=$countBefore after=$countAfter
+    } -result {before=1 after=1}
 
 # -- chatarea apply tests -------------------------------------------------------
 
@@ -850,12 +865,23 @@ test chatarea-apply-patch-skipped-when-not-displayed {patch entry for non-displa
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg 500 "" "msg E"]]
-        # Patch targets 999 which isn't displayed — entire batch skipped
+        # Patch targets 999 which isn't displayed — patch entry alone
+        # is skipped; sibling message still inserts at sorted position.
         .ca apply [list \
             [ca_patch 999 400] \
             [ca_msg 400 "" "msg D"]]
         .ca messages ids
-    } -result {500}
+    } -result {400 500}
+
+test chatarea-apply-out-of-order {batch with non-monotonic timestamps lands sorted} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list \
+            [ca_msg 100 "" "A"] \
+            [ca_msg 300 100 "C"] \
+            [ca_msg 200 100 "B"]]
+        .ca messages ids
+    } -result {100 200 300}
 
 test chatarea-apply-dedup {already displayed message is patched not duplicated} \
     {*}$ca_common \
@@ -960,3 +986,102 @@ test chatarea-displaced-prev-series {two insertions update follower prev chain c
         .ca apply [list [ca_msg 500 400 "F"]]
         .ca messages ids
     } -result {100 200 300 400 500}
+
+# -- chatarea pagination signals ------------------------------------------------
+
+# Wrap .ca.text so 'count -ypixels' returns values from the global ::mock_above
+# / ::mock_below. Each is read fresh on every call, so DoCleanup's while-loop
+# sees decreasing pixels as messages are deleted (callers can adjust between
+# calls or use a proc-style global that tracks llength).
+proc ca_install_pixel_mock {} {
+    rename .ca.text _real_ca_text
+    proc ::.ca.text args {
+        if {[lindex $args 0] eq "count" && [lindex $args 1] eq "-ypixels"} {
+            set startIdx [lindex $args 2]
+            if {$startIdx eq "0.0"} {
+                return [expr {$::mock_above}]
+            } else {
+                return [expr {$::mock_below}]
+            }
+        }
+        return [_real_ca_text {*}$args]
+    }
+}
+proc ca_uninstall_pixel_mock {} {
+    catch {rename ::.ca.text {}}
+    catch {rename _real_ca_text {}}
+}
+
+set ca_signals_common {
+    -setup {
+        set ::ca_thirsty {}
+        set ::ca_culled {}
+        set ::mock_above 0
+        set ::mock_below 0
+        chatarea .ca \
+            -thirst-command [list apply {{dir id} {lappend ::ca_thirsty [list $dir $id]}}] \
+            -cull-command   [list apply {{dirs} {lappend ::ca_culled $dirs}}]
+        pack .ca -fill both -expand yes
+        wm geometry . 400x200
+        update
+        ca_install_pixel_mock
+    }
+    -cleanup {
+        ca_uninstall_pixel_mock
+        destroy .ca
+        unset -nocomplain ::ca_thirsty ::ca_culled ::mock_above ::mock_below
+    }
+}
+
+test chatarea-thirsty-fires-per-direction {-thirst-command fires once per thirsty direction with edge id} \
+    {*}$ca_signals_common \
+    -body {
+        # Both directions below load threshold (default 500): each fires once
+        # with its own edge id.
+        set ::mock_above 100
+        set ::mock_below 100
+        .ca apply [list \
+            [ca_msg 100 "" "a"] \
+            [ca_msg 200 100 "b"] \
+            [ca_msg 300 200 "c"]]
+        .ca DoCleanup
+        set ::ca_thirsty
+    } -result {{old 100} {new 300}}
+
+test chatarea-cull-fires-with-directions {-cull-command fires with the list of culled directions} \
+    {*}$ca_signals_common \
+    -body {
+        # Pixel mock above above clean threshold; messages get culled until
+        # MessageIds drains (mock returns constant high value, so the
+        # loop's `[llength $MessageIds] > 0` guard is what stops it).
+        set ::mock_above 9999
+        set ::mock_below 0
+        .ca apply [list \
+            [ca_msg 100 "" "a"] \
+            [ca_msg 200 100 "b"] \
+            [ca_msg 300 200 "c"]]
+        .ca DoCleanup
+        set ::ca_culled
+    } -result {old}
+
+test chatarea-no-thirst-for-just-culled-direction {a direction culled this pass does not also fire thirst} \
+    {*}$ca_signals_common \
+    -body {
+        # Cull old; mock_above stays high so loop drains MessageIds; once
+        # empty, the empty-display guard prevents any thirst fire — including
+        # the suppressed "old" we just culled. Verifies no {old ...} entry
+        # leaks into ::ca_thirsty even when above-pixels look thirsty.
+        set ::mock_above 9999
+        set ::mock_below 0
+        .ca apply [list \
+            [ca_msg 100 "" "a"] \
+            [ca_msg 200 100 "b"] \
+            [ca_msg 300 200 "c"]]
+        .ca DoCleanup
+        # No "old" entry in thirsty calls; cull happened.
+        set hasOld 0
+        foreach call $::ca_thirsty {
+            if {[lindex $call 0] eq "old"} { set hasOld 1 }
+        }
+        list culled=$::ca_culled hasOldThirst=$hasOld
+    } -result {culled=old hasOldThirst=0}

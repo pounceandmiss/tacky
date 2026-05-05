@@ -440,30 +440,23 @@ snit::type taco_message {
     # isn't fully synced, a MAM fetch kicks in to get the next batch
     # from the server.
 
-    # Shared local-store query: dispatches to get before/after/latest
-    # and appends a patch entry for backward pagination (updates the
-    # cursor message's prev to bridge into the new page).
+    # Shared local-store query: dispatches to get before/after/latest.
     method GetLocal {chatJid before after limit region} {
         if {$before ne ""} {
             if {$region eq ""} {
                 set region [$messagestore region resolve $chatJid $before -backward]
                 if {$region eq ""} { return {} }
             }
-            set local [$messagestore get before $chatJid $before $region $limit]
+            return [$messagestore get before $chatJid $before $region $limit]
         } elseif {$after ne ""} {
             if {$region eq ""} {
                 set region [$messagestore region resolve $chatJid $after -forward]
                 if {$region eq ""} { return {} }
             }
-            set local [$messagestore get after $chatJid $after $region $limit]
+            return [$messagestore get after $chatJid $after $region $limit]
         } else {
-            set local [$messagestore get latest $chatJid $limit]
+            return [$messagestore get latest $chatJid $limit]
         }
-        if {$before ne "" && [llength $local] > 0} {
-            set lastTs [dict get [lindex $local end] timestamp]
-            lappend local [dict create timestamp $before prev $lastTs patch 1]
-        }
-        return $local
     }
 
     method history {args} {

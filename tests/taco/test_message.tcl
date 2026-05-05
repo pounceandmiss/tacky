@@ -111,11 +111,10 @@ test message-history-synced-before {synced chat with -before returns correct sli
             [msg_msg timestamp 200 server_id s2 body b] \
             [msg_msg timestamp 300 server_id s3 body c]]
         set result [msg_history -chat alice@example.com -before 300 -limit 2]
-        # result[0..1] are chronological, result[2] is patch entry for cursor
         list [llength $result] \
              [dict get [lindex $result 0] body] \
              [dict get [lindex $result 1] body]
-    } -result {3 a b}
+    } -result {2 a b}
 
 # -- history: synced prevents MAM -----------------------------------------------
 
@@ -801,11 +800,10 @@ test message-history-fetch-bridges-before {MAM fetch via -before bridges into an
 
         # The callback should see the fetched messages (bridged into
         # the live message's region, so the re-query finds them).
-        # result[0..1] are chronological, result[2] is patch entry for cursor
         list [llength $::_result] \
              [dict get [lindex $::_result 0] body] \
              [dict get [lindex $::_result 1] body]
-    } -result {3 {old msg 1} {old msg 2}}
+    } -result {2 {old msg 1} {old msg 2}}
 
 test message-history-fetch-live-during {live message during fetch ends up in same region} \
     {*}$msg_common \
@@ -850,14 +848,13 @@ test message-history-fetch-live-during {live message during fetch ends up in sam
         }]
 
         # All three messages (fetched + both live) should be in one region
-        # result includes patch entry for cursor + 1 real message
         set db [$::_client message messagestore cget -db]
         set regions [$db eval {
             SELECT COUNT(DISTINCT region) FROM chat_message
             WHERE chat_jid='alice@example.com'
         }]
         list [llength $::_result] $regions
-    } -result {2 1}
+    } -result {1 1}
 
 test message-history-fetch-live-after {live message after fetch lands in same region} \
     {*}$msg_common \
@@ -1176,52 +1173,6 @@ test message-get-before-from-outgoing-cursor {get before from outgoing cursor fi
              [dict get [lindex $before 0] body] \
              [dict get [lindex $before 1] body]
     } -result {2 a b}
-
-# -- patch entries in backward pagination --------------------------------------
-
-test message-history-before-patch {backward pagination appends edge patch entry} \
-    {*}$msg_common \
-    -body {
-        msg_store [list \
-            [msg_msg timestamp 100 server_id s1 body a] \
-            [msg_msg timestamp 200 server_id s2 body b] \
-            [msg_msg timestamp 300 server_id s3 body c]]
-        set result [msg_history -chat alice@example.com -before 300]
-        # Last entry should be patch: timestamp=300 (cursor), prev=200 (last real msg)
-        set real1 [lindex $result 0]
-        set real2 [lindex $result 1]
-        set entry [lindex $result 2]
-        list [dict get $entry timestamp] \
-             [dict get $entry prev] \
-             [dict get $entry patch] \
-             [dict get $real1 body] \
-             [dict get $real2 body]
-    } -result {300 200 1 a b}
-
-test message-history-after-no-patch {forward pagination has no patch entry} \
-    {*}$msg_common \
-    -body {
-        msg_sync alice@example.com
-        msg_store [list \
-            [msg_msg timestamp 100 server_id s1 body a] \
-            [msg_msg timestamp 200 server_id s2 body b] \
-            [msg_msg timestamp 300 server_id s3 body c]]
-        set result [msg_history -chat alice@example.com -after 100]
-        # All entries should be real messages (have body)
-        set allHaveBody 1
-        foreach msg $result {
-            if {![dict exists $msg body]} { set allHaveBody 0 }
-        }
-        list [llength $result] $allHaveBody
-    } -result {2 1}
-
-test message-history-before-empty-no-patch {backward pagination with no results has no patch entry} \
-    {*}$msg_common \
-    -body {
-        msg_store [list [msg_msg timestamp 100 server_id s1 body only]]
-        set result [msg_history -chat alice@example.com -before 100]
-        llength $result
-    } -result {0}
 
 # -- search --------------------------------------------------------------------
 
