@@ -58,8 +58,8 @@ package require snit
 #       LoadToken dict tracks what's active as a boolean).
 #  5. History results arrive via OnLoadDone → ProcessBatch → apply:
 #     a. The LoadToken for that direction is cleared.
-#     b. Messages are inserted into chatarea via the prev-based rule
-#        (see "Universal insertion rule" below).
+#     b. Messages are inserted into chatarea via the timestamp-sorted
+#        rule (see "Universal insertion rule" below).
 #     c. [compensate] wraps the entire apply loop — it's a no-op for
 #        below-viewport inserts, adjusts for above-viewport inserts.
 #     d. The insert changes the text geometry, which triggers
@@ -70,22 +70,29 @@ package require snit
 # Every batch of messages passes through one generic loop:
 #
 #   for each message:
-#     if already displayed → patch fields (e.g. prev, server_status)
+#     if already displayed → patch fields (e.g. server_status)
 #     if patch entry       → skip (patch targeting non-displayed msg)
-#     if some displayed message's prev == this id → insert before it
-#     if this message's prev is displayed → insert after it
-#     if widget empty → insert at end (bootstrap)
-#     otherwise → skip (can't connect — silently discarded)
+#     otherwise → insert at timestamp-sorted position
 #
-# This handles all directions, dedup, and staleness uniformly.
-# A bidict (bidirectional map) tracks id→prev and prev→id for O(1)
-# lookups in both directions.
+# Message id equals timestamp (unique; bumped slightly on collision by
+# the backend), and MessageIds is kept sorted by id, so a linear scan
+# finds the insertion point. Forward, backward, goto, and live batches
+# all use the same path; final order is determined by timestamp, not
+# by arrival order.
 #
-# Staleness is handled by the rule itself: if the user scrolled away
-# and the cursor message was cleaned, the batch can't connect to any
-# displayed message and is silently discarded — no generation tokens
-# or explicit guards needed.  Tag-based cancel (-tag $win/$dir) is
-# an optional optimization to save backend work.
+# Staleness is handled outside this rule by two mechanisms:
+#
+#   - History requests (pagination, goto): chatview's OnCulled cancels
+#     in-flight tags via `tacky message cancel` when chatarea culls the
+#     corresponding edge, so stale responses never reach apply.
+#
+#   - Live events: chatview gates OnLiveMessage on AtTail (true iff
+#     the displayed window contains the conversation tail). When
+#     AtTail is false, live messages are dropped — the message is
+#     durable in the local DB (the backend persists and bridges
+#     regions before emitting <Received>), and the user rejoins the
+#     tail via the scroll-to-bottom button (goto end) or by scrolling
+#     down until thirst catches up to DB-newest.
 #
 # Steady state
 # ------------
@@ -99,9 +106,10 @@ package require snit
 # ----------------------
 # New messages arriving from the network bypass the thirst mechanism.
 # chatview subscribes to <Received> events for its JID and feeds
-# them through ProcessBatch → apply. The prev rule handles dedup
-# (already-displayed → patch) and connectivity. After insert, the
-# view scrolls to the end if the user was already at the bottom.
+# them through ProcessBatch → apply. Sorted insert handles ordering;
+# rule 1 dedups already-displayed messages. After insert, the view
+# scrolls to the end if the user was already at the bottom. Live
+# inserts are gated by AtTail (see comment on OnLiveMessage).
 #
 # Catchup and goto
 # -----------------
@@ -133,7 +141,22 @@ snit::widgetadaptor chatview {
     option -jid
     option -menubar -default ""
 
+    # Display-and-tail predicate. True iff the displayed window ends at
+    # the conversation tail AND the viewport is at the visual end.
+    # Drives the scroll-to-bottom button visibility (button shows when
+    # !WasAtEnd).
     variable WasAtEnd
+
+    # Tail-only predicate. True iff the displayed window contains the
+    # conversation tail, regardless of viewport position. Gates live
+    # message inserts (see OnLiveMessage). Pegged to event transitions
+    # (initial-load done, end-of-stream thirst, cull, goto), not
+    # derived from displayed-newest == DB-newest — at the moment a
+    # live <Received> fires, the message has already been persisted to
+    # the local DB, so a derived check would always come up false and
+    # drop the very message it should accept.
+    variable AtTail
+
     variable IsMuc
     variable ScrollBtnVisible
 
@@ -144,6 +167,11 @@ snit::widgetadaptor chatview {
             -avatar-release-command [mymethod OnAvatarRelease]
         $self configurelist $args
         set WasAtEnd 1
+        # Empty display is vacuously at the tail; any live message
+        # arriving before InitialLoad completes is the new tail.
+        # InitialLoad / OnLoadDone(new) re-affirm; OnCulled(new) and
+        # goto-non-end flip false.
+        set AtTail 1
         set ScrollBtnVisible 0
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set TrackedAvatars [list]
@@ -191,6 +219,10 @@ snit::widgetadaptor chatview {
     method OnInitialLoadDone {messages} {
         dict set LoadToken new 0
         $self ProcessBatch $messages
+        # Initial load fetches the newest page by definition; we are
+        # at the tail even when the result is empty (empty conversation
+        # is vacuously at tail).
+        set AtTail 1
         $self UpdateWasAtEnd
         $hull see end
     }
@@ -216,12 +248,19 @@ snit::widgetadaptor chatview {
         }
 
         if {$target eq "end"} {
-            # Reset to "bottom of conversation" — same as initial open
+            # Reset to "bottom of conversation" — same as initial open.
+            # InitialLoad will flip AtTail back to true on completion.
             $hull clear
             set LoadToken [dict create old 0 new 0]
+            set AtTail 0
             $self InitialLoad
             return
         }
+
+        # Goto-around displays a slice centered on an anchor that
+        # isn't the tail; live messages should not append until the
+        # user explicitly rejoins the tail.
+        set AtTail 0
 
         if {$source eq "remote"} {
             $self ShowLoading
@@ -303,6 +342,11 @@ snit::widgetadaptor chatview {
     }
 
     method OnCulled {directions} {
+        if {"new" in $directions} {
+            # Tail is no longer displayed — pause live-message inserts
+            # until the user rejoins the tail.
+            set AtTail 0
+        }
         foreach dir $directions {
             dict set LoadToken $dir 0
             catch {::tacky unlisten $win/$dir}
@@ -312,18 +356,46 @@ snit::widgetadaptor chatview {
 
     method OnLoadDone {direction messages} {
         dict set LoadToken $direction 0
-        if {$direction eq "old"} {
-            set messages [lreverse $messages]
-        }
         set atEnd [$hull atEnd]
         $self ProcessBatch $messages
+        if {$direction eq "new"} {
+            # If thirst caught up to DB-newest, rejoin the live tail
+            # so subsequent <Received> events insert again. Comparing
+            # to maxTimestamp is robust to changes in -limit.
+            set newest [$hull messages newest]
+            set dbNewest [::tacky chats maxTimestamp \
+                -acc $options(-acc) -chat $options(-jid)]
+            if {$newest ne "" && $newest eq $dbNewest} {
+                set AtTail 1
+            }
+        }
         $self UpdateWasAtEnd
         if {$direction eq "new" && $atEnd} {
             $hull see end
         }
     }
 
+    # Live-message flow.
+    #
+    # <Received> / <Sent> arrive only after the backend persists the
+    # message to the local store and bridges liveRegion into the
+    # predecessor's region (libtacky/taco/message.tcl::store, lines
+    # 222 and 258–266, before the emit at line 269). So a live event
+    # we drop here is durable in the DB and reachable by a subsequent
+    # `tacky message history` query — same region, same cursor space.
+    #
+    # The AtTail gate drops live events whenever the displayed window
+    # doesn't contain the conversation tail. Inserting in that case
+    # would create a temporal gap in the display and (worse) push the
+    # "new" thirst cursor past the unfetched run, so the gap would
+    # never fill. Dropping is safe: the user rejoins the tail by
+    # either (a) clicking the scroll-to-bottom button, which calls
+    # `goto end` → InitialLoad and reloads the newest page from the
+    # DB, or (b) scrolling down naturally until thirst's `-after`
+    # query catches up to DB-newest, at which point OnLoadDone flips
+    # AtTail back to true and live inserts resume.
     method OnLiveMessage {ev} {
+        if {!$AtTail} return
         set m [dict get $ev -message]
         set atEnd [$hull atEnd]
         $self ProcessBatch [list $m]
@@ -343,7 +415,6 @@ snit::widgetadaptor chatview {
                     $hull deleteById $ts
                     dict set storeDict timestamp $newTs
                     dict set storeDict server_status [dict get $msg server_status]
-                    dict set storeDict prev [dict get $msg prev]
                     if {[dict exists $msg region]} {
                         dict set storeDict region [dict get $msg region]
                     }
@@ -395,7 +466,6 @@ snit::widgetadaptor chatview {
             if {[dict exists $msg patch]} {
                 lappend enriched [dict create \
                     id [dict get $msg timestamp] \
-                    prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}] \
                     patch 1]
                 continue
             }
@@ -492,9 +562,9 @@ snit::widgetadaptor chatview {
 
 
 if 0 {
-    # Insert messages using the universal prev-based rule.
-    # Each message must have id, prev, and body (or id+prev+patch for a
-    # patch entry).
+    # Insert messages at their timestamp-sorted position.
+    # Each message must have id (== timestamp) and body (or id+patch
+    # for a patch entry targeting an already-displayed message).
     $chatview apply $messageDictList
     $chatview message edit $id $messageDict
     $chatview message delete id $id
@@ -558,11 +628,8 @@ snit::widget chatarea {
     #   Not fired if the click lands on empty space.
 
     # list of ids of all messages currently drawn on text
-    # top to bottom, oldest to newest
+    # top to bottom, oldest to newest. Sorted by id (== timestamp).
     variable MessageIds
-
-    # bidict: id → prev (forward), prev → id (reverse)
-    variable Prevs
 
     # Whether a DoCleanup is already scheduled via after idle
     variable CleanupScheduled
@@ -604,7 +671,6 @@ snit::widget chatarea {
         set MessageAvatars [dict create]
         set Messages [dict create]
         set HighlightedId ""
-        set Prevs [bidict new]
 
         if {$options(-pixelsbelowvariable) ne ""} {
             upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
@@ -626,20 +692,17 @@ snit::widget chatarea {
         after cancel [mymethod DoCleanup]
     }
 
-    # Might-be pitfall about ordering:
-    # While timestamp+prev is the ultimate source of truth, here we
-    # just assume the backend also ordered the list correctly - which
-    # the backend indeed currently does and it's covered by tests. If
-    # the backend somehow sent messages out of order, we'd SILENTLY
-    # DROP a message - just something to keep in mind. If there ever
-    # arises a case where the backend could send the list out of order
-    # - we'd have to rework this.
+    # Insert each message at its timestamp-sorted position. ID equals
+    # the message's timestamp (unique, bumped on collision by backend),
+    # so MessageIds stays sorted by id and a linear scan finds the
+    # insertion point. Patch entries (rule 1/2) still update displayed
+    # messages in place; staleness is handled outside this method (see
+    # OnCulled for history requests, AtTail for live events).
     method apply {messageDictList} {
         set inserted {}
         compensate $text {
             foreach msg $messageDictList {
                 set id [dict get $msg id]
-                set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
 
                 if {$id in $MessageIds} {
                     # Already displayed — patch fields
@@ -652,31 +715,23 @@ snit::widget chatarea {
                     continue
                 }
 
-                if {[bidict rexists $Prevs $id]} {
-                    # Some displayed message claims this id as its prev
-                    # → insert before that message
-                    set target [bidict rget $Prevs $id]
-                    $self InsertAt $target before $msg
-                    lappend inserted $id
-                } elseif {$prev ne "" && $prev in $MessageIds} {
-                    # This message's prev is displayed → insert after it
-                    # If another message already claims this prev, update
-                    # it to point to the new message (displaced-prev rule).
-                    # Must happen before InsertAt — bidict enforces 1:1 and
-                    # would evict the displaced entry on reverse collision.
-                    if {[bidict rexists $Prevs $prev]} {
-                        set displaced [bidict rget $Prevs $prev]
-                        set Prevs [bidict set $Prevs $displaced $id]
-                    }
-                    $self InsertAt $prev after $msg
-                    lappend inserted $id
-                } elseif {[llength $MessageIds] == 0} {
-                    # Bootstrap: empty widget
-                    $self InsertAt "" end $msg
-                    lappend inserted $id
-                } else {
-                    # can't connect — silently skip
+                # Find first displayed id greater than $id; insert before
+                # it. If none, append. (Linear scan — windows are small.)
+                set idx 0
+                foreach existing $MessageIds {
+                    if {$existing > $id} break
+                    incr idx
                 }
+                if {$idx == [llength $MessageIds]} {
+                    lappend MessageIds $id
+                    $text mark set msgins end
+                } else {
+                    set successor [lindex $MessageIds $idx]
+                    set MessageIds [linsert $MessageIds $idx $id]
+                    $text mark set msgins item.$successor.first
+                }
+                $self DrawMessage msgins $msg
+                lappend inserted $id
             }
         }
 
@@ -684,39 +739,11 @@ snit::widget chatarea {
     }
 
     method PatchMessage {id patchDict} {
-        if {[dict exists $patchDict prev]} {
-            set Prevs [bidict set $Prevs $id [dict get $patchDict prev]]
-        }
         if {[dict exists $patchDict server_status]} {
             $self receipt update $id [dict get $patchDict server_status]
         }
     }
 
-    method InsertAt {targetId position msg} {
-        set id [dict get $msg id]
-        set prev [expr {[dict exists $msg prev] ? [dict get $msg prev] : ""}]
-
-        switch -- $position {
-            before {
-                set idx [lsearch -exact $MessageIds $targetId]
-                set MessageIds [linsert $MessageIds $idx $id]
-                $text mark set msgins item.$targetId.first
-            }
-            after {
-                set idx [lsearch -exact $MessageIds $targetId]
-                set MessageIds [linsert $MessageIds [expr {$idx + 1}] $id]
-                $text mark set msgins item.$targetId.last
-            }
-            end {
-                lappend MessageIds $id
-                $text mark set msgins end
-            }
-        }
-
-        set Prevs [bidict set $Prevs $id $prev]
-        $self DrawMessage msgins $msg
-    }
-    
     method OnYview {} {
         $self Cleanup
     }
@@ -923,7 +950,6 @@ snit::widget chatarea {
         $text del 0.0 end
         set MessageIds {}
         set HighlightedId ""
-        set Prevs [bidict new]
         set Messages [dict create]
         if {$options(-avatar-release-command) ne ""} {
             set released {}
@@ -1027,7 +1053,6 @@ snit::widget chatarea {
         $text del $tag.first $tag.last
         # Delete tag itself
         $text tag delete item.$id
-        set Prevs [bidict unset $Prevs $id]
         if {[dict exists $Messages $id]} {
             dict unset Messages $id
         }
@@ -1039,7 +1064,6 @@ snit::widget chatarea {
         set MessageIds [lreplace $MessageIds $idx $idx]
         $text del item.$id.first item.$id.last
         $text tag delete item.$id
-        set Prevs [bidict unset $Prevs $id]
         if {[dict exists $Messages $id]} {
             dict unset Messages $id
         }
@@ -1073,7 +1097,6 @@ proc enrich_store_message {storeDict isMuc} {
     }
     set serverStatus [dict get $storeDict server_status]
     set isOutgoing [expr {$serverStatus ne ""}]
-    set prev [expr {[dict exists $storeDict prev] ? [dict get $storeDict prev] : ""}]
     set region [expr {[dict exists $storeDict region] ? [dict get $storeDict region] : -1}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
@@ -1083,7 +1106,6 @@ proc enrich_store_message {storeDict isMuc} {
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
         server_status $serverStatus \
-        prev         $prev \
         region       $region]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
