@@ -201,55 +201,6 @@ test messagestore-outgoing-resolve-no-real-messages {region resolve on outgoing 
         store region resolve alice@example.com 100 -backward
     } -result {}
 
-# -- prev annotation + outgoing -----------------------------------------------
-
-test messagestore-outgoing-prev-chains-through {prev chains through outgoing and incoming messages together} \
-    {*}$ms_out_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 300 body c]]
-        ms_outgoing [ms_msg timestamp 200 body b own_id oid1 server_status pending]
-        set msgs [store get latest alice@example.com]
-        list [dict get [lindex $msgs 0] prev] \
-             [dict get [lindex $msgs 1] prev] \
-             [dict get [lindex $msgs 2] prev]
-    } -result {{} 100 200}
-
-test messagestore-outgoing-prev-first-is-outgoing {first message in batch is outgoing; prev still finds DB predecessor} \
-    {*}$ms_out_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 300 body c]]
-        ms_outgoing [ms_msg timestamp 200 body b own_id oid1 server_status pending]
-        # get before 300: region is same as 300;
-        # returns a(100) + outgoing b(200), both before cursor
-        set msgs [store get before alice@example.com 300 [ms_region_of 300]]
-        list [dict get [lindex $msgs 0] prev] \
-             [dict get [lindex $msgs 1] prev]
-    } -result {{} 100}
-
-test messagestore-outgoing-prev-region-boundary-respected {outgoing messages near a region gap don't cause prev to leak across} \
-    {*}$ms_out_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d]]
-        ms_outgoing [ms_msg timestamp 450 body out own_id oid1 server_status pending]
-        # get latest returns region 2 (c,d) + outgoing (out)
-        # out(450) is between regions but prev must not leak into region 1
-        set msgs [store get latest alice@example.com]
-        # order: out(450), c(500), d(600); out's prev is empty (no region 2 predecessor)
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] prev] \
-             [dict get [lindex $msgs 1] prev] \
-             [dict get [lindex $msgs 2] prev]
-    } -result {3 {} 450 500}
-
 # -- get around + outgoing ----------------------------------------------------
 
 test messagestore-outgoing-around-includes-outgoing {get around targeting incoming includes nearby outgoing} \
@@ -459,48 +410,8 @@ test messagestore-outgoing-reorder-end-to-end {confirmed message reorders correc
         set afterBodies {}
         foreach m $after { lappend afterBodies [dict get $m body] }
 
-        # Prev chain should be correct: a→{}, b→100, x→300, c→400
-        set prevs {}
-        foreach m $after { lappend prevs [dict get $m prev] }
-
-        list $beforeBodies $afterBodies $prevs
-    } -result {{a x b c} {a b x c} {{} 100 300 400}}
-
-# -- ComputeMovePatch ---------------------------------------------------------
-
-test messagestore-outgoing-move-patch-prev {ComputeMovePatch computes correct prev for moved message} \
-    {*}$ms_out_common \
-    -body {
-        store region new live
-        store store batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 300 body b] \
-            [ms_msg timestamp 500 body c]] live
-        testdb eval {
-            INSERT INTO chat_message(timestamp,chat_jid,from_jid,body,
-                server_id,own_id,raw_xml,region,server_status)
-            VALUES(400,'alice@example.com','me@example.com','moved',
-                '','','', $live, 'received')
-        }
-        set result [store ComputeMovePatch alice@example.com 200 400 $live]
-        # moved msg prev = 300 (b is before 400)
-        # follower entries are empty — GUI handles displaced prev
-        list [dict get $result prev] [llength [dict get $result entries]]
-    } -result {300 0}
-
-test messagestore-outgoing-move-patch-no-predecessor {ComputeMovePatch with no predecessor returns empty prev} \
-    {*}$ms_out_common \
-    -body {
-        store region new live
-        testdb eval {
-            INSERT INTO chat_message(timestamp,chat_jid,from_jid,body,
-                server_id,own_id,raw_xml,region,server_status)
-            VALUES(400,'alice@example.com','me@example.com','alone',
-                '','','', $live, 'received')
-        }
-        set result [store ComputeMovePatch alice@example.com 200 400 $live]
-        list [dict get $result prev] [llength [dict get $result entries]]
-    } -result {{} 0}
+        list $beforeBodies $afterBodies
+    } -result {{a x b c} {a b x c}}
 
 # -- predecessorRegion ---------------------------------------------------------
 

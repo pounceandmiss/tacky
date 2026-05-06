@@ -226,19 +226,10 @@ snit::type taco_message {
                 set oldTs [dict get $c timestamp]
                 set newTs [dict get $c newtimestamp]
                 if {$oldTs != $newTs} {
-                    # Timestamp changed — build compound patch with
-                    # moved message and affected followers
-                    set moveInfo [$messagestore ComputeMovePatch \
-                        $chatJid $oldTs $newTs $liveRegion]
                     set patchMessages [list [dict create \
                         timestamp $oldTs newtimestamp $newTs \
                         server_status received \
-                        region $liveRegion \
-                        prev [dict get $moveInfo prev]]]
-                    foreach entry [dict get $moveInfo entries] {
-                        dict set entry patch 1
-                        lappend patchMessages $entry
-                    }
+                        region $liveRegion]]
                 } else {
                     set patchMessages [list [dict create \
                         timestamp $oldTs server_status received \
@@ -252,9 +243,10 @@ snit::type taco_message {
             if {[llength $inserted] > 0} {
                 set newTs [lindex $inserted 0]
                 # On first-ever liveRegion, bridge into the existing
-                # history region so AnnotatePrev finds predecessors.
-                # After disconnect liveRegion is pre-allocated, so
-                # freshRegion is false and we don't bridge (gap).
+                # history region so region-scoped queries see one
+                # contiguous region. After disconnect liveRegion is
+                # pre-allocated, so freshRegion is false and we don't
+                # bridge (gap).
                 if {$freshRegion} {
                     set predRegion [$messagestore predecessorRegion \
                         $chatJid $newTs]

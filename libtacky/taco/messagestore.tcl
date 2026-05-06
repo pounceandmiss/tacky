@@ -46,8 +46,8 @@ if 0 {
     When `store batch` finds a pending message by own_id (MUC echo),
     it moves the message from outgoing region (-1) to the caller's
     region and updates the timestamp to the server's authoritative
-    value. The caller emits a compound <Patch> with the moved message
-    and any affected followers (prev chain fixups).
+    value. The caller emits a <Patch> with the moved message's old
+    and new timestamp.
 
     SM ack only flips server_status — no region or timestamp change.
 
@@ -296,7 +296,7 @@ snit::type taco_messagestore {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return [$self AnnotatePrev $jid $rows $reg]
+        return $rows
     }
 
     # Messages newer than cursor, region-scoped via UNION.
@@ -341,7 +341,7 @@ snit::type taco_messagestore {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return [$self AnnotatePrev $jid $rows $reg]
+        return $rows
     }
 
     # Most recent messages from the latest non-outgoing region, plus
@@ -391,7 +391,7 @@ snit::type taco_messagestore {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return [$self AnnotatePrev $jid $rows $reg]
+        return $rows
     }
 
     # Full-text search by LIKE match on body. Returns list of timestamps
@@ -442,11 +442,11 @@ snit::type taco_messagestore {
         } row {
             set target [list [$self RowToDict [array get row]]]
         }
-        set all [$self AnnotatePrev $jid [concat $before $target $after]]
-        return [list messages $all anchor $nearestTs]
+        return [list messages [concat $before $target $after] \
+            anchor $nearestTs]
     }
 
-    # Fetch rows by exact timestamps, applying RowToDict + AnnotatePrev.
+    # Fetch rows by exact timestamps.
     method "get ids" {jid timestamps} {
         set rows {}
         foreach ts $timestamps {
@@ -459,7 +459,7 @@ snit::type taco_messagestore {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return [$self AnnotatePrev $jid $rows]
+        return $rows
     }
 
     # Flip pending → received for each own_id (SM ack path).
@@ -493,51 +493,6 @@ snit::type taco_messagestore {
         messagestyling::enrich $row
     }
 
-    # Annotate each message in a chronological list with {prev $ts},
-    # the timestamp of the immediately preceding message.  The first
-    # message's predecessor is looked up in the DB via UNION (same
-    # region + outgoing); subsequent messages chain from the previous
-    # element.  When callerReg is supplied, it pins the region for the
-    # prev lookup — this prevents outgoing messages from bridging
-    # across region gaps.
-    method AnnotatePrev {jid messages {callerReg ""}} {
-        if {[llength $messages] == 0} { return {} }
-        set firstTs [dict get [lindex $messages 0] timestamp]
-        if {$callerReg ne ""} {
-            set reg $callerReg
-        } else {
-            set reg [$self region resolve $jid $firstTs -backward]
-        }
-        set out $OUTGOING_REGION
-        if {$reg eq "" || $reg == $OUTGOING_REGION} {
-            # Only outgoing messages — no region constraint
-            set prevTs [$options(-db) onecolumn {
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $firstTs
-                ORDER BY timestamp DESC LIMIT 1
-            }]
-        } else {
-            set prevTs [$options(-db) onecolumn {
-                SELECT timestamp FROM (
-                    SELECT timestamp FROM chat_message
-                    WHERE chat_jid=$jid AND timestamp < $firstTs
-                      AND region = $reg
-                    UNION ALL
-                    SELECT timestamp FROM chat_message
-                    WHERE chat_jid=$jid AND timestamp < $firstTs
-                      AND region = $out
-                ) ORDER BY timestamp DESC LIMIT 1
-            }]
-        }
-        set result {}
-        foreach msg $messages {
-            dict set msg prev $prevTs
-            set prevTs [dict get $msg timestamp]
-            lappend result $msg
-        }
-        return $result
-    }
-
     # Return the region of the nearest non-outgoing predecessor, or "".
     method predecessorRegion {jid ts} {
         return [$options(-db) onecolumn {
@@ -546,27 +501,6 @@ snit::type taco_messagestore {
               AND region != $OUTGOING_REGION
             ORDER BY timestamp DESC LIMIT 1
         }]
-    }
-
-    # Compute the moved message's new prev after a MUC echo confirmation
-    # that changed its timestamp from oldTs to newTs. Follower prev
-    # updates are handled by the GUI's displaced-prev rule during
-    # re-insertion, so only the moved message's own prev is returned.
-    method ComputeMovePatch {jid oldTs newTs region} {
-        set reg $region
-        set out $OUTGOING_REGION
-        set prevOfNew [$options(-db) onecolumn {
-            SELECT timestamp FROM (
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $newTs
-                  AND region = $reg
-                UNION ALL
-                SELECT timestamp FROM chat_message
-                WHERE chat_jid=$jid AND timestamp < $newTs
-                  AND region = $out
-            ) ORDER BY timestamp DESC LIMIT 1
-        }]
-        return [dict create prev $prevOfNew entries {}]
     }
 
     method IsDuplicate {jid msg} {

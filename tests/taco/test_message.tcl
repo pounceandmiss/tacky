@@ -988,58 +988,6 @@ test message-goto-remote-error-falls-back {goto -source remote falls back to loc
         list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 local-only}
 
-# -- prev on live messages -----------------------------------------------------
-
-test message-live-prev-first {first live message has empty prev} \
-    {*}$msg_common \
-    -body {
-        set ::_got {}
-        tacky listen message <Received> {apply {{ev} {
-            set ::_got $ev
-        }}}
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "first"
-        }]
-        dict get [dict get $_got -message] prev
-    } -result {}
-
-test message-live-prev-chain {second live message prev points to first} \
-    {*}$msg_common \
-    -body {
-        set ::_events {}
-        tacky listen message <Received> {apply {{ev} {
-            lappend ::_events $ev
-        }}}
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "first"
-        }]
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "second"
-        }]
-        set msg1 [dict get [lindex $::_events 0] -message]
-        set msg2 [dict get [lindex $::_events 1] -message]
-        expr {[dict get $msg2 prev] == [dict get $msg1 timestamp]}
-    } -result {1}
-
-test message-sent-prev {sent message has prev in event} \
-    {*}$msg_common \
-    -body {
-        # Pre-store a message so send has a predecessor
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "incoming"
-        }]
-        set ::_got {}
-        tacky listen message <Sent> {apply {{ev} {
-            set ::_got $ev
-        }}}
-        tacky message send -acc $acc -chat_jid alice@example.com -body "reply"
-        set msg [dict get $_got -message]
-        # prev should point to the incoming message's timestamp
-        set stored [$::_client message messagestore get latest alice@example.com]
-        set incomingTs [dict get [lindex $stored 0] timestamp]
-        expr {[dict get $msg prev] == $incomingTs}
-    } -result {1}
-
 # -- send then receive ordering ------------------------------------------------
 
 test message-send-uses-outgoing-region {sent message uses outgoing region, incoming uses liveRegion} \
@@ -1061,25 +1009,6 @@ test message-send-uses-outgoing-region {sent message uses outgoing region, incom
         list [expr {$sentRegion == -1}] [expr {$recvRegion > 0}]
     } -result {1 1}
 
-test message-send-then-receive-prev-chain {incoming after send has prev pointing to sent message} \
-    {*}$msg_common \
-    -body {
-        set ::_sent {}
-        set ::_recv {}
-        tacky listen message <Sent> {apply {{ev} { set ::_sent $ev }}}
-        tacky listen message <Received> {apply {{ev} { set ::_recv $ev }}}
-        # Send
-        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
-        set sentTs [dict get [dict get $_sent -message] timestamp]
-        # Receive
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "incoming"
-        }]
-        set recvMsg [dict get $_recv -message]
-        # Incoming message's prev should point to our sent message
-        expr {[dict get $recvMsg prev] == $sentTs}
-    } -result {1}
-
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
     -body {
@@ -1100,49 +1029,8 @@ test message-send-then-receive-earlier-ts {incoming with earlier timestamp inser
         # Chronological order: earlier first, then our sent
         list [llength $all] \
              [dict get [lindex $all 0] body] \
-             [dict get [lindex $all 1] body] \
-             [expr {[dict get [lindex $all 1] prev] == [dict get [lindex $all 0] timestamp]}]
-    } -result {2 earlier outgoing 1}
-
-test message-send-then-receive-earlier-ts-event-prev {Received event for earlier msg has correct prev} \
-    {*}$msg_common \
-    -body {
-        set ::_recv {}
-        tacky listen message <Received> {apply {{ev} { set ::_recv $ev }}}
-        # Send a message
-        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
-        set sentTs [dict get \
-            [lindex [$::_client message messagestore get latest alice@example.com] 0] \
-            timestamp]
-        # Incoming with timestamp before our send
-        set earlyTs [expr {$sentTs - 1000000}]
-        set earlyStamp [FormatTimestampISO $earlyTs]
-        $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "earlier"
-            j delay -ns urn:xmpp:delay -stamp $earlyStamp
-        }]
-        set recvMsg [dict get $_recv -message]
-        # The earlier message's prev should be empty (nothing before it)
-        dict get $recvMsg prev
-    } -result {}
-
-# -- outgoing region cross-region queries ---------------------------------------
-
-test message-send-prev-crosses-region {sent message prev crosses into prior real region} \
-    {*}$msg_common \
-    -body {
-        # Store history in a real region
-        msg_store [list \
-            [msg_msg timestamp 100 server_id s1 body a] \
-            [msg_msg timestamp 200 server_id s2 body b]]
-        set ::_got {}
-        tacky listen message <Sent> {apply {{ev} { set ::_got $ev }}}
-        tacky message send -acc $acc -chat_jid alice@example.com -body "reply"
-        set msg [dict get $_got -message]
-        # prev should point to message b (ts=200), even though it's in a
-        # different region
-        expr {[dict get $msg prev] == 200}
-    } -result {1}
+             [dict get [lindex $all 1] body]
+    } -result {2 earlier outgoing}
 
 test message-get-latest-outgoing-plus-real {get latest returns real region + outgoing mixed} \
     {*}$msg_common \

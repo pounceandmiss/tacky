@@ -328,7 +328,7 @@ test chatview-muc-echo-reorders {echo reorders message among interleaved message
             [expr {[lindex $ids 2] == $echoTs}]
     } -result {count=3 3 1 1 1}
 
-test chatview-muc-echo-reorders-4msg {compound Patch with old and new follower prev updates} \
+test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-message view} \
     {*}$cv_common \
     -body {
         # Setup: A(100) → X(200,pending) → B(300) → C(400)
@@ -352,7 +352,6 @@ test chatview-muc-echo-reorders-4msg {compound Patch with old and new follower p
         wait
         set after [.cv messages ids]
         # Expected: A, B, X', C — X moved between B and C
-        # Compound Patch updates: B's prev (was X → now A), C's prev (was B → now X')
         list [llength $before] [llength $after] \
             [expr {[lindex $after 0] == $tsA}] \
             [expr {[lindex $after 1] == $tsB}] \
@@ -793,20 +792,20 @@ test chatview-live-dropped-when-tail-culled {live message ignored after new-dire
 # -- chatarea apply tests -------------------------------------------------------
 
 # Helper: build a message dict suitable for chatarea apply
-proc ca_msg {id prev body} {
-    dict create id $id prev $prev body $body \
+proc ca_msg {id body} {
+    dict create id $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 0 server_status ""
 }
 
-proc ca_outgoing {id prev body {status pending}} {
-    dict create id $id prev $prev body $body \
+proc ca_outgoing {id body {status pending}} {
+    dict create id $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 1 server_status $status
 }
 
-proc ca_patch {id prev} {
-    dict create id $id prev $prev patch 1
+proc ca_patch {id} {
+    dict create id $id patch 1
 }
 
 set ca_common {
@@ -814,62 +813,58 @@ set ca_common {
     -cleanup { destroy .ca }
 }
 
-test chatarea-apply-forward {forward batch chains via prev} \
+test chatarea-apply-forward {forward batch lands in timestamp order} \
     {*}$ca_common \
     -body {
         .ca apply [list \
-            [ca_msg 100 "" "msg A"] \
-            [ca_msg 200 100 "msg B"] \
-            [ca_msg 300 200 "msg C"]]
+            [ca_msg 100 "msg A"] \
+            [ca_msg 200 "msg B"] \
+            [ca_msg 300 "msg C"]]
         .ca messages ids
     } -result {100 200 300}
 
-test chatarea-apply-backward {reversed backward batch chains via rexists} \
+test chatarea-apply-backward {newest-first batch lands in timestamp order} \
     {*}$ca_common \
     -body {
-        # Bootstrap with one message
-        .ca apply [list [ca_msg 500 400 "msg E"]]
-        # Simulate reversed backward page: edge patch + newest-first
+        .ca apply [list [ca_msg 500 "msg E"]]
         .ca apply [list \
-            [ca_patch 500 400] \
-            [ca_msg 400 300 "msg D"] \
-            [ca_msg 300 200 "msg C"] \
-            [ca_msg 200 "" "msg B"]]
+            [ca_msg 400 "msg D"] \
+            [ca_msg 300 "msg C"] \
+            [ca_msg 200 "msg B"]]
         .ca messages ids
     } -result {200 300 400 500}
 
-test chatarea-apply-tombstone-in-chain {empty-body messages maintain prev chain} \
+test chatarea-apply-tombstone {empty-body messages still take a slot in the timeline} \
     {*}$ca_common \
     -body {
         .ca apply [list \
-            [ca_msg 100 "" "msg A"] \
-            [ca_msg 200 100 ""] \
-            [ca_msg 300 200 "msg C"] \
-            [ca_msg 400 300 ""] \
-            [ca_msg 500 400 "msg E"]]
+            [ca_msg 100 "msg A"] \
+            [ca_msg 200 ""] \
+            [ca_msg 300 "msg C"] \
+            [ca_msg 400 ""] \
+            [ca_msg 500 "msg E"]]
         .ca messages ids
     } -result {100 200 300 400 500}
 
-test chatarea-apply-patch-updates-prev {patch entry updates displayed message prev} \
+test chatarea-apply-patch-on-displayed {patch entry alongside a new insert applies and inserts} \
     {*}$ca_common \
     -body {
-        .ca apply [list [ca_msg 500 "" "msg E"]]
-        # Patch updates E's prev, then D chains via rexists
+        .ca apply [list [ca_msg 500 "msg E"]]
         .ca apply [list \
-            [ca_patch 500 400] \
-            [ca_msg 400 "" "msg D"]]
+            [ca_patch 500] \
+            [ca_msg 400 "msg D"]]
         .ca messages ids
     } -result {400 500}
 
 test chatarea-apply-patch-skipped-when-not-displayed {patch entry for non-displayed message is ignored} \
     {*}$ca_common \
     -body {
-        .ca apply [list [ca_msg 500 "" "msg E"]]
-        # Patch targets 999 which isn't displayed — patch entry alone
-        # is skipped; sibling message still inserts at sorted position.
+        .ca apply [list [ca_msg 500 "msg E"]]
+        # Patch targets 999 which isn't displayed — dropped; sibling
+        # message still inserts at sorted position.
         .ca apply [list \
-            [ca_patch 999 400] \
-            [ca_msg 400 "" "msg D"]]
+            [ca_patch 999] \
+            [ca_msg 400 "msg D"]]
         .ca messages ids
     } -result {400 500}
 
@@ -877,9 +872,9 @@ test chatarea-apply-out-of-order {batch with non-monotonic timestamps lands sort
     {*}$ca_common \
     -body {
         .ca apply [list \
-            [ca_msg 100 "" "A"] \
-            [ca_msg 300 100 "C"] \
-            [ca_msg 200 100 "B"]]
+            [ca_msg 100 "A"] \
+            [ca_msg 300 "C"] \
+            [ca_msg 200 "B"]]
         .ca messages ids
     } -result {100 200 300}
 
@@ -887,19 +882,19 @@ test chatarea-apply-dedup {already displayed message is patched not duplicated} 
     {*}$ca_common \
     -body {
         .ca apply [list \
-            [ca_msg 100 "" "msg A"] \
-            [ca_msg 200 100 "msg B"]]
+            [ca_msg 100 "msg A"] \
+            [ca_msg 200 "msg B"]]
         # Re-apply same messages
         .ca apply [list \
-            [ca_msg 100 "" "msg A"] \
-            [ca_msg 200 100 "msg B"]]
+            [ca_msg 100 "msg A"] \
+            [ca_msg 200 "msg B"]]
         .ca messages ids
     } -result {100 200}
 
 test chatarea-patch-receipt {Patch with server_status updates receipt checkmark} \
     {*}$ca_common \
     -body {
-        .ca apply [list [ca_outgoing 100 "" "hello"]]
+        .ca apply [list [ca_outgoing 100 "hello"]]
         # Receipt tag should exist but show no checkmark (pending)
         set tag item.100.receipt
         set ranges [.ca.text tag ranges $tag]
@@ -919,8 +914,8 @@ test chatarea-highlight-message {highlight applies yellow and clears previous} \
     {*}$ca_common \
     -body {
         .ca apply [list \
-            [ca_msg 100 "" "msg A"] \
-            [ca_msg 200 100 "msg B"]]
+            [ca_msg 100 "msg A"] \
+            [ca_msg 200 "msg B"]]
         .ca highlight message 100
         set bg1 [.ca.text tag cget item.100 -background]
         .ca highlight message 200
@@ -932,7 +927,7 @@ test chatarea-highlight-message {highlight applies yellow and clears previous} \
 test chatarea-highlight-clear {highlight clear removes background} \
     {*}$ca_common \
     -body {
-        .ca apply [list [ca_msg 100 "" "msg A"]]
+        .ca apply [list [ca_msg 100 "msg A"]]
         .ca highlight message 100
         set before [.ca.text tag cget item.100 -background]
         .ca highlight clear
@@ -949,43 +944,6 @@ test chatarea-system-insert {system message is inserted with system tag} \
         list [string match *Connection\ lost* $content] \
             [expr {"system" in $tags}]
     } -result {1 1}
-
-# -- displaced-prev rule -------------------------------------------------------
-
-foreach {suffix desc followerCmd} {
-    incoming "incoming between displayed msgs updates follower prev" ca_msg
-    outgoing "incoming before outgoing updates outgoing prev"        ca_outgoing
-} {
-    test chatarea-displaced-prev-$suffix $desc \
-        {*}$ca_common \
-        -body {
-            # Anchor A(100) and follower B(400), B.prev=A
-            .ca apply [list \
-                [ca_msg 100 "" "A"] \
-                [$followerCmd 400 100 "B"]]
-            # C(200) arrives with prev=A — B displaced from prev=A to prev=C
-            .ca apply [list [ca_msg 200 100 "C"]]
-            # Verify: msg with prev=B connects (proves B.prev was updated)
-            .ca apply [list [ca_msg 500 400 "D"]]
-            .ca messages ids
-        } -result {100 200 400 500}
-}
-
-test chatarea-displaced-prev-series {two insertions update follower prev chain correctly} \
-    {*}$ca_common \
-    -body {
-        # Display B(100) and E(400)
-        .ca apply [list \
-            [ca_msg 100 "" "B"] \
-            [ca_msg 400 100 "E"]]
-        # C(200) arrives — E displaced to prev=C
-        .ca apply [list [ca_msg 200 100 "C"]]
-        # D(300) arrives — E displaced to prev=D
-        .ca apply [list [ca_msg 300 200 "D"]]
-        # Verify: msg with prev=E connects (proves E stayed in chain)
-        .ca apply [list [ca_msg 500 400 "F"]]
-        .ca messages ids
-    } -result {100 200 300 400 500}
 
 # -- chatarea pagination signals ------------------------------------------------
 
@@ -1041,9 +999,9 @@ test chatarea-thirsty-fires-per-direction {-thirst-command fires once per thirst
         set ::mock_above 100
         set ::mock_below 100
         .ca apply [list \
-            [ca_msg 100 "" "a"] \
-            [ca_msg 200 100 "b"] \
-            [ca_msg 300 200 "c"]]
+            [ca_msg 100 "a"] \
+            [ca_msg 200 "b"] \
+            [ca_msg 300 "c"]]
         .ca DoCleanup
         set ::ca_thirsty
     } -result {{old 100} {new 300}}
@@ -1057,9 +1015,9 @@ test chatarea-cull-fires-with-directions {-cull-command fires with the list of c
         set ::mock_above 9999
         set ::mock_below 0
         .ca apply [list \
-            [ca_msg 100 "" "a"] \
-            [ca_msg 200 100 "b"] \
-            [ca_msg 300 200 "c"]]
+            [ca_msg 100 "a"] \
+            [ca_msg 200 "b"] \
+            [ca_msg 300 "c"]]
         .ca DoCleanup
         set ::ca_culled
     } -result {old}
@@ -1074,9 +1032,9 @@ test chatarea-no-thirst-for-just-culled-direction {a direction culled this pass 
         set ::mock_above 9999
         set ::mock_below 0
         .ca apply [list \
-            [ca_msg 100 "" "a"] \
-            [ca_msg 200 100 "b"] \
-            [ca_msg 300 200 "c"]]
+            [ca_msg 100 "a"] \
+            [ca_msg 200 "b"] \
+            [ca_msg 300 "c"]]
         .ca DoCleanup
         # No "old" entry in thirsty calls; cull happened.
         set hasOld 0
