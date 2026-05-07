@@ -147,7 +147,7 @@ proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
     if {$echoStamp eq ""} {
         set echoStamp [FormatTimestampISO $sentTs]
     }
-    $::_client message store alice@example.com [j message -type chat \
+    $::_client message ingestLive alice@example.com [j message -type chat \
         -from alice@example.com/phone -id $sentTs {
         j body #body "echo"
         j stanza-id -ns urn:xmpp:sid:0 -id $echoSid

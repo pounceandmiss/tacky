@@ -37,13 +37,13 @@
 #
 #   Server echoes <message> back with same @id
 #     → muc.OnGroupchatMessage
-#       → message.store
+#       → message.ingestLive
 #         → ParseMessage: extracts server_id from <stanza-id>
 #         → messagestore.store batch:
 #           IsDuplicate finds pending row by own_id
 #           UPDATE server_status='received', captures server_id
 #           Returns confirmed list
-#         → Emit <Patch> (GUI shows checkmark)
+#         → HandleConfirmation: emit <Patch> (GUI shows checkmark)
 #         → No <Received> emitted (it's our own echo)
 #
 # === Confirmation path B: SM ack (1:1 and MUC) ===
@@ -66,13 +66,13 @@
 #
 #   1:1: server stanza
 #     → message.OnMessage
-#       → message.store
+#       → message.ingestLive
 #         → store batch: INSERT (server_status="")
-#         → Emit <Received> → GUI displays
+#         → HandleInsertion: emit <Received> → GUI displays
 #
 #   MUC: server stanza
 #     → muc.OnGroupchatMessage
-#       → message.store (same path as above)
+#       → message.ingestLive (same path as above)
 #
 # === Retry on reconnect ===
 #
@@ -188,13 +188,16 @@ snit::type taco_message {
         } else {
             set chatJid $fromBare
         }
-        $self store $chatJid $stanza $isOwn
+        $self ingestLive $chatJid $stanza $isOwn
     }
 
-    # Parse a live message stanza, store it, and emit message <Received>.
-    # Called directly by OnMessage (DMs) and by the MUC module
+    # Live-stanza entry point: parse, persist, dispatch to GUI.
+    # Called from OnMessage (1:1 DMs) and from the MUC module
     # (groupchat with room@muc?join, PMs with room@muc/nick).
-    method store {chatJid stanza {isOwn 0}} {
+    # Two outcomes from messagestore:
+    #   confirmed → echo of one of our own pending sends → HandleConfirmation
+    #   inserted  → fresh incoming row                   → HandleInsertion
+    method ingestLive {chatJid stanza {isOwn 0}} {
         set body [xsearch $stanza body -get body]
         if {$body eq ""} return
         set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
@@ -212,45 +215,53 @@ snit::type taco_message {
         set result [$messagestore store batch [list $msg] liveRegion]
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
-            foreach c $confirmed {
-                set oldTs [dict get $c timestamp]
-                set newTs [dict get $c newtimestamp]
-                if {$oldTs != $newTs} {
-                    set patchMessages [list [dict create \
-                        timestamp $oldTs newtimestamp $newTs \
-                        server_status received \
-                        region $liveRegion]]
-                } else {
-                    set patchMessages [list [dict create \
-                        timestamp $oldTs server_status received]]
-                }
-                $client emit message <Patch> -jid $chatJid \
-                    -messages $patchMessages
-            }
+            $self HandleConfirmation $chatJid $confirmed
         } else {
-            set inserted [dict get $result inserted]
-            if {[llength $inserted] > 0} {
-                set newTs [lindex $inserted 0]
-                # On first-ever liveRegion, bridge into the existing
-                # history region so region-scoped queries see one
-                # contiguous region. After disconnect liveRegion is
-                # pre-allocated, so freshRegion is false and we don't
-                # bridge (gap).
-                if {$freshRegion} {
-                    set predRegion [$messagestore predecessorRegion \
-                        $chatJid $newTs]
-                    if {$predRegion ne "" \
-                            && $predRegion != $liveRegion} {
-                        $messagestore region bridge \
-                            $chatJid predRegion liveRegion
-                    }
-                }
-                set dbMsg [lindex \
-                    [$messagestore get ids $chatJid $inserted] 0]
-                $client emit message <Received> \
-                    -jid $chatJid -message $dbMsg
+            $self HandleInsertion $chatJid \
+                [dict get $result inserted] $freshRegion
+        }
+    }
+
+    # Echo of a pending outgoing message: messagestore has already
+    # flipped server_status pending → received and captured server_id.
+    # Emit <Patch> so the GUI updates the checkmark; if the row's
+    # timestamp moved (server stamp differs from our own_id), include
+    # newtimestamp + region so the GUI can rekey the displayed row.
+    method HandleConfirmation {chatJid confirmed} {
+        foreach c $confirmed {
+            set oldTs [dict get $c timestamp]
+            set newTs [dict get $c newtimestamp]
+            if {$oldTs != $newTs} {
+                set patchMessages [list [dict create \
+                    timestamp $oldTs newtimestamp $newTs \
+                    server_status received \
+                    region $liveRegion]]
+            } else {
+                set patchMessages [list [dict create \
+                    timestamp $oldTs server_status received]]
+            }
+            $client emit message <Patch> -jid $chatJid \
+                -messages $patchMessages
+        }
+    }
+
+    # Fresh incoming row. On the first-ever liveRegion, bridge into
+    # the existing history region so region-scoped queries see one
+    # contiguous region. After disconnect liveRegion is pre-allocated,
+    # so freshRegion is false and we don't bridge (gap).
+    method HandleInsertion {chatJid inserted freshRegion} {
+        if {[llength $inserted] == 0} return
+        set newTs [lindex $inserted 0]
+        if {$freshRegion} {
+            set predRegion [$messagestore predecessorRegion \
+                $chatJid $newTs]
+            if {$predRegion ne "" && $predRegion != $liveRegion} {
+                $messagestore region bridge \
+                    $chatJid predRegion liveRegion
             }
         }
+        set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
+        $client emit message <Received> -jid $chatJid -message $dbMsg
     }
 
     # Durable message send — store before transmit, confirm on echo/ack.
@@ -261,8 +272,8 @@ snit::type taco_message {
     #
     # Confirmation (pending → received) happens via two paths:
     #   MUC:  server echoes the message back with our id; the echo hits
-    #         `store`, where `store batch` dedup finds the pending row
-    #         and flips it to 'received'.
+    #         `ingestLive`, where `messagestore store batch` dedup finds
+    #         the pending row and flips it to 'received'.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
     #         calls `confirmByOwnIds` on the messagestore.
     # Both paths emit <Patch> so the GUI can show the checkmark.
