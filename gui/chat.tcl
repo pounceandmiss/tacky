@@ -242,8 +242,7 @@ snit::widgetadaptor chatview {
     #
     # <Received> / <Sent> arrive only after the backend persists the
     # message to the local store and bridges liveRegion into the
-    # predecessor's region (libtacky/taco/message.tcl::store, lines
-    # 222 and 258–266, before the emit at line 269). So a live event
+    # predecessor's region (libtacky/taco/message.tcl). So a live event
     # we drop here is durable in the DB and reachable by a subsequent
     # `tacky message history` query — same region, same cursor space.
     #
