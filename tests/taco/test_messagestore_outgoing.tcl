@@ -19,7 +19,7 @@ proc ms_region_of {ts {jid alice@example.com}} {
 # Helper: store a message in the outgoing region
 proc ms_outgoing {msg} {
     set out [store region outgoing]
-    store store batch [list $msg] out
+    store store [list $msg] out
 }
 
 # -- outgoing region basics ---------------------------------------------------
@@ -332,7 +332,7 @@ test messagestore-outgoing-confirm-moves-region {echo confirmation moves message
         store region new live
         ms_outgoing [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
         # Echo arrives with same timestamp, server_id, matched by own_id
-        set result [store store batch [list \
+        set result [store store [list \
             [ms_msg timestamp 100 server_id srv1 own_id oid1 body sent]] live]
         set confirmed [dict get $result confirmed]
         set c [lindex $confirmed 0]
@@ -348,10 +348,10 @@ test messagestore-outgoing-confirm-timestamp-change {echo with different timesta
     {*}$ms_out_common \
     -body {
         store region new live
-        store store batch [list [ms_msg timestamp 50 body earlier]] live
+        store store [list [ms_msg timestamp 50 body earlier]] live
         ms_outgoing [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
         # Echo arrives with server timestamp 200 (different from local 100)
-        set result [store store batch [list \
+        set result [store store [list \
             [ms_msg timestamp 200 server_id srv1 own_id oid1 body sent]] live]
         set c [lindex [dict get $result confirmed] 0]
         # Old timestamp gone, new timestamp exists
@@ -374,7 +374,7 @@ test messagestore-outgoing-confirm-no-bulk-merge {confirmation does not bulk-mov
         ms_outgoing [ms_msg timestamp 100 body sent1 own_id oid1 server_status pending]
         ms_outgoing [ms_msg timestamp 200 body sent2 own_id oid2 server_status pending]
         # Confirm only oid1 via echo
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 server_id srv1 own_id oid1 body sent1]] live
         # sent2 should still be in outgoing region
         set r2 [testdb onecolumn {
@@ -389,7 +389,7 @@ test messagestore-outgoing-reorder-end-to-end {confirmed message reorders correc
     -body {
         store region new live
         # A(100) → B(300) → C(500) in real region
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 300 body b] \
             [ms_msg timestamp 500 body c]] live
@@ -402,7 +402,7 @@ test messagestore-outgoing-reorder-end-to-end {confirmed message reorders correc
         foreach m $before { lappend beforeBodies [dict get $m body] }
 
         # Server confirms X at timestamp 400 (between B and C)
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 400 server_id srv1 own_id oid1 body x]] live
 
         # After confirmation: order should be a, b, x, c
@@ -419,7 +419,7 @@ test messagestore-predecessor-region {predecessorRegion returns region of neares
     {*}$ms_out_common \
     -body {
         store region new r1
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b]] r1
         store predecessorRegion alice@example.com 300
@@ -435,7 +435,7 @@ test messagestore-predecessor-region-skips-outgoing {predecessorRegion skips out
     {*}$ms_out_common \
     -body {
         store region new r1
-        store store batch [list [ms_msg timestamp 100 body a]] r1
+        store store [list [ms_msg timestamp 100 body a]] r1
         ms_outgoing [ms_msg timestamp 200 body x own_id oid1 server_status pending]
         store predecessorRegion alice@example.com 300
     } -result {1}

@@ -39,7 +39,7 @@
 #     → muc.OnGroupchatMessage
 #       → message.ingestLive
 #         → ParseMessage: extracts server_id from <stanza-id>
-#         → messagestore.store batch:
+#         → messagestore.store:
 #           IsDuplicate finds pending row by own_id
 #           UPDATE server_status='received', captures server_id
 #           Returns confirmed list
@@ -67,7 +67,7 @@
 #   1:1: server stanza
 #     → message.OnMessage
 #       → message.ingestLive
-#         → store batch: INSERT (server_status="")
+#         → store: INSERT (server_status="")
 #         → HandleInsertion: emit <Received> → GUI displays
 #
 #   MUC: server stanza
@@ -165,7 +165,7 @@ snit::type taco_message {
         set totalCount 0
 
         dict for {chatJid messages} $groups {
-            $messagestore store batch $messages catchupRegion
+            $messagestore store $messages catchupRegion
             incr totalCount [llength $messages]
         }
 
@@ -212,7 +212,7 @@ snit::type taco_message {
         if {$freshRegion} {
             $messagestore region new liveRegion
         }
-        set result [$messagestore store batch [list $msg] liveRegion]
+        set result [$messagestore store [list $msg] liveRegion]
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
             $self HandleConfirmation $chatJid $confirmed
@@ -272,7 +272,7 @@ snit::type taco_message {
     #
     # Confirmation (pending → received) happens via two paths:
     #   MUC:  server echoes the message back with our id; the echo hits
-    #         `ingestLive`, where `messagestore store batch` dedup finds
+    #         `ingestLive`, where `messagestore store` dedup finds
     #         the pending row and flips it to 'received'.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
     #         calls `confirmByOwnIds` on the messagestore.
@@ -311,7 +311,7 @@ snit::type taco_message {
             server_status pending]
 
         set outgoing [$messagestore region outgoing]
-        set result [$messagestore store batch [list $msg] outgoing]
+        set result [$messagestore store [list $msg] outgoing]
         set inserted [dict get $result inserted]
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
@@ -538,7 +538,7 @@ snit::type taco_message {
 
         # Store the fetched batch (even if cancelled — data is still useful)
         if {[llength $messages] > 0} {
-            $messagestore store batch $messages fetchRegion
+            $messagestore store $messages fetchRegion
         }
 
         # Bridge fetch region into the local region it reached.
@@ -626,7 +626,7 @@ snit::type taco_message {
         }
 
         if {[llength $messages] > 0} {
-            $messagestore store batch $messages fetchRegion
+            $messagestore store $messages fetchRegion
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -680,7 +680,7 @@ snit::type taco_message {
             set msg [$self ParseResultNode $resultNode $chatJid]
             if {[dict get $msg body] eq ""} continue
             $messagestore region new r
-            set result [$messagestore store batch [list $msg] r]
+            set result [$messagestore store [list $msg] r]
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
                 lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]

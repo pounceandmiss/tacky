@@ -24,7 +24,7 @@ proc ds_msg {args} {
 
 proc ds_batch {messages {jid alice@example.com}} {
     store region new r
-    store store batch $messages r
+    store store $messages r
 }
 
 test ds-ms-store-server-status {server_status is stored and returned in get} \
@@ -295,7 +295,7 @@ test ds-retry-pending-on-ready {RetryPending defers MUC until room joined} \
     -body {
         # Store a pending message directly in DB
         c message messagestore region new r
-        c message messagestore store batch [list [dict create \
+        c message messagestore store [list [dict create \
             timestamp 100 chat_jid room@muc.example.com?join \
             from_jid room@muc.example.com/me body "retry me" \
             server_id "" own_id retry-oid1 raw_xml "" \
@@ -324,7 +324,7 @@ test ds-retry-1to1-pending {RetryPending sends 1:1 pending as chat type} \
     {*}$ds_msg_common \
     -body {
         c message messagestore region new r
-        c message messagestore store batch [list [dict create \
+        c message messagestore store [list [dict create \
             timestamp 100 chat_jid bob@example.com \
             from_jid user@test.example.com/res body "retry dm" \
             server_id "" own_id retry-oid2 raw_xml "" \
@@ -472,7 +472,7 @@ test ds-disconnect-clears-pending-retry {OnDisconnect clears PendingRetry} \
     -body {
         # Store a pending MUC message and trigger retry (stashes it)
         c message messagestore region new r
-        c message messagestore store batch [list [dict create \
+        c message messagestore store [list [dict create \
             timestamp 100 chat_jid room@muc.example.com?join \
             from_jid room@muc.example.com/me body "stale" \
             server_id "" own_id stale-oid raw_xml "" \
