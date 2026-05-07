@@ -86,6 +86,19 @@ oo::class create tacky_base {
         }
     }
 
+    # Are we listening check for $tag callbacks or events
+    method listening {tag} {
+        dict for {_key entries} $_listeners {
+            foreach entry $entries {
+                if {[lindex $entry 0] eq $tag} { return 1 }
+            }
+        }
+        dict for {_token entry} $Callbacks {
+            if {[lindex $entry 0] eq $tag} { return 1 }
+        }
+        return 0
+    }
+
     method dispatch {module event argsL} {
         set key [list $module $event]
         if {![dict exists $_listeners $key]} return
