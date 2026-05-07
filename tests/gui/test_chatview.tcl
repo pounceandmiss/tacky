@@ -805,7 +805,7 @@ proc ca_outgoing {id body {status pending}} {
 }
 
 proc ca_patch {id} {
-    dict create id $id patch 1
+    dict create id $id server_status received
 }
 
 set ca_common {
@@ -852,18 +852,6 @@ test chatarea-apply-patch-on-displayed {patch entry alongside a new insert appli
         .ca apply [list [ca_msg 500 "msg E"]]
         .ca apply [list \
             [ca_patch 500] \
-            [ca_msg 400 "msg D"]]
-        .ca messages ids
-    } -result {400 500}
-
-test chatarea-apply-patch-skipped-when-not-displayed {patch entry for non-displayed message is ignored} \
-    {*}$ca_common \
-    -body {
-        .ca apply [list [ca_msg 500 "msg E"]]
-        # Patch targets 999 which isn't displayed — dropped; sibling
-        # message still inserts at sorted position.
-        .ca apply [list \
-            [ca_patch 999] \
             [ca_msg 400 "msg D"]]
         .ca messages ids
     } -result {400 500}

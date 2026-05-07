@@ -89,10 +89,10 @@
 #
 # === GUI events ===
 #
-#   <Sent>      → OnLiveMessage: insert message (is_outgoing=1, no checkmark)
-#   <Received>  → OnLiveMessage: insert message (is_outgoing=0)
+#   <Sent>      → OnMessage: insert message (is_outgoing=1, no checkmark)
+#   <Received>  → OnMessage: insert message (is_outgoing=0)
 #                  Dedup by timestamp/id — skips if already displayed
-#   <Patch>     → OnLivePatch: $hull apply patch dict (checkmark)
+#   <Patch>     → OnPatch: patch displayed entry's fields (checkmark)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -219,12 +219,10 @@ snit::type taco_message {
                     set patchMessages [list [dict create \
                         timestamp $oldTs newtimestamp $newTs \
                         server_status received \
-                        region $liveRegion \
-                        patch 1]]
+                        region $liveRegion]]
                 } else {
                     set patchMessages [list [dict create \
-                        timestamp $oldTs server_status received \
-                        patch 1]]
+                        timestamp $oldTs server_status received]]
                 }
                 $client emit message <Patch> -jid $chatJid \
                     -messages $patchMessages
@@ -328,8 +326,7 @@ snit::type taco_message {
             $client emit message <Patch> -jid [dict get $c chat_jid] \
                 -messages [list [dict create \
                     timestamp [dict get $c timestamp] \
-                    server_status received \
-                    patch 1]]
+                    server_status received]]
         }
     }
 
