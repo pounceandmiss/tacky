@@ -45,7 +45,7 @@ snit::type taco_avatar {
         set PendingPubSubHash [dict create]
         array set ActiveTags {}
         $self Migrate
-        $client message pubsub handler urn:xmpp:avatar:metadata \
+        $client pubsub handler urn:xmpp:avatar:metadata \
             [mymethod OnMetadataNotification]
         $client caps addFeature urn:xmpp:avatar:metadata+notify
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
@@ -60,7 +60,7 @@ snit::type taco_avatar {
 
     destructor {
         catch {$client bus unsubscribe $self}
-        catch {$client message pubsub unhandler urn:xmpp:avatar:metadata}
+        catch {$client pubsub unhandler urn:xmpp:avatar:metadata}
     }
 
     # Return avatar metadata for a JID

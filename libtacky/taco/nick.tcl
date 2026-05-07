@@ -25,14 +25,14 @@ snit::type taco_nick {
         $self configurelist $args
         set client $options(-client)
         $self Migrate
-        $client message pubsub handler http://jabber.org/protocol/nick \
+        $client pubsub handler http://jabber.org/protocol/nick \
             [mymethod OnNotification]
         $client caps addFeature http://jabber.org/protocol/nick+notify
     }
 
     destructor {
         catch {$client bus unsubscribe $self}
-        catch {$client message pubsub unhandler http://jabber.org/protocol/nick}
+        catch {$client pubsub unhandler http://jabber.org/protocol/nick}
     }
 
     # Set own nick via PEP, vcard-temp, and bookmarks.

@@ -1,5 +1,5 @@
 snit::type taco_client {
-    taco_modules message mam roster caps bookmarks presence avatar muc vcard nick chats chatlist
+    taco_modules message pubsub mam roster caps bookmarks presence avatar muc vcard nick chats chatlist
 
     component conn -public conn
     component iq -public iq
@@ -149,10 +149,11 @@ snit::type taco_client {
                 #   muc:     groupchat → store under room@muc?join
                 #            MUC PM    → store under room@muc/nick
                 #            invites, declines, voice requests, config changes
+                #   pubsub:  XEP-0060 event stanzas → per-node handler
                 #   message: DM        → store under user@domain
-                #            PubSub event dispatch
                 if {[$mam onResultMessage $stanza]} return
                 if {[$muc OnMessage $stanza]} return
+                if {[$pubsub OnMessage $stanza]} return
                 $message OnMessage $stanza
             }
             presence {
