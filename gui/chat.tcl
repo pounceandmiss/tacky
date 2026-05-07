@@ -11,9 +11,12 @@ package require snit
 #
 # Two cooperating types implement this:
 #
-#   chatarea  — the GUI layer (text widget). Knows about pixels, not history.
-#   chatview  — the controller. Bridges chatarea's pixel-based needs to the
-#               Client's history API.
+#   chatarea  — the GUI layer (text widget). Measures pixels and emits
+#               direction+edge message id signals when its loaded window runs thin
+#               or fat. Knows nothing about history.
+#   chatview  — the controller. Turns those signals into history requests
+#               against the Client API, and feeds results back to chatarea
+#               as message dicts.
 #
 # The pixel model
 # ---------------
@@ -579,8 +582,8 @@ snit::widget chatarea {
     component text
     component scrollbar
 
-    # Might be useful for debugging: Global vars that will be set to
-    # latest calculated numbers of pixels above and below the viewport
+    # For debugging: Global vars that will be set to the latest
+    # calculated numbers of pixels above and below the viewport
     option -pixelsabovevariable
     option -pixelsbelowvariable
 
@@ -856,15 +859,9 @@ snit::widget chatarea {
         # Scale thresholds to viewport height so fetching starts
         # well before the user reaches the edge of loaded content.
         set vh [winfo height $text]
-        if {$vh > 0} {
-            set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
-            set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
-            set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
-        } else {
-            set loadTh      $options(-load-threshold)
-            set cleanTh     $options(-clean-threshold)
-            set cleanTarget $options(-clean-target)
-        }
+	set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
+	set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
+	set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
 
         set cleaned {}
 
