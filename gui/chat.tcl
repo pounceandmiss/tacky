@@ -715,23 +715,26 @@ snit::widget chatarea {
         $text tag configure body -lmargin1 40 -lmargin2 40
         # Formatting gimmicks
         $text tag configure entity.quote -foreground green -lmargin1 40 -lmargin2 55
-        $text tag configure entity.overstrike -overstrike yes
-        $text configure -font $font
-        $text tag configure entity.bold -font "$font bold"
-        $text tag configure entity.italic -font "$font italic"
-        $text tag configure entity.monospace -font "Courier 13"
         $text tag configure entity.preformatted -font "Courier 13"
-        $text tag configure entity.bold.italic -font "$font bold italic"
-        $text tag configure entity.bold.monospace -font "Courier 13 bold"
-        $text tag configure entity.italic.monospace -font "Courier 13 italic"
-        $text tag configure entity.bold.italic.monospace -font "Courier 13 bold italic"
-        $text tag configure entity.bold.overstrike -font "$font bold" -overstrike yes
-        $text tag configure entity.italic.overstrike -font "$font italic" -overstrike yes
-        $text tag configure entity.bold.italic.overstrike -font "$font bold italic" -overstrike yes
-        $text tag configure entity.monospace.overstrike -font "Courier 13" -overstrike yes
-        $text tag configure entity.bold.monospace.overstrike -font "Courier 13 bold" -overstrike yes
-        $text tag configure entity.italic.monospace.overstrike -font "Courier 13 italic" -overstrike yes
-        $text tag configure entity.bold.italic.monospace.overstrike -font "Courier 13 bold italic" -overstrike yes
+        $text configure -font $font
+        # Cross-product of bold/italic/monospace/overstrike entity tags.
+        foreach bold {0 1} {
+            foreach italic {0 1} {
+                foreach mono {0 1} {
+                    foreach over {0 1} {
+                        if {!$bold && !$italic && !$mono && !$over} continue
+                        set parts {}
+                        set fontspec [expr {$mono ? {Courier 13} : $font}]
+                        if {$bold}   { lappend parts bold;       append fontspec " bold" }
+                        if {$italic} { lappend parts italic;     append fontspec " italic" }
+                        if {$mono}   { lappend parts monospace }
+                        set opts [list -font $fontspec]
+                        if {$over}   { lappend parts overstrike; lappend opts -overstrike yes }
+                        $text tag configure "entity.[join $parts .]" {*}$opts
+                    }
+                }
+            }
+        }
         $text tag configure receipt -foreground #888888
         $text tag configure timestamp -foreground #888888
         $text tag configure system -foreground gray50 -font "$font italic" \
