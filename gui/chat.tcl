@@ -39,7 +39,7 @@ snit::widgetadaptor chatview {
 
     # True if the displayed window contains the
     # conversation tail, regardless of viewport position. Gates live
-    # message inserts (see OnLiveMessage). Pegged to event transitions.
+    # message inserts (see OnMessage). Pegged to event transitions.
     #
     # Transition sites:
     #   constructor                   -> true    (empty window is vacuously at tail)
@@ -69,11 +69,11 @@ snit::widgetadaptor chatview {
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set TrackedAvatars [list]
         ::tacky listen -tag $win message <Received> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Sent> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Patch> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnLivePatch]
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
@@ -257,7 +257,7 @@ snit::widgetadaptor chatview {
     # DB, or (b) scrolling down naturally until thirst's `-after`
     # query catches up to DB-newest, at which point OnLoadDone flips
     # AtTail back to true and live inserts resume.
-    method OnLiveMessage {ev} {
+    method OnMessage {ev} {
         if {!$AtTail} return
         set m [dict get $ev -message]
         set atEnd [$hull atEnd]
@@ -266,26 +266,23 @@ snit::widgetadaptor chatview {
         if {$atEnd} { $hull see end }
     }
 
-    method OnLivePatch {ev} {
-        set messages [dict get $ev -messages]
-        foreach msg $messages {
+    method OnPatch {ev} {
+        foreach msg [dict get $ev -messages] {
             set ts [dict get $msg timestamp]
+            if {$ts ni [$hull messages ids]} continue
             if {[dict exists $msg newtimestamp]} {
-                # Timestamp change: grab stored dict, update, re-insert
+                # Timestamp move: grab stored dict, update, re-insert
                 set newTs [dict get $msg newtimestamp]
-                if {$ts in [$hull messages ids]} {
-                    set storeDict [$hull messages get $ts]
-                    $hull deleteById $ts
-                    dict set storeDict timestamp $newTs
-                    dict set storeDict server_status [dict get $msg server_status]
-                    if {[dict exists $msg region]} {
-                        dict set storeDict region [dict get $msg region]
-                    }
-                    $self ProcessBatch [list $storeDict]
+                set storeDict [$hull messages get $ts]
+                $hull deleteById $ts
+                dict set storeDict timestamp $newTs
+                dict set storeDict server_status [dict get $msg server_status]
+                if {[dict exists $msg region]} {
+                    dict set storeDict region [dict get $msg region]
                 }
+                $self ProcessBatch [list $storeDict]
             } else {
-                dict set msg id $ts
-                $hull apply [list $msg]
+                $hull patchFields $ts $msg
             }
         }
     }
@@ -322,12 +319,6 @@ snit::widgetadaptor chatview {
     method ProcessBatch {messages} {
         set enriched {}
         foreach msg $messages {
-            if {[dict exists $msg patch]} {
-                lappend enriched [dict create \
-                    id [dict get $msg timestamp] \
-                    patch 1]
-                continue
-            }
             set emsg [$self EnrichMessage $msg]
             set ajid [dict get $emsg avatar_jid]
             if {$ajid ne ""} {
@@ -577,8 +568,8 @@ snit::widget chatarea {
     # Insert each message at its timestamp-sorted position. ID equals
     # the message's timestamp (unique, bumped on collision by backend),
     # so MessageIds stays sorted by id and a linear scan finds the
-    # insertion point. Patch entries (rule 1/2) still update displayed
-    # messages in place; staleness is handled outside this method (see
+    # insertion point. Already-displayed entries get their fields
+    # patched in place; staleness is handled outside this method (see
     # OnCulled for history requests, AtTail for live events).
     method apply {messageDictList} {
         set inserted {}
@@ -587,13 +578,7 @@ snit::widget chatarea {
                 set id [dict get $msg id]
 
                 if {$id in $MessageIds} {
-                    # Already displayed — patch fields
-                    $self PatchMessage $id $msg
-                    continue
-                }
-
-                if {[dict exists $msg patch]} {
-                    # Patch entry targeting non-displayed msg — skip
+                    $self patchFields $id $msg
                     continue
                 }
 
@@ -620,7 +605,7 @@ snit::widget chatarea {
         return $inserted
     }
 
-    method PatchMessage {id patchDict} {
+    method patchFields {id patchDict} {
         if {[dict exists $patchDict server_status]} {
             $self receipt update $id [dict get $patchDict server_status]
         }
