@@ -20,9 +20,6 @@ package require snit
 #
 
 snit::widgetadaptor chatview {
-    # dict: old 0 / new 0 — prevents duplicate history requests (boolean)
-    variable LoadToken
-
     # set of jids tracked via avatarcache
     variable TrackedAvatars
 
@@ -35,20 +32,22 @@ snit::widgetadaptor chatview {
     option -jid
     option -menubar -default ""
 
-    # Display-and-tail predicate. True iff the displayed window ends at
-    # the conversation tail AND the viewport is at the visual end.
-    # Drives the scroll-to-bottom button visibility (button shows when
-    # !WasAtEnd).
-    variable WasAtEnd
+    # True if AtTail is true AND the viewport is scrolled to the
+    # visual bottom. Drives scroll-to-bottom button visibility (button
+    # shown when !ViewAtTail).
+    variable ViewAtTail
 
-    # Tail-only predicate. True iff the displayed window contains the
+    # True if the displayed window contains the
     # conversation tail, regardless of viewport position. Gates live
-    # message inserts (see OnLiveMessage). Pegged to event transitions
-    # (initial-load done, end-of-stream thirst, cull, goto), not
-    # derived from displayed-newest == DB-newest — at the moment a
-    # live <Received> fires, the message has already been persisted to
-    # the local DB, so a derived check would always come up false and
-    # drop the very message it should accept.
+    # message inserts (see OnLiveMessage). Pegged to event transitions.
+    #
+    # Transition sites:
+    #   constructor                   -> true    (empty window is vacuously at tail)
+    #   OnInitialLoadDone             -> true    (newest page contains tail by definition)
+    #   OnLoadDone(new)               -> true    (only when newest displayed == DB-tail)
+    #   goto target!=end              -> false   (window may not reach the tail)
+    #   OnCulled (new in directions)  -> false   (tail just dropped from the window)
+    #   goto end                      -> false   (transient, until OnInitialLoadDone re-asserts)
     variable AtTail
 
     variable IsMuc
@@ -61,7 +60,7 @@ snit::widgetadaptor chatview {
             -scrollbtn-command [mymethod ScrollToBottom] \
             -loading-cancel-command [mymethod CancelGoto]
         $self configurelist $args
-        set WasAtEnd 1
+        set ViewAtTail 1
         # Empty display is vacuously at the tail; any live message
         # arriving before InitialLoad completes is the new tail.
         # InitialLoad / OnLoadDone(new) re-affirm; OnCulled(new) and
@@ -69,7 +68,6 @@ snit::widgetadaptor chatview {
         set AtTail 1
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set TrackedAvatars [list]
-        set LoadToken [dict create old 0 new 0]
         ::tacky listen -tag $win message <Received> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnLiveMessage]
         ::tacky listen -tag $win message <Sent> \
@@ -98,21 +96,19 @@ snit::widgetadaptor chatview {
     }
 
     method InitialLoad {} {
-        if {[dict get $LoadToken new]} return
-        dict set LoadToken new 1
+        if {[::tacky listening $win/new]} return
         ::tacky message history -acc $options(-acc) \
             -chat $options(-jid) -limit 50 \
             -tag $win/new -command [mymethod OnInitialLoadDone]
     }
 
     method OnInitialLoadDone {messages} {
-        dict set LoadToken new 0
         $self ProcessBatch $messages
         # Initial load fetches the newest page by definition; we are
         # at the tail even when the result is empty (empty conversation
         # is vacuously at tail).
         set AtTail 1
-        $self UpdateWasAtEnd
+        $self UpdateViewAtTail
         $hull see end
     }
 
@@ -140,7 +136,6 @@ snit::widgetadaptor chatview {
             # Reset to "bottom of conversation" — same as initial open.
             # InitialLoad will flip AtTail back to true on completion.
             $hull clear
-            set LoadToken [dict create old 0 new 0]
             set AtTail 0
             $self InitialLoad
             return
@@ -175,9 +170,8 @@ snit::widgetadaptor chatview {
 
         # Clear and reload around the anchor
         $hull clear
-        set LoadToken [dict create old 0 new 0]
         $self ProcessBatch $messages
-        $self UpdateWasAtEnd
+        $self UpdateViewAtTail
         if {$anchor ne "" && $anchor in [$hull messages ids]} {
             $hull see message $anchor
         }
@@ -195,8 +189,7 @@ snit::widgetadaptor chatview {
     }
 
     method OnThirsty {direction edgeId} {
-        if {[dict get $LoadToken $direction]} return
-        dict set LoadToken $direction 1
+        if {[::tacky listening $win/$direction]} return
         set region [$hull messages regionForDirection $direction]
         if {$direction eq "old"} {
             ::tacky message history -acc $options(-acc) \
@@ -220,14 +213,12 @@ snit::widgetadaptor chatview {
             set AtTail 0
         }
         foreach dir $directions {
-            dict set LoadToken $dir 0
             catch {::tacky unlisten $win/$dir}
             ::tacky message cancel -acc $options(-acc) -tag $win/$dir
         }
     }
 
     method OnLoadDone {direction messages} {
-        dict set LoadToken $direction 0
         set atEnd [$hull atEnd]
         $self ProcessBatch $messages
         if {$direction eq "new"} {
@@ -241,7 +232,7 @@ snit::widgetadaptor chatview {
                 set AtTail 1
             }
         }
-        $self UpdateWasAtEnd
+        $self UpdateViewAtTail
         if {$direction eq "new" && $atEnd} {
             $hull see end
         }
@@ -271,7 +262,7 @@ snit::widgetadaptor chatview {
         set m [dict get $ev -message]
         set atEnd [$hull atEnd]
         $self ProcessBatch [list $m]
-        $self UpdateWasAtEnd
+        $self UpdateViewAtTail
         if {$atEnd} { $hull see end }
     }
 
@@ -300,20 +291,20 @@ snit::widgetadaptor chatview {
     }
 
     method OnScroll {} {
-        $self UpdateWasAtEnd
+        $self UpdateViewAtTail
     }
 
-    method UpdateWasAtEnd {} {
+    method UpdateViewAtTail {} {
         set newest [$hull messages newest]
         set dbNewest [::tacky chats maxTimestamp \
             -acc $options(-acc) -chat $options(-jid)]
         set hasNewest [expr {$newest ne "" && $newest eq $dbNewest}]
-        set WasAtEnd [expr {$hasNewest && [$hull atEnd]}]
+        set ViewAtTail [expr {$hasNewest && [$hull atEnd]}]
         $self UpdateScrollBtn
     }
 
     method UpdateScrollBtn {} {
-        if {$WasAtEnd} {
+        if {$ViewAtTail} {
             $hull scrollbtn hide
         } else {
             $hull scrollbtn show
@@ -780,7 +771,7 @@ snit::widget chatarea {
         # Need an edge id to fetch from; if the display ended up empty
         # there is nothing to be thirsty about. Initial load comes
         # through a different path (chatview::InitialLoad), so the
-        # controller's LoadToken guard would not catch this.
+        # controller's dedupe guard would not catch this.
         if {[llength $MessageIds] == 0} return
 
         # Don't fire thirst for a direction we just cleaned —
