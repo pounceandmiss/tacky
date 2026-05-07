@@ -381,7 +381,7 @@ test message-live-pubsub-not-stored {PubSub messages are dispatched, not stored}
     {*}$msg_common \
     -body {
         set got 0
-        $::_client message pubsub handler urn:xmpp:avatar:metadata \
+        $::_client pubsub handler urn:xmpp:avatar:metadata \
             [list apply {{stanza} { set ::got 1 }}]
         $::_client conn feed [j message -from alice@example.com {
             j event -ns http://jabber.org/protocol/pubsub#event {

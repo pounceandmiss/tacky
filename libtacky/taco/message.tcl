@@ -100,7 +100,6 @@ snit::type taco_message {
     component messagestore -public messagestore
 
     variable client
-    variable PubSubHandlers
     variable PendingRetry
     variable liveRegion ""
     variable ActiveTags
@@ -110,7 +109,6 @@ snit::type taco_message {
         set client $options(-client)
         install messagestore using taco_messagestore $self.messagestore \
             -db [$client cget -db]
-        array set PubSubHandlers {}
         array set PendingRetry {}
         array set ActiveTags {}
         $client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
@@ -180,16 +178,8 @@ snit::type taco_message {
         $messagestore region new liveRegion
     }
 
+    # Called on message stanzas that haven't been intercepted by other modules. These are supposed to be 1-1 messages
     method OnMessage {stanza} {
-        # Check for PubSub event -> dispatch
-        set eventNodes [xsearch $stanza event -ns http://jabber.org/protocol/pubsub#event]
-        if {[llength $eventNodes] > 0} {
-            set node [xsearch [lindex $eventNodes 0] items -get @node]
-            if {$node ne "" && [info exists PubSubHandlers($node)]} {
-                {*}$PubSubHandlers($node) $stanza
-                return
-            }
-        }
         set fromBare [jid norm [jid bare [xsearch $stanza -get @from]]]
         set myBare [jid bare [$client cget -jid]]
         set isOwn [expr {$fromBare eq $myBare}]
@@ -393,14 +383,6 @@ snit::type taco_message {
             j body #body $body
         }]
         $client write $stanza
-    }
-
-    method "pubsub handler" {node command} {
-        set PubSubHandlers($node) $command
-    }
-
-    method "pubsub unhandler" {node} {
-        unset -nocomplain PubSubHandlers($node)
     }
 
     # local_search -chat $jid -query "text" -command $cb
