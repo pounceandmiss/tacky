@@ -52,13 +52,14 @@ snit::widgetadaptor chatview {
     variable AtTail
 
     variable IsMuc
-    variable ScrollBtnVisible
 
     constructor args {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
             -cull-command [mymethod OnCulled] \
-            -avatar-release-command [mymethod OnAvatarRelease]
+            -avatar-release-command [mymethod OnAvatarRelease] \
+            -scrollbtn-command [mymethod ScrollToBottom] \
+            -loading-cancel-command [mymethod CancelGoto]
         $self configurelist $args
         set WasAtEnd 1
         # Empty display is vacuously at the tail; any live message
@@ -66,7 +67,6 @@ snit::widgetadaptor chatview {
         # InitialLoad / OnLoadDone(new) re-affirm; OnCulled(new) and
         # goto-non-end flip false.
         set AtTail 1
-        set ScrollBtnVisible 0
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set TrackedAvatars [list]
         set LoadToken [dict create old 0 new 0]
@@ -82,11 +82,6 @@ snit::widgetadaptor chatview {
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
-        ttk::button $win.scrollbtn -image mate/22x22/actions/go-down \
-            -style Toolbutton -command [mymethod ScrollToBottom]
-        bind $win.scrollbtn <Button-4> [list event generate $win.text <Button-4>]
-        bind $win.scrollbtn <Button-5> [list event generate $win.text <Button-5>]
-        bind $win.scrollbtn <MouseWheel> [list event generate $win.text <MouseWheel> -delta %D]
         bind $win.text <<Yview>> +[mymethod OnScroll]
         bind $win.text <Configure> [mymethod OnFirstConfigure]
     }
@@ -131,7 +126,7 @@ snit::widgetadaptor chatview {
     }
 
     method goto {target args} {
-        $self HideLoading
+        $hull loading hide
         set defaults [dict create -source local]
         set opts [dict merge $defaults $args]
         set source [dict get $opts -source]
@@ -157,7 +152,7 @@ snit::widgetadaptor chatview {
         set AtTail 0
 
         if {$source eq "remote"} {
-            $self ShowLoading
+            $hull loading show
         }
         ::tacky message goto -acc $options(-acc) \
             -chat $options(-jid) -date $target -source $source \
@@ -166,7 +161,7 @@ snit::widgetadaptor chatview {
     }
 
     method OnGotoDone {result} {
-        $self HideLoading
+        $hull loading hide
         set messages [dict get $result messages]
         set anchor [dict get $result anchor]
 
@@ -188,27 +183,10 @@ snit::widgetadaptor chatview {
         }
     }
 
-    method ShowLoading {} {
-        set f $win.loading
-        if {[winfo exists $f]} return
-        ttk::frame $f
-        ttk::label $f.lbl -text "Loading\u2026"
-        ttk::button $f.cancel -text "Cancel" -style Toolbutton \
-            -command [mymethod CancelGoto]
-        pack $f.lbl $f.cancel -side left -padx 4
-        place $f -in $win.text -relx 0.5 -y 8 -anchor n
-    }
-
-    method HideLoading {} {
-        if {[winfo exists $win.loading]} {
-            destroy $win.loading
-        }
-    }
-
     method CancelGoto {} {
         ::tacky unlisten $win/goto
         ::tacky message cancel -acc $options(-acc) -tag $win/goto
-        $self HideLoading
+        $hull loading hide
     }
 
     method OnCatchupDone {ev} {
@@ -335,14 +313,10 @@ snit::widgetadaptor chatview {
     }
 
     method UpdateScrollBtn {} {
-        if {!$WasAtEnd == $ScrollBtnVisible} return
-        set ScrollBtnVisible [expr {!$WasAtEnd}]
-        if {$ScrollBtnVisible} {
-            place $win.scrollbtn -in $win.text \
-                -relx 1.0 -rely 1.0 -anchor se -x -24 -y -8
-            raise $win.scrollbtn
+        if {$WasAtEnd} {
+            $hull scrollbtn hide
         } else {
-            place forget $win.scrollbtn
+            $hull scrollbtn show
         }
     }
 
@@ -480,6 +454,11 @@ snit::widget chatarea {
     hulltype ttk::frame
     component text
     component scrollbar
+    component scrollbtn -public scrollbtn
+    component loading   -public loading
+
+    delegate option -scrollbtn-command      to scrollbtn as -command
+    delegate option -loading-cancel-command to loading   as -cancel-command
 
     # For debugging: Global vars that will be set to the latest
     # calculated numbers of pixels above and below the viewport
@@ -566,7 +545,11 @@ snit::widget chatarea {
             -yscrollcommand [list $win.scrollbar set]
         install scrollbar using ttk::scrollbar $win.scrollbar\
             -command [list $win.text yview]
-        
+        install scrollbtn using chatscrollbtn $win.scrollbtn \
+            -parent $win.text
+        install loading using chatloading $win.loading \
+            -parent $win.text
+
         $self configurelist $args
         
         grid $win.text $win.scrollbar -sticky nsew
@@ -1021,4 +1004,65 @@ proc list_remove_once_inplace {varName val} {
     if {$idx == -1} { return 0 }
     set lst [lreplace $lst $idx $idx]
     return 1
+}
+
+# Scroll-to-bottom button overlay. 
+snit::widgetadaptor chatscrollbtn {
+    option -parent -readonly yes
+    delegate option -command to hull
+
+    variable Visible 0
+
+    constructor args {
+        installhull using ttk::button \
+            -image mate/22x22/actions/go-down -style Toolbutton
+        $self configurelist $args
+
+	# Wheel events on the button are forwarded to the text widget
+	# so the user can keep scrolling if the cursor comes over it.
+        bind $win <Button-4> \
+            [list event generate $options(-parent) <Button-4>]
+        bind $win <Button-5> \
+            [list event generate $options(-parent) <Button-5>]
+        bind $win <MouseWheel> \
+            [list event generate $options(-parent) <MouseWheel> -delta %D]
+    }
+
+    method show {} {
+        if {$Visible} return
+        set Visible 1
+        place $win -in $options(-parent) \
+            -relx 1.0 -rely 1.0 -anchor se -x -24 -y -8
+        raise $win
+    }
+
+    method hide {} {
+        if {!$Visible} return
+        set Visible 0
+        place forget $win
+    }
+}
+
+# "Loading…" overlay with a Cancel button
+snit::widget chatloading {
+    hulltype ttk::frame
+    component cancel
+    option -parent -readonly yes
+    delegate option -cancel-command to cancel as -command
+
+    constructor args {
+        ttk::label $win.lbl -text "Loading…"
+        install cancel using ttk::button $win.cancel \
+            -text "Cancel" -style Toolbutton
+        $self configurelist $args
+        pack $win.lbl $win.cancel -side left -padx 4
+    }
+
+    method show {} {
+        place $win -in $options(-parent) -relx 0.5 -y 8 -anchor n
+    }
+
+    method hide {} {
+        place forget $win
+    }
 }
