@@ -620,7 +620,7 @@ snit::widget chatarea {
     # Fires when the last message displaying a given avatar JID was just
     # removed. Called as: {*}$cmd $avatarJid. Lets the controller release
     # its avatar tracking for that JID.
-    option -avatar-release-command -default ""
+    option -avatar-release-command -default control::no-op
 
     # Virtual events
     # <<MessageRightClick>> — fired on the chatarea frame when a message
@@ -946,13 +946,11 @@ snit::widget chatarea {
         set MessageIds {}
         set HighlightedId ""
         set Messages [dict create]
-        if {$options(-avatar-release-command) ne ""} {
-            set released {}
-            dict for {mid ajid} $MessageAvatars {
-                if {$ajid ni $released} {
-                    lappend released $ajid
-                    {*}$options(-avatar-release-command) $ajid
-                }
+        set released {}
+        dict for {mid ajid} $MessageAvatars {
+            if {$ajid ni $released} {
+                lappend released $ajid
+                {*}$options(-avatar-release-command) $ajid
             }
         }
         set MessageAvatars [dict create]
@@ -1066,7 +1064,6 @@ snit::widget chatarea {
     }
 
     method CheckAvatarRelease {id} {
-        if {$options(-avatar-release-command) eq ""} return
         if {![dict exists $MessageAvatars $id]} return
         set ajid [dict get $MessageAvatars $id]
         dict unset MessageAvatars $id
