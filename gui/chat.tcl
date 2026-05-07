@@ -4,121 +4,20 @@ package require snit
 # Scroll-driven message loading algorithm
 # ========================================
 #
-# The chat display is a virtualized window over the full message history.
-# Only a slice of messages is kept in the text widget at any time. As the
-# user scrolls, old messages are loaded on demand and distant ones are
-# cleaned up to bound memory usage.
+# The text widget holds only a slice of the conversation, not the
+# full history. As the user scrolls toward an edge, the next batch
+# is loaded on demand; messages far from the viewport are culled to
+# bound memory.
 #
-# Two cooperating types implement this:
+# Two layers implementing this:
 #
-#   chatarea  — the GUI layer (text widget). Measures pixels and emits
+#   chatarea  — the GUI layer built on top of Tk text. Measures pixels and emits
 #               direction+edge message id signals when its loaded window runs thin
 #               or fat. Knows nothing about history.
 #   chatview  — the controller. Turns those signals into history requests
 #               against the Client API, and feeds results back to chatarea
 #               as message dicts.
 #
-# The pixel model
-# ---------------
-# chatarea tracks two values: PixelsAbove (content above the visible
-# viewport) and PixelsBelow (content below it). These are measured on
-# every scroll event and widget-view-sync, coalesced via [after idle].
-#
-# Three thresholds govern the behavior — load, clean, and clean target.
-# When the buffer in a direction is thinner than the load threshold,
-# chatarea fires -thirst-command. When it's thicker than the clean
-# threshold, messages at that edge are deleted until the buffer drops
-# to the clean target. See chatarea's option block for tunables.
-#
-# The cycle
-# ---------
-#  1. User scrolls (or widget syncs after insert).
-#  2. <<Yview>> / <<WidgetViewSync>> fires → Cleanup is scheduled
-#     [after idle] (coalesced: only one DoCleanup per idle cycle).
-#  3. DoCleanup runs:
-#     a. Measures PixelsAbove and PixelsBelow.
-#     b. CLEAN phase — for each direction where pixels exceed the
-#        clean threshold, delete messages from that edge one by one
-#        until pixels drop to the clean target.
-#     c. THIRST phase — for each direction where pixels are below the
-#        load threshold AND that direction was NOT just cleaned,
-#        fire -thirst-command with {directions} and thirsty=yes.
-#        (The "not just cleaned" guard prevents load→clean→load loops.)
-#  4. chatview receives -thirst-command via OnThirst:
-#     - If thirsty=yes and no load is already in flight for that
-#       direction, starts an async history request (oldest/newest
-#       message ID as the cursor).
-#     - If thirsty=no, cancels any in-flight load for that direction.
-#     - Duplicate calls while a load is in flight are ignored (the
-#       LoadToken dict tracks what's active as a boolean).
-#  5. History results arrive via OnLoadDone → ProcessBatch → apply:
-#     a. The LoadToken for that direction is cleared.
-#     b. Messages are inserted into chatarea via the timestamp-sorted
-#        rule (see "Universal insertion rule" below).
-#     c. [compensate] wraps the entire apply loop — it's a no-op for
-#        below-viewport inserts, adjusts for above-viewport inserts.
-#     d. The insert changes the text geometry, which triggers
-#        <<WidgetViewSync>> → back to step 2.
-#
-# Universal insertion rule (chatarea apply)
-# ------------------------------------------
-# Every batch of messages passes through one generic loop:
-#
-#   for each message:
-#     if already displayed → patch fields (e.g. server_status)
-#     if patch entry       → skip (patch targeting non-displayed msg)
-#     otherwise → insert at timestamp-sorted position
-#
-# Message id equals timestamp (unique; bumped slightly on collision by
-# the backend), and MessageIds is kept sorted by id, so a linear scan
-# finds the insertion point. Forward, backward, goto, and live batches
-# all use the same path; final order is determined by timestamp, not
-# by arrival order.
-#
-# Staleness is handled outside this rule by two mechanisms:
-#
-#   - History requests (pagination, goto): chatview's OnCulled cancels
-#     in-flight tags via `tacky message cancel` when chatarea culls the
-#     corresponding edge, so stale responses never reach apply.
-#
-#   - Live events: chatview gates OnLiveMessage on AtTail (true iff
-#     the displayed window contains the conversation tail). When
-#     AtTail is false, live messages are dropped — the message is
-#     durable in the local DB (the backend persists and bridges
-#     regions before emitting <Received>), and the user rejoins the
-#     tail via the scroll-to-bottom button (goto end) or by scrolling
-#     down until thirst catches up to DB-newest.
-#
-# Steady state
-# ------------
-# The user sees a smooth scroll. When they approach either edge of the
-# loaded window, new messages appear seamlessly. When they scroll far
-# from an edge, distant messages are pruned. The text widget never holds
-# more than roughly the clean threshold worth of off-screen content
-# in either direction.
-#
-# Live incoming messages
-# ----------------------
-# New messages arriving from the network bypass the thirst mechanism.
-# chatview subscribes to <Received> events for its JID and feeds
-# them through ProcessBatch → apply. Sorted insert handles ordering;
-# rule 1 dedups already-displayed messages. After insert, the view
-# scrolls to the end if the user was already at the bottom. Live
-# inserts are gated by AtTail (see comment on OnLiveMessage).
-#
-# Catchup and goto
-# -----------------
-# At connect, the backend runs a MAM catchup that silently syncs recent
-# messages into the local DB (no per-message <Received> events).  When
-# catchup completes it emits <CatchupDone>.  chatview listens for this
-# and calls `goto end`, which clears the widget and runs InitialLoad to
-# reload the newest messages from local store.
-#
-# `goto` supports three modes:
-#   goto end             — clear and reload from the bottom (InitialLoad).
-#   goto $ts             — local: getAround from local store, scroll to
-#                          nearest.  If anchor is already visible, just scrolls.
-#   goto $ts -source remote — MAM fetch from $ts, store, getAround, display.
 
 snit::widgetadaptor chatview {
     # dict: old 0 / new 0 — prevents duplicate history requests (boolean)
@@ -569,6 +468,14 @@ if 0 {
 
 
 
+# chatarea — the GUI layer that owns the text widget.
+#
+# Pixel model: chatarea tracks PixelsAbove (content above the visible
+# viewport) and PixelsBelow (content below it). These are measured on
+# every scroll event and widget-view-sync, coalesced via [after idle],
+# and drive the load/cull decisions made by DoCleanup. Three thresholds
+# govern that behavior — load, clean, and clean target — see the option
+# block below.
 snit::widget chatarea {
     hulltype ttk::frame
     component text
@@ -579,11 +486,11 @@ snit::widget chatarea {
     option -pixelsabovevariable
     option -pixelsbelowvariable
 
-    # Three thresholds govern scroll-driven loading and culling. Each
-    # is computed as max(<name>-threshold, vh * <name>-factor) — the
-    # factor scales with viewport height (primary tuning knob); the
-    # threshold is a pixel floor that only matters on very small
-    # windows where vh*factor would be too small.
+    # The three thresholds. Each is computed as
+    # max(<name>-threshold, vh * <name>-factor) — the factor scales
+    # with viewport height (primary tuning knob); the threshold is a
+    # pixel floor that only matters on very small windows where
+    # vh*factor would be too small.
 
     # When the buffer in any direction exceeds the clean threshold,
     # messages at that edge are deleted until the buffer drops to the
