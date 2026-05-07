@@ -24,7 +24,7 @@ proc ms_msg {args} {
 # Helper: store a batch with a fresh region
 proc ms_batch {messages {jid alice@example.com}} {
     store region new r
-    store store batch $messages r
+    store store $messages r
 }
 
 # Helper: count distinct regions for a jid
@@ -282,10 +282,10 @@ test messagestore-multi-page-same-region {two batches with same region share one
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b]] r
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 300 body c] \
             [ms_msg timestamp 400 body d]] r
         ms_regions
@@ -307,7 +307,7 @@ test messagestore-live-assigns-region {single batch assigns one region} \
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100]] r
+        store store [list [ms_msg timestamp 100]] r
         ms_regions
     } -result {1}
 
@@ -315,9 +315,9 @@ test messagestore-live-same-region {multiple batches with same region var share 
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100]] r
-        store store batch [list [ms_msg timestamp 200]] r
-        store store batch [list [ms_msg timestamp 300]] r
+        store store [list [ms_msg timestamp 100]] r
+        store store [list [ms_msg timestamp 200]] r
+        store store [list [ms_msg timestamp 300]] r
         ms_regions
     } -result {1}
 
@@ -325,10 +325,10 @@ test messagestore-reconnect-different-regions {new region new creates separate r
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100 body a]] r
-        store store batch [list [ms_msg timestamp 200 body b]] r
+        store store [list [ms_msg timestamp 100 body a]] r
+        store store [list [ms_msg timestamp 200 body b]] r
         store region new r
-        store store batch [list [ms_msg timestamp 500 body c]] r
+        store store [list [ms_msg timestamp 500 body c]] r
         ms_regions
     } -result {2}
 
@@ -346,9 +346,9 @@ test messagestore-bridge-merges-regions {bridge merges two regions into one} \
     {*}$ms_common \
     -body {
         store region new r1
-        store store batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
+        store store [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
         store region new r2
-        store store batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
+        store store [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
         store region bridge alice@example.com r1 r2
         ms_regions
     } -result {1}
@@ -357,9 +357,9 @@ test messagestore-bridge-enables-cross-range-get {after bridge, get returns all 
     {*}$ms_common \
     -body {
         store region new r1
-        store store batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
+        store store [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
         store region new r2
-        store store batch [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
+        store store [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
         store region bridge alice@example.com r1 r2
         set msgs [store get latest alice@example.com]
         list [llength $msgs] \
@@ -371,9 +371,9 @@ test messagestore-bridge-updates-upvar {bridge sets r2 to r1} \
     {*}$ms_common \
     -body {
         store region new r1
-        store store batch [list [ms_msg timestamp 100 body a]] r1
+        store store [list [ms_msg timestamp 100 body a]] r1
         store region new r2
-        store store batch [list [ms_msg timestamp 500 body b]] r2
+        store store [list [ms_msg timestamp 500 body b]] r2
         set orig_r1 $r1
         store region bridge alice@example.com r1 r2
         list [expr {$r2 == $orig_r1}] [expr {$r1 == $r2}]
@@ -383,7 +383,7 @@ test messagestore-bridge-noop-same-region {bridge with same region is no-op} \
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100 body a]] r
+        store store [list [ms_msg timestamp 100 body a]] r
         set r2 $r
         store region bridge alice@example.com r r2
         ms_regions
@@ -444,9 +444,9 @@ test messagestore-merge-updates-upvar {dup-triggered merge unifies DB under call
     {*}$ms_common \
     -body {
         store region new r1
-        store store batch [list [ms_msg timestamp 100 server_id s1 body a]] r1
+        store store [list [ms_msg timestamp 100 server_id s1 body a]] r1
         store region new r2
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 200 server_id s_new body b] \
             [ms_msg timestamp 100 server_id s1 body dup]] r2
         set msgs [store get latest alice@example.com]
@@ -543,14 +543,14 @@ test messagestore-get-before-below-all-data {-before below all messages returns 
         store get before alice@example.com 100 [ms_region_of 100]
     } -result {}
 
-# -- edge cases: store batch / live ------------------------------------------
+# -- edge cases: store / live ------------------------------------------
 
 test messagestore-live-dedup-no-extend {deduped message does not create extra rows} \
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 100 own_id oid1 body first]] r
-        store store batch [list [ms_msg timestamp 200 own_id oid1 body duplicate]] r
+        store store [list [ms_msg timestamp 100 own_id oid1 body first]] r
+        store store [list [ms_msg timestamp 200 own_id oid1 body duplicate]] r
         testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
     } -result {1}
 
@@ -615,7 +615,7 @@ test messagestore-empty-batch-noop {empty batch is a no-op} \
     {*}$ms_common \
     -body {
         store region new r
-        store store batch {} r
+        store store {} r
         testdb eval {SELECT count(*) FROM chat_message}
     } -result {0}
 
@@ -623,8 +623,8 @@ test messagestore-live-earlier-timestamp {messages with earlier timestamp in sam
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list [ms_msg timestamp 500 body late]] r
-        store store batch [list [ms_msg timestamp 100 body early]] r
+        store store [list [ms_msg timestamp 500 body late]] r
+        store store [list [ms_msg timestamp 100 body early]] r
         set msgs [store get latest alice@example.com]
         list [llength $msgs] [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
@@ -634,10 +634,10 @@ test messagestore-multi-batch-all-visible {multiple batches in same region all v
     {*}$ms_common \
     -body {
         store region new r
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 1000 body p1a] \
             [ms_msg timestamp 1010 body p1b]] r
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 980 body p2a] \
             [ms_msg timestamp 990 body p2b]] r
         llength [store get latest alice@example.com]
@@ -663,12 +663,12 @@ test messagestore-parallel-regions-overlapping {MAM and live regions stay separa
         store region new mam
         store region new live
 
-        store store batch [list [ms_msg timestamp 500 body live1]] live
-        store store batch [list \
+        store store [list [ms_msg timestamp 500 body live1]] live
+        store store [list \
             [ms_msg timestamp 100 server_id s1 body mam1] \
             [ms_msg timestamp 200 server_id s2 body mam2]] mam
-        store store batch [list [ms_msg timestamp 600 body live2]] live
-        store store batch [list \
+        store store [list [ms_msg timestamp 600 body live2]] live
+        store store [list \
             [ms_msg timestamp 300 server_id s3 body mam3] \
             [ms_msg timestamp 400 server_id s4 body mam4]] mam
 
@@ -689,11 +689,11 @@ test messagestore-parallel-regions-bridge-unifies {bridge merges MAM and live re
         store region new mam
         store region new live
 
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 server_id s1 body a] \
             [ms_msg timestamp 200 server_id s2 body b]] mam
-        store store batch [list [ms_msg timestamp 500 body c]] live
-        store store batch [list [ms_msg timestamp 600 body d]] live
+        store store [list [ms_msg timestamp 500 body c]] live
+        store store [list [ms_msg timestamp 600 body d]] live
 
         store region bridge alice@example.com mam live
         set msgs [store get latest alice@example.com]
@@ -710,13 +710,13 @@ test messagestore-parallel-multi-chat-isolation {MAM backfill for one chat does 
         store region new bob_live
 
         # Alice: live message, then MAM backfill
-        store store batch [list [ms_msg timestamp 500 chat_jid alice@example.com body alice-live]] alice_live
-        store store batch [list \
+        store store [list [ms_msg timestamp 500 chat_jid alice@example.com body alice-live]] alice_live
+        store store [list \
             [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-mam1] \
             [ms_msg timestamp 200 chat_jid alice@example.com server_id as2 body alice-mam2]] alice_mam
 
         # Bob: independent live messages
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 300 chat_jid bob@example.com body bob-live1] \
             [ms_msg timestamp 400 chat_jid bob@example.com body bob-live2]] bob_live
 
@@ -737,13 +737,13 @@ test messagestore-parallel-multi-chat-bridge-isolated {bridging one chat does no
         store region new bob_live
 
         # Both chats: MAM + live
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-old]] alice_mam
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 500 chat_jid alice@example.com body alice-new]] alice_live
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 100 chat_jid bob@example.com server_id bs1 body bob-old]] bob_mam
-        store store batch [list \
+        store store [list \
             [ms_msg timestamp 500 chat_jid bob@example.com body bob-new]] bob_live
 
         # Bridge only alice

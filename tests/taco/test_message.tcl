@@ -31,7 +31,7 @@ proc msg_msg {args} {
 # Helper: store messages in a fresh region via the message module's messagestore
 proc msg_store {msgs} {
     $::_client message messagestore region new r
-    $::_client message messagestore store batch $msgs r
+    $::_client message messagestore store $msgs r
 }
 
 # Helper: call history and collect result via -command

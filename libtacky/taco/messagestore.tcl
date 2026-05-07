@@ -5,7 +5,7 @@ if 0 {
 
     The store can't determine contiguity — only the caller knows, from
     protocol semantics and connection state. The caller allocates regions
-    via `region new` and passes them to `store batch`.
+    via `region new` and passes them to `store`.
 
     Outgoing messages (sent but not yet confirmed by server) are stored
     with region = -1 (OUTGOING_REGION). They are never assigned a real
@@ -29,7 +29,7 @@ if 0 {
 
     Region merging via server_id overlap:
 
-    `store batch` checks every message for a server_id/own_id duplicate
+    `store` checks every message for a server_id/own_id duplicate
     already in the DB. When a duplicate is found in a different region,
     the batch proves overlap — the old region is merged into the caller's
     region via UPDATE. The caller's region variable is passed by name
@@ -37,13 +37,13 @@ if 0 {
 
     `region bridge` is still needed when MAM finishes just short of the
     live range — the last MAM page contained no server_id already in the
-    DB, so `store batch` can't merge on its own. The caller knows the two
+    DB, so `store` can't merge on its own. The caller knows the two
     ranges meet from protocol state (MAM said "complete") and calls
     `region bridge` to merge the two regions.
 
     Outgoing confirmation (pending → received):
 
-    When `store batch` finds a pending message by own_id (MUC echo),
+    When `store` finds a pending message by own_id (MUC echo),
     it moves the message from outgoing region (-1) to the caller's
     region and updates the timestamp to the server's authoritative
     value. The caller emits a <Patch> with the moved message's old
@@ -55,7 +55,7 @@ if 0 {
 
     On reconnect, MAM catchup and live messages each get their own region.
     Three outcomes:
-    1. MAM reaches a live message (server_id match) — `store batch` merges
+    1. MAM reaches a live message (server_id match) — `store` merges
        regions automatically.
     2. MAM reaches previously-stored old data — same mechanism.
     3. MAM completes without overlap — caller calls `region bridge` to merge.
@@ -126,7 +126,7 @@ snit::type taco_messagestore {
     # overlap, and confirms pending messages on echo. Returns dict with
     # `confirmed` (list of {own_id, timestamp}) and `inserted` (list
     # of stored timestamps, which may differ from input due to BumpTs).
-    method "store batch" {messages regionVar} {
+    method store {messages regionVar} {
         if {[llength $messages] == 0} { return {} }
 
         upvar $regionVar region
