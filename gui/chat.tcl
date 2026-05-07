@@ -24,19 +24,11 @@ package require snit
 # viewport) and PixelsBelow (content below it). These are measured on
 # every scroll event and widget-view-sync, coalesced via [after idle].
 #
-# Three thresholds govern the behavior:
-#
-#   -load-threshold (default 500px)
-#       When PixelsAbove or PixelsBelow drops below this, the chatarea is
-#       "thirsty" for that direction and fires -thirst-command.
-#
-#   -clean-threshold (default 5000px)
-#       When PixelsAbove or PixelsBelow exceeds this, messages at that
-#       edge are deleted to free memory.
-#
-#   -clean-target (default 2500px)
-#       During cleaning, messages are deleted until pixels drop to this
-#       level (midpoint between load and clean thresholds).
+# Three thresholds govern the behavior — load, clean, and clean target.
+# When the buffer in a direction is thinner than the load threshold,
+# chatarea fires -thirst-command. When it's thicker than the clean
+# threshold, messages at that edge are deleted until the buffer drops
+# to the clean target. See chatarea's option block for tunables.
 #
 # The cycle
 # ---------
@@ -45,11 +37,11 @@ package require snit
 #     [after idle] (coalesced: only one DoCleanup per idle cycle).
 #  3. DoCleanup runs:
 #     a. Measures PixelsAbove and PixelsBelow.
-#     b. CLEAN phase — for each direction where pixels exceed
-#        -clean-threshold, delete messages from that edge one by one
-#        until pixels drop to -clean-target.
-#     c. THIRST phase — for each direction where pixels are below
-#        -load-threshold AND that direction was NOT just cleaned,
+#     b. CLEAN phase — for each direction where pixels exceed the
+#        clean threshold, delete messages from that edge one by one
+#        until pixels drop to the clean target.
+#     c. THIRST phase — for each direction where pixels are below the
+#        load threshold AND that direction was NOT just cleaned,
 #        fire -thirst-command with {directions} and thirsty=yes.
 #        (The "not just cleaned" guard prevents load→clean→load loops.)
 #  4. chatview receives -thirst-command via OnThirst:
@@ -102,8 +94,8 @@ package require snit
 # The user sees a smooth scroll. When they approach either edge of the
 # loaded window, new messages appear seamlessly. When they scroll far
 # from an edge, distant messages are pruned. The text widget never holds
-# more than roughly -clean-threshold pixels of off-screen content in
-# either direction.
+# more than roughly the clean threshold worth of off-screen content
+# in either direction.
 #
 # Live incoming messages
 # ----------------------
@@ -587,21 +579,27 @@ snit::widget chatarea {
     option -pixelsabovevariable
     option -pixelsbelowvariable
 
-    # These are minimum values; DoCleanup scales them up to
-    # viewport-relative multiples (2x for load, 10x/5x for clean)
-    # so fetching starts well before the user reaches the edge.
+    # Three thresholds govern scroll-driven loading and culling. Each
+    # is computed as max(<name>-threshold, vh * <name>-factor) — the
+    # factor scales with viewport height (primary tuning knob); the
+    # threshold is a pixel floor that only matters on very small
+    # windows where vh*factor would be too small.
 
-    # When the number of pixels in any direction exceeds
-    # -clean-threshold, some messages will be erased
+    # When the buffer in any direction exceeds the clean threshold,
+    # messages at that edge are deleted until the buffer drops to the
+    # clean target.
+    option -clean-factor    -default 10
     option -clean-threshold -default 5000
 
-    # When the number of pixels in any direction is less that
-    # -load-threshold, some messages will be loaded
+    # When the buffer in any direction drops below the load threshold,
+    # chatarea fires -thirst-command for that direction.
+    option -load-factor    -default 2
     option -load-threshold -default 500
 
-    # When cleaning, delete messages until pixels drop to this level
-    # (midpoint between load and clean thresholds)
-    option -clean-target -default 2500
+    # Where cleaning stops — sits between load and clean for hysteresis,
+    # so a clean pass leaves the buffer well clear of the load threshold.
+    option -clean-target-factor    -default 5
+    option -clean-target-threshold -default 2500
 
     # Fires when the buffer in $direction ("old"/"new") fell below the
     # load threshold. Called as: {*}$cmd $direction $edgeId — $edgeId
@@ -859,9 +857,9 @@ snit::widget chatarea {
         # Scale thresholds to viewport height so fetching starts
         # well before the user reaches the edge of loaded content.
         set vh [winfo height $text]
-	set loadTh      [expr {max($options(-load-threshold), $vh * 2)}]
-	set cleanTh     [expr {max($options(-clean-threshold), $vh * 10)}]
-	set cleanTarget [expr {max($options(-clean-target), $vh * 5)}]
+	set loadTh      [expr {max($options(-load-threshold),         $vh * $options(-load-factor))}]
+	set cleanTh     [expr {max($options(-clean-threshold),        $vh * $options(-clean-factor))}]
+	set cleanTarget [expr {max($options(-clean-target-threshold), $vh * $options(-clean-target-factor))}]
 
         set cleaned {}
 
