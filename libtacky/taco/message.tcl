@@ -229,7 +229,8 @@ snit::type taco_message {
                     set patchMessages [list [dict create \
                         timestamp $oldTs newtimestamp $newTs \
                         server_status received \
-                        region $liveRegion]]
+                        region $liveRegion \
+                        patch 1]]
                 } else {
                     set patchMessages [list [dict create \
                         timestamp $oldTs server_status received \
