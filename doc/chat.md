@@ -1,236 +1,189 @@
-# Chat view guide
-
-## 1. Lifecycle
-
-### Open
-
-1. Subscribe to four events filtered by JID (use a single tag for
-   teardown):
-   - `message <Received>` — incoming live message
-   - `message <Sent>` — own outgoing message (optimistic)
-   - `message <Patch>` — partial update to a displayed message
-   - `message <CatchupDone>` — MAM sync finished (1:1 chats only)
-
-2. Request the initial page:
-   `tacky message history -acc $acc -chat $jid -limit 50 -tag $tag -command $cb`
-   No `-before` or `-after` — returns the newest page. Display and
-   scroll to bottom.
-
-### Close
-
-1. `tacky unlisten $tag` — removes all event listeners.
-2. `tacky message cancel -acc $acc -tag $tag` — marks in-flight
-   callbacks inactive. Optional optimization.
-
----
-
-## 2. The prev rule
-
-Every message carries `prev`: the timestamp of the message
-immediately before it. The `timestamp + prev` chain is the source of
-truth for ordering.
-
-The view uses one algorithm for every batch — history responses, live
-events, goto results — with no direction-awareness or special cases.
-
-### Algorithm
-
-Maintain an ordered list of displayed message IDs and a bidirectional
-map (id <-> prev) for O(1) forward and reverse lookup.
-
-For each message in a batch:
-
-1. **Already displayed?** Patch fields (`prev`, `server_status`).
-2. **Patch entry and not displayed?** Skip (field update for
-   off-screen message).
-3. **Some displayed message's prev == this ID?** Insert *before* it.
-4. **This message's prev is displayed?** Insert *after* prev.
-5. **Display empty?** Insert (bootstrap).
-6. **None of the above?** Skip (can't connect — stale response).
-
-A **patch entry** is a dict carrying `{patch 1}` instead of a body.
-It only ever updates an already-displayed message; rule 2 ensures it
-is dropped if the target isn't on screen. Patches arrive on two
-channels: inline at the edge of backward history pages (§3) and via
-`<Patch>` events (§4).
-
-This handles forward/backward pagination, live messages, patches,
-dedup, and staleness in one loop.
-
-### Notes
-
-- The view can process messages sequentially in returned order.
-- **Backward pages** are reversed before applying so the edge patch
-  is processed first (updating the edge message's prev), then the
-  rest chain via rule 3.
-- **Forward pages** are applied in order; each message's prev points
-  to the previous one, chaining via rule 4.
-- **Live messages** connect via rule 4 or are skipped if the user
-  scrolled away (show a "new message" indicator).
-- **Stale responses** silently fail: if the cursor was culled while
-  the request was in flight, nothing connects and the batch is
-  discarded.
-
-### Displaced-prev rule
-
-When inserting C with prev=B (rule 4), if another displayed message E
-already claims B as its prev, update E.prev=C before inserting. This
-keeps the chain intact when messages interleave — incoming between
-displayed, incoming before pending outgoing, delayed delivery, MUC
-echo reorders.
-
-```
-Before:    [A, B, E]          E.prev=B
-C arrives: insert C after B, displace E.prev -> C
-After:     [A, B, C, E]       E.prev=C
-```
-
----
-
-## 3. Pagination
-
-The view holds a sliding window, not the full history. When the user
-scrolls near an edge, request more:
-
-`tacky message history -before $oldest -region $region ...`
-
-or `-after $newest` to scroll down.
-
-**Region selection**: use the region of the furthest *non-outgoing*
-message in the direction of scrolling, but the *timestamp* of the
-furthest displayed message (outgoing or not). Never use an outgoing
-message's region — outgoing doesn't participate in contiguity and
-would mask gaps.
-
-Guard against duplicate in-flight requests with a boolean per
-direction. Set on fire, clear on callback.
-
-### Backward pagination edge patch
-
-The backend appends a **patch entry** to backward pages:
-`{timestamp $edgeTs prev $newPrev patch 1}`. This updates the edge
-message's prev to connect the new page to the existing display.
-
-It uses the same `{patch 1}` marker as `<Patch>` events (§4) — the
-flag tells the algorithm "update fields if the target is displayed,
-otherwise drop." Rule 1 (patch if displayed) and rule 2 (skip if not
-displayed) handle it without special-casing.
-
-Reverse backward pages before applying so the edge patch is
-processed first.
-
-### Forward pagination
-
-Applied in chronological order (no reversal). Each message's prev
-points to the one before it, chaining via rule 4.
-
----
-
-## 4. Live events
-
-### `<Received>` and `<Sent>`
-
-Both carry `-message` (a single message dict). Feed through the prev
-rule.
-
-### `<Patch>`
-
-Carries `-messages`: a list of update dicts, each with a `timestamp`
-identifying the target.
-
-**Simple patch** (in-place):
-`{timestamp $ts server_status received patch 1}`
-Updates the receipt indicator. The `patch 1` flag routes it through
-rule 1/2 (patch if displayed, drop otherwise).
-
-**Timestamp-change patch**:
-`{timestamp $oldTs newtimestamp $newTs server_status received prev $newPrev region $reg}`
-The message moved to a new timestamp (server assigned a different
-time on MUC echo). Delete by `$oldTs`, re-insert with new timestamp,
-status, and prev. Untagged: it's a delete+reinsert, not a field
-update, and so doesn't carry `patch 1`. The displaced-prev rule
-handles any affected followers automatically during re-insertion.
-
-### `<CatchupDone>`
-
-Fired after reconnect MAM sync. Only handle for 1:1 chats (MUCs
-don't do eager catchup yet).
-
-Response: clear the display and re-run the initial load (`goto end`).
-Cancel any in-flight pagination tags.
-
----
-
-## 5. Outgoing messages
-
-Outgoing messages are stored with `region = -1`. They don't
-participate in the contiguity model in the DB, but the view gets them
-linked by prev like incoming messages.
-
-### Display
-
-On `<Sent>`, the message appears immediately (optimistic), after all
-real-region messages. Its prev links it to the chain.
-
-### Receipt indicators
-
-- `server_status = ""` — incoming, no indicator
-- `server_status = "pending"` — sent, awaiting confirmation
-- `server_status = "received"` — server confirmed delivery
-
-Update in place when `<Patch>` changes `server_status`.
-
-### Confirmation
-
-A `<Patch>` may change timestamp, prev, region, and status. The
-message moves from the pending area to its chronological position.
-
-For MUC messages, the server may assign a different timestamp
-(timestamp-change patch). SM-acked messages stay at region -1 — they
-move to a real region only on MUC echo or MAM dedup.
-
----
-
-## 6. Live message region bridging
-
-Live messages are stored in `liveRegion`, which starts empty and is
-created on the first incoming message. Since MAM history lives in a
-different region, the first live message bridges `liveRegion` into
-the predecessor's region so they share a single contiguous region.
-
-On disconnect, a fresh `liveRegion` is pre-allocated (rather than
-reset to empty) so the bridge does not fire again — post-disconnect
-messages correctly land in a separate region. On reconnect,
-`OnCatchup` sets `liveRegion` to the catchup region.
-
----
-
-## 7. Goto and search
-
-### Goto
-
-`tacky message goto -acc $acc -chat $jid -date $ts -source local -limit 50 ...`
-
-Callback returns `{messages $list anchor $nearestTs}`.
-
-- If `anchor` is already displayed: scroll to it.
-- Otherwise: clear the display, show returned messages, scroll to
-  anchor.
-
-`-source remote` fetches from the server (MAM) first, then returns
-local results.
-
-### Search
-
-`tacky message search -acc $acc -chat $jid -query "text" -limit 20 ...`
-
-Server-side (MAM) full-text search. Returns
+# Chat view
+
+This file describes how the chat GUI<->backend interaction goes.  Reference implementation: `gui/chat.tcl`.
+
+## 1. Overview
+
+A chat view shows a sliding window over the conversation, fetched on
+demand. The window is bounded (memory pressure forces culling); the
+conversation is not. A frontend must ensure:
+
+- **Contiguity** — messages in the window form an unbroken run of the
+  conversation. Only "A B C", no "A B F".
+- **No stale displays** — a result whose cursor was invalidated
+  (because the user culled or jumped) is never applied to the window.
+
+## 2. Data model
+
+`timestamp` doubles down as id as it's unique (under the hood backend bumps it by a millisecond when necessary). The window is sorted by `timestamp`.
+
+The backend groups incoming messages into **regions** — contiguous
+runs of conversation history with no archive gap between them. An
+archive gap (an unsynced stretch of server-side MAM history) starts a
+new region. Pagination queries are scoped to a region with `-region $r`
+so the backend can tell when the cursor has reached the edge of synced
+history.
+
+Outgoing messages have `region = -1` and do not belong to any region. 
+They interleave into the window by timestamp like everything else, but must be skipped when figuring region for the next query.
+
+## 3. What the frontend holds
+
+Beyond the displayed messages, the chat-view tracks a single flag:
+whether the window contains the conversation tail. Live-event
+acceptance gates on this flag (see section 6); the empty window is
+vacuously at tail.
+
+In-flight backend requests are identified by a tag passed when the
+request is issued. Cancelling a request is `tacky message cancel -tag
+$tag`; results arriving on a cancelled tag are suppressed before the
+callback fires. The chat-view uses one tag per cancel scope — one for
+live events, plus one each for older-page, newer-page, and goto
+requests. Tag-based cancellation is the only mechanism protecting
+contiguity from racing results.
+
+Pagination cursors are the first and last timestamps in the window —
+used as `-before` and `-after` arguments for the older and newer
+directions. The cursor's region is computed by scanning from the
+corresponding end of the window inward and using the region of the
+first non-outgoing message found.
+
+## 4. Insertion rule
+
+For each message in any incoming batch (initial, paginated, goto,
+live), insert it at its timestamp-sorted position. The same rule
+applies regardless of source — there is no separate "backfill" or
+"live insert" path. `<Patch>` events take a different path entirely
+(see section 7).
+
+## 5. tacky API surface
+
+| Call                                                                        | Purpose                                                                                                |
+|-----------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| `tacky message history -acc $a -chat $j -limit $n -tag $t -command $cb`     | Initial page (no `-before` / `-after` returns the newest).                                             |
+| `tacky message history -before $ts -region $r ...`                          | Older page.                                                                                            |
+| `tacky message history -after $ts -region $r ...`                           | Newer page.                                                                                            |
+| `tacky message goto -acc $a -chat $j -date $ts -source local\|remote ...`   | Jump to anchor. Result: `{messages $list anchor $nearestTs}`. `-source remote` fetches from MAM first. |
+| `tacky message cancel -acc $a -tag $t`                                      | Mark in-flight callbacks for `$t` inactive.                                                            |
+| `tacky chats maxTimestamp -acc $a -chat $j`                                 | Newest known timestamp for the chat. Used to decide whether the window has reached the tail.          |
+| `tacky listen -tag $t message <Received\|Sent\|Patch\|CatchupDone> ... $cb` | Subscribe to live events.                                                                              |
+| `tacky unlisten $t`                                                         | Remove all listeners under `$t`.                                                                       |
+
+## 6. Event handling
+
+The chat-view reacts to events from two sources: its own UI (the user
+scrolls, jumps, or culls) and the backend (a result arrives, a live
+event arrives). Each event has an effect on the held message list and
+the at-tail flag.
+
+When (and how often) to request more pages or cull is up to the
+frontend — the reference uses pixel thresholds, but a CLI might use
+line counts. Any firing schedule works as long as the responses below
+are respected.
+
+### Pagination
+
+A page extends the window by an unbroken run; a stale result is never
+applied.
+
+When the user scrolls toward an edge, issue `tacky message history`
+with `-before` (older) or `-after` (newer) of the corresponding edge
+timestamp, plus `-region $r`, tagged for that direction. If a request
+on that tag is already in flight, drop the new one.
+
+When the window culls messages from an end, cancel any in-flight
+request on that end's tag — its cursor has moved, and a result still
+in flight would extend the window across the resulting gap. Culling
+the newer end additionally clears the at-tail flag, since the window
+may no longer reach the tail.
+
+When a page result arrives, apply each message via the insertion rule.
+For a newer-page result, additionally check whether the window's
+newest timestamp equals `tacky chats maxTimestamp`; if so, the window
+is back at the tail and the flag is set.
+
+### Initial load, goto, catchup
+
+After any fresh load, the window is a fresh slice and the at-tail flag
+reflects whether that slice contains the tail.
+
+On chat-view open, issue `tacky message history` with no
+`-before`/`-after`. The newest page comes back; the flag is vacuously
+true going in (empty window) and stays true on completion (the newest
+page contains the tail by definition, even when empty).
+
+A "scroll to bottom" affordance cancels in-flight requests, clears the
+window, sets the flag false, and re-runs the initial load. The flag
+flips back when that completes.
+
+A jump to a specific timestamp cancels in-flight requests, sets the
+flag false, and issues `tacky message goto -date $ts`. The result
+carries `messages` and `anchor`. If the anchor is already in the
+window, just scroll to it — the user is already looking at the right
+slice. Otherwise clear the window, apply `messages`, and scroll to the
+anchor. The flag stays false either way; even if the returned slice
+happens to reach the tail, it does not flip back. The user rejoins the
+live tail either by clicking "scroll to bottom" or by paging forward
+until the at-tail check flips.
+
+When MAM catchup completes (1:1 chats only), behave as if the user
+clicked "scroll to bottom" — the sync may have introduced messages
+between the displayed window and the tail, so reload to re-establish
+contiguity.
+
+### Live messages
+
+When a `<Received>` or `<Sent>` event arrives, apply the message via
+the insertion rule if the at-tail flag is set; otherwise drop. The
+gate is required because inserting a live message when the window
+does not reach the tail would advance the newer-direction cursor past
+an unfetched range, and the next page request would skip that range
+— a permanent gap. `<Patch>` events take a different path (see
+section 7).
+
+## 7. Patch handling
+
+Two shapes arrive on the `<Patch>` channel:
+
+- **Field update** — carries `timestamp` identifying the target, plus
+  the changing fields (e.g. `server_status`). If the target is in the
+  window, patch its fields in place; if not, drop.
+- **Timestamp move** — carries `timestamp $oldTs`, `newtimestamp
+  $newTs`, plus updated `server_status` and `region`. The message moved
+  (e.g. MUC echo assigned a different server time). If displayed:
+  update its timestamp / status / region and reposition it to its
+  sorted slot. If not displayed: drop.
+
+The two shapes are distinguished by the presence of `newtimestamp`:
+field updates omit it, timestamp moves include it. `<Patch>` is
+dispatched on its own path that pre-filters by "is the target
+displayed?" — it does not flow through the insertion rule (see
+section 4).
+
+## 8. Outgoing messages
+
+Outgoing messages are stored with `region = -1`. They appear immediately
+on `<Sent>` (optimistic) at their pending timestamp.
+
+`server_status` evolves through `<Patch>` field updates:
+
+- `""` — incoming (no indicator).
+- `"pending"` — sent locally, awaiting confirmation.
+- `"received"` — server confirmed.
+- `"read"` — recipient acknowledged.
+
+A timestamp-move `<Patch>` (e.g. MUC echo with a different server time)
+relocates the message and may also assign a real region. SM-acked
+messages without echo stay at region -1.
+
+## 9. Search
+
+`tacky message search -acc $a -chat $j -query $q -limit $n -command $cb`
+
+Server-side MAM full-text search. Result:
 `{messages $list complete $bool last $serverId}`. Paginate with
 `-before $serverId`.
 
-To navigate to a result, use `goto $timestamp -source remote`.
-
-Search results should be displayed separately (e.g. a search window),
-not as real history. The messages come from different points in
-history but are artificially prev-linked so the view can use the same
-logic.
+Search results are not chat-view content; display them in a separate
+list. To navigate to a result, jump the chat view to its timestamp
+using `tacky message goto -date $ts -source remote`.
