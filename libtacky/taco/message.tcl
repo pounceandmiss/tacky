@@ -144,7 +144,7 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set fwdNode [lindex [xsearch $resultNode forwarded \
                                     -ns urn:xmpp:forward:0] 0]
-            set msgNode [lindex [xsearch $fwdNode message] 0]
+            set msgNode [$client ensureTo [lindex [xsearch $fwdNode message] 0]]
 
         set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
         set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]

@@ -139,8 +139,22 @@ snit::type taco_client {
         }
     }
 
+    # RFC 6121 §8.1.1.2: an inbound stanza with no 'to' is addressed
+    # to our bare JID. Fill it in at ingress so downstream consumers
+    # can read @to without special-casing the empty case.
+    method ensureTo {stanza} {
+        if {![dict exists $stanza attrs to]
+            || [dict get $stanza attrs to] eq ""} {
+            dict set stanza attrs to [jid bare $options(-jid)]
+        }
+        return $stanza
+    }
+
     method OnStanza {stanza} {
         set tag [dict get $stanza tag]
+        if {$tag in {message iq presence}} {
+            set stanza [$self ensureTo $stanza]
+        }
         switch -- $tag {
             iq       { $iq feed $stanza }
             message  {
