@@ -248,18 +248,35 @@ oo::class create tacky_threaded_type {
 
 set _tacky_backend_script [file join [file dirname [info script]] .. tackyd-tcl.tcl]
 
-# Process-based backend: taco runs in a child process
-# (taco_process_backend.tcl), communicating over stdin/stdout with
-# length-prefixed messages (lenpipe).  The child's tacky object sends
-# {event $module $event $args} messages back, which _onMessage routes
-# through emit.
+# Process-based backend: taco runs in a child process (tackyd-tcl.tcl),
+# communicating over stdin/stdout with length-prefixed messages (lenpipe).
+#
+# Wire shape mirrors tackyd-json.tcl, just with Tcl lists/dicts on the
+# wire instead of JSON:
+#
+#   out: [module method args]          fire-and-forget
+#        [module method args token]    request/response
+#   in:  [event module <Event> args]   broadcast
+#        [result token data]           success reply
+#        [error  token message]        error reply
+#
+# Unlike tacky_type / tacky_threaded_type — which round-trip the
+# original callback by replacing -command with a magic string that
+# bounces back through `tacky emit callback` — we override `unknown`
+# to allocate a wire-level token and let the child wire its own
+# internal callbacks against it.  Keeps the callback string off the
+# wire.
 oo::class create tacky_process_type {
     superclass tacky_base
     variable Pipe
+    variable Callbacks
+    variable TokenCounter
 
     constructor {args} {
         next
         package require lenpipe
+        set Callbacks [dict create]
+        set TokenCounter 0
         set fd [open |[list [info nameofexecutable] $::_tacky_backend_script {*}$args] r+]
         set Pipe [lenpipe new $fd \
             -onmessage [namespace code {my _onMessage}] \
@@ -268,15 +285,50 @@ oo::class create tacky_process_type {
 
     destructor { catch {$Pipe destroy} }
 
-    method _send {module method args} {
-        $Pipe send [list $module $method {*}$args]
+    method unknown {module method args} {
+        if {[dict exists $args -command] || [dict exists $args -onerror]} {
+            set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]
+            set cmd [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+            set err [expr {[dict exists $args -onerror] ? [dict get $args -onerror] : ""}]
+            set token [incr TokenCounter]
+            dict set Callbacks $token [list $tag $cmd $err]
+            dict unset args -command
+            dict unset args -onerror
+            $Pipe send [list $module $method $args $token]
+        } else {
+            $Pipe send [list $module $method $args]
+        }
     }
 
-    # Dispatch incoming messages from the child process.
-    # Format: {event $module $event $args}
+    method _send {module method args} {
+        $Pipe send [list $module $method $args]
+    }
+
     method _onMessage {msg} {
-        lassign $msg type module event args
-        my emit $module $event {*}$args
+        switch -- [lindex $msg 0] {
+            event {
+                lassign $msg _ module event eargs
+                my dispatch $module $event $eargs
+            }
+            result {
+                lassign $msg _ token data
+                if {[dict exists $Callbacks $token]} {
+                    set entry [dict get $Callbacks $token]
+                    dict unset Callbacks $token
+                    set cmd [lindex $entry 1]
+                    if {$cmd ne ""} { {*}$cmd $data }
+                }
+            }
+            error {
+                lassign $msg _ token errmsg
+                if {[dict exists $Callbacks $token]} {
+                    set entry [dict get $Callbacks $token]
+                    dict unset Callbacks $token
+                    set err [lindex $entry 2]
+                    if {$err ne ""} { {*}$err $errmsg }
+                }
+            }
+        }
     }
 
     method _onEof {} { my dispatch error <ProcessExit> {} }
