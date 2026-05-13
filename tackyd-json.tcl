@@ -130,18 +130,35 @@ jsonify_type jsonify \
         muc/getList             {list {dict {}}}
         muc/discoverRooms       {list {dict {}}}
         muc/reservedNick        string
+        muc/getSubject          string
+        muc/myNick              string
+        muc/myRole              string
+        muc/myAffiliation       string
+        muc/haveVoice           bool
+        muc/isJoined            bool
+        muc/occupant            occupant
+        muc/occupants           {list occupant}
+        muc/rooms               list
         roster/get              {list roster_item}
+        roster/subscription     string
         bookmarks/get           {list bookmark}
         bookmarks/autojoin      bool
+        bookmarks/defaultNick   string
         account/list            list
         account/exists          bool
         account/get             {dict {enabled bool}}
         chats/latest            list
+        chats/maxTimestamp      int
         presence/get            presence
         presence/isOnline       bool
         avatar/metadata         avatar_meta
         avatar/thumb            base64
         avatar/data             base64
+        nick/get                string
+        vcard/nick              string
+        setting/list            list
+        debugtap/on             int
+        message/rawxml          string
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list
