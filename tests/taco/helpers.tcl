@@ -24,19 +24,19 @@ proc tacky_await {args} {
     return $::_await_result
 }
 
-# Run a tacky command that should error, wait for the MethodError event.
+# Run a tacky command that should error, wait for the -onerror callback.
 proc tacky_await_error {args} {
     set ::_await_err_done 0
     set ::_await_err {}
-    set tag [tacky listen error <MethodError> {apply {{ev} {
-        set ::_await_err [dict get $ev -message]
-        set ::_await_err_done 1
-    }}}]
-    {*}$args -command {apply {{result} {}}}
+    {*}$args \
+        -command {apply {{result} {}}} \
+        -onerror {apply {{msg} {
+            set ::_await_err $msg
+            set ::_await_err_done 1
+        }}}
     if {!$::_await_err_done} {
         vwait ::_await_err_done
     }
-    tacky unlisten $tag
     return $::_await_err
 }
 

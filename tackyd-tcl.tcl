@@ -1,10 +1,12 @@
 #!/usr/bin/env tclsh9.0
 # Child process entry point for tacky_process_type.
-# Runs a full taco_type backend, communicating with the GUI over
-# stdin/stdout using length-prefixed messages (lenpipe).
+# Speaks length-prefixed Tcl lists over stdin/stdout (lenpipe).
 #
-# Incoming (stdin):  <module> <method> <kwarg>...
-# Outgoing (stdout): event <module> <event> <args>
+# Incoming (stdin):  [module method args]            fire-and-forget
+#                    [module method args token]      request/response
+# Outgoing (stdout): [event module <Event> args]     broadcast
+#                    [result token data]             success reply
+#                    [error  token message]          error reply
 
 lappend auto_path [file join [file dirname [info script]] libtacky]
 package require taco
@@ -17,21 +19,41 @@ proc pipesend {msg} {
     flush stdout
 }
 
-# Define "tacky" command before creating taco_type,
-# because taco constructor calls `tacky emit` for existing accounts.
+# Define "tacky" before creating taco_type — taco's constructor calls
+# `tacky emit` for existing accounts.  Module=callback (used by the
+# token wiring below) becomes a result/error reply; everything else is
+# a broadcast event.
 namespace eval ::tacky_ns {
     namespace export emit
     namespace ensemble create -command ::tacky
-    proc emit {module event args} { pipesend [list event $module $event $args] }
+    proc emit {module event args} {
+        if {$module eq "callback" && [dict exists $args -token]} {
+            set token [dict get $args -token]
+            set data  [dict get $args -result]
+            if {$event eq "<Error>"} {
+                pipesend [list error $token $data]
+            } else {
+                pipesend [list result $token $data]
+            }
+            return
+        }
+        pipesend [list event $module $event $args]
+    }
 }
 
-# Configure stdout for writing
 chan configure stdout -translation binary -buffering full
 
-# Read commands from stdin via lenpipe
 lenpipe create _pipe stdin \
     -onmessage {apply {{msg} {
-        taco [lindex $msg 0] [lindex $msg 1] {*}[lrange $msg 2 end]
+        lassign $msg module method args
+        if {[llength $msg] > 3} {
+            set token [lindex $msg 3]
+            dict set args -command \
+                [list tacky emit callback <Result> -token $token -result]
+            dict set args -onerror \
+                [list tacky emit callback <Error> -token $token -result]
+        }
+        taco $module $method {*}$args
     }}} \
     -oneof {apply {{} {
         taco destroy
