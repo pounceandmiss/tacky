@@ -14,10 +14,10 @@ proc xmpp_starttls {chan host cb} {
         return
     }
     fileevent $chan readable \
-        [list _xmpp_starttls_readable_cb $chan $cb]
+        [list _xmpp_starttls_readable_cb $chan $host $cb]
 }
 
-proc _xmpp_starttls_readable_cb {chan cb} {
+proc _xmpp_starttls_readable_cb {chan host cb} {
     if {[set chunk [read $chan]] eq ""} {
         fileevent $chan readable {}
         unset -nocomplain ::_xmpp_starttls_data($chan)
@@ -36,6 +36,6 @@ proc _xmpp_starttls_readable_cb {chan cb} {
             lappend extraopts -cafile $::env(SPOOF_SSL_CERT)
         }
         # </for automated testing>
-        {*}$cb ok [mtls::import $chan {*}$extraopts]
+        {*}$cb ok [mtls::import $chan -servername $host {*}$extraopts]
     }
 }
