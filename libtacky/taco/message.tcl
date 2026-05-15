@@ -291,9 +291,11 @@ snit::type taco_message {
             regsub {\?join$} $opts(-chat_jid) {} toJid
             set nick [$client muc myNick -jid $toJid]
             set fromJid $toJid/$nick
+            set fromRes ""
         } else {
             set toJid $opts(-chat_jid)
-            set fromJid [$client cget -jid]
+            set fromJid [jid bare [$client cget -jid]]
+            set fromRes [jid resource [$client cget -jid]]
         }
 
         set stanza [j message -to $toJid -type $type -id $oid {
@@ -304,6 +306,7 @@ snit::type taco_message {
             timestamp $ts \
             chat_jid $opts(-chat_jid) \
             from_jid $fromJid \
+            from_resource $fromRes \
             body $opts(-body) \
             server_id "" \
             own_id $oid \
@@ -709,14 +712,45 @@ snit::type taco_message {
     # Caller supplies -chat_jid, -timestamp, -server_id as overrides
     # (these come from different places for live vs MAM).
     method ParseMessage {msgNode args} {
+        set chatJid [dict get $args -chat_jid]
+        set rawFrom [xsearch $msgNode -get @from]
+        set fromJid [NormalizeAuthorJid $chatJid $rawFrom]
+        set fromRes [SplitFromResource $chatJid $rawFrom]
         dict create \
             timestamp  [dict get $args -timestamp] \
-            chat_jid   [dict get $args -chat_jid] \
-            from_jid   [xsearch $msgNode -get @from] \
+            chat_jid   $chatJid \
+            from_jid   $fromJid \
+            from_resource $fromRes \
             body       [xsearch $msgNode body -get body] \
             server_id  [dict get $args -server_id] \
             own_id     [expr {[dict exists $args -own_id] ? [dict get $args -own_id] : ""}] \
             raw_xml    [jwrite $msgNode] \
             server_status ""
     }
+}
+
+# Author identity within a chat: full `room/nick` for MUC chats (resource
+# is the participant's stable nick), bare JID for 1:1 (resource is an
+# ephemeral client tag with no identity meaning). chat_jid shapes:
+# `room@muc?join` (groupchat) and `room@muc/nick` (PM) are MUC; anything
+# else is 1:1.
+proc NormalizeAuthorJid {chatJid fromJid} {
+    if {[IsMucChatJid $chatJid]} {
+        return $fromJid
+    }
+    return [jid bare $fromJid]
+}
+
+# Resource component for 1:1 senders (the ephemeral client tag — useful
+# for debug / per-resource features). Empty for MUC, where the resource
+# is the nick and lives in from_jid.
+proc SplitFromResource {chatJid fromJid} {
+    if {[IsMucChatJid $chatJid]} {
+        return ""
+    }
+    return [jid resource $fromJid]
+}
+
+proc IsMucChatJid {chatJid} {
+    expr {[string match {*\?join} $chatJid] || [string match */* $chatJid]}
 }
