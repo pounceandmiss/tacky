@@ -86,6 +86,11 @@ snit::type taco_messagestore {
                 timestamp      INTEGER NOT NULL,
                 chat_jid       TEXT NOT NULL,
                 from_jid       TEXT NOT NULL,
+                -- Stanza @from resource for 1:1 chats (the sending
+                -- client tag — debug metadata, not identity). Empty
+                -- for MUC, where the resource is the nick and lives
+                -- in from_jid. raw_xml has the wire-original either way.
+                from_resource  TEXT,
                 body           TEXT,
                 -- server-assigned, for MAM pagination;
                 -- <stanza-id id='...' by='server.example.com'/>
@@ -183,10 +188,13 @@ snit::type taco_messagestore {
 
                 set status [expr {[info exists m(server_status)] \
                     ? $m(server_status) : ""}]
+                set fromRes [expr {[info exists m(from_resource)] \
+                    ? $m(from_resource) : ""}]
                 $options(-db) eval {
-                    INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
+                    INSERT INTO chat_message(timestamp, chat_jid, from_jid,
+                        from_resource, body,
                         server_id, own_id, raw_xml, region, server_status)
-                    VALUES($ts, $jid, $m(from_jid), $m(body),
+                    VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $m(raw_xml), $region,
                         $status)
                 }
@@ -262,7 +270,7 @@ snit::type taco_messagestore {
         if {$reg == $OUTGOING_REGION} {
             $options(-db) eval {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                            own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND timestamp < $cursor
@@ -277,7 +285,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                                own_id, raw_xml, server_status, region
                         FROM chat_message
                         WHERE chat_jid=$jid AND timestamp < $cursor
@@ -286,7 +294,7 @@ snit::type taco_messagestore {
                         LIMIT $limit
                     )
                     UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                            own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND timestamp < $cursor
@@ -308,7 +316,7 @@ snit::type taco_messagestore {
         set rows {}
         if {$reg == $OUTGOING_REGION} {
             $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, body, server_id,
+                SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                        own_id, raw_xml, server_status, region
                 FROM chat_message
                 WHERE chat_jid=$jid AND timestamp > $cursor
@@ -322,7 +330,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                                own_id, raw_xml, server_status, region
                         FROM chat_message
                         WHERE chat_jid=$jid AND timestamp > $cursor
@@ -331,7 +339,7 @@ snit::type taco_messagestore {
                         LIMIT $limit
                     )
                     UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                            own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND timestamp > $cursor
@@ -360,7 +368,7 @@ snit::type taco_messagestore {
             # Only outgoing messages exist
             $options(-db) eval {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                            own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND region = $out
@@ -374,7 +382,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, body, server_id,
+                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                                own_id, raw_xml, server_status, region
                         FROM chat_message
                         WHERE chat_jid=$jid AND region = $reg
@@ -382,7 +390,7 @@ snit::type taco_messagestore {
                         LIMIT $limit
                     )
                     UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, body, server_id,
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                            own_id, raw_xml, server_status, region
                     FROM chat_message
                     WHERE chat_jid=$jid AND region = $out
@@ -435,7 +443,7 @@ snit::type taco_messagestore {
         set after [$self get after $jid $nearestTs $reg $halfLimit]
         set target {}
         $options(-db) eval {
-            SELECT timestamp, chat_jid, from_jid, body, server_id,
+            SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                    own_id, raw_xml, server_status, region
             FROM chat_message
             WHERE chat_jid=$jid AND timestamp=$nearestTs
@@ -451,7 +459,7 @@ snit::type taco_messagestore {
         set rows {}
         foreach ts $timestamps {
             $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, body, server_id,
+                SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
                        own_id, raw_xml, server_status, region
                 FROM chat_message
                 WHERE chat_jid=$jid AND timestamp=$ts

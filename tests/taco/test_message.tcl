@@ -194,7 +194,7 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [expr {[dict get $m1 timestamp] > 0}] \
              [expr {[dict get $m1 raw_xml] ne ""}] \
              [dict get $m2 body] [dict get $m2 server_id]
-    } -result {2 {first msg} bob@example.com/phone mam1 {} alice@example.com 1 1 {second msg} mam2}
+    } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 
 # -- history: -after at latest skips MAM ----------------------------------------
 
@@ -242,7 +242,43 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
              [dict get $msg own_id] \
              [dict get $msg chat_jid] \
              [expr {[dict get $msg timestamp] > 0}]
-    } -result {sid42 juliet@capulet.li/phone {hello romeo} {} chat@example.com 1}
+    } -result {sid42 juliet@capulet.li {hello romeo} {} chat@example.com 1}
+
+test message-parseresultnode-keeps-muc-resource {ParseResultNode keeps resource on MUC chats (resource is the nick)} \
+    {*}$msg_common \
+    -body {
+        set rn [mam_result id sid7 from room@muc.example.com/alice \
+                    body "hi all" stamp 2024-06-15T12:30:00Z]
+        set msg [$::_client message ParseResultNode $rn room@muc.example.com?join]
+        dict get $msg from_jid
+    } -result {room@muc.example.com/alice}
+
+test message-parseresultnode-keeps-muc-pm-resource {ParseResultNode keeps resource on MUC PM chats} \
+    {*}$msg_common \
+    -body {
+        set rn [mam_result id sid8 from room@muc.example.com/alice \
+                    body "psst" stamp 2024-06-15T12:30:00Z]
+        set msg [$::_client message ParseResultNode $rn room@muc.example.com/alice]
+        dict get $msg from_jid
+    } -result {room@muc.example.com/alice}
+
+test message-parseresultnode-1to1-captures-from-resource {1:1 from_resource captures the sending client tag} \
+    {*}$msg_common \
+    -body {
+        set rn [mam_result id sid9 from juliet@capulet.li/phone \
+                    body "hi" stamp 2024-06-15T12:30:00Z]
+        set msg [$::_client message ParseResultNode $rn juliet@capulet.li]
+        dict get $msg from_resource
+    } -result {phone}
+
+test message-parseresultnode-muc-empty-from-resource {MUC from_resource is empty (nick already lives in from_jid)} \
+    {*}$msg_common \
+    -body {
+        set rn [mam_result id sid10 from room@muc.example.com/alice \
+                    body "hi" stamp 2024-06-15T12:30:00Z]
+        set msg [$::_client message ParseResultNode $rn room@muc.example.com?join]
+        dict get $msg from_resource
+    } -result {}
 
 test message-history-preserves-join {history preserves ?join suffix in chatJid} \
     {*}$msg_common \
@@ -353,7 +389,7 @@ test message-live-fields {stored live message has correct fields} \
              [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
              [expr {[dict get $msg raw_xml] ne ""}]
-    } -result {alice@example.com alice@example.com/phone hi srv42 {} 1 1}
+    } -result {alice@example.com alice@example.com hi srv42 {} 1 1}
 
 test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
     {*}$msg_common \
@@ -479,7 +515,7 @@ test message-live-emits-event {incoming message emits message <Received>} \
         list [dict get $_got -jid] \
              [dict get $_got -message from_jid] \
              [dict get $_got -message body]
-    } -result {alice@example.com alice@example.com/phone {event test}}
+    } -result {alice@example.com alice@example.com {event test}}
 
 test message-live-dup-no-event {duplicate message does not emit <Received>} \
     {*}$msg_common \
@@ -670,10 +706,10 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
         # Pre-store messages without IDs (simulating previous catchup)
         msg_store [list \
             [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
-                chat_jid alice@example.com from_jid alice@example.com/phone \
+                chat_jid alice@example.com from_jid alice@example.com \
                 body "bridge msg" server_id "" own_id ""] \
             [msg_msg timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
-                chat_jid alice@example.com from_jid alice@example.com/phone \
+                chat_jid alice@example.com from_jid alice@example.com \
                 body "bridge msg 2" server_id "" own_id ""]]
         # Now catchup returns the same messages (no IDs, as IRC bridges do)
         msg_ready
