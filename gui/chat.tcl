@@ -52,6 +52,11 @@ snit::widgetadaptor chatview {
 
     variable IsMuc
 
+    # Names dict: from_jid → display name for messages in this chat.
+    # Seeded from `tacky author get` at construction; kept in sync by
+    # the author <Changed> listener.
+    variable Names
+
     constructor args {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
@@ -67,6 +72,7 @@ snit::widgetadaptor chatview {
         # goto-non-end flip false.
         set AtTail 1
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
+        set Names [dict create]
         set TrackedAvatars [list]
         ::tacky listen -tag $win message <Received> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
@@ -76,12 +82,33 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
+        ::tacky listen -tag $win author <Changed> \
+            -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
+        ::tacky author get -acc $options(-acc) -chat $options(-jid) \
+            -command [mymethod OnAuthorSeed]
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
         bind $win.text <<Yview>> +[mymethod OnScroll]
         bind $win.text <Configure> [mymethod OnFirstConfigure]
+    }
+
+    # Initial snapshot of author names for this chat. Applies cached
+    # names to any messages already rendered (history may have arrived
+    # first if the seed callback is async).
+    method OnAuthorSeed {names} {
+        set Names $names
+        dict for {fromJid name} $names {
+            $hull author update $fromJid $name
+        }
+    }
+
+    method OnAuthorChanged {ev} {
+        set fromJid [dict get $ev -from]
+        set name [dict get $ev -name]
+        dict set Names $fromJid $name
+        $hull author update $fromJid $name
     }
 
     method OnFirstConfigure {} {
@@ -312,7 +339,7 @@ snit::widgetadaptor chatview {
     }
 
     method EnrichMessage {storeDict} {
-        enrich_store_message $storeDict $IsMuc
+        enrich_store_message $storeDict $Names
     }
 
     method ProcessBatch {messages} {
@@ -832,6 +859,16 @@ snit::widget chatarea {
         }
     }
 
+    # Repaint the author label for every visible message authored by
+    # $fromJid. Tags are preserved so styling and per-item identity
+    # survive the replace.
+    method {author update} {fromJid newName} {
+        foreach {start end} [$text tag ranges author.$fromJid] {
+            set tags [$text tag names $start]
+            $text replace $start $end $newName $tags
+        }
+    }
+
     method ReceiptText {status} {
         switch -- $status {
             received { return "\u2713" }
@@ -886,7 +923,11 @@ snit::widget chatarea {
             if {$avatarJid ne ""} {
                 $text tag add from.$avatarJid $imageId
             }
-            $text ins msgins $message(display_name) [list $tag $tag.author author]
+            set authorTags [list $tag $tag.author author]
+            if {[info exists message(from_jid)] && $message(from_jid) ne ""} {
+                lappend authorTags author.$message(from_jid)
+            }
+            $text ins msgins $message(display_name) $authorTags
             $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
             $text ins msgins \n $tag
             
@@ -944,24 +985,26 @@ snit::widget chatarea {
 
 # Shared enrichment: converts a store dict (from_jid, server_status,
 # timestamp, body, etc.) into the display dict that chatarea expects.
-proc enrich_store_message {storeDict isMuc} {
+# `names` maps from_jid → display name (from tacky author get); not in
+# the dict means a late-arriving author the cache hasn't been told about
+# yet, in which case we fall back to the resource of from_jid (the MUC
+# nick) or the from_jid itself (1:1 bare JID after Phase 1 normalisation).
+proc enrich_store_message {storeDict names} {
     set fromJid [dict get $storeDict from_jid]
-    set res [jid resource $fromJid]
-    if {$res eq ""} {
-        set res [jid bare $fromJid]
-    }
-    if {$isMuc} {
-        set avatarJid $fromJid
+    if {[dict exists $names $fromJid]} {
+        set displayName [dict get $names $fromJid]
     } else {
-        set avatarJid [jid bare $fromJid]
+        set displayName [jid resource $fromJid]
+        if {$displayName eq ""} { set displayName $fromJid }
     }
     set serverStatus [dict get $storeDict server_status]
     set isOutgoing [expr {$serverStatus ne ""}]
     set region [expr {[dict exists $storeDict region] ? [dict get $storeDict region] : -1}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
-        display_name $res \
-        avatar_jid   $avatarJid \
+        from_jid     $fromJid \
+        display_name $displayName \
+        avatar_jid   $fromJid \
         timestamp    [dict get $storeDict timestamp] \
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \

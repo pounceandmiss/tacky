@@ -19,12 +19,12 @@ snit::widget searchwindow {
     variable isComplete 0
     variable searchTag
     variable ca
-    variable isMuc
+    variable Names
 
     constructor args {
 	$self configurelist $args
 	set searchTag $win/search
-	set isMuc [expr {[jid query $options(-jid)] eq "join"}]
+	set Names [dict create]
 	wm title $win "Search — [jid bare $options(-jid)]"
 
 	# Top frame: entry + buttons
@@ -62,11 +62,31 @@ snit::widget searchwindow {
 	$win.ca.text tag configure search_match -background yellow \
 	    -font "Helvetica 13 bold"
 
+	::tacky listen -tag $searchTag/author author <Changed> \
+	    -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
+	::tacky author get -acc $options(-acc) -chat $options(-jid) \
+	    -command [mymethod OnAuthorSeed]
+
 	focus $top.entry
     }
 
     destructor {
 	catch {::tacky message cancel -acc $options(-acc) -tag $searchTag}
+	catch {::tacky unlisten $searchTag/author}
+    }
+
+    method OnAuthorSeed {names} {
+	set Names $names
+	dict for {fromJid name} $names {
+	    $ca author update $fromJid $name
+	}
+    }
+
+    method OnAuthorChanged {ev} {
+	set fromJid [dict get $ev -from]
+	set name [dict get $ev -name]
+	dict set Names $fromJid $name
+	$ca author update $fromJid $name
     }
 
     method DoSearch {} {
@@ -155,7 +175,7 @@ snit::widget searchwindow {
     }
 
     method EnrichMessage {storeDict prevId} {
-	set d [enrich_store_message $storeDict $isMuc]
+	set d [enrich_store_message $storeDict $Names]
 	dict set d prev $prevId
 	return $d
     }
