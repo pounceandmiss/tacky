@@ -100,6 +100,9 @@ snit::widgetadaptor xmlstream {
         $win.sendbar.btn state disabled
         pack $win.sendbar -side bottom -fill x -before $win.scroll
 
+        bind $win.text <Control-f> "[mymethod FocusSearch]; break"
+        bind $win.sendbar.input <Control-f> "[mymethod FocusSearch]; break"
+
         $self configurelist $args
         set stanzas {}
         tacky setting get -key xmlconsole.filters \
@@ -116,6 +119,11 @@ snit::widgetadaptor xmlstream {
     method clear {} {
         $hull clear
         set stanzas {}
+    }
+
+    method FocusSearch {} {
+        focus $win.toolbar.searchentry
+        $win.toolbar.searchentry selection range 0 end
     }
 
     destructor {
@@ -653,6 +661,7 @@ proc xmlconsole {jid} {
     wm geometry $w 600x400
     xmlstream $w.xs -conn [list account $jid]
     pack $w.xs -expand yes -fill both
+    bind $w <Control-f> [list $w.xs FocusSearch]
     return $w
 }
 
