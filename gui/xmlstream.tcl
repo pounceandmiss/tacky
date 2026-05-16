@@ -109,8 +109,7 @@ snit::widgetadaptor xmlstream {
             -tag $win -command [mymethod OnLoadFilters]
     }
 
-    method OnLoadFilters {result} {
-        set value [dict get $result -value]
+    method OnLoadFilters {value} {
         if {$value ne ""} {
             $win.toolbar.filters setFilters $value
         }

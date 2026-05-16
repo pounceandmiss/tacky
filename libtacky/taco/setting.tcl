@@ -12,9 +12,9 @@ snit::type taco_setting {
     tackymethod get {args} {
         set key [dict get $args -key]
         $options(-db) eval {SELECT value FROM setting WHERE key=$key} row {
-            return [list -key $key -value $row(value)]
+            return $row(value)
         }
-        list -key $key -value ""
+        return ""
     }
 
     method set {args} {
@@ -24,6 +24,15 @@ snit::type taco_setting {
             ON CONFLICT(key) DO UPDATE SET value=$opts(-value);
         }
         $options(-taco) emit setting <Changed> -key $opts(-key) -value $opts(-value)
+    }
+
+    tackymethod pull {args} {
+        set key [dict get $args -key]
+        set value ""
+        $options(-db) eval {SELECT value FROM setting WHERE key=$key} row {
+            set value $row(value)
+        }
+        $options(-taco) emit setting <Changed> -key $key -value $value
     }
 
     tackymethod list {args} {

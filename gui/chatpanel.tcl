@@ -58,14 +58,12 @@ snit::widget chatpanel {
         }
 
         if {$isMuc} {
-            ::tacky setting get -key show_participants \
-                -command [mymethod OnShowParticipantsSetting]
+            ::tacky observe -tag $win setting <Changed> -key show_participants \
+                [mymethod OnShowParticipantsSetting]
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
         } else {
-            ::tacky setting get -key show_jid_in_1to1 \
-                -command [mymethod OnShowJidIn1to1Setting]
-            ::tacky listen -tag $win setting <Changed> -key show_jid_in_1to1 \
+            ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
                 [mymethod OnShowJidIn1to1Setting]
         }
     }

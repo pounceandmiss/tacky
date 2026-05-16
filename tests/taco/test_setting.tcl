@@ -18,13 +18,13 @@ test setting-get-value {get returns stored value} \
     -body {
         tacky setting set -key theme -value dark
         tacky setting get -key theme
-    } -result {-key theme -value dark}
+    } -result {dark}
 
 test setting-get-missing {get returns empty string for missing key} \
     {*}$common \
     -body {
         tacky setting get -key nonexistent
-    } -result {-key nonexistent -value {}}
+    } -result {}
 
 test setting-get-command {get with -command calls back result} \
     {*}$common \
@@ -33,7 +33,7 @@ test setting-get-command {get with -command calls back result} \
         set ::_cb {}
         tacky setting get -key lang -command ::_test_cb
         set ::_cb
-    } -result {{-key lang -value en}}
+    } -result {en}
 
 test setting-get-missing-command {get with -command calls back empty string for missing key} \
     {*}$common \
@@ -41,7 +41,7 @@ test setting-get-missing-command {get with -command calls back empty string for 
         set ::_cb {}
         tacky setting get -key missing -command ::_test_cb
         set ::_cb
-    } -result {{-key missing -value {}}}
+    } -result {{}}
 
 # -- set -------------------------------------------------------------------
 
@@ -50,7 +50,7 @@ test setting-set-insert {set inserts a new key} \
     -body {
         tacky setting set -key color -value blue
         tacky setting get -key color
-    } -result {-key color -value blue}
+    } -result {blue}
 
 test setting-set-overwrite {set overwrites an existing key} \
     {*}$common \
@@ -58,7 +58,7 @@ test setting-set-overwrite {set overwrites an existing key} \
         tacky setting set -key color -value blue
         tacky setting set -key color -value red
         tacky setting get -key color
-    } -result {-key color -value red}
+    } -result {red}
 
 # -- list ------------------------------------------------------------------
 
@@ -97,3 +97,89 @@ test setting-event-changed {set emits setting <Changed> with correct args} \
         tacky setting set -key font -value mono
         set ::_events
     } -result {{-key font -value mono}}
+
+# -- pull ------------------------------------------------------------------
+
+test setting-pull-emits-current {pull emits <Changed> with current value} \
+    {*}$common \
+    -body {
+        tacky setting set -key theme -value dark
+        set ::_events {}
+        tacky listen setting <Changed> {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky setting pull -key theme
+        set ::_events
+    } -result {{-key theme -value dark}}
+
+test setting-pull-missing {pull emits <Changed> with empty value for absent key} \
+    {*}$common \
+    -body {
+        set ::_events {}
+        tacky listen setting <Changed> {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky setting pull -key nope
+        set ::_events
+    } -result {{-key nope -value {}}}
+
+# -- observe ---------------------------------------------------------------
+
+test setting-observe-initial {observe fires once with the current value on subscribe} \
+    {*}$common \
+    -body {
+        tacky setting set -key theme -value dark
+        set ::_events {}
+        tacky observe setting <Changed> -key theme {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        set ::_events
+    } -result {{-key theme -value dark}}
+
+test setting-observe-initial-missing {observe fires with empty value for unset key} \
+    {*}$common \
+    -body {
+        set ::_events {}
+        tacky observe setting <Changed> -key blank {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        set ::_events
+    } -result {{-key blank -value {}}}
+
+test setting-observe-subsequent {observe continues to fire on later set} \
+    {*}$common \
+    -body {
+        tacky setting set -key theme -value dark
+        set ::_events {}
+        tacky observe setting <Changed> -key theme {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky setting set -key theme -value light
+        set ::_events
+    } -result {{-key theme -value dark} {-key theme -value light}}
+
+test setting-observe-filter {observe -key filter ignores other keys} \
+    {*}$common \
+    -body {
+        tacky setting set -key theme -value dark
+        set ::_events {}
+        tacky observe setting <Changed> -key theme {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky setting set -key lang -value en
+        tacky setting set -key theme -value light
+        set ::_events
+    } -result {{-key theme -value dark} {-key theme -value light}}
+
+test setting-observe-unlisten {unlisten by tag stops further dispatches} \
+    {*}$common \
+    -body {
+        tacky setting set -key theme -value dark
+        set ::_events {}
+        tacky observe -tag mytag setting <Changed> -key theme {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky unlisten mytag
+        tacky setting set -key theme -value light
+        set ::_events
+    } -result {{-key theme -value dark}}
