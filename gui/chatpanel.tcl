@@ -22,6 +22,7 @@ snit::widget chatpanel {
     variable isMuc
     variable roomJid ""
     variable showParticipants 0
+    variable showJidIn1to1 0
     variable mucList ""
     variable findBar ""
     variable findMatches {}
@@ -61,6 +62,11 @@ snit::widget chatpanel {
                 -command [mymethod OnShowParticipantsSetting]
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
+        } else {
+            ::tacky setting get -key show_jid_in_1to1 \
+                -command [mymethod OnShowJidIn1to1Setting]
+            ::tacky listen -tag $win setting <Changed> -key show_jid_in_1to1 \
+                [mymethod OnShowJidIn1to1Setting]
         }
     }
 
@@ -76,6 +82,16 @@ snit::widget chatpanel {
             set showParticipants 1
             $self ShowParticipants
         }
+    }
+
+    method OnShowJidIn1to1Setting {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} { set val 0 }
+        set showJidIn1to1 [expr {!!$val}]
+    }
+
+    method ToggleShowJidIn1to1 {} {
+        ::tacky setting set -key show_jid_in_1to1 -value $showJidIn1to1
     }
 
     method Send {text} {
@@ -94,6 +110,11 @@ snit::widget chatpanel {
             -command [mymethod OpenSearch]
         if {$isMuc} {
             $self RebuildMucMenu
+        } else {
+            $mb.chat add separator
+            $mb.chat add checkbutton -label "Show JID Instead of Name" \
+                -variable [myvar showJidIn1to1] \
+                -command [mymethod ToggleShowJidIn1to1]
         }
         $mb add cascade -label "Chat" -menu $mb.chat
     }

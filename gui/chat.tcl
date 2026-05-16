@@ -57,6 +57,10 @@ snit::widgetadaptor chatview {
     # the author <Changed> listener.
     variable Names
 
+    # 1:1 only: when true, render bare JIDs instead of resolved names.
+    # Mirrors the global `show_jid_in_1to1` setting.
+    variable ShowJid 0
+
     constructor args {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
@@ -86,6 +90,12 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
         ::tacky author get -acc $options(-acc) -chat $options(-jid) \
             -command [mymethod OnAuthorSeed]
+        if {!$IsMuc} {
+            ::tacky setting get -key show_jid_in_1to1 \
+                -command [mymethod OnShowJidSetting]
+            ::tacky listen -tag $win setting <Changed> -key show_jid_in_1to1 \
+                [mymethod OnShowJidSetting]
+        }
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
@@ -100,7 +110,8 @@ snit::widgetadaptor chatview {
     method OnAuthorSeed {names} {
         set Names $names
         dict for {fromJid name} $names {
-            $hull author update $fromJid $name
+            set label [expr {$ShowJid ? $fromJid : $name}]
+            $hull author update $fromJid $label
         }
     }
 
@@ -108,7 +119,23 @@ snit::widgetadaptor chatview {
         set fromJid [dict get $ev -from]
         set name [dict get $ev -name]
         dict set Names $fromJid $name
-        $hull author update $fromJid $name
+        if {!$ShowJid} {
+            $hull author update $fromJid $name
+        }
+    }
+
+    # Live-toggle JID-vs-name rendering: repaints every existing author
+    # label using $Names as the source of truth.
+    method OnShowJidSetting {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} { set val 0 }
+        set val [expr {!!$val}]
+        if {$val == $ShowJid} return
+        set ShowJid $val
+        dict for {fromJid name} $Names {
+            set label [expr {$ShowJid ? $fromJid : $name}]
+            $hull author update $fromJid $label
+        }
     }
 
     method OnFirstConfigure {} {
@@ -339,7 +366,8 @@ snit::widgetadaptor chatview {
     }
 
     method EnrichMessage {storeDict} {
-        enrich_store_message $storeDict $Names
+        set names [expr {$ShowJid && !$IsMuc ? [dict create] : $Names}]
+        enrich_store_message $storeDict $names
     }
 
     method ProcessBatch {messages} {
