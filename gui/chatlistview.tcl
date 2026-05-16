@@ -38,10 +38,10 @@ snit::widget chatlistview {
             error "chatlistview requires -acc"
         }
 
-        ::tacky setting get -key show_presence_colors \
-            -tag $win -command [mymethod OnPresenceColorsSetting]
-        ::tacky setting get -key show_avatars \
-            -tag $win -command [mymethod OnShowAvatarsSetting]
+        ::tacky observe -tag $win setting <Changed> -key show_presence_colors \
+            [mymethod OnPresenceColorsSetting]
+        ::tacky observe -tag $win setting <Changed> -key show_avatars \
+            [mymethod OnShowAvatarsSetting]
 
         # Search entry
         install searchentry using ttk::entry $win.search \
@@ -167,10 +167,6 @@ snit::widget chatlistview {
             [mymethod OnRecentDrop]
         $t listen -tag $win chatlist <MucStatus> -acc $acc \
             [mymethod OnMucStatus]
-        $t listen -tag $win setting <Changed> -key show_presence_colors \
-            [mymethod OnPresenceColorsSetting]
-        $t listen -tag $win setting <Changed> -key show_avatars \
-            [mymethod OnShowAvatarsSetting]
 
         # Initial load
         $self Rebuild

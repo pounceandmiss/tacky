@@ -91,9 +91,7 @@ snit::widgetadaptor chatview {
         ::tacky author get -acc $options(-acc) -chat $options(-jid) \
             -command [mymethod OnAuthorSeed]
         if {!$IsMuc} {
-            ::tacky setting get -key show_jid_in_1to1 \
-                -command [mymethod OnShowJidSetting]
-            ::tacky listen -tag $win setting <Changed> -key show_jid_in_1to1 \
+            ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
                 [mymethod OnShowJidSetting]
         }
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
