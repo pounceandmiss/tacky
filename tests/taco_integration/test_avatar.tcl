@@ -10,9 +10,22 @@ namespace eval ::test::avatar_int {
     variable ROMEO "romeo@example.local"
     variable JULIET "juliet@example.local"
 
-    # 1x1 transparent PNG pixel (~68 bytes)
+    # 1x1 transparent PNG pixel (~68 bytes).
+    # publish runs the input through `magick - -resize 128x128> png:-`, which
+    # re-encodes the PNG even when no resize is needed, so the on-wire hash is
+    # over the magick-emitted bytes — not the original. Pre-resize here so the
+    # fixture matches what tacky will actually publish.
     variable SAMPLE_PNG_B64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-    variable SAMPLE_PNG_RAW [::base64::decode $SAMPLE_PNG_B64]
+    proc resizeLikePublish {rawData} {
+        set pipe [open |[list magick - -resize 128x128> png:-] r+]
+        chan configure $pipe -translation binary
+        puts -nonewline $pipe $rawData
+        chan close $pipe write
+        set out [chan read $pipe]
+        chan close $pipe
+        return $out
+    }
+    variable SAMPLE_PNG_RAW [resizeLikePublish [::base64::decode $SAMPLE_PNG_B64]]
     variable SAMPLE_PNG_HASH [::sha1::sha1 -hex $SAMPLE_PNG_RAW]
 
     # Helper: awaitEvent
