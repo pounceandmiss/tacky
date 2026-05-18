@@ -10,14 +10,13 @@ namespace eval ::test::avatar_int {
     variable ROMEO "romeo@example.local"
     variable JULIET "juliet@example.local"
 
-    # 1x1 transparent PNG pixel (~68 bytes).
-    # publish runs the input through `magick - -resize 128x128> png:-`, which
-    # re-encodes the PNG even when no resize is needed, so the on-wire hash is
-    # over the magick-emitted bytes — not the original. Pre-resize here so the
-    # fixture matches what tacky will actually publish.
+    # 1x1 transparent PNG pixel (~68 bytes). publish re-encodes through magick,
+    # so the on-wire hash is over magick's output, not the original bytes. Mirror
+    # publish's exact invocation here (including png:exclude-chunk=date,time,
+    # which makes magick's output deterministic) so the fixture hash matches.
     variable SAMPLE_PNG_B64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
     proc resizeLikePublish {rawData} {
-        set pipe [open |[list magick - -resize 128x128> png:-] r+]
+        set pipe [open |[list magick - -define png:exclude-chunk=date,time -resize 128x128> png:-] r+]
         chan configure $pipe -translation binary
         puts -nonewline $pipe $rawData
         chan close $pipe write

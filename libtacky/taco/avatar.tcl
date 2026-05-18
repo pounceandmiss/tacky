@@ -421,7 +421,11 @@ snit::type taco_avatar {
 
     method ResizeForPublish {rawData} {
         try {
-            set pipe [open |[list magick - -resize 128x128> png:-] r+]
+            # png:exclude-chunk=date,time strips the tIME chunk and the
+            # date:create/date:modify/date:timestamp tEXt chunks magick
+            # otherwise embeds, so identical input produces identical output
+            # bytes (and identical hash) regardless of when it runs.
+            set pipe [open |[list magick - -define png:exclude-chunk=date,time -resize 128x128> png:-] r+]
             chan configure $pipe -translation binary
             puts -nonewline $pipe $rawData
             chan close $pipe write
@@ -436,7 +440,7 @@ snit::type taco_avatar {
 
     method MakeThumb {rawData caller} {
         try {
-            set pipe [open |[list magick - -thumbnail 32x32 png:-] r+]
+            set pipe [open |[list magick - -define png:exclude-chunk=date,time -thumbnail 32x32 png:-] r+]
             chan configure $pipe -translation binary
             puts -nonewline $pipe $rawData
             chan close $pipe write

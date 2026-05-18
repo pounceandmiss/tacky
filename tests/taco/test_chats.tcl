@@ -28,8 +28,7 @@ proc chats_insert {chat_jid args} {
         raw_xml "" \
         server_status ""]
     set msg [dict merge $defaults [dict create chat_jid $chat_jid] $args]
-    c message messagestore region new r
-    c message messagestore store [list $msg] r
+    c message messagestore store [list $msg]
 }
 
 test chats-latest-ordered {latest returns JIDs ordered by most recent message} \
@@ -116,8 +115,7 @@ test chats-event-debounced {batch inserts produce one event per JID} \
                 raw_xml "" \
                 server_status ""]
         }
-        c message messagestore region new r
-        c message messagestore store $msgs r
+        c message messagestore store $msgs
         update idletasks
         llength $events
     } -result {1}

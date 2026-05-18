@@ -56,8 +56,7 @@ proc chatlist_chat_insert {chat_jid args} {
         raw_xml "" \
         server_status ""]
     set msg [dict merge $defaults [dict create chat_jid $chat_jid] $args]
-    c message messagestore region new r
-    c message messagestore store [list $msg] r
+    c message messagestore store [list $msg]
 }
 
 test chatlist-empty {empty DB returns empty sections} \

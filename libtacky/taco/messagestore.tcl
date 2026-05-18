@@ -1,83 +1,48 @@
 if 0 {
-    Contiguity is tracked via a `region` column on every message row.
-    Messages sharing a region are known contiguous (no gaps between them).
-    Different regions within the same chat_jid may have gaps.
+    Contiguity is implicit: two adjacent stored messages with no
+    sentinel between them are trusted to have no gap.
 
-    The store can't determine contiguity — only the caller knows, from
-    protocol semantics and connection state. The caller allocates regions
-    via `region new` and passes them to `store`.
+    chat_message holds two row kinds, discriminated by `kind`:
 
-    Outgoing messages (sent but not yet confirmed by server) are stored
-    with region = -1 (OUTGOING_REGION). They are never assigned a real
-    region until confirmed via MUC echo or MAM dedup.
+    - kind='message'  a real message (incoming, outgoing pending, or
+                      outgoing confirmed). server_id is set once the
+                      server has acknowledged it.
+    - kind='sentinel' a gap marker placed at moments of doubt
+                      (reconnect, initial chat open). chat_jid and
+                      timestamp are set; all other columns NULL.
 
-    Query structure (UNION):
+    The "contiguity citizen" predicate is uniform across all queries:
 
-    All region-scoped queries (get before, get after, get latest) use
-    UNION ALL with two arms:
-    - Real-region arm: scoped to the caller's region, with LIMIT
-    - Outgoing arm: all outgoing messages in range, no LIMIT
-    This ensures outgoing messages never bridge gaps between regions
-    and LIMIT only counts real-region messages.
+        kind='message' AND server_id != ''
 
-    get before / get after take a mandatory -region argument from the
-    caller (the GUI derives it from displayed messages). get latest
-    and get around resolve region internally (bootstrap methods).
+    Sentinels and pending outgoings (server_id='') both fail it and
+    are transparently skipped by neighbour lookups, cursor selection,
+    and dedup.
 
-    Region is included as a field in every returned message dict so
-    the caller can derive -region for pagination.
+    Sentinels are placed by `sentinel add $jid $direction $anchorTs`
+    and removed either explicitly (`sentinel remove` on RSM-complete,
+    `sentinel removeBetween` for the post-MAM sweep) or implicitly
+    when `store` proves overlap against pre-existing cache (the
+    batch's bracket span is swept).
 
-    Region merging via server_id overlap:
+    Pagination queries (`get before` / `get after` / `get latest`)
+    return `{messages bounded}`. `bounded=1` signals "a sentinel
+    truncated the result on the queried side; if you want more in
+    this direction, fall through to MAM."
 
-    `store` checks every message for a server_id/own_id duplicate
-    already in the DB. When a duplicate is found in a different region,
-    the batch proves overlap — the old region is merged into the caller's
-    region via UPDATE. The caller's region variable is passed by name
-    (upvar) so it stays current after merges.
-
-    `region bridge` is still needed when MAM finishes just short of the
-    live range — the last MAM page contained no server_id already in the
-    DB, so `store` can't merge on its own. The caller knows the two
-    ranges meet from protocol state (MAM said "complete") and calls
-    `region bridge` to merge the two regions.
-
-    Outgoing confirmation (pending → received):
-
-    When `store` finds a pending message by own_id (MUC echo),
-    it moves the message from outgoing region (-1) to the caller's
-    region and updates the timestamp to the server's authoritative
-    value. The caller emits a <Patch> with the moved message's old
-    and new timestamp.
-
-    SM ack only flips server_status — no region or timestamp change.
-
-    Concurrent catchup and live messages:
-
-    On reconnect, MAM catchup and live messages each get their own region.
-    Three outcomes:
-    1. MAM reaches a live message (server_id match) — `store` merges
-       regions automatically.
-    2. MAM reaches previously-stored old data — same mechanism.
-    3. MAM completes without overlap — caller calls `region bridge` to merge.
-
-    In all cases the caller's region variables are updated via upvar,
-    so subsequent inserts use the surviving region.
+    Outgoing messages stored with server_id="" show up in `get`
+    results (so the UI sees them) but fail the citizen check, so
+    they don't anchor sentinels or bound queries. On confirmation
+    (MUC echo or own MAM result) they gain a server_id and join
+    contiguity normally.
 }
 
 snit::type taco_messagestore {
     option -db -default ""
 
-    variable RegionCounter 0
-    # Sentinel region for outgoing messages. Floats across region
-    # boundaries — query methods include it alongside any real region.
-    variable OUTGOING_REGION -1
-
     constructor args {
         $self configurelist $args
         $self Migrate
-        set RegionCounter [lindex [$options(-db) eval {
-            SELECT COALESCE(MAX(region), 0) FROM chat_message
-        }] 0]
     }
 
     method Migrate {} {
@@ -85,7 +50,7 @@ snit::type taco_messagestore {
             CREATE TABLE IF NOT EXISTS chat_message(
                 timestamp      INTEGER NOT NULL,
                 chat_jid       TEXT NOT NULL,
-                from_jid       TEXT NOT NULL,
+                from_jid       TEXT,
                 -- Stanza @from resource for 1:1 chats (the sending
                 -- client tag — debug metadata, not identity). Empty
                 -- for MUC, where the resource is the nick and lives
@@ -97,12 +62,13 @@ snit::type taco_messagestore {
                 server_id      TEXT,
                 -- set only for outgoing messages; = <message id="...">
                 -- incoming messages have own_id=""
-                own_id      TEXT,
+                own_id         TEXT,
                 raw_xml        TEXT,
-                region         INTEGER NOT NULL,
+                -- 'message' (default) | 'sentinel'
+                kind           TEXT NOT NULL DEFAULT 'message',
                 -- NULL/empty = incoming (already received);
-                -- 'pending' = stored, awaiting server confirmation;
-                -- 'received' = server confirmed via echo or SM ack
+                -- 'pending'   = stored, awaiting server confirmation;
+                -- 'received'  = server confirmed via echo or SM ack
                 server_status  TEXT,
                 PRIMARY KEY(chat_jid, timestamp)
             );
@@ -110,34 +76,131 @@ snit::type taco_messagestore {
                 ON chat_message(chat_jid, server_id) WHERE server_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_own_id
                 ON chat_message(chat_jid, own_id) WHERE own_id != '';
-            CREATE INDEX IF NOT EXISTS idx_chat_message_region
-                ON chat_message(chat_jid, region, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_chat_message_sentinel
+                ON chat_message(chat_jid, timestamp) WHERE kind='sentinel';
         }
-        catch {
-            $options(-db) eval {
-                ALTER TABLE chat_message ADD COLUMN server_status TEXT
+    }
+
+    # --- Sentinels ------------------------------------------------------
+
+    # Insert a sentinel in the gap immediately $direction of $anchorTs.
+    # direction is `older` | `newer`. Enforces at-most-one-per-gap: if a
+    # sentinel already lies between $anchorTs and the next citizen in
+    # $direction (treating "no citizen on that side" as +/-inf), this is a
+    # no-op. Synthetic ts derived via BumpTs one step off the anchor.
+    method "sentinel add" {jid direction anchorTs} {
+        lassign [$self GapBounds $jid $direction $anchorTs] lo hi
+        set exists [$options(-db) onecolumn {
+            SELECT 1 FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp > $lo AND timestamp < $hi
+            LIMIT 1
+        }]
+        if {$exists ne ""} return
+        set step [expr {$direction eq "older" ? -1 : 1}]
+        set ts [$self BumpTs $jid [expr {$anchorTs + $step}] $step]
+        $options(-db) eval {
+            INSERT INTO chat_message(timestamp, chat_jid, kind)
+            VALUES($ts, $jid, 'sentinel')
+        }
+    }
+
+    # Remove any sentinel(s) in the gap immediately $direction of
+    # $anchorTs. Invariant says at most one; defensive plural costs the
+    # same as a range delete.
+    method "sentinel remove" {jid direction anchorTs} {
+        lassign [$self GapBounds $jid $direction $anchorTs] lo hi
+        $options(-db) eval {
+            DELETE FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp > $lo AND timestamp < $hi
+        }
+    }
+
+    # Internal: delete sentinels strictly between $loTs and $hiTs.
+    # Used by `store` overlap-proof and by post-MAM sweep in message.tcl.
+    method "sentinel removeBetween" {jid loTs hiTs} {
+        $options(-db) eval {
+            DELETE FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp > $loTs AND timestamp < $hiTs
+        }
+    }
+
+    # Tests-only: ordered list of sentinel timestamps.
+    method "sentinel list" {jid} {
+        set rows {}
+        $options(-db) eval {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+            ORDER BY timestamp ASC
+        } row {
+            lappend rows $row(timestamp)
+        }
+        return $rows
+    }
+
+    # Bounds of the gap immediately $direction of $anchorTs, inclusive
+    # of $anchorTs on the anchor side. Returns {lo hi} with sentinels
+    # found via `timestamp > lo AND timestamp < hi`.
+    method GapBounds {jid direction anchorTs} {
+        switch -- $direction {
+            older {
+                set bound [$options(-db) onecolumn {
+                    SELECT MAX(timestamp) FROM chat_message
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND server_id IS NOT NULL AND server_id != ''
+                      AND timestamp < $anchorTs
+                }]
+                set lo [expr {$bound eq "" ? -9223372036854775807 : $bound}]
+                set hi $anchorTs
+            }
+            newer {
+                set bound [$options(-db) onecolumn {
+                    SELECT MIN(timestamp) FROM chat_message
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND server_id IS NOT NULL AND server_id != ''
+                      AND timestamp > $anchorTs
+                }]
+                set lo $anchorTs
+                set hi [expr {$bound eq "" ? 9223372036854775807 : $bound}]
+            }
+            default {
+                error "direction must be older or newer, got: $direction"
             }
         }
+        return [list $lo $hi]
     }
 
-    # Allocate a fresh region token and store it in the caller's variable.
-    method "region new" {varName} {
-        upvar $varName v
-        set v [incr RegionCounter]
-    }
+    # --- Store ----------------------------------------------------------
 
-    # Insert messages into the DB under regionVar's region. Deduplicates
-    # by server_id/own_id (or content fallback), merges regions on
-    # overlap, and confirms pending messages on echo. Returns dict with
-    # `confirmed` (list of {own_id, timestamp}) and `inserted` (list
-    # of stored timestamps, which may differ from input due to BumpTs).
-    method store {messages regionVar} {
+    # Insert messages. Deduplicates by server_id/own_id (or content
+    # fallback). Pending outgoings matched by own_id are confirmed
+    # (server_id captured, timestamp adjusted to server's value).
+    # When the batch contains at least one real-overlap dup hit (a
+    # row that already had a server_id), the entire batch's bracket
+    # is swept of sentinels — RSM guarantees the batch is server-
+    # contiguous, so any sentinel inside the bracket marked a gap
+    # we've now proven empty.
+    # Returns dict with `confirmed` (list of {own_id, timestamp,
+    # newtimestamp}) and `inserted` (list of stored timestamps).
+    method store {messages} {
         if {[llength $messages] == 0} { return {} }
 
-        upvar $regionVar region
         set jid [dict get [lindex $messages 0] chat_jid]
 
-        set mergedRegions {}
+        # Bracket: input timestamps from the server tell us the
+        # contiguous range. BumpTs may shift stored ts by a microsecond
+        # on collision, but the input range is what RSM guarantees.
+        set batchMinTs ""
+        set batchMaxTs ""
+        foreach msg $messages {
+            set t [dict get $msg timestamp]
+            if {$batchMinTs eq "" || $t < $batchMinTs} { set batchMinTs $t }
+            if {$batchMaxTs eq "" || $t > $batchMaxTs} { set batchMaxTs $t }
+        }
+
+        set hadRealOverlap 0
         set confirmed {}
         set insertedTimestamps {}
         set prevTs -1
@@ -149,14 +212,12 @@ snit::type taco_messagestore {
 
                 set dup [$self IsDuplicate $jid $msg]
                 if {$dup ne ""} {
-                    set dupRegion [dict get $dup region]
-                    # Confirm pending messages on server echo.
-                    # Move from outgoing region to caller's region and
-                    # update timestamp to server's authoritative value.
-                    # Don't bulk-merge outgoing — the UPDATE below moves
-                    # only this message; adding -1 to mergedRegions would
-                    # drag ALL outgoing messages into liveRegion.
                     if {[dict get $dup server_status] eq "pending"} {
+                        # Pending outgoing confirmed by server echo or
+                        # MAM result. Move timestamp to server's value
+                        # and set server_id. Not an overlap proof —
+                        # the pending row was server-invisible until
+                        # now, so it didn't bound any sentinel.
                         set dupTs [dict get $dup timestamp]
                         set sid $m(server_id)
                         if {$m(timestamp) == $dupTs} {
@@ -167,7 +228,6 @@ snit::type taco_messagestore {
                         $options(-db) eval {
                             UPDATE chat_message
                             SET timestamp=$newTs,
-                                region=$region,
                                 server_status='received',
                                 server_id = CASE WHEN $sid != ''
                                     THEN $sid ELSE server_id END
@@ -176,12 +236,14 @@ snit::type taco_messagestore {
                         lappend confirmed [dict create \
                             own_id $m(own_id) timestamp $dupTs \
                             newtimestamp $newTs]
-                    } elseif {$dupRegion != $region} {
-                        dict set mergedRegions $dupRegion 1
+                    } else {
+                        # Real overlap: matched row already has a
+                        # server_id. The bracket sweep below proves
+                        # the gap empty.
+                        set hadRealOverlap 1
                     }
                     continue
                 }
-                # Skip past slots this batch already filled
                 set ts $m(timestamp)
                 if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }
                 set ts [$self BumpTs $jid $ts 1]
@@ -192,186 +254,140 @@ snit::type taco_messagestore {
                     ? $m(from_resource) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
-                        from_resource, body,
-                        server_id, own_id, raw_xml, region, server_status)
+                        from_resource, body, server_id, own_id, raw_xml,
+                        server_status)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
-                        $m(server_id), $m(own_id), $m(raw_xml), $region,
-                        $status)
+                        $m(server_id), $m(own_id), $m(raw_xml), $status)
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
             }
 
-            dict for {oldRegion _} $mergedRegions {
-                $options(-db) eval {
-                    UPDATE chat_message SET region = $region
-                    WHERE chat_jid = $jid AND region = $oldRegion
-                }
+            if {$hadRealOverlap} {
+                $self sentinel removeBetween $jid \
+                    $batchMinTs $batchMaxTs
             }
         }
-        return [dict create confirmed $confirmed inserted $insertedTimestamps]
+        return [dict create confirmed $confirmed \
+            inserted $insertedTimestamps]
     }
 
-    # Merge r2's region into r1's region for jid. Updates the caller's
-    # r2 variable to match r1. No-op if already the same region.
-    method "region bridge" {jid r1Var r2Var} {
-        upvar $r1Var r1
-        upvar $r2Var r2
-        if {$r1 == $r2} { return }
-        $options(-db) eval {
-            UPDATE chat_message SET region = $r1
-            WHERE chat_jid = $jid AND region = $r2
-        }
-        set r2 $r1
-    }
+    # --- Get ------------------------------------------------------------
 
-    # Return the outgoing region sentinel value.
-    method "region outgoing" {} { return $OUTGOING_REGION }
-
-    # Find the real region for a cursor position. If the message at ts
-    # is outgoing, find the nearest non-outgoing neighbor in the given
-    # direction (-backward or -forward). Returns "" if none found.
-    method "region resolve" {jid ts direction} {
-        set r [$options(-db) onecolumn {
-            SELECT region FROM chat_message
-            WHERE chat_jid=$jid AND timestamp=$ts
+    # Messages older than cursor. Truncates at the nearest older
+    # sentinel (cannot cross a gap). Returns {messages $list bounded $b}
+    # where bounded=1 iff a sentinel exists older than cursor and we
+    # didn't satisfy the limit (caller should fall through to MAM).
+    method "get before" {jid cursor {limit 50}} {
+        set sentTs [$options(-db) onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp < $cursor
         }]
-        if {$r eq ""} { return "" }
-        if {$r != $OUTGOING_REGION} { return $r }
-        switch $direction {
-            -backward {
-                return [$options(-db) onecolumn {
-                    SELECT region FROM chat_message
-                    WHERE chat_jid=$jid AND region != $OUTGOING_REGION
-                      AND timestamp <= $ts
-                    ORDER BY timestamp DESC LIMIT 1
-                }]
-            }
-            -forward {
-                return [$options(-db) onecolumn {
-                    SELECT region FROM chat_message
-                    WHERE chat_jid=$jid AND region != $OUTGOING_REGION
-                      AND timestamp >= $ts
-                    ORDER BY timestamp ASC LIMIT 1
-                }]
-            }
-        }
-    }
-
-
-
-    # Messages older than cursor, region-scoped via UNION.
-    # Real-region arm is limited; outgoing rides alongside unlimited.
-    # Returns message dicts in chronological order with region field.
-    method "get before" {jid cursor region {limit 50}} {
-        set reg $region
-        set out $OUTGOING_REGION
         set rows {}
-        if {$reg == $OUTGOING_REGION} {
+        if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                           own_id, raw_xml, server_status, region
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                           server_id, own_id, raw_xml, server_status
                     FROM chat_message
-                    WHERE chat_jid=$jid AND timestamp < $cursor
-                      AND region = $out
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND timestamp < $cursor
                     ORDER BY timestamp DESC
                     LIMIT $limit
                 ) ORDER BY timestamp ASC
             } row {
                 lappend rows [$self RowToDict [array get row]]
             }
-        } else {
-            $options(-db) eval {
-                SELECT * FROM (
-                    SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                               own_id, raw_xml, server_status, region
-                        FROM chat_message
-                        WHERE chat_jid=$jid AND timestamp < $cursor
-                          AND region = $reg
-                        ORDER BY timestamp DESC
-                        LIMIT $limit
-                    )
-                    UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                           own_id, raw_xml, server_status, region
-                    FROM chat_message
-                    WHERE chat_jid=$jid AND timestamp < $cursor
-                      AND region = $out
-                ) ORDER BY timestamp ASC
-            } row {
-                lappend rows [$self RowToDict [array get row]]
-            }
+            return [dict create messages $rows bounded 0]
         }
-        return $rows
+        $options(-db) eval {
+            SELECT * FROM (
+                SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                       server_id, own_id, raw_xml, server_status
+                FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
+                  AND timestamp < $cursor AND timestamp > $sentTs
+                ORDER BY timestamp DESC
+                LIMIT $limit
+            ) ORDER BY timestamp ASC
+        } row {
+            lappend rows [$self RowToDict [array get row]]
+        }
+        set bounded [expr {[llength $rows] < $limit}]
+        return [dict create messages $rows bounded $bounded]
     }
 
-    # Messages newer than cursor, region-scoped via UNION.
-    # Real-region arm is limited; outgoing rides alongside unlimited.
-    # Returns message dicts in chronological order with region field.
-    method "get after" {jid cursor region {limit 50}} {
-        set reg $region
-        set out $OUTGOING_REGION
+    # Symmetric to `get before`. Truncates at the nearest newer sentinel.
+    method "get after" {jid cursor {limit 50}} {
+        set sentTs [$options(-db) onecolumn {
+            SELECT MIN(timestamp) FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp > $cursor
+        }]
         set rows {}
-        if {$reg == $OUTGOING_REGION} {
+        if {$sentTs eq ""} {
             $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                       own_id, raw_xml, server_status, region
+                SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                       server_id, own_id, raw_xml, server_status
                 FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $cursor
-                  AND region = $out
+                WHERE chat_jid=$jid AND kind='message'
+                  AND timestamp > $cursor
                 ORDER BY timestamp ASC
                 LIMIT $limit
             } row {
                 lappend rows [$self RowToDict [array get row]]
             }
-        } else {
-            $options(-db) eval {
-                SELECT * FROM (
-                    SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                               own_id, raw_xml, server_status, region
-                        FROM chat_message
-                        WHERE chat_jid=$jid AND timestamp > $cursor
-                          AND region = $reg
-                        ORDER BY timestamp ASC
-                        LIMIT $limit
-                    )
-                    UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                           own_id, raw_xml, server_status, region
-                    FROM chat_message
-                    WHERE chat_jid=$jid AND timestamp > $cursor
-                      AND region = $out
-                ) ORDER BY timestamp ASC
-            } row {
-                lappend rows [$self RowToDict [array get row]]
-            }
+            return [dict create messages $rows bounded 0]
         }
-        return $rows
+        $options(-db) eval {
+            SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                   server_id, own_id, raw_xml, server_status
+            FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND timestamp > $cursor AND timestamp < $sentTs
+            ORDER BY timestamp ASC
+            LIMIT $limit
+        } row {
+            lappend rows [$self RowToDict [array get row]]
+        }
+        set bounded [expr {[llength $rows] < $limit}]
+        return [dict create messages $rows bounded $bounded]
     }
 
-    # Most recent messages from the latest non-outgoing region, plus
-    # any outgoing messages. Falls back to outgoing-only if no real
-    # regions exist. Region resolved internally (bootstrap method).
+    # Most recent messages, truncated so the result never spans a
+    # sentinel that sits between citizens. A sentinel sitting newer
+    # than every message (reconnect placement) does not truncate —
+    # the existing citizens are still the latest cluster — but it
+    # does flip bounded=1 to signal more might arrive via MAM.
     method "get latest" {jid {limit 50}} {
-        set maxTs [$options(-db) onecolumn {
+        set latestMsgTs [$options(-db) onecolumn {
             SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid
+            WHERE chat_jid=$jid AND kind='message'
         }]
-        if {$maxTs eq ""} { return {} }
-        set reg [$self region resolve $jid $maxTs -backward]
-        set out $OUTGOING_REGION
+        if {$latestMsgTs eq ""} {
+            return [dict create messages {} bounded 0]
+        }
+        # Truncation sentinel = latest sentinel strictly older than the
+        # latest message. A sentinel sitting newer than all messages
+        # never separates clusters, so it cannot truncate.
+        set truncTs [$options(-db) onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+              AND timestamp < $latestMsgTs
+        }]
+        set anySentinel [$options(-db) exists {
+            SELECT 1 FROM chat_message
+            WHERE chat_jid=$jid AND kind='sentinel'
+        }]
         set rows {}
-        if {$reg eq ""} {
-            # Only outgoing messages exist
+        if {$truncTs eq ""} {
             $options(-db) eval {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                           own_id, raw_xml, server_status, region
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                           server_id, own_id, raw_xml, server_status
                     FROM chat_message
-                    WHERE chat_jid=$jid AND region = $out
+                    WHERE chat_jid=$jid AND kind='message'
                     ORDER BY timestamp DESC
                     LIMIT $limit
                 ) ORDER BY timestamp ASC
@@ -381,29 +397,28 @@ snit::type taco_messagestore {
         } else {
             $options(-db) eval {
                 SELECT * FROM (
-                    SELECT * FROM (
-                        SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                               own_id, raw_xml, server_status, region
-                        FROM chat_message
-                        WHERE chat_jid=$jid AND region = $reg
-                        ORDER BY timestamp DESC
-                        LIMIT $limit
-                    )
-                    UNION ALL
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                           own_id, raw_xml, server_status, region
+                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                           server_id, own_id, raw_xml, server_status
                     FROM chat_message
-                    WHERE chat_jid=$jid AND region = $out
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND timestamp > $truncTs
+                    ORDER BY timestamp DESC
+                    LIMIT $limit
                 ) ORDER BY timestamp ASC
             } row {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        return $rows
+        # bounded if any sentinel exists and we didn't satisfy the
+        # limit — either a cluster-separating sentinel truncated us,
+        # or a future-edge sentinel signals more may arrive.
+        set bounded [expr {$anySentinel && [llength $rows] < $limit}]
+        return [dict create messages $rows bounded $bounded]
     }
 
     # Full-text search by LIKE match on body. Returns list of timestamps
-    # (newest first, capped at -limit).
+    # (newest first, capped at -limit). Sentinels have NULL body so
+    # they're naturally excluded.
     method search {jid query args} {
         array set opts {-limit 500}
         array set opts $args
@@ -412,7 +427,7 @@ snit::type taco_messagestore {
         set timestamps {}
         $options(-db) eval {
             SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid AND body LIKE $pattern
+            WHERE chat_jid=$jid AND kind='message' AND body LIKE $pattern
             ORDER BY timestamp DESC LIMIT $limit
         } row {
             lappend timestamps $row(timestamp)
@@ -421,37 +436,41 @@ snit::type taco_messagestore {
     }
 
     # Find the nearest message to timestamp and return context around
-    # it (limit/2 before + target + limit/2 after), region-scoped.
-    # Region resolved internally (bootstrap method).
-    # Returns dict: {messages $list anchor $nearestTs}.
+    # it (limit/2 before + target + limit/2 after). Each side is
+    # truncated independently at the nearest sentinel.
+    # Returns dict: {messages $list anchor $nearestTs
+    #                bounded_before $b bounded_after $b}.
     method "get around" {jid timestamp limit} {
         set nearestTs ""
         $options(-db) eval {
             SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid
+            WHERE chat_jid=$jid AND kind='message'
             ORDER BY ABS(timestamp - $timestamp) LIMIT 1
         } row {
             set nearestTs $row(timestamp)
         }
         if {$nearestTs eq ""} {
-            return {messages {} anchor ""}
+            return [dict create messages {} anchor "" \
+                bounded_before 0 bounded_after 0]
         }
-        set reg [$self region resolve $jid $nearestTs -backward]
-        if {$reg eq ""} { set reg $OUTGOING_REGION }
         set halfLimit [expr {$limit / 2}]
-        set before [$self get before $jid $nearestTs $reg $halfLimit]
-        set after [$self get after $jid $nearestTs $reg $halfLimit]
+        set before [$self get before $jid $nearestTs $halfLimit]
+        set after  [$self get after  $jid $nearestTs $halfLimit]
         set target {}
         $options(-db) eval {
-            SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                   own_id, raw_xml, server_status, region
+            SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                   server_id, own_id, raw_xml, server_status
             FROM chat_message
-            WHERE chat_jid=$jid AND timestamp=$nearestTs
+            WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
         } row {
             set target [list [$self RowToDict [array get row]]]
         }
-        return [list messages [concat $before $target $after] \
-            anchor $nearestTs]
+        return [dict create \
+            messages [concat [dict get $before messages] $target \
+                             [dict get $after messages]] \
+            anchor $nearestTs \
+            bounded_before [dict get $before bounded] \
+            bounded_after  [dict get $after  bounded]]
     }
 
     # Fetch rows by exact timestamps.
@@ -459,10 +478,10 @@ snit::type taco_messagestore {
         set rows {}
         foreach ts $timestamps {
             $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, from_resource, body, server_id,
-                       own_id, raw_xml, server_status, region
+                SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                       server_id, own_id, raw_xml, server_status
                 FROM chat_message
-                WHERE chat_jid=$jid AND timestamp=$ts
+                WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
             } row {
                 lappend rows [$self RowToDict [array get row]]
             }
@@ -501,30 +520,20 @@ snit::type taco_messagestore {
         messagestyling::enrich $row
     }
 
-    # Return the region of the nearest non-outgoing predecessor, or "".
-    method predecessorRegion {jid ts} {
-        return [$options(-db) onecolumn {
-            SELECT region FROM chat_message
-            WHERE chat_jid=$jid AND timestamp < $ts
-              AND region != $OUTGOING_REGION
-            ORDER BY timestamp DESC LIMIT 1
-        }]
-    }
-
     method IsDuplicate {jid msg} {
         set sid [dict get $msg server_id]
         set oid [dict get $msg own_id]
         set result ""
         if {$sid ne "" || $oid ne ""} {
             $options(-db) eval {
-                SELECT timestamp, region, server_status FROM chat_message
-                WHERE chat_jid=$jid
+                SELECT timestamp, server_status FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
                   AND ( ($sid != '' AND server_id=$sid)
                      OR ($oid != '' AND own_id=$oid) )
                 LIMIT 1
             } row {
                 set result [dict create timestamp $row(timestamp) \
-                    region $row(region) server_status $row(server_status)]
+                    server_status $row(server_status)]
             }
         } else {
             # Content-based fallback for messages without server_id/own_id
@@ -541,14 +550,14 @@ snit::type taco_messagestore {
             set tsBase [expr {$ts / 1000000 * 1000000}]
             set tsEnd  [expr {$tsBase + 999999}]
             $options(-db) eval {
-                SELECT timestamp, region, server_status FROM chat_message
-                WHERE chat_jid=$jid
+                SELECT timestamp, server_status FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
                   AND timestamp BETWEEN $tsBase AND $tsEnd
                   AND from_jid=$from AND body=$body
                 LIMIT 1
             } row {
                 set result [dict create timestamp $row(timestamp) \
-                    region $row(region) server_status $row(server_status)]
+                    server_status $row(server_status)]
             }
         }
         return $result

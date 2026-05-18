@@ -37,8 +37,7 @@ proc insert_msg {chatJid fromJid args} {
         from_resource "" body "hi" server_id "" own_id "" raw_xml "" \
         server_status ""]
     set msg [dict merge $defaults [dict create chat_jid $chatJid from_jid $fromJid] $args]
-    $::_client message messagestore region new r
-    $::_client message messagestore store [list $msg] r
+    $::_client message messagestore store [list $msg]
 }
 
 # -- 1:1 resolution -----------------------------------------------------------
