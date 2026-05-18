@@ -75,7 +75,7 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
 ### message
 
     tacky message send -acc $acc -chat $jid -body $text ?-command $cb?
-    tacky message history -acc $acc -chat $jid -limit 50 ?-before $id? ?-after $id? ?-region $r? ?-tag $tag? ?-command $cb?
+    tacky message history -acc $acc -chat $jid -limit 50 ?-before $ts? ?-after $ts? ?-tag $tag? ?-command $cb?
     tacky message goto -acc $acc -chat $jid -date $timestamp -source local|remote -limit 50 ?-tag $tag? ?-command $cb?
     tacky message cancel -acc $acc -tag $tag
     tacky message rawxml -acc $acc -chat $jid -timestamp $id ?-command $cb?
