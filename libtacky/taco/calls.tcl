@@ -30,8 +30,10 @@
 #   <- <message><ringing sid/></message> from full JID
 #     -> emit <Ringing> (informational; internal state stays proposed)
 #   <- <message><proceed sid/></message> from full JID
-#     -> state=proceeded, peer=full JID, create pc + sendrecv audio
-#        track, attach capturer+player, set-local-description ""
+#     -> state=proceeded, peer=full JID
+#     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
+#     -> create pc + sendrecv audio track, attach capturer+player,
+#        set-local-description ""
 #     -> on-local-description(offer)   -> send <jingle action=session-initiate>
 #     -> on-local-candidate * N        -> send <jingle action=transport-info>
 #   <- <jingle action=session-accept>  -> set-remote-description sdp answer
@@ -49,6 +51,7 @@
 #   accept
 #     -> state=proceeded, send <message><proceed sid/></message>
 #   <- <jingle action=session-initiate>
+#     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
 #     -> create pc, set-remote-description sdp offer
 #        (libdatachannel auto-negotiation generates + applies the answer
 #        internally — we do NOT call set-local-description here; see
@@ -106,7 +109,6 @@ snit::type taco_calls {
     typevariable MID            audio
     typevariable PAYLOAD_TYPE   111
     typevariable AUDIO_CHANNELS 2
-    typevariable ICE_SERVERS    {stun:stun.l.google.com:19302}
 
     variable client
     variable Calls           ;# sid -> dict (see file header)
@@ -289,9 +291,9 @@ snit::type taco_calls {
     # Create a fresh pc, hook callbacks, and (caller side) add the audio
     # track + attach media. Callee path uses CreatePc and then drives
     # set-remote-description; on-track attaches media.
-    method CreatePc {sid} {
+    method CreatePc {sid iceServers} {
         set pc [::rtc::pc::new \
-            -ice-servers $ICE_SERVERS]
+            -ice-servers $iceServers]
         set PcToSid($pc) $sid
         dict set Calls $sid pc $pc
         ::rtc::pc::on-local-description      $pc [mymethod OnLocalDescription]
@@ -623,17 +625,28 @@ snit::type taco_calls {
             $self Cleanup $sid
             return
         }
-        # We're the original caller: latch full JID, set up media,
-        # generate the offer.
+        # We're the original caller: latch full JID, then fetch the
+        # server's STUN/TURN list (XEP-0215). StartOutgoingMedia runs in
+        # the extdisco callback once the iceServers list is in hand.
         if {$state eq "proposed" && [dict get $call initiator]} {
             dict set Calls $sid peer $from
             dict set Calls $sid state proceeded
-            set pc [$self CreatePc $sid]
-            set track [::rtc::pc::add-track $pc [$self BuildAudioMediaDesc]]
-            $self AttachMedia $sid $track
-            # Empty type = libdatachannel infers offer (no remote desc set).
-            ::rtc::pc::set-local-description $pc ""
+            $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
         }
+    }
+
+    # Caller side: extdisco callback. Builds the pc with whatever ICE
+    # servers the server advertised (empty list = host candidates only),
+    # adds the sendrecv audio track, attaches media, and kicks off
+    # offer generation. A hangup arriving during the fetch can have
+    # removed this sid from Calls — bail in that case.
+    method StartOutgoingMedia {sid iceServers} {
+        if {![dict exists $Calls $sid]} return
+        set pc [$self CreatePc $sid $iceServers]
+        set track [::rtc::pc::add-track $pc [$self BuildAudioMediaDesc]]
+        $self AttachMedia $sid $track
+        # Empty type = libdatachannel infers offer (no remote desc set).
+        ::rtc::pc::set-local-description $pc ""
     }
 
     method HandleJmiReject {stanza sid from} {
@@ -732,8 +745,20 @@ snit::type taco_calls {
         jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
         dict set Calls $sid peer $from
         dict set Calls $sid state new
-        set pc [$self CreatePc $sid]
         $self AckIq $stanza
+        # Fetch ICE servers (XEP-0215) before standing up the pc.
+        # StartIncomingMedia drives the rest in the extdisco callback.
+        $client extdisco fetch \
+            -command [mymethod StartIncomingMedia $sid $sdp]
+    }
+
+    # Callee side: extdisco callback. Stands up the pc, applies the
+    # remote offer, and drains any transport-info that arrived while
+    # the fetch was outstanding. A hangup during the fetch can have
+    # removed this sid — bail then.
+    method StartIncomingMedia {sid sdp iceServers} {
+        if {![dict exists $Calls $sid]} return
+        set pc [$self CreatePc $sid $iceServers]
         # Apply the offer; on-track fires async to drive AttachMedia.
         # NOTE: do NOT call set-local-description here — libdatachannel's
         # auto-negotiation (config.disableAutoNegotiation = false by
