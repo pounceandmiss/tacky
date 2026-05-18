@@ -39,7 +39,9 @@ set -- "${args[@]+"${args[@]}"}"
 # ─── Callbacks ───────────────────────────────────────────────────────────────
 
 _check_ready() {
-  docker exec "${CONTAINER_NAME}" prosodyctl about >/dev/null 2>&1
+  docker exec "${CONTAINER_NAME}" prosodyctl about >/dev/null 2>&1 \
+    && (exec 3<>"/dev/tcp/127.0.0.1/${PORT_HOST}") 2>/dev/null \
+    && exec 3<&- 3>&-
 }
 
 _register_user() {

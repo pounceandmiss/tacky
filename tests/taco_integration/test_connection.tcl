@@ -64,7 +64,9 @@ namespace eval ::test::bareconn {
 
     test barebones-int-001 {Connect with automatic TLS} {*}$common -body {
         c connect $HOST $PORT
-        ::test::helpers::waitVar [namespace current]::ready
+        # First connect against a freshly-started prosody includes cold-cache
+        # TLS handshake setup; allow more than the default budget.
+        ::test::helpers::waitVar [namespace current]::ready 5000
         expr {[c state] eq "connected"}
     } -result 1
 
