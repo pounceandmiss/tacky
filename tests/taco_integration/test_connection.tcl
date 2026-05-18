@@ -50,36 +50,36 @@ namespace eval ::test::bareconn {
             variable HOST
             variable PORT
             reset
-            set conn [bareconn conn \
+            set conn [bareconn c \
                 -onready [namespace code onReady] \
                 -header-command [namespace code onHeader] \
                 -ondisconnect [namespace code onError] \
                 -onstanza [namespace code onStanza]]
         }
         -cleanup {
-            catch {conn close}
-            catch {conn destroy}
+            catch {c close}
+            catch {c destroy}
         }
     }
 
     test barebones-int-001 {Connect with automatic TLS} {*}$common -body {
-        conn connect $HOST $PORT
+        c connect $HOST $PORT
         ::test::helpers::waitVar [namespace current]::ready
-        expr {[conn state] eq "connected"}
+        expr {[c state] eq "connected"}
     } -result 1
 
     test barebones-int-002 {Receive stream header after connect} {*}$common -body {
-        conn connect $HOST $PORT
+        c connect $HOST $PORT
         ::test::helpers::waitVar [namespace current]::ready
-        conn write [::jab::header "" to $HOST]
+        c write [::jab::header "" to $HOST]
         ::test::helpers::waitVar [namespace current]::headerReceived
         dict exists $receivedHeader attrs from
     } -result 1
 
     test barebones-int-003 {Features include SASL mechanisms after TLS} {*}$common -body {
-        conn connect $HOST $PORT
+        c connect $HOST $PORT
         ::test::helpers::waitVar [namespace current]::ready
-        conn write [::jab::header "" to $HOST]
+        c write [::jab::header "" to $HOST]
         ::test::helpers::waitVar [namespace current]::headerReceived
         ::test::helpers::waitVar [namespace current]::stanzas
         set features [lindex $stanzas 0]
@@ -88,19 +88,19 @@ namespace eval ::test::bareconn {
 
     test barebones-int-004 {Write buffering before connect} {*}$common -body {
         # Write before connecting - should buffer
-        conn write [::jab::header "" to $HOST]
-        conn connect $HOST $PORT
+        c write [::jab::header "" to $HOST]
+        c connect $HOST $PORT
         ::test::helpers::waitVar [namespace current]::ready
         ::test::helpers::waitVar [namespace current]::headerReceived
         dict exists $receivedHeader attrs from
     } -result 1
 
     test barebones-int-005 {Connect while already connected is a no-op} {*}$common -body {
-        conn connect $HOST $PORT
+        c connect $HOST $PORT
         ::test::helpers::waitVar [namespace current]::ready
         # Second connect should silently return
-        conn connect $HOST $PORT
-        expr {[conn state] eq "connected"}
+        c connect $HOST $PORT
+        expr {[c state] eq "connected"}
     } -result 1
 }
 
@@ -149,7 +149,7 @@ namespace eval ::test::conn {
             variable USER
             variable PASS
             reset
-            set conn [conn conn \
+            set conn [conn c \
                 -host $HOST \
                 -port $PORT \
                 -username $USER \
@@ -159,28 +159,28 @@ namespace eval ::test::conn {
                 -onautherror  [namespace code {onError auth}]]
         }
         -cleanup {
-            catch {conn close}
-            catch {conn destroy}
+            catch {c close}
+            catch {c destroy}
         }
     }
 
     test authorized-int-001 {Connect and authenticate} {*}$common -body {
-        conn connect
+        c connect
         vwait [namespace current]::done
-        expr {$ready && [conn isReady]}
+        expr {$ready && [c isReady]}
     } -result 1
 
     test authorized-int-002 {Gets bound JID after connect} {*}$common -body {
-        conn connect
+        c connect
         vwait [namespace current]::done
-        set jid [conn cget -bound-jid]
+        set jid [c cget -bound-jid]
         expr {[string match "*@$HOST*" $jid]}
     } -result 1
 
     test authorized-int-003 {SM is enabled after connect} {*}$common -body {
-        conn connect
+        c connect
         vwait [namespace current]::done
-        set smInfo [[conn sm] getInfo]
+        set smInfo [[c sm] getInfo]
         # SM should be in "running" state (either active or passthrough)
         expr {[dict get $smInfo state] eq "running"}
     } -result 1
@@ -189,7 +189,7 @@ namespace eval ::test::conn {
         variable HOST
         variable PORT
         reset
-        set conn [conn conn \
+        set conn [conn c \
             -host $HOST \
             -port $PORT \
             -username "baduser" \
@@ -198,20 +198,20 @@ namespace eval ::test::conn {
             -ondisconnect [namespace code {onError transport}] \
             -onautherror  [namespace code {onError auth}]]
     } -cleanup {
-        catch {conn close}
-        catch {conn destroy}
+        catch {c close}
+        catch {c destroy}
     } -body {
-        conn connect
+        c connect
         vwait [namespace current]::done
         expr {$errorMsg ne "" && !$ready}
     } -result 1
 
     test authorized-int-005 {Write buffering before ready} {*}$common -body {
         # Queue a presence stanza before connecting
-        conn write [j presence]
-        conn connect
+        c write [j presence]
+        c connect
         vwait [namespace current]::done
         # If we got here without error, buffered write was sent
-        expr {$ready && [conn isReady]}
+        expr {$ready && [c isReady]}
     } -result 1
 }

@@ -74,6 +74,30 @@
 #     → muc.OnGroupchatMessage
 #       → message.ingestLive (same path as above)
 #
+# === Sentinels ===
+#
+#   Sentinels mark "messages may exist here that we haven't fetched."
+#   They're placed at moments of doubt:
+#
+#   - OnReady (reconnect): a `newer` sentinel after each chat's newest
+#     pre-disconnect citizen, bracketing any history that arrived
+#     while we were offline.
+#   - OnFetch (MAM `complete=false`): a sentinel at the far edge of
+#     the MAM response in the queried direction, signalling "more
+#     server-side history exists past this point."
+#
+#   Sentinels are removed when their gap is proven empty:
+#
+#   - `store` overlap: a batch whose dups against pre-existing cache
+#     prove the batch's bracket span has no gap — `store` sweeps any
+#     sentinels in that span automatically.
+#   - OnFetch sweep: after MAM stores a non-empty page, sweep any
+#     sentinels strictly between the cursor and the batch's far edge
+#     (RSM guarantees that range is server-contiguous).
+#   - OnFetch RSM-complete: if the fetch was bounded by a sentinel on
+#     the queried side and the server returns `complete=true`, the
+#     bounding sentinel clears (direction proven exhausted).
+#
 # === Retry on reconnect ===
 #
 #   message.OnReady
@@ -101,7 +125,6 @@ snit::type taco_message {
 
     variable client
     variable PendingRetry
-    variable liveRegion ""
     variable ActiveTags
 
     constructor {args} {
@@ -123,8 +146,34 @@ snit::type taco_message {
     }
 
     method OnReady {args} {
+        $self PlaceReconnectSentinels
         $self DoCatchup
         $self RetryPending
+    }
+
+    # Bracket any history that arrived during the disconnect window:
+    # a `newer` sentinel after each chat's newest citizen. Catchup may
+    # then sweep these via store overlap; otherwise they remain and
+    # bound future pagination.
+    method PlaceReconnectSentinels {} {
+        set chatJids {}
+        $client db eval {
+            SELECT DISTINCT chat_jid FROM chat_message
+            WHERE kind='message' AND server_id IS NOT NULL
+              AND server_id != ''
+        } row {
+            lappend chatJids $row(chat_jid)
+        }
+        foreach jid $chatJids {
+            set newestTs [$client db onecolumn {
+                SELECT MAX(timestamp) FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
+                  AND server_id IS NOT NULL AND server_id != ''
+            }]
+            if {$newestTs ne ""} {
+                $messagestore sentinel add $jid newer $newestTs
+            }
+        }
     }
 
     method DoCatchup {} {
@@ -132,6 +181,14 @@ snit::type taco_message {
             -command [mymethod OnCatchup]
     }
 
+    # Per-message walk: each catchup arrival fires <Received> (or
+    # <Patch> for confirmations) individually so the GUI's AtTail
+    # gate applies uniformly. Per-chat bracket tracking lets us
+    # replicate the batch-level overlap sweep that single-call
+    # `store` would do: if any one of this chat's catchup messages
+    # dedups against pre-existing cache, the entire bracket span
+    # is server-contiguous (RSM) and any sentinels in that span
+    # are proven false positives.
     method OnCatchup {mamResult} {
         if {[dict exists $mamResult error]} {
             $client emit message <CatchupDone> -count 0
@@ -139,15 +196,20 @@ snit::type taco_message {
         }
 
         set myBareJid [jid bare [$client cget -jid]]
-        set groups [dict create]
+        set totalCount 0
+        # Per-chat: min/max input timestamps, oldest, and whether any
+        # real overlap (dup against an existing citizen) was seen.
+        set perChatMin     [dict create]
+        set perChatMax     [dict create]
+        set perChatOverlap [dict create]
 
         foreach resultNode [dict get $mamResult messages] {
             set fwdNode [lindex [xsearch $resultNode forwarded \
                                     -ns urn:xmpp:forward:0] 0]
             set msgNode [$client ensureTo [lindex [xsearch $fwdNode message] 0]]
 
-        set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
-        set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
+            set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
+            set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
 
             if {[string equal -nocase $fromBare $myBareJid]} {
                 set chatJid $toBare
@@ -158,27 +220,62 @@ snit::type taco_message {
             set msg [$self ParseResultNode $resultNode $chatJid]
             if {[dict get $msg body] eq ""} continue
 
-            dict lappend groups $chatJid $msg
+            set msgTs [dict get $msg timestamp]
+            if {![dict exists $perChatMin $chatJid]
+                || $msgTs < [dict get $perChatMin $chatJid]} {
+                dict set perChatMin $chatJid $msgTs
+            }
+            if {![dict exists $perChatMax $chatJid]
+                || $msgTs > [dict get $perChatMax $chatJid]} {
+                dict set perChatMax $chatJid $msgTs
+            }
+
+            set result [$messagestore store [list $msg]]
+            set confirmed [dict get $result confirmed]
+            set inserted  [dict get $result inserted]
+
+            if {[llength $confirmed] > 0} {
+                $self HandleConfirmation $chatJid $confirmed
+                # confirmed = pending->received echo; not an overlap proof
+            } elseif {[llength $inserted] > 0} {
+                set dbMsg [lindex [$messagestore get ids \
+                    $chatJid $inserted] 0]
+                $client emit message <Received> -jid $chatJid \
+                    -message $dbMsg
+                incr totalCount
+            } else {
+                # No insertion, no confirmation: IsDuplicate hit on a
+                # citizen (real overlap).
+                dict set perChatOverlap $chatJid 1
+            }
         }
 
-        $messagestore region new catchupRegion
-        set totalCount 0
-
-        dict for {chatJid messages} $groups {
-            $messagestore store $messages catchupRegion
-            incr totalCount [llength $messages]
+        # Per-chat sweep over the catchup span if any overlap occurred.
+        dict for {jid _} $perChatOverlap {
+            $messagestore sentinel removeBetween $jid \
+                [dict get $perChatMin $jid] \
+                [dict get $perChatMax $jid]
         }
 
-        set liveRegion $catchupRegion
+        # Place older-edge sentinel for any chat in this catchup if the
+        # global MAM query reports more older history. For chats with
+        # an existing covering sentinel (PlaceReconnectSentinels), the
+        # dedup invariant makes the add a no-op.
+        if {![dict get $mamResult complete]} {
+            dict for {jid minTs} $perChatMin {
+                $messagestore sentinel add $jid older $minTs
+            }
+        }
+
         $client emit message <CatchupDone> -count $totalCount
     }
 
     method OnDisconnect {args} {
         array unset PendingRetry
-        $messagestore region new liveRegion
     }
 
-    # Called on message stanzas that haven't been intercepted by other modules. These are supposed to be 1-1 messages
+    # Called on message stanzas that haven't been intercepted by other
+    # modules. These are supposed to be 1-1 messages.
     method OnMessage {stanza} {
         set fromBare [jid norm [jid bare [xsearch $stanza -get @from]]]
         set myBare [jid bare [$client cget -jid]]
@@ -208,17 +305,12 @@ snit::type taco_message {
             lappend parseArgs -own_id [xsearch $stanza -get @id]
         }
         set msg [$self ParseMessage $stanza {*}$parseArgs]
-        set freshRegion [expr {$liveRegion eq ""}]
-        if {$freshRegion} {
-            $messagestore region new liveRegion
-        }
-        set result [$messagestore store [list $msg] liveRegion]
+        set result [$messagestore store [list $msg]]
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
             $self HandleConfirmation $chatJid $confirmed
         } else {
-            $self HandleInsertion $chatJid \
-                [dict get $result inserted] $freshRegion
+            $self HandleInsertion $chatJid [dict get $result inserted]
         }
     }
 
@@ -226,7 +318,7 @@ snit::type taco_message {
     # flipped server_status pending → received and captured server_id.
     # Emit <Patch> so the GUI updates the checkmark; if the row's
     # timestamp moved (server stamp differs from our own_id), include
-    # newtimestamp + region so the GUI can rekey the displayed row.
+    # newtimestamp so the GUI can rekey the displayed row.
     method HandleConfirmation {chatJid confirmed} {
         foreach c $confirmed {
             set oldTs [dict get $c timestamp]
@@ -234,8 +326,7 @@ snit::type taco_message {
             if {$oldTs != $newTs} {
                 set patchMessages [list [dict create \
                     timestamp $oldTs newtimestamp $newTs \
-                    server_status received \
-                    region $liveRegion]]
+                    server_status received]]
             } else {
                 set patchMessages [list [dict create \
                     timestamp $oldTs server_status received]]
@@ -245,21 +336,8 @@ snit::type taco_message {
         }
     }
 
-    # Fresh incoming row. On the first-ever liveRegion, bridge into
-    # the existing history region so region-scoped queries see one
-    # contiguous region. After disconnect liveRegion is pre-allocated,
-    # so freshRegion is false and we don't bridge (gap).
-    method HandleInsertion {chatJid inserted freshRegion} {
+    method HandleInsertion {chatJid inserted} {
         if {[llength $inserted] == 0} return
-        set newTs [lindex $inserted 0]
-        if {$freshRegion} {
-            set predRegion [$messagestore predecessorRegion \
-                $chatJid $newTs]
-            if {$predRegion ne "" && $predRegion != $liveRegion} {
-                $messagestore region bridge \
-                    $chatJid predRegion liveRegion
-            }
-        }
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <Received> -jid $chatJid -message $dbMsg
     }
@@ -313,8 +391,7 @@ snit::type taco_message {
             raw_xml [jwrite $stanza] \
             server_status pending]
 
-        set outgoing [$messagestore region outgoing]
-        set result [$messagestore store [list $msg] outgoing]
+        set result [$messagestore store [list $msg]]
         set inserted [dict get $result inserted]
         set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
 
@@ -348,7 +425,7 @@ snit::type taco_message {
         set pending {}
         $client db eval {
             SELECT chat_jid, body, own_id FROM chat_message
-            WHERE server_status='pending'
+            WHERE kind='message' AND server_status='pending'
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
@@ -419,34 +496,26 @@ snit::type taco_message {
     # Always async — calls -command with result list.
     # -tag: if given, the callback can be cancelled via `cancel -tag $tag`.
     #
-    # Local-first: tries the local store before the server.
-    # messagestore get latest/before/after are region-scoped, so they
-    # only return messages from the same contiguous region as the cursor.
-    # When the region is exhausted (local returns empty) and the chat
-    # isn't fully synced, a MAM fetch kicks in to get the next batch
-    # from the server.
+    # Local-first: tries the local store before the server. messagestore
+    # get methods truncate at sentinels and signal `bounded=1` when a
+    # sentinel forced truncation and the limit wasn't satisfied; the
+    # MAM fill kicks in to fetch what's on the far side of the gap.
 
     # Shared local-store query: dispatches to get before/after/latest.
-    method GetLocal {chatJid before after limit region} {
+    # Returns dict {messages bounded} (forwarded from messagestore.get).
+    method GetLocal {chatJid before after limit} {
         if {$before ne ""} {
-            if {$region eq ""} {
-                set region [$messagestore region resolve $chatJid $before -backward]
-                if {$region eq ""} { return {} }
-            }
-            return [$messagestore get before $chatJid $before $region $limit]
+            return [$messagestore get before $chatJid $before $limit]
         } elseif {$after ne ""} {
-            if {$region eq ""} {
-                set region [$messagestore region resolve $chatJid $after -forward]
-                if {$region eq ""} { return {} }
-            }
-            return [$messagestore get after $chatJid $after $region $limit]
+            return [$messagestore get after $chatJid $after $limit]
         } else {
             return [$messagestore get latest $chatJid $limit]
         }
     }
 
     method history {args} {
-        set defaults [dict create -before "" -after "" -limit 50 -command "" -tag "" -region ""]
+        set defaults [dict create -before "" -after "" -limit 50 \
+            -command "" -tag ""]
         set opts [dict merge $defaults $args]
 
         set chatJid [dict get $opts -chat]
@@ -455,35 +524,40 @@ snit::type taco_message {
         set before [dict get $opts -before]
         set after [dict get $opts -after]
         set tag [dict get $opts -tag]
-        set region [dict get $opts -region]
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
         }
 
-        # Try local store first
-        set local [$self GetLocal $chatJid $before $after $limit $region]
+        set local [$self GetLocal $chatJid $before $after $limit]
+        set localMessages [dict get $local messages]
+        set bounded [dict get $local bounded]
+        set hasCursor [expr {$before ne "" || $after ne ""}]
 
-        if {[llength $local] > 0} {
-            {*}$callback $local
+        # Return local immediately when it satisfies the request. Trigger
+        # MAM only when there's a cursor to anchor the fill — initial
+        # loads with bounded local data show what they have; the user
+        # scrolls into the sentinel later to trigger fill.
+        if {[llength $localMessages] >= $limit
+            || ([llength $localMessages] > 0
+                && (!$bounded || !$hasCursor))} {
+            {*}$callback $localMessages
             return
         }
 
-        # For -after queries, skip MAM when cursor is at or past the
-        # latest stored message — there's nothing newer in the archive.
-        if {$after ne ""} {
+        # For -after queries with no sentinel ahead, skip MAM when
+        # cursor is at or past the latest stored message — there's
+        # nothing newer in the archive.
+        if {$after ne "" && !$bounded} {
             set latestTs [$client db onecolumn {
                 SELECT MAX(timestamp) FROM chat_message
-                WHERE chat_jid=$chatJid
+                WHERE chat_jid=$chatJid AND kind='message'
             }]
             if {$latestTs eq "" || $after >= $latestTs} {
-                {*}$callback $local
+                {*}$callback $localMessages
                 return
             }
         }
-
-        # No local data and not synced — query the server
-        $messagestore region new fetchRegion
 
         set mamArgs [list -max $limit]
         set cursorSid ""
@@ -491,7 +565,8 @@ snit::type taco_message {
             # Try server_id at cursor for RSM pagination; time-based fallback
             set cursorSid [$client db onecolumn {
                 SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$before AND server_id != ''
+                WHERE chat_jid=$chatJid AND timestamp=$before
+                  AND server_id != ''
             }]
             if {$cursorSid ne ""} {
                 lappend mamArgs -before $cursorSid
@@ -501,7 +576,8 @@ snit::type taco_message {
         } elseif {$after ne ""} {
             set cursorSid [$client db onecolumn {
                 SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$after AND server_id != ''
+                WHERE chat_jid=$chatJid AND timestamp=$after
+                  AND server_id != ''
             }]
             if {$cursorSid ne ""} {
                 lappend mamArgs -after $cursorSid
@@ -509,27 +585,33 @@ snit::type taco_message {
                 lappend mamArgs -start [FormatTimestampISO $after]
             }
         } else {
-            # Cursor-based: page backwards from earliest known server_id
+            # Cursor-based: page backwards from earliest known citizen
             set cursorSid [$client db onecolumn {
                 SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND server_id != ''
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND server_id != ''
                 ORDER BY timestamp ASC LIMIT 1
             }]
             if {$cursorSid ne ""} {
                 lappend mamArgs -before $cursorSid
             }
         }
-        lappend mamArgs -command [mymethod OnFetch $chatJid $cursorSid \
-                                      $before $after $limit $callback $tag \
-                                      $fetchRegion]
+
+        # Direction is "older" for -before / initial, "newer" for -after.
+        set direction [expr {$after ne "" ? "newer" : "older"}]
+
+        lappend mamArgs -command [mymethod OnFetch $chatJid \
+            $before $after $limit $callback $tag $direction $bounded]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnFetch {chatJid cursorSid before after limit callback tag fetchRegion mamResult} {
+    method OnFetch {chatJid before after limit callback tag direction \
+                    wasBounded mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-            {*}$callback [$self GetLocal $chatJid $before $after $limit ""]
+            set local [$self GetLocal $chatJid $before $after $limit]
+            {*}$callback [dict get $local messages]
             return
         }
 
@@ -541,38 +623,85 @@ snit::type taco_message {
 
         # Store the fetched batch (even if cancelled — data is still useful)
         if {[llength $messages] > 0} {
-            $messagestore store $messages fetchRegion
+            $messagestore store $messages
         }
-
-        # Bridge fetch region into the local region it reached.
-        if {$cursorSid ne ""} {
-            set anchorRegion [$client db onecolumn {
-                SELECT region FROM chat_message
-                WHERE chat_jid=$chatJid AND server_id=$cursorSid
-            }]
-        } elseif {$before ne ""} {
-            set anchorRegion [$client db onecolumn {
-                SELECT region FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$before
-            }]
-        } elseif {$after ne ""} {
-            set anchorRegion [$client db onecolumn {
-                SELECT region FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$after
-            }]
-        } else {
-            set anchorRegion ""
-        }
-        if {$anchorRegion ne "" && $anchorRegion != $fetchRegion} {
-            $messagestore region bridge $chatJid anchorRegion fetchRegion
-        }
+        # Sentinel ops apply for empty batches too — particularly the
+        # complete=true bounding-sentinel removal, which signals the
+        # server-side archive is exhausted in this direction.
+        $self ApplyFetchSentinelOps $chatJid $messages \
+            $direction $before $after $wasBounded \
+            [dict get $mamResult complete]
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
-        # Re-query local: use bridged region for the re-query
-        set reRegion $fetchRegion
-        if {$anchorRegion ne ""} { set reRegion $anchorRegion }
-        {*}$callback [$self GetLocal $chatJid $before $after $limit $reRegion]
+        set local [$self GetLocal $chatJid $before $after $limit]
+        {*}$callback [dict get $local messages]
+    }
+
+    # Sentinel ops after a non-empty MAM page lands:
+    #   1. Sweep: any sentinels strictly between cursor and batch
+    #      far-edge. RSM guarantees that range is contiguous, so any
+    #      sentinel there was a false positive (the sentinel the user
+    #      paginated past, or stale boundary sentinels).
+    #   2. Place: if complete=false, drop a sentinel at the batch's
+    #      far edge in the queried direction. The synthetic sentinel
+    #      ts is one µs past the far-edge message (via BumpTs), so the
+    #      sweep above doesn't touch it.
+    #   3. Remove bounding sentinel on complete=true: if local was
+    #      bounded by a sentinel on the queried side and the server
+    #      confirms exhaustion, the bounding sentinel can clear.
+    method ApplyFetchSentinelOps {chatJid messages direction \
+                                  before after wasBounded complete} {
+        # Cursor for sweep: the existing cursor message timestamp.
+        # If no cursor (initial open), sweep span is open-ended on the
+        # far side — no sweep applies.
+        set cursorTs ""
+        if {$direction eq "older"} {
+            if {$before ne ""} { set cursorTs $before }
+        } else {
+            if {$after ne ""} { set cursorTs $after }
+        }
+
+        set hasBatch [expr {[llength $messages] > 0}]
+        if {$hasBatch} {
+            set tsList {}
+            foreach m $messages {
+                lappend tsList [dict get $m timestamp]
+            }
+            set oldestTs [tcl::mathfunc::min {*}$tsList]
+            set newestTs [tcl::mathfunc::max {*}$tsList]
+        }
+
+        # 1. Sweep: only meaningful with a non-empty batch (RSM
+        # contiguity guarantee applies to the returned range).
+        if {$hasBatch && $cursorTs ne ""} {
+            if {$direction eq "older"} {
+                $messagestore sentinel removeBetween $chatJid \
+                    $oldestTs $cursorTs
+            } else {
+                $messagestore sentinel removeBetween $chatJid \
+                    $cursorTs $newestTs
+            }
+        }
+
+        # 2. Place far-edge sentinel on complete=false (only if we got
+        # a batch to anchor against; an empty batch with complete=false
+        # is degenerate but doesn't tell us where to place).
+        if {$hasBatch && !$complete} {
+            if {$direction eq "older"} {
+                $messagestore sentinel add $chatJid older $oldestTs
+            } else {
+                $messagestore sentinel add $chatJid newer $newestTs
+            }
+        }
+
+        # 3. Remove bounding sentinel on complete=true. Applies even
+        # when the batch was empty — the server has confirmed there's
+        # nothing in this direction past the cursor, so the bounding
+        # sentinel is proven false.
+        if {$complete && $wasBounded && $cursorTs ne ""} {
+            $messagestore sentinel remove $chatJid $direction $cursorTs
+        }
     }
 
     method cancel {args} {
@@ -607,14 +736,12 @@ snit::type taco_message {
         }
 
         # remote: fetch from server first, then get around
-        $messagestore region new fetchRegion
         $client mam queryChat $chatJid \
             -start [FormatTimestampISO $date] -max $limit \
-            -command [mymethod OnGoto $chatJid $date $limit $callback \
-                          $tag $fetchRegion]
+            -command [mymethod OnGoto $chatJid $date $limit $callback $tag]
     }
 
-    method OnGoto {chatJid date limit callback tag fetchRegion mamResult} {
+    method OnGoto {chatJid date limit callback tag mamResult} {
         if {[dict exists $mamResult error]} {
             # Fall back to local
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -629,7 +756,7 @@ snit::type taco_message {
         }
 
         if {[llength $messages] > 0} {
-            $messagestore store $messages fetchRegion
+            $messagestore store $messages
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -642,7 +769,11 @@ snit::type taco_message {
     #        ?-tag $tag? -command $cb
     #
     # Full text search via MAM. Always server-side.
-    # Each result stored in its own region (sparse islands).
+    # Results are stored to the local cache and wrapped with sentinels
+    # on each side — a hit is an isolated island whose surroundings we
+    # know nothing about, so future pagination across it must fall
+    # through to MAM. `sentinel add` is a no-op when the target gap is
+    # already sentineled, so repeated searches don't accumulate.
     # Callback receives dict: messages, complete, last
     method search {args} {
         array set opts {-limit 20 -tag "" -field ""}
@@ -682,10 +813,12 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set msg [$self ParseResultNode $resultNode $chatJid]
             if {[dict get $msg body] eq ""} continue
-            $messagestore region new r
-            set result [$messagestore store [list $msg] r]
+            set result [$messagestore store [list $msg]]
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
+                set storedTs [lindex $ins 0]
+                $messagestore sentinel add $chatJid older $storedTs
+                $messagestore sentinel add $chatJid newer $storedTs
                 lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]
             }
         }

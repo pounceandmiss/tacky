@@ -359,43 +359,18 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
             [expr {[lindex $after 3] == $tsC}]
     } -result {4 4 1 1 1 1}
 
-test chatview-outgoing-region-is-negative {outgoing-only chat has region -1} \
-    {*}$cv_common \
-    -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "out"
-        wait
-        list old=[.cv messages regionForDirection old] \
-            new=[.cv messages regionForDirection new]
-    } -result {old=-1 new=-1}
-
-test chatview-mixed-region-derivation {region derivation skips outgoing messages} \
-    {*}$cv_common \
-    -body {
-        cv_feed "incoming" srv1
-        wait
-        # With only incoming, region must be real (not -1)
-        set regionBefore [.cv messages regionForDirection old]
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "out"
-        wait
-        # After adding outgoing, region should still resolve to the real one
-        set regionAfter [.cv messages regionForDirection old]
-        list [expr {$regionBefore != -1}] [expr {$regionAfter == $regionBefore}]
-    } -result {1 1}
-
 foreach {direction seedCmd} {
     outgoing {tacky message send -acc $::acc -chat_jid alice@example.com -body "pending"}
     incoming {cv_feed "before catchup" srv1}
 } {
     test chatview-${direction}-survives-catchup \
-        "$direction still visible after CatchupDone reload" \
+        "$direction still visible after CatchupDone (no reload under sentinels)" \
         {*}$cv_common \
         -body {
             eval $seedCmd
             wait
             set countBefore [llength [.cv messages ids]]
             tacky emit message <CatchupDone> -count 5
-            wait
-            cv_complete_mam
             wait
             set countAfter [llength [.cv messages ids]]
             list before=$countBefore after=$countAfter
@@ -654,7 +629,7 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
         set hasFirst [expr {$firstId in [.cv messages ids]}]
         list before=$countBefore pending=$countPending \
             after=$countAfter hasFirst=$hasFirst
-    } -result {before=2 pending=2 after=3 hasFirst=1}
+    } -result {before=2 pending=2 after=5 hasFirst=1}
 
 # -- stale cursor guard ---------------------------------------------------------
 

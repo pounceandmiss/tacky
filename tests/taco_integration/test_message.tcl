@@ -184,4 +184,76 @@ namespace eval ::test::message_int {
             }
             set found
         } -result {1}
+
+    # -- Sentinels ---
+
+    # `message messagestore` is a snit -public component delegate: you
+    # always have to call a subcommand on the same line. ms forwards
+    # the subcommand inline so tests can stay readable.
+    proc ms {acc args} {
+        [tacky client $acc] message messagestore {*}$args
+    }
+
+    test message-int-reconnect-overlap-clears-sentinel \
+        {reconnect places a sentinel; catchup overlap (preserved DB) sweeps it} \
+        {*}$common \
+        -body {
+            variable ROMEO
+            variable JULIET
+
+            # Baseline: one message exchanged with both connected.
+            sendAndReceive "before disconnect"
+            if {[llength [dict get [ms $ROMEO get latest $JULIET] messages]] == 0} {
+                error "baseline message not stored"
+            }
+
+            # Disable romeo (preserves DB + client; just disconnects).
+            tacky account disable -acc $ROMEO
+
+            # Juliet sends another message while romeo is offline. The
+            # server archives it for romeo's account.
+            set jclient [tacky client $JULIET]
+            $jclient conn writeImmediate [j message \
+                -type chat -to $ROMEO {
+                    j body #body "during disconnect"
+                }]
+            after 300
+
+            # Re-enable romeo. OnReady places a reconnect sentinel for
+            # juliet, then DoCatchup pulls both messages; overlap on
+            # "before disconnect" proves the bracket empty so the
+            # sentinel sweeps.
+            tacky account enable -acc $ROMEO
+            ::test::helpers::waitEvents {
+                {message <CatchupDone> -acc romeo@example.local}
+            }
+
+            llength [ms $ROMEO sentinel list $JULIET]
+        } -result {0}
+
+    test message-int-history-mam-complete-removes-sentinel \
+        {history MAM with empty result + complete=true clears the bounding sentinel} \
+        {*}$common \
+        -body {
+            variable ROMEO
+            variable JULIET
+
+            # Anchor: one message exchanged so we have a citizen to bound.
+            set ev [sendAndReceive "anchor"]
+            set ts [dict get $ev -message timestamp]
+
+            # Manually place an older-side sentinel.
+            ms $ROMEO sentinel add $JULIET older $ts
+            if {[llength [ms $ROMEO sentinel list $JULIET]] != 1} {
+                error "sentinel not placed; got [ms $ROMEO sentinel list $JULIET]"
+            }
+
+            # history -before $ts: local is empty older than the anchor
+            # and bounded by the sentinel, so MAM fires. Server has
+            # nothing older and returns empty + complete=true, so
+            # OnFetch removes the bounding sentinel.
+            historyWait -acc $ROMEO -chat $JULIET -before $ts -limit 50
+
+            llength [ms $ROMEO sentinel list $JULIET]
+        } -result {0}
 }

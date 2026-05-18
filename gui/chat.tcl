@@ -235,24 +235,23 @@ snit::widgetadaptor chatview {
         $hull loading hide
     }
 
-    method OnCatchupDone {ev} {
-        if {$IsMuc} return
-        $self goto end
-    }
+    # Catchup messages now flow through <Received> under the AtTail
+    # gate; no reload needed. Kept as a stub for future UI-settling
+    # work (spinners, badges).
+    method OnCatchupDone {ev} {}
 
     method OnThirsty {direction edgeId} {
         if {[::tacky listening $win/$direction]} return
-        set region [$hull messages regionForDirection $direction]
         if {$direction eq "old"} {
             ::tacky message history -acc $options(-acc) \
                 -chat $options(-jid) \
-                -before $edgeId -region $region -limit 50 \
+                -before $edgeId -limit 50 \
                 -tag $win/$direction \
                 -command [mymethod OnLoadDone $direction]
         } else {
             ::tacky message history -acc $options(-acc) \
                 -chat $options(-jid) \
-                -after $edgeId -region $region -limit 50 \
+                -after $edgeId -limit 50 \
                 -tag $win/$direction \
                 -command [mymethod OnLoadDone $direction]
         }
@@ -293,10 +292,9 @@ snit::widgetadaptor chatview {
     # Live-message flow.
     #
     # <Received> / <Sent> arrive only after the backend persists the
-    # message to the local store and bridges liveRegion into the
-    # predecessor's region (libtacky/taco/message.tcl). So a live event
-    # we drop here is durable in the DB and reachable by a subsequent
-    # `tacky message history` query — same region, same cursor space.
+    # message to the local store. So a live event we drop here is
+    # durable in the DB and reachable by a subsequent `tacky message
+    # history` query.
     #
     # The AtTail gate drops live events whenever the displayed window
     # doesn't contain the conversation tail. Inserting in that case
@@ -328,9 +326,6 @@ snit::widgetadaptor chatview {
                 $hull deleteById $ts
                 dict set storeDict timestamp $newTs
                 dict set storeDict server_status [dict get $msg server_status]
-                if {[dict exists $msg region]} {
-                    dict set storeDict region [dict get $msg region]
-                }
                 $self ProcessBatch [list $storeDict]
             } else {
                 $hull patchFields $ts $msg
@@ -841,27 +836,6 @@ snit::widget chatarea {
         dict get $Messages $id
     }
 
-    # Find region for pagination: scan displayed messages for the
-    # first (old) or last (new) non-outgoing region.
-    method {messages regionForDirection} {dir} {
-        if {$dir eq "old"} {
-            foreach id $MessageIds {
-                if {[dict exists $Messages $id]} {
-                    set r [dict get [dict get $Messages $id] region]
-                    if {$r != -1} { return $r }
-                }
-            }
-        } else {
-            foreach id [lreverse $MessageIds] {
-                if {[dict exists $Messages $id]} {
-                    set r [dict get [dict get $Messages $id] region]
-                    if {$r != -1} { return $r }
-                }
-            }
-        }
-        return -1
-    }
-
     method clear {} {
         $text del 0.0 end
         set MessageIds {}
@@ -1025,7 +999,6 @@ proc enrich_store_message {storeDict names} {
     }
     set serverStatus [dict get $storeDict server_status]
     set isOutgoing [expr {$serverStatus ne ""}]
-    set region [expr {[dict exists $storeDict region] ? [dict get $storeDict region] : -1}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
         from_jid     $fromJid \
@@ -1034,8 +1007,7 @@ proc enrich_store_message {storeDict names} {
         timestamp    [dict get $storeDict timestamp] \
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
-        server_status $serverStatus \
-        region       $region]
+        server_status $serverStatus]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
     }
@@ -1054,6 +1026,7 @@ proc list_remove_once_inplace {varName val} {
 snit::widgetadaptor chatscrollbtn {
     option -parent -readonly yes
     delegate option -command to hull
+    delegate method * to hull
 
     variable Visible 0
 

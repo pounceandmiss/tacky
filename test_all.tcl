@@ -19,6 +19,7 @@ if {$_server ne ""} {
     ::tcltest::testConstraint notProsody   [expr {$_server ne "prosody"}]
     ::tcltest::testConstraint notMongoose  [expr {$_server ne "mongoose"}]
     ::tcltest::testConstraint notEjabberd  [expr {$_server ne "ejabberd"}]
+    package require taco
     foreach script [lsort [glob [file join $dir tests taco_integration *.tcl]]] {
         source $script
     }

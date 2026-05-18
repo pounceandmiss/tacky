@@ -92,20 +92,20 @@ namespace eval ::test::BareInterrupt {
             reset
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
-            set conn [bareconn conn \
+            set conn [bareconn c \
                 -onready [namespace code onReady] \
                 -ondisconnect [namespace code onTransportError]]
         }
         -cleanup {
-            catch {conn close}
-            catch {conn destroy}
+            catch {c close}
+            catch {c destroy}
             catch {proxy destroy}
         }
     }
 
     test bare-int-interrupt-001 {Error callback fires on connection loss} \
         {*}$common -body {
-        conn connect $HOST $proxyPort
+        c connect $HOST $proxyPort
         ::test::helpers::waitVar [namespace current]::done
         set done 0
         proxy kill
@@ -115,13 +115,13 @@ namespace eval ::test::BareInterrupt {
 
     test bare-int-interrupt-002 {State is disconnected after connection loss} \
         {*}$common -body {
-        conn connect $HOST $proxyPort
+        c connect $HOST $proxyPort
         ::test::helpers::waitVar [namespace current]::done
         set done 0
         proxy kill
         ::test::helpers::waitVar [namespace current]::done
         # Current implementation auto-closes transport on error
-        expr {[conn state] eq "disconnected"}
+        expr {[c state] eq "disconnected"}
     } -result 1
 }
 
@@ -171,7 +171,7 @@ namespace eval ::test::AuthInterrupt {
             reset
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
-            set conn [conn conn \
+            set conn [conn c \
                 -host $HOST \
                 -port $proxyPort \
                 -username $USER \
@@ -182,8 +182,8 @@ namespace eval ::test::AuthInterrupt {
                 -onautherror  [namespace code {onError auth}]]
         }
         -cleanup {
-            catch {conn close}
-            catch {conn destroy}
+            catch {c close}
+            catch {c destroy}
             catch {proxy destroy}
         }
     }
@@ -192,7 +192,7 @@ namespace eval ::test::AuthInterrupt {
 
     test auth-int-interrupt-001 {onerror fires on loss while ready} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done
         if {!$ready} { error "did not reach ready" }
         set done 0
@@ -203,19 +203,19 @@ namespace eval ::test::AuthInterrupt {
 
     test auth-int-interrupt-002 {isReady false after loss while ready} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done
         set done 0
         proxy kill
         ::test::helpers::waitVar [namespace current]::done
-        expr {![conn isReady]}
+        expr {![c isReady]}
     } -result 1
 
     # ---- During SASL authentication ----
 
     test auth-int-interrupt-003 {onerror fires on loss during authentication} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitForState [namespace current]::lastState authenticating
         proxy kill
         ::test::helpers::waitVar [namespace current]::done
@@ -226,7 +226,7 @@ namespace eval ::test::AuthInterrupt {
 
     test auth-int-interrupt-004 {onerror fires on loss during binding} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitForState [namespace current]::lastState binding
         proxy kill
         ::test::helpers::waitVar [namespace current]::done
@@ -237,12 +237,12 @@ namespace eval ::test::AuthInterrupt {
 
     test auth-int-interrupt-005 {Close after loss during auth is safe} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitForState [namespace current]::lastState authenticating
         proxy kill
         ::test::helpers::waitVar [namespace current]::done
-        conn close
-        expr {![conn isReady]}
+        c close
+        expr {![c isReady]}
     } -result 1
 }
 
@@ -300,7 +300,7 @@ namespace eval ::test::AutoReconnect {
             reset
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
-            set conn [conn conn \
+            set conn [conn c \
                 -host $HOST \
                 -port $proxyPort \
                 -username $USER \
@@ -312,25 +312,25 @@ namespace eval ::test::AutoReconnect {
                 -onautherror  [namespace code {onError auth}]]
         }
         -cleanup {
-            catch {conn close}
-            catch {conn destroy}
+            catch {c close}
+            catch {c destroy}
             catch {proxy destroy}
         }
     }
 
     test reconnect-001 {Auto-reconnect succeeds after proxy kill} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         set done 0
         proxy kill
         ::test::helpers::waitVar [namespace current]::done 6000
-        list $readyCount [conn isReady] [conn state]
+        list $readyCount [c isReady] [c state]
     } -result {2 1 connected}
 
     test reconnect-002 {state sequence is correct through reconnect} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         set done 0
         proxy kill
@@ -340,26 +340,26 @@ namespace eval ::test::AutoReconnect {
 
     test reconnect-003 {state reaches waiting before reconnect} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         proxy kill
         ::test::helpers::waitForState [namespace current]::lastState waiting
-        conn state
+        c state
     } -result waiting
 
     test reconnect-004 {close during waiting cancels reconnect} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         proxy kill
         ::test::helpers::waitForState [namespace current]::lastState waiting
-        conn close
-        list [conn state] $readyCount
+        c close
+        list [c state] $readyCount
     } -result {disconnected 1}
 
     test reconnect-005 {Second reconnect also succeeds (backoff resets)} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         # First reconnect cycle
         set done 0
@@ -374,10 +374,10 @@ namespace eval ::test::AutoReconnect {
 
     test reconnect-006 {isReady is false during waiting state} \
         {*}$common -body {
-        conn connect
+        c connect
         ::test::helpers::waitVar [namespace current]::done 6000
         proxy kill
         ::test::helpers::waitForState [namespace current]::lastState waiting
-        conn isReady
+        c isReady
     } -result 0
 }

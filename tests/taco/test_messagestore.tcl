@@ -21,23 +21,31 @@ proc ms_msg {args} {
     return [dict merge $defaults $args]
 }
 
-# Helper: store a batch with a fresh region
+# Helper: store a batch of messages
 proc ms_batch {messages {jid alice@example.com}} {
-    store region new r
-    store store $messages r
+    store store $messages
 }
 
-# Helper: count distinct regions for a jid
-proc ms_regions {{jid alice@example.com}} {
-    testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid=$jid}
+# Helper: store a pending outgoing message
+proc ms_pending {msg} {
+    store store [list $msg]
 }
 
-# Helper: get the region of a message by timestamp
-proc ms_region_of {ts {jid alice@example.com}} {
-    testdb onecolumn {SELECT region FROM chat_message WHERE chat_jid=$jid AND timestamp=$ts}
+# Helper: count chat_message rows of a given kind
+proc ms_count {{kind message} {jid alice@example.com}} {
+    testdb eval {
+        SELECT COUNT(*) FROM chat_message
+        WHERE chat_jid=$jid AND kind=$kind
+    }
 }
 
-# -- basic --------------------------------------------------------------------
+# Helpers: unwrap {messages ... bounded ...} dict from get
+proc ms_msgs {result} { dict get $result messages }
+proc ms_bounded {result} { dict get $result bounded }
+
+# =============================================================================
+# Store: basic
+# =============================================================================
 
 test messagestore-basic-store-and-get {store a batch, get it back in chronological order} \
     {*}$ms_common \
@@ -46,7 +54,7 @@ test messagestore-basic-store-and-get {store a batch, get it back in chronologic
             [ms_msg timestamp 100 body first] \
             [ms_msg timestamp 200 body second] \
             [ms_msg timestamp 300 body third]]
-        set msgs [store get latest alice@example.com]
+        set msgs [ms_msgs [store get latest alice@example.com]]
         list [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body] \
              [dict get [lindex $msgs 2] body]
@@ -59,13 +67,66 @@ test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 prese
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 100 body b] \
             [ms_msg timestamp 100 body c]]
-        set msgs [store get latest alice@example.com]
+        set msgs [ms_msgs [store get latest alice@example.com]]
         list [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body] \
              [dict get [lindex $msgs 2] body]
     } -result {a b c}
 
-# -- dedup --------------------------------------------------------------------
+test messagestore-batch-single-message {single-message batch works} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 42 body only]]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 only}
+
+test messagestore-batch-empty-noop {empty batch is a no-op} \
+    {*}$ms_common \
+    -body {
+        store store {}
+        testdb eval {SELECT count(*) FROM chat_message}
+    } -result {0}
+
+test messagestore-batch-out-of-order-timestamps {batch with non-chronological timestamps preserves caller order} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 300 body c] \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b]]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        list [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body] \
+             [dict get [lindex $msgs 2] body]
+    } -result {c a b}
+
+test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 100 body b] \
+            [ms_msg timestamp 100 body c]]
+        set msgs [ms_msgs [store get after alice@example.com 100]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body]
+    } -result {2 b c}
+
+test messagestore-multi-chat-isolation {get only returns messages for requested chat} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 chat_jid alice@example.com body alice-msg]]
+        ms_batch [list \
+            [ms_msg timestamp 200 chat_jid bob@example.com body bob-msg]] bob@example.com
+        llength [ms_msgs [store get latest alice@example.com]]
+    } -result {1}
+
+# =============================================================================
+# Store: dedup
+# =============================================================================
 
 test messagestore-dedup-server-id {duplicate server_id is not inserted twice} \
     {*}$ms_common \
@@ -74,7 +135,7 @@ test messagestore-dedup-server-id {duplicate server_id is not inserted twice} \
             [ms_msg timestamp 100 server_id sid1 body first]]
         ms_batch [list \
             [ms_msg timestamp 200 server_id sid1 body duplicate]]
-        llength [store get latest alice@example.com]
+        llength [ms_msgs [store get latest alice@example.com]]
     } -result {1}
 
 test messagestore-dedup-own-id {duplicate own_id is not inserted twice} \
@@ -84,7 +145,27 @@ test messagestore-dedup-own-id {duplicate own_id is not inserted twice} \
             [ms_msg timestamp 100 own_id oid1 body first]]
         ms_batch [list \
             [ms_msg timestamp 200 own_id oid1 body duplicate]]
-        llength [store get latest alice@example.com]
+        llength [ms_msgs [store get latest alice@example.com]]
+    } -result {1}
+
+test messagestore-dedup-both-ids-match-server {both IDs set, dedup fires on server_id match} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
+        ms_batch [list \
+            [ms_msg timestamp 200 server_id sid1 own_id oid_other body dup]]
+        llength [ms_msgs [store get latest alice@example.com]]
+    } -result {1}
+
+test messagestore-dedup-both-ids-match-own {both IDs set, dedup fires on own_id match} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
+        ms_batch [list \
+            [ms_msg timestamp 200 server_id sid_other own_id oid1 body dup]]
+        llength [ms_msgs [store get latest alice@example.com]]
     } -result {1}
 
 test messagestore-dedup-content-same-batch {content dedup within batch when IDs empty} \
@@ -93,7 +174,7 @@ test messagestore-dedup-content-same-batch {content dedup within batch when IDs 
         ms_batch [list \
             [ms_msg timestamp 100 server_id "" own_id "" body hello] \
             [ms_msg timestamp 100 server_id "" own_id "" body hello]]
-        llength [store get latest alice@example.com]
+        llength [ms_msgs [store get latest alice@example.com]]
     } -result {1}
 
 test messagestore-dedup-content-across-batches {content dedup across batches when IDs empty} \
@@ -105,20 +186,8 @@ test messagestore-dedup-content-across-batches {content dedup across batches whe
         ms_batch [list \
             [ms_msg timestamp 100 body hello] \
             [ms_msg timestamp 200 body world]]
-        testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
+        ms_count
     } -result {2}
-
-test messagestore-dedup-content-merges-regions {content dedup merges regions like server_id dedup} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body hello] \
-            [ms_msg timestamp 200 body world]]
-        ms_batch [list \
-            [ms_msg timestamp 100 body hello] \
-            [ms_msg timestamp 200 body world]]
-        ms_regions
-    } -result {1}
 
 test messagestore-dedup-content-different-body-not-deduped {same timestamp different body not falsely deduped} \
     {*}$ms_common \
@@ -127,7 +196,7 @@ test messagestore-dedup-content-different-body-not-deduped {same timestamp diffe
             [ms_msg timestamp 100 body hello]]
         ms_batch [list \
             [ms_msg timestamp 100 body goodbye]]
-        testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
+        ms_count
     } -result {2}
 
 test messagestore-dedup-content-different-from-not-deduped {same timestamp+body different sender not falsely deduped} \
@@ -137,7 +206,7 @@ test messagestore-dedup-content-different-from-not-deduped {same timestamp+body 
             [ms_msg timestamp 100 from_jid alice@example.com/phone body hello]]
         ms_batch [list \
             [ms_msg timestamp 100 from_jid bob@example.com/phone body hello]]
-        testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
+        ms_count
     } -result {2}
 
 test messagestore-dedup-isolation-across-chats {same own_id in different chats stored independently} \
@@ -147,85 +216,56 @@ test messagestore-dedup-isolation-across-chats {same own_id in different chats s
             [ms_msg timestamp 100 chat_jid alice@example.com own_id oid1 body hi]]
         ms_batch [list \
             [ms_msg timestamp 100 chat_jid bob@example.com own_id oid1 body hi]] bob@example.com
-        set a [llength [store get latest alice@example.com]]
-        set b [llength [store get latest bob@example.com]]
+        set a [llength [ms_msgs [store get latest alice@example.com]]]
+        set b [llength [ms_msgs [store get latest bob@example.com]]]
         list $a $b
     } -result {1 1}
 
-test messagestore-dedup-both-ids-match-server {both IDs set, dedup fires on server_id match} \
+# =============================================================================
+# Get: basic
+# =============================================================================
+
+test messagestore-get-empty-chat {get on a jid with no messages returns empty list} \
     {*}$ms_common \
     -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
-        ms_batch [list \
-            [ms_msg timestamp 200 server_id sid1 own_id oid_other body dup]]
-        llength [store get latest alice@example.com]
-    } -result {1}
+        ms_msgs [store get latest nobody@example.com]
+    } -result {}
 
-test messagestore-dedup-both-ids-match-own {both IDs set, dedup fires on own_id match} \
+test messagestore-get-result-shape {get returns {messages bounded} dict} \
     {*}$ms_common \
     -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id sid1 own_id oid1 body first]]
-        ms_batch [list \
-            [ms_msg timestamp 200 server_id sid_other own_id oid1 body dup]]
-        llength [store get latest alice@example.com]
-    } -result {1}
+        ms_batch [list [ms_msg timestamp 100 body a]]
+        set r [store get latest alice@example.com]
+        list [dict exists $r messages] [dict exists $r bounded]
+    } -result {1 1}
 
-# -- pagination ---------------------------------------------------------------
-
-test messagestore-pagination-before {-before returns messages older than timestamp} \
+test messagestore-get-before {get before returns messages older than cursor} \
     {*}$ms_common \
     -body {
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get before alice@example.com 300 [ms_region_of 300]]
+        set msgs [ms_msgs [store get before alice@example.com 300]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
     } -result {2 a b}
 
-test messagestore-pagination-limit {-limit caps result count} \
+test messagestore-get-after {get after returns messages newer than cursor, ascending} \
     {*}$ms_common \
     -body {
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [store get latest alice@example.com 2]
+        set msgs [ms_msgs [store get after alice@example.com 100]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
     } -result {2 b c}
 
-test messagestore-pagination-after {-after returns messages newer than timestamp, ascending} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b] \
-            [ms_msg timestamp 300 body c]]
-        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
-    } -result {2 b c}
-
-test messagestore-pagination-after-limit {-after respects -limit} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b] \
-            [ms_msg timestamp 300 body c]]
-        set msgs [store get after alice@example.com 100 [ms_region_of 100] 1]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body]
-    } -result {1 b}
-
-test messagestore-pagination-region-boundary {-before stays in cursor region, does not cross gap} \
+test messagestore-get-latest-multiple-batches {get latest spans multiple batches when no sentinel separates them} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -234,25 +274,50 @@ test messagestore-pagination-region-boundary {-before stays in cursor region, do
         ms_batch [list \
             [ms_msg timestamp 500 body c] \
             [ms_msg timestamp 600 body d]]
-        set latest [store get latest alice@example.com]
-        set older [store get before alice@example.com 500 [ms_region_of 500]]
-        list [llength $latest] \
-             [dict get [lindex $latest 0] body] \
-             [dict get [lindex $latest 1] body] \
-             [llength $older]
-    } -result {2 c d 0}
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        set bodies {}
+        foreach m $msgs { lappend bodies [dict get $m body] }
+        list [llength $msgs] $bodies
+    } -result {4 {a b c d}}
 
-test messagestore-get-limit-larger-than-available {-limit larger than message count returns all} \
+test messagestore-get-before-at-first-ts {get before at oldest timestamp returns empty} \
     {*}$ms_common \
     -body {
         ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        llength [store get latest alice@example.com 1000]
-    } -result {3}
+        ms_msgs [store get before alice@example.com 100]
+    } -result {}
 
-test messagestore-get-before-with-limit {-before combined with -limit returns correct slice} \
+test messagestore-get-after-at-last-ts {get after at newest timestamp returns empty} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b] \
+            [ms_msg timestamp 300 body c]]
+        ms_msgs [store get after alice@example.com 300]
+    } -result {}
+
+# =============================================================================
+# Get: limit
+# =============================================================================
+
+test messagestore-get-latest-with-limit {get latest caps result count at -limit} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b] \
+            [ms_msg timestamp 300 body c]]
+        set msgs [ms_msgs [store get latest alice@example.com 2]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body]
+    } -result {2 b c}
+
+test messagestore-get-before-with-limit {get before with -limit returns correct slice} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -260,539 +325,517 @@ test messagestore-get-before-with-limit {-before combined with -limit returns co
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c] \
             [ms_msg timestamp 400 body d]]
-        set msgs [store get before alice@example.com 400 [ms_region_of 400] 2]
+        set msgs [ms_msgs [store get before alice@example.com 400 2]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
              [dict get [lindex $msgs 1] body]
     } -result {2 b c}
 
-# -- region assignment --------------------------------------------------------
-
-test messagestore-batch-assigns-region {batch assigns all messages to one region} \
+test messagestore-get-after-with-limit {get after with -limit returns correct slice} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100] \
-            [ms_msg timestamp 200] \
-            [ms_msg timestamp 300]]
-        ms_regions
-    } -result {1}
-
-test messagestore-multi-page-same-region {two batches with same region share one region} \
-    {*}$ms_common \
-    -body {
-        store region new r
-        store store [list \
             [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]] r
-        store store [list \
-            [ms_msg timestamp 300 body c] \
-            [ms_msg timestamp 400 body d]] r
-        ms_regions
-    } -result {1}
+            [ms_msg timestamp 200 body b] \
+            [ms_msg timestamp 300 body c]]
+        set msgs [ms_msgs [store get after alice@example.com 100 1]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body]
+    } -result {1 b}
 
-test messagestore-batch-overlapping-merges {overlapping batch via server_id merges regions} \
+test messagestore-get-limit-exceeds-available {-limit larger than message count returns all} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 server_id s1] \
-            [ms_msg timestamp 200 server_id s2]]
-        ms_batch [list \
-            [ms_msg timestamp 200 server_id s2] \
-            [ms_msg timestamp 300 server_id s3]]
-        ms_regions
-    } -result {1}
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b] \
+            [ms_msg timestamp 300 body c]]
+        llength [ms_msgs [store get latest alice@example.com 1000]]
+    } -result {3}
 
-test messagestore-live-assigns-region {single batch assigns one region} \
+# =============================================================================
+# Pending outgoings (server_id='', server_status='pending')
+# =============================================================================
+
+test messagestore-pending-stored {pending outgoing is stored and visible in get latest} \
     {*}$ms_common \
     -body {
-        store region new r
-        store store [list [ms_msg timestamp 100]] r
-        ms_regions
-    } -result {1}
+        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        list [llength $msgs] [dict get [lindex $msgs 0] body]
+    } -result {1 sent}
 
-test messagestore-live-same-region {multiple batches with same region var share one region} \
+test messagestore-pending-no-server-id {pending outgoing has empty server_id} \
     {*}$ms_common \
     -body {
-        store region new r
-        store store [list [ms_msg timestamp 100]] r
-        store store [list [ms_msg timestamp 200]] r
-        store store [list [ms_msg timestamp 300]] r
-        ms_regions
-    } -result {1}
+        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
+        dict get $msg server_id
+    } -result {}
 
-test messagestore-reconnect-different-regions {new region new creates separate region} \
+test messagestore-pending-only {get latest returns pendings when only pendings exist} \
     {*}$ms_common \
     -body {
-        store region new r
-        store store [list [ms_msg timestamp 100 body a]] r
-        store store [list [ms_msg timestamp 200 body b]] r
-        store region new r
-        store store [list [ms_msg timestamp 500 body c]] r
-        ms_regions
-    } -result {2}
-
-test messagestore-region-new-unique {region new assigns distinct values} \
-    {*}$ms_common \
-    -body {
-        store region new r1
-        store region new r2
-        expr {$r1 != $r2}
-    } -result {1}
-
-# -- bridge -------------------------------------------------------------------
-
-test messagestore-bridge-merges-regions {bridge merges two regions into one} \
-    {*}$ms_common \
-    -body {
-        store region new r1
-        store store [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
-        store region new r2
-        store store [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
-        store region bridge alice@example.com r1 r2
-        ms_regions
-    } -result {1}
-
-test messagestore-bridge-enables-cross-range-get {after bridge, get returns all messages} \
-    {*}$ms_common \
-    -body {
-        store region new r1
-        store store [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]] r1
-        store region new r2
-        store store [list [ms_msg timestamp 500 body c] [ms_msg timestamp 600 body d]] r2
-        store region bridge alice@example.com r1 r2
-        set msgs [store get latest alice@example.com]
+        ms_pending [ms_msg timestamp 100 body x own_id oid1 server_status pending]
+        ms_pending [ms_msg timestamp 200 body y own_id oid2 server_status pending]
+        set msgs [ms_msgs [store get latest alice@example.com]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 3] body]
-    } -result {4 a d}
+             [dict get [lindex $msgs 1] body]
+    } -result {2 x y}
 
-test messagestore-bridge-updates-upvar {bridge sets r2 to r1} \
+test messagestore-pending-mixed-with-real {get latest returns pendings interleaved with real} \
     {*}$ms_common \
     -body {
-        store region new r1
-        store store [list [ms_msg timestamp 100 body a]] r1
-        store region new r2
-        store store [list [ms_msg timestamp 500 body b]] r2
-        set orig_r1 $r1
-        store region bridge alice@example.com r1 r2
-        list [expr {$r2 == $orig_r1}] [expr {$r1 == $r2}]
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 300 server_id s3 body c]]
+        ms_pending [ms_msg timestamp 200 body b own_id oid1 server_status pending]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body] \
+             [dict get [lindex $msgs 2] body]
+    } -result {3 a b c}
+
+test messagestore-pending-visible-in-get {pending and real rows both appear} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body real]]
+        ms_batch [list \
+            [ms_msg timestamp 200 own_id oid1 body pending server_status pending]]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        set bodies {}
+        foreach m $msgs { lappend bodies [dict get $m body] }
+        set bodies
+    } -result {real pending}
+
+test messagestore-get-before-includes-pending {get before includes pendings older than cursor} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 300 server_id s3 body c] \
+            [ms_msg timestamp 500 server_id s5 body e]]
+        ms_pending [ms_msg timestamp 200 body b own_id oid1 server_status pending]
+        set msgs [ms_msgs [store get before alice@example.com 500]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body] \
+             [dict get [lindex $msgs 2] body]
+    } -result {3 a b c}
+
+test messagestore-get-after-includes-pending {get after includes pendings newer than cursor} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 300 server_id s3 body c] \
+            [ms_msg timestamp 500 server_id s5 body e]]
+        ms_pending [ms_msg timestamp 400 body d own_id oid1 server_status pending]
+        set msgs [ms_msgs [store get after alice@example.com 100]]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 1] body] \
+             [dict get [lindex $msgs 2] body]
+    } -result {3 c d e}
+
+test messagestore-get-around-includes-pending {get around includes nearby pendings} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 200 body b] \
+            [ms_msg timestamp 400 body d] \
+            [ms_msg timestamp 500 body e]]
+        ms_pending [ms_msg timestamp 300 body c own_id oid1 server_status pending]
+        set result [store get around alice@example.com 300 10]
+        set msgs [dict get $result messages]
+        set bodies {}
+        foreach m $msgs { lappend bodies [dict get $m body] }
+        set bodies
+    } -result {a b c d e}
+
+test messagestore-get-around-on-pending-target {get around snapping onto a pending works} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a] \
+            [ms_msg timestamp 500 body e]]
+        ms_pending [ms_msg timestamp 300 body out own_id oid1 server_status pending]
+        set result [store get around alice@example.com 300 10]
+        set anchor [dict get $result anchor]
+        set msgs [dict get $result messages]
+        list $anchor [llength $msgs]
+    } -result {300 3}
+
+test messagestore-pending-confirm-same-ts {echo with same timestamp confirms in place} \
+    {*}$ms_common \
+    -body {
+        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        set result [store store [list \
+            [ms_msg timestamp 100 server_id srv1 own_id oid1 body sent]]]
+        set c [lindex [dict get $result confirmed] 0]
+        set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
+        list [dict get $c timestamp] [dict get $c newtimestamp] \
+             [dict get $msg server_id] [dict get $msg server_status]
+    } -result {100 100 srv1 received}
+
+test messagestore-pending-confirm-ts-change {echo with different timestamp moves the row} \
+    {*}$ms_common \
+    -body {
+        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        # Echo arrives with server timestamp 200
+        set result [store store [list \
+            [ms_msg timestamp 200 server_id srv1 own_id oid1 body sent]]]
+        set c [lindex [dict get $result confirmed] 0]
+        set oldExists [testdb exists {
+            SELECT 1 FROM chat_message
+            WHERE chat_jid='alice@example.com' AND timestamp=100
+        }]
+        set newStatus [testdb onecolumn {
+            SELECT server_status FROM chat_message
+            WHERE chat_jid='alice@example.com' AND timestamp=200
+        }]
+        list [dict get $c timestamp] [dict get $c newtimestamp] \
+             $oldExists $newStatus
+    } -result {100 200 0 received}
+
+test messagestore-pending-confirm-no-bulk-update {confirming one pending does not move others} \
+    {*}$ms_common \
+    -body {
+        ms_pending [ms_msg timestamp 100 body sent1 own_id oid1 server_status pending]
+        ms_pending [ms_msg timestamp 200 body sent2 own_id oid2 server_status pending]
+        store store [list \
+            [ms_msg timestamp 100 server_id srv1 own_id oid1 body sent1]]
+        # sent2 should still be pending (no server_id)
+        set sid2 [testdb onecolumn {
+            SELECT server_id FROM chat_message
+            WHERE chat_jid='alice@example.com' AND timestamp=200
+        }]
+        set status2 [testdb onecolumn {
+            SELECT server_status FROM chat_message
+            WHERE chat_jid='alice@example.com' AND timestamp=200
+        }]
+        list $sid2 $status2
+    } -result {{} pending}
+
+test messagestore-pending-confirm-reorders {confirmed pending moves to its new sorted slot} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 300 server_id s3 body b] \
+            [ms_msg timestamp 500 server_id s5 body c]]
+        ms_pending [ms_msg timestamp 200 body x own_id oid1 server_status pending]
+
+        # Before confirmation: order is a, x, b, c
+        set before [ms_msgs [store get latest alice@example.com]]
+        set beforeBodies {}
+        foreach m $before { lappend beforeBodies [dict get $m body] }
+
+        # Server confirms X at timestamp 400 (between B and C)
+        store store [list \
+            [ms_msg timestamp 400 server_id srv1 own_id oid1 body x]]
+
+        # After confirmation: order should be a, b, x, c
+        set after [ms_msgs [store get latest alice@example.com]]
+        set afterBodies {}
+        foreach m $after { lappend afterBodies [dict get $m body] }
+
+        list $beforeBodies $afterBodies
+    } -result {{a x b c} {a b x c}}
+
+test messagestore-pending-confirm-visible {confirmed pending (status=received) still shows up in get} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a]]
+        ms_pending [ms_msg timestamp 200 body sent own_id oid1 \
+            server_id srv1 server_status received]
+        set msgs [ms_msgs [store get latest alice@example.com]]
+        list [llength $msgs] [dict get [lindex $msgs 1] body]
+    } -result {2 sent}
+
+# =============================================================================
+# Sentinel: add / remove API
+# =============================================================================
+
+test messagestore-sentinel-add-older {sentinel add older inserts a sentinel below the anchor} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        store sentinel add alice@example.com older 100
+        list [llength [store sentinel list alice@example.com]] \
+             [expr {[lindex [store sentinel list alice@example.com] 0] < 100}]
     } -result {1 1}
 
-test messagestore-bridge-noop-same-region {bridge with same region is no-op} \
+test messagestore-sentinel-add-newer {sentinel add newer inserts a sentinel above the anchor} \
     {*}$ms_common \
     -body {
-        store region new r
-        store store [list [ms_msg timestamp 100 body a]] r
-        set r2 $r
-        store region bridge alice@example.com r r2
-        ms_regions
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        store sentinel add alice@example.com newer 100
+        list [llength [store sentinel list alice@example.com]] \
+             [expr {[lindex [store sentinel list alice@example.com] 0] > 100}]
+    } -result {1 1}
+
+test messagestore-sentinel-add-dedup-per-gap {repeated adds to the same gap are no-ops} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        store sentinel add alice@example.com newer 100
+        store sentinel add alice@example.com newer 100
+        store sentinel add alice@example.com newer 100
+        llength [store sentinel list alice@example.com]
     } -result {1}
 
-# -- server_id driven region merging -----------------------------------------
+test messagestore-sentinel-add-different-gaps {sentinels in different gaps both stored} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 500 server_id s5 body e]]
+        # Two distinct gaps: older of 100, and between 100 and 500
+        store sentinel add alice@example.com older 100
+        store sentinel add alice@example.com newer 100
+        llength [store sentinel list alice@example.com]
+    } -result {2}
 
-test messagestore-serverid-dup-merges-regions {server_id dup merges overlapping regions} \
+test messagestore-sentinel-add-skips-pending {pendings don't count as gap bounds; sentinel sits adjacent to citizen} \
+    {*}$ms_common \
+    -body {
+        # Citizen at 100, pending at 1000. The gap "newer of 100" runs
+        # from 100 to the next citizen (none) — extending past the
+        # pending. Sentinel is placed adjacent to the citizen at 101.
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        ms_pending [ms_msg timestamp 1000 body p own_id oid1 server_status pending]
+        store sentinel add alice@example.com newer 100
+        set sList [store sentinel list alice@example.com]
+        list [llength $sList] [lindex $sList 0]
+    } -result {1 101}
+
+test messagestore-sentinel-remove {sentinel remove clears the targeted gap} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        store sentinel add alice@example.com newer 100
+        set before [llength [store sentinel list alice@example.com]]
+        store sentinel remove alice@example.com newer 100
+        set after [llength [store sentinel list alice@example.com]]
+        list $before $after
+    } -result {1 0}
+
+test messagestore-sentinel-removeBetween {removeBetween deletes sentinels strictly within range} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 500 server_id s5 body e]]
+        store sentinel add alice@example.com newer 100
+        # Sentinel sits at 101 (BumpTs from 100); span (100, 500)
+        store sentinel removeBetween alice@example.com 100 500
+        llength [store sentinel list alice@example.com]
+    } -result {0}
+
+test messagestore-sentinel-chat-isolation {sentinels are scoped per chat} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id s1 body a]]
+        ms_batch [list \
+            [ms_msg timestamp 100 chat_jid bob@example.com server_id bs1 body b]] \
+            bob@example.com
+        store sentinel add alice@example.com newer 100
+        list [llength [store sentinel list alice@example.com]] \
+             [llength [store sentinel list bob@example.com]]
+    } -result {1 0}
+
+# =============================================================================
+# Sentinel: store-time sweep
+# =============================================================================
+
+test messagestore-store-overlap-sweeps-sentinel {store with real overlap sweeps sentinels in the batch bracket} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body a]]
+        store sentinel add alice@example.com newer 100
+        # A batch that overlaps the existing citizen via server_id
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s1 body dup] \
+            [ms_msg timestamp 500 server_id s5 body e]]
+        llength [store sentinel list alice@example.com]
+    } -result {0}
+
+test messagestore-store-pending-confirm-does-not-sweep {pending->confirmed dedup does not sweep sentinels} \
+    {*}$ms_common \
+    -body {
+        # Pre-existing citizen + sentinel
+        ms_batch [list \
+            [ms_msg timestamp 50 server_id s_old body anchor]]
+        store sentinel add alice@example.com newer 50
+        # Pending outgoing
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body sent server_status pending]]
+        # Echo: dedup hits via own_id, but the matched row is pending —
+        # this is confirmation, not server overlap. Sentinel must stay
+        # (the gap between 50 and 100 is still uncertain).
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id s_echo own_id oid1 body sent]]
+        llength [store sentinel list alice@example.com]
+    } -result {1}
+
+# =============================================================================
+# Sentinel: get truncation
+# =============================================================================
+
+test messagestore-get-before-truncates-at-sentinel {get before stops at sentinel and signals bounded} \
     {*}$ms_common \
     -body {
         ms_batch [list \
             [ms_msg timestamp 100 server_id s1 body a] \
             [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
         ms_batch [list \
-            [ms_msg timestamp 500 server_id s5 body e] \
-            [ms_msg timestamp 600 server_id s6 body f]]
-        ms_batch [list \
-            [ms_msg timestamp 300 server_id s3 body c] \
-            [ms_msg timestamp 400 server_id s4 body d] \
-            [ms_msg timestamp 500 server_id s5 body dup]]
-        ms_regions
-    } -result {2}
+            [ms_msg timestamp 500 server_id s5 body c] \
+            [ms_msg timestamp 600 server_id s6 body d]]
+        set r [store get before alice@example.com 600]
+        list [llength [ms_msgs $r]] \
+             [dict get [lindex [ms_msgs $r] 0] body] \
+             [ms_bounded $r]
+    } -result {1 c 1}
 
-test messagestore-no-serverid-separate-regions {batches without IDs stay separate} \
+test messagestore-get-after-truncates-at-sentinel {get after stops at sentinel and signals bounded} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
         ms_batch [list \
-            [ms_msg timestamp 500 body e] \
-            [ms_msg timestamp 600 body f]]
-        ms_batch [list \
-            [ms_msg timestamp 300 body c] \
-            [ms_msg timestamp 400 body d]]
-        ms_regions
-    } -result {3}
+            [ms_msg timestamp 500 server_id s5 body c]]
+        set r [store get after alice@example.com 100]
+        list [llength [ms_msgs $r]] \
+             [dict get [lindex [ms_msgs $r] 0] body] \
+             [ms_bounded $r]
+    } -result {1 b 1}
 
-test messagestore-all-deduped-no-extra {all-dup batch merges regions} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 100 own_id oid1 body first]]
-        ms_batch [list [ms_msg timestamp 200 own_id oid1 body duplicate]]
-        ms_regions
-    } -result {1}
-
-test messagestore-overlap-merges-proven {batch with dup merges into existing region} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 50 server_id s1 body old]]
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id s_new body new] \
-            [ms_msg timestamp 200 server_id s1 body dup]]
-        ms_regions
-    } -result {1}
-
-test messagestore-merge-updates-upvar {dup-triggered merge unifies DB under caller region} \
-    {*}$ms_common \
-    -body {
-        store region new r1
-        store store [list [ms_msg timestamp 100 server_id s1 body a]] r1
-        store region new r2
-        store store [list \
-            [ms_msg timestamp 200 server_id s_new body b] \
-            [ms_msg timestamp 100 server_id s1 body dup]] r2
-        set msgs [store get latest alice@example.com]
-        list [llength $msgs] [ms_regions]
-    } -result {2 1}
-
-# -- edge cases: get ---------------------------------------------------------
-
-test messagestore-get-empty-chat {get on a jid with no messages returns empty list} \
-    {*}$ms_common \
-    -body {
-        store get latest nobody@example.com
-    } -result {}
-
-test messagestore-get-before-at-region-start {-before at first timestamp returns empty} \
+test messagestore-get-latest-truncates-at-sentinel {get latest returns only the newest cluster} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b] \
-            [ms_msg timestamp 300 body c]]
-        store get before alice@example.com 100 [ms_region_of 100]
-    } -result {}
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
+        ms_batch [list \
+            [ms_msg timestamp 500 server_id s5 body c] \
+            [ms_msg timestamp 600 server_id s6 body d]]
+        set r [store get latest alice@example.com]
+        set bodies {}
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        list $bodies [ms_bounded $r]
+    } -result {{c d} 1}
 
-test messagestore-get-after-region-boundary {-after stays within region, does not cross gap} \
+test messagestore-get-before-ignores-newer-sentinel {sentinel on the newer side does not affect get before} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d]]
-        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
-    } -result {1 b}
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b] \
+            [ms_msg timestamp 300 server_id s3 body c]]
+        # Sentinel sits past the cursor — irrelevant to "older" walks.
+        store sentinel add alice@example.com newer 300
+        set r [store get before alice@example.com 300]
+        set bodies {}
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        list $bodies [ms_bounded $r]
+    } -result {{a b} 0}
 
-test messagestore-get-after-gap {-after with region stays in region even if gap exists} \
+test messagestore-get-after-ignores-older-sentinel {sentinel on the older side does not affect get after} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d]]
-        # Use region of first batch — no messages after 200 in that region
-        store get after alice@example.com 200 [ms_region_of 200]
-    } -result {}
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b] \
+            [ms_msg timestamp 300 server_id s3 body c]]
+        # Sentinel sits older than the cursor — irrelevant to "newer" walks.
+        store sentinel add alice@example.com older 100
+        set r [store get after alice@example.com 100]
+        set bodies {}
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        list $bodies [ms_bounded $r]
+    } -result {{b c} 0}
 
-test messagestore-get-before-gap {-before with region stays in region even if gap exists} \
+test messagestore-get-latest-with-future-sentinel {get latest returns citizens when sentinel sits newer than all of them (reconnect case)} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d]]
-        # Use region of second batch — no messages before 500 in that region
-        store get before alice@example.com 500 [ms_region_of 500]
-    } -result {}
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        # Reconnect-style sentinel placed after the newest citizen,
+        # marking "more might exist newer than this." get latest must
+        # still return the existing citizens.
+        store sentinel add alice@example.com newer 200
+        set r [store get latest alice@example.com]
+        set bodies {}
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        list $bodies [ms_bounded $r]
+    } -result {{a b} 1}
 
-test messagestore-get-no-cursor-multiple-ranges {no cursor returns latest region} \
+test messagestore-get-latest-newer-cluster-only {get latest with mid-timeline sentinel returns only the newest cluster} \
     {*}$ms_common \
     -body {
+        # Old cluster + sentinel separating + new cluster + future
+        # reconnect sentinel. Only the newest cluster should come back.
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
         ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d]]
-        set msgs [store get latest alice@example.com]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
-    } -result {2 c d}
+            [ms_msg timestamp 500 server_id s5 body c] \
+            [ms_msg timestamp 600 server_id s6 body d]]
+        store sentinel add alice@example.com newer 600
+        set r [store get latest alice@example.com]
+        set bodies {}
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        list $bodies [ms_bounded $r]
+    } -result {{c d} 1}
 
-test messagestore-get-after-beyond-all-data {-after beyond all messages returns empty} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        store get after alice@example.com 200 [ms_region_of 200]
-    } -result {}
+# =============================================================================
+# Sentinel: bounded flag
+# =============================================================================
 
-test messagestore-get-before-below-all-data {-before below all messages returns empty} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        store get before alice@example.com 100 [ms_region_of 100]
-    } -result {}
-
-# -- edge cases: store / live ------------------------------------------
-
-test messagestore-live-dedup-no-extend {deduped message does not create extra rows} \
-    {*}$ms_common \
-    -body {
-        store region new r
-        store store [list [ms_msg timestamp 100 own_id oid1 body first]] r
-        store store [list [ms_msg timestamp 200 own_id oid1 body duplicate]] r
-        testdb eval {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}
-    } -result {1}
-
-test messagestore-batch-out-of-order-timestamps {batch with non-chronological timestamps preserves caller order} \
+test messagestore-bounded-false-without-sentinel {no sentinel -> bounded=false even if result short} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 300 body c] \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        set msgs [store get latest alice@example.com]
-        list [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
-    } -result {c a b}
-
-test messagestore-batch-decreasing-timestamps {batch with decreasing timestamps preserves caller order} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 300 body x] \
-            [ms_msg timestamp 200 body y] \
-            [ms_msg timestamp 100 body z]]
-        set msgs [store get latest alice@example.com]
-        list [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
-    } -result {x y z}
-
-test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 100 body b] \
-            [ms_msg timestamp 100 body c]]
-        set msgs [store get after alice@example.com 100 [ms_region_of 100]]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
-    } -result {2 b c}
-
-test messagestore-get-after-at-exact-last {-after at exact last timestamp returns empty} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b] \
-            [ms_msg timestamp 300 body c]]
-        store get after alice@example.com 300 [ms_region_of 300]
-    } -result {}
-
-test messagestore-batch-single-message {single-message batch works} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 42 body only]]
-        set msgs [store get latest alice@example.com]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
-    } -result {1 only}
-
-test messagestore-empty-batch-noop {empty batch is a no-op} \
-    {*}$ms_common \
-    -body {
-        store region new r
-        store store {} r
-        testdb eval {SELECT count(*) FROM chat_message}
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        ms_bounded [store get latest alice@example.com 50]
     } -result {0}
 
-test messagestore-live-earlier-timestamp {messages with earlier timestamp in same region are visible} \
-    {*}$ms_common \
-    -body {
-        store region new r
-        store store [list [ms_msg timestamp 500 body late]] r
-        store store [list [ms_msg timestamp 100 body early]] r
-        set msgs [store get latest alice@example.com]
-        list [llength $msgs] [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
-    } -result {2 early late}
-
-test messagestore-multi-batch-all-visible {multiple batches in same region all visible} \
-    {*}$ms_common \
-    -body {
-        store region new r
-        store store [list \
-            [ms_msg timestamp 1000 body p1a] \
-            [ms_msg timestamp 1010 body p1b]] r
-        store store [list \
-            [ms_msg timestamp 980 body p2a] \
-            [ms_msg timestamp 990 body p2b]] r
-        llength [store get latest alice@example.com]
-    } -result {4}
-
-# -- multi-chat isolation -----------------------------------------------------
-
-test messagestore-multi-chat-isolation {get only returns messages for requested chat} \
+test messagestore-bounded-false-when-limit-satisfied {sentinel exists but limit satisfied -> bounded=false} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 chat_jid alice@example.com body alice-msg]]
-        ms_batch [list \
-            [ms_msg timestamp 200 chat_jid bob@example.com body bob-msg]] bob@example.com
-        llength [store get latest alice@example.com]
-    } -result {1}
-
-# -- parallel regions --------------------------------------------------------
-
-test messagestore-parallel-regions-overlapping {MAM and live regions stay separate} \
-    {*}$ms_common \
-    -body {
-        store region new mam
-        store region new live
-
-        store store [list [ms_msg timestamp 500 body live1]] live
-        store store [list \
-            [ms_msg timestamp 100 server_id s1 body mam1] \
-            [ms_msg timestamp 200 server_id s2 body mam2]] mam
-        store store [list [ms_msg timestamp 600 body live2]] live
-        store store [list \
-            [ms_msg timestamp 300 server_id s3 body mam3] \
-            [ms_msg timestamp 400 server_id s4 body mam4]] mam
-
-        set latest [store get latest alice@example.com]
-        set mam_after [store get after alice@example.com 100 [ms_region_of 100]]
-        list [ms_regions] \
-             [llength $latest] \
-             [dict get [lindex $latest 0] body] \
-             [dict get [lindex $latest 1] body] \
-             [llength $mam_after] \
-             [dict get [lindex $mam_after 0] body] \
-             [dict get [lindex $mam_after end] body]
-    } -result {2 2 live1 live2 3 mam2 mam4}
-
-test messagestore-parallel-regions-bridge-unifies {bridge merges MAM and live regions} \
-    {*}$ms_common \
-    -body {
-        store region new mam
-        store region new live
-
-        store store [list \
             [ms_msg timestamp 100 server_id s1 body a] \
-            [ms_msg timestamp 200 server_id s2 body b]] mam
-        store store [list [ms_msg timestamp 500 body c]] live
-        store store [list [ms_msg timestamp 600 body d]] live
+            [ms_msg timestamp 200 server_id s2 body b] \
+            [ms_msg timestamp 300 server_id s3 body c]]
+        store sentinel add alice@example.com older 100
+        # limit=2 satisfied without touching the sentinel range
+        set r [store get before alice@example.com 300 2]
+        list [llength [ms_msgs $r]] [ms_bounded $r]
+    } -result {2 0}
 
-        store region bridge alice@example.com mam live
-        set msgs [store get latest alice@example.com]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 3] body]
-    } -result {4 a d}
+# =============================================================================
+# Get around
+# =============================================================================
 
-test messagestore-parallel-multi-chat-isolation {MAM backfill for one chat does not affect another chat} \
-    {*}$ms_common \
-    -body {
-        store region new alice_mam
-        store region new alice_live
-        store region new bob_live
-
-        # Alice: live message, then MAM backfill
-        store store [list [ms_msg timestamp 500 chat_jid alice@example.com body alice-live]] alice_live
-        store store [list \
-            [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-mam1] \
-            [ms_msg timestamp 200 chat_jid alice@example.com server_id as2 body alice-mam2]] alice_mam
-
-        # Bob: independent live messages
-        store store [list \
-            [ms_msg timestamp 300 chat_jid bob@example.com body bob-live1] \
-            [ms_msg timestamp 400 chat_jid bob@example.com body bob-live2]] bob_live
-
-        set alice_latest [store get latest alice@example.com]
-        set alice_mam [store get before alice@example.com 200 [ms_region_of 200 alice@example.com]]
-        set bob_msgs [store get latest bob@example.com]
-        list [llength $alice_latest] [dict get [lindex $alice_latest 0] body] \
-             [llength $alice_mam] [dict get [lindex $alice_mam 0] body] \
-             [llength $bob_msgs] [dict get [lindex $bob_msgs 0] body] [dict get [lindex $bob_msgs 1] body]
-    } -result {1 alice-live 1 alice-mam1 2 bob-live1 bob-live2}
-
-test messagestore-parallel-multi-chat-bridge-isolated {bridging one chat does not merge another chat's regions} \
-    {*}$ms_common \
-    -body {
-        store region new alice_mam
-        store region new alice_live
-        store region new bob_mam
-        store region new bob_live
-
-        # Both chats: MAM + live
-        store store [list \
-            [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-old]] alice_mam
-        store store [list \
-            [ms_msg timestamp 500 chat_jid alice@example.com body alice-new]] alice_live
-        store store [list \
-            [ms_msg timestamp 100 chat_jid bob@example.com server_id bs1 body bob-old]] bob_mam
-        store store [list \
-            [ms_msg timestamp 500 chat_jid bob@example.com body bob-new]] bob_live
-
-        # Bridge only alice
-        store region bridge alice@example.com alice_mam alice_live
-
-        set alice_msgs [store get latest alice@example.com]
-        set bob_latest [store get latest bob@example.com]
-        set bob_regions [testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='bob@example.com'}]
-        list [llength $alice_msgs] \
-             [dict get [lindex $alice_msgs 0] body] [dict get [lindex $alice_msgs 1] body] \
-             [llength $bob_latest] [dict get [lindex $bob_latest 0] body] \
-             $bob_regions
-    } -result {2 alice-old alice-new 1 bob-new 2}
-
-test messagestore-parallel-multi-chat-serverid-merge-isolated {server_id merge in one chat does not affect another} \
-    {*}$ms_common \
-    -body {
-        # Alice: two separate batches that will merge via server_id overlap
-        ms_batch [list \
-            [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-a]]
-        ms_batch [list \
-            [ms_msg timestamp 200 chat_jid alice@example.com server_id as2 body alice-b] \
-            [ms_msg timestamp 100 chat_jid alice@example.com server_id as1 body alice-dup]]
-
-        # Bob: separate batch that should stay independent
-        ms_batch [list \
-            [ms_msg timestamp 300 chat_jid bob@example.com server_id bs1 body bob-x]] bob@example.com
-
-        set alice_msgs [store get latest alice@example.com]
-        set bob_msgs [store get latest bob@example.com]
-        set alice_regions [testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='alice@example.com'}]
-        set bob_regions [testdb eval {SELECT COUNT(DISTINCT region) FROM chat_message WHERE chat_jid='bob@example.com'}]
-        list [llength $alice_msgs] $alice_regions \
-             [llength $bob_msgs] $bob_regions
-    } -result {2 1 1 1}
-
-# -- row format ---------------------------------------------------------------
-
-test messagestore-row-has-region-key {message dicts contain region field} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 100 body test]]
-        set msg [lindex [store get latest alice@example.com] 0]
-        expr {[dict exists $msg region] && [dict get $msg region] != -1}
-    } -result {1}
-
-# -- get around --------------------------------------------------------------
-
-test messagestore-getaround-nearest {getAround finds nearest message and returns context} \
+test messagestore-get-around-nearest {get around finds nearest message and returns context} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -811,7 +854,7 @@ test messagestore-getaround-nearest {getAround finds nearest message and returns
              $anchor
     } -result {5 a c e 300}
 
-test messagestore-getaround-nearest-inexact {getAround snaps to nearest message when target is between messages} \
+test messagestore-get-around-nearest-inexact {get around snaps to nearest message when target is between} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -827,33 +870,7 @@ test messagestore-getaround-nearest-inexact {getAround snaps to nearest message 
              [dict get [lindex $msgs 2] body]
     } -result {200 3 a b c}
 
-test messagestore-getaround-region-scoped {getAround stays within nearest message's region} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
-        ms_batch [list \
-            [ms_msg timestamp 500 body c] \
-            [ms_msg timestamp 600 body d] \
-            [ms_msg timestamp 700 body e]]
-        set result [store get around alice@example.com 600 10]
-        set msgs [dict get $result messages]
-        list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body] \
-             [dict get $result anchor]
-    } -result {3 c d e 600}
-
-test messagestore-getaround-empty {getAround on empty chat returns empty messages and empty anchor} \
-    {*}$ms_common \
-    -body {
-        set result [store get around nobody@example.com 500 10]
-        list [dict get $result messages] [dict get $result anchor]
-    } -result {{} {}}
-
-test messagestore-getaround-anchor-value {getAround anchor is the nearest message's timestamp} \
+test messagestore-get-around-anchor-value {get around anchor = nearest message's timestamp} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -865,38 +882,67 @@ test messagestore-getaround-anchor-value {getAround anchor is the nearest messag
         dict get $result anchor
     } -result {300}
 
-# -- strict region: cursor must exist -----------------------------------------
+test messagestore-get-around-empty {get around on empty chat returns empty messages and empty anchor} \
+    {*}$ms_common \
+    -body {
+        set result [store get around nobody@example.com 500 10]
+        list [dict get $result messages] [dict get $result anchor]
+    } -result {{} {}}
 
-test messagestore-strict-before-no-cross {-before cursor in region A does not pull from region B} \
+test messagestore-get-around-sentinel-bounds {get around truncates at sentinels on both sides} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b]]
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
         ms_batch [list \
-            [ms_msg timestamp 500 body c]]
-        # cursor 500 is in region B — no messages before 500 in region B
-        store get before alice@example.com 500 [ms_region_of 500]
-    } -result {}
+            [ms_msg timestamp 500 server_id s5 body c] \
+            [ms_msg timestamp 600 server_id s6 body d] \
+            [ms_msg timestamp 700 server_id s7 body e]]
+        store sentinel add alice@example.com newer 700
+        set result [store get around alice@example.com 600 10]
+        set msgs [dict get $result messages]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs end] body] \
+             [dict get $result anchor] \
+             [dict get $result bounded_before] \
+             [dict get $result bounded_after]
+    } -result {3 c e 600 1 1}
 
-test messagestore-strict-region-scoped {-before/-after only return messages from given region} \
+test messagestore-get-around-sentinel-one-side-only {get around truncates asymmetrically when sentinel is one-sided} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a] \
-            [ms_msg timestamp 200 body b] \
-            [ms_msg timestamp 300 body c]]
+            [ms_msg timestamp 100 server_id s1 body a] \
+            [ms_msg timestamp 200 server_id s2 body b]]
+        store sentinel add alice@example.com newer 200
         ms_batch [list \
-            [ms_msg timestamp 500 body d]]
-        # Before 300 in region of batch 2 — no results (500 is not < 300)
-        set b [store get before alice@example.com 300 [ms_region_of 500]]
-        # After 200 in region of batch 1 — only 300 (same region)
-        set a [store get after alice@example.com 200 [ms_region_of 200]]
-        list $b [llength $a] [dict get [lindex $a 0] body]
-    } -result {{} 1 c}
+            [ms_msg timestamp 500 server_id s5 body c] \
+            [ms_msg timestamp 600 server_id s6 body d] \
+            [ms_msg timestamp 700 server_id s7 body e]]
+        # Sentinel only on the older side of the anchor; newer side
+        # is open. get around should reach forward through e without
+        # truncation, but stop on the older side at the sentinel.
+        set result [store get around alice@example.com 600 10]
+        set msgs [dict get $result messages]
+        set bodies {}
+        foreach m $msgs { lappend bodies [dict get $m body] }
+        list $bodies \
+             [dict get $result anchor] \
+             [dict get $result bounded_before] \
+             [dict get $result bounded_after]
+    } -result {{c d e} 600 1 0}
 
-test messagestore-empty-result {empty result returns empty list, no error} \
+# =============================================================================
+# Search
+# =============================================================================
+
+test messagestore-search-skips-sentinels {search results never include sentinel rows} \
     {*}$ms_common \
     -body {
-        store get latest nobody@example.com
-    } -result {}
+        ms_batch [list [ms_msg timestamp 100 server_id s1 body needle]]
+        store sentinel add alice@example.com newer 100
+        store search alice@example.com needle
+    } -result {100}
