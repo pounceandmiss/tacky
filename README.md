@@ -6,10 +6,12 @@ A desktop XMPP chat client built with Tcl/Tk. Pre-alpha.
 
 ![Multi-window chat](doc/screenshots/multiwindow.png)
 ![XML Console](doc/screenshots/xmlconsole.png)
+![Call](doc/screenshots/call.png)
 
 ## Core ideas
 
-- Portable backend aiming for a very high level api: libtacky doesn't just help you form and send stanzas, it aims to take care of all the business logic, local caching and settings storage, etc. The gui should stay as simple as possible, only concerning itself with displaying stuff. All methods and events are routed through a bridge ready to transparently be called either in the same thread.
+- Portable backend aiming for a very high level api: libtacky doesn't just help you form and send stanzas, it aims to take care of all the business logic, local caching and settings storage, now also calls, etc. The gui should stay as simple as possible, only concerning itself with displaying stuff. All methods and events are routed through a bridge ready to transparently be called either in the same thread or a different process, or even a different language via JSON.
+- Lightweight, tries to be easily distributable - self-contained statically-linked executable with all dependencies including calls at <20mb
 - Advanced MAM handling: it's aware that the message history it has is not full. Lazy loads from server, aims to support server-side search.
 
 ## Requirements
