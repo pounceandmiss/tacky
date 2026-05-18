@@ -57,6 +57,7 @@ snit::type taco_type {
     component db
     component account -public account
     component setting -public setting
+    component audio -public audio
     component register -public register
     component debugtap -public debugtap
 
@@ -84,6 +85,7 @@ snit::type taco_type {
         install account using taco_account ${selfns}::account \
             -db $db -taco $self -cache-dir $options(-cache-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
+        install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
         install debugtap using taco_debugtap ${selfns}::debugtap -taco $self
         foreach jid [$self account list] {

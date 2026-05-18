@@ -84,6 +84,8 @@ snit::widget chatlistview {
         $contactmenu add separator
         $contactmenu add command -label "Open Chat" \
             -command [mymethod OnOpenChat]
+        $contactmenu add command -label "Start Call" \
+            -command [mymethod OnStartCall]
         $contactmenu add separator
         $contactmenu add command -label "Rename..." \
             -command [mymethod OnRenameContact]
@@ -403,6 +405,13 @@ snit::widget chatlistview {
         if {$item ne "" && [$self IsLeaf $item]} {
             $self ActivateItem $item
         }
+    }
+
+    method OnStartCall {} {
+        set jid [$self SelectedLeafJid]
+        if {$jid eq ""} return
+        $options(-tacky) calls start -acc $options(-acc) \
+            -to [jid bare $jid]
     }
 
     method OnRightClick {x y X Y} {

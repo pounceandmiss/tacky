@@ -30,10 +30,14 @@ snit::type app_type {
             jlog configure -logproc [list jlog_file_writer $options(-debug-dir)] \
                 -defaultlevel debug
         }
+        ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
+        ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
+
         ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
+        catch {::tacky unlisten $self}
         if {$current ne ""} {
             catch {destroy $current}
         }
@@ -240,6 +244,23 @@ snit::type app_type {
         set jid [$notebook CurrentAccountJid]
         if {$jid eq ""} return
         xmlconsole $jid
+    }
+
+    # --- Calls ---
+
+    method OnIncomingCall {ev} {
+        incomingcalldialog open \
+            -acc [dict get $ev -acc] \
+            -sid [dict get $ev -sid] \
+            -from [dict get $ev -from]
+    }
+
+    method OnOutgoingCall {ev} {
+        callwindow show \
+            -acc [dict get $ev -acc] \
+            -sid [dict get $ev -sid] \
+            -peer [dict get $ev -to] \
+            -direction outgoing
     }
 
     method OpenMamInfo {} {
