@@ -144,3 +144,96 @@ test client-bus-emit-publishes {emit publishes module:event on bus} \
         c emit test <Ping> -data hello
         set got
     } -result {-data hello}
+
+# -- XEP-0280 carbons ------------------------------------------------------
+
+# Helper: find the first enable-carbons IQ in mock_conn's written log.
+proc ::find_enable_carbons {written} {
+    foreach s $written {
+        if {[xsearch $s -get tag] ne "iq"} continue
+        if {[xsearch $s enable -ns urn:xmpp:carbons:2 -get node] ne ""} {
+            return $s
+        }
+    }
+    return ""
+}
+
+test client-carbons-enabled-on-ready {OnReady sends <enable xmlns=carbons:2/> on fresh session} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        set iq [::find_enable_carbons [c.conn get_written]]
+        expr {$iq ne "" && [xsearch $iq -get @type] eq "set"}
+    } -result {1}
+
+test client-carbons-not-re-enabled-on-resume {resumed stream preserves carbons state — no re-enable} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 1
+        ::find_enable_carbons [c.conn get_written]
+    } -result {}
+
+test client-carbons-unwraps-self-sent {<sent> carbon from our own bare JID returns the forwarded inner message} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        set carbon [j message -from user@test.example.com -to user@test.example.com {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -from user@test.example.com/res2 -to peer@example.org/x -type chat {
+                        j body #body hello
+                    }
+                }
+            }
+        }]
+        set inner [c UnwrapCarbon $carbon]
+        list [xsearch $inner -get tag] \
+             [xsearch $inner -get @from] \
+             [xsearch $inner body -get body]
+    } -result {message user@test.example.com/res2 hello}
+
+test client-carbons-unwraps-received {<received> carbon also unwraps} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        set carbon [j message -from user@test.example.com -to user@test.example.com {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -from peer@example.org/x -to user@test.example.com/res2 -type chat {
+                        j body #body howdy
+                    }
+                }
+            }
+        }]
+        xsearch [c UnwrapCarbon $carbon] body -get body
+    } -result {howdy}
+
+test client-carbons-drops-forged {carbon envelope from a foreign bare JID is dropped per XEP-0280 §11} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        # Attacker-shaped envelope: outer @from is not our bare JID.
+        # Returning the inner would let any peer inject stanzas as us.
+        set carbon [j message -from attacker@evil.org -to user@test.example.com {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -from user@test.example.com/res2 -to peer@example.org/x {
+                        j body #body forged
+                    }
+                }
+            }
+        }]
+        c UnwrapCarbon $carbon
+    } -result {}
+
+test client-carbons-ignores-plain {a regular message with no carbon wrapper returns empty} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        set m [j message -from peer@example.org/x -to user@test.example.com -type chat {
+            j body #body hi
+        }]
+        c UnwrapCarbon $m
+    } -result {}

@@ -91,6 +91,11 @@ snit::type taco_client {
     method OnReady {resumed} {
         set options(-jid) [$conn cget -bound-jid]
         if {!$resumed} {
+            # XEP-0280: ask the server to carbon-copy messages sent and
+            # received by our other resources. Stream resumption preserves
+            # carbons state, so only enable on a fresh session.
+            $iq request -type set \
+                -payload [j enable -ns urn:xmpp:carbons:2]
             $bus publish <Ready>
         }
     }
@@ -150,6 +155,28 @@ snit::type taco_client {
         return $stanza
     }
 
+    # XEP-0280 carbon unwrap. Returns the forwarded inner <message> if
+    # $stanza is a <sent> or <received> carbon from our own bare JID;
+    # empty string otherwise (not a carbon, or a forged one from a
+    # foreign JID we must ignore per §11).
+    method UnwrapCarbon {stanza} {
+        set ns urn:xmpp:carbons:2
+        foreach kind {sent received} {
+            set wrap [xsearch $stanza $kind -ns $ns -get node]
+            if {$wrap eq ""} continue
+            set from [xsearch $stanza -get @from]
+            set myBare [jid bare $options(-jid)]
+            if {$from ne "" && [jid bare $from] ne $myBare} return
+            set fwd [xsearch $wrap forwarded \
+                -ns urn:xmpp:forward:0 -get node]
+            if {$fwd eq ""} return
+            set inner [xsearch $fwd message -get node]
+            if {$inner eq ""} return
+            return [$self ensureTo $inner]
+        }
+        return
+    }
+
     method OnStanza {stanza} {
         set tag [dict get $stanza tag]
         if {$tag in {message iq presence}} {
@@ -158,6 +185,11 @@ snit::type taco_client {
         switch -- $tag {
             iq       { $iq feed $stanza }
             message  {
+                # Replace carbon wrappers with their inner forwarded
+                # message so the rest of the chain sees one shape.
+                set unwrapped [$self UnwrapCarbon $stanza]
+                if {$unwrapped ne ""} { set stanza $unwrapped }
+
                 # Handler chain — first claimer wins:
                 #   mam:     MAM result stanzas → message.tcl backfill path
                 #   muc:     groupchat → store under room@muc?join
