@@ -130,11 +130,11 @@ snit::widget profilesettings {
     method OnNameSaved {stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ ne "error"} {
-            $self OnResult Name ok ""
+            $self OnResult Name [list ok ""]
         } else {
             set errText [xsearch $stanza error text -get body]
             if {$errText eq ""} { set errText "Nick publish failed" }
-            $self OnResult Name error $errText
+            $self OnResult Name [list error $errText]
         }
     }
 
