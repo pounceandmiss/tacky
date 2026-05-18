@@ -43,7 +43,7 @@ snit::type sm {
     # raises "SM queue full"; the caller (conn) catches this and triggers
     # a disconnect/reconnect.  The overflowing stanza is already in the
     # queue at that point, so SM resumption will replay it.
-    option -max-queue-size -default 500
+    option -max-queue-size -default 5000
 
     constructor {args} {
         $self configurelist $args
