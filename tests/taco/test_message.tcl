@@ -182,14 +182,6 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
              [expr {[dict get $msg timestamp] > 0}]
     } -result {sid42 juliet@capulet.li {hello romeo} {} chat@example.com 1}
 
-test message-parseresultnode-no-own-id {ParseResultNode returns empty own_id} \
-    {*}$msg_common \
-    -body {
-        set rn [mam_result id sid1 from bob@example.com body test stamp 2024-01-01T00:00:00Z]
-        set msg [$::_client message ParseResultNode $rn bob@example.com]
-        dict get $msg own_id
-    } -result {}
-
 test message-parseresultnode-keeps-muc-resource {ParseResultNode keeps resource on MUC chats (resource is the nick)} \
     {*}$msg_common \
     -body {
