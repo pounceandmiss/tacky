@@ -13,6 +13,7 @@ snit::type app_type {
 
     constructor args {
         $self configurelist $args
+        wm title . "Tacky"
         switch $options(-backend) {
             process {
                 tacky_init_process -transient $options(-transient)
@@ -88,8 +89,6 @@ snit::type app_type {
     }
 
     method BuildMainUI {} {
-        wm title . "Tacky"
-
         # TODO: replace with ::tacky setting get once setting module exists
         set chatModeVar "inline"
 
