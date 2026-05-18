@@ -5,6 +5,8 @@
 package require tcltest
 package require control
 package require snit
+package require rtc
+package require rtcma
 set dir [file dirname [info script]]
 lappend auto_path [file join $dir libtacky]
 package require libtacky

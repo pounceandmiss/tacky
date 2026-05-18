@@ -113,6 +113,8 @@ snit::widget chatpanel {
             $mb.chat add checkbutton -label "Show JID Instead of Name" \
                 -variable [myvar showJidIn1to1] \
                 -command [mymethod ToggleShowJidIn1to1]
+            $mb.chat add command -label "Start Call" \
+                -command [mymethod StartCall]
         }
         $mb add cascade -label "Chat" -menu $mb.chat
     }
@@ -275,6 +277,11 @@ snit::widget chatpanel {
 
     method RequestVoice {} {
         ::tacky muc requestVoice -acc $options(-acc) -jid $roomJid
+    }
+
+    method StartCall {} {
+        ::tacky calls start -acc $options(-acc) \
+            -to [jid bare $options(-jid)]
     }
 
     method DestroyRoom {} {
