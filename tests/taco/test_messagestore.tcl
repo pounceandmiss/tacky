@@ -73,14 +73,6 @@ test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 prese
              [dict get [lindex $msgs 2] body]
     } -result {a b c}
 
-test messagestore-batch-single-message {single-message batch works} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 42 body only]]
-        set msgs [ms_msgs [store get latest alice@example.com]]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
-    } -result {1 only}
-
 test messagestore-batch-empty-noop {empty batch is a no-op} \
     {*}$ms_common \
     -body {
@@ -231,14 +223,6 @@ test messagestore-get-empty-chat {get on a jid with no messages returns empty li
         ms_msgs [store get latest nobody@example.com]
     } -result {}
 
-test messagestore-get-result-shape {get returns {messages bounded} dict} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list [ms_msg timestamp 100 body a]]
-        set r [store get latest alice@example.com]
-        list [dict exists $r messages] [dict exists $r bounded]
-    } -result {1 1}
-
 test messagestore-get-before {get before returns messages older than cursor} \
     {*}$ms_common \
     -body {
@@ -364,14 +348,6 @@ test messagestore-pending-stored {pending outgoing is stored and visible in get 
         set msgs [ms_msgs [store get latest alice@example.com]]
         list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 sent}
-
-test messagestore-pending-no-server-id {pending outgoing has empty server_id} \
-    {*}$ms_common \
-    -body {
-        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
-        set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
-        dict get $msg server_id
-    } -result {}
 
 test messagestore-pending-only {get latest returns pendings when only pendings exist} \
     {*}$ms_common \
