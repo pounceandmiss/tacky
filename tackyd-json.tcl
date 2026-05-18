@@ -170,7 +170,7 @@ jsonify_type jsonify \
 
         message/<Received>      {dict {message message}}
         message/<Sent>          {dict {message message}}
-        message/<Patch>         {dict {message message}}
+        message/<Patch>         {dict {messages {list message}}}
         message/<CatchupDone>   {dict {count int}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
