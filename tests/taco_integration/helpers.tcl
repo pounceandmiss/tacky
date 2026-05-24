@@ -1,3 +1,5 @@
+package provide tacky::testhelpers::integration 0.1
+
 namespace eval ::test::helpers {}
 
 # Wait for a fully-qualified variable to become truthy (non-zero, non-empty).

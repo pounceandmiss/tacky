@@ -4,6 +4,11 @@
 # pass through end-to-end (the proxy never terminates TLS). Calling
 # "kill" abruptly severs both sides, causing the client's reader to
 # see EOF -- same as a real network drop from the server.
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers::integration
+package require libtacky
+package require taco
 
 snit::type TcpProxy {
     variable listenSock ""

@@ -1,21 +1,12 @@
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
+
 ::tcltest::testConstraint hasMagick [expr {![catch {exec magick -version}]}]
 
 test avatar-resize-for-publish {ResizeForPublish returns valid PNG} \
     -constraints hasMagick \
-    -setup {
-        tacky_type create tacky
-        rename conn _real_conn
-        rename mock_conn conn
-        tacky account add -acc user@test
-        set _client [tacky client user@test]
-        $_client.conn configure -bound-jid user@test/res
-        $_client.conn fire_ready 0
-    } \
-    -cleanup {
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    } \
+    {*}[tacky_env -mock conn -account user@test -bound-jid user@test/res] \
     -body {
         # Generate a 256x256 red PNG via magick pipe (binary-safe)
         set pipe [open |[list magick -size 256x256 xc:red png:-] rb]

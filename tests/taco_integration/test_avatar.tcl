@@ -1,3 +1,8 @@
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers::integration
+package require libtacky
+package require taco
 package require base64
 package require sha1
 

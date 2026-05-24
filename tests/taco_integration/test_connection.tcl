@@ -1,3 +1,9 @@
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers::integration
+package require libtacky
+package require taco
+
 namespace eval ::test::bareconn {
 
     # Test configuration - matches with_prosody.sh

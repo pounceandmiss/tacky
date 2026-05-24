@@ -1,3 +1,7 @@
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
+
 set common {
     -setup {
         tacky account add -acc user@example.com

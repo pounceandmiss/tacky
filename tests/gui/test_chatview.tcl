@@ -1,4 +1,9 @@
 # Unit tests for chatview — end-to-end from stanza to widget
+package require tcltest
+namespace import ::tcltest::*
+package require libtacky
+package require taco
+package require tacky::mockconn
 
 set acc user@test.example.com
 

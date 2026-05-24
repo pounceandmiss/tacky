@@ -1,3 +1,5 @@
+package require tcltest
+namespace import ::tcltest::*
 package require taco
 
 set ms_common {

@@ -1,3 +1,8 @@
+package require tcltest
+namespace import ::tcltest::*
+package require libtacky
+package require taco
+
 # Sample registration query with XEP-0004 form, media element, and inline BOB data
 set ::sample_reg_query [xmppreader string -zap yes {<query xmlns='jabber:iq:register'>
  <x xmlns='jabber:x:data'
@@ -175,10 +180,10 @@ proc drive_to_form {} {
 
 set common {
     -setup {
-        set ::_events {}
-        tacky_type create tacky
         rename bareconn _real_bareconn
         rename mock_bareconn bareconn
+        tacky_type create ::tacky
+        set ::_events {}
         tacky listen register <Form>       {apply {{ev} {lappend ::_events [list <Form> {*}$ev]}}}
         tacky listen register <MediaReady> {apply {{ev} {lappend ::_events [list <MediaReady> {*}$ev]}}}
         tacky listen register <Success>    {apply {{ev} {lappend ::_events [list <Success> {*}$ev]}}}

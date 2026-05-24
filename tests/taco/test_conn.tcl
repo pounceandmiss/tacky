@@ -1,3 +1,7 @@
+package require tcltest
+namespace import ::tcltest::*
+package require taco
+
 snit::type mockbaseconn {
     variable state
     variable written

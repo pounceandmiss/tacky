@@ -1,4 +1,7 @@
 # Unit tests for FormatTimestampISO (inverse of ParseTimestamp)
+package require tcltest
+namespace import ::tcltest::*
+package require taco
 
 test format-timestamp-roundtrip {round-trip with fractional seconds} -body {
     set stamp "2024-06-15T12:30:00.123456Z"

@@ -1,16 +1,17 @@
 #!/usr/bin/env tclsh9.0
 # Usage: tclsh9.0 test_all.tcl
 #   NO_THREADED=1  - skip threaded (tacky_threaded_type) tests
+#   NO_PROCESS=1   - skip process (tacky_process_type) tests
 #   XMPP_SERVER=x  - run integration tests (requires SPOOF_SSL_CERT)
 package require tcltest
-package require control
-package require snit
-package require rtc
-package require rtcma
-set dir [file dirname [info script]]
-lappend auto_path [file join $dir libtacky]
-package require libtacky
 namespace import ::tcltest::*
+
+set dir [file dirname [info script]]
+lappend auto_path \
+    [file join $dir libtacky] \
+    [file join $dir tests taco] \
+    [file join $dir tests taco_integration]
+
 set _server [expr {[info exists ::env(XMPP_SERVER)] ? $::env(XMPP_SERVER) : ""}]
 
 if {$_server ne "" && ![info exists ::env(SPOOF_SSL_CERT)]} {
@@ -21,15 +22,12 @@ if {$_server ne ""} {
     ::tcltest::testConstraint notProsody   [expr {$_server ne "prosody"}]
     ::tcltest::testConstraint notMongoose  [expr {$_server ne "mongoose"}]
     ::tcltest::testConstraint notEjabberd  [expr {$_server ne "ejabberd"}]
-    package require taco
-    foreach script [lsort [glob [file join $dir tests taco_integration *.tcl]]] {
+    foreach script [lsort [glob [file join $dir tests taco_integration test_*.tcl]]] {
         source $script
     }
 }
 
-
-
-foreach script [lsort [glob [file join $dir tests taco *.tcl]]] {
+foreach script [lsort [glob [file join $dir tests taco test_*.tcl]]] {
     source $script
 }
 

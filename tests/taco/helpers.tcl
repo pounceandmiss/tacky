@@ -1,4 +1,9 @@
 # Shared test helpers for tacky dual-mode (direct + threaded) testing
+package provide tacky::testhelpers 0.1
+package require tcltest
+package require libtacky
+package require taco
+package require tacky::mockconn
 
 ::tcltest::testConstraint hasThread [expr {
     ![catch {package require Thread}]
@@ -64,4 +69,147 @@ proc tacky_test {name desc args} {
             -cleanup "$user_cleanup\ntacky destroy" \
             {*}$rest
     }
+}
+
+# tacky_env — returns {-setup body -cleanup body} for a tcltest test.
+#
+# Layers are applied bottom-up. Each layer's undo is pushed onto
+# ::_tacky_env_stack only after its do succeeds, so a partial setup
+# failure leaves only the completed layers' undos on the stack.
+# Cleanup walks the stack in reverse with `catch` around each step.
+#
+# Layer order (bottom to top):
+#   1. tacky          tacky_type create tacky                            (always)
+#   2. emit override  stub or capture tacky.emit             (-stub-emit/-capture-emit)
+#   3. mock factory   swap mock_conn into place                          (-mock)
+#   4. client         either via -account or -taco-client
+#   5. bound-jid      configure bound-jid + fire_ready on the client     (-bound-jid)
+#   6. avatarcache    instantiate avatarcache from given class           (-avatarcache)
+#   7. extra-setup    user script appended after all layers (no auto-undo)
+#
+# Options:
+#   -mock {none|conn}             Default: none.
+#   -stub-emit 0|1                Drop all emits.
+#   -capture-emit 0|1             Append emits to ::_emitted (list of {module event args}).
+#   -account JID                  `tacky account add -acc JID`; sets ::_client.
+#   -taco-client {opts...}        `taco_client c {*}$opts`.
+#   -bound-jid JID                After client creation, configure bound-jid + fire_ready.
+#   -avatarcache CLASS            `CLASS create avatarcache`; teardown destroys it.
+#   -extra-setup SCRIPT           Appended to setup body (no automatic undo).
+#   -extra-cleanup SCRIPT         Runs before the layer-stack teardown.
+#
+# Mutually-exclusive pairs: -account/-taco-client, -stub-emit/-capture-emit.
+proc tacky_env {args} {
+    array set opts {
+        -mock          none
+        -stub-emit     0
+        -capture-emit  0
+        -account       ""
+        -taco-client   ""
+        -bound-jid     ""
+        -avatarcache   ""
+        -extra-setup   ""
+        -extra-cleanup ""
+    }
+    array set opts $args
+
+    if {$opts(-account) ne "" && $opts(-taco-client) ne ""} {
+        error "tacky_env: -account and -taco-client are mutually exclusive"
+    }
+    if {$opts(-stub-emit) && $opts(-capture-emit)} {
+        error "tacky_env: -stub-emit and -capture-emit are mutually exclusive"
+    }
+    if {$opts(-mock) ni {none conn}} {
+        error "tacky_env -mock: expected {none|conn}, got $opts(-mock)"
+    }
+    if {$opts(-bound-jid) ne "" && $opts(-account) eq "" && $opts(-taco-client) eq ""} {
+        error "tacky_env: -bound-jid requires -account or -taco-client"
+    }
+
+    # Each layer is {do undo}. Empty undo = no separate teardown.
+    set layers {}
+
+    lappend layers [list {tacky_type create tacky} {tacky destroy}]
+
+    if {$opts(-stub-emit)} {
+        lappend layers [list \
+            {oo::objdefine tacky method emit {module event args} {}} \
+            {}]
+    } elseif {$opts(-capture-emit)} {
+        lappend layers [list {
+            set ::_emitted {}
+            oo::objdefine tacky method emit {module event args} {
+                lappend ::_emitted [list $module $event {*}$args]
+            }
+        } {unset -nocomplain ::_emitted}]
+    }
+
+    switch -- $opts(-mock) {
+        conn {
+            lappend layers [list {
+                rename conn _real_conn
+                rename mock_conn conn
+            } {
+                rename conn mock_conn
+                rename _real_conn conn
+            }]
+        }
+    }
+
+    set clientRef ""
+    if {$opts(-account) ne ""} {
+        set acc $opts(-account)
+        set clientRef {$::_client}
+        lappend layers [list [subst -nocommands {
+            tacky account add -acc $acc
+            set ::_client [tacky client $acc]
+        }] {unset -nocomplain ::_client}]
+    } elseif {$opts(-taco-client) ne ""} {
+        set clientRef c
+        lappend layers [list \
+            [list taco_client c {*}$opts(-taco-client)] \
+            {c destroy}]
+    }
+
+    if {$opts(-bound-jid) ne ""} {
+        set bj $opts(-bound-jid)
+        lappend layers [list "$clientRef.conn configure -bound-jid $bj
+$clientRef.conn fire_ready 0" {}]
+    }
+
+    if {$opts(-avatarcache) ne ""} {
+        set ac $opts(-avatarcache)
+        lappend layers [list "$ac create avatarcache" {avatarcache destroy}]
+    }
+
+    if {$opts(-extra-setup) ne ""} {
+        lappend layers [list $opts(-extra-setup) {}]
+    }
+
+    set setupBody "set ::_tacky_env_stack {}\n"
+    foreach layer $layers {
+        lassign $layer do undo
+        append setupBody $do \n
+        if {$undo ne ""} {
+            append setupBody "lappend ::_tacky_env_stack " [list $undo] \n
+        }
+    }
+
+    set cleanupBody ""
+    if {$opts(-extra-cleanup) ne ""} {
+        append cleanupBody $opts(-extra-cleanup) \n
+    }
+    append cleanupBody {
+        if {[info exists ::_tacky_env_stack]} {
+            try {
+                foreach _u [lreverse $::_tacky_env_stack] {
+                    eval $_u
+                }
+            } finally {
+                unset ::_tacky_env_stack
+            }
+        }
+    }
+
+    return [list -setup $setupBody -cleanup $cleanupBody]
 }

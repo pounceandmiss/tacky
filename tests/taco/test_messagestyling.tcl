@@ -1,4 +1,7 @@
 # Unit tests for messagestyling (XEP-0393)
+package require tcltest
+namespace import ::tcltest::*
+package require taco
 
 test ms-plain {plain text passthrough} -body {
     messagestyling::parse "hello world"

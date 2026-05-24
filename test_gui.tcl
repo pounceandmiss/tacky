@@ -5,23 +5,23 @@ proc bgerror {message} {
     puts stderr $::errorInfo
 }
 package require tcltest
-package require control
-package require snit
+namespace import ::tcltest::*
+
 set dir [file dirname [info script]]
-lappend auto_path [file join $dir libtacky]
+lappend auto_path \
+    [file join $dir libtacky] \
+    [file join $dir tests taco]
+
+# Match production load order from main.tcl so gui/*.tcl can be sourced.
+package require Tk
+ttk::style theme use clam
+package require snit
 package require libtacky
+package require taco
 
 foreach script [lsort [glob [file join $dir gui *.tcl]]] {
     source $script
 }
-
-# Bootstrap: create and destroy tacky so conn type is loaded
-tacky_type create _bootstrap
-_bootstrap destroy
-
-source [file join $dir tests taco mock_conn.tcl]
-
-namespace import ::tcltest::*
 
 # Helper: let the event loop run for $ms milliseconds.
 proc wait {{ms 300}} {
