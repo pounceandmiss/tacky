@@ -1,10 +1,10 @@
+package require tcltest
+namespace import ::tcltest::*
+package require libtacky
+
 set common {
-    -setup {
-        tacky_type create tacky
-    }
-    -cleanup {
-        tacky destroy
-    }
+    -setup   {tacky_type create ::tacky}
+    -cleanup {tacky destroy}
 }
 
 proc ::_test_cb {result} {

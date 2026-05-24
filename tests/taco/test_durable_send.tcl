@@ -1,4 +1,8 @@
 # Tests for durable message send (store-before-send, confirmation, retry)
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
+package require taco
 
 # -- messagestore: server_status -----------------------------------------------
 
@@ -113,24 +117,10 @@ proc ds_muc_join {room nick} {
     c.conn feed [ds_muc_presence from $room/$nick]
 }
 
-set ds_msg_common {
-    -setup {
-        tacky_type create tacky
-
-        rename conn _real_conn
-        rename mock_conn conn
-
-        taco_client c \
-            -host test.example.com -port 5222 \
-            -username user -password pass -resource res
-    }
-    -cleanup {
-        catch {c destroy}
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set ds_msg_common [tacky_env -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+}]
 
 test ds-send-stores-pending {send stores message with pending status before writing} \
     {*}$ds_msg_common \

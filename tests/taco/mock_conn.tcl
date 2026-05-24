@@ -1,3 +1,6 @@
+package provide tacky::mockconn 0.1
+package require snit
+
 snit::type mock_conn {
     variable written
     variable connected

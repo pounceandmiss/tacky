@@ -1,4 +1,7 @@
 # Unit tests for taco_client_bus
+package require tcltest
+namespace import ::tcltest::*
+package require taco
 
 test bus-subscribe-publish {subscribe and publish delivers to subscriber} \
     -setup { taco_client_bus create testbus } \

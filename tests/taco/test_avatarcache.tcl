@@ -1,6 +1,8 @@
-# Test-only subclass: uses simple strings as "image" handles.
-# avatarcache_base is already available via tacky.tcl (sourced by test_all.tcl).
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
+# Test-only subclass: uses simple strings as "image" handles.
 oo::class create test_avatarcache {
     superclass avatarcache_base
     variable Counter
@@ -23,25 +25,11 @@ oo::class create test_avatarcache {
     }
 }
 
-set ac_common {
-    -setup {
-        set ::deleted_images {}
-        tacky_type create tacky
-        rename conn _real_conn
-        rename mock_conn conn
-        tacky account add -acc user@test
-        set _client [tacky client user@test]
-        $_client.conn configure -bound-jid user@test/res
-        $_client.conn fire_ready 0
-        test_avatarcache create avatarcache
-    }
-    -cleanup {
-        avatarcache destroy
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set ac_common [tacky_env -mock conn \
+    -account user@test \
+    -bound-jid user@test/res \
+    -avatarcache test_avatarcache \
+    -extra-setup {set ::deleted_images {}}]
 
 # -- track / untrack --------------------------------------------------------
 
@@ -127,12 +115,8 @@ test avatarcache-notify-untracked-not-called {untracked tag not notified} \
 # -- isolation -------------------------------------------------------------
 
 test avatarcache-different-acc {same jid different acc are independent} \
-    {*}$ac_common \
-    -setup {
+    {*}[tacky_env -mock conn -extra-setup {
         set ::deleted_images {}
-        tacky_type create tacky
-        rename conn _real_conn
-        rename mock_conn conn
         tacky account add -acc a@test
         tacky account add -acc b@test
         set _ca [tacky client a@test]
@@ -142,7 +126,7 @@ test avatarcache-different-acc {same jid different acc are independent} \
         $_ca.conn fire_ready 0
         $_cb.conn fire_ready 0
         test_avatarcache create avatarcache
-    } \
+    } -extra-cleanup {avatarcache destroy}] \
     -body {
         set img1 [avatarcache track \
             -acc a@test -jid c@d -tag t1 -command {apply {{img} {}}}]

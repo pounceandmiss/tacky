@@ -1,22 +1,12 @@
 # Unit tests for capsmod (XEP-0115)
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
-set caps_common {
-    -setup {
-        tacky_type create tacky
-        oo::objdefine tacky method emit {module event args} {}
-        rename conn _real_conn
-        rename mock_conn conn
-        taco_client c \
-            -host test.example.com -port 5222 \
-            -username user -password pass -resource res
-    }
-    -cleanup {
-        catch {c destroy}
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set caps_common [tacky_env -stub-emit 1 -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+}]
 
 test caps-verstr-1 {XEP-0115 example verification string} {*}$caps_common -body {
     # Build the XEP example disco#info query node using j

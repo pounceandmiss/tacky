@@ -1,4 +1,6 @@
 # Unit tests for json_backend.tcl JSON formatting and dispatch logic.
+package require tcltest
+namespace import ::tcltest::*
 
 source [file join [file dirname [info script]] .. .. tackyd-json.tcl]
 

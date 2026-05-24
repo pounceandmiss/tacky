@@ -1,26 +1,11 @@
-set common {
-    -setup {
-        tacky_type create tacky
-        oo::objdefine tacky method emit {module event args} {
-            lappend ::_emitted [list $module $event {*}$args]
-        }
-        set ::_emitted {}
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
-        # Inject mock_conn via rename (same pattern as test_conn.tcl)
-        rename conn _real_conn
-        rename mock_conn conn
-
-        taco_client c \
-            -host test.example.com -port 5222 \
-            -username user -password pass -resource res
-    }
-    -cleanup {
-        catch {c destroy}
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set common [tacky_env -capture-emit 1 -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+}]
 
 # -- OnReady ----------------------------------------------------------------
 

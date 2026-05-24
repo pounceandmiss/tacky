@@ -1,22 +1,11 @@
 # Unit tests for taco_message
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
 set acc user@test.example.com
 
-set msg_common {
-    -setup {
-        rename conn _real_conn
-        rename mock_conn conn
-        tacky_type create tacky
-        tacky account add -acc user@test.example.com
-        set ::_client [tacky client user@test.example.com]
-    }
-    -cleanup {
-        rename conn mock_conn
-        rename _real_conn conn
-        unset -nocomplain ::_client
-        tacky destroy
-    }
-}
+set msg_common [tacky_env -mock conn -account $acc]
 
 # Helper: build a message dict
 proc msg_msg {args} {

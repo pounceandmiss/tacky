@@ -1,23 +1,12 @@
 # Unit tests for taco_muc
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
-set muc_common {
-    -setup {
-        tacky_type create tacky
-
-        rename conn _real_conn
-        rename mock_conn conn
-
-        taco_client c \
-            -host test.example.com -port 5222 \
-            -username user -password pass -resource res
-    }
-    -cleanup {
-        catch {c destroy}
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set muc_common [tacky_env -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+}]
 
 # -- Helpers --
 

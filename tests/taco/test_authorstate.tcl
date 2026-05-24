@@ -1,22 +1,11 @@
 # Tests for taco_authorstate (per-chat author display state).
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
 set acc user@test.example.com
 
-set author_common {
-    -setup {
-        rename conn _real_conn
-        rename mock_conn conn
-        tacky_type create tacky
-        tacky account add -acc user@test.example.com
-        set ::_client [tacky client user@test.example.com]
-    }
-    -cleanup {
-        rename conn mock_conn
-        rename _real_conn conn
-        unset -nocomplain ::_client
-        tacky destroy
-    }
-}
+set author_common [tacky_env -mock conn -account $acc]
 
 proc roster_set {jid name} {
     $::_client db eval {

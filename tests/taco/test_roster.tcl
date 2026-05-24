@@ -1,22 +1,12 @@
 # Unit tests for roster subscription management (RFC 6121 §3)
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers
 
-set roster_common {
-    -setup {
-        tacky_type create tacky
-        rename conn _real_conn
-        rename mock_conn conn
-        tacky account add -acc user@example.com
-        set _client [tacky client user@example.com]
-        $_client.conn configure -bound-jid user@example.com/res1
-        $_client.conn fire_ready 0
-        $_client.conn clear
-    }
-    -cleanup {
-        rename conn mock_conn
-        rename _real_conn conn
-        tacky destroy
-    }
-}
+set roster_common [tacky_env -mock conn \
+    -account user@example.com \
+    -bound-jid user@example.com/res1 \
+    -extra-setup {$::_client.conn clear}]
 
 # -- Outgoing: subscribe ------------------------------------------------------
 

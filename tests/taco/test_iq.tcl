@@ -1,3 +1,7 @@
+package require tcltest
+namespace import ::tcltest::*
+package require taco
+
 # --- test helpers ---
 
 variable iq_test_sent {}
