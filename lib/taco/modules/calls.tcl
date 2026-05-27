@@ -12,7 +12,7 @@
 #   ;# per-call device override; does not touch the persisted preference.
 #
 # Enumeration and the persisted preferred device + volume live on the
-# process-global `audio` module (see libtacky/taco/audio.tcl). Volume
+# process-global `audio` module (see lib/taco/modules/audio.tcl). Volume
 # has no per-call override — `tacky audio setVolume` is the only knob.
 #
 # tacky listen calls <Outgoing>        $cmd  ;# -sid $sid -to $jid

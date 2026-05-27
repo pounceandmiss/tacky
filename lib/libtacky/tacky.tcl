@@ -262,9 +262,9 @@ oo::class create tacky_threaded_type {
     }
 }
 
-set _tacky_backend_script [file join [file dirname [info script]] .. tackyd-tcl.tcl]
+set _tacky_backend_script [file join [file dirname [info script]] .. .. bin tackyd.tcl]
 
-# Process-based backend: taco runs in a child process (tackyd-tcl.tcl),
+# Process-based backend: taco runs in a child process (bin/tackyd.tcl),
 # communicating over stdin/stdout with length-prefixed messages (lenpipe).
 #
 # Wire shape mirrors tackyd-json.tcl, just with Tcl lists/dicts on the

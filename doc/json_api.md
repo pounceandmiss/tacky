@@ -1,7 +1,7 @@
 # JSON API
 
 Non-Tcl frontends drive the taco backend over stdin/stdout using
-length-prefixed JSON messages via `libtacky/tackyd-json.tcl`.
+length-prefixed JSON messages via `bin/tackyd-json.tcl`.
 
 ## Transport
 
@@ -93,14 +93,14 @@ any error from the underlying method is silently discarded.
 ## Launching
 
 ```sh
-tclsh9.0 libtacky/tackyd-json.tcl
+tclsh9.0 bin/tackyd-json.tcl
 ```
 
 The backend reads JSON from stdin and writes JSON to stdout.
 Pass taco_type constructor args on the command line:
 
 ```sh
-tclsh9.0 libtacky/tackyd-json.tcl -transient 0
+tclsh9.0 bin/tackyd-json.tcl -transient 0
 ```
 
 With `-transient 0`, accounts and messages persist to SQLite
@@ -111,5 +111,5 @@ Try it out in bash (see empty account list):
 ```sh
 msg='["account", "list", {}, 1]'
 printf '%d\n%s' ${#msg} "$msg" \
-  | tclsh9.0 libtacky/tackyd-json.tcl; echo
+  | tclsh9.0 bin/tackyd-json.tcl; echo
 ```

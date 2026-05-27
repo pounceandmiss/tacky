@@ -9,10 +9,10 @@ namespace import ::tcltest::*
 
 set dir [file dirname [info script]]
 lappend auto_path \
-    [file join $dir libtacky] \
+    [file join $dir lib] \
     [file join $dir tests taco]
 
-# Match production load order from main.tcl so gui/*.tcl can be sourced.
+# Match production load order from bin/tacky.tcl so gui/*.tcl can be sourced.
 package require Tk
 ttk::style theme use clam
 package require snit

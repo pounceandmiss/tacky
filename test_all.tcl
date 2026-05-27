@@ -8,7 +8,7 @@ namespace import ::tcltest::*
 
 set dir [file dirname [info script]]
 lappend auto_path \
-    [file join $dir libtacky] \
+    [file join $dir lib] \
     [file join $dir tests taco] \
     [file join $dir tests taco_integration]
 
@@ -31,7 +31,7 @@ foreach script [lsort [glob [file join $dir tests taco test_*.tcl]]] {
     source $script
 }
 
-foreach script [lsort [glob [file join $dir tests json_backend test_*.tcl]]] {
+foreach script [lsort [glob [file join $dir tests tackyd-json test_*.tcl]]] {
     source $script
 }
 

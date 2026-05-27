@@ -8,7 +8,7 @@
 #                    [result token data]             success reply
 #                    [error  token message]          error reply
 
-lappend auto_path [file join [file dirname [info script]] libtacky]
+lappend auto_path [file normalize [file join [file dirname [info script]] .. lib]]
 package require taco
 package require lenpipe
 

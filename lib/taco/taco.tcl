@@ -45,7 +45,7 @@ snit::macro tackymethod {name arglist body} {
     }]
 }
 
-set _taco_dir [file join [file dirname [info script]] taco]
+set _taco_dir [file join [file dirname [info script]] modules]
 foreach script [lsort [glob [file join $_taco_dir *.tcl]]] {
     source $script
 }
