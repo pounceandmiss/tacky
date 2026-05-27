@@ -1,6 +1,0 @@
-set dir [file dirname [info script]]
-package ifneeded libtacky 0.1 [list source [file join $dir tacky.tcl]]
-package ifneeded taco 0.1 [list source [file join $dir taco.tcl]]
-package ifneeded xmpprw 0.1 [list source [file join $dir xmpprw.tcl]]
-package ifneeded lenpipe 0.1 [list source [file join $dir lenpipe.tcl]]
-package ifneeded jid 0.1 [list source [file join $dir jid.tcl]]

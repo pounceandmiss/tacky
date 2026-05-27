@@ -28,8 +28,8 @@ proc bgerror {message} {
     puts stderr $::errorInfo
 }
 
-set dir [file dirname [info script]]
-lappend auto_path [file join $dir libtacky]
+set dir [file normalize [file join [file dirname [info script]] ..]]
+lappend auto_path [file join $dir lib]
 package require libtacky
 
 foreach script [lsort [glob [file join $dir gui *.tcl]]] {

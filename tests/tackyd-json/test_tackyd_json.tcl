@@ -1,8 +1,9 @@
-# Unit tests for json_backend.tcl JSON formatting and dispatch logic.
+# Unit tests for tackyd-json JSON formatting and dispatch logic.
 package require tcltest
 namespace import ::tcltest::*
-
-source [file join [file dirname [info script]] .. .. tackyd-json.tcl]
+package require json
+package require json::write
+package require tackyd-json
 
 # -- Helpers: capture pipesend output ----------------------------------------
 
@@ -181,7 +182,7 @@ test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -b
 
 test json-backend-process-roundtrip {spawn json backend, send request, get response} \
     -constraints hasProcess -setup {
-    set backend [file join [file dirname [info script]] .. .. tackyd-json.tcl]
+    set backend [file join [file dirname [info script]] .. .. bin tackyd-json.tcl]
     set fd [open |[list [info nameofexecutable] $backend] r+]
     chan configure $fd -translation binary -buffering full -blocking 0
 } -body {
