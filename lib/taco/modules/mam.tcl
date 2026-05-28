@@ -420,6 +420,7 @@ snit::type taco_mam {
 
         if {$iqType eq "error"} {
             {*}$callback [dict create messages {} complete 0 first "" last "" error 1]
+            $client emit mam <QueryEnd> -id $queryId
             return
         }
 
@@ -428,6 +429,12 @@ snit::type taco_mam {
             complete $complete \
             first $first \
             last $last]
+        # Fires AFTER the callback so consumers (e.g. taco_omemo's
+        # post-MAM flush) see whatever state the callback's per-result
+        # processing left behind. One emit per query — including the
+        # initial catchup query — so omemo's mamHadOmemo / Postponed
+        # bookkeeping closes the window at the right moment.
+        $client emit mam <QueryEnd> -id $queryId
     }
 }
 

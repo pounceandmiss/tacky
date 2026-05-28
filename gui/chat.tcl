@@ -873,6 +873,7 @@ snit::widget chatarea {
         switch -- $status {
             received { return "\u2713" }
             read     { return "\u2713\u2713" }
+            failed   { return "!" }
             default   { return "" }
         }
     }

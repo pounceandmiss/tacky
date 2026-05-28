@@ -26,8 +26,10 @@ snit::type taco_setting {
         $options(-taco) emit setting <Changed> -key $opts(-key) -value $opts(-value)
     }
 
+    # pull -event <Changed> -key K  (-event ignored — setting has one event)
     tackymethod pull {args} {
-        set key [dict get $args -key]
+        array set opts $args
+        set key $opts(-key)
         set value ""
         $options(-db) eval {SELECT value FROM setting WHERE key=$key} row {
             set value $row(value)

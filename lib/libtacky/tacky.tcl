@@ -67,16 +67,18 @@ oo::class create tacky_base {
     # observe ?-tag $tag? module event ?-field $value ...? $command
     #
     # State-bearing companion to listen: registers the listener, then calls
-    # the module's `pull` method (passing the -field/value pairs as args),
-    # which re-emits the module's change event with the current value.
-    # The synthesized "initial" event flows through dispatch like any
-    # subsequent change, so callers get one uniform callback for both.
+    # the module's `pull` method as `pull -event <Event> ?-field $v ...?`,
+    # which re-emits the event with the current value. The synthesized
+    # "initial" event flows through dispatch like any subsequent change,
+    # so callers get one uniform callback for both. Modules with multiple
+    # pullable events dispatch on the -event arg.
     method observe args {
         set tag [my listen {*}$args]
         set eventIdx [lsearch -glob $args <*>]
         set module [lindex $args [expr {$eventIdx - 1}]]
+        set event [lindex $args $eventIdx]
         set filters [lrange $args [expr {$eventIdx + 1}] end-1]
-        my $module pull {*}$filters
+        my $module pull -event $event {*}$filters
         return $tag
     }
 

@@ -129,7 +129,11 @@ proc tacky_env {args} {
     # Each layer is {do undo}. Empty undo = no separate teardown.
     set layers {}
 
-    lappend layers [list {tacky_type create tacky} {tacky destroy}]
+    # Qualify with :: so the instance is always created at global scope.
+    # Without this, when tcltest runs the setup body in a test's
+    # namespace (e.g. ::test::omemo_int), oo creates the instance there
+    # and downstream snit code that hard-references "tacky" fails.
+    lappend layers [list {tacky_type create ::tacky} {tacky destroy}]
 
     if {$opts(-stub-emit)} {
         lappend layers [list \

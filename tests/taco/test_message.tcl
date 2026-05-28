@@ -363,12 +363,104 @@ test message-live-dup-no-event {duplicate message does not emit <Received>} \
 test message-send-stored-as-pending {sent message stored with empty server_id and pending status} \
     {*}$msg_common \
     -body {
+        # Plaintext-path test — OMEMO defaults on, so disable it here.
+        $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg server_id] \
              [dict get $msg server_status] \
              [expr {[dict get $msg own_id] ne ""}]
     } -result {{} pending 1}
+
+# The message row dict carries `encryption` (intent) and `fail_reason`
+# (why a send failed) so the GUI can tell "couldn't encrypt" from a
+# delivery failure and render the right resend affordance. fail_reason
+# is distinct from encryption — outcome vs intent.
+test message-row-exposes-encryption-and-failreason \
+    {get row dicts include the encryption stamp and fail_reason} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg chat_jid alice@example.com body clear own_id o1 \
+                encryption "" fail_reason ""] \
+            [msg_msg chat_jid alice@example.com body secret own_id o2 \
+                encryption omemo server_status failed fail_reason encrypt]]
+        set rows [msg_store_latest alice@example.com]
+        set r0 [lindex $rows 0]
+        set r1 [lindex $rows 1]
+        list \
+            [dict get $r0 encryption] [dict get $r0 fail_reason] \
+            [dict get $r1 encryption] [dict get $r1 fail_reason]
+    } -result {{} {} omemo encrypt}
+
+# resend: user-driven retry. Default honors the row's stamped
+# encryption; -plaintext downgrades (the only path that may).
+
+test message-resend-plaintext-downgrades \
+    {resend -plaintext rewrites the stamp to '' and sends cleartext} \
+    {*}$msg_common \
+    -body {
+        # Synthetic stuck OMEMO message: stamped omemo, never wire-built.
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-pt server_status pending \
+            encryption omemo raw_xml ""]]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set before [llength [$::_client conn get_written]]
+        tacky message resend -acc $acc -chat_jid alice@example.com \
+            -timestamp $ts -plaintext 1
+        set last [lindex [$::_client conn get_written] end]
+        set db [$::_client message messagestore cget -db]
+        set enc [$db onecolumn {
+            SELECT encryption FROM chat_message WHERE timestamp=$ts}]
+        list enc $enc \
+            has_body [expr {[llength [xsearch $last body]] > 0}] \
+            has_enc [expr {[llength [xsearch $last encrypted]] > 0}] \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {enc {} has_body 1 has_enc 0 wrote 1}
+
+test message-resend-honors-stamp \
+    {plain resend re-attempts OMEMO (no silent downgrade)} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-st server_status pending \
+            encryption omemo raw_xml ""]]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set before [llength [$::_client conn get_written]]
+        tacky message resend -acc $acc -chat_jid alice@example.com \
+            -timestamp $ts
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, encryption FROM chat_message
+            WHERE timestamp=$ts} row {}
+        # Store is uninitialised here (no OnReady), so encrypt is
+        # NOT_READY: the row stays pending, NOT downgraded to plaintext
+        # (encryption still 'omemo', nothing written to the wire).
+        list status $row(server_status) enc $row(encryption) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status pending enc omemo wrote 0}
+
+# OnOmemoSelfReady (fired when omemo's store + own devicelist are ready)
+# must retry only OMEMO sends that never reached the wire, never a row
+# already on the wire awaiting ack - re-sending those would duplicate.
+test message-omemo-selfready-skips-on-wire \
+    {OnOmemoSelfReady leaves on-wire rows alone (no double-send)} \
+    {*}$msg_common \
+    -body {
+        # Plaintext row already written (raw_xml set), awaiting ack.
+        msg_store [list [msg_msg chat_jid alice@example.com body clear \
+            from_jid $acc own_id o-clear server_status pending \
+            encryption "" raw_xml "<message/>"]]
+        # OMEMO row that never reached the wire (encrypt NOT_READY).
+        msg_store [list [msg_msg chat_jid bob@example.com body secret \
+            from_jid $acc own_id o-omemo server_status pending \
+            encryption omemo raw_xml ""]]
+        set before [llength [$::_client conn get_written]]
+        $::_client message OnOmemoSelfReady
+        # On-wire plaintext row not re-sent; the omemo row retries but
+        # NOT_READYs (store uninit), so the wire count is unchanged.
+        expr {[llength [$::_client conn get_written]] - $before}
+    } -result {0}
 
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
@@ -408,6 +500,8 @@ test message-get-latest-real-plus-pending {get latest returns real + pending int
 test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not Received} \
     {*}$msg_common \
     -body {
+        # Plaintext-path test — OMEMO defaults on, so disable it here.
+        $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat_jid alice@example.com -body "echo me"
         set msgs [msg_store_latest alice@example.com]
         set oid [dict get [lindex $msgs 0] own_id]
