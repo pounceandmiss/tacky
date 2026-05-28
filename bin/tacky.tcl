@@ -26,6 +26,9 @@ package require snit
 
 proc bgerror {message} {
     puts stderr $::errorInfo
+    if {[info commands jlog] ne "" && [jlog cget -logproc] ne ""} {
+        catch {jlog error $::errorInfo -obj bgerror}
+    }
 }
 
 set dir [file normalize [file join [file dirname [info script]] ..]]

@@ -109,6 +109,15 @@ proc jlog_file_writer {dir opts_list} {
     close $fd
 }
 
+proc jlog_stderr_writer {opts_list} {
+    array set opts {-obj "" -level debug -text ""}
+    array set opts $opts_list
+    puts stderr "\[$opts(-level)\] $opts(-obj): $opts(-text)"
+    if {[info exists opts(-stanza)]} {
+        puts stderr [jwrite -pretty $opts(-stanza)]
+    }
+}
+
 if {[info commands jlog] eq ""} {
     jlog_type jlog
 }

@@ -16,11 +16,13 @@ snit::type app_type {
         wm title . "Tacky"
         switch $options(-backend) {
             process {
-                tacky_init_process -transient $options(-transient)
+                tacky_init_process -transient $options(-transient) \
+                    -debug-dir $options(-debug-dir)
             }
             thread {
                 package require Thread
-                tacky_init_threaded -transient $options(-transient)
+                tacky_init_threaded -transient $options(-transient) \
+                    -debug-dir $options(-debug-dir)
             }
             default {
                 tacky_init -transient $options(-transient)
