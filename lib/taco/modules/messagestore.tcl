@@ -70,6 +70,18 @@ snit::type taco_messagestore {
                 -- 'pending'   = stored, awaiting server confirmation;
                 -- 'received'  = server confirmed via echo or SM ack
                 server_status  TEXT,
+                -- intended outgoing encryption, stamped at send time:
+                -- '' = plaintext, 'omemo' = OMEMO. Automatic retries
+                -- honor this so a later toggle change can't silently
+                -- downgrade a pending encrypted send; only an explicit
+                -- user resend rewrites it.
+                encryption     TEXT NOT NULL DEFAULT '',
+                -- why a send failed (set with server_status='failed',
+                -- '' otherwise). Distinct from `encryption`, which is
+                -- intent not outcome. Categories: 'encrypt' (OMEMO
+                -- couldn't produce ciphertext — no usable recipients).
+                -- Reserved for a future delivery-failure path: 'send'.
+                fail_reason    TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(chat_jid, timestamp)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -252,12 +264,17 @@ snit::type taco_messagestore {
                     ? $m(server_status) : ""}]
                 set fromRes [expr {[info exists m(from_resource)] \
                     ? $m(from_resource) : ""}]
+                set enc [expr {[info exists m(encryption)] \
+                    ? $m(encryption) : ""}]
+                set failReason [expr {[info exists m(fail_reason)] \
+                    ? $m(fail_reason) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, raw_xml,
-                        server_status)
+                        server_status, encryption, fail_reason)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
-                        $m(server_id), $m(own_id), $m(raw_xml), $status)
+                        $m(server_id), $m(own_id), $m(raw_xml), $status, $enc,
+                        $failReason)
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
@@ -289,7 +306,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status
+                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp < $cursor
@@ -304,7 +321,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status
+                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp < $cursor AND timestamp > $sentTs
@@ -329,7 +346,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status
+                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp > $cursor
@@ -342,7 +359,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, raw_xml, server_status
+                   server_id, own_id, raw_xml, server_status, encryption, fail_reason
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND timestamp > $cursor AND timestamp < $sentTs
@@ -385,7 +402,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status
+                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                     ORDER BY timestamp DESC
@@ -398,7 +415,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status
+                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp > $truncTs
@@ -459,7 +476,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, raw_xml, server_status
+                   server_id, own_id, raw_xml, server_status, encryption, fail_reason
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
         } row {
@@ -479,7 +496,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status
+                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
             } row {

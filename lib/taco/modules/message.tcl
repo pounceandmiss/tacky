@@ -136,8 +136,21 @@ snit::type taco_message {
         array set ActiveTags {}
         $client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
+        $client bus subscribe $self omemo:<SessionReady> \
+            [mymethod OnOmemoSessionReady]
+        # A peer's devicelist resolving (to devices or empty) also wakes
+        # a blocked send: re-running encrypt either warms further, or
+        # TERMINAL-fails on an empty list so the message stops hanging.
+        $client bus subscribe $self omemo:<DevicelistResolved> \
+            [mymethod OnOmemoSessionReady]
+        # omemo's account-level prerequisites (store, own devicelist)
+        # become ready after OnMessage's RetryPending has already run
+        # this connection, so retry pending OMEMO sends once they land.
+        $client bus subscribe $self omemo:<SelfReady> \
+            [mymethod OnOmemoSelfReady]
         $client bus subscribe $self <Ready>      [mymethod OnReady]
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        array set OmemoRetryBudget {}
     }
 
     destructor {
@@ -146,6 +159,10 @@ snit::type taco_message {
     }
 
     method OnReady {args} {
+        # Network just came back. Transient disconnects shouldn't
+        # exhaust the OMEMO retry budget — give each still-pending
+        # message a fresh shot on the new connection.
+        array unset OmemoRetryBudget
         $self PlaceReconnectSentinels
         $self DoCatchup
         $self RetryPending
@@ -342,11 +359,80 @@ snit::type taco_message {
         $client emit message <Received> -jid $chatJid -message $dbMsg
     }
 
+    # Maximum BuildOutgoingStanza attempts per message before marking
+    # failed. Each <SessionReady> tick for the peer counts as one
+    # attempt; warming usually settles within 1-2 ticks for live
+    # peers, so 5 gives slack for slow bundle fetches without
+    # looping forever on an undeliverable peer.
+    variable OmemoRetryBudget
+    typevariable OMEMO_RETRY_LIMIT 5
+
+    # Compute (msgType, toJid, fromJid, fromRes) from a chat jid.
+    # MUC chats use the `?join` suffix tacky uses internally for the
+    # "self as room member" identity.
+    method DeriveAddressing {chatJid} {
+        if {[string match "*?join" $chatJid]} {
+            set msgType groupchat
+            regsub {\?join$} $chatJid {} toJid
+            set nick [$client muc myNick -jid $toJid]
+            return [list $msgType $toJid $toJid/$nick ""]
+        }
+        return [list chat $chatJid \
+            [jid bare [$client cget -jid]] \
+            [jid resource [$client cget -jid]]]
+    }
+
+    # Build the wire stanza for an outbound message. encMode is the
+    # intended encryption ('omemo' or '' for plaintext); the caller
+    # decides it (new sends from the per-chat toggle, retries from the
+    # stamped `encryption` column). Throws TACO_OMEMO_NOT_READY
+    # (transient — leave pending, retry on <SessionReady>) or
+    # TACO_OMEMO_TERMINAL (don't retry) for OMEMO failures. Plaintext
+    # path can't throw.
+    #
+    # OMEMO fail-closed: when encMode is 'omemo' we encrypt or throw;
+    # never fall back to cleartext. See security invariant #2 in
+    # lib/taco/modules/omemo.tcl.
+    method BuildOutgoingStanza {chatJid body oid msgType toJid encMode} {
+        if {$encMode ne "omemo"} {
+            return [j message -to $toJid -type $msgType -id $oid {
+                j body #body $body
+            }]
+        }
+        set encNode [$client omemo encrypt $chatJid $body]
+        return [j message -to $toJid -type $msgType -id $oid {
+            j #as-is $encNode
+            j encryption -ns urn:xmpp:eme:0 \
+                -namespace eu.siacs.conversations.axolotl \
+                -name OMEMO
+            j body #body \
+                "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+        }]
+    }
+
+    # Intended encryption for a fresh outbound message to $chatJid:
+    # 'omemo' when it's a 1:1 chat with OMEMO enabled for that peer,
+    # else '' (plaintext). The omemo module owns the per-chat toggle.
+    method OutgoingEncMode {chatJid msgType} {
+        if {$msgType eq "chat" && [$client omemo IsEnabled $chatJid]} {
+            return omemo
+        }
+        return ""
+    }
+
     # Durable message send — store before transmit, confirm on echo/ack.
     #
-    # 1. Generate a unique ID, persist to DB with server_status='pending'.
-    # 2. Emit <Sent> so the GUI can display immediately (optimistic).
-    # 3. Write stanza to server (if this throws, message is safe in DB).
+    # 1. Generate a unique ID, build the stanza (may need OMEMO).
+    # 2. Persist to DB. server_status='pending' if we wrote to the wire
+    #    or expect to retry; 'failed' if the build said TERMINAL.
+    # 3. Emit <Sent> so the GUI can display immediately (optimistic).
+    # 4. Write stanza to server if one exists.
+    #
+    # OMEMO cold-cache path: encrypt throws TACO_OMEMO_NOT_READY,
+    # message persists pending without going on the wire, warming runs
+    # in the background, OnOmemoSessionReady drives a retry. Reuses
+    # the existing pending-row machinery rather than a separate
+    # outbox/queue.
     #
     # Confirmation (pending → received) happens via two paths:
     #   MUC:  server echoes the message back with our id; the echo hits
@@ -364,21 +450,29 @@ snit::type taco_message {
         set ts [clock microseconds]
         set oid $ts
 
-        if {[string match "*?join" $opts(-chat_jid)]} {
-            set type groupchat
-            regsub {\?join$} $opts(-chat_jid) {} toJid
-            set nick [$client muc myNick -jid $toJid]
-            set fromJid $toJid/$nick
-            set fromRes ""
-        } else {
-            set toJid $opts(-chat_jid)
-            set fromJid [jid bare [$client cget -jid]]
-            set fromRes [jid resource [$client cget -jid]]
-        }
+        # NB: do not use `type` as a local — snit injects its own
+        # `type` (the snit type name like ::taco_message), and the
+        # one-armed if below previously forgot to assign it in the
+        # else branch, so the snit-injected value leaked into the
+        # outgoing <message type=...> attribute. Use msgType.
+        lassign [$self DeriveAddressing $opts(-chat_jid)] \
+            msgType toJid fromJid fromRes
 
-        set stanza [j message -to $toJid -type $type -id $oid {
-            j body #body $opts(-body)
-        }]
+        set encMode [$self OutgoingEncMode $opts(-chat_jid) $msgType]
+        set stanza ""
+        set status "pending"
+        set failReason ""
+        try {
+            set stanza [$self BuildOutgoingStanza \
+                $opts(-chat_jid) $opts(-body) $oid $msgType $toJid $encMode]
+        } trap TACO_OMEMO_NOT_READY {} {
+            # Stays pending; warming kicks via encrypt side effect.
+            # Initial attempt counts toward the budget.
+            set OmemoRetryBudget($oid) [expr {$OMEMO_RETRY_LIMIT - 1}]
+        } trap TACO_OMEMO_TERMINAL {} {
+            set status "failed"
+            set failReason "encrypt"
+        }
 
         set msg [dict create \
             timestamp $ts \
@@ -388,8 +482,10 @@ snit::type taco_message {
             body $opts(-body) \
             server_id "" \
             own_id $oid \
-            raw_xml [jwrite $stanza] \
-            server_status pending]
+            raw_xml [expr {$stanza eq "" ? "" : [jwrite $stanza]}] \
+            server_status $status \
+            encryption $encMode \
+            fail_reason $failReason]
 
         set result [$messagestore store [list $msg]]
         set inserted [dict get $result inserted]
@@ -398,7 +494,9 @@ snit::type taco_message {
         $client emit message <Sent> \
             -jid $opts(-chat_jid) -message $dbMsg
 
-        $client write $stanza
+        if {$stanza ne ""} {
+            $client write $stanza
+        }
     }
 
     method OnSmAck {args} {
@@ -424,13 +522,13 @@ snit::type taco_message {
     method RetryPending {} {
         set pending {}
         $client db eval {
-            SELECT chat_jid, body, own_id FROM chat_message
+            SELECT chat_jid, body, own_id, encryption FROM chat_message
             WHERE kind='message' AND server_status='pending'
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id)]
+                own_id $row(own_id) encryption $row(encryption)]
         }
         # Group by MUC vs 1:1 — MUC messages must wait for room join
         foreach msg $pending {
@@ -444,7 +542,59 @@ snit::type taco_message {
         }
     }
 
-    # Called via bus when a MUC room is joined — flush pending
+    # Called via bus when OMEMO makes progress for $peerJid — a session
+    # got built (omemo:<SessionReady>) or the devicelist resolved
+    # (omemo:<DevicelistResolved>). Retries OMEMO-intended pending
+    # messages to $peerJid that never made it onto the wire (raw_xml==""
+    # — encrypt threw NOT_READY, never written). The retry re-runs
+    # encrypt: it succeeds, stays pending (still warming), or
+    # TERMINAL-fails (peer's devicelist resolved empty). Pending-with-
+    # stanza rows are already on the wire awaiting SM ack; retrying those
+    # would duplicate sends each time another tick fires.
+    method OnOmemoSessionReady {args} {
+        array set opts $args
+        set peerJid $opts(-jid)
+        set pending {}
+        $client db eval {
+            SELECT chat_jid, body, own_id, encryption FROM chat_message
+            WHERE kind='message' AND chat_jid=$peerJid
+              AND server_status='pending'
+              AND encryption='omemo'
+              AND (raw_xml IS NULL OR raw_xml = '')
+            ORDER BY timestamp
+        } row {
+            lappend pending [dict create \
+                chat_jid $row(chat_jid) body $row(body) \
+                own_id $row(own_id) encryption $row(encryption)]
+        }
+        foreach msg $pending {
+            $self RetrySend $msg
+        }
+    }
+
+    # Called via bus when omemo's account-level state (store + own
+    # devicelist) is ready. Unlike OnOmemoSessionReady this isn't tied
+    # to one peer: retry every pending OMEMO send that never reached the
+    # wire, since they were all blocked on the same account prerequisite.
+    method OnOmemoSelfReady {args} {
+        set pending {}
+        $client db eval {
+            SELECT chat_jid, body, own_id, encryption FROM chat_message
+            WHERE kind='message' AND server_status='pending'
+              AND encryption='omemo'
+              AND (raw_xml IS NULL OR raw_xml = '')
+            ORDER BY timestamp
+        } row {
+            lappend pending [dict create \
+                chat_jid $row(chat_jid) body $row(body) \
+                own_id $row(own_id) encryption $row(encryption)]
+        }
+        foreach msg $pending {
+            $self RetrySend $msg
+        }
+    }
+
+    # Called via bus when a MUC room is joined - flush pending
     # retries for that room.
     method OnMucJoined {args} {
         set roomJid [dict get $args -jid]
@@ -456,21 +606,121 @@ snit::type taco_message {
         }
     }
 
+    # Retry a still-pending message. Uses BuildOutgoingStanza so OMEMO
+    # chats get re-encrypted against the current devicelist (the
+    # devicelist may have changed since the original send; replaying
+    # the stored raw_xml would either leak cleartext or send to a
+    # stale recipient set). Honors the row's stamped `encryption` —
+    # automatic retries never downgrade an OMEMO message to plaintext
+    # even if the per-chat toggle was flipped off in the meantime.
     method RetrySend {msg} {
         set chatJid [dict get $msg chat_jid]
-        set body [dict get $msg body]
-        set oid [dict get $msg own_id]
-        if {[string match "*?join" $chatJid]} {
-            regsub {\?join$} $chatJid {} toJid
-            set type groupchat
-        } else {
-            set toJid $chatJid
-            set type chat
+        set body    [dict get $msg body]
+        set oid     [dict get $msg own_id]
+        set encMode [expr {[dict exists $msg encryption] \
+            ? [dict get $msg encryption] : ""}]
+        lassign [$self DeriveAddressing $chatJid] msgType toJid _ _
+
+        try {
+            set stanza [$self BuildOutgoingStanza \
+                $chatJid $body $oid $msgType $toJid $encMode]
+        } trap TACO_OMEMO_NOT_READY {} {
+            # Bundle/devicelist warming still in flight. If we have
+            # budget left, stay pending and wait for the next
+            # <SessionReady> tick.
+            if {![info exists OmemoRetryBudget($oid)]} {
+                set OmemoRetryBudget($oid) $OMEMO_RETRY_LIMIT
+            }
+            incr OmemoRetryBudget($oid) -1
+            if {$OmemoRetryBudget($oid) <= 0} {
+                $self MarkOutgoingFailed $chatJid $oid encrypt
+            }
+            return
+        } trap TACO_OMEMO_TERMINAL {} {
+            $self MarkOutgoingFailed $chatJid $oid encrypt
+            return
         }
-        set stanza [j message -to $toJid -type $type -id $oid {
-            j body #body $body
-        }]
+
+        unset -nocomplain OmemoRetryBudget($oid)
+        # Stamp raw_xml so a subsequent <SessionReady> tick doesn't
+        # re-send this stanza (the row stays pending until SM ack).
+        set xml [jwrite $stanza]
+        $client db eval {
+            UPDATE chat_message SET raw_xml=$xml
+            WHERE chat_jid=$chatJid AND own_id=$oid
+        }
         $client write $stanza
+    }
+
+    # resend -chat_jid X -timestamp T ?-plaintext 0|1?
+    #
+    # User-driven resend of a pending/failed outgoing message, keyed by
+    # the GUI's stable (chat_jid, timestamp) id. Default honors the
+    # row's stamped `encryption` — "try again, same way". `-plaintext 1`
+    # rewrites the stamp to '' and is the ONLY path allowed to downgrade
+    # an OMEMO message to cleartext, so a stuck encrypted message can be
+    # sent in clear once the user learns the peer can't do OMEMO.
+    #
+    # Does NOT touch the chat toggle: downgrading one message leaves the
+    # chat's default encryption for future messages unchanged. Fire-and-
+    # forget; the outcome surfaces via <Patch> like any other send.
+    method resend {args} {
+        array set opts {-plaintext 0}
+        array set opts $args
+        set chatJid $opts(-chat_jid)
+        set ts      $opts(-timestamp)
+
+        set row [$client db eval {
+            SELECT own_id, body, encryption FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$ts AND kind='message'
+        }]
+        if {[llength $row] == 0} return
+        lassign $row oid body enc
+
+        if {$opts(-plaintext)} {
+            set enc ""
+            $client db eval {
+                UPDATE chat_message SET encryption='', raw_xml=''
+                WHERE chat_jid=$chatJid AND timestamp=$ts
+            }
+        }
+
+        # Fresh attempt: reset budget, flip back to pending and clear the
+        # prior failure so the GUI shows it in flight; MarkOutgoingFailed
+        # re-stamps fail_reason if it fails again.
+        unset -nocomplain OmemoRetryBudget($oid)
+        $client db eval {
+            UPDATE chat_message SET server_status='pending', fail_reason=''
+            WHERE chat_jid=$chatJid AND timestamp=$ts
+        }
+        $client emit message <Patch> -jid $chatJid \
+            -messages [list [dict create \
+                timestamp $ts server_status pending fail_reason ""]]
+
+        $self RetrySend [dict create \
+            chat_jid $chatJid body $body own_id $oid encryption $enc]
+    }
+
+    # Flip a pending row to failed with a fail_reason category and notify
+    # the GUI. `reason` is a category ('encrypt' = OMEMO couldn't produce
+    # ciphertext); persisted on the row and carried in the <Patch> so the
+    # GUI picks the right affordance (e.g. resend-as-plaintext).
+    method MarkOutgoingFailed {chatJid oid reason} {
+        $client db eval {
+            UPDATE chat_message
+            SET server_status='failed', fail_reason=$reason
+            WHERE chat_jid=$chatJid AND own_id=$oid
+              AND server_status='pending'
+        }
+        set ts [$client db onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$chatJid AND own_id=$oid
+        }]
+        if {$ts eq ""} return
+        unset -nocomplain OmemoRetryBudget($oid)
+        $client emit message <Patch> -jid $chatJid \
+            -messages [list [dict create \
+                timestamp $ts server_status failed fail_reason $reason]]
     }
 
     # local_search -chat $jid -query "text" -command $cb
@@ -834,6 +1084,13 @@ snit::type taco_message {
         set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
         set stamp [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]
         set msgNode [lindex [xsearch $fwdNode message] 0]
+
+        # If the archived message is OMEMO-encrypted, route it through
+        # the same decrypt core that the live path uses. Returns a
+        # synthesised plaintext stanza on success, the original
+        # encrypted stanza on failure (which then parses to an empty
+        # body and gets skipped by the caller's body-empty filter).
+        set msgNode [$client omemo decryptForwarded $msgNode]
 
         $self ParseMessage $msgNode \
             -chat_jid $chatJid \

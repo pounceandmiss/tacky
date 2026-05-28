@@ -1,5 +1,5 @@
 snit::type taco_client {
-    taco_modules message pubsub mam roster caps bookmarks presence avatar muc vcard nick chats chatlist author extdisco calls
+    taco_modules message pubsub mam roster caps bookmarks presence avatar muc vcard nick chats chatlist author extdisco calls omemo
 
     component conn -public conn
     component iq -public iq
@@ -197,11 +197,15 @@ snit::type taco_client {
                 #            invites, declines, voice requests, config changes
                 #   pubsub:  XEP-0060 event stanzas → per-node handler
                 #   calls:   XEP-0353 JMI propose/proceed/reject/retract
+                #   omemo:   XEP-0384 <encrypted> → decrypts and re-injects
+                #            a synthesised plaintext <message> back into
+                #            the chain (claims the encrypted original).
                 #   message: DM        → store under user@domain
                 if {[$mam onResultMessage $stanza]} return
                 if {[$muc OnMessage $stanza]} return
                 if {[$pubsub OnMessage $stanza]} return
                 if {[$calls OnMessage $stanza]} return
+                if {[$omemo OnMessage $stanza]} return
                 $message OnMessage $stanza
             }
             presence {

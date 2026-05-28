@@ -1,0 +1,2 @@
+slixmpp==1.8.5
+slixmpp-omemo==1.0.0
