@@ -94,5 +94,28 @@ lenpipe create _pipe stdin \
         exit 0
     }}}
 
-taco_type create taco {*}$::argv
+proc bgerror {message} {
+    if {[catch {jlog error $::errorInfo -obj bgerror}]} {
+        puts stderr $::errorInfo
+    }
+}
+
+set _debug_dir ""
+set _taco_args {}
+foreach {_k _v} $::argv {
+    if {$_k in {-debug-dir --debug-dir}} {
+        set _debug_dir $_v
+    } else {
+        lappend _taco_args $_k $_v
+    }
+}
+# stdout is the lenpipe wire, so logs must never go there.
+if {$_debug_dir ne ""} {
+    file mkdir $_debug_dir
+    jlog configure -logproc [list jlog_file_writer $_debug_dir] -defaultlevel debug
+} else {
+    jlog configure -logproc jlog_stderr_writer
+}
+
+taco_type create taco {*}$_taco_args
 vwait forever

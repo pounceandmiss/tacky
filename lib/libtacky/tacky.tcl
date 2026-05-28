@@ -235,6 +235,23 @@ oo::class create tacky_threaded_type {
         set TacoTid [thread::create]
         thread::send $TacoTid [list set auto_path $::auto_path]
         thread::send $TacoTid {package require taco}
+        if {[dict exists $args -debug-dir]} {
+            set debugDir [dict get $args -debug-dir]
+            dict unset args -debug-dir
+            if {$debugDir ne ""} {
+                thread::send $TacoTid [list file mkdir $debugDir]
+                thread::send $TacoTid [list jlog configure \
+                    -logproc [list jlog_file_writer $debugDir] -defaultlevel debug]
+                thread::send $TacoTid {
+                    proc bgerror {message} {
+                        puts stderr $::errorInfo
+                        if {[jlog cget -logproc] ne ""} {
+                            catch {jlog error $::errorInfo -obj bgerror}
+                        }
+                    }
+                }
+            }
+        }
         # Define the proxy in the backend thread: it forwards every emit
         # back to the GUI thread asynchronously.
         thread::send $TacoTid {
