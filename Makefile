@@ -1,26 +1,23 @@
 # ==== Shared config ====
 
-COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo
+COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
-tacky_DEPS  := $(COMMON_DEPS) img
-tacky_IMG   := jpeg png gif
+tacky_DEPS  := $(COMMON_DEPS) tkwuffs
 tacky_SRC   := lib bin gui icons
 tacky_ENT   := bin/tacky.tcl
 
 tackyd_SHELL := tclsh
 tackyd_DEPS  := $(COMMON_DEPS)
-tackyd_IMG   :=
 tackyd_SRC   := lib bin
 tackyd_ENT   := bin/tackyd.tcl
 
 tackyd-json_SHELL := tclsh
 tackyd-json_DEPS  := $(COMMON_DEPS)
-tackyd-json_IMG   :=
 tackyd-json_SRC   := lib bin
 tackyd-json_ENT   := bin/tackyd-json.tcl
 
@@ -35,7 +32,6 @@ tacky tackyd tackyd-json: %: dist-dir
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
 	    DEPS="$($*_DEPS)" \
-	    IMG_INCLUDE="$($*_IMG)" \
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -62,7 +58,7 @@ build/tools/tclsh:
 build/tools/wish:
 	$(MAKE) -f zippy/zippy.mk \
 	    SHELL_TYPE=wish \
-	    DEPS="$(COMMON_DEPS)" \
+	    DEPS="$(COMMON_DEPS) tkwuffs" \
 	    BASEDIR=$(CURDIR)/build/tools \
 	    wish
 

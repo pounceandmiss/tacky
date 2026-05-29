@@ -1,4 +1,5 @@
 package require sha1
+package require tclwuffs
 
 if 0 {
     taco_avatar - manages XEP-0084 User Avatar support.
@@ -419,19 +420,13 @@ snit::type taco_avatar {
         $client emit avatar <Update> -jid $jid -hash $hash
     }
 
+    # Re-encoding through wuffs strips source metadata, so identical input
+    # yields identical PNG bytes (and hash) regardless of when it runs.
     method ResizeForPublish {rawData} {
         try {
-            # png:exclude-chunk=date,time strips the tIME chunk and the
-            # date:create/date:modify/date:timestamp tEXt chunks magick
-            # otherwise embeds, so identical input produces identical output
-            # bytes (and identical hash) regardless of when it runs.
-            set pipe [open |[list magick - -define png:exclude-chunk=date,time -resize 128x128> png:-] r+]
-            chan configure $pipe -translation binary
-            puts -nonewline $pipe $rawData
-            chan close $pipe write
-            set resized [chan read $pipe]
-            chan close $pipe
-            return $resized
+            set d [::tclwuffs::decode $rawData]
+            lassign [$self FitWithin [dict get $d width] [dict get $d height] 128] tw th
+            return [::tclwuffs::resize_bytes $rawData $tw $th]
         } on error {err} {
             jlog warn "Avatar resize failed: $err"
             return $rawData
@@ -440,17 +435,29 @@ snit::type taco_avatar {
 
     method MakeThumb {rawData caller} {
         try {
-            set pipe [open |[list magick - -define png:exclude-chunk=date,time -thumbnail 32x32 png:-] r+]
-            chan configure $pipe -translation binary
-            puts -nonewline $pipe $rawData
-            chan close $pipe write
-            set thumbData [chan read $pipe]
-            chan close $pipe
-            return $thumbData
+            set d [::tclwuffs::decode $rawData]
+            lassign [$self FitWithin [dict get $d width] [dict get $d height] 32] tw th
+            return [::tclwuffs::resize_bytes $rawData $tw $th]
         } on error {err} {
             jlog warn "Thumbnail generation failed: $err"
             return ""
         }
+    }
+
+    # Largest dimensions fitting within max*max, preserving aspect, never
+    # upscaling. Returns {w h}.
+    method FitWithin {w h max} {
+        if {$w <= $max && $h <= $max} {
+            return [list $w $h]
+        }
+        if {$w >= $h} {
+            set nw $max
+            set nh [expr {int(round(double($h) * $max / $w))}]
+        } else {
+            set nh $max
+            set nw [expr {int(round(double($w) * $max / $h))}]
+        }
+        return [list [expr {max($nw, 1)}] [expr {max($nh, 1)}]]
     }
 
     method Migrate {} {
