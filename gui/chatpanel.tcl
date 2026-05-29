@@ -23,6 +23,7 @@ snit::widget chatpanel {
     variable roomJid ""
     variable showParticipants 0
     variable showJidIn1to1 0
+    variable omemoEnabled 1
     variable mucList ""
     variable findBar ""
     variable findMatches {}
@@ -47,6 +48,9 @@ snit::widget chatpanel {
             -request-voice-command [mymethod RequestVoice]]
         pack $cv -expand yes -fill both
         pack $entry -fill x
+        if {!$isMuc} {
+            $self BuildOmemoToggle
+        }
 
         bind $cv <<FindInChat>> [mymethod OpenFind]
 
@@ -65,6 +69,9 @@ snit::widget chatpanel {
         } else {
             ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
                 [mymethod OnShowJidIn1to1Setting]
+            ::tacky observe -tag $win omemo <Enabled> \
+                -acc $options(-acc) -jid $options(-jid) \
+                [mymethod OnOmemoEnabled]
         }
     }
 
@@ -92,6 +99,29 @@ snit::widget chatpanel {
         ::tacky setting set -key show_jid_in_1to1 -value $showJidIn1to1
     }
 
+    method BuildOmemoToggle {} {
+        set slot [$entry accessory]
+        ttk::checkbutton $slot.lock -style Toolbutton \
+            -variable [myvar omemoEnabled] \
+            -command [mymethod ToggleOmemo] \
+            -image [list mate/24x24/status/stock_lock-open.png \
+                selected mate/24x24/status/stock_lock.png]
+        pack $slot.lock -fill both -expand 1
+    }
+
+    method OnOmemoEnabled {ev} {
+        set omemoEnabled [dict get $ev -value]
+    }
+
+    method ToggleOmemo {} {
+        ::tacky omemo setEnabled -acc $options(-acc) \
+            -jid $options(-jid) -value $omemoEnabled
+    }
+
+    method OpenOmemoKeys {} {
+        omemokeyswindow open $options(-acc) $options(-jid)
+    }
+
     method Send {text} {
         ::tacky message send -acc $options(-acc) \
             -chat_jid $options(-jid) -body $text
@@ -109,6 +139,12 @@ snit::widget chatpanel {
         if {$isMuc} {
             $self RebuildMucMenu
         } else {
+            $mb.chat add separator
+            $mb.chat add checkbutton -label "Encrypt with OMEMO" \
+                -variable [myvar omemoEnabled] \
+                -command [mymethod ToggleOmemo]
+            $mb.chat add command -label "OMEMO Keys..." \
+                -command [mymethod OpenOmemoKeys]
             $mb.chat add separator
             $mb.chat add checkbutton -label "Show JID Instead of Name" \
                 -variable [myvar showJidIn1to1] \
