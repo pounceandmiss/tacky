@@ -410,6 +410,25 @@ snit::type taco_message {
         }]
     }
 
+    # The form stored in raw_xml: always the readable message, never
+    # ciphertext. For OMEMO that's the real body + EME marker (symmetric
+    # with the synthesised stanza we store for decrypted incoming
+    # messages, and with the encryption stamp); for plaintext it's just
+    # the body. The wire stanza (BuildOutgoingStanza) is separate.
+    method StoredForm {body oid msgType toJid encMode} {
+        if {$encMode ne "omemo"} {
+            return [j message -to $toJid -type $msgType -id $oid {
+                j body #body $body
+            }]
+        }
+        return [j message -to $toJid -type $msgType -id $oid {
+            j body #body $body
+            j encryption -ns urn:xmpp:eme:0 \
+                -namespace eu.siacs.conversations.axolotl \
+                -name OMEMO
+        }]
+    }
+
     # Intended encryption for a fresh outbound message to $chatJid:
     # 'omemo' when it's a 1:1 chat with OMEMO enabled for that peer,
     # else '' (plaintext). The omemo module owns the per-chat toggle.
@@ -465,11 +484,13 @@ snit::type taco_message {
         try {
             set stanza [$self BuildOutgoingStanza \
                 $opts(-chat_jid) $opts(-body) $oid $msgType $toJid $encMode]
-        } trap TACO_OMEMO_NOT_READY {} {
+        } trap TACO_OMEMO_NOT_READY {emsg} {
             # Stays pending; warming kicks via encrypt side effect.
             # Initial attempt counts toward the budget.
+            jlog debug "send $opts(-chat_jid): OMEMO not ready ($emsg), parking pending oid=$oid"
             set OmemoRetryBudget($oid) [expr {$OMEMO_RETRY_LIMIT - 1}]
-        } trap TACO_OMEMO_TERMINAL {} {
+        } trap TACO_OMEMO_TERMINAL {emsg} {
+            jlog debug "send $opts(-chat_jid): OMEMO terminal ($emsg), marking failed oid=$oid"
             set status "failed"
             set failReason "encrypt"
         }
@@ -482,7 +503,8 @@ snit::type taco_message {
             body $opts(-body) \
             server_id "" \
             own_id $oid \
-            raw_xml [expr {$stanza eq "" ? "" : [jwrite $stanza]}] \
+            raw_xml [expr {$stanza eq "" ? "" \
+                : [jwrite [$self StoredForm $opts(-body) $oid $msgType $toJid $encMode]]}] \
             server_status $status \
             encryption $encMode \
             fail_reason $failReason]
@@ -567,6 +589,7 @@ snit::type taco_message {
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption)]
         }
+        jlog debug "omemo:<SessionReady> $peerJid: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
             $self RetrySend $msg
         }
@@ -589,6 +612,7 @@ snit::type taco_message {
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption)]
         }
+        jlog debug "omemo:<SelfReady>: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
             $self RetrySend $msg
         }
@@ -621,6 +645,7 @@ snit::type taco_message {
             ? [dict get $msg encryption] : ""}]
         lassign [$self DeriveAddressing $chatJid] msgType toJid _ _
 
+        jlog debug "RetrySend $chatJid oid=$oid encMode=$encMode"
         try {
             set stanza [$self BuildOutgoingStanza \
                 $chatJid $body $oid $msgType $toJid $encMode]
@@ -632,19 +657,23 @@ snit::type taco_message {
                 set OmemoRetryBudget($oid) $OMEMO_RETRY_LIMIT
             }
             incr OmemoRetryBudget($oid) -1
+            jlog debug "RetrySend $chatJid oid=$oid: still NOT_READY, budget=$OmemoRetryBudget($oid)"
             if {$OmemoRetryBudget($oid) <= 0} {
                 $self MarkOutgoingFailed $chatJid $oid encrypt
             }
             return
         } trap TACO_OMEMO_TERMINAL {} {
+            jlog debug "RetrySend $chatJid oid=$oid: TERMINAL, marking failed"
             $self MarkOutgoingFailed $chatJid $oid encrypt
             return
         }
 
         unset -nocomplain OmemoRetryBudget($oid)
-        # Stamp raw_xml so a subsequent <SessionReady> tick doesn't
-        # re-send this stanza (the row stays pending until SM ack).
-        set xml [jwrite $stanza]
+        jlog debug "RetrySend $chatJid oid=$oid: built stanza, writing to wire"
+        # Stamp raw_xml with the readable form (not the ciphertext wire
+        # stanza) so it stays non-empty - the sentinel that a later
+        # <SessionReady> tick uses to skip re-sending an on-wire row.
+        set xml [jwrite [$self StoredForm $body $oid $msgType $toJid $encMode]]
         $client db eval {
             UPDATE chat_message SET raw_xml=$xml
             WHERE chat_jid=$chatJid AND own_id=$oid
@@ -1106,6 +1135,23 @@ snit::type taco_message {
         set rawFrom [xsearch $msgNode -get @from]
         set fromJid [NormalizeAuthorJid $chatJid $rawFrom]
         set fromRes [SplitFromResource $chatJid $rawFrom]
+        # Encryption stamp from the EME marker (XEP-0380), which the decrypt
+        # path (SynthesisePlain) leaves on decrypted messages; plaintext has
+        # none. Drives the lock on peer messages.
+        set emeNs [xsearch $msgNode encryption -ns urn:xmpp:eme:0 -get @namespace]
+        set enc [expr {$emeNs eq "eu.siacs.conversations.axolotl" ? "omemo" : ""}]
+        # own_id dedups messages we sent. The caller sets it on the live
+        # carbon path; otherwise, for a stanza from our own bare JID (echo:
+        # self-chat, carbon, MAM), derive it from @id - which equals the
+        # own_id we stored on send, so messagestore confirms the row rather
+        # than duplicating it.
+        if {[dict exists $args -own_id]} {
+            set ownId [dict get $args -own_id]
+        } elseif {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
+            set ownId [xsearch $msgNode -get @id]
+        } else {
+            set ownId ""
+        }
         dict create \
             timestamp  [dict get $args -timestamp] \
             chat_jid   $chatJid \
@@ -1113,9 +1159,10 @@ snit::type taco_message {
             from_resource $fromRes \
             body       [xsearch $msgNode body -get body] \
             server_id  [dict get $args -server_id] \
-            own_id     [expr {[dict exists $args -own_id] ? [dict get $args -own_id] : ""}] \
+            own_id     $ownId \
             raw_xml    [jwrite $msgNode] \
-            server_status ""
+            server_status "" \
+            encryption $enc
     }
 }
 
