@@ -92,6 +92,24 @@ namespace eval ::test::omemo_int {
         return $ev
     }
 
+    # Poll until a session row for (bot, dev) exists. Used to await an
+    # async Heal: omemo:<SessionReady> is internal-bus only (not exposed
+    # to `tacky listen`), so the DB row reappearing is our readiness signal.
+    proc waitSessionRow {client tester bot dev} {
+        variable TIMEOUT
+        set deadline [expr {[clock milliseconds] + $TIMEOUT}]
+        while {[clock milliseconds] < $deadline} {
+            if {[$client db onecolumn {
+                SELECT count(*) FROM omemo_sessions
+                WHERE account_jid=$tester AND peer_jid=$bot AND peer_device=$dev
+            }] > 0} { return 1 }
+            set ::test::omemo_int::_tick 0
+            after 100 [list set ::test::omemo_int::_tick 1]
+            vwait ::test::omemo_int::_tick
+        }
+        return 0
+    }
+
     set common [concat {-constraints withServer} \
         [tacky_env -extra-setup { ::test::omemo_int::extraSetup }]]
 
@@ -148,6 +166,49 @@ namespace eval ::test::omemo_int {
         set bodies
     } -result {{msg 0} {msg 1} {msg 2} {msg 3} {msg 4} {msg 5} {msg 6} {msg 7} {msg 8} {msg 9}}
 
+    # 2b. Non-ASCII body. The picomemo payload codec wants UTF-8 bytes;
+    # passing a Tcl string with non-ASCII codepoints throws EPARAM, so
+    # encrypt convertto-utf-8's and decrypt convertfrom-utf-8's. CJK
+    # exercises 3-byte sequences, the \U-escaped emoji a 4-byte one.
+    test omemo-int-unicode-roundtrip {non-ASCII body survives encrypt + decrypt} \
+        {*}$common -body {
+            set msg "你好 \U0001F44B"
+            set ev [sendOmemo $msg]
+            expr {[string trimright [dict get [dict get $ev -message] body]] eq $msg}
+        } -result 1
+
+    # 4. Heal convergence against a real peer. The echo bot only replies
+    # to our sends and can't be driven to desync, so we can't provoke a
+    # natural inbound decrypt failure - instead we drop our session and
+    # invoke Heal directly. This checks the two things the unit tests
+    # can't: (a) BuildSessionFromBundle re-keys from a REAL fetched bundle,
+    # and (b) the peer adopts our prekey KeyTransport so traffic resumes
+    # on the healed session. sendOmemo is wrapped so a convergence failure
+    # reports `converged timeout` rather than erroring the whole test.
+    test omemo-int-heal-converges \
+        {dropped session: Heal rebuilds from a real bundle + peer re-syncs} \
+        {*}$common -body {
+            set client [tacky client $::test::omemo_int::TESTER]
+            set bot $::test::omemo_int::BOT
+            set tester [jid bare $::test::omemo_int::TESTER]
+            sendOmemo "warmup"
+            set dev [$client db onecolumn {
+                SELECT peer_device FROM omemo_sessions
+                WHERE account_jid=$tester AND peer_jid=$bot LIMIT 1
+            }]
+            $client db eval {
+                DELETE FROM omemo_sessions
+                WHERE account_jid=$tester AND peer_jid=$bot AND peer_device=$dev
+            }
+            $client omemo Heal $bot $dev
+            set rebuilt [::test::omemo_int::waitSessionRow $client $tester $bot $dev]
+            set converged timeout
+            if {![catch {sendOmemo "after heal"} ev]} {
+                set converged [string trimright [dict get [dict get $ev -message] body]]
+            }
+            list rebuilt $rebuilt converged $converged
+        } -result {rebuilt 1 converged {after heal}}
+
     # 5. Persistence: destroy + recreate, ensure the saved session
     # carries forward. No new prekey establishment required.
     test omemo-int-persistence \
@@ -196,10 +257,10 @@ namespace eval ::test::omemo_int {
                 -type chat {
                     j encrypted -ns eu.siacs.conversations.axolotl {
                         j header -sid $dev {
-                            j key -rid $dev #body Zm9v
-                            j iv #body AAAAAAAAAAAAAAAA
+                            j key -rid $dev .body Zm9v
+                            j iv .body AAAAAAAAAAAAAAAA
                         }
-                        j payload #body Zm9v
+                        j payload .body Zm9v
                     }
                 }]
             $client omemo OnMessage $msg

@@ -393,6 +393,88 @@ test message-row-exposes-encryption-and-failreason \
             [dict get $r1 encryption] [dict get $r1 fail_reason]
     } -result {{} {} omemo encrypt}
 
+# Incoming encryption stamp: ParseMessage reads the EME marker (XEP-0380)
+# the decrypt path leaves on decrypted messages, so peer OMEMO messages
+# carry encryption='omemo' (lock shows on their side too). Plaintext
+# incoming has no marker -> ''.
+test message-incoming-eme-stamps-encryption \
+    {ParseMessage derives encryption='omemo' from the EME marker} \
+    {*}$msg_common \
+    -body {
+        set omemoNode [j message -from alice@example.com/x -type chat {
+            j body #body "secret"
+            j encryption -ns urn:xmpp:eme:0 \
+                -namespace eu.siacs.conversations.axolotl -name OMEMO
+        }]
+        set plainNode [j message -from alice@example.com/x -type chat {
+            j body #body "hi there"
+        }]
+        set m1 [$::_client message ParseMessage $omemoNode \
+            -chat_jid alice@example.com -timestamp 1000 -server_id ""]
+        set m2 [$::_client message ParseMessage $plainNode \
+            -chat_jid alice@example.com -timestamp 1001 -server_id ""]
+        list omemo [dict get $m1 encryption] plain [dict get $m2 encryption]
+    } -result {omemo omemo plain {}}
+
+# raw_xml stores the readable form, never ciphertext: for OMEMO that's
+# the real body + EME marker (the wire stanza, with <encrypted>, is
+# separate); for plaintext just the body.
+test message-storedform-readable-not-ciphertext \
+    {StoredForm yields body (+EME for omemo), never <encrypted>} \
+    {*}$msg_common \
+    -body {
+        set om [$::_client message StoredForm "secret text" o1 chat bob@example.com omemo]
+        set pl [$::_client message StoredForm "hi there" o2 chat bob@example.com ""]
+        list \
+            om_body [xsearch $om body -get body] \
+            om_eme [xsearch $om encryption -ns urn:xmpp:eme:0 -get @namespace] \
+            om_noct [llength [xsearch $om encrypted]] \
+            pl_body [xsearch $pl body -get body] \
+            pl_noeme [llength [xsearch $pl encryption]]
+    } -result {om_body {secret text} om_eme eu.siacs.conversations.axolotl om_noct 0 pl_body {hi there} pl_noeme 0}
+
+# Self-echo dedup: our own message coming back (self-chat, carbon, MAM)
+# carries the @id we set on send, so ParseMessage derives own_id from it
+# (for stanzas from our own bare JID) and messagestore dedups against the
+# sent row instead of showing a duplicate. Keyed on @id, not <origin-id>.
+test message-parsemessage-ownid-from-id-when-from-self \
+    {ParseMessage sets own_id from @id for our own stanzas, '' for peers} \
+    {*}$msg_common -body {
+        set mine [j message -from $acc/phone -to bob@example.com -type chat \
+                -id uuid-mine { j body #body "from my phone" }]
+        set peer [j message -from bob@example.com/x -to $acc -type chat \
+                -id peer-id { j body #body "from bob" }]
+        set m1 [$::_client message ParseMessage $mine \
+            -chat_jid bob@example.com -timestamp 1000 -server_id ""]
+        set m2 [$::_client message ParseMessage $peer \
+            -chat_jid bob@example.com -timestamp 1001 -server_id ""]
+        list mine [dict get $m1 own_id] peer [dict get $m2 own_id]
+    } -result {mine uuid-mine peer {}}
+
+test message-self-echo-dedups-not-duplicate \
+    {an echo of our own message (same @id) confirms the sent row, no new row} \
+    {*}$msg_common -body {
+        # The row we stored on send (pending, on the wire).
+        msg_store [list [msg_msg chat_jid bob@example.com body "hello" \
+            from_jid $acc own_id uuid-7 server_status pending \
+            raw_xml "<message/>"]]
+        # The echo comes back from our own jid (carbon / MAM) with same @id
+        # and a server stanza-id; ParseMessage derives own_id from @id.
+        set echo [j message -from $acc/phone -to bob@example.com -type chat \
+                -id uuid-7 {
+            j body #body "hello"
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-99
+        }]
+        set m [$::_client message ParseMessage $echo \
+            -chat_jid bob@example.com -timestamp 2000 -server_id srv-99]
+        set res [$::_client message messagestore store [list $m]]
+        set rows [msg_store_latest bob@example.com]
+        list nrows [llength $rows] \
+            inserted [llength [dict get $res inserted]] \
+            confirmed [llength [dict get $res confirmed]] \
+            status [dict get [lindex $rows 0] server_status]
+    } -result {nrows 1 inserted 0 confirmed 1 status received}
+
 # resend: user-driven retry. Default honors the row's stamped
 # encryption; -plaintext downgrades (the only path that may).
 

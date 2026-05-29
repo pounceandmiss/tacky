@@ -75,16 +75,22 @@ namespace eval ::taco::omemo {
     variable NS_PUBSUB http://jabber.org/protocol/pubsub
     variable NS_EME urn:xmpp:eme:0
     variable SKIPPED_CAP 2000
+    # Curve25519 public-key type tag (= libsignal Curve.DJB_TYPE): the
+    # one-byte prefix on the 33-byte wire form of a key.
+    variable DJB_TYPE "\x05"
+    # Min interval between heals to one peer-device. Survives
+    # reconnect (see HealAt) to stop a re-key ping-pong.
+    variable HEAL_WINDOW_MS 60000
 
     # OMEMO 0.3 wire format (matches libsignal / oldmemo) carries
     # Curve25519 public keys as 33 bytes: a 0x05 DJB-type prefix
     # followed by the 32-byte raw key. picomemo's $store bundle yields
     # the raw 32 bytes (and $sess initiate expects raw 32 bytes too).
     # We add the prefix on publish and strip it on parse.
-    proc prefixDjb {bytes} { return "\x05${bytes}" }
+    proc prefixDjb {bytes} { return "${::taco::omemo::DJB_TYPE}${bytes}" }
     proc stripDjb {bytes} {
         if {[string length $bytes] == 33 \
-                && [string index $bytes 0] eq "\x05"} {
+                && [string index $bytes 0] eq $::taco::omemo::DJB_TYPE} {
             return [string range $bytes 1 end]
         }
         return $bytes
@@ -125,8 +131,8 @@ snit::type taco_omemo {
     #                        (bundle republish).
     #   PostponedHeartbeats: (peer,device) keys needing a heartbeat.
     #   PostponedHealing:    broken-session (peer,device) keys from failed
-    #                        MAM decrypts; one TryHeal each, capped by
-    #                        HealingAttempts (once per peer per connection).
+    #                        MAM decrypts; one Heal each at query end,
+    #                        rate-limited by HealAt.
     # Concurrent MAM on two chats can drain both at the first query end;
     # the second re-drains what accumulated after (cost: a deduped
     # republish, maybe a heartbeat). Live decrypts (isMam=0) heal and run
@@ -136,9 +142,9 @@ snit::type taco_omemo {
     variable PostponedHealing
     variable PostponedHeartbeats
 
-    # Per-connection broken-session healing rate-limit. Set of "$jid|$dev"
-    # keys that have already triggered a rebuild attempt this connection.
-    variable HealingAttempts
+    # Heal rate-limit: "$jid|$dev" -> earliest clock-ms we may heal again.
+    # NOT cleared in OnDisconnect, so reconnects can't re-key in a loop.
+    variable HealAt
 
     constructor args {
         $self configurelist $args
@@ -151,7 +157,7 @@ snit::type taco_omemo {
         set Postponed [list]
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
-        set HealingAttempts [dict create]
+        set HealAt [dict create]
 
         $self Migrate
 
@@ -235,12 +241,11 @@ snit::type taco_omemo {
     }
 
     method OnDisconnect {args} {
-        # Drop in-memory caches and per-connection healing budget so
-        # the next session is unconditioned.
+        # Drop in-memory caches so the next connection is unconditioned.
+        # HealAt is kept on purpose - it must outlive reconnects.
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
-        set HealingAttempts [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
@@ -279,7 +284,7 @@ snit::type taco_omemo {
         set PostponedHealing [dict create]
         foreach key $heals {
             lassign [split $key |] pj pd
-            $self TryHeal $pj $pd
+            $self Heal $pj $pd
         }
     }
 
@@ -411,6 +416,8 @@ snit::type taco_omemo {
             dict set DeviceLists $accountJid $devices
             $self DoPublishDevicelist $devices
         }
+        # Key our own OTHER devices so they appear in the "my keys" UI.
+        $self EnsureBundlesForDevicelist $accountJid $devices
         # Account-level prerequisites (store + own devicelist) are now in
         # place. Wake any send that pended on them this connection, since
         # message.tcl's reconnect RetryPending ran before omemo's OnReady.
@@ -433,17 +440,17 @@ snit::type taco_omemo {
             j publish-options {
                 j x -ns jabber:x:data -type submit {
                     j field -var FORM_TYPE -type hidden {
-                        j value #body \
+                        j value .body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
                     j field -var pubsub#persist_items {
-                        j value #body true
+                        j value .body true
                     }
                     j field -var pubsub#max_items {
-                        j value #body 1
+                        j value .body 1
                     }
                     j field -var pubsub#access_model {
-                        j value #body open
+                        j value .body open
                     }
                 }
             }
@@ -465,6 +472,7 @@ snit::type taco_omemo {
     method OnFetchedDevicelist {peerJid command stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
+            jlog debug "devicelist fetch for $peerJid: ERROR ([xsearch $stanza error -get @type])"
             # item-not-found = the peer has no devicelist node: a
             # definitive "no OMEMO". Cache an empty list so encrypt()
             # hits TERMINAL and the pending message fails (the GUI offers
@@ -485,6 +493,7 @@ snit::type taco_omemo {
             return
         }
         set devices [$self ParseDevicelist $stanza]
+        jlog debug "devicelist fetch for $peerJid: [llength $devices] device(s) = $devices"
         # Populate the DeviceLists cache (and reconcile trust-active
         # rows) for peers, so encrypt() sees the result without depending
         # on a separate PEP +notify push. OWN jid takes its own
@@ -517,6 +526,7 @@ snit::type taco_omemo {
         set from [xsearch $stanza -get @from]
         set peerJid [expr {$from eq "" ? $accountJid : [jid bare $from]}]
         set devices [$self ParseDevicelist $stanza]
+        jlog debug "devicelist +notify from $peerJid: [llength $devices] device(s) = $devices"
         if {$peerJid eq $accountJid} {
             dict set DeviceLists $accountJid $devices
             if {$deviceId ne "" && $deviceId ni $devices} {
@@ -524,6 +534,8 @@ snit::type taco_omemo {
                 dict set DeviceLists $accountJid $devices
                 $self DoPublishDevicelist $devices
             }
+            # Key our own other devices (own devicelist via +notify).
+            $self EnsureBundlesForDevicelist $accountJid $devices
             return
         }
         $self UpdatePeerDevicelist $peerJid $devices
@@ -583,6 +595,24 @@ snit::type taco_omemo {
         # unconditionally - a never-seen peer resolving to empty is a
         # no-change (empty->empty) yet is exactly the case to wake.
         $client bus publish omemo:<DevicelistResolved> -jid $peerJid
+        $self EnsureBundlesForDevicelist $peerJid $devices
+    }
+
+    # Fetch bundles for announced devices we haven't keyed yet, so the
+    # trust UI shows each device's fingerprint before any message exchange
+    # (mirrors Dino). Skips our own current device and already-keyed rows.
+    method EnsureBundlesForDevicelist {jid devices} {
+        foreach dev $devices {
+            if {$jid eq $accountJid && $dev == $deviceId} continue
+            set have [$db onecolumn {
+                SELECT 1 FROM omemo_trust
+                WHERE account_jid=$accountJid
+                  AND peer_jid=$jid AND peer_device=$dev
+            }]
+            if {$have ne ""} continue
+            jlog debug "eager bundle fetch $jid/$dev (unkeyed announced device)"
+            $self FetchBundle $jid $dev [list apply {args {}}]
+        }
     }
 
     # =====================================================================
@@ -661,18 +691,18 @@ snit::type taco_omemo {
                 j item -id current {
                     j bundle -ns $::taco::omemo::NS_AXOLOTL {
                         j signedPreKeyPublic -signedPreKeyId $spkId \
-                            #body [base64::encode -wrapchar "" $spk]
+                            .body [base64::encode -wrapchar "" $spk]
                         j signedPreKeySignature \
-                            #body [base64::encode -wrapchar "" $spks]
+                            .body [base64::encode -wrapchar "" $spks]
                         j identityKey \
-                            #body [base64::encode -wrapchar "" $ik]
+                            .body [base64::encode -wrapchar "" $ik]
                         j prekeys {
                             foreach pk $prekeys {
                                 set pid [dict get $pk id]
                                 set pdata [::taco::omemo::prefixDjb \
                                     [dict get $pk pk]]
                                 j preKeyPublic -preKeyId $pid \
-                                    #body [base64::encode -wrapchar "" $pdata]
+                                    .body [base64::encode -wrapchar "" $pdata]
                             }
                         }
                     }
@@ -681,17 +711,17 @@ snit::type taco_omemo {
             j publish-options {
                 j x -ns jabber:x:data -type submit {
                     j field -var FORM_TYPE -type hidden {
-                        j value #body \
+                        j value .body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
                     j field -var pubsub#persist_items {
-                        j value #body true
+                        j value .body true
                     }
                     j field -var pubsub#max_items {
-                        j value #body 1
+                        j value .body 1
                     }
                     j field -var pubsub#access_model {
-                        j value #body open
+                        j value .body open
                     }
                 }
             }
@@ -727,18 +757,21 @@ snit::type taco_omemo {
 
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
+            jlog debug "bundle fetch $peerJid/$peerDev: ERROR"
             foreach cb $waiters {
                 {*}$cb $peerJid $peerDev "" "bundle fetch failed"
             }
             return
         }
         if {[catch {$self ParseBundle $stanza} bundle]} {
+            jlog debug "bundle fetch $peerJid/$peerDev: parse failed: $bundle"
             foreach cb $waiters {
                 {*}$cb $peerJid $peerDev "" "bundle parse failed: $bundle"
             }
             return
         }
         if {$bundle eq ""} {
+            jlog debug "bundle fetch $peerJid/$peerDev: empty/unparseable"
             foreach cb $waiters {
                 {*}$cb $peerJid $peerDev "" "bundle empty"
             }
@@ -749,11 +782,13 @@ snit::type taco_omemo {
         # the file header.
         set ik [dict get $bundle ik]
         if {![$self EnsureTrustRow $peerJid $peerDev $ik]} {
+            jlog debug "bundle fetch $peerJid/$peerDev: trust compromised (IK changed)"
             foreach cb $waiters {
                 {*}$cb $peerJid $peerDev "" "trust compromised"
             }
             return
         }
+        jlog debug "bundle fetch $peerJid/$peerDev: OK (trust row ensured)"
         dict set Bundles $key $bundle
         foreach cb $waiters {
             {*}$cb $peerJid $peerDev $bundle ""
@@ -837,9 +872,21 @@ snit::type taco_omemo {
             {*}$cb $peerJid $peerDev [dict get $Sessions $key] ""
             return
         }
-        if {[llength [dict get $bundle prekeys]] == 0} {
-            {*}$cb $peerJid $peerDev "" "no prekeys in bundle"
+        lassign [$self BuildSessionFromBundle $peerJid $peerDev $bundle] sess berr
+        if {$sess eq ""} {
+            {*}$cb $peerJid $peerDev "" $berr
             return
+        }
+        $self NotifySessionReady $peerJid
+        {*}$cb $peerJid $peerDev $sess ""
+    }
+
+    # Initiate + persist a fresh session from a bundle, replacing any
+    # existing one (picomemo is single-state: a re-key, not build-on-top).
+    # Returns {session ""} or {"" errmsg}; destroys the old handle.
+    method BuildSessionFromBundle {peerJid peerDev bundle} {
+        if {[llength [dict get $bundle prekeys]] == 0} {
+            return [list "" "no prekeys in bundle"]
         }
         set pk [lindex [dict get $bundle prekeys] 0]
         set sess [$self CreateSessionHandle $peerJid $peerDev]
@@ -856,13 +903,13 @@ snit::type taco_omemo {
                 -pk-id  [dict get $pk id]
         } initErr]} {
             catch {$sess destroy}
-            {*}$cb $peerJid $peerDev "" "initiate failed: $initErr"
-            return
+            return [list "" "initiate failed: $initErr"]
         }
-        dict set Sessions "$peerJid|$peerDev" $sess
+        set key "$peerJid|$peerDev"
+        catch {[dict get $Sessions $key] destroy}
+        dict set Sessions $key $sess
         $self PersistSession $peerJid $peerDev $sess
-        $self NotifySessionReady $peerJid
-        {*}$cb $peerJid $peerDev $sess ""
+        return [list $sess ""]
     }
 
     method CreateSessionHandle {peerJid peerDev} {
@@ -871,19 +918,6 @@ snit::type taco_omemo {
         return $name
     }
     variable SessionCounter 0
-
-    method DropSession {peerJid peerDev} {
-        set key "$peerJid|$peerDev"
-        if {[dict exists $Sessions $key]} {
-            catch {[dict get $Sessions $key] destroy}
-            dict unset Sessions $key
-        }
-        $db eval {
-            DELETE FROM omemo_sessions
-            WHERE account_jid=$accountJid
-              AND peer_jid=$peerJid AND peer_device=$peerDev
-        }
-    }
 
     # =====================================================================
     # Incoming dispatch (called from client.tcl message chain)
@@ -1089,6 +1123,8 @@ snit::type taco_omemo {
             return [list decrypt_error \
                 "\[OMEMO\] Could not decrypt message payload"]
         }
+        # The plaintext on the wire is UTF-8 bytes; decode to a Tcl string.
+        set plain [encoding convertfrom utf-8 $plain]
         # Strip Conversations-style privacy padding (trailing whitespace).
         set plain [string trimright $plain " \t"]
         return [list plaintext $plain]
@@ -1166,8 +1202,8 @@ snit::type taco_omemo {
         set msg [j message -to $peerJid -type chat {
             j encrypted -ns $::taco::omemo::NS_AXOLOTL {
                 j header -sid $deviceId {
-                    j key -rid $peerDev #body [base64::encode -wrapchar "" $hb]
-                    j iv #body [base64::encode -wrapchar "" \
+                    j key -rid $peerDev .body [base64::encode -wrapchar "" $hb]
+                    j iv .body [base64::encode -wrapchar "" \
                         [string repeat \x00 12]]
                 }
             }
@@ -1181,36 +1217,31 @@ snit::type taco_omemo {
         set tag [lindex $ecode 1]
         # Was the last candidate a prekey path?
         set lastWasPrekey [lindex [lindex $candidates end] 0]
+        jlog debug "HandleDecryptError $peerJid/$peerDev: tag=$tag prekey=$lastWasPrekey\
+            isMam=$isMam err='$err'"
         switch -- $tag {
             EPROTOBUF -
             ECORRUPT  -
-            ECRYPTO {
-                # Non-prekey crypto failure on a SignalMessage: the
-                # session is wedged from the peer's perspective. Heal
-                # by dropping the session + cached bundle so the next
-                # outbound rebuilds via a fresh bundle fetch (peer
-                # picks up the new session via the resulting prekey
-                # message we send them).
-                #
-                # MAM-originated failures route through PostponedHealing
-                # so 1000 ancient decrypt fails from one peer collapse
-                # to one heal at QueryEnd, and so the heal doesn't race
-                # with messages still streaming in the same MAM page.
-                # HealingAttempts caps both paths at once per peer per
-                # connection.
+            ECRYPTO   -
+            ESTATE {
+                # ESTATE = no session for the sender; the rest = an
+                # established session broken. Both recover by healing.
+                # Skip prekey-path failures (a bad/replayed prekey isn't a
+                # broken session). MAM failures defer to the QueryEnd flush
+                # (one heal/device, no racing the same page).
                 if {!$lastWasPrekey} {
                     if {$isMam} {
                         dict set PostponedHealing "$peerJid|$peerDev" 1
                         set mamHadOmemo 1
                     } else {
-                        $self TryHeal $peerJid $peerDev
+                        $self Heal $peerJid $peerDev
                     }
                 }
             }
             EKEYGONE -
-            ESTATE   -
             EUSER    {
-                # Drop and log.
+                # Drop and log: a consumed/replayed prekey, or a storage
+                # callback error - healing wouldn't help.
             }
             ESTORE   -
             EPARAM   -
@@ -1221,14 +1252,69 @@ snit::type taco_omemo {
         }
     }
 
-    method TryHeal {peerJid peerDev} {
+    # Recover a missing/broken session: re-key from the peer's bundle and
+    # send a prekey KeyTransport so they adopt a session we share. Never
+    # deletes - picomemo restores the session across a failed decrypt, and
+    # BuildSessionFromBundle swaps it atomically. Rate-limited (HealAt)
+    # to avoid a re-key ping-pong.
+    method Heal {peerJid peerDev} {
         set key "$peerJid|$peerDev"
-        if {[dict exists $HealingAttempts $key]} return
-        dict set HealingAttempts $key 1
-        # Drop the broken session and any cached bundle so the next
-        # outbound encrypt path rebuilds from a fresh bundle fetch.
-        $self DropSession $peerJid $peerDev
+        set now [clock milliseconds]
+        if {[dict exists $HealAt $key] && $now < [dict get $HealAt $key]} {
+            return
+        }
+        dict set HealAt $key \
+            [expr {$now + $::taco::omemo::HEAL_WINDOW_MS}]
+        jlog debug "OMEMO heal $peerJid/$peerDev: fetching bundle to re-key + KeyTransport"
+        # Force a fresh fetch (EnsureSession would short-circuit on the
+        # existing broken session); the cached bundle may also be stale.
         dict unset Bundles $key
+        $self FetchBundle $peerJid $peerDev [mymethod AfterHeal]
+    }
+
+    method AfterHeal {peerJid peerDev bundle err} {
+        if {$err ne ""} {
+            jlog debug "OMEMO heal $peerJid/$peerDev: bundle fetch failed: $err"
+            return
+        }
+        lassign [$self BuildSessionFromBundle $peerJid $peerDev $bundle] sess berr
+        if {$sess eq ""} {
+            jlog debug "OMEMO heal $peerJid/$peerDev: rebuild failed: $berr"
+            return
+        }
+        jlog debug "OMEMO heal $peerJid/$peerDev: re-keyed, sending KeyTransport"
+        $self NotifySessionReady $peerJid
+        $self SendKeyTransport $peerJid $peerDev $sess
+    }
+
+    # Send an empty (no <payload>) KeyTransport. On a fresh session this is
+    # the prekey message that makes the peer adopt our new session - unlike
+    # SendHeartbeat, which only fires when the ratchet counter is too high.
+    method SendKeyTransport {peerJid peerDev sess} {
+        set enc [omemo::encrypt_message ""]
+        if {[catch {$sess encrypt_key [dict get $enc key]} wrap]} {
+            jlog debug "OMEMO heal $peerJid/$peerDev: encrypt_key failed: $wrap"
+            return
+        }
+        $self PersistSession $peerJid $peerDev $sess
+        set p [dict get $wrap p]
+        set isPrekey [dict get $wrap isprekey]
+        set iv [dict get $enc iv]
+        set msg [j message -to $peerJid -type chat {
+            j encrypted -ns $::taco::omemo::NS_AXOLOTL {
+                j header -sid $deviceId {
+                    if {$isPrekey} {
+                        j key -rid $peerDev -prekey true \
+                            .body [base64::encode -wrapchar "" $p]
+                    } else {
+                        j key -rid $peerDev \
+                            .body [base64::encode -wrapchar "" $p]
+                    }
+                    j iv .body [base64::encode -wrapchar "" $iv]
+                }
+            }
+        }]
+        $client write $msg
     }
 
     # Build a synthesised plaintext <message> from the original encrypted
@@ -1370,13 +1456,18 @@ snit::type taco_omemo {
                 "OMEMO store not initialised yet"
         }
 
+        jlog debug "encrypt -> $chatJid: peerDevlistCached=[dict exists $DeviceLists $chatJid]\
+            ownDevlistCached=[dict exists $DeviceLists $accountJid]"
+
         # Devicelists must be loaded; if not, kick fetch and bail.
         set kicked 0
         if {![dict exists $DeviceLists $chatJid]} {
+            jlog debug "encrypt $chatJid: peer devicelist not cached, kicking fetch"
             $self FetchDevicelist $chatJid [list apply {args {}}]
             set kicked 1
         }
         if {![dict exists $DeviceLists $accountJid]} {
+            jlog debug "encrypt $chatJid: OWN devicelist not cached, kicking fetch"
             $self FetchDevicelist $accountJid [list apply {args {}}]
             set kicked 1
         }
@@ -1387,6 +1478,7 @@ snit::type taco_omemo {
 
         set peerDevs [dict get $DeviceLists $chatJid]
         if {[llength $peerDevs] == 0} {
+            jlog debug "encrypt TERMINAL $chatJid: cached devicelist is empty"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "no devices on $chatJid devicelist"
         }
@@ -1396,9 +1488,25 @@ snit::type taco_omemo {
                 if {$d != $deviceId} { lappend ownDevs $d }
             }
         }
+        jlog debug "encrypt $chatJid: peerDevs=$peerDevs ownDevs=$ownDevs (ourDev=$deviceId)"
+        # Recipient set = peer devices + our own other devices, deduped
+        # and never including our own current device. For a self-chat
+        # (chatJid == accountJid) peerDevs already IS our devicelist, so
+        # without dedup/self-exclusion we'd (a) try to encrypt to our own
+        # current device and (b) double-list every other own device -
+        # calling encrypt_key twice on one session, desyncing its ratchet.
         set rawCandidates [list]
-        foreach d $peerDevs { lappend rawCandidates [list $chatJid $d] }
-        foreach d $ownDevs  { lappend rawCandidates [list $accountJid $d] }
+        set seen [dict create]
+        foreach pair [concat \
+                [lmap d $peerDevs {list $chatJid $d}] \
+                [lmap d $ownDevs  {list $accountJid $d}]] {
+            lassign $pair pj pd
+            if {$pj eq $accountJid && $pd == $deviceId} continue
+            set k "$pj|$pd"
+            if {[dict exists $seen $k]} continue
+            dict set seen $k 1
+            lappend rawCandidates $pair
+        }
 
         # Sync session lookup only. If a candidate is unsessioned,
         # EnsureSessionSync fires a bundle fetch in the background and
@@ -1409,29 +1517,47 @@ snit::type taco_omemo {
         set peerWarming 0
         foreach cand $rawCandidates {
             lassign $cand pj pd
-            if {[$self IsDeviceBlocked $pj $pd]} continue
+            if {[$self IsDeviceBlocked $pj $pd]} {
+                jlog debug "encrypt $chatJid: $pj/$pd BLOCKED (trust/inactive)"
+                continue
+            }
             set sess [$self EnsureSessionSync $pj $pd]
             if {$sess eq ""} {
+                jlog debug "encrypt $chatJid: $pj/$pd WARMING (no session yet)"
                 if {$pj eq $chatJid} { incr peerWarming }
                 continue
             }
             lappend sessions [list $pj $pd $sess]
             if {$pj eq $chatJid} { incr peerSessionCount }
         }
+        jlog debug "encrypt $chatJid: usableSessions=[llength $sessions]\
+            peerSessions=$peerSessionCount peerWarming=$peerWarming"
         # Fail-closed: no point ciphering a payload no peer device can
         # read, even if our own carbon devices could. The peer would
         # silently get an undecryptable stanza (MessageNotForUs).
         if {$peerSessionCount == 0} {
             if {$peerWarming > 0} {
+                jlog debug "encrypt NOT_READY $chatJid: peer bundle(s) still warming"
                 return -code error -errorcode TACO_OMEMO_NOT_READY \
                     "bundle fetch in flight for $chatJid"
             }
+            jlog debug "encrypt TERMINAL $chatJid: no usable peer recipients"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "no usable recipients for $chatJid"
         }
 
-        # Generate AES-GCM payload key + ciphertext + iv.
-        set encDict [omemo::encrypt_message $plaintext]
+        # Generate AES-GCM payload key + ciphertext + iv. The payload
+        # is UTF-8 bytes: the picomemo binding wants a byte string, and
+        # a Tcl string with non-ASCII codepoints throws EPARAM. Wrap the
+        # crypto so an unexpected failure becomes a typed send error
+        # rather than escaping to bgerror and killing the stanza loop.
+        if {[catch {
+            omemo::encrypt_message [encoding convertto utf-8 $plaintext]
+        } encDict]} {
+            jlog debug "encrypt TERMINAL $chatJid: payload encrypt failed: $encDict"
+            return -code error -errorcode TACO_OMEMO_TERMINAL \
+                "payload encryption failed: $encDict"
+        }
         set ct  [dict get $encDict ct]
         set key [dict get $encDict key]
         set iv  [dict get $encDict iv]
@@ -1446,9 +1572,11 @@ snit::type taco_omemo {
                 [dict get $wrap isprekey] [dict get $wrap p]]
         }
         if {[llength $perRecipient] == 0} {
+            jlog debug "encrypt TERMINAL $chatJid: all per-session encrypts failed"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "all per-session encrypts failed"
         }
+        jlog debug "encrypt OK $chatJid: wrapped for [llength $perRecipient] device(s)"
 
         return [j encrypted -ns $::taco::omemo::NS_AXOLOTL {
             j header -sid $deviceId {
@@ -1456,15 +1584,15 @@ snit::type taco_omemo {
                     lassign $r rid isPrekey p
                     if {$isPrekey} {
                         j key -rid $rid -prekey true \
-                            #body [base64::encode -wrapchar "" $p]
+                            .body [base64::encode -wrapchar "" $p]
                     } else {
                         j key -rid $rid \
-                            #body [base64::encode -wrapchar "" $p]
+                            .body [base64::encode -wrapchar "" $p]
                     }
                 }
-                j iv #body [base64::encode -wrapchar "" $iv]
+                j iv .body [base64::encode -wrapchar "" $iv]
             }
-            j payload #body [base64::encode -wrapchar "" $ct]
+            j payload .body [base64::encode -wrapchar "" $ct]
         }]
     }
 
@@ -1484,6 +1612,7 @@ snit::type taco_omemo {
               AND peer_jid=$peerJid AND peer_device=$peerDev
         }]
         if {[llength $row] > 0} {
+            jlog debug "EnsureSessionSync $peerJid/$peerDev: loaded session from DB"
             set sess [$self CreateSessionHandle $peerJid $peerDev]
             $sess deserialize [lindex $row 0]
             dict set Sessions $key $sess
@@ -1491,7 +1620,10 @@ snit::type taco_omemo {
         }
         if {[dict exists $Bundles $key]} {
             set bundle [dict get $Bundles $key]
-            if {[llength [dict get $bundle prekeys]] == 0} { return "" }
+            if {[llength [dict get $bundle prekeys]] == 0} {
+                jlog debug "EnsureSessionSync $peerJid/$peerDev: cached bundle has no prekeys"
+                return ""
+            }
             set pk [lindex [dict get $bundle prekeys] 0]
             set sess [$self CreateSessionHandle $peerJid $peerDev]
             # picomemo verifies spks against ik before deriving any state and
@@ -1506,9 +1638,11 @@ snit::type taco_omemo {
                     -spk-id [dict get $bundle spk_id] \
                     -pk-id  [dict get $pk id]
             } err]} {
+                jlog debug "EnsureSessionSync $peerJid/$peerDev: initiate failed: $err"
                 catch {$sess destroy}
                 return ""
             }
+            jlog debug "EnsureSessionSync $peerJid/$peerDev: initiated session from cached bundle"
             dict set Sessions $key $sess
             $self PersistSession $peerJid $peerDev $sess
             return $sess
@@ -1517,6 +1651,7 @@ snit::type taco_omemo {
         # subsequent send will succeed; this send won't include this
         # device. EnsureSession emits <SessionReady> when the build
         # completes, which retries any pending outbound to this peer.
+        jlog debug "EnsureSessionSync $peerJid/$peerDev: no session or bundle, kicking async fetch"
         $self EnsureSession $peerJid $peerDev [list apply {args {}}]
         return ""
     }

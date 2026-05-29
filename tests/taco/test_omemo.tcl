@@ -200,10 +200,10 @@ test omemo-unit-reflected-guard-drops-own-echo {server echo of our send is dropp
         set msg [j message -from $::test::omemo_unit::JULIET_BARE -type chat {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $dev {
-                    j key -rid $dev #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid $dev .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -220,10 +220,10 @@ test omemo-unit-reflected-guard-allows-cross-device-carbon \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $otherDev {
-                    j key -rid $ourDev #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid $ourDev .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -240,10 +240,10 @@ test omemo-unit-no-key-for-us-surfaces-error \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid $otherRid #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid $otherRid .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set encNode [lindex [xsearch $msg encrypted \
@@ -265,13 +265,13 @@ test omemo-unit-mam-preserves-stanza-id \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-1 {
             j {stanza-id} -ns urn:xmpp:sid:0 -id $sid -by $::test::omemo_unit::JULIET_BARE
-            j body #body "OMEMO encrypted message fallback"
+            j body .body "OMEMO encrypted message fallback"
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid 99 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 99 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set plain [c omemo SynthesisePlain $msg "hello"]
@@ -289,13 +289,13 @@ test omemo-unit-mam-self-sent-blanks-body \
                 -from $::test::omemo_unit::JULIET_BARE \
                 -to   $::test::omemo_unit::ROMEO \
                 -type chat -id wire-2 {
-            j body #body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $ourDev {
-                    j key -rid 7 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 7 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -318,13 +318,13 @@ test omemo-unit-mam-untrusted-blanks-body \
                 -from $::test::omemo_unit::ROMEO \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-3 {
-            j body #body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 77 {
-                    j key -rid 1 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 1 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -338,9 +338,9 @@ test omemo-unit-mam-no-header-blanks-body \
                 -from $::test::omemo_unit::ROMEO \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-4 {
-            j body #body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -361,10 +361,10 @@ test omemo-unit-onmessage-nonnumeric-sid-drops \
                 -type chat -id wire-nan1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid "abc" {
-                    j key -rid 1 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 1 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -378,7 +378,7 @@ test omemo-unit-onmessage-no-header-drops \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-nh1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -391,13 +391,13 @@ test omemo-unit-mam-nonnumeric-sid-blanks-body \
                 -from $::test::omemo_unit::JULIET_BARE \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-nan2 {
-            j body #body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid "abc" {
-                    j key -rid 1 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 1 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -521,6 +521,261 @@ test omemo-unit-devicelist-error-caches-empty \
             resolved $::_resolved
     } -result {cached {} resolved 1}
 
+# Eager bundle fetch: on learning a devicelist we fetch a bundle for
+# every announced device we haven't keyed yet (own + peer), so the trust
+# UI shows them without a message exchange. Skips already-keyed devices
+# and our own current device. Uses a mock conn to capture the fetch IQs.
+test omemo-unit-eager-bundle-fetch-peer \
+    {EnsureBundlesForDevicelist fetches unkeyed peer devices, skips keyed} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        # Pre-key romeo device 2 so it's skipped.
+        c db eval {
+            INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+                identity_pk, trust, active, last_activation)
+            VALUES('juliet@capulet.lit','romeo@montague.lit',2,x'00','trusted',1,1)
+        }
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo EnsureBundlesForDevicelist $::test::omemo_unit::ROMEO {1 2 3}
+        set fetched {}
+        foreach s [lrange [c conn get_written] $before end] {
+            set node [xsearch $s pubsub items -get @node]
+            if {[string match {*axolotl.bundles:*} $node]} {
+                lappend fetched [lindex [split $node :] end]
+            }
+        }
+        lsort -integer $fetched
+    } -result {1 3}
+
+test omemo-unit-eager-bundle-fetch-skips-own-device \
+    {EnsureBundlesForDevicelist skips our own current device} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set ourDev [c omemo device_id]
+        set otherDev [expr {$ourDev + 1}]
+        set before [llength [c conn get_written]]
+        c omemo EnsureBundlesForDevicelist $::test::omemo_unit::JULIET_BARE \
+            [list $ourDev $otherDev]
+        set fetched {}
+        foreach s [lrange [c conn get_written] $before end] {
+            set node [xsearch $s pubsub items -get @node]
+            if {[string match {*axolotl.bundles:*} $node]} {
+                lappend fetched [lindex [split $node :] end]
+            }
+        }
+        # Only the other device is fetched; our own current device skipped.
+        list count [llength $fetched] \
+            is_other [expr {$fetched eq [list $otherDev]}] \
+            own_skipped [expr {$ourDev ni $fetched}]
+    } -result {count 1 is_other 1 own_skipped 1}
+
+# =====================================================================
+# Session recovery ("heal"): never delete on failure, one
+# rate-limited re-key + KeyTransport per peer-device. Most tests observe
+# the bundle-fetch IQ; the last drives the real re-key with a minted bundle.
+
+# Count axolotl bundle-fetch IQs for $dev in a list of written stanzas.
+proc ::test::omemo_unit::bundleFetches {written dev} {
+    set n 0
+    foreach s $written {
+        set node [xsearch $s pubsub items -get @node]
+        if {$node eq "eu.siacs.conversations.axolotl.bundles:$dev"} { incr n }
+    }
+    return $n
+}
+
+# ESTATE (no session) used to be dropped and never recovered.
+test omemo-unit-recover-no-session-heals \
+    {ESTATE (no session) triggers a bundle-fetch heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ESTATE} "no session" {{0 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 1
+
+# A broken session must recover without the old DropSession (which left a
+# no-session gap and re-keyed every reconnect): row survives, fetch fires.
+test omemo-unit-recover-broken-preserves-session \
+    {ECORRUPT heals but does not delete the existing session} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        c db eval {
+            INSERT INTO omemo_sessions(account_jid, peer_jid, peer_device, blob)
+            VALUES('juliet@capulet.lit', 'romeo@montague.lit', 648103571, x'00')
+        }
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        list \
+            session_rows [c db onecolumn {
+                SELECT count(*) FROM omemo_sessions
+                WHERE peer_jid='romeo@montague.lit' AND peer_device=648103571
+            }] \
+            fetches [::test::omemo_unit::bundleFetches \
+                [lrange [c conn get_written] $before end] 648103571]
+    } -result {session_rows 1 fetches 1}
+
+# Repeated failures for one device heal at most once per window.
+test omemo-unit-recover-rate-limited-per-device \
+    {two failures for one device produce a single heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 1
+
+# The old per-connection cap was cleared in OnDisconnect, so reconnects
+# defeated it. A failure in-window after a reconnect must not heal.
+test omemo-unit-recover-rate-limit-survives-reconnect \
+    {heal rate-limit is not reset by OnDisconnect} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        c omemo OnDisconnect
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 1
+
+# MAM-origin failures postpone; healing mid-catchup would storm on
+# replayed history.
+test omemo-unit-recover-skips-during-mam \
+    {an isMam failure does not heal mid-catchup} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 1
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 0
+
+# A prekey-path failure (malformed/replayed prekey) isn't a broken session; drop it.
+test omemo-unit-recover-skips-prekey-failure \
+    {a prekey-path failure does not heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{1 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 0
+
+# Execution half: a real peer bundle (minted from a second store, no
+# server) so the re-key and KeyTransport actually run, not just the fetch.
+test omemo-unit-heal-rekeys-and-sends-keytransport \
+    {AfterHeal builds a session from a real bundle and sends a prekey KeyTransport} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        # A real, validly-signed peer bundle from an independent store.
+        omemo::store create peerstore -device 648103571
+        peerstore setup
+        set bundle [peerstore bundle]
+        peerstore destroy
+
+        set before [llength [c conn get_written]]
+        c omemo AfterHeal $::test::omemo_unit::ROMEO 648103571 $bundle ""
+
+        set kt 0
+        set prekey 0
+        foreach s [lrange [c conn get_written] $before end] {
+            set enc [lindex [xsearch $s encrypted \
+                -ns eu.siacs.conversations.axolotl] 0]
+            if {$enc eq ""} continue
+            if {[llength [xsearch $enc payload]] != 0} continue
+            xsearch $enc header key -script kn {
+                if {[xsearch $kn -get @rid] eq "648103571"} {
+                    incr kt
+                    if {[xsearch $kn -get @prekey] in {true 1}} { set prekey 1 }
+                }
+            }
+        }
+        list session_rows [c db onecolumn {
+            SELECT count(*) FROM omemo_sessions
+            WHERE peer_jid='romeo@montague.lit' AND peer_device=648103571
+        }] keytransports $kt prekey $prekey
+    } -result {session_rows 1 keytransports 1 prekey 1}
+
+# Companion to skips-during-mam: the deferred heal fires at mam:<QueryEnd>.
+test omemo-unit-recover-mam-heal-flushes-at-queryend \
+    {a postponed MAM heal fires at mam:<QueryEnd>} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        # MAM-origin failure: deferred, no heal yet.
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 1
+        set deferred [::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571]
+        # Query end flushes the postponed heal -> exactly one heal.
+        c omemo OnMamQueryEnd
+        set flushed [::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571]
+        list deferred $deferred flushed $flushed
+    } -result {deferred 0 flushed 1}
+
+# Self-chat (chatJid == our own jid): encrypt must never include our own
+# current device, and must not double-list other own devices. With only
+# our current device announced, there are no recipients -> TERMINAL
+# (proves we don't try to encrypt to ourselves, which used to build a
+# junk self-session and duplicate keys).
+test omemo-unit-self-chat-excludes-own-current-device \
+    {encrypt to self with only our own device yields no recipients} \
+    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        # Inject an own devicelist containing ONLY our current device.
+        set dev [c omemo device_id]
+        c omemo OnDevicelist [j message -from $::test::omemo_unit::JULIET_BARE {
+            j event -ns http://jabber.org/protocol/pubsub#event {
+                j items -node eu.siacs.conversations.axolotl.devicelist {
+                    j item {
+                        j list -ns eu.siacs.conversations.axolotl {
+                            j device -id $dev
+                        }
+                    }
+                }
+            }
+        }]
+    }] -body {
+        set code [catch {
+            c omemo encrypt $::test::omemo_unit::JULIET_BARE "note to self"
+        } _ opts]
+        list code $code ecode [dict get $opts -errorcode]
+    } -result {code 1 ecode TACO_OMEMO_TERMINAL}
+
 test omemo-unit-devicelist-transient-error-leaves-pending \
     {a transient PEP error does not cache empty or wake (message stays pending)} \
     {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
@@ -622,10 +877,10 @@ test omemo-unit-event-decrypt-failed \
                 -type chat -id wire-df1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid 99 #body Zm9v
-                    j iv #body AAAAAAAAAAAAAAAA
+                    j key -rid 99 .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
                 }
-                j payload #body Zm9v
+                j payload .body Zm9v
             }
         }]
         c omemo OnMessage $msg
