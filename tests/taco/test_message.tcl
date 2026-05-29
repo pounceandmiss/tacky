@@ -1606,3 +1606,148 @@ test message-search-multiple-hits-share-middle-sentinel {two hits with no citize
              [expr {[lindex $sents 1] > $ts1 && [lindex $sents 1] < $ts2}] \
              [expr {[lindex $sents 2] > $ts2}]
     } -result {3 1 1 1}
+
+# XEP-0461 replies: ingest parsing + gotoReply
+
+test message-live-reply-fields {reply target id + author parsed into stored fields} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id origA -from alice@example.com/phone {
+            j body #body "my reply"
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TARGET99
+        }]
+        set msg [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $msg reply_id] [dict get $msg reply_to]
+    } -result {TARGET99 alice@example.com}
+
+test message-reply-fallback-codepoints {fallback offsets count Unicode codepoints, not bytes} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id rf3 -from alice@example.com/phone {
+            j body #body "> café\nreply"
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRF3
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                j body -start 0 -end 7
+            }
+        }]
+        $::_client db onecolumn {SELECT body FROM chat_message WHERE server_id='srvRF3'}
+    } -result {reply}
+
+test message-reply-fallback-for-mismatch {a fallback for a different feature is left in the body} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id rf2 -from alice@example.com/phone {
+            j body #body "> hi\nactual reply"
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRF2
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:other:0 {
+                j body -start 0 -end 5
+            }
+        }]
+        $::_client db onecolumn {SELECT body FROM chat_message WHERE server_id='srvRF2'}
+    } -result "> hi\nactual reply"
+
+test message-live-origin-id-captured {origin-id element is captured and resolvable} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id atA -from alice@example.com/phone {
+            j body #body hi
+            j stanza-id -ns urn:xmpp:sid:0 -id srvX
+            j origin-id -ns urn:xmpp:sid:0 -id ORIG-A
+        }]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        expr {[$::_client message messagestore resolveReply \
+                   alice@example.com ORIG-A alice@example.com] == $ts}
+    } -result {1}
+
+test message-live-origin-id-fallback {origin_id falls back to @id when no origin-id element} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id ATID -from alice@example.com/phone {
+            j body #body hi
+            j stanza-id -ns urn:xmpp:sid:0 -id srvB
+        }]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        expr {[$::_client message messagestore resolveReply \
+                   alice@example.com ATID alice@example.com] == $ts}
+    } -result {1}
+
+test message-live-nonreply-empty {non-reply message has empty reply fields} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body plain
+        }]
+        set msg [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $msg reply_id] [dict get $msg reply_to]
+    } -result {{} {}}
+
+test message-gotoreply-local {gotoReply resolves a reply target locally and returns it as the anchor} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id t1 -from alice@example.com/phone {
+            j body #body "the original"
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV-TGT
+        }]
+        $::_client conn feed [j message -type chat -id r1 -from alice@example.com/phone {
+            j body #body "the reply"
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV-RPL
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id SRV-TGT
+        }]
+        set ::_gr {}
+        tacky message gotoReply -acc $acc -chat alice@example.com \
+            -reply_id SRV-TGT -reply_to alice@example.com -source local \
+            -command [list apply {{r} {set ::_gr $r}}]
+        set bodies {}
+        foreach m [dict get $::_gr messages] { lappend bodies [dict get $m body] }
+        list [expr {[dict get $::_gr anchor] ne ""}] \
+             [expr {"the original" in $bodies}]
+    } -result {1 1}
+
+test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi-line body, stores a clean reply} \
+    {*}$msg_common \
+    -body {
+        # Plaintext-path test — OMEMO defaults on, so disable it here.
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        set orig "line one\nline two is long enough to clearly exceed the eighty-character display preview cap"
+        $::_client conn feed [j message -type chat -id tOrig -from alice@example.com/phone {
+            j body #body $orig
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV1
+            j origin-id -ns urn:xmpp:sid:0 -id ORIG1
+        }]
+        set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message send -acc $acc -chat_jid alice@example.com \
+            -body "my answer" -reply_to_ts $tgtTs
+        set stanza [lindex [$::_client conn get_written] end]
+        set fb [lindex [xsearch $stanza fallback -ns urn:xmpp:fallback:0] 0]
+        set fbEnd [xsearch [lindex [xsearch $fb body] 0] -get @end]
+        set wireBody [xsearch $stanza body -get body]
+        set stored [lindex [msg_store_latest alice@example.com] end]
+        set quote "> line one\n> line two is long enough to clearly exceed the eighty-character display preview cap\n"
+        list [xsearch $stanza reply -ns urn:xmpp:reply:0 -get @id] \
+             [xsearch $stanza reply -ns urn:xmpp:reply:0 -get @to] \
+             [expr {$wireBody eq "${quote}my answer"}] \
+             [expr {$fbEnd == [string length $quote]}] \
+             [dict get $stored body] \
+             [dict get $stored reply_id]
+    } -result {ORIG1 alice@example.com 1 1 {my answer} ORIG1}
+
+test message-send-reply-own-pending {replying to our own pending message cites its origin/own id (no server_id yet)} \
+    {*}$msg_common \
+    -body {
+        # Plaintext-path test — OMEMO defaults on, so disable it here.
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        tacky message send -acc $acc -chat_jid alice@example.com -body "mine"
+        set own [lindex [msg_store_latest alice@example.com] end]
+        set ownTs [dict get $own timestamp]
+        set ownOid [dict get $own own_id]
+        tacky message send -acc $acc -chat_jid alice@example.com \
+            -body "follow up" -reply_to_ts $ownTs
+        set stanza [lindex [$::_client conn get_written] end]
+        set reply [lindex [msg_store_latest alice@example.com] end]
+        list [dict get $own server_id] \
+             [expr {[xsearch $stanza reply -ns urn:xmpp:reply:0 -get @id] eq $ownOid}] \
+             [expr {[dict get $reply reply_id] eq $ownOid}]
+    } -result {{} 1 1}

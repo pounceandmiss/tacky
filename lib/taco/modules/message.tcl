@@ -2,8 +2,8 @@
 # ========================
 #
 # Message dict keys:
-#   timestamp, chat_jid, from_jid, body, server_id, own_id,
-#   raw_xml (debug-only), server_status, on_wire
+#   timestamp, chat_jid, from_jid, body, server_id, own_id, origin_id,
+#   reply_id, reply_to, raw_xml (debug-only), server_status, on_wire
 #
 # chat_jid assignment:
 #   MUC groupchat:  room@muc?join   (appended by muc.say / OnGroupchatMessage)
@@ -393,10 +393,26 @@ snit::type taco_message {
     # OMEMO fail-closed: when encMode is 'omemo' we encrypt or throw;
     # never fall back to cleartext. See security invariant #2 in
     # lib/taco/modules/omemo.tcl.
-    method BuildOutgoingStanza {chatJid body oid msgType toJid encMode} {
+    # XEP-0461 reply markup is stanza-level metadata, so it rides on
+    # both plaintext and OMEMO sends. The textual fallback (the quoted
+    # `> ...` lines) lives inside $body and so is encrypted with it for
+    # OMEMO; the <fallback> span only makes sense against that cleartext
+    # body, so it is omitted from the OMEMO wire stanza (whose body is
+    # the EME warning) and emitted only on the plaintext path / in the
+    # stored readable form.
+    method BuildOutgoingStanza {chatJid body oid msgType toJid encMode \
+            {replyId ""} {replyTo ""} {fbEnd 0}} {
         if {$encMode ne "omemo"} {
             return [j message -to $toJid -type $msgType -id $oid {
                 j body #body $body
+                if {$replyId ne ""} {
+                    j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
+                    if {$fbEnd > 0} {
+                        j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                            j body -start 0 -end $fbEnd
+                        }
+                    }
+                }
             }]
         }
         set encNode [$client omemo encrypt $chatJid $body]
@@ -407,6 +423,9 @@ snit::type taco_message {
                 -name OMEMO
             j body #body \
                 "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            if {$replyId ne ""} {
+                j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
+            }
         }]
     }
 
@@ -415,10 +434,19 @@ snit::type taco_message {
     # with the synthesised stanza we store for decrypted incoming
     # messages, and with the encryption stamp); for plaintext it's just
     # the body. The wire stanza (BuildOutgoingStanza) is separate.
-    method StoredForm {body oid msgType toJid encMode} {
+    method StoredForm {body oid msgType toJid encMode \
+            {replyId ""} {replyTo ""} {fbEnd 0}} {
         if {$encMode ne "omemo"} {
             return [j message -to $toJid -type $msgType -id $oid {
                 j body #body $body
+                if {$replyId ne ""} {
+                    j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
+                    if {$fbEnd > 0} {
+                        j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                            j body -start 0 -end $fbEnd
+                        }
+                    }
+                }
             }]
         }
         return [j message -to $toJid -type $msgType -id $oid {
@@ -426,6 +454,14 @@ snit::type taco_message {
             j encryption -ns urn:xmpp:eme:0 \
                 -namespace eu.siacs.conversations.axolotl \
                 -name OMEMO
+            if {$replyId ne ""} {
+                j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
+                if {$fbEnd > 0} {
+                    j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                        j body -start 0 -end $fbEnd
+                    }
+                }
+            }
         }]
     }
 
@@ -477,13 +513,31 @@ snit::type taco_message {
         lassign [$self DeriveAddressing $opts(-chat_jid)] \
             msgType toJid fromJid fromRes
 
+        set replyId ""
+        set replyTo ""
+        set wireBody $opts(-body)
+        set fbEnd 0
+        if {[info exists opts(-reply_to_ts)] && $opts(-reply_to_ts) ne ""} {
+            lassign [$self BuildReplyTarget $opts(-chat_jid) $opts(-reply_to_ts)] \
+                replyId replyTo quoteBody
+            if {$replyId ne ""} {
+                set quote ""
+                foreach line [split $quoteBody \n] {
+                    append quote "> $line\n"
+                }
+                set fbEnd [string length $quote]
+                set wireBody $quote$opts(-body)
+            }
+        }
+
         set encMode [$self OutgoingEncMode $opts(-chat_jid) $msgType]
         set stanza ""
         set status "pending"
         set failReason ""
         try {
             set stanza [$self BuildOutgoingStanza \
-                $opts(-chat_jid) $opts(-body) $oid $msgType $toJid $encMode]
+                $opts(-chat_jid) $wireBody $oid $msgType $toJid $encMode \
+                $replyId $replyTo $fbEnd]
         } trap TACO_OMEMO_NOT_READY {emsg} {
             # Stays pending; warming kicks via encrypt side effect.
             # Initial attempt counts toward the budget.
@@ -503,8 +557,12 @@ snit::type taco_message {
             body $opts(-body) \
             server_id "" \
             own_id $oid \
+            origin_id $oid \
+            reply_id $replyId \
+            reply_to $replyTo \
             raw_xml [expr {$stanza eq "" ? "" \
-                : [jwrite [$self StoredForm $opts(-body) $oid $msgType $toJid $encMode]]}] \
+                : [jwrite [$self StoredForm $wireBody $oid $msgType $toJid $encMode \
+                    $replyId $replyTo $fbEnd]]}] \
             server_status $status \
             encryption $encMode \
             fail_reason $failReason \
@@ -520,6 +578,31 @@ snit::type taco_message {
         if {$stanza ne ""} {
             $client write $stanza
         }
+    }
+
+    # Reply id another client resolves against, by chat kind: MUC uses the
+    # stanza-id (server_id); 1:1 uses the origin-id, since peers never see
+    # our server id. Falls through when an id is absent (our own pending
+    # send has no server_id yet). Returns the full body for the wire quote.
+    method BuildReplyTarget {chatJid ts} {
+        set found 0
+        $client db eval {
+            SELECT server_id, origin_id, own_id, from_jid, body
+            FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$ts
+            LIMIT 1
+        } row { set found 1 }
+        if {!$found} { return [list "" "" ""] }
+        if {[IsMucChatJid $chatJid]} {
+            set candidates [list $row(server_id) $row(origin_id) $row(own_id)]
+        } else {
+            set candidates [list $row(origin_id) $row(own_id) $row(server_id)]
+        }
+        set replyId ""
+        foreach c $candidates {
+            if {$c ne ""} { set replyId $c; break }
+        }
+        return [list $replyId $row(from_jid) $row(body)]
     }
 
     method OnSmAck {args} {
@@ -545,13 +628,15 @@ snit::type taco_message {
     method RetryPending {} {
         set pending {}
         $client db eval {
-            SELECT chat_jid, body, own_id, encryption FROM chat_message
+            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
+            FROM chat_message
             WHERE kind='message' AND server_status='pending'
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id) encryption $row(encryption)]
+                own_id $row(own_id) encryption $row(encryption) \
+                reply_id $row(reply_id) reply_to $row(reply_to)]
         }
         # Group by MUC vs 1:1 — MUC messages must wait for room join
         foreach msg $pending {
@@ -576,7 +661,8 @@ snit::type taco_message {
         set peerJid $opts(-jid)
         set pending {}
         $client db eval {
-            SELECT chat_jid, body, own_id, encryption FROM chat_message
+            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
+            FROM chat_message
             WHERE kind='message' AND chat_jid=$peerJid
               AND server_status='pending'
               AND encryption='omemo'
@@ -585,7 +671,8 @@ snit::type taco_message {
         } row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id) encryption $row(encryption)]
+                own_id $row(own_id) encryption $row(encryption) \
+                reply_id $row(reply_id) reply_to $row(reply_to)]
         }
         jlog debug "omemo:<SessionReady> $peerJid: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
@@ -600,7 +687,8 @@ snit::type taco_message {
     method OnOmemoSelfReady {args} {
         set pending {}
         $client db eval {
-            SELECT chat_jid, body, own_id, encryption FROM chat_message
+            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
+            FROM chat_message
             WHERE kind='message' AND server_status='pending'
               AND encryption='omemo'
               AND on_wire=0
@@ -608,7 +696,8 @@ snit::type taco_message {
         } row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id) encryption $row(encryption)]
+                own_id $row(own_id) encryption $row(encryption) \
+                reply_id $row(reply_id) reply_to $row(reply_to)]
         }
         jlog debug "omemo:<SelfReady>: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
@@ -641,12 +730,21 @@ snit::type taco_message {
         set oid     [dict get $msg own_id]
         set encMode [expr {[dict exists $msg encryption] \
             ? [dict get $msg encryption] : ""}]
+        # Preserve the reply linkage across retries. The textual quote
+        # fallback isn't reconstructed (the stored body is the clean,
+        # unquoted text), so fbEnd stays 0 - 0461-aware peers still see
+        # the <reply> reference.
+        set replyId [expr {[dict exists $msg reply_id] \
+            ? [dict get $msg reply_id] : ""}]
+        set replyTo [expr {[dict exists $msg reply_to] \
+            ? [dict get $msg reply_to] : ""}]
         lassign [$self DeriveAddressing $chatJid] msgType toJid _ _
 
         jlog debug "RetrySend $chatJid oid=$oid encMode=$encMode"
         try {
             set stanza [$self BuildOutgoingStanza \
-                $chatJid $body $oid $msgType $toJid $encMode]
+                $chatJid $body $oid $msgType $toJid $encMode \
+                $replyId $replyTo]
         } trap TACO_OMEMO_NOT_READY {} {
             # Bundle/devicelist warming still in flight. If we have
             # budget left, stay pending and wait for the next
@@ -671,7 +769,8 @@ snit::type taco_message {
         # on_wire stops a later <SessionReady> tick re-sending this row;
         # raw_xml is refreshed only as a debug record (readable form, not
         # the wire ciphertext).
-        set xml [jwrite [$self StoredForm $body $oid $msgType $toJid $encMode]]
+        set xml [jwrite [$self StoredForm $body $oid $msgType $toJid $encMode \
+            $replyId $replyTo]]
         $client db eval {
             UPDATE chat_message SET on_wire=1, raw_xml=$xml
             WHERE chat_jid=$chatJid AND own_id=$oid
@@ -698,11 +797,12 @@ snit::type taco_message {
         set ts      $opts(-timestamp)
 
         set row [$client db eval {
-            SELECT own_id, body, encryption FROM chat_message
+            SELECT own_id, body, encryption, reply_id, reply_to
+            FROM chat_message
             WHERE chat_jid=$chatJid AND timestamp=$ts AND kind='message'
         }]
         if {[llength $row] == 0} return
-        lassign $row oid body enc
+        lassign $row oid body enc replyId replyTo
 
         if {$opts(-plaintext)} {
             set enc ""
@@ -728,7 +828,8 @@ snit::type taco_message {
                 timestamp $ts server_status pending fail_reason ""]]
 
         $self RetrySend [dict create \
-            chat_jid $chatJid body $body own_id $oid encryption $enc]
+            chat_jid $chatJid body $body own_id $oid encryption $enc \
+            reply_id $replyId reply_to $replyTo]
     }
 
     # Flip a pending row to failed with a fail_reason category and notify
@@ -1045,6 +1146,31 @@ snit::type taco_message {
         {*}$callback $result
     }
 
+    # gotoReply -chat $jid -reply_id $rid ?-reply_to $jid? ?-limit 50?
+    #           ?-tag $tag? -command $cb
+    # Resolve an XEP-0461 reply target in the local store and jump to it
+    # via `goto`. An uncached target yields an empty result; remote fetch
+    # by stanza-id is not implemented.
+    method gotoReply {args} {
+        set defaults [dict create -limit 50 -tag "" -reply_to ""]
+        set opts [dict merge $defaults $args]
+
+        set chatJid  [dict get $opts -chat]
+        set replyId  [dict get $opts -reply_id]
+        set replyTo  [dict get $opts -reply_to]
+        set limit    [dict get $opts -limit]
+        set tag      [dict get $opts -tag]
+        set callback [dict get $opts -command]
+
+        set ts [$messagestore resolveReply $chatJid $replyId $replyTo]
+        if {$ts eq ""} {
+            {*}$callback [dict create messages {} anchor ""]
+            return
+        }
+        $self goto -chat $chatJid -date $ts -source local \
+            -limit $limit -tag $tag -command $callback
+    }
+
     # search -chat $jid -query "text" ?-before $serverId? ?-limit 20?
     #        ?-tag $tag? -command $cb
     #
@@ -1141,6 +1267,15 @@ snit::type taco_message {
         # none. Drives the lock on peer messages.
         set emeNs [xsearch $msgNode encryption -ns urn:xmpp:eme:0 -get @namespace]
         set enc [expr {$emeNs eq "eu.siacs.conversations.axolotl" ? "omemo" : ""}]
+        set originId [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id]
+        if {$originId eq ""} {
+            set originId [xsearch $msgNode -get @id]
+        }
+        lassign [ParseReply $msgNode] replyId replyTo
+        set body [xsearch $msgNode body -get body]
+        if {$replyId ne ""} {
+            set body [StripReplyFallback $msgNode $body]
+        }
         # own_id dedups messages we sent. The caller sets it on the live
         # carbon path; otherwise, for a stanza from our own bare JID (echo:
         # self-chat, carbon, MAM), derive it from @id - which equals the
@@ -1158,9 +1293,12 @@ snit::type taco_message {
             chat_jid   $chatJid \
             from_jid   $fromJid \
             from_resource $fromRes \
-            body       [xsearch $msgNode body -get body] \
+            body       $body \
             server_id  [dict get $args -server_id] \
             own_id     $ownId \
+            origin_id  $originId \
+            reply_id   $replyId \
+            reply_to   $replyTo \
             raw_xml    [jwrite $msgNode] \
             server_status "" \
             encryption $enc
@@ -1191,4 +1329,40 @@ proc SplitFromResource {chatJid fromJid} {
 
 proc IsMucChatJid {chatJid} {
     expr {[string match {*\?join} $chatJid] || [string match */* $chatJid]}
+}
+
+# XEP-0461: extract {reply_id reply_to} from a <message> node, or {"" ""}.
+proc ParseReply {msgNode} {
+    set replyNode [lindex [xsearch $msgNode reply -ns urn:xmpp:reply:0] 0]
+    if {$replyNode eq ""} {
+        return [list "" ""]
+    }
+    list [xsearch $replyNode -get @id] [xsearch $replyNode -get @to]
+}
+
+# XEP-0428/0461: drop the quoted-reply fallback span(s) from a reply body.
+# start/end are codepoint indices, end-exclusive; spans are removed
+# right-to-left so earlier indices stay valid.
+proc StripReplyFallback {msgNode body} {
+    set ranges {}
+    foreach fb [xsearch $msgNode fallback -ns urn:xmpp:fallback:0] {
+        if {[xsearch $fb -get @for] ne "urn:xmpp:reply:0"} continue
+        foreach b [xsearch $fb body] {
+            set start [xsearch $b -get @start]
+            set end   [xsearch $b -get @end]
+            if {$start eq ""} { set start 0 }
+            if {$end eq ""}   { set end [string length $body] }
+            if {![string is integer -strict $start]
+                || ![string is integer -strict $end]} continue
+            lappend ranges [list $start $end]
+        }
+    }
+    foreach r [lsort -integer -index 0 -decreasing $ranges] {
+        lassign $r start end
+        if {$start < 0} { set start 0 }
+        if {$end > [string length $body]} { set end [string length $body] }
+        if {$start >= $end} continue
+        set body [string replace $body $start [expr {$end - 1}]]
+    }
+    return $body
 }
