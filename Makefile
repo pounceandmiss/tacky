@@ -1,6 +1,6 @@
 # ==== Shared config ====
 
-COMMON_DEPS := tdom mtls tcllib rtc rtcma
+COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
