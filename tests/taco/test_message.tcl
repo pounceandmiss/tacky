@@ -457,7 +457,7 @@ test message-self-echo-dedups-not-duplicate \
         # The row we stored on send (pending, on the wire).
         msg_store [list [msg_msg chat_jid bob@example.com body "hello" \
             from_jid $acc own_id uuid-7 server_status pending \
-            raw_xml "<message/>"]]
+            on_wire 1]]
         # The echo comes back from our own jid (carbon / MAM) with same @id
         # and a server stanza-id; ParseMessage derives own_id from @id.
         set echo [j message -from $acc/phone -to bob@example.com -type chat \
@@ -485,7 +485,7 @@ test message-resend-plaintext-downgrades \
         # Synthetic stuck OMEMO message: stamped omemo, never wire-built.
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-pt server_status pending \
-            encryption omemo raw_xml ""]]
+            encryption omemo on_wire 0]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat_jid alice@example.com \
@@ -506,7 +506,7 @@ test message-resend-honors-stamp \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-st server_status pending \
-            encryption omemo raw_xml ""]]
+            encryption omemo on_wire 0]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat_jid alice@example.com \
@@ -529,14 +529,14 @@ test message-omemo-selfready-skips-on-wire \
     {OnOmemoSelfReady leaves on-wire rows alone (no double-send)} \
     {*}$msg_common \
     -body {
-        # Plaintext row already written (raw_xml set), awaiting ack.
+        # Plaintext row already written (on_wire), awaiting ack.
         msg_store [list [msg_msg chat_jid alice@example.com body clear \
             from_jid $acc own_id o-clear server_status pending \
-            encryption "" raw_xml "<message/>"]]
+            encryption "" on_wire 1]]
         # OMEMO row that never reached the wire (encrypt NOT_READY).
         msg_store [list [msg_msg chat_jid bob@example.com body secret \
             from_jid $acc own_id o-omemo server_status pending \
-            encryption omemo raw_xml ""]]
+            encryption omemo on_wire 0]]
         set before [llength [$::_client conn get_written]]
         $::_client message OnOmemoSelfReady
         # On-wire plaintext row not re-sent; the omemo row retries but

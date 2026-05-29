@@ -54,7 +54,7 @@ snit::type taco_messagestore {
                 -- Stanza @from resource for 1:1 chats (the sending
                 -- client tag — debug metadata, not identity). Empty
                 -- for MUC, where the resource is the nick and lives
-                -- in from_jid. raw_xml has the wire-original either way.
+                -- in from_jid.
                 from_resource  TEXT,
                 body           TEXT,
                 -- server-assigned, for MAM pagination;
@@ -63,7 +63,12 @@ snit::type taco_messagestore {
                 -- set only for outgoing messages; = <message id="...">
                 -- incoming messages have own_id=""
                 own_id         TEXT,
+                -- debug-only readable record of the stanza
                 raw_xml        TEXT,
+                -- 1 once the stanza was written to the wire, 0 while
+                -- parked (OMEMO encrypt NOT_READY). OMEMO retries pick
+                -- on_wire=0 rows so they don't re-send in-flight ones.
+                on_wire        INTEGER NOT NULL DEFAULT 0,
                 -- 'message' (default) | 'sentinel'
                 kind           TEXT NOT NULL DEFAULT 'message',
                 -- NULL/empty = incoming (already received);
@@ -268,13 +273,15 @@ snit::type taco_messagestore {
                     ? $m(encryption) : ""}]
                 set failReason [expr {[info exists m(fail_reason)] \
                     ? $m(fail_reason) : ""}]
+                set onWire [expr {[info exists m(on_wire)] \
+                    ? $m(on_wire) : 0}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, raw_xml,
-                        server_status, encryption, fail_reason)
+                        server_status, encryption, fail_reason, on_wire)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $m(raw_xml), $status, $enc,
-                        $failReason)
+                        $failReason, $onWire)
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts

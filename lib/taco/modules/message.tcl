@@ -3,7 +3,7 @@
 #
 # Message dict keys:
 #   timestamp, chat_jid, from_jid, body, server_id, own_id,
-#   raw_xml, server_status
+#   raw_xml (debug-only), server_status, on_wire
 #
 # chat_jid assignment:
 #   MUC groupchat:  room@muc?join   (appended by muc.say / OnGroupchatMessage)
@@ -507,7 +507,8 @@ snit::type taco_message {
                 : [jwrite [$self StoredForm $opts(-body) $oid $msgType $toJid $encMode]]}] \
             server_status $status \
             encryption $encMode \
-            fail_reason $failReason]
+            fail_reason $failReason \
+            on_wire [expr {$stanza ne ""}]]
 
         set result [$messagestore store [list $msg]]
         set inserted [dict get $result inserted]
@@ -564,15 +565,12 @@ snit::type taco_message {
         }
     }
 
-    # Called via bus when OMEMO makes progress for $peerJid — a session
-    # got built (omemo:<SessionReady>) or the devicelist resolved
-    # (omemo:<DevicelistResolved>). Retries OMEMO-intended pending
-    # messages to $peerJid that never made it onto the wire (raw_xml==""
-    # — encrypt threw NOT_READY, never written). The retry re-runs
-    # encrypt: it succeeds, stays pending (still warming), or
-    # TERMINAL-fails (peer's devicelist resolved empty). Pending-with-
-    # stanza rows are already on the wire awaiting SM ack; retrying those
-    # would duplicate sends each time another tick fires.
+    # Bus callback for omemo:<SessionReady>/<DevicelistResolved> on
+    # $peerJid. Retries pending OMEMO sends to $peerJid still parked off
+    # the wire (on_wire=0): re-running encrypt either succeeds, stays
+    # pending (still warming), or TERMINAL-fails (empty devicelist).
+    # on_wire=1 rows are in flight awaiting SM ack; re-sending them on
+    # each tick would duplicate.
     method OnOmemoSessionReady {args} {
         array set opts $args
         set peerJid $opts(-jid)
@@ -582,7 +580,7 @@ snit::type taco_message {
             WHERE kind='message' AND chat_jid=$peerJid
               AND server_status='pending'
               AND encryption='omemo'
-              AND (raw_xml IS NULL OR raw_xml = '')
+              AND on_wire=0
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
@@ -605,7 +603,7 @@ snit::type taco_message {
             SELECT chat_jid, body, own_id, encryption FROM chat_message
             WHERE kind='message' AND server_status='pending'
               AND encryption='omemo'
-              AND (raw_xml IS NULL OR raw_xml = '')
+              AND on_wire=0
             ORDER BY timestamp
         } row {
             lappend pending [dict create \
@@ -632,8 +630,8 @@ snit::type taco_message {
 
     # Retry a still-pending message. Uses BuildOutgoingStanza so OMEMO
     # chats get re-encrypted against the current devicelist (the
-    # devicelist may have changed since the original send; replaying
-    # the stored raw_xml would either leak cleartext or send to a
+    # devicelist may have changed since the original send; replaying a
+    # stored stanza would either leak cleartext or send to a
     # stale recipient set). Honors the row's stamped `encryption` —
     # automatic retries never downgrade an OMEMO message to plaintext
     # even if the per-chat toggle was flipped off in the meantime.
@@ -670,12 +668,12 @@ snit::type taco_message {
 
         unset -nocomplain OmemoRetryBudget($oid)
         jlog debug "RetrySend $chatJid oid=$oid: built stanza, writing to wire"
-        # Stamp raw_xml with the readable form (not the ciphertext wire
-        # stanza) so it stays non-empty - the sentinel that a later
-        # <SessionReady> tick uses to skip re-sending an on-wire row.
+        # on_wire stops a later <SessionReady> tick re-sending this row;
+        # raw_xml is refreshed only as a debug record (readable form, not
+        # the wire ciphertext).
         set xml [jwrite [$self StoredForm $body $oid $msgType $toJid $encMode]]
         $client db eval {
-            UPDATE chat_message SET raw_xml=$xml
+            UPDATE chat_message SET on_wire=1, raw_xml=$xml
             WHERE chat_jid=$chatJid AND own_id=$oid
         }
         $client write $stanza
@@ -709,17 +707,20 @@ snit::type taco_message {
         if {$opts(-plaintext)} {
             set enc ""
             $client db eval {
-                UPDATE chat_message SET encryption='', raw_xml=''
+                UPDATE chat_message SET encryption=''
                 WHERE chat_jid=$chatJid AND timestamp=$ts
             }
         }
 
-        # Fresh attempt: reset budget, flip back to pending and clear the
-        # prior failure so the GUI shows it in flight; MarkOutgoingFailed
-        # re-stamps fail_reason if it fails again.
+        # Fresh attempt: reset budget, flip back to pending, clear on_wire
+        # (RetrySend re-stamps it on write; a still-parked OMEMO retry must
+        # stay eligible for <SessionReady>) and clear the prior failure so
+        # the GUI shows it in flight; MarkOutgoingFailed re-stamps
+        # fail_reason if it fails again.
         unset -nocomplain OmemoRetryBudget($oid)
         $client db eval {
-            UPDATE chat_message SET server_status='pending', fail_reason=''
+            UPDATE chat_message
+            SET server_status='pending', fail_reason='', on_wire=0
             WHERE chat_jid=$chatJid AND timestamp=$ts
         }
         $client emit message <Patch> -jid $chatJid \

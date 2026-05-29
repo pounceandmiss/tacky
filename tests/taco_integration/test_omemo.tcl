@@ -145,7 +145,7 @@ namespace eval ::test::omemo_int {
                     WHERE chat_jid=$bot AND body='cold hello'
                 }]
                 set ::test::omemo_int::_coldRaw [$client db onecolumn {
-                    SELECT raw_xml='' FROM chat_message
+                    SELECT on_wire=0 FROM chat_message
                     WHERE chat_jid=$bot AND body='cold hello'
                 }]
             }]
