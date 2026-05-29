@@ -116,6 +116,7 @@ jsonify_type jsonify \
         message/local_search    {list int}
         message/history         {list message}
         message/goto            {list message}
+        message/gotoReply       {dict {messages {list message}}}
         message/search          {dict {messages {list message} complete bool}}
         muc/getList             {list {dict {}}}
         muc/discoverRooms       {list {dict {}}}

@@ -636,6 +636,39 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
             after=$countAfter hasFirst=$hasFirst
     } -result {before=2 pending=2 after=5 hasFirst=1}
 
+test chatview-reply-jump {clicking a reply jumps to and highlights the target} \
+    -setup { cv_setup; cv_create -pack } \
+    -cleanup { cv_cleanup } \
+    -body {
+        cv_feed "the original" srv-tgt
+        wait
+        set tsTarget [.cv messages newest]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "the reply"
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-rpl
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id srv-tgt
+        }]
+        wait
+        # Simulate a click on the reply reference.
+        .cv OnReplyJump [list srv-tgt alice@example.com]
+        wait
+        .cv.text tag cget item.$tsTarget -background
+    } -result {yellow}
+
+test chatview-reply-select {selecting Reply emits ReplyTo carrying the target id and body snippet} \
+    -setup { cv_setup; cv_create -pack } \
+    -cleanup { cv_cleanup } \
+    -body {
+        cv_feed "original text here" srv-sel
+        wait
+        set id [.cv messages newest]
+        set ::_replyto {}
+        bind .cv <<ReplyTo>> {set ::_replyto %d}
+        .cv OnReplySelected $id
+        wait
+        list [expr {[lindex $::_replyto 0] eq $id}] [lindex $::_replyto 2]
+    } -result {1 {original text here}}
+
 # -- stale cursor guard ---------------------------------------------------------
 
 test chatview-stale-old-discarded {cleanup invalidation discards stale old-direction response} \
@@ -788,6 +821,14 @@ proc ca_patch {id} {
     dict create id $id server_status received
 }
 
+proc ca_reply {id body replyId replyTo author replyBody} {
+    dict create id $id body $body \
+        display_name test avatar_jid "" \
+        timestamp $id is_outgoing 0 server_status "" \
+        reply_id $replyId reply_to $replyTo reply_author $author \
+        reply_body $replyBody
+}
+
 set ca_common {
     -setup   { chatarea .ca; update }
     -cleanup { destroy .ca }
@@ -875,6 +916,15 @@ test chatarea-patch-receipt {Patch with server_status updates receipt checkmark}
             ? [.ca.text get {*}$ranges] : "MISSING"}]
         list before=$before after=$after
     } -result "{before= } {after= \u2713}"
+
+test chatarea-reply-preview-rendered {a reply renders a clickable preview with author and snippet} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_reply 100 "the reply" rid1 room@x/bob bob "the original text"]]
+        set content [.ca.text get 1.0 end-1c]
+        list [string match "*bob*the original text*the reply*" $content] \
+             [expr {"item.100.replyref" in [.ca.text tag names]}]
+    } -result {1 1}
 
 # -- highlight / system ---------------------------------------------------------
 

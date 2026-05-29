@@ -924,3 +924,77 @@ test messagestore-search-skips-sentinels {search results never include sentinel 
         store sentinel add alice@example.com newer 100
         store search alice@example.com needle
     } -result {100}
+
+# resolveReply (XEP-0461 target lookup)
+
+test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves with no author hint} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 500 server_id sid-x body target]]
+        store resolveReply alice@example.com sid-x
+    } -result {500}
+
+test messagestore-resolvereply-origin-id-author {origin_id collision across senders disambiguated by MUC author} \
+    -setup {
+        sqlite3 testdb :memory:
+        taco_messagestore create store -db testdb
+    } -cleanup {store destroy; testdb close} \
+    -body {
+        set jid room@conf.example.com?join
+        store store [list \
+            [dict create timestamp 100 chat_jid $jid \
+                from_jid room@conf.example.com/alice body hi \
+                server_id sid1 own_id "" origin_id oxxx raw_xml ""] \
+            [dict create timestamp 200 chat_jid $jid \
+                from_jid room@conf.example.com/bob body yo \
+                server_id sid2 own_id "" origin_id oxxx raw_xml ""]]
+        store resolveReply $jid oxxx room@conf.example.com/bob
+    } -result {200}
+
+test messagestore-resolvereply-author-mismatch {origin_id match but wrong MUC author resolves to nothing} \
+    -setup {
+        sqlite3 testdb :memory:
+        taco_messagestore create store -db testdb
+    } -cleanup {store destroy; testdb close} \
+    -body {
+        set jid room@conf.example.com?join
+        store store [list [dict create timestamp 100 chat_jid $jid \
+            from_jid room@conf.example.com/alice body hi \
+            server_id sid1 own_id "" origin_id oxxx raw_xml ""]]
+        store resolveReply $jid oxxx room@conf.example.com/charlie
+    } -result {}
+
+test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when reply-to is a full JID} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 300 chat_jid bob@example.com \
+            from_jid bob@example.com origin_id u1 body target]]
+        store resolveReply bob@example.com u1 bob@example.com/Phone.123
+    } -result {300}
+
+test messagestore-resolvereply-notfound {unknown reply id resolves to nothing} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id s1 body x]]
+        store resolveReply alice@example.com nope
+    } -result {}
+
+test messagestore-reply-body-enriched {a reply's enriched dict carries the target body snippet} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id tgt body "the original"] \
+            [ms_msg timestamp 200 server_id rpl body "the reply" \
+                reply_id tgt reply_to alice@example.com]]
+        set reply [lindex [ms_msgs [store get latest alice@example.com]] end]
+        dict get $reply reply_body
+    } -result {the original}
+
+test messagestore-reply-body-missing-target {a reply whose target is absent has no reply_body} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 200 server_id rpl body "the reply" \
+            reply_id ghost reply_to alice@example.com]]
+        set reply [lindex [ms_msgs [store get latest alice@example.com]] 0]
+        dict exists $reply reply_body
+    } -result {0}

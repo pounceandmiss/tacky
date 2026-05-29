@@ -95,6 +95,7 @@ snit::widgetadaptor chatview {
                 [mymethod OnShowJidSetting]
         }
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
+        bind $self <<ReplyJump>> [mymethod OnReplyJump %d]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
@@ -173,30 +174,30 @@ snit::widgetadaptor chatview {
         catch {$self UntrackAllAvatars}
     }
 
-    method goto {target args} {
+    # Cancel in-flight loads and leave the live tail before a non-tail jump.
+    method ResetForGoto {} {
         $hull loading hide
-        set defaults [dict create -source local]
-        set opts [dict merge $defaults $args]
-        set source [dict get $opts -source]
-
         foreach tag [list $win/goto $win/old $win/new] {
             ::tacky unlisten $tag
             ::tacky message cancel -acc $options(-acc) -tag $tag
         }
+        set AtTail 0
+    }
+
+    method goto {target args} {
+        set defaults [dict create -source local]
+        set opts [dict merge $defaults $args]
+        set source [dict get $opts -source]
+
+        $self ResetForGoto
 
         if {$target eq "end"} {
             # Reset to "bottom of conversation" — same as initial open.
             # InitialLoad will flip AtTail back to true on completion.
             $hull clear
-            set AtTail 0
             $self InitialLoad
             return
         }
-
-        # Goto-around displays a slice centered on an anchor that
-        # isn't the tail; live messages should not append until the
-        # user explicitly rejoins the tail.
-        set AtTail 0
 
         if {$source eq "remote"} {
             $hull loading show
@@ -233,6 +234,18 @@ snit::widgetadaptor chatview {
         ::tacky unlisten $win/goto
         ::tacky message cancel -acc $options(-acc) -tag $win/goto
         $hull loading hide
+    }
+
+    # Clicking a message's reply reference jumps to the replied-to message,
+    # reusing the goto slice-and-highlight path (OnGotoDone).
+    method OnReplyJump {data} {
+        lassign $data replyId replyTo
+        if {$replyId eq ""} return
+        $self ResetForGoto
+        ::tacky message gotoReply -acc $options(-acc) \
+            -chat $options(-jid) -reply_id $replyId -reply_to $replyTo \
+            -limit 50 -tag $win/goto \
+            -command [mymethod OnGotoDone]
     }
 
     # Catchup messages now flow through <Received> under the AtTail
@@ -414,11 +427,23 @@ snit::widgetadaptor chatview {
             menu $m -tearoff 0
         }
         $m delete 0 end
+        $m add command -label "Reply" \
+            -command [mymethod OnReplySelected $id]
         $m add command -label "View XML" \
             -command [mymethod OnViewXml $id]
         $m add command -label "Find in Chat" \
             -command [list event generate $win <<FindInChat>>]
         tk_popup $m $rootX $rootY
+    }
+
+    method OnReplySelected {id} {
+        set sd [$hull messages get $id]
+        set author [dict get [$self EnrichMessage $sd] display_name]
+        set snippet [lindex [split [dict get $sd body] \n] 0]
+        if {[string length $snippet] > 80} {
+            set snippet "[string range $snippet 0 79]…"
+        }
+        event generate $win <<ReplyTo>> -data [list $id $author $snippet]
     }
 
     method OnViewXml {id} {
@@ -719,6 +744,11 @@ snit::widget chatarea {
     method SetFont {{font {Helvetica 13}}} {
         # Message body - bigger indent
         $text tag configure body -lmargin1 40 -lmargin2 40
+        # XEP-0461 reply preview: inset, lightly-filled block, clickable.
+        $text tag configure replyref -lmargin1 52 -lmargin2 52 \
+            -background #f0f3f6 -font "Helvetica 11"
+        $text tag configure replyref.author -font "Helvetica 11 bold"
+        $text tag configure replyref.body -foreground #666666
         # Formatting gimmicks
         $text tag configure entity.quote -foreground green -lmargin1 40 -lmargin2 55
         $text tag configure entity.preformatted -font "Courier 13"
@@ -936,7 +966,9 @@ snit::widget chatarea {
                 $text tag add $tag $lockId
             }
             $text ins msgins \n $tag
-            
+
+            $self DrawReplyPreview $messageDict $tag
+
             $text ins msgins $message(body) [list $tag body message $tag.body]
             if {$message(is_outgoing)} {
                 set rt [$self ReceiptText $message(server_status)]
@@ -952,6 +984,31 @@ snit::widget chatarea {
                 }
             }
         }
+    }
+
+    # Quoted reply preview, drawn at msgins above the body. No-op unless
+    # the message carries a reply_id.
+    method DrawReplyPreview {messageDict tag} {
+        array set message $messageDict
+        if {![info exists message(reply_id)] || $message(reply_id) eq ""} return
+        set rtag $tag.replyref
+        set ra [expr {[info exists message(reply_author)] ? $message(reply_author) : ""}]
+        if {$ra eq ""} { set ra "a message" }
+        set preview [expr {[info exists message(reply_body)] ? $message(reply_body) : ""}]
+        if {$preview eq ""} { set preview "Original message" }
+        set ricon [$text image create msgins \
+            -image mate/16x16/actions/mail-reply-sender.png -padx 3]
+        $text tag add $tag $ricon
+        $text tag add $rtag $ricon
+        $text tag add replyref $ricon
+        $text ins msgins $ra      [list $tag $rtag replyref replyref.author]
+        $text ins msgins \n       [list $tag $rtag replyref]
+        $text ins msgins $preview [list $tag $rtag replyref replyref.body]
+        $text ins msgins \n       [list $tag $rtag replyref]
+        set rto [expr {[info exists message(reply_to)] ? $message(reply_to) : ""}]
+        $text tag bind $rtag <Button-1> \
+            [list event generate $win <<ReplyJump>> \
+                 -data [list $message(reply_id) $rto]]
     }
 
     method deleteById {id} {
@@ -1018,6 +1075,24 @@ proc enrich_store_message {storeDict names} {
         fail_reason  [expr {[dict exists $storeDict fail_reason] ? [dict get $storeDict fail_reason] : ""}]]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
+    }
+    if {[dict exists $storeDict reply_id] && [dict get $storeDict reply_id] ne ""} {
+        set rto [dict get $storeDict reply_to]
+        dict set d reply_id [dict get $storeDict reply_id]
+        dict set d reply_to $rto
+        set cj [dict get $storeDict chat_jid]
+        if {[dict exists $names $rto]} {
+            set ra [dict get $names $rto]
+        } elseif {[string match {*\?join} $cj] || [string match */* $cj]} {
+            set ra [jid resource $rto]
+        } else {
+            set ra [jid bare $rto]
+        }
+        if {$ra eq ""} { set ra $rto }
+        dict set d reply_author $ra
+        if {[dict exists $storeDict reply_body]} {
+            dict set d reply_body [dict get $storeDict reply_body]
+        }
     }
     return $d
 }

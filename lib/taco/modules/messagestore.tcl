@@ -63,6 +63,14 @@ snit::type taco_messagestore {
                 -- set only for outgoing messages; = <message id="...">
                 -- incoming messages have own_id=""
                 own_id         TEXT,
+                -- this message's own id: <origin-id> if present else @id.
+                -- reply-target lookup key; NOT used for dedup.
+                origin_id      TEXT,
+                -- XEP-0461 reply: target message id + addressed author.
+                -- reply_id resolves against server_id/origin_id/own_id;
+                -- reply_to disambiguates client-generated id matches.
+                reply_id       TEXT,
+                reply_to       TEXT,
                 -- debug-only readable record of the stanza
                 raw_xml        TEXT,
                 -- 1 once the stanza was written to the wire, 0 while
@@ -93,6 +101,8 @@ snit::type taco_messagestore {
                 ON chat_message(chat_jid, server_id) WHERE server_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_own_id
                 ON chat_message(chat_jid, own_id) WHERE own_id != '';
+            CREATE INDEX IF NOT EXISTS idx_chat_message_origin_id
+                ON chat_message(chat_jid, origin_id) WHERE origin_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_sentinel
                 ON chat_message(chat_jid, timestamp) WHERE kind='sentinel';
         }
@@ -275,12 +285,20 @@ snit::type taco_messagestore {
                     ? $m(fail_reason) : ""}]
                 set onWire [expr {[info exists m(on_wire)] \
                     ? $m(on_wire) : 0}]
+                set originId [expr {[info exists m(origin_id)] \
+                    ? $m(origin_id) : ""}]
+                set replyId [expr {[info exists m(reply_id)] \
+                    ? $m(reply_id) : ""}]
+                set replyTo [expr {[info exists m(reply_to)] \
+                    ? $m(reply_to) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
-                        from_resource, body, server_id, own_id, raw_xml,
-                        server_status, encryption, fail_reason, on_wire)
+                        from_resource, body, server_id, own_id, origin_id,
+                        reply_id, reply_to, raw_xml, server_status,
+                        encryption, fail_reason, on_wire)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
-                        $m(server_id), $m(own_id), $m(raw_xml), $status, $enc,
+                        $m(server_id), $m(own_id), $originId,
+                        $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $failReason, $onWire)
                 }
                 set prevTs $ts
@@ -313,7 +331,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp < $cursor
@@ -328,7 +346,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp < $cursor AND timestamp > $sentTs
@@ -353,7 +371,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp > $cursor
@@ -366,7 +384,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND timestamp > $cursor AND timestamp < $sentTs
@@ -409,7 +427,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                     ORDER BY timestamp DESC
@@ -422,7 +440,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp > $truncTs
@@ -483,7 +501,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
         } row {
@@ -503,7 +521,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
             } row {
@@ -511,6 +529,40 @@ snit::type taco_messagestore {
             }
         }
         return $rows
+    }
+
+    # Resolve an XEP-0461 reply target to its stored timestamp, or "".
+    #   server_id match  : authoritative (stanza-id is unique in the archive).
+    #   origin_id/own_id : client-generated id, so disambiguate by author
+    #                      (replyTo) — these ids aren't unique across senders.
+    # MUC authors are compared full (room/nick); 1:1 by bare JID (the reply's
+    # `to` is often a full JID while we store the bare author).
+    method resolveReply {jid replyId {replyTo ""}} {
+        if {$replyId eq ""} { return "" }
+        set ts [$options(-db) onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND server_id != '' AND server_id=$replyId
+            LIMIT 1
+        }]
+        if {$ts ne ""} { return $ts }
+
+        set isMuc [IsMucChatJid $jid]
+        set result ""
+        $options(-db) eval {
+            SELECT timestamp, from_jid FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND ( (origin_id != '' AND origin_id=$replyId)
+                 OR (own_id    != '' AND own_id=$replyId) )
+        } row {
+            if {$replyTo eq ""
+                || ($isMuc && $row(from_jid) eq $replyTo)
+                || (!$isMuc && [jid bare $row(from_jid)] eq [jid bare $replyTo])} {
+                set result $row(timestamp)
+                break
+            }
+        }
+        return $result
     }
 
     # Flip pending → received for each own_id (SM ack path).
@@ -541,7 +593,22 @@ snit::type taco_messagestore {
     # send, search) read back via get ids so live messages are
     # enriched too.
     method RowToDict {row} {
-        messagestyling::enrich $row
+        set d [messagestyling::enrich $row]
+        if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
+            set chatJid [dict get $d chat_jid]
+            set targetTs [$self resolveReply $chatJid \
+                [dict get $d reply_id] [dict get $d reply_to]]
+            if {$targetTs ne ""} {
+                set targetBody [$options(-db) onecolumn {
+                    SELECT body FROM chat_message
+                    WHERE chat_jid=$chatJid AND timestamp=$targetTs
+                }]
+                if {$targetBody ne ""} {
+                    dict set d reply_body [ReplyPreview $targetBody]
+                }
+            }
+        }
+        return $d
     }
 
     method IsDuplicate {jid msg} {
@@ -598,4 +665,12 @@ snit::type taco_messagestore {
             incr ts $step
         }
     }
+}
+
+proc ReplyPreview {body} {
+    set line [lindex [split $body \n] 0]
+    if {[string length $line] > 80} {
+        set line "[string range $line 0 79]…"
+    }
+    return $line
 }

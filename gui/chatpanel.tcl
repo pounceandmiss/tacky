@@ -29,6 +29,8 @@ snit::widget chatpanel {
     variable findMatches {}
     variable findIndex -1
     variable findQuery ""
+    variable replyBar ""
+    variable replyToTs ""
 
     constructor args {
         $self configurelist $args
@@ -53,6 +55,7 @@ snit::widget chatpanel {
         }
 
         bind $cv <<FindInChat>> [mymethod OpenFind]
+        bind $cv <<ReplyTo>> [mymethod StartReply %d]
 
         $paned add $leftFrame -weight 1
         pack $paned -expand yes -fill both
@@ -123,8 +126,43 @@ snit::widget chatpanel {
     }
 
     method Send {text} {
-        ::tacky message send -acc $options(-acc) \
-            -chat_jid $options(-jid) -body $text
+        set sendArgs [list -acc $options(-acc) -chat_jid $options(-jid) -body $text]
+        if {$replyToTs ne ""} {
+            lappend sendArgs -reply_to_ts $replyToTs
+        }
+        ::tacky message send {*}$sendArgs
+        $self CancelReply
+    }
+
+    method StartReply {data} {
+        lassign $data ts author snippet
+        set replyToTs $ts
+        if {$replyBar eq "" || ![winfo exists $replyBar]} {
+            set replyBar [ttk::frame $leftFrame.replybar]
+            ttk::label $replyBar.icon \
+                -image mate/16x16/actions/mail-reply-sender.png
+            ttk::label $replyBar.lbl -anchor w
+            ttk::button $replyBar.close -text "\u00D7" -style Toolbutton \
+                -command [mymethod CancelReply]
+            pack $replyBar.icon -side left -padx {4 2}
+            pack $replyBar.close -side right -padx 2
+            pack $replyBar.lbl -side left -fill x -expand yes
+        }
+        $replyBar.lbl configure -text "Replying to $author: $snippet"
+        # Freeze the pane's size so the banner shrinks the chat view rather
+        # than growing the window.
+        pack propagate $leftFrame 0
+        pack $replyBar -fill x -before $entry
+        $entry focus
+    }
+
+    method CancelReply {} {
+        set replyToTs ""
+        if {$replyBar ne "" && [winfo exists $replyBar]} {
+            destroy $replyBar
+            pack propagate $leftFrame 1
+        }
+        set replyBar ""
     }
 
     method InstallMenus {} {
