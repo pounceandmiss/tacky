@@ -21,6 +21,21 @@ image create photo mate/22x22/actions/call-stop.png \
 image create photo mate/22x22/actions/call-start.png \
     -file [file join $_icondir call-start-22.png]
 
+# OMEMO lock icons pulled from the system mate theme; fall back to the
+# bundled 32x32 lock if the theme isn't installed.
+foreach {_name _rel} {
+    mate/16x16/status/stock_lock.png      16x16/status/stock_lock.png
+    mate/24x24/status/stock_lock.png      24x24/status/stock_lock.png
+    mate/24x24/status/stock_lock-open.png 24x24/status/stock_lock-open.png
+} {
+    if {[catch {
+        image create photo $_name -file /usr/share/icons/mate/$_rel
+    }]} {
+        image create photo $_name -file [file join $_icondir stock_lock.png]
+    }
+}
+unset _name _rel
+
 # Shared fallback avatar (used by avatarcache)
 if {[catch {
     image create photo avatarcache::defaultAvatar \

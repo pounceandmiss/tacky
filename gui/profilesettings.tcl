@@ -22,7 +22,7 @@ snit::widget profilesettings {
         }
         toplevel $top
         wm title $top "Profile"
-        wm resizable $top 1 0
+        wm resizable $top 1 1
         pack [profilesettings $top.ps -acc $account] \
             -expand yes -fill both -padx 10 -pady 10
     }
@@ -74,7 +74,18 @@ snit::widget profilesettings {
         ttk::label $win.status -text ""
         grid $win.status -row 4 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
 
+        # --- OMEMO own keys ---
+        ttk::separator $win.omemosep -orient horizontal
+        grid $win.omemosep -row 5 -column 0 -columnspan 3 -sticky ew -pady {8 4}
+        ttk::label $win.omemolbl -text "My OMEMO keys" \
+            -font {Helvetica 12 bold}
+        grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
+        omemokeyspanel $win.omemokeys -acc $acc -jid [jid bare $acc]
+        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
+            -padx 4 -pady 4
+
         grid columnconfigure $win 1 -weight 1
+        grid rowconfigure $win 7 -weight 1
 
         # Nick: load + stay live
         $t nick get -acc $acc -jid $acc \

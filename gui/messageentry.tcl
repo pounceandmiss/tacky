@@ -39,9 +39,14 @@ snit::widget messageentry {
             -text "Send" \
             -command [mymethod Send]
 
-        grid $win.grip -row 0 -column 0 -columnspan 3 -sticky ew
+        # Accessory slot just left of Send for caller-supplied context
+        # controls (e.g. the OMEMO lock toggle in 1:1 chats). Empty otherwise.
+        ttk::frame $win.accessory
+
+        grid $win.grip -row 0 -column 0 -columnspan 4 -sticky ew
         grid $win.text -row 1 -column 0 -sticky nsew
-        grid $win.send -row 1 -column 2 -sticky nsew -padx {4 0}
+        grid $win.accessory -row 1 -column 2 -sticky nsew -padx {4 0}
+        grid $win.send -row 1 -column 3 -sticky nsew -padx {4 0}
         grid rowconfigure $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
 
@@ -111,6 +116,11 @@ snit::widget messageentry {
         if {$options(-request-voice-command) ne ""} {
             {*}$options(-request-voice-command)
         }
+    }
+
+    # Container left of the Send button for caller-supplied controls.
+    method accessory {} {
+        return $win.accessory
     }
 
     method focus {} {

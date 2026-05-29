@@ -9,6 +9,10 @@ snit::widget scrollable {
 
     constructor args {
         install canvas using canvas $win.canvas -highlightthickness 0
+        # Match the ttk theme so the canvas doesn't show its classic-Tk
+        # (white) background around the content frame.
+        set bg [ttk::style lookup TFrame -background]
+        if {$bg ne ""} { $canvas configure -background $bg }
         install vsb using ttk::scrollbar $win.vsb -orient vertical \
             -command [list $canvas yview]
         $canvas configure -yscrollcommand [list $vsb set]
@@ -17,9 +21,12 @@ snit::widget scrollable {
         pack $canvas -side left -fill both -expand yes
 
         bind $canvas <Configure> [mymethod OnCanvasConfigure]
-        # Linux mousewheel
+        # Wheel scrolling: X11 sends Button-4/5; Tk 9 / other platforms
+        # send <MouseWheel> with %D.
         bind $canvas <Button-4> {%W yview scroll -5 units}
         bind $canvas <Button-5> {%W yview scroll 5 units}
+        bind $canvas <MouseWheel> \
+            {%W yview scroll [expr {%D > 0 ? -5 : 5}] units}
     }
 
     method setwidget {w} {

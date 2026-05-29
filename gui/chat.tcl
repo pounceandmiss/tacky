@@ -930,6 +930,11 @@ snit::widget chatarea {
             }
             $text ins msgins $message(display_name) $authorTags
             $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
+            if {[info exists message(encryption)] && $message(encryption) eq "omemo"} {
+                $text ins msgins " " [list $tag timestamp]
+                set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
+                $text tag add $tag $lockId
+            }
             $text ins msgins \n $tag
             
             $text ins msgins $message(body) [list $tag body message $tag.body]
@@ -1008,7 +1013,9 @@ proc enrich_store_message {storeDict names} {
         timestamp    [dict get $storeDict timestamp] \
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
-        server_status $serverStatus]
+        server_status $serverStatus \
+        encryption   [expr {[dict exists $storeDict encryption] ? [dict get $storeDict encryption] : ""}] \
+        fail_reason  [expr {[dict exists $storeDict fail_reason] ? [dict get $storeDict fail_reason] : ""}]]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
     }
