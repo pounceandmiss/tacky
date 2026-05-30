@@ -105,7 +105,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int prev int patch bool formatting {tuples {type string offset int length int}}}
+        message     {timestamp int prev int patch bool formatting {tuples {type string offset int length int}} attachments {list {dict {url string type string name string size int mime string}}} caption string}
         occupant    {}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
@@ -163,6 +163,7 @@ jsonify_type jsonify \
         message/<Sent>          {dict {message message}}
         message/<Patch>         {dict {messages {list message}}}
         message/<CatchupDone>   {dict {count int}}
+        file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<NickChanged>       {dict {self bool}}

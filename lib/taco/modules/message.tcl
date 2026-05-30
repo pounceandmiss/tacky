@@ -17,9 +17,11 @@
 #   IsDuplicate matches by server_id or own_id (or content fallback).
 #
 # server_status lifecycle:
-#   ""         incoming message (already delivered by definition)
-#   "pending"  outgoing, stored locally, not yet confirmed by server
-#   "received" server confirmed via MUC echo or SM ack
+#   ""          incoming message (already delivered by definition)
+#   "uploading" outgoing attachment, HTTP PUT in flight (XEP-0363)
+#   "failed"    outgoing attachment whose upload failed (retryable)
+#   "pending"   outgoing, stored locally, not yet confirmed by server
+#   "received"  server confirmed via MUC echo or SM ack
 #
 # === Outgoing: send ===
 #
@@ -151,6 +153,9 @@ snit::type taco_message {
         $client bus subscribe $self <Ready>      [mymethod OnReady]
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
         array set OmemoRetryBudget {}
+        # An 'uploading' row from a previous run was never sent (PUT isn't
+        # resumable); reconcile it to 'failed' so the user can retry.
+        $messagestore failStaleUploads
     }
 
     destructor {
@@ -505,7 +510,7 @@ snit::type taco_message {
         set ts [clock microseconds]
         set oid $ts
 
-        # NB: do not use `type` as a local — snit injects its own
+        # NB: do not use `type` as a local - snit injects its own
         # `type` (the snit type name like ::taco_message), and the
         # one-armed if below previously forgot to assign it in the
         # else branch, so the snit-injected value leaked into the
@@ -603,6 +608,73 @@ snit::type taco_message {
             if {$c ne ""} { set replyId $c; break }
         }
         return [list $replyId $row(from_jid) $row(body)]
+    }
+
+    # Attachment send (XEP-0363 + XEP-0066), optimistic + progress:
+    #   1. store now as 'uploading' (attachment url = local path) and emit
+    #      <Sent> so it shows immediately;
+    #   2. hand the file to the file module, which PUTs it and reports bytes
+    #      via `file <Update>` (keyed by the message id);
+    #   3. on success promote to 'pending' with the public URL + OOB stanza and
+    #      transmit (echo/ack then confirms);
+    #   4. on failure mark 'failed' (the file module's <Update> shows it).
+    method sendFile {args} {
+        array set opts $args
+        set chatJid $opts(-chat_jid)
+        set path $opts(-path)
+        set oid [clock microseconds]
+        lassign [$self DeriveAddressing $chatJid] msgType toJid fromJid fromRes
+        set msg [dict create \
+            timestamp $oid chat_jid $chatJid \
+            from_jid $fromJid from_resource $fromRes \
+            body "" server_id "" own_id $oid raw_xml "" \
+            attachments [OutgoingAttachment $path $path] \
+            server_status uploading]
+        set inserted [dict get [$messagestore store [list $msg]] inserted]
+        set ts [lindex $inserted 0]
+        set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
+        $client emit message <Sent> -jid $chatJid -message $dbMsg
+        $self StartUpload $chatJid $oid $ts $path
+    }
+
+    # The transfer id is the message id (== own_id == timestamp), so the GUI,
+    # which keys an outgoing attachment by its message id, correlates upload
+    # progress without a handshake. Progress/terminal state reach the GUI via
+    # the file module's `file <Update>` event; OnUploaded is the internal
+    # completion that turns the GET URL into the actual outgoing stanza.
+    method StartUpload {chatJid oid ts path} {
+        $client file upload -id $ts -path $path \
+            -command [mymethod OnUploaded $chatJid $oid $ts $path]
+    }
+
+    method OnUploaded {chatJid oid ts path url} {
+        if {$url eq ""} {
+            $messagestore markUploadFailed $chatJid $oid
+            return
+        }
+        lassign [$self DeriveAddressing $chatJid] msgType toJid
+        set stanza [j message -to $toJid -type $msgType -id $oid {
+            j body #body $url
+            j x -ns jabber:x:oob { j url #body $url }
+        }]
+        $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
+            [OutgoingAttachment $url $path]
+        $client write $stanza
+    }
+
+    # Re-attempt a failed upload using the local file recorded on the row. A
+    # missing source surfaces as a `file <Update>` failed (file upload checks
+    # readability), so no separate guard is needed here.
+    method retryUpload {args} {
+        array set opts $args
+        set chatJid $opts(-chat_jid)
+        set ts $opts(-timestamp)
+        set row [lindex [$messagestore get ids $chatJid [list $ts]] 0]
+        if {$row eq "" || [llength [dict get $row attachments]] == 0} return
+        set path [dict get [lindex [dict get $row attachments] 0] url]
+        set oid [dict get $row own_id]
+        $messagestore markUploading $chatJid $oid
+        $self StartUpload $chatJid $oid $ts $path
     }
 
     method OnSmAck {args} {
@@ -1300,9 +1372,49 @@ snit::type taco_message {
             reply_id   $replyId \
             reply_to   $replyTo \
             raw_xml    [jwrite $msgNode] \
+            attachments [ExtractAttachments $msgNode $body] \
             server_status "" \
             encryption $enc
     }
+}
+
+# Derive the attachment list for an incoming <message>. An attachment is
+# signalled by an XEP-0066 Out-of-Band <x><url/></x> child (what
+# Conversations/Dino/Gajim send for XEP-0363 shares). A body that merely *is*
+# a URL is just a link, not an attachment, so it is left as text.
+# Returns a (possibly empty) Tcl list of attachment dicts.
+proc ExtractAttachments {msgNode body} {
+    set atts {}
+    xsearch $msgNode x -ns jabber:x:oob url -script u {
+        set url [dict get $u body]
+        if {$url ne ""} { lappend atts [attachment_dict $url] }
+    }
+    return $atts
+}
+
+proc attachment_dict {url} {
+    dict create url $url type [attachment_kind $url] \
+        name [attachment_basename $url] size "" mime ""
+}
+
+# Display text for a message with attachments: the body, emptied when it is
+# just the (OOB-duplicated) attachment URL, kept when it carries real text.
+proc attachment_caption {body attachments} {
+    set trimmed [string trim $body]
+    foreach att $attachments {
+        if {$trimmed eq [dict get $att url]} { return "" }
+    }
+    return $body
+}
+
+# Single-element attachment list for an outgoing send. `url` is the local
+# path while uploading, then the public URL once known; `path` is always the
+# local file (drives name/size/mime).
+proc OutgoingAttachment {url path} {
+    list [dict create url $url type [attachment_kind $path] \
+        name [file tail $path] \
+        size [expr {[file isfile $path] ? [file size $path] : ""}] \
+        mime [attachment_mime $path]]
 }
 
 # Author identity within a chat: full `room/nick` for MUC chats (resource

@@ -65,7 +65,7 @@ snit::type taco_author {
             # but whose messages we still display)
             $client db eval {
                 SELECT DISTINCT from_jid FROM chat_message
-                WHERE chat_jid = $chatJid
+                WHERE chat_jid = $chatJid AND kind='message'
             } row {
                 set f $row(from_jid)
                 if {![dict exists $d $f]} {

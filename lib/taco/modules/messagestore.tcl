@@ -92,9 +92,13 @@ snit::type taco_messagestore {
                 -- why a send failed (set with server_status='failed',
                 -- '' otherwise). Distinct from `encryption`, which is
                 -- intent not outcome. Categories: 'encrypt' (OMEMO
-                -- couldn't produce ciphertext — no usable recipients).
+                -- couldn't produce ciphertext - no usable recipients).
                 -- Reserved for a future delivery-failure path: 'send'.
                 fail_reason    TEXT NOT NULL DEFAULT '',
+                -- Tcl list of attachment dicts {url type name size mime};
+                -- derived from XEP-0066 OOB / URL bodies on store. Empty
+                -- for plain text messages.
+                attachments    TEXT,
                 PRIMARY KEY(chat_jid, timestamp)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -291,15 +295,17 @@ snit::type taco_messagestore {
                     ? $m(reply_id) : ""}]
                 set replyTo [expr {[info exists m(reply_to)] \
                     ? $m(reply_to) : ""}]
+                set attach [expr {[info exists m(attachments)] \
+                    ? $m(attachments) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         reply_id, reply_to, raw_xml, server_status,
-                        encryption, fail_reason, on_wire)
+                        encryption, fail_reason, on_wire, attachments)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $failReason, $onWire)
+                        $failReason, $onWire, $attach)
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
@@ -331,7 +337,8 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp < $cursor
@@ -346,7 +353,8 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp < $cursor AND timestamp > $sentTs
@@ -371,7 +379,8 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp > $cursor
@@ -384,7 +393,8 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                   attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND timestamp > $cursor AND timestamp < $sentTs
@@ -427,7 +437,8 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                     ORDER BY timestamp DESC
@@ -440,7 +451,8 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp > $truncTs
@@ -501,7 +513,8 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                   attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
         } row {
@@ -521,7 +534,8 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
             } row {
@@ -563,6 +577,49 @@ snit::type taco_messagestore {
             }
         }
         return $result
+    }
+
+    # --- Outgoing upload lifecycle -------------------------------------
+    # An attachment send is stored as server_status='uploading' before the
+    # HTTP PUT runs, so it shows immediately. On success the same row is
+    # promoted to 'pending' (body/url/raw_xml filled in) and rejoins the
+    # normal pending -> received confirmation flow; on failure it becomes
+    # 'failed'. Matched by own_id, which is stable from store time.
+
+    method markUploaded {jid ownId url rawXml attachments} {
+        $options(-db) eval {
+            UPDATE chat_message
+            SET body=$url, raw_xml=$rawXml, attachments=$attachments,
+                server_status='pending'
+            WHERE chat_jid=$jid AND own_id=$ownId
+              AND server_status='uploading'
+        }
+    }
+
+    method markUploadFailed {jid ownId} {
+        $options(-db) eval {
+            UPDATE chat_message SET server_status='failed'
+            WHERE chat_jid=$jid AND own_id=$ownId
+              AND server_status='uploading'
+        }
+    }
+
+    # Retry: flip a previously failed upload back to uploading.
+    method markUploading {jid ownId} {
+        $options(-db) eval {
+            UPDATE chat_message SET server_status='uploading'
+            WHERE chat_jid=$jid AND own_id=$ownId
+              AND server_status='failed'
+        }
+    }
+
+    # Startup recovery: an 'uploading' row left over from a previous run
+    # was never sent (HTTP PUT isn't resumable), so mark it failed.
+    method failStaleUploads {} {
+        $options(-db) eval {
+            UPDATE chat_message SET server_status='failed'
+            WHERE kind='message' AND server_status='uploading'
+        }
     }
 
     # Flip pending → received for each own_id (SM ack path).
@@ -607,6 +664,12 @@ snit::type taco_messagestore {
                     dict set d reply_body [ReplyPreview $targetBody]
                 }
             }
+        }
+        if {[dict exists $d attachments]
+            && [llength [dict get $d attachments]] > 0} {
+            dict set d caption \
+                [attachment_caption [dict get $d body] \
+                    [dict get $d attachments]]
         }
         return $d
     }

@@ -425,7 +425,7 @@ snit::type taco_avatar {
     method ResizeForPublish {rawData} {
         try {
             set d [::tclwuffs::decode $rawData]
-            lassign [$self FitWithin [dict get $d width] [dict get $d height] 128] tw th
+            lassign [fit_within [dict get $d width] [dict get $d height] 128] tw th
             return [::tclwuffs::resize_bytes $rawData $tw $th]
         } on error {err} {
             jlog warn "Avatar resize failed: $err"
@@ -436,28 +436,12 @@ snit::type taco_avatar {
     method MakeThumb {rawData caller} {
         try {
             set d [::tclwuffs::decode $rawData]
-            lassign [$self FitWithin [dict get $d width] [dict get $d height] 32] tw th
+            lassign [fit_within [dict get $d width] [dict get $d height] 32] tw th
             return [::tclwuffs::resize_bytes $rawData $tw $th]
         } on error {err} {
             jlog warn "Thumbnail generation failed: $err"
             return ""
         }
-    }
-
-    # Largest dimensions fitting within max*max, preserving aspect, never
-    # upscaling. Returns {w h}.
-    method FitWithin {w h max} {
-        if {$w <= $max && $h <= $max} {
-            return [list $w $h]
-        }
-        if {$w >= $h} {
-            set nw $max
-            set nh [expr {int(round(double($h) * $max / $w))}]
-        } else {
-            set nh $max
-            set nw [expr {int(round(double($w) * $max / $h))}]
-        }
-        return [list [expr {max($nw, 1)}] [expr {max($nh, 1)}]]
     }
 
     method Migrate {} {

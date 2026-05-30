@@ -47,6 +47,7 @@ snit::widget chatpanel {
             -acc $options(-acc) -jid $options(-jid)]
         set entry [messageentry $leftFrame.entry \
             -send-command [mymethod Send] \
+            -attach-command [mymethod Attach] \
             -request-voice-command [mymethod RequestVoice]]
         pack $cv -expand yes -fill both
         pack $entry -fill x
@@ -163,6 +164,13 @@ snit::widget chatpanel {
             pack propagate $leftFrame 1
         }
         set replyBar ""
+    }
+
+    method Attach {} {
+        set path [tk_getOpenFile -title "Attach File"]
+        if {$path eq ""} return
+        ::tacky message sendFile -acc $options(-acc) \
+            -chat_jid $options(-jid) -path $path
     }
 
     method InstallMenus {} {

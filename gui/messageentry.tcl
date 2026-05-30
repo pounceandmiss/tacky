@@ -9,9 +9,11 @@ snit::widget messageentry {
     component text
     component scrollbar
     component sendbutton
+    component attachbutton
     component grip
 
     option -send-command -default ""
+    option -attach-command -default ""
     option -request-voice-command -default ""
 
     # "normal" or "visitor"
@@ -39,12 +41,18 @@ snit::widget messageentry {
             -text "Send" \
             -command [mymethod Send]
 
+        install attachbutton using ttk::button $win.attach \
+            -style Toolbutton \
+            -image mate/22x22/status/mail-attachment.png \
+            -command [mymethod Attach]
+
         # Accessory slot just left of Send for caller-supplied context
         # controls (e.g. the OMEMO lock toggle in 1:1 chats). Empty otherwise.
         ttk::frame $win.accessory
 
         grid $win.grip -row 0 -column 0 -columnspan 4 -sticky ew
         grid $win.text -row 1 -column 0 -sticky nsew
+        grid $win.attach -row 1 -column 1 -sticky nsew -padx {4 0}
         grid $win.accessory -row 1 -column 2 -sticky nsew -padx {4 0}
         grid $win.send -row 1 -column 3 -sticky nsew -padx {4 0}
         grid rowconfigure $win 1 -weight 1
@@ -78,6 +86,12 @@ snit::widget messageentry {
         }
     }
 
+    method Attach {} {
+        if {$options(-attach-command) ne ""} {
+            {*}$options(-attach-command)
+        }
+    }
+
     method ScrollSet {first last} {
         if {$first == 0.0 && $last == 1.0} {
             grid remove $win.scrollbar
@@ -105,10 +119,12 @@ snit::widget messageentry {
             $sendbutton configure -text "Request Voice" \
                 -command [mymethod RequestVoice]
             $text configure -state disabled
+            $attachbutton configure -state disabled
         } else {
             $sendbutton configure -text "Send" \
                 -command [mymethod Send]
             $text configure -state normal
+            $attachbutton configure -state normal
         }
     }
 

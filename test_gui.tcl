@@ -15,6 +15,13 @@ lappend auto_path \
 # Match production load order from bin/tacky.tcl so gui/*.tcl can be sourced.
 package require Tk
 ttk::style theme use clam
+
+# Keep the test window above others and mapped. Tests measure real geometry
+# (bbox, count -ypixels, winfo height); if the toplevel is obscured or not
+# fully mapped those return stale/zero values, which makes layout-sensitive
+# tests (history pagination, viewport stability) flaky.
+wm attributes . -topmost 1
+raise .
 package require snit
 package require libtacky
 package require taco
