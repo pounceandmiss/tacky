@@ -24,6 +24,7 @@ package require Tk
 ttk::style theme use clam
 package require snit
 package require tkwuffs
+package require tkdnd
 
 proc bgerror {message} {
     puts stderr $::errorInfo
