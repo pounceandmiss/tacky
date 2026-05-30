@@ -7,7 +7,7 @@ COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
-tacky_DEPS  := $(COMMON_DEPS) tkwuffs
+tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd
 tacky_SRC   := lib bin gui icons
 tacky_ENT   := bin/tacky.tcl
 

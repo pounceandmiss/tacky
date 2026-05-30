@@ -31,6 +31,7 @@ snit::widget chatpanel {
     variable findQuery ""
     variable replyBar ""
     variable replyToTs ""
+    variable dropBg -array {}
 
     constructor args {
         $self configurelist $args
@@ -54,6 +55,9 @@ snit::widget chatpanel {
         if {!$isMuc} {
             $self BuildOmemoToggle
         }
+
+        $self EnableFileDrop $cv.text
+        $self EnableFileDrop $entry.text
 
         bind $cv <<FindInChat>> [mymethod OpenFind]
         bind $cv <<ReplyTo>> [mymethod StartReply %d]
@@ -171,6 +175,39 @@ snit::widget chatpanel {
         if {$path eq ""} return
         ::tacky message sendFile -acc $options(-acc) \
             -chat_jid $options(-jid) -path $path
+    }
+
+    # Register $w as a drop target so files dragged onto it are sent to this
+    # chat. No-op when tkdnd isn't loaded (e.g. under the test harness).
+    method EnableFileDrop {w} {
+        if {[catch {package require tkdnd}]} return
+        tkdnd::drop_target register $w DND_Files
+        bind $w <<DropEnter>> [mymethod DropEnter $w]
+        bind $w <<DropLeave>> [mymethod DropLeave $w]
+        bind $w <<Drop:DND_Files>> [mymethod DropFiles $w %D]
+    }
+
+    method DropEnter {w} {
+        set dropBg($w) [$w cget -background]
+        $w configure -background "#cfe0ff"
+        return copy
+    }
+
+    method DropLeave {w} {
+        if {[info exists dropBg($w)]} {
+            $w configure -background $dropBg($w)
+            unset dropBg($w)
+        }
+    }
+
+    method DropFiles {w files} {
+        $self DropLeave $w
+        foreach path $files {
+            if {![file isfile $path]} continue
+            ::tacky message sendFile -acc $options(-acc) \
+                -chat_jid $options(-jid) -path $path
+        }
+        return copy
     }
 
     method InstallMenus {} {
