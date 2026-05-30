@@ -1,5 +1,5 @@
 snit::type taco_client {
-    taco_modules message pubsub mam roster caps bookmarks presence avatar muc vcard nick chats chatlist author extdisco calls omemo
+    taco_modules message pubsub mam roster caps bookmarks presence avatar muc vcard nick chats chatlist author extdisco calls omemo file
 
     component conn -public conn
     component iq -public iq

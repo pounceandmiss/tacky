@@ -32,20 +32,26 @@ snit::type taco_chats {
         $self configurelist $args
         set client $options(-client)
         set db [$client cget -db]
-        # Load existing max timestamps
+        # Load existing max timestamps. Sentinels sit one microsecond past
+        # the newest message to mark an unfetched gap; they are not messages,
+        # so exclude them or a tail sentinel would masquerade as the latest.
         $db eval {
             SELECT chat_jid, MAX(timestamp) AS max_ts
             FROM chat_message
+            WHERE kind='message'
             GROUP BY chat_jid
         } row {
             dict set MaxTimestamps $row(chat_jid) $row(max_ts)
         }
 
-        # Trigger calls into Tcl on every new message
+        # Trigger calls into Tcl on every new message. Gate on kind so a
+        # sentinel insert neither poisons the cached max nor churns the
+        # chat-list ordering with a spurious <Updated>.
         $db function _chats_on_message [mymethod OnMessage]
         $db eval {
             CREATE TRIGGER IF NOT EXISTS trg_chats_on_message
             AFTER INSERT ON chat_message
+            WHEN NEW.kind='message'
             BEGIN
                 SELECT _chats_on_message(NEW.chat_jid, NEW.timestamp);
             END;
@@ -80,13 +86,16 @@ snit::type taco_chats {
         }
     }
 
+    # Not the MaxTimestamps cache: its AFTER INSERT trigger counts sentinel
+    # rows and misses the timestamp UPDATE on MUC-echo confirmation.
     tackymethod maxTimestamp {args} {
         array set opts $args
         set jid $opts(-chat)
-        if {[dict exists $MaxTimestamps $jid]} {
-            return [dict get $MaxTimestamps $jid]
-        }
-        return ""
+        set ts [$db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+        }]
+        return [expr {$ts eq "" ? "" : $ts}]
     }
 
     # latest — returns ordered list of bare JIDs, most recent message first.
@@ -95,6 +104,7 @@ snit::type taco_chats {
         set result {}
         $db eval {
             SELECT chat_jid FROM chat_message
+            WHERE kind='message'
             GROUP BY chat_jid
             ORDER BY MAX(timestamp) DESC
         } row {

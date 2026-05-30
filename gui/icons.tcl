@@ -23,6 +23,9 @@ image create photo mate/22x22/actions/call-start.png \
 image create photo mate/16x16/actions/mail-reply-sender.png \
     -file [file join $_icondir mail-reply-sender-16.png]
 
+image create photo mate/22x22/status/mail-attachment.png \
+    -file [file join $_icondir mail-attachment-22.png]
+
 # OMEMO lock icons pulled from the system mate theme; fall back to the
 # bundled 32x32 lock if the theme isn't installed.
 foreach {_name _rel} {

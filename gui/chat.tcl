@@ -61,11 +61,21 @@ snit::widgetadaptor chatview {
     # Mirrors the global `show_jid_in_1to1` setting.
     variable ShowJid 0
 
+    # Image downloads in flight: url -> list of "msgId,attIdx" awaiting their
+    # thumbnail. A `file <Update>` for that url routes progress/result to each.
+    variable DownloadPending
+
     constructor args {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
             -cull-command [mymethod OnCulled] \
             -avatar-release-command [mymethod OnAvatarRelease] \
+            -attachment-open-command [mymethod AttachOpen] \
+            -attachment-save-command [mymethod AttachSave] \
+            -attachment-openfolder-command [mymethod AttachOpenFolder] \
+            -attachment-uncache-command [mymethod AttachUncache] \
+            -attachment-load-command [mymethod AttachLoad] \
+            -attachment-retry-command [mymethod AttachRetry] \
             -scrollbtn-command [mymethod ScrollToBottom] \
             -loading-cancel-command [mymethod CancelGoto]
         $self configurelist $args
@@ -78,6 +88,7 @@ snit::widgetadaptor chatview {
         set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
         set Names [dict create]
         set TrackedAvatars [list]
+        set DownloadPending [dict create]
         ::tacky listen -tag $win message <Received> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Sent> \
@@ -86,6 +97,8 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
+        ::tacky listen -tag $win file <Update> \
+            -acc $options(-acc) [mymethod OnTransfer]
         ::tacky listen -tag $win author <Changed> \
             -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
         ::tacky author get -acc $options(-acc) -chat $options(-jid) \
@@ -388,6 +401,145 @@ snit::widgetadaptor chatview {
             lappend enriched $emsg
         }
         $hull apply $enriched
+        foreach emsg $enriched {
+            $self FetchAttachments $emsg
+        }
+    }
+
+    # Kick off the inline-thumbnail fetch for each image attachment. The file
+    # module downloads (remote) or reads in place (local), derives the
+    # thumbnail, and reports via `file <Update>` (-> OnTransfer).
+    method FetchAttachments {emsg} {
+        if {![dict exists $emsg attachments]} return
+        set id [dict get $emsg id]
+        set idx 0
+        foreach att [dict get $emsg attachments] {
+            if {[dict get $att type] eq "image"} {
+                $self StartDownload [dict get $att url] $id $idx
+            }
+            incr idx
+        }
+    }
+
+    # Click-to-reload after "Delete from cache": same path as the initial fetch.
+    method AttachLoad {url id idx} {
+        $self StartDownload $url $id $idx
+    }
+
+    method StartDownload {url id idx} {
+        set key "$id,$idx"
+        set cur [expr {[dict exists $DownloadPending $url]
+            ? [dict get $DownloadPending $url] : {}}]
+        if {$key ni $cur} {
+            dict set DownloadPending $url [lappend cur $key]
+        }
+        ::tacky file download -acc $options(-acc) -url $url
+    }
+
+    # Single transfer listener: upload events key on -id (== message id);
+    # download events key on -url via DownloadPending.
+    method OnTransfer {ev} {
+        set dir   [dict get $ev -direction]
+        set state [dict get $ev -state]
+        set loaded [dict get $ev -loaded]
+        set total  [dict get $ev -total]
+        set thumb  [dict get $ev -thumbpath]
+        if {$dir eq "upload"} {
+            $self ApplyTransfer [dict get $ev -id] 0 $dir $state $loaded $total $thumb
+            return
+        }
+        set url [dict get $ev -url]
+        if {![dict exists $DownloadPending $url]} return
+        foreach key [dict get $DownloadPending $url] {
+            lassign [split $key ,] mid idx
+            $self ApplyTransfer $mid $idx $dir $state $loaded $total $thumb
+        }
+        if {$state ne "active"} { dict unset DownloadPending $url }
+    }
+
+    method ApplyTransfer {id idx dir state loaded total thumb} {
+        if {$id ni [$hull messages ids]} return
+        # A thumbnail or progress row arriving after the message was drawn
+        # grows it below the last line, pushing the viewport off the bottom.
+        # Re-pin if we were riding the tail so the scroll-to-bottom button
+        # doesn't spuriously appear (and stick).
+        set atEnd [$hull atEnd]
+        if {$state eq "done" && $thumb ne ""} {
+            $hull attachment image $id $idx $thumb
+        }
+        $hull attachment state $id $idx $dir $state $loaded $total
+        if {$atEnd} {
+            # Packing the thumbnail into the embedded frame defers the frame's
+            # geometry recalc to idle, so flush it before `see end` measures
+            # the (now taller) last line; otherwise we land short and drift off.
+            update idletasks
+            $hull see end
+            $self UpdateViewAtTail
+        }
+    }
+
+    method AttachRetry {id} {
+        $hull attachment state $id 0 upload active 0 0
+        ::tacky message retryUpload -acc $options(-acc) \
+            -chat_jid $options(-jid) -timestamp $id
+    }
+
+    method AttachOpen {url} {
+        if {[file exists $url]} { attachment_os_open $url; return }
+        ::tacky file download -acc $options(-acc) -url $url \
+            -command [mymethod OnAttachOpenReady]
+    }
+
+    method OnAttachOpenReady {path} {
+        if {$path eq ""} {
+            tk_messageBox -icon error -title "Download Failed" \
+                -message "Could not download the attachment."
+            return
+        }
+        attachment_os_open $path
+    }
+
+    method AttachSave {url name} {
+        set dest [tk_getSaveFile -initialfile $name]
+        if {$dest eq ""} return
+        if {[file exists $url]} {
+            if {[catch {file copy -force -- $url $dest} err]} {
+                tk_messageBox -icon error -title "Save Failed" -message $err
+            }
+            return
+        }
+        ::tacky file download -acc $options(-acc) -url $url \
+            -command [mymethod OnAttachSaveReady $dest]
+    }
+
+    method OnAttachSaveReady {dest path} {
+        if {$path eq ""} {
+            tk_messageBox -icon error -title "Download Failed" \
+                -message "Could not download the attachment."
+            return
+        }
+        if {[catch {file copy -force -- $path $dest} err]} {
+            tk_messageBox -icon error -title "Save Failed" -message $err
+        }
+    }
+
+    method AttachOpenFolder {url} {
+        if {[file exists $url]} { attachment_os_open [file dirname $url]; return }
+        ::tacky file download -acc $options(-acc) -url $url \
+            -command [mymethod OnAttachFolderReady]
+    }
+
+    method OnAttachFolderReady {path} {
+        if {$path eq ""} {
+            tk_messageBox -icon error -title "Download Failed" \
+                -message "Could not download the attachment."
+            return
+        }
+        attachment_os_open [file dirname $path]
+    }
+
+    method AttachUncache {url} {
+        ::tacky file uncache -acc $options(-acc) -url $url
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.
@@ -562,6 +714,20 @@ snit::widget chatarea {
     # its avatar tracking for that JID.
     option -avatar-release-command -default control::no-op
 
+    # Attachment actions, invoked from the rendered attachment widgets:
+    #   open       {*}$cmd $url            download (cached) and open with the OS
+    #   save       {*}$cmd $url $filename  download (cached) and copy to a path
+    #   openfolder {*}$cmd $url            open the cached file's folder
+    #   uncache    {*}$cmd $url            delete the cached copy from disk
+    #   load       {*}$cmd $url $id $idx   (re)fetch an image thumbnail
+    #   retry      {*}$cmd $id             retry a failed upload
+    option -attachment-open-command -default control::no-op
+    option -attachment-save-command -default control::no-op
+    option -attachment-openfolder-command -default control::no-op
+    option -attachment-uncache-command -default control::no-op
+    option -attachment-load-command -default control::no-op
+    option -attachment-retry-command -default control::no-op
+
     # Virtual events
     # <<MessageRightClick>> — fired on the chatarea frame when a message
     #   is right-clicked. -data is the message ID. Standard event fields
@@ -708,6 +874,11 @@ snit::widget chatarea {
     }
 
     method {see end} {} {
+        # Force a synchronous layout first: an embedded attachment whose
+        # thumbnail just grew the last line needs its new geometry resolved
+        # before `see` can land on the true bottom (else we stop short and
+        # the viewport drifts off the tail once the relayout settles).
+        $text sync
         $text see end
     }
 
@@ -969,18 +1140,31 @@ snit::widget chatarea {
 
             $self DrawReplyPreview $messageDict $tag
 
-            $text ins msgins $message(body) [list $tag body message $tag.body]
+            # The backend supplies `caption` (body with redundant attachment
+            # URLs removed) for attachment messages; plain messages have none.
+            set displayBody [expr {[info exists message(caption)]
+                ? $message(caption) : $message(body)}]
+            $text ins msgins $displayBody [list $tag body message $tag.body]
             if {$message(is_outgoing)} {
                 set rt [$self ReceiptText $message(server_status)]
                 $text ins msgins " $rt" [list $tag $tag.receipt receipt]
             }
             $text ins msgins \n $tag
-            
+
             if {[info exists message(formatting)]} {
                 foreach {type offset length} $message(formatting) {
                     $text tag add entity.$type \
                         "$tag.body.first + $offset chars" \
                         "$tag.body.first + $offset chars + $length chars"
+                }
+            }
+
+            if {[info exists message(attachments)]} {
+                set aidx 0
+                foreach att $message(attachments) {
+                    $self DrawAttachment $tag $message(id) $aidx $att \
+                        $message(server_status)
+                    incr aidx
                 }
             }
         }
@@ -1009,6 +1193,44 @@ snit::widget chatarea {
         $text tag bind $rtag <Button-1> \
             [list event generate $win <<ReplyJump>> \
                  -data [list $message(reply_id) $rto]]
+    }
+
+    # Render one attachment as an embedded `attachment` widget under the body.
+    # The widget owns its drawing and routes user actions to chatarea's
+    # -attachment-*-command callbacks itself; chatarea only forwards
+    # `attachment image`/`attachment state` to it by id+idx. `status` is the
+    # message's server_status, which seeds the upload-state row (progress bar
+    # while 'uploading', Retry when 'failed').
+    method DrawAttachment {tag id idx att status} {
+        set f $text.att_${id}_${idx}
+        catch {destroy $f}
+        attachment $f \
+            -chatarea $self \
+            -url [dict get $att url] -kind [dict get $att type] \
+            -name [dict get $att name] -id $id -idx $idx \
+            -scroll-target $text
+        $text window create msgins -window $f -padx 40 -pady 2
+        $text tag add $tag "msgins - 1 chars"
+        $text ins msgins \n $tag
+        switch -- $status {
+            uploading { $self attachment state $id $idx upload active 0 0 }
+            failed    { $self attachment state $id $idx upload failed 0 0 }
+        }
+    }
+
+    # Forward a backend-produced thumbnail (already downscaled) to the widget.
+    method {attachment image} {id idx path} {
+        set f $text.att_${id}_${idx}
+        if {![winfo exists $f]} return
+        $f setImage $path
+    }
+
+    # Forward a transfer-progress update to the widget: a progress bar while
+    # active, an error + Retry row on failure, removed on done.
+    method {attachment state} {id idx direction state loaded total} {
+        set f $text.att_${id}_${idx}
+        if {![winfo exists $f]} return
+        $f setState $direction $state $loaded $total
     }
 
     method deleteById {id} {
@@ -1094,7 +1316,27 @@ proc enrich_store_message {storeDict names} {
             dict set d reply_body [dict get $storeDict reply_body]
         }
     }
+    if {[dict exists $storeDict caption]} {
+        dict set d caption [dict get $storeDict caption]
+    }
+    if {[dict exists $storeDict attachments]
+        && [llength [dict get $storeDict attachments]] > 0} {
+        dict set d attachments [dict get $storeDict attachments]
+    }
     return $d
+}
+
+# Open a downloaded attachment with the platform's default handler.
+proc attachment_os_open {path} {
+    catch {
+        if {$::tcl_platform(os) eq "Darwin"} {
+            exec open $path &
+        } elseif {$::tcl_platform(platform) eq "windows"} {
+            exec cmd /c start "" $path &
+        } else {
+            exec xdg-open $path &
+        }
+    }
 }
 
 proc list_remove_once_inplace {varName val} {
@@ -1105,7 +1347,182 @@ proc list_remove_once_inplace {varName val} {
     return 1
 }
 
-# Scroll-to-bottom button overlay. 
+# One rendered attachment, embedded in the chat text widget. Draws a caption
+# (image) or an Open/Save chip (file), with the thumbnail and a transfer
+# progress/Retry row added later via `setImage` / `setState`. The widget knows
+# its own url/id/idx and routes every user action (open, save, click-to-load,
+# retry, the right-click menu) straight to its host chatarea's
+# -attachment-*-command callbacks; chatarea just creates it and forwards
+# setImage/setState by message id+idx.
+snit::widget attachment {
+    hulltype ttk::frame
+
+    option -chatarea -default ""      ;# host chatarea; source of action callbacks
+    option -url  -default ""
+    option -kind -default file        ;# image | file
+    option -name -default ""
+    option -id   -default ""          ;# message id, passed to load/retry callbacks
+    option -idx  -default 0           ;# attachment index within the message
+    option -scroll-target -default "" ;# text widget wheel events relay to
+
+    constructor args {
+        $self configurelist $args
+        if {$options(-kind) eq "image"} {
+            ttk::label $win.cap -text $options(-name) -foreground blue -cursor hand2
+            bind $win.cap <Button-1> [mymethod Click]
+            pack $win.cap -side top -anchor w
+        } else {
+            set chip [ttk::frame $win.chip]
+            ttk::label  $chip.name -text $options(-name)
+            ttk::button $chip.open -text "Open" -style Toolbutton \
+                -command [mymethod Open]
+            ttk::button $chip.save -text "Save" -style Toolbutton \
+                -command [mymethod Save]
+            pack $chip.name $chip.open $chip.save -side left -padx 2
+            pack $chip -side top -anchor w
+        }
+        $self RelayScroll $win
+        $self BindMenu $win
+    }
+
+    # Invoke one of the host chatarea's -attachment-<name>-command callbacks.
+    method Cb {name args} {
+        {*}[$options(-chatarea) cget -attachment-$name-command] {*}$args
+    }
+
+    # Image caption/thumbnail click: open the image when its thumbnail is shown,
+    # else (re)load it (e.g. after "Delete from cache" cleared it).
+    method Click {} {
+        if {[$self hasImage]} {
+            $self Open
+        } else {
+            $self Cb load $options(-url) $options(-id) $options(-idx)
+        }
+    }
+
+    method Open {} { $self Cb open $options(-url) }
+    method Save {} { $self Cb save $options(-url) $options(-name) }
+
+    method hasImage {} { winfo exists $win.img }
+    method dropImage {} { catch {destroy $win.img} }
+
+    # Add the backend-produced thumbnail (already downscaled) above the caption.
+    method setImage {path} {
+        if {[winfo exists $win.img]} return
+        if {[catch {image create photo -file $path} photo]} return
+        ttk::label $win.img -image $photo -cursor hand2
+        # Tk photos aren't auto-freed when their last referencing widget dies,
+        # so tie this one's lifetime to the label so cull/clear/uncache release it.
+        bind $win.img <Destroy> [list catch [list image delete $photo]]
+        if {[winfo exists $win.cap]} {
+            bind $win.img <Button-1> [mymethod Click]
+            pack $win.img -side top -anchor w -before $win.cap
+        } else {
+            pack $win.img -side top -anchor w
+        }
+        $self RelayScroll $win.img
+        $self BindMenu $win.img
+    }
+
+    # Transfer state row: a progress bar while active, an error + Retry on
+    # failure, removed on done. upload/download use separate rows ($win.up /
+    # $win.dl) so an uploading image keeps both its bar and its thumbnail.
+    method setState {direction state loaded total} {
+        set w $win.[expr {$direction eq "upload" ? "up" : "dl"}]
+        switch -- $state {
+            done   { catch {destroy $w} }
+            failed { $self ShowFailed $w $direction }
+            active { $self ShowActive $w $direction $loaded $total }
+        }
+    }
+
+    method ShowActive {w direction loaded total} {
+        if {![winfo exists $w.bar]} {
+            catch {destroy $w}
+            ttk::frame $w
+            ttk::progressbar $w.bar -length 200
+            ttk::label $w.lbl -foreground #888888
+            pack $w.bar $w.lbl -side left -padx {0 6}
+            pack $w -side top -anchor w -pady {2 0}
+            $self RelayScroll $w
+        }
+        $w.lbl configure -text \
+            [expr {$direction eq "upload" ? "Uploading..." : "Downloading..."}]
+        if {$total > 0} {
+            $w.bar configure -mode determinate \
+                -value [expr {100.0 * $loaded / $total}]
+        } else {
+            $w.bar configure -mode indeterminate
+            catch {$w.bar start}
+        }
+    }
+
+    method ShowFailed {w direction} {
+        catch {destroy $w}
+        ttk::frame $w
+        ttk::label $w.lbl -foreground #c0504d -text \
+            [expr {$direction eq "upload" ? "Upload failed" : "Download failed"}]
+        ttk::button $w.retry -text "Retry" -style Toolbutton \
+            -command [mymethod Retry $direction]
+        pack $w.lbl $w.retry -side left -padx {0 6}
+        pack $w -side top -anchor w -pady {2 0}
+        $self RelayScroll $w
+    }
+
+    # Upload retry re-runs the upload; download retry re-fetches the thumbnail
+    # (same path as the click-to-load placeholder).
+    method Retry {direction} {
+        if {$direction eq "upload"} {
+            $self Cb retry $options(-id)
+        } else {
+            $self Cb load $options(-url) $options(-id) $options(-idx)
+        }
+    }
+
+    # Embedded windows in the text widget swallow wheel events; forward them
+    # (and any later descendants') to the text so scrolling keeps working when
+    # the pointer is over an attachment. Mirrors chatscrollbtn.
+    method RelayScroll {w} {
+        set t $options(-scroll-target)
+        if {$t eq ""} return
+        bind $w <Button-4>   [list event generate $t <Button-4>]
+        bind $w <Button-5>   [list event generate $t <Button-5>]
+        bind $w <MouseWheel> [list event generate $t <MouseWheel> -delta %D]
+        foreach c [winfo children $w] { $self RelayScroll $c }
+    }
+
+    # Bind the right-click menu on $w and its descendants; the thumbnail arrives
+    # after the chip/caption, so setImage runs this again for it.
+    method BindMenu {w} {
+        bind $w <Button-3> [mymethod Menu %X %Y]
+        foreach c [winfo children $w] { $self BindMenu $c }
+    }
+
+    # The right-click menu is identical for every attachment; build it lazily,
+    # once per widget, with its actions bound to this one.
+    method Menu {X Y} { tk_popup [$self MenuWidget] $X $Y }
+
+    method MenuWidget {} {
+        set m $win.menu
+        if {[winfo exists $m]} { return $m }
+        menu $m -tearoff 0
+        $m add command -label "Open"              -command [mymethod Open]
+        $m add command -label "Open folder"       -command [mymethod OpenFolder]
+        $m add command -label "Delete from cache" -command [mymethod Uncache]
+        return $m
+    }
+
+    method OpenFolder {} { $self Cb openfolder $options(-url) }
+
+    # Drop the cached copy on disk and the inline thumbnail; the message keeps
+    # its caption/chip and re-fetches the next time the thumbnail is requested.
+    method Uncache {} {
+        $self dropImage
+        $self Cb uncache $options(-url)
+    }
+}
+
+# Scroll-to-bottom button overlay.
 snit::widgetadaptor chatscrollbtn {
     option -parent -readonly yes
     delegate option -command to hull

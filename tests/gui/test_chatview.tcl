@@ -4,6 +4,7 @@ namespace import ::tcltest::*
 package require libtacky
 package require taco
 package require tacky::mockconn
+package require tclwuffs
 
 set acc user@test.example.com
 
@@ -225,6 +226,56 @@ test chatview-sent-appears {sent message appears in chatview} \
         llength [.cv messages ids]
     } -result {1}
 
+test chatview-sendfile-optimistic {sendFile shows the message immediately in an uploading state} \
+    {*}$cv_common \
+    -body {
+        set tmp /tmp/cv_sendfile_[pid].png
+        set fh [open $tmp w]; puts -nonewline $fh "x"; close $fh
+        # Upload stalls at service discovery (mock server never replies),
+        # so the optimistic message stays in the uploading state.
+        tacky message sendFile -acc $::acc \
+            -chat_jid alice@example.com -path $tmp
+        wait
+        set id [.cv messages newest]
+        set res [list n=[llength [.cv messages ids]] \
+            bar=[winfo exists .cv.text.att_${id}_0.up.bar]]
+        file delete $tmp
+        set res
+    } -result {n=1 bar=1}
+
+test chatview-sendfile-image-thumbnail \
+    {an outgoing image is thumbnailed by the backend and rendered inline} \
+    -setup {
+        set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)]
+            ? $::env(XDG_CACHE_HOME) : ""}]
+        set ::env(XDG_CACHE_HOME) [file join /tmp tacky_cvcache_[pid]]
+        cv_setup
+        cv_create
+    } \
+    -cleanup {
+        cv_cleanup
+        file delete -force -- $::env(XDG_CACHE_HOME)
+        if {$::_old_xdg eq ""} {
+            unset -nocomplain ::env(XDG_CACHE_HOME)
+        } else {
+            set ::env(XDG_CACHE_HOME) $::_old_xdg
+        }
+    } \
+    -body {
+        set tmp /tmp/cv_img_[pid].png
+        set w 120; set h 80
+        set px [string repeat [binary format cccc 200 80 40 255] [expr {$w * $h}]]
+        set f [open $tmp wb]
+        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
+        close $f
+        tacky message sendFile -acc $::acc -chat_jid alice@example.com -path $tmp
+        wait
+        set id [.cv messages newest]
+        set res [winfo exists .cv.text.att_${id}_0.img]
+        file delete $tmp
+        set res
+    } -result 1
+
 test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
     {*}$cv_common \
     -body {
@@ -438,6 +489,43 @@ test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrol
         set hiddenAfterReturn [expr {[place info .cv.scrollbtn] eq ""}]
         list shown=$shownAfterScroll hidden=$hiddenAfterReturn
     } -result {shown=1 hidden=1}
+
+# Regression: an inline thumbnail that arrives after a message is drawn grows
+# the last line below the viewport. If we don't re-pin to the tail, atEnd flips
+# and the scroll-to-bottom button spuriously appears (and sticks).
+test chatview-scrollbtn-hidden-after-async-thumbnail \
+    {scroll button stays hidden when an inline thumbnail loads at the tail} \
+    -setup {
+        set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)]
+            ? $::env(XDG_CACHE_HOME) : ""}]
+        set ::env(XDG_CACHE_HOME) [file join /tmp tacky_cvscroll_[pid]]
+        cv_overflow_setup
+    } \
+    -cleanup {
+        cv_cleanup
+        file delete -force -- $::env(XDG_CACHE_HOME)
+        if {$::_old_xdg eq ""} {
+            unset -nocomplain ::env(XDG_CACHE_HOME)
+        } else {
+            set ::env(XDG_CACHE_HOME) $::_old_xdg
+        }
+    } \
+    -body {
+        set hiddenBefore [expr {[place info .cv.scrollbtn] eq ""}]
+        set tmp /tmp/cv_scrollimg_[pid].png
+        set w 120; set h 80
+        set px [string repeat [binary format cccc 200 80 40 255] [expr {$w * $h}]]
+        set f [open $tmp wb]
+        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
+        close $f
+        tacky message sendFile -acc $::acc -chat_jid alice@example.com -path $tmp
+        wait
+        set id [.cv messages newest]
+        set hasImg [winfo exists .cv.text.att_${id}_0.img]
+        set hiddenAfter [expr {[place info .cv.scrollbtn] eq ""}]
+        file delete $tmp
+        list hiddenBefore=$hiddenBefore img=$hasImg hiddenAfter=$hiddenAfter
+    } -result {hiddenBefore=1 img=1 hiddenAfter=1}
 
 # -- history loading -------------------------------------------------------------
 
@@ -829,6 +917,24 @@ proc ca_reply {id body replyId replyTo author replyBody} {
         reply_body $replyBody
 }
 
+proc ca_msg_att {id body attachments args} {
+    set d [dict create id $id body $body \
+        display_name test avatar_jid "" \
+        timestamp $id is_outgoing 0 server_status "" \
+        attachments $attachments]
+    # The backend supplies `caption` (body minus a redundant attachment URL);
+    # callers pass it explicitly when the rendered text matters.
+    if {[llength $args]} { dict set d caption [lindex $args 0] }
+    return $d
+}
+
+proc ca_upload {id status attachments} {
+    dict create id $id body "" \
+        display_name You avatar_jid "" \
+        timestamp $id is_outgoing 1 server_status $status \
+        attachments $attachments
+}
+
 set ca_common {
     -setup   { chatarea .ca; update }
     -cleanup { destroy .ca }
@@ -925,6 +1031,207 @@ test chatarea-reply-preview-rendered {a reply renders a clickable preview with a
         list [string match "*bob*the original text*the reply*" $content] \
              [expr {"item.100.replyref" in [.ca.text tag names]}]
     } -result {1 1}
+
+# -- attachments ----------------------------------------------------------------
+
+test chatarea-attachment-image-caption {image attachment renders a clickable caption frame} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+        set f .ca.text.att_100_0
+        list [winfo exists $f] [winfo exists $f.cap]
+    } -result {1 1}
+
+test chatarea-attachment-file-chip {file attachment renders name + Open/Save buttons} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
+            [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
+        set f .ca.text.att_100_0.chip
+        list [winfo exists $f.name] [winfo exists $f.open] [winfo exists $f.save]
+    } -result {1 1 1}
+
+test chatarea-image-load-above-keeps-viewport \
+    {a thumbnail loading above the viewport must not move the view} \
+    -setup {
+        set ::ca_png /tmp/ca_relay_[pid].png
+        set im [image create photo -width 400 -height 300]
+        $im put #336699 -to 0 0 400 300
+        $im write $::ca_png -format png
+        image delete $im
+        chatarea .ca
+        pack .ca -fill both -expand yes
+        wm geometry . 440x540
+        update
+    } \
+    -cleanup {
+        destroy .ca
+        file delete -- $::ca_png
+        unset -nocomplain ::ca_png
+    } \
+    -body {
+        # 21 messages; the image is on a mid message (id 200).
+        set msgs {}
+        for {set i 0} {$i <= 20} {incr i} {
+            set id [expr {100 + $i * 10}]
+            if {$id == 200} {
+                lappend msgs [ca_msg_att $id "" [list [dict create \
+                    url $::ca_png type image name p.png size "" mime ""]]]
+            } else {
+                lappend msgs [ca_msg $id "line $i\nbody $i\ntail $i"]
+            }
+        }
+        .ca apply $msgs
+        # Park message 150 at the top of the viewport, with the image (200)
+        # on-screen below it. A thumbnail popping in on 200 must not shift
+        # the content the user is already reading above it.
+        .ca.text see item.150.first
+        .ca.text sync; update
+        set before [lindex [.ca.text bbox item.150.first] 1]
+        .ca attachment image 200 0 $::ca_png
+        .ca.text sync; update
+        set after [lindex [.ca.text bbox item.150.first] 1]
+        list visBefore=[expr {$before ne ""}] visAfter=[expr {$after ne ""}] \
+             stable=[expr {$before ne "" && $after ne "" \
+                 && abs($after - $before) < 30}]
+    } -result {visBefore=1 visAfter=1 stable=1}
+
+test chatarea-attachment-scroll-relay {attachment widgets relay wheel events to the text} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
+            [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
+        set f .ca.text.att_100_0
+        list [expr {[bind $f <Button-4>] ne ""}] \
+             [expr {[bind $f.chip.name <MouseWheel>] ne ""}] \
+             [expr {[bind $f.chip.open <Button-5>] ne ""}]
+    } -result {1 1 1}
+
+test chatarea-attachment-uploading-bar {an uploading attachment shows a progress bar} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_upload 100 uploading \
+            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+        winfo exists .ca.text.att_100_0.up.bar
+    } -result 1
+
+test chatarea-attachment-progress {attachment state active sets the bar value} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_upload 100 uploading \
+            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+        .ca attachment state 100 0 upload active 50 100
+        expr {abs([.ca.text.att_100_0.up.bar cget -value] - 50) < 0.01}
+    } -result 1
+
+test chatarea-attachment-uploaded-removes-bar {upload done removes the progress bar} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_upload 100 uploading \
+            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+        .ca attachment state 100 0 upload done 0 0
+        winfo exists .ca.text.att_100_0.up
+    } -result 0
+
+test chatarea-attachment-failed-retry {a failed upload shows a Retry button} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_upload 100 failed \
+            [list [dict create url /tmp/d.pdf type file name d.pdf size "" mime ""]]]]
+        winfo exists .ca.text.att_100_0.up.retry
+    } -result 1
+
+test chatarea-attachment-done-then-failed-transition {uploaded then failed swaps bar for Retry} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_upload 100 uploading \
+            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+        set hadBar [winfo exists .ca.text.att_100_0.up.bar]
+        .ca attachment state 100 0 upload failed 0 0
+        list bar=$hadBar retry=[winfo exists .ca.text.att_100_0.up.retry] \
+            barGone=[expr {![winfo exists .ca.text.att_100_0.up.bar]}]
+    } -result {bar=1 retry=1 barGone=1}
+
+test chatarea-attachment-download-bar {a download active state shows a progress bar} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+        .ca attachment state 100 0 download active 30 100
+        list bar=[winfo exists .ca.text.att_100_0.dl.bar] \
+            val=[expr {abs([.ca.text.att_100_0.dl.bar cget -value] - 30) < 0.01}]
+    } -result {bar=1 val=1}
+
+test chatarea-attachment-download-done-removes-bar {download done removes the bar} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+        .ca attachment state 100 0 download active 30 100
+        .ca attachment state 100 0 download done 0 0
+        winfo exists .ca.text.att_100_0.dl
+    } -result 0
+
+test chatarea-attachment-empty-caption-no-body {an empty caption renders no body text} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
+            ""]]
+        set r [.ca.text tag ranges item.100.body]
+        expr {[llength $r] == 0 || [.ca.text get {*}$r] eq ""}
+    } -result 1
+
+test chatarea-attachment-caption-rendered {a non-empty caption is shown as the body text} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "see this https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
+            "see this https://h/p.png"]]
+        set r [.ca.text tag ranges item.100.body]
+        .ca.text get {*}$r
+    } -result {see this https://h/p.png}
+
+test chatarea-attachment-image-missing-frame {attachment image on an unknown id is a no-op} \
+    {*}$ca_common \
+    -body {
+        .ca attachment image 999 0 /nonexistent/path.png
+        winfo exists .ca.text.att_999_0
+    } -result 0
+
+test chatarea-attachment-image-bad-path {attachment image with an undecodable file leaves no image} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+        .ca attachment image 100 0 /nonexistent/path.png
+        winfo exists .ca.text.att_100_0.img
+    } -result 0
+
+test chatarea-attachment-image-frees-photo {destroying the thumbnail label frees its Tk photo} \
+    -setup {
+        set ::cap_png /tmp/ca_leak_[pid].png
+        set im [image create photo -width 20 -height 20]
+        $im put #abcdef -to 0 0 20 20
+        $im write $::cap_png -format png
+        image delete $im
+        chatarea .ca
+        pack .ca
+        update
+    } \
+    -cleanup { destroy .ca; file delete -- $::cap_png; unset -nocomplain ::cap_png } \
+    -body {
+        .ca apply [list [ca_msg_att 100 "https://h/p.png" \
+            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+        set before [llength [image names]]
+        .ca attachment image 100 0 $::cap_png
+        set during [llength [image names]]
+        destroy .ca.text.att_100_0.img
+        update
+        set after [llength [image names]]
+        list grew=[expr {$during > $before}] cleaned=[expr {$after == $before}]
+    } -result {grew=1 cleaned=1}
 
 # -- highlight / system ---------------------------------------------------------
 
