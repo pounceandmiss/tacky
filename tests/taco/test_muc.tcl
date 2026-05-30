@@ -99,6 +99,15 @@ test muc-joined-after-self-presence {joined after self-presence with 110} \
         c muc isJoined -jid room@muc.example.com
     } -result {1}
 
+test muc-joining-event {<Joining> event fires when a join is requested} \
+    {*}$muc_common \
+    -body {
+        set got {}
+        tacky listen muc <Joining> {apply {{ev} { set ::got $ev }}}
+        c muc join -jid room@muc.example.com -nick me
+        dict get $got -jid
+    } -result {room@muc.example.com}
+
 test muc-joined-event {<Joined> event fires on self-presence} \
     {*}$muc_common \
     -body {

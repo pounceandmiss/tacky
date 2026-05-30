@@ -143,6 +143,29 @@ snit::type taco_bookmarks {
         $client muc leave -jid $jid
     }
 
+    # Re-send a join request using the bookmark's stored nick/password,
+    # without touching the autojoin flag.  Used to re-attempt a room that
+    # was dropped (e.g. an IRC gateway disconnect) without auto-retrying.
+    tackymethod forceJoin {args} {
+        set jid [jid norm [dict get $args -jid]]
+        set nick ""
+        set password ""
+        $client db eval {
+            SELECT nick, password FROM bookmark WHERE jid=$jid
+        } row {
+            set nick $row(nick)
+            set password $row(password)
+        }
+        if {$nick eq ""} {
+            set nick [$self defaultNick]
+        }
+        if {$password ne ""} {
+            $client muc join -jid $jid -nick $nick -password $password
+        } else {
+            $client muc join -jid $jid -nick $nick
+        }
+    }
+
     # Get or set the default nickname for new bookmarks.
     # Falls back to JID username if unset.
     tackymethod defaultNick {args} {

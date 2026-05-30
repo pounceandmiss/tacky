@@ -27,9 +27,24 @@ snit::widget chatlistview {
     variable grouping 0
     variable prescolors 1
     variable showAvatars 1
-    variable bookmarkAutojoin 0
+    variable bookmarkMember 0
     variable trackedAvatars {}
     variable itemSources {}
+    variable roomStates {}
+    variable roomReasons {}
+
+    # Row style per backend room-state enum (taco_chatlist RoomState).  Tags
+    # are named muc_<state>, so the state name IS the tag - no translation.
+    #   joined = normal; idle = dimmed grey (not a member / unattempted);
+    #   joining = grey italic (transient); disconnected = amber (a member
+    #   room we're not in); error = red (explicit join error).
+    typevariable mucStateStyle {
+        joined       {-foreground ""           -font ""}
+        idle         {-foreground gray60       -font ""}
+        joining      {-foreground gray60       -font ChatlistMucItalic}
+        disconnected {-foreground DarkOrange3  -font ""}
+        error        {-foreground red3         -font ""}
+    }
 
     constructor args {
         $self configurelist $args
@@ -74,7 +89,7 @@ snit::widget chatlistview {
         $treeview insert {} end -id Bookmarks -text "Bookmarks"  -open 1
 
         $self ConfigurePresenceTags
-        $treeview tag configure muc_error -foreground red3
+        $self ConfigureMucTags
 
         # --- Context menus ---
 
@@ -99,14 +114,14 @@ snit::widget chatlistview {
         install bookmarkmenu using menu $win.bookmarkmenu -tearoff 0
         $bookmarkmenu add command -label "" -state disabled
         $bookmarkmenu add separator
-        $bookmarkmenu add command -label "Join Room" \
+        $bookmarkmenu add command -label "Open chat" \
             -command [mymethod OnOpenChat]
-        $bookmarkmenu add command -label "Leave Room" \
-            -command [mymethod OnLeaveBookmark]
+        $bookmarkmenu add checkbutton -label "Join" \
+            -variable [myvar bookmarkMember] \
+            -command [mymethod OnToggleMembership]
+        $bookmarkmenu add command -label "Force join request" \
+            -command [mymethod OnForceJoin]
         $bookmarkmenu add separator
-        $bookmarkmenu add checkbutton -label "Autojoin" \
-            -variable [myvar bookmarkAutojoin] \
-            -command [mymethod OnToggleAutojoin]
         $bookmarkmenu add command -label "Edit..." \
             -command [mymethod OnEditBookmark]
         $bookmarkmenu add command -label "Remove Bookmark" \
@@ -167,8 +182,8 @@ snit::widget chatlistview {
             [mymethod OnRecentTop]
         $t listen -tag $win chatlist <RecentDrop> -acc $acc \
             [mymethod OnRecentDrop]
-        $t listen -tag $win chatlist <MucStatus> -acc $acc \
-            [mymethod OnMucStatus]
+        $t listen -tag $win chatlist <RoomState> -acc $acc \
+            [mymethod OnRoomState]
 
         # Initial load
         $self Rebuild
@@ -202,6 +217,10 @@ snit::widget chatlistview {
                 lappend openGroups $child
             }
         }
+
+        # Reset room-state tracking; PopulateSection repopulates from fresh data
+        set roomStates {}
+        set roomReasons {}
 
         # Clear all sections
         $treeview delete [$treeview children RecentChats]
@@ -290,17 +309,17 @@ snit::widget chatlistview {
         }
     }
 
-    method OnMucStatus {ev} {
-        array set opts {-jid "" -muc-status ""}
+    method OnRoomState {ev} {
+        array set opts {-jid "" -state idle -reason ""}
         array set opts $ev
         set jid $opts(-jid)
-        set status $opts(-muc-status)
+        dict set roomStates $jid $opts(-state)
+        dict set roomReasons $jid $opts(-reason)
         foreach item [$self FindItemsByJid $jid] {
-            if {$status eq "error"} {
-                $treeview tag add muc_error $item
-            } else {
-                $treeview tag remove muc_error $item
+            foreach {state _} $mucStateStyle {
+                $treeview tag remove muc_$state $item
             }
+            $treeview tag add muc_$opts(-state) $item
         }
     }
 
@@ -318,9 +337,13 @@ snit::widget chatlistview {
             set text [$self DisplayText $item]
             set img  [$self TrackAvatar $jid]
             set tags {}
-            if {[dict exists $item muc-status] &&
-                [dict get $item muc-status] eq "error"} {
-                set tags muc_error
+            if {[dict exists $item room-state]} {
+                set state [dict get $item room-state]
+                set tags muc_$state
+                dict set roomStates $jid $state
+                if {[dict exists $item room-reason]} {
+                    dict set roomReasons $jid [dict get $item room-reason]
+                }
             }
             $treeview insert $parent end -id "$parent/$jid" -text $text \
                 -image $img -tags $tags
@@ -362,6 +385,32 @@ snit::widget chatlistview {
             foreach tag {available away xa dnd offline} {
                 $treeview tag configure $tag -foreground ""
             }
+        }
+    }
+
+    method ConfigureMucTags {} {
+        if {[lsearch -exact [font names] ChatlistMucItalic] < 0} {
+            font create ChatlistMucItalic {*}[font actual TkDefaultFont]
+            font configure ChatlistMucItalic -slant italic
+        }
+        foreach {state opts} $mucStateStyle {
+            $treeview tag configure muc_$state {*}$opts
+        }
+    }
+
+    method MucErrorText {condition} {
+        switch -- $condition {
+            not-authorized          { return "Password required or incorrect" }
+            forbidden               { return "You are banned from this room" }
+            registration-required   { return "Membership required to join" }
+            conflict                { return "Nickname already in use" }
+            service-unavailable     { return "Room is full" }
+            item-not-found          { return "Room does not exist" }
+            remote-server-not-found -
+            remote-server-timeout   { return "Room server unreachable" }
+            jid-malformed           { return "Invalid nickname" }
+            gone                    { return "Room no longer exists" }
+            default                 { return "Could not join room" }
         }
     }
 
@@ -450,10 +499,50 @@ snit::widget chatlistview {
     }
 
     method OnAutojoinResult {X Y value} {
-        set bookmarkAutojoin $value
+        set bookmarkMember $value
         set jid [$self SelectedLeafJid]
         $bookmarkmenu entryconfigure 0 -label [string range $jid 0 39]
+        $self UpdateBookmarkStatusLine $jid
         tk_popup $bookmarkmenu $X $Y
+    }
+
+    # User-facing copy for a room's state, shown as a disabled status line in
+    # the bookmark menu.  Empty string = no line for this state.
+    method BookmarkStatusLabel {jid} {
+        set state idle
+        if {[dict exists $roomStates $jid]} {
+            set state [dict get $roomStates $jid]
+        }
+        switch -- $state {
+            error {
+                set reason ""
+                if {[dict exists $roomReasons $jid]} {
+                    set reason [dict get $roomReasons $jid]
+                }
+                return "Join failed: [$self MucErrorText $reason]"
+            }
+            joining      { return "Joining..." }
+            disconnected { return "Not connected" }
+            default      { return "" }
+        }
+    }
+
+    # Show, update, or hide the status line at index 1, just under the jid
+    # label (index 0).  Presence is read from the menu itself - index 1 is
+    # either our inserted command or the original separator - so there is no
+    # shadow flag to keep in sync.
+    method UpdateBookmarkStatusLine {jid} {
+        set label [$self BookmarkStatusLabel $jid]
+        set present [expr {[$bookmarkmenu type 1] eq "command"}]
+        if {$label ne ""} {
+            if {$present} {
+                $bookmarkmenu entryconfigure 1 -label $label
+            } else {
+                $bookmarkmenu insert 1 command -state disabled -label $label
+            }
+        } elseif {$present} {
+            $bookmarkmenu delete 1
+        }
     }
 
     method OnCopyJid {} {
@@ -513,18 +602,27 @@ snit::widget chatlistview {
         }
     }
 
-    method OnLeaveBookmark {} {
+    # The "Join" tick is the room's membership: ticking joins the room and
+    # remembers it (autojoin=1); unticking leaves the room and forgets it.
+    method OnToggleMembership {} {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
-        $options(-tacky) bookmarks leave \
-            -acc $options(-acc) -jid $jid
+        if {$bookmarkMember} {
+            $options(-tacky) bookmarks item \
+                -acc $options(-acc) -jid $jid -autojoin 1
+        } else {
+            $options(-tacky) bookmarks leave \
+                -acc $options(-acc) -jid $jid
+        }
     }
 
-    method OnToggleAutojoin {} {
+    # Re-send a join request without changing membership - for re-attempting
+    # a room that was dropped (e.g. an IRC gateway disconnect).
+    method OnForceJoin {} {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
-        $options(-tacky) bookmarks item \
-            -acc $options(-acc) -jid $jid -autojoin $bookmarkAutojoin
+        $options(-tacky) bookmarks forceJoin \
+            -acc $options(-acc) -jid $jid
     }
 
     method OnEditBookmark {} {
