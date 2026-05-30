@@ -624,17 +624,19 @@ snit::type taco_message {
         set path $opts(-path)
         set oid [clock microseconds]
         lassign [$self DeriveAddressing $chatJid] msgType toJid fromJid fromRes
+        set encMode [$self OutgoingEncMode $chatJid $msgType]
         set msg [dict create \
             timestamp $oid chat_jid $chatJid \
             from_jid $fromJid from_resource $fromRes \
             body "" server_id "" own_id $oid raw_xml "" \
+            encryption $encMode \
             attachments [OutgoingAttachment $path $path] \
             server_status uploading]
         set inserted [dict get [$messagestore store [list $msg]] inserted]
         set ts [lindex $inserted 0]
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <Sent> -jid $chatJid -message $dbMsg
-        $self StartUpload $chatJid $oid $ts $path
+        $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
     # The transfer id is the message id (== own_id == timestamp), so the GUI,
@@ -642,23 +644,35 @@ snit::type taco_message {
     # progress without a handshake. Progress/terminal state reach the GUI via
     # the file module's `file <Update>` event; OnUploaded is the internal
     # completion that turns the GET URL into the actual outgoing stanza.
-    method StartUpload {chatJid oid ts path} {
+    method StartUpload {chatJid oid ts path encMode} {
         $client file upload -id $ts -path $path \
-            -command [mymethod OnUploaded $chatJid $oid $ts $path]
+            -encrypt [expr {$encMode eq "omemo"}] \
+            -command [mymethod OnUploaded $chatJid $oid $ts $path $encMode]
     }
 
-    method OnUploaded {chatJid oid ts path url} {
+    method OnUploaded {chatJid oid ts path encMode url} {
         if {$url eq ""} {
             $messagestore markUploadFailed $chatJid $oid
             return
         }
         lassign [$self DeriveAddressing $chatJid] msgType toJid
+        # OMEMO: the aesgcm:// fragment carries the media key, so the URL must
+        # ride inside the OMEMO body, never a cleartext OOB. RetrySend encrypts
+        # it and parks the row pending if the session isn't ready yet.
+        if {$encMode eq "omemo"} {
+            $messagestore markUploaded $chatJid $oid $url \
+                [jwrite [$self StoredForm $url $oid $msgType $toJid omemo]] \
+                [OutgoingAttachment $url $path] omemo
+            $self RetrySend [dict create chat_jid $chatJid body $url \
+                own_id $oid encryption omemo reply_id "" reply_to ""]
+            return
+        }
         set stanza [j message -to $toJid -type $msgType -id $oid {
             j body #body $url
             j x -ns jabber:x:oob { j url #body $url }
         }]
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
-            [OutgoingAttachment $url $path]
+            [OutgoingAttachment $url $path] ""
         $client write $stanza
     }
 
@@ -673,8 +687,10 @@ snit::type taco_message {
         if {$row eq "" || [llength [dict get $row attachments]] == 0} return
         set path [dict get [lindex [dict get $row attachments] 0] url]
         set oid [dict get $row own_id]
+        set encMode [expr {[dict exists $row encryption] \
+            ? [dict get $row encryption] : ""}]
         $messagestore markUploading $chatJid $oid
-        $self StartUpload $chatJid $oid $ts $path
+        $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
     method OnSmAck {args} {
@@ -1380,14 +1396,21 @@ snit::type taco_message {
 
 # Derive the attachment list for an incoming <message>. An attachment is
 # signalled by an XEP-0066 Out-of-Band <x><url/></x> child (what
-# Conversations/Dino/Gajim send for XEP-0363 shares). A body that merely *is*
-# a URL is just a link, not an attachment, so it is left as text.
+# Conversations/Dino/Gajim send for XEP-0363 shares). A plaintext body that
+# merely *is* a URL is just a link, not an attachment, so it is left as text.
+#
+# XEP-0454 (OMEMO media) is the exception: the encrypted share has no OOB (the
+# aesgcm:// URL carries the key and so lives only in the OMEMO body), so a body
+# that is itself an aesgcm:// URL is recognised as the attachment.
 # Returns a (possibly empty) Tcl list of attachment dicts.
 proc ExtractAttachments {msgNode body} {
     set atts {}
     xsearch $msgNode x -ns jabber:x:oob url -script u {
         set url [dict get $u body]
         if {$url ne ""} { lappend atts [attachment_dict $url] }
+    }
+    if {[llength $atts] == 0 && [is_aesgcm_url [string trim $body]]} {
+        lappend atts [attachment_dict [string trim $body]]
     }
     return $atts
 }
