@@ -913,8 +913,11 @@ snit::widget chatarea {
     }
 
     method SetFont {{font {Helvetica 13}}} {
-        # Message body - bigger indent
-        $text tag configure body -lmargin1 40 -lmargin2 40
+        # Message body - bigger indent, a little breathing room below/between lines
+        $text tag configure body -lmargin1 40 -lmargin2 40 -spacing2 2 -spacing3 6
+        # Author name - bold accent color, space above to separate messages
+        $text tag configure author -font "$font bold" -foreground #2d6da3 \
+            -spacing1 10
         # XEP-0461 reply preview: inset, lightly-filled block, clickable.
         $text tag configure replyref -lmargin1 52 -lmargin2 52 \
             -background #f0f3f6 -font "Helvetica 11"
@@ -943,7 +946,7 @@ snit::widget chatarea {
             }
         }
         $text tag configure receipt -foreground #888888
-        $text tag configure timestamp -foreground #888888
+        $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
         $text tag configure system -foreground gray50 -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
     }
