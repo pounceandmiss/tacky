@@ -1446,6 +1446,16 @@ snit::type taco_omemo {
     # when missing, and the call throws TACO_OMEMO_NOT_READY - caller
     # holds the message pending and retries on <SessionReady>.
     # TACO_OMEMO_TERMINAL means no future warming will help.
+    # XEP-0454 media keys (AES-256-GCM, fresh per file). Independent of any
+    # session/store. encrypt returns {ct key iv}.
+    method mediaEncrypt {plaintext} {
+        return [::omemo::media_encrypt $plaintext]
+    }
+
+    method mediaDecrypt {key iv ct} {
+        return [::omemo::media_decrypt $key $iv $ct]
+    }
+
     method encrypt {chatJid plaintext} {
         if {$store eq ""} {
             # Transient: OnReady hasn't initialised the store yet (e.g. a

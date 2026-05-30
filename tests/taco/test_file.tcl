@@ -25,6 +25,41 @@ test file-basename-strips-query {basename strips query and fragment} -body {
          [attachment_basename https://h/f.pdf#frag]
 } -result {pic.png f.pdf}
 
+# --- aesgcm:// URL helpers (XEP-0454) -------------------------------------
+
+test file-aesgcm-url-roundtrip {aesgcm_url builds a fragment that aesgcm_parse recovers} -body {
+    set iv  [binary decode hex "000102030405060708090a0b"]      ;# 12 bytes
+    set key [binary decode hex [string repeat "ab" 32]]         ;# 32 bytes
+    set url [aesgcm_url "https://up.example/abc/pic.png" $iv $key]
+    lassign [aesgcm_parse $url] http riv rkey
+    list scheme=[is_aesgcm_url $url] \
+         frag=[string match {aesgcm://up.example/abc/pic.png#*} $url] \
+         http=$http iv=[expr {$riv eq $iv}] key=[expr {$rkey eq $key}]
+} -result {scheme=1 frag=1 http=https://up.example/abc/pic.png iv=1 key=1}
+
+test file-aesgcm-parse-rejects-plain {aesgcm_parse yields "" for a non-aesgcm URL} -body {
+    list [is_aesgcm_url https://h/x.png] [aesgcm_parse https://h/x.png]
+} -result {0 {}}
+
+# The key is always the trailing 32 bytes, so a sender that used a 16-byte IV
+# still parses (interop with older clients).
+test file-aesgcm-parse-16byte-iv {parse accepts a 16-byte iv} -body {
+    set frag "[string repeat 11 16][string repeat 22 32]"
+    lassign [aesgcm_parse "aesgcm://h/x.png#$frag"] http iv key
+    list [string length $iv] [string length $key]
+} -result {16 32}
+
+test file-aesgcm-parse-rejects-short-fragment {a fragment shorter than a key is rejected} -body {
+    aesgcm_parse "aesgcm://h/x.png#deadbeef"
+} -result {}
+
+# kind/basename ignore the scheme and fragment, so display logic works on the
+# aesgcm URL as-is.
+test file-aesgcm-kind {attachment kind/basename see through the aesgcm scheme} -body {
+    set u "aesgcm://h/path/pic.png#[string repeat aa 44]"
+    list [attachment_kind $u] [attachment_basename $u]
+} -result {image pic.png}
+
 test file-fitwithin {fit_within shrinks within max, preserves aspect, no upscale} -body {
     list [fit_within 200 100 50] [fit_within 100 200 50] \
          [fit_within 40 30 100] [fit_within 50 50 50]
@@ -76,6 +111,22 @@ test file-extract-plain-text {plain text yields no attachments} -body {
 
 test file-extract-url-in-sentence {a URL embedded in a sentence is not an attachment} -body {
     set m [j message { j body #body "see https://x/y.png please" }]
+    ExtractAttachments $m [xsearch $m body -get body]
+} -result {}
+
+# OMEMO media: the decrypted body IS the aesgcm:// URL (no OOB), and must be
+# recognised as the attachment.
+test file-extract-aesgcm-body {an aesgcm:// body with no OOB is an attachment} -body {
+    set u "aesgcm://up.example/x/pic.png#[string repeat aa 44]"
+    set m [j message { j body #body $u }]
+    set atts [ExtractAttachments $m [xsearch $m body -get body]]
+    list [llength $atts] [dict get [lindex $atts 0] type] \
+         [dict get [lindex $atts 0] name] [dict get [lindex $atts 0] url]
+} -result [list 1 image pic.png "aesgcm://up.example/x/pic.png#[string repeat aa 44]"]
+
+# A plaintext https body is still just a link, even now.
+test file-extract-aesgcm-only-for-aesgcm {a plain https body is not promoted by the aesgcm rule} -body {
+    set m [j message { j body #body "https://up.example/x/pic.png" }]
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
@@ -286,6 +337,21 @@ proc up_readb {path} {
 set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)] ? $::env(XDG_CACHE_HOME) : ""}]
 set ::_upcache [file join /tmp tacky_upcache_[pid]]
 set ::env(XDG_CACHE_HOME) $::_upcache
+
+test file-encrypt-to-temp {EncryptToTemp writes ciphertext that mediaDecrypt recovers} \
+    {*}[tacky_env -mock conn -account $acc] -body {
+        set src [file join $::_upcache plain.bin]
+        file mkdir [file dirname $src]
+        set plain [string repeat "abc123\x00\xff" 64]
+        set f [open $src wb]; puts -nonewline $f $plain; close $f
+        lassign [$::_client file EncryptToTemp $src] tmp key iv
+        set ct [up_readb $tmp]
+        set back [$::_client omemo mediaDecrypt $key $iv $ct]
+        file delete -- $tmp
+        list overhead=[expr {[string length $ct] - [string length $plain]}] \
+             keylen=[string length $key] ivlen=[string length $iv] \
+             ok=[expr {$back eq $plain}]
+    } -result {overhead=16 keylen=32 ivlen=12 ok=1}
 
 test file-progress-throttle {ProgressCb emits a <Update> on ~1% steps and at completion} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {

@@ -586,11 +586,11 @@ snit::type taco_messagestore {
     # normal pending -> received confirmation flow; on failure it becomes
     # 'failed'. Matched by own_id, which is stable from store time.
 
-    method markUploaded {jid ownId url rawXml attachments} {
+    method markUploaded {jid ownId url rawXml attachments {encryption ""}} {
         $options(-db) eval {
             UPDATE chat_message
             SET body=$url, raw_xml=$rawXml, attachments=$attachments,
-                server_status='pending'
+                server_status='pending', encryption=$encryption
             WHERE chat_jid=$jid AND own_id=$ownId
               AND server_status='uploading'
         }
