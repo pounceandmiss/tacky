@@ -117,6 +117,8 @@ snit::type taco_muc {
                 }
             }
         }]
+
+        $client emit muc <Joining> -jid $opts(-jid)
     }
 
     method leave {args} {

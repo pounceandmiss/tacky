@@ -303,52 +303,130 @@ test chatlist-roster-change-still-emits-changed {roster/bookmark changes emit <C
         set got
     } -result {1}
 
-test chatlist-muc-status-default {bookmark items have muc-status "" by default} \
+test chatlist-room-state-default {fresh bookmark is idle with no reason} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item muc-status
-    } -result {}
+        list [dict get $item room-state] [dict get $item room-reason]
+    } -result {idle {}}
 
-test chatlist-muc-status-joined {muc-status is joined after muc:<Joined>} \
+test chatlist-room-state-joined {room-state is joined after muc:<Joined>} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         c bus publish muc:<Joined> -jid room@muc.example.com -nick me
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item muc-status
+        dict get $item room-state
     } -result {joined}
 
-test chatlist-muc-status-error {muc-status is error after muc:<Error>} \
+test chatlist-room-state-error {room-state is error after muc:<Error>} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name "Room"
         c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
         set result [c chatlist search]
         set item [lindex [dict get $result bookmarks] 0]
-        dict get $item muc-status
+        dict get $item room-state
     } -result {error}
 
-test chatlist-muc-status-event {chatlist <MucStatus> fires with correct args} \
-    {*}$chatlist_common \
-    -body {
-        set ev {}
-        tacky listen chatlist <MucStatus> \
-            {apply {{ev} { set ::ev $ev }}}
-        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
-        list [dict get $ev -jid] [dict get $ev -muc-status]
-    } -result {room@muc.example.com error}
-
-test chatlist-muc-status-recent {recent bookmark items include muc-status} \
+test chatlist-room-recent {recent bookmark items carry room-state and room-reason} \
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert room@muc.example.com
         bookmark_insert room@muc.example.com name "Room"
-        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
+        c bus publish muc:<Error> -jid room@muc.example.com -error registration-required -stanza {}
         set result [c chatlist search]
         set item [lindex [dict get $result recent] 0]
-        dict get $item muc-status
-    } -result {error}
+        list [dict get $item room-state] [dict get $item room-reason]
+    } -result {error registration-required}
+
+test chatlist-room-reason-error {room-reason holds the condition after muc:<Error>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Error> -jid room@muc.example.com -error not-authorized -stanza {}
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item room-reason
+    } -result {not-authorized}
+
+test chatlist-room-reason-cleared {room-reason clears after a later muc:<Joined>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Error> -jid room@muc.example.com -error conflict -stanza {}
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        list [dict get $item room-state] [dict get $item room-reason]
+    } -result {joined {}}
+
+test chatlist-room-state-event {chatlist <RoomState> carries jid, state and reason} \
+    {*}$chatlist_common \
+    -body {
+        set ev {}
+        tacky listen chatlist <RoomState> \
+            {apply {{ev} { set ::ev $ev }}}
+        c bus publish muc:<Error> -jid room@muc.example.com -error forbidden -stanza {}
+        set err [list [dict get $ev -jid] [dict get $ev -state] [dict get $ev -reason]]
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        set ok [list [dict get $ev -state] [dict get $ev -reason]]
+        list $err $ok
+    } -result {{room@muc.example.com error forbidden} {joined {}}}
+
+test chatlist-room-state-joining {room-state is joining after muc:<Joining>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Joining> -jid room@muc.example.com
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item room-state
+    } -result {joining}
+
+test chatlist-room-joining-then-joined {joining is overridden by a later muc:<Joined>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Joining> -jid room@muc.example.com
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item room-state
+    } -result {joined}
+
+test chatlist-room-joining-then-error {joining is overridden by a later muc:<Error>} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        c bus publish muc:<Joining> -jid room@muc.example.com
+        c bus publish muc:<Error> -jid room@muc.example.com -error conflict -stanza {}
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        list [dict get $item room-state] [dict get $item room-reason]
+    } -result {error conflict}
+
+test chatlist-room-state-left-nonmember {dropped non-member room is idle, not disconnected} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room" autojoin 0
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        c bus publish muc:<Left> -jid room@muc.example.com -nick me
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item room-state
+    } -result {idle}
+
+test chatlist-room-state-disconnected {dropped member room is disconnected} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room" autojoin 1
+        c bus publish muc:<Joined> -jid room@muc.example.com -nick me
+        c bus publish muc:<Left> -jid room@muc.example.com -nick me
+        set result [c chatlist search]
+        set item [lindex [dict get $result bookmarks] 0]
+        dict get $item room-state
+    } -result {disconnected}

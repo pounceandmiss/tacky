@@ -11,6 +11,7 @@ snit::type taco_chatlist {
     variable db
     variable RecentJids {}
     variable mucStatus {}
+    variable mucReason {}
 
     constructor args {
         $self configurelist $args
@@ -20,6 +21,7 @@ snit::type taco_chatlist {
         $client bus subscribe $self roster:<Changed> [mymethod OnDataChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnDataChanged]
         $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
+        $client bus subscribe $self muc:<Joining> [mymethod OnMucJoining]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
         $client bus subscribe $self muc:<Error> [mymethod OnMucError]
         $client bus subscribe $self muc:<Left> [mymethod OnMucLeft]
@@ -61,29 +63,46 @@ snit::type taco_chatlist {
         set RecentJids $newTop20
     }
 
+    method OnMucJoining {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) joining
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
+    }
+
     method OnMucJoined {args} {
         array set opts {-jid ""}
         array set opts $args
         dict set mucStatus $opts(-jid) joined
-        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status joined
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
     }
 
     method OnMucError {args} {
-        array set opts {-jid ""}
+        array set opts {-jid "" -error ""}
         array set opts $args
         dict set mucStatus $opts(-jid) error
-        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status error
+        dict set mucReason $opts(-jid) $opts(-error)
+        $self EmitRoomState $opts(-jid)
     }
 
     method OnMucLeft {args} {
         array set opts {-jid ""}
         array set opts $args
-        dict set mucStatus $opts(-jid) ""
-        $client emit chatlist <MucStatus> -jid $opts(-jid) -muc-status ""
+        dict set mucStatus $opts(-jid) left
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
+    }
+
+    method EmitRoomState {jid} {
+        $client emit chatlist <RoomState> -jid $jid \
+            -state [$self RoomState $jid] -reason [$self ResolveMucReason $jid]
     }
 
     method OnDisconnect {args} {
         set mucStatus {}
+        set mucReason {}
     }
 
     method ResolveName {jid} {
@@ -120,6 +139,33 @@ snit::type taco_chatlist {
             return [dict get $mucStatus $jid]
         }
         return ""
+    }
+
+    method ResolveMucReason {jid} {
+        if {[dict exists $mucReason $jid]} {
+            return [dict get $mucReason $jid]
+        }
+        return ""
+    }
+
+    # Derived room state for the UI, folding raw join status together with
+    # membership (autojoin).  A room we joined and dropped out of reads as
+    # "disconnected" only if we're still a member; the initial unattempted
+    # state is plain "idle".
+    #   joined | joining | error | disconnected | idle
+    method RoomState {jid} {
+        switch -- [$self ResolveMucStatus $jid] {
+            joined  { return joined }
+            joining { return joining }
+            error   { return error }
+            left {
+                if {[$self ResolveAutojoin $jid] in {1 true}} {
+                    return disconnected
+                }
+                return idle
+            }
+            default { return idle }
+        }
     }
 
     tackymethod search {args} {
@@ -189,7 +235,8 @@ snit::type taco_chatlist {
             set entry [list jid $jid name $name source $source]
             if {$source in {bookmark both}} {
                 lappend entry autojoin [dict get $bmAutojoin $jid]
-                lappend entry muc-status [$self ResolveMucStatus $jid]
+                lappend entry room-state [$self RoomState $jid]
+                lappend entry room-reason [$self ResolveMucReason $jid]
             }
             lappend recent $entry
             if {[incr count] >= 20} break
@@ -223,7 +270,8 @@ snit::type taco_chatlist {
             # Replace name with resolved name for display
             set entry $item
             dict set entry name $resolvedName
-            dict set entry muc-status [$self ResolveMucStatus $jid]
+            dict set entry room-state [$self RoomState $jid]
+            dict set entry room-reason [$self ResolveMucReason $jid]
             lappend bookmarks $entry
         }
         set bookmarks [$self SortItems $bookmarks $sort]
