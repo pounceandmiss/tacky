@@ -979,6 +979,8 @@ snit::type taco_omemo {
     #                               the body so the user sees SOMETHING
     #                               rather than the previous silent loss
     #   {keytransport ""}        -> no body, side effects already done
+    #   {duplicate ""}           -> already-consumed/replayed key
+    #                               (EKEYGONE/EUSER); drop silently
     method DispatchDecrypt {stanza encNode peerJid peerDev} {
         set result [$self DoDecrypt $encNode $peerJid $peerDev 0]
         if {$result eq ""} {
@@ -987,8 +989,8 @@ snit::type taco_omemo {
             return
         }
         lassign $result kind body
-        if {$kind eq "keytransport"} {
-            jlog debug "OMEMO keytransport from $peerJid/$peerDev"
+        if {$kind in {keytransport duplicate}} {
+            jlog debug "OMEMO $kind from $peerJid/$peerDev"
             return
         }
         if {$kind eq "decrypt_error"} {
@@ -1077,6 +1079,13 @@ snit::type taco_omemo {
         if {!$ok} {
             $self HandleDecryptError $peerJid $peerDev $lastEcode $lastErr \
                 $candidates $isMam
+            # EKEYGONE (key already consumed) and EUSER (replayed prekey)
+            # are duplicates/re-deliveries, not a broken session; drop them
+            # silently as Conversations and Dino do. Genuine session breaks
+            # (ECORRUPT/ESTATE/...) fall through to the placeholder + heal.
+            if {[lindex $lastEcode 1] in {EKEYGONE EUSER}} {
+                return [list duplicate ""]
+            }
             return [list decrypt_error \
                 "\[OMEMO\] Could not decrypt message"]
         }
@@ -1396,7 +1405,7 @@ snit::type taco_omemo {
             return [$self SynthesisePlain $msgNode ""]
         }
         lassign $res kind body
-        if {$kind eq "keytransport"} {
+        if {$kind in {keytransport duplicate}} {
             return [$self SynthesisePlain $msgNode ""]
         }
         # plaintext OR decrypt_error: surface as a real <message> with

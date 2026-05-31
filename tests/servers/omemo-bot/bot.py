@@ -19,6 +19,7 @@ in different harnesses:
 import asyncio
 import logging
 import os
+import re
 import sys
 import traceback
 from typing import Any, Dict, FrozenSet, Literal, Optional, Union
@@ -138,6 +139,20 @@ class OmemoEchoBot(ClientXMPP):
             plaintext, _device_info = await xep_0384.decrypt_message(stanza)
         except Exception:
             log.error("decrypt failed:\n%s", traceback.format_exc())
+            return
+
+        # `BURST:N` makes the bot send N unprompted encrypted messages
+        # instead of echoing once - a one-sided inbound flood.
+        body_text = plaintext if isinstance(plaintext, str) else plaintext["body"]
+        m = re.match(r"^\s*BURST:(\d+)\s*$", body_text or "")
+        if m:
+            count = int(m.group(1))
+            log.info("BURST request: sending %d unprompted messages", count)
+            for i in range(count):
+                try:
+                    await self._encrypted_reply(mto, mtype, f"burst {i}")
+                except Exception:
+                    log.error("burst %d failed:\n%s", i, traceback.format_exc())
             return
 
         try:

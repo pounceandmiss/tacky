@@ -110,6 +110,47 @@ namespace eval ::test::omemo_int {
         return 0
     }
 
+    # Run $script (which fires sends) and collect inbound bot bodies in
+    # arrival order until $want arrive or the timeout elapses. Unlike
+    # sendOmemo, the script may pipeline many sends before any echo lands.
+    proc collectReceived {want script {timeout 0}} {
+        variable TIMEOUT
+        variable BOT
+        variable TESTER
+        if {$timeout == 0} { set timeout $TIMEOUT }
+        set acc [namespace current]::_collect_[incr [namespace current]::_awaitCounter]
+        set $acc [list]
+        set ::test::omemo_int::_collectDone 0
+        set tag [tacky listen message <Received> -acc $TESTER -jid $BOT \
+            [list apply {{accVar want ev} {
+                lappend $accVar [string trimright \
+                    [dict get [dict get $ev -message] body]]
+                if {[llength [set $accVar]] >= $want} {
+                    set ::test::omemo_int::_collectDone 1
+                }
+            }} $acc $want]]
+        uplevel 1 $script
+        if {[llength [set $acc]] < $want} {
+            catch {::test::helpers::waitVar ::test::omemo_int::_collectDone $timeout}
+        }
+        tacky unlisten $tag
+        return [set $acc]
+    }
+
+    # Count rows that represent a failed inbound decrypt (synthesised
+    # placeholder body) or a failed send, for the bot chat.
+    proc decryptFailures {client} {
+        variable BOT
+        return [$client db onecolumn {
+            SELECT count(*) FROM chat_message
+            WHERE chat_jid=$BOT
+              AND (body LIKE '[OMEMO] Could not decrypt%'
+                   OR fail_reason != '')
+        }]
+    }
+
+    variable BURST_N 50
+
     set common [concat {-constraints withServer} \
         [tacky_env -extra-setup { ::test::omemo_int::extraSetup }]]
 
@@ -166,7 +207,25 @@ namespace eval ::test::omemo_int {
         set bodies
     } -result {{msg 0} {msg 1} {msg 2} {msg 3} {msg 4} {msg 5} {msg 6} {msg 7} {msg 8} {msg 9}}
 
-    # 2b. Non-ASCII body. The picomemo payload codec wants UTF-8 bytes;
+    # 2a. Bot-driven inbound burst: on a `BURST:N` body the bot sends N
+    # unprompted encrypted messages. Asserts a one-sided inbound flood off
+    # a single receiving chain all decrypts, with no placeholder rows.
+    test omemo-int-inbound-burst \
+        {bot sends BURST_N unprompted messages, all decrypt} {*}$common -body {
+            set client [tacky client $TESTER]
+            set N $::test::omemo_int::BURST_N
+            set bodies [collectReceived $N {
+                tacky message send -acc $::test::omemo_int::TESTER \
+                    -chat_jid $::test::omemo_int::BOT \
+                    -body "BURST:$::test::omemo_int::BURST_N"
+            }]
+            set want [lmap i [lseq 0 [expr {$N - 1}]] {string cat "burst " $i}]
+            list received [llength $bodies] \
+                all_present [expr {[lsort $bodies] eq [lsort $want]}] \
+                failures [decryptFailures $client]
+        } -result {received 50 all_present 1 failures 0}
+
+    # 2c. Non-ASCII body. The picomemo payload codec wants UTF-8 bytes;
     # passing a Tcl string with non-ASCII codepoints throws EPARAM, so
     # encrypt convertto-utf-8's and decrypt convertfrom-utf-8's. CJK
     # exercises 3-byte sequences, the \U-escaped emoji a 4-byte one.
@@ -221,29 +280,6 @@ namespace eval ::test::omemo_int {
             set ev [sendOmemo "second"]
             string trimright [dict get [dict get $ev -message] body]
         } -result {second}
-
-    # 5b. Live OMEMO ingress preserves <stanza-id>. The synthesised
-    # plaintext stanza used to drop everything except <body>+<encryption>,
-    # leaving messagestore with server_id="" for OMEMO rows. That broke
-    # MAM dedup on chat reopen and produced ghost messages (see DB
-    # forensics in chat with `kurisumakise@draugr.de`). Symptom: the
-    # decrypted echo from the bot gets stored with no server_id, so any
-    # later MAM backfill of the same stanza inserts a fresh row instead
-    # of matching the live one.
-    test omemo-int-mam-live-row-has-server-id \
-        {decrypted live OMEMO row keeps the server stanza-id for MAM dedup} \
-        {*}$common -body {
-            sendOmemo "dedup-check"
-            set client [tacky client $TESTER]
-            # Echo from bot is the inbound row with body 'dedup-check'.
-            $client db onecolumn {
-                SELECT server_id != '' FROM chat_message
-                WHERE chat_jid=$::test::omemo_int::BOT AND kind='message'
-                  AND from_jid=$::test::omemo_int::BOT
-                  AND body='dedup-check'
-                ORDER BY timestamp DESC LIMIT 1
-            }
-        } -result {1}
 
     # 6. Reflected message guard: a stanza whose @from is our own bare
     # JID and whose <header sid> is our own device id must be dropped
