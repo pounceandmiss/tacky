@@ -825,21 +825,24 @@ snit::widget chatarea {
                 }
 
                 # Find first displayed id greater than $id; insert before
-                # it. If none, append. (Linear scan — windows are small.)
+                # it. If none, append. (Linear scan - windows are small.)
                 set idx 0
                 foreach existing $MessageIds {
                     if {$existing > $id} break
                     incr idx
                 }
                 if {$idx == [llength $MessageIds]} {
-                    lappend MessageIds $id
                     $text mark set msgins end
                 } else {
                     set successor [lindex $MessageIds $idx]
-                    set MessageIds [linsert $MessageIds $idx $id]
                     $text mark set msgins item.$successor.first
                 }
+                # Record the id only after the draw succeeds. If DrawMessage
+                # throws, MessageIds must not keep a phantom id whose item.$id
+                # tag was never created - a later insert would pick it as a
+                # successor and fail looking up the missing item.$id.first.
                 $self DrawMessage msgins $msg
+                set MessageIds [linsert $MessageIds $idx $id]
                 lappend inserted $id
             }
         }
