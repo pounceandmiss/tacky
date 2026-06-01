@@ -1,7 +1,7 @@
 if 0 {
     accountpanel - per-account container wrapping a chatlistview.
 
-    Created by accountnotebook for each enabled account tab.
+    Created by accountwindow as the per-window account view.
 
     Layout:
         ┌─────────────────────┐
@@ -22,6 +22,9 @@ snit::widget accountpanel {
     option -open-chat-command -default ""
     option -open-bookmark-command -default ""
     option -menubar -default "" -readonly yes
+
+    delegate option -width to hull
+    delegate option -height to hull
 
     constructor args {
         $self configurelist $args

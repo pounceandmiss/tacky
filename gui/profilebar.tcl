@@ -31,9 +31,10 @@ snit::widget profilebar {
 
         # Avatar label (32x32)
         ttk::label $win.avatar -image [avatarcache default] -padding 2
-        avatarcache track \
+        set img [avatarcache track \
             -acc $acc -jid $acc -tag $win \
-            -command [mymethod OnAvatar]
+            -command [mymethod OnAvatar]]
+        $win.avatar configure -image $img
         # Name label — default to JID username until we fetch the nick
         ttk::label $win.name -text [jid username $acc] -padding {4 2}
         # Connection status indicator

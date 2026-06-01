@@ -1,6 +1,9 @@
 snit::type accountsmenu {
     option -menubar -readonly yes
     option -tacky -default ::tacky -readonly yes
+    option -parent -default "" -readonly yes
+    option -open-here-command -default ""
+    option -open-window-command -default ""
     option -add-account-command -default ""
     option -join-room-command -default ""
 
@@ -64,8 +67,16 @@ snit::type accountsmenu {
 
         dict for {jid enabled} $accounts {
             set safe [string map {@ _ . _} $jid]
-            set sub $m.$safe
+            set sub $m.mng_$safe
             menu $sub -tearoff 0
+
+            if {$enabled} {
+                $sub add command -label "Open in This Window" \
+                    -command [list {*}$options(-open-here-command) $jid]
+                $sub add command -label "Open in New Window" \
+                    -command [list {*}$options(-open-window-command) $jid]
+                $sub add separator
+            }
 
             $sub add command -label "Settings..." \
                 -command [list profilesettings open $jid]
@@ -99,10 +110,13 @@ snit::type accountsmenu {
     # --- Actions ---
 
     method RemoveAccount {jid} {
-        set answer [tk_messageBox -type yesno -icon warning \
+        set args [list -type yesno -icon warning \
             -title "Remove Account" \
             -message "Remove account $jid?\nThis cannot be undone."]
-        if {$answer eq "yes"} {
+        if {$options(-parent) ne "" && [winfo exists $options(-parent)]} {
+            lappend args -parent $options(-parent)
+        }
+        if {[tk_messageBox {*}$args] eq "yes"} {
             $options(-tacky) account remove -acc $jid
         }
     }

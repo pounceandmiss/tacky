@@ -2,17 +2,14 @@ snit::type app_type {
     option -transient -default 0 -readonly yes
     option -backend -default direct -readonly yes
     option -debug-dir -default "" -readonly yes
-    variable current ""
 
-    variable notebook ""
-    variable paned ""
-    variable chatpanel ""
-    variable inlineJid ""
-    variable chatModeVar "inline"
-    variable accmenu ""
+    variable windows {}
+    variable winCounter 0
+    variable setupWin ""
 
     constructor args {
         $self configurelist $args
+        wm withdraw .
         wm title . "Tacky"
         switch $options(-backend) {
             process {
@@ -36,187 +33,132 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
 
-        ::tacky account list  -enabled 1 -command [mymethod OnAccountList]
+        ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
         catch {::tacky unlisten $self}
-        if {$current ne ""} {
-            catch {destroy $current}
-        }
-        catch {::tacky destroy}
-        foreach w [winfo children .] {
+        foreach w $windows {
             catch {destroy $w}
         }
+        catch {::tacky destroy}
     }
 
     method OnAccountList {result} {
         if {[llength $result] > 0} {
-            $self BuildMainUI
+            $self SpawnWindow [lindex $result 0]
         } else {
             $self ShowSetup
         }
     }
 
-    method TeardownUI {} {
-        if {$current ne ""} {
-            destroy $current
-            set current ""
+    # --- Account windows ---
+
+    # One window per account: raise the existing one if it's already open.
+    method SpawnWindow {jid} {
+        set existing [$self WindowForAccount $jid]
+        if {$existing ne ""} {
+            $self RaiseWindow $existing
+            return $existing
         }
-        if {$accmenu ne ""} {
-            $accmenu destroy
-            set accmenu ""
-        }
-        . configure -menu {}
-        if {[winfo exists .menubar]} {
-            destroy .menubar
-        }
-        set notebook ""
-        set paned ""
-        set chatpanel ""
-        set inlineJid ""
+        set safe [string map {@ _ . _ / _} $jid]
+        set w .acctwin_${safe}_[incr winCounter]
+        accountwindow $w -account $jid -controller $self
+        lappend windows $w
+        return $w
     }
 
+    method WindowForAccount {jid} {
+        foreach w $windows {
+            if {[winfo exists $w] && [$w CurrentAccount] eq $jid} {
+                return $w
+            }
+        }
+        return ""
+    }
+
+    method RaiseWindow {w} {
+        if {![winfo exists $w]} return
+        wm deiconify $w
+        raise $w
+        focus $w
+    }
+
+    method OnWindowClosed {w} {
+        set idx [lsearch -exact $windows $w]
+        if {$idx >= 0} {
+            set windows [lreplace $windows $idx $idx]
+        }
+        catch {destroy $w}
+        if {[llength $windows] == 0} {
+            $self EnsureSomethingVisible
+        }
+    }
+
+    method AnyVisibleWindow {} {
+        return [lindex $windows 0]
+    }
+
+    method EnsureSomethingVisible {} {
+        if {[tk windowingsystem] eq "aqua"} {
+            # macOS keeps the process alive with no open windows; the Dock
+            # icon would reopen a window via tk::mac::ReopenApplication.
+            # Hook left for later - not wired yet.
+            return
+        }
+        ::tacky account list -command [mymethod OnLastWindowClosed]
+    }
+
+    # With no windows left: drop back to setup if there are no accounts at
+    # all (e.g. the last one was removed), otherwise quit.
+    method OnLastWindowClosed {result} {
+        if {[llength $windows] > 0} return
+        if {[llength $result] == 0} {
+            $self ShowSetup
+        } else {
+            $self Quit
+        }
+    }
+
+    method Quit {} {
+        catch {::tacky unlisten $self}
+        foreach w $windows {
+            catch {destroy $w}
+        }
+        set windows {}
+        catch {::tacky destroy}
+        destroy .
+    }
+
+    # --- Setup / add account ---
+
     method ShowSetup {} {
-        $self TeardownUI
-        set current [initialsetup .setup \
-            -onsuccess [mymethod OnSetupDone]]
-        pack $current -expand yes -fill both
+        if {$setupWin ne "" && [winfo exists $setupWin]} {
+            raise $setupWin
+            return
+        }
+        set setupWin .setup
+        toplevel $setupWin
+        wm title $setupWin "Welcome to Tacky"
+        wm protocol $setupWin WM_DELETE_WINDOW [mymethod OnSetupClosed]
+        initialsetup $setupWin.content -onsuccess [mymethod OnSetupDone]
+        pack $setupWin.content -expand yes -fill both
+    }
+
+    method OnSetupClosed {} {
+        catch {destroy $setupWin}
+        set setupWin ""
+        if {[llength $windows] == 0} {
+            $self Quit
+        }
     }
 
     method OnSetupDone {jid} {
         ::tacky account enable -acc $jid
-        $self TeardownUI
-        $self BuildMainUI
+        catch {destroy $setupWin}
+        set setupWin ""
+        $self SpawnWindow $jid
     }
-
-    method BuildMainUI {} {
-        # TODO: replace with ::tacky setting get once setting module exists
-        set chatModeVar "inline"
-
-        # --- Menubar ---
-        menu .menubar -tearoff 0
-
-        # File menu
-        menu .menubar.file -tearoff 0
-        .menubar.file add command -label "XML Console..." \
-            -command [mymethod OpenXmlConsole] -accelerator "Ctrl+Shift+X"
-        .menubar.file add command -label "MAM Info..." \
-            -command [mymethod OpenMamInfo]
-        .menubar.file add separator
-        .menubar.file add command -label "Quit" \
-            -command [list destroy .] -accelerator "Ctrl+Q"
-        .menubar add cascade -label "File" -menu .menubar.file
-
-        # Accounts menu
-        set accmenu [accountsmenu %AUTO% \
-            -menubar .menubar \
-            -add-account-command [mymethod OpenAddAccount] \
-            -join-room-command [mymethod OpenJoinRoom]]
-
-        # View menu
-        menu .menubar.view -tearoff 0
-        .menubar.view add radiobutton -label "Open chats inline" \
-            -variable [myvar chatModeVar] -value "inline" \
-            -command [mymethod OnChatModeChanged]
-        .menubar.view add radiobutton -label "Open chats in window" \
-            -variable [myvar chatModeVar] -value "window" \
-            -command [mymethod OnChatModeChanged]
-        .menubar add cascade -label "View" -menu .menubar.view
-
-        . configure -menu .menubar
-
-        # Global accelerators
-        bind . <Control-q> [list destroy .]
-        bind . <Control-Q> [list destroy .]
-        bind . <Control-Shift-X> [mymethod OpenXmlConsole]
-        bind . <Control-f> [mymethod InlineOpenFind]
-        bind . <Control-F> [mymethod InlineOpenFind]
-
-        # --- Paned layout ---
-        set paned [ttk::panedwindow .paned -orient horizontal]
-        set chatpanel [ttk::frame $paned.chatpanel]
-
-        set notebook [accountnotebook $paned.notebook \
-            -open-chat-command [mymethod OpenChat] \
-            -open-bookmark-command [mymethod OpenBookmark] \
-            -menubar .menubar]
-        # Tabs load async in threaded mode — request a width so the
-        # pane doesn't collapse before content arrives.
-        $notebook configure -width 200
-        $paned add $notebook -weight 0
-
-        set current $paned
-        pack $paned -expand yes -fill both
-    }
-
-    # --- Chat routing ---
-
-    method OpenChat {args} {
-        array set opts $args
-        if {$chatModeVar eq "inline"} {
-            $self OpenChatInline -acc $opts(-acc) -jid $opts(-jid)
-        } else {
-            $self Openchatwindow -acc $opts(-acc) -jid $opts(-jid)
-        }
-    }
-
-    method OpenChatInline {args} {
-        array set opts $args
-        if {$inlineJid eq $opts(-jid)} return
-
-        # Destroy previous inline chat content
-        foreach child [winfo children $chatpanel] {
-            destroy $child
-        }
-        set inlineJid $opts(-jid)
-        # Create chat widgets in the panel
-        chatpanel $chatpanel.cp -acc $opts(-acc) -jid $opts(-jid) \
-            -menubar .menubar
-        pack $chatpanel.cp -expand yes -fill both
-
-        # Add panel to paned if not already there
-        if {$chatpanel ni [$paned panes]} {
-            $paned add $chatpanel -weight 1
-        }
-    }
-
-    method Openchatwindow {args} {
-        array set opts $args
-        set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
-        chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid)
-    }
-
-    method OpenBookmark {args} {
-        array set opts $args
-        $self OpenChat -acc $opts(-acc) -jid $opts(-jid)?join
-    }
-
-    method CloseInlineChat {} {
-        if {$inlineJid eq ""} return
-        foreach child [winfo children $chatpanel] {
-            destroy $child
-        }
-        set inlineJid ""
-        if {$chatpanel in [$paned panes]} {
-            $paned forget $chatpanel
-        }
-    }
-
-    method InlineOpenFind {} {
-        if {$inlineJid ne "" && [winfo exists $chatpanel.cp]} {
-            $chatpanel.cp OpenFind
-        }
-    }
-
-    method OnChatModeChanged {} {
-        # TODO: persist with ::tacky setting set once setting module exists
-        if {$chatModeVar eq "window"} {
-            $self CloseInlineChat
-        }
-    }
-
-    # --- Menu actions ---
 
     method OpenAddAccount {} {
         if {[winfo exists .addaccount]} {
@@ -225,6 +167,10 @@ snit::type app_type {
         }
         toplevel .addaccount
         wm title .addaccount "Add Account"
+        set parent [$self AnyVisibleWindow]
+        if {$parent ne "" && [winfo exists $parent]} {
+            wm transient .addaccount $parent
+        }
         initialsetup .addaccount.setup \
             -onsuccess [mymethod OnAddAccountDone]
         pack .addaccount.setup -expand yes -fill both
@@ -232,19 +178,10 @@ snit::type app_type {
 
     method OnAddAccountDone {jid} {
         ::tacky account enable -acc $jid
-        destroy .addaccount
-    }
-
-    method OpenJoinRoom {} {
-        set jid [$notebook CurrentAccountJid]
-        if {$jid eq ""} return
-        joinroomdialog show $jid
-    }
-
-    method OpenXmlConsole {} {
-        set jid [$notebook CurrentAccountJid]
-        if {$jid eq ""} return
-        xmlconsole $jid
+        catch {destroy .addaccount}
+        if {[llength $windows] == 0} {
+            $self SpawnWindow $jid
+        }
     }
 
     # --- Calls ---
@@ -263,15 +200,4 @@ snit::type app_type {
             -peer [dict get $ev -to] \
             -direction outgoing
     }
-
-    method OpenMamInfo {} {
-        set jid [$notebook CurrentAccountJid]
-        if {$jid eq ""} return
-        if {$inlineJid ne ""} {
-            maminfo open $jid -target $inlineJid
-        } else {
-            maminfo open $jid
-        }
-    }
-
 }

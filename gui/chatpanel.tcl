@@ -171,7 +171,8 @@ snit::widget chatpanel {
     }
 
     method Attach {} {
-        set path [tk_getOpenFile -title "Attach File"]
+        set path [tk_getOpenFile -title "Attach File" \
+            -parent [winfo toplevel $win]]
         if {$path eq ""} return
         ::tacky message sendFile -acc $options(-acc) \
             -chat_jid $options(-jid) -path $path
@@ -327,6 +328,7 @@ snit::widget chatpanel {
         if {$dateStr eq ""} return
         if {[catch {clock scan $dateStr -format "%Y-%m-%d"} secs]} {
             tk_messageBox -icon error -title "Invalid Date" \
+                -parent [winfo toplevel $win] \
                 -message "Could not parse date: $dateStr\n\nExpected format: YYYY-MM-DD"
             return
         }
@@ -360,6 +362,7 @@ snit::widget chatpanel {
         if {[dict get $ev -jid] ne $roomJid} return
         set answer [tk_messageBox -type yesno -icon question \
             -title "New Room Created" \
+            -parent [winfo toplevel $win] \
             -message "You created a new room. Configure it now?\n\nChoose No to accept default settings."]
         if {$answer eq "yes"} {
             # TODO: room config UI
@@ -406,6 +409,7 @@ snit::widget chatpanel {
     method DestroyRoom {} {
         set answer [tk_messageBox -type yesno -icon warning \
             -title "Destroy Room" \
+            -parent [winfo toplevel $win] \
             -message "Are you sure you want to permanently destroy this room?\n\n$roomJid"]
         if {$answer ne "yes"} return
         ::tacky muc destroyRoom -acc $options(-acc) -jid $roomJid
