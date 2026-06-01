@@ -419,7 +419,13 @@ snit::type taco_mam {
         unset -nocomplain Callbacks($queryId)
 
         if {$iqType eq "error"} {
-            {*}$callback [dict create messages {} complete 0 first "" last "" error 1]
+            set errCond ""
+            set condNode [xsearch $stanza error 0 -get node]
+            if {$condNode ne ""} {
+                set errCond [dict get $condNode tag]
+            }
+            {*}$callback [dict create messages {} complete 0 first "" last "" \
+                error 1 error_condition $errCond]
             $client emit mam <QueryEnd> -id $queryId
             return
         }

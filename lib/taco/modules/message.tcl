@@ -372,6 +372,10 @@ snit::type taco_message {
     variable OmemoRetryBudget
     typevariable OMEMO_RETRY_LIMIT 5
 
+    # Per-call cap on demote-and-retry steps; demotion makes progress durable
+    # across calls, so the cap only bounds one history call's blast radius.
+    typevariable MaxCursorRetries 5
+
     # Compute (msgType, toJid, fromJid, fromRes) from a chat jid.
     # MUC chats use the `?join` suffix tacky uses internally for the
     # "self as room member" identity.
@@ -1028,147 +1032,166 @@ snit::type taco_message {
             }
         }
 
+        $self QueryServer $chatJid $before $after $limit $callback $tag \
+            $bounded 0
+    }
+
+    # Fire one MAM page anchored on the nearest citizen in the queried
+    # direction (oldest at-or-after $before, newest at-or-before $after), or
+    # cursorless when none exists. `attempt` bounds the OnFetch retry loop.
+    method QueryServer {chatJid before after limit callback tag wasBounded \
+                        attempt} {
+        set direction [expr {$after ne "" ? "newer" : "older"}]
         set mamArgs [list -max $limit]
-        set cursorSid ""
+        set cursorId ""
         if {$before ne ""} {
-            # Try server_id at cursor for RSM pagination; time-based fallback
-            set cursorSid [$client db onecolumn {
+            set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$before
-                  AND server_id != ''
-            }]
-            if {$cursorSid ne ""} {
-                lappend mamArgs -before $cursorSid
-            } else {
-                lappend mamArgs -end [FormatTimestampISO $before] -before {}
-            }
-        } elseif {$after ne ""} {
-            set cursorSid [$client db onecolumn {
-                SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$after
-                  AND server_id != ''
-            }]
-            if {$cursorSid ne ""} {
-                lappend mamArgs -after $cursorSid
-            } else {
-                lappend mamArgs -start [FormatTimestampISO $after]
-            }
-        } else {
-            # Cursor-based: page backwards from earliest known citizen
-            set cursorSid [$client db onecolumn {
-                SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message'
-                  AND server_id != ''
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                  AND timestamp >= $before
                 ORDER BY timestamp ASC LIMIT 1
             }]
-            if {$cursorSid ne ""} {
-                lappend mamArgs -before $cursorSid
-            }
+            if {$cursorId ne ""} { lappend mamArgs -before $cursorId }
+        } elseif {$after ne ""} {
+            set cursorId [$client db onecolumn {
+                SELECT server_id FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                  AND timestamp <= $after
+                ORDER BY timestamp DESC LIMIT 1
+            }]
+            if {$cursorId ne ""} { lappend mamArgs -after $cursorId }
+        } else {
+            set cursorId [$client db onecolumn {
+                SELECT server_id FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                ORDER BY timestamp ASC LIMIT 1
+            }]
+            if {$cursorId ne ""} { lappend mamArgs -before $cursorId }
         }
 
-        # Direction is "older" for -before / initial, "newer" for -after.
-        set direction [expr {$after ne "" ? "newer" : "older"}]
-
-        lappend mamArgs -command [mymethod OnFetch $chatJid \
-            $before $after $limit $callback $tag $direction $bounded]
+        lappend mamArgs -command [mymethod OnFetch $chatJid $before $after \
+            $limit $callback $tag $direction $wasBounded $cursorId $attempt]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
     method OnFetch {chatJid before after limit callback tag direction \
-                    wasBounded mamResult} {
+                    wasBounded cursorId attempt mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+            # item-not-found means the cursor id was never archived (a poisoned
+            # live stanza-id, or a wrong `by`): demote the row and retry from
+            # the next citizen. Other errors just fall back to local.
+            set cond [expr {[dict exists $mamResult error_condition]
+                ? [dict get $mamResult error_condition] : ""}]
+            if {$cond eq "item-not-found" && $cursorId ne ""
+                && $attempt < $MaxCursorRetries} {
+                $messagestore demote $chatJid $cursorId
+                $self QueryServer $chatJid $before $after $limit $callback \
+                    $tag $wasBounded [expr {$attempt + 1}]
+                return
+            }
             set local [$self GetLocal $chatJid $before $after $limit]
             {*}$callback [dict get $local messages]
             return
         }
 
-        # Parse result nodes into message dicts
-        set messages {}
+        # Persist only displayable stanzas (non-empty body) - receipts,
+        # markers and chat states stay out of the store, as in every other
+        # ingest path. The full parsed batch still drives the sentinel ops, so
+        # contiguity is reasoned over the true archive span.
+        set parsed {}
         foreach resultNode [dict get $mamResult messages] {
-            lappend messages [$self ParseResultNode $resultNode $chatJid]
+            lappend parsed [$self ParseResultNode $resultNode $chatJid]
         }
-
-        # Store the fetched batch (even if cancelled — data is still useful)
-        if {[llength $messages] > 0} {
-            $messagestore store $messages
+        set displayable [lmap m $parsed {
+            if {[dict get $m body] eq ""} continue
+            set m
+        }]
+        # Store the displayable batch (even if cancelled - data is useful)
+        if {[llength $displayable] > 0} {
+            $messagestore store $displayable
         }
-        # Sentinel ops apply for empty batches too — particularly the
-        # complete=true bounding-sentinel removal, which signals the
-        # server-side archive is exhausted in this direction.
-        $self ApplyFetchSentinelOps $chatJid $messages \
-            $direction $before $after $wasBounded \
-            [dict get $mamResult complete]
+        $self SweepFetchedRange $chatJid $parsed $direction $before $after
 
-        if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-
+        set cancelled [expr {$tag ne "" && ![info exists ActiveTags($tag)]}]
         set local [$self GetLocal $chatJid $before $after $limit]
+        set complete [dict get $mamResult complete]
+        set pageSize [llength [dict get $mamResult messages]]
+
+        # A page can be mostly empty-body stanzas, leaving fewer than `limit`
+        # displayable messages; a short page would stall the GUI's scroll-back
+        # cursor on stanzas it can't display. Keep paging by this page's far
+        # edge until we have a full page or hit the archive end. The pageSize>0
+        # guard stops a complete=false empty response from spinning.
+        if {!$cancelled
+            && [llength [dict get $local messages]] < $limit
+            && !$complete && $pageSize > 0} {
+            set nextCursor [expr {$direction eq "older"
+                ? [dict get $mamResult first] : [dict get $mamResult last]}]
+            if {$nextCursor ne ""} {
+                set rsmFlag [expr {$direction eq "older" ? "-before" : "-after"}]
+                $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
+                    -command [mymethod OnFetch $chatJid $before $after $limit \
+                        $callback $tag $direction $wasBounded "" $attempt]
+                return
+            }
+        }
+
+        # Terminal page (enough collected, archive exhausted, no cursor to
+        # advance, or cancelled): finalise the queried-direction boundary.
+        if {$complete} {
+            $self ClearBoundingSentinel $chatJid $direction $before $after \
+                $wasBounded
+        } else {
+            $self PlaceFarEdgeSentinel $chatJid $parsed $direction
+        }
+
+        if {$cancelled} return
         {*}$callback [dict get $local messages]
     }
 
-    # Sentinel ops after a non-empty MAM page lands:
-    #   1. Sweep: any sentinels strictly between cursor and batch
-    #      far-edge. RSM guarantees that range is contiguous, so any
-    #      sentinel there was a false positive (the sentinel the user
-    #      paginated past, or stale boundary sentinels).
-    #   2. Place: if complete=false, drop a sentinel at the batch's
-    #      far edge in the queried direction. The synthetic sentinel
-    #      ts is one µs past the far-edge message (via BumpTs), so the
-    #      sweep above doesn't touch it.
-    #   3. Remove bounding sentinel on complete=true: if local was
-    #      bounded by a sentinel on the queried side and the server
-    #      confirms exhaustion, the bounding sentinel can clear.
-    method ApplyFetchSentinelOps {chatJid messages direction \
-                                  before after wasBounded complete} {
-        # Cursor for sweep: the existing cursor message timestamp.
-        # If no cursor (initial open), sweep span is open-ended on the
-        # far side — no sweep applies.
-        set cursorTs ""
+    # Cursor timestamp on the queried side (older->before, newer->after);
+    # empty on an initial open, where there's no anchor.
+    proc fetch_cursor_ts {direction before after} {
+        expr {$direction eq "older" ? $before : $after}
+    }
+
+    # Sweep sentinels between the cursor and the batch's far edge. RSM
+    # guarantees that range is contiguous, so any sentinel there was a false
+    # positive (paginated past, or stale). No-op without a cursor or batch.
+    method SweepFetchedRange {chatJid messages direction before after} {
+        set cursorTs [fetch_cursor_ts $direction $before $after]
+        if {[llength $messages] == 0 || $cursorTs eq ""} return
+        set tsList [lmap m $messages {dict get $m timestamp}]
         if {$direction eq "older"} {
-            if {$before ne ""} { set cursorTs $before }
+            $messagestore sentinel removeBetween $chatJid \
+                [tcl::mathfunc::min {*}$tsList] $cursorTs
         } else {
-            if {$after ne ""} { set cursorTs $after }
+            $messagestore sentinel removeBetween $chatJid \
+                $cursorTs [tcl::mathfunc::max {*}$tsList]
         }
+    }
 
-        set hasBatch [expr {[llength $messages] > 0}]
-        if {$hasBatch} {
-            set tsList {}
-            foreach m $messages {
-                lappend tsList [dict get $m timestamp]
-            }
-            set oldestTs [tcl::mathfunc::min {*}$tsList]
-            set newestTs [tcl::mathfunc::max {*}$tsList]
+    # Mark "archive continues beyond here, not yet fetched" at the batch's far
+    # edge. Only once the fill loop stops short (complete=false): on an
+    # intermediate page it would truncate the next page on the cursorless path.
+    method PlaceFarEdgeSentinel {chatJid messages direction} {
+        if {[llength $messages] == 0} return
+        set tsList [lmap m $messages {dict get $m timestamp}]
+        if {$direction eq "older"} {
+            $messagestore sentinel add $chatJid older [tcl::mathfunc::min {*}$tsList]
+        } else {
+            $messagestore sentinel add $chatJid newer [tcl::mathfunc::max {*}$tsList]
         }
+    }
 
-        # 1. Sweep: only meaningful with a non-empty batch (RSM
-        # contiguity guarantee applies to the returned range).
-        if {$hasBatch && $cursorTs ne ""} {
-            if {$direction eq "older"} {
-                $messagestore sentinel removeBetween $chatJid \
-                    $oldestTs $cursorTs
-            } else {
-                $messagestore sentinel removeBetween $chatJid \
-                    $cursorTs $newestTs
-            }
-        }
-
-        # 2. Place far-edge sentinel on complete=false (only if we got
-        # a batch to anchor against; an empty batch with complete=false
-        # is degenerate but doesn't tell us where to place).
-        if {$hasBatch && !$complete} {
-            if {$direction eq "older"} {
-                $messagestore sentinel add $chatJid older $oldestTs
-            } else {
-                $messagestore sentinel add $chatJid newer $newestTs
-            }
-        }
-
-        # 3. Remove bounding sentinel on complete=true. Applies even
-        # when the batch was empty — the server has confirmed there's
-        # nothing in this direction past the cursor, so the bounding
-        # sentinel is proven false.
-        if {$complete && $wasBounded && $cursorTs ne ""} {
+    # Remove the bounding sentinel proven false by complete=true: the server
+    # confirms nothing exists past the cursor in this direction. Applies even
+    # for an empty terminal page.
+    method ClearBoundingSentinel {chatJid direction before after wasBounded} {
+        set cursorTs [fetch_cursor_ts $direction $before $after]
+        if {$wasBounded && $cursorTs ne ""} {
             $messagestore sentinel remove $chatJid $direction $cursorTs
         }
     }
@@ -1219,13 +1242,14 @@ snit::type taco_message {
             return
         }
 
-        set messages {}
-        foreach resultNode [dict get $mamResult messages] {
-            lappend messages [$self ParseResultNode $resultNode $chatJid]
-        }
+        set displayable [lmap resultNode [dict get $mamResult messages] {
+            set m [$self ParseResultNode $resultNode $chatJid]
+            if {[dict get $m body] eq ""} continue
+            set m
+        }]
 
-        if {[llength $messages] > 0} {
-            $messagestore store $messages
+        if {[llength $displayable] > 0} {
+            $messagestore store $displayable
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return

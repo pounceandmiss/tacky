@@ -114,6 +114,55 @@ proc msg_catchup_finish {results {complete true}} {
     }]
 }
 
+# Helper: number of MAM query IQs written so far (the fill loop issues one
+# per page, so this counts how many archive pages were requested).
+proc mam_iq_count {} {
+    set n 0
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} { incr n }
+    }
+    return $n
+}
+
+# Helper: respond to the most recently written MAM query IQ. `specs` is a
+# list of dicts, each passed to `mam_result` (with the live queryid filled
+# in) to build a <result>; then a <fin> closes the page. RSM first/last
+# default to the edge result ids; override via -first/-last for a page with
+# no results (so the fill loop still has a cursor to advance from).
+proc msg_mam_respond {specs args} {
+    set opts [dict merge {-complete true -first "" -last ""} $args]
+    set iqStanza ""
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} { set iqStanza $stanza }
+    }
+    set iqId [dict get $iqStanza attrs id]
+    set qid [xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid]
+    set ids {}
+    foreach spec $specs {
+        set rn [mam_result {*}[dict merge $spec [list queryid $qid]]]
+        lappend ids [xsearch $rn -get @id]
+        $::_client mam onResultMessage [j message -from user@test.example.com {
+            j /as-is $rn
+        }]
+    }
+    set first [dict get $opts -first]
+    set last [dict get $opts -last]
+    if {$first eq "" && [llength $ids] > 0} {
+        set first [lindex $ids 0]
+        set last [lindex $ids end]
+    }
+    $::_client iq feed [j iq -type result -id $iqId {
+        j fin -ns urn:xmpp:mam:2 -complete [dict get $opts -complete] {
+            j set -ns http://jabber.org/protocol/rsm {
+                if {$first ne ""} {
+                    j first #body $first
+                    j last #body $last
+                }
+            }
+        }
+    }]
+}
+
 # Helper: prime MAM fulltext field cache (avoids formfields discovery IQ in search tests)
 proc msg_prime_search {{chatJid alice@example.com}} {
     if {[regexp {(.*)\?join$} $chatJid -> mucjid]} {
@@ -747,28 +796,23 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [dict get $m2 body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 
-test message-history-mam-before-timestamp {-before with empty local sends MAM with -end and empty -before} \
+test message-history-mam-before-timestamp {-before with no local citizen sends a cursorless MAM page (no time fallback)} \
     {*}$msg_common \
     -body {
-        # Use a known timestamp (2024-06-15T12:00:00Z in microseconds)
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
         tacky message history -acc $acc -chat alice@example.com \
             -before $ts -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
-        # Should have end field with ISO timestamp
-        set endVal [xsearch $qnode x field @var end value -get body]
-        # Should have empty before (request from end of archive)
-        set beforeVal [xsearch $qnode set before -get body]
-        # Should NOT have start field
+        # No citizen to anchor on -> bare newest page: no time bounds, no cursor
+        set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
         set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
-        list [expr {$endVal eq "2024-06-15T12:00:00Z"}] \
-             [expr {$beforeVal eq ""}] \
-             $hasStart
-    } -result {1 1 0}
+        set hasBefore [expr {[xsearch $qnode set before] ne ""}]
+        list $hasEnd $hasStart $hasBefore
+    } -result {0 0 0}
 
-test message-history-mam-after-timestamp {-after with empty local sends MAM with -start} \
+test message-history-mam-after-timestamp {-after with no at-or-before citizen sends a cursorless MAM page (no time fallback)} \
     {*}$msg_common \
     -body {
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
@@ -782,15 +826,13 @@ test message-history-mam-after-timestamp {-after with empty local sends MAM with
             -command [list apply {{r} { set ::result $r }}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
-        # Should have start field with ISO timestamp
-        set startVal [xsearch $qnode x field @var start value -get body]
-        # Should NOT have end field
+        # The only citizen is newer than the cursor, so none anchors -after:
+        # bare newest page with no time bounds and no cursor.
+        set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
         set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
-        # Should NOT have before (no cursor)
-        set hasBefore [expr {[xsearch $qnode set before] ne ""}]
-        list [expr {$startVal eq "2024-06-15T12:00:00Z"}] \
-             $hasEnd $hasBefore
-    } -result {1 0 0}
+        set hasAfter [expr {[xsearch $qnode set after] ne ""}]
+        list $hasStart $hasEnd $hasAfter
+    } -result {0 0 0}
 
 test message-history-mam-default-cursor {default (no timestamp) uses cursor-based -before} \
     {*}$msg_common \
@@ -808,6 +850,183 @@ test message-history-mam-default-cursor {default (no timestamp) uses cursor-base
         set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
         list $hasStart $hasEnd
     } -result {0 0}
+
+# =============================================================================
+# History: poisoned-cursor recovery (demote on item-not-found + retry)
+# =============================================================================
+
+test message-history-nearest-citizen-skips-noncitizen \
+    {cursor selection skips a non-citizen boundary row and anchors on the nearest citizen} \
+    {*}$msg_common \
+    -body {
+        set tsN [ParseTimestamp 2024-03-01T10:00:00Z]
+        set tsC [ParseTimestamp 2024-03-01T11:00:00Z]
+        # Boundary row is a non-citizen (no server_id); a citizen sits just newer.
+        msg_store [list \
+            [msg_msg timestamp $tsN server_id "" body n] \
+            [msg_msg timestamp $tsC server_id Cgood body c]]
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsN -limit 50 \
+            -command [list apply {{r} {}}]
+        set q1 [lindex [xsearch [lindex [$::_client conn get_written] end] \
+            query -ns urn:xmpp:mam:2] 0]
+        xsearch $q1 set before -get body
+    } -result {Cgood}
+
+test message-history-demote-retry-recovers-older \
+    {item-not-found on a poisoned cursor demotes it and retries from the next citizen} \
+    {*}$msg_common \
+    -body {
+        set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
+        set tsQ [ParseTimestamp 2024-03-01T11:00:00Z]
+        # Two citizens at/after the boundary; the nearer one carries a poisoned
+        # server_id (a live stanza-id the server never archived).
+        msg_store [list \
+            [msg_msg timestamp $tsP server_id Pbad body p] \
+            [msg_msg timestamp $tsQ server_id Qgood body q]]
+
+        set ::result {}
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsP -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+
+        # First page must carry the nearest citizen, Pbad.
+        set iq1 [lindex [$::_client conn get_written] end]
+        set firstCursor [xsearch [lindex [xsearch $iq1 query -ns urn:xmpp:mam:2] 0] \
+            set before -get body]
+
+        # Server rejects it: not present in the archive.
+        $::_client iq feed [j iq -type error -id [dict get $iq1 attrs id] {
+            j error -type cancel {
+                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+
+        # Retry must reselect the next citizen, Qgood.
+        set iq2 [lindex [$::_client conn get_written] end]
+        set retryCursor [xsearch [lindex [xsearch $iq2 query -ns urn:xmpp:mam:2] 0] \
+            set before -get body]
+
+        # That page succeeds with an older archived message.
+        msg_mam_respond {{id arcA from bob@example.com body {older one} stamp 2024-01-01T09:00:00Z}} -complete true
+
+        set db [$::_client message messagestore cget -db]
+        set pSid [$db onecolumn {SELECT server_id FROM chat_message
+            WHERE chat_jid='alice@example.com' AND body='p'}]
+
+        list $firstCursor $retryCursor $pSid [llength $::result] \
+            [dict get [lindex $::result 0] body]
+    } -result {Pbad Qgood {} 1 {older one}}
+
+test message-history-transient-error-no-demote \
+    {a transient MAM error does not demote the cursor or retry} \
+    {*}$msg_common \
+    -body {
+        set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
+        msg_store [list [msg_msg timestamp $tsP server_id Pbad body p]]
+        set ::result none
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsP -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+        set queriesBefore [mam_iq_count]
+        set iq1id [dict get [lindex [$::_client conn get_written] end] attrs id]
+        $::_client iq feed [j iq -type error -id $iq1id {
+            j error -type wait {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set queriesAfter [mam_iq_count]
+        set db [$::_client message messagestore cget -db]
+        set pSid [$db eval {SELECT server_id FROM chat_message
+            WHERE chat_jid='alice@example.com' AND body='p'}]
+        list $queriesBefore $queriesAfter $pSid [llength $::result]
+    } -result {1 1 Pbad 0}
+
+# =============================================================================
+# History: empty-body filtering + internal fill loop
+# =============================================================================
+
+test message-history-mam-drops-empty-body {empty-body MAM stanzas (receipts/markers) are parsed but never stored} \
+    {*}$msg_common \
+    -body {
+        set result {}
+        tacky message history -acc $acc -chat alice@example.com -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+        msg_mam_respond {
+            {id m1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
+            {id m2 from bob@example.com body "real" stamp 2024-01-01T09:01:00Z}
+        } -complete true
+        list [llength $result] \
+             [dict get [lindex $result 0] body] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {1 real 1}
+
+test message-history-mam-fill-loop-continues {a short page (mostly empty-body) triggers another MAM page} \
+    {*}$msg_common \
+    -body {
+        tacky message history -acc $acc -chat alice@example.com -limit 3 \
+            -command [list apply {{r} { set ::result $r }}]
+        set pagesBefore [mam_iq_count]
+        # 3 stanzas but only 1 displayable, and the archive isn't exhausted
+        msg_mam_respond {
+            {id e1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
+            {id r1 from bob@example.com body "one" stamp 2024-01-01T09:01:00Z}
+            {id e2 from bob@example.com body "" stamp 2024-01-01T09:02:00Z}
+        } -complete false
+        # the fill loop should have requested a further page
+        expr {[mam_iq_count] > $pagesBefore}
+    } -result {1}
+
+test message-history-mam-fill-loop-stops-on-complete {fill loop stops at archive end even with a short page} \
+    {*}$msg_common \
+    -body {
+        set result {}
+        tacky message history -acc $acc -chat alice@example.com -limit 5 \
+            -command [list apply {{r} { set ::result $r }}]
+        set pagesBefore [mam_iq_count]
+        msg_mam_respond {
+            {id r1 from bob@example.com body "only" stamp 2024-01-01T09:00:00Z}
+        } -complete true
+        list [llength $result] [expr {[mam_iq_count] == $pagesBefore}]
+    } -result {1 1}
+
+test message-history-mam-fill-loop-accumulates {fill loop pages until a full screen of displayable messages is collected} \
+    {*}$msg_common \
+    -body {
+        set result {}
+        tacky message history -acc $acc -chat alice@example.com -limit 3 \
+            -command [list apply {{r} { set ::result $r }}]
+        # page 1: one real message (newest) plus a trailing marker
+        msg_mam_respond {
+            {id r1 from bob@example.com body "c" stamp 2024-01-01T09:03:00Z}
+            {id e1 from bob@example.com body "" stamp 2024-01-01T09:04:00Z}
+        } -complete false
+        # page 2: the two older real messages that top us up to the limit
+        msg_mam_respond {
+            {id r2 from bob@example.com body "a" stamp 2024-01-01T09:01:00Z}
+            {id r3 from bob@example.com body "b" stamp 2024-01-01T09:02:00Z}
+        } -complete true
+        lmap m $result { dict get $m body }
+    } -result {a b c}
+
+test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page is paged through, not surfaced as a stall} \
+    {*}$msg_common \
+    -body {
+        set result {}
+        tacky message history -acc $acc -chat alice@example.com -limit 2 \
+            -command [list apply {{r} { set ::result $r }}]
+        # page 1: entirely receipts/markers, more behind them
+        msg_mam_respond {
+            {id e1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
+            {id e2 from bob@example.com body "" stamp 2024-01-01T09:01:00Z}
+        } -complete false
+        # page 2: the real messages
+        msg_mam_respond {
+            {id r1 from bob@example.com body "x" stamp 2024-01-01T08:00:00Z}
+            {id r2 from bob@example.com body "y" stamp 2024-01-01T08:30:00Z}
+        } -complete true
+        lmap m $result { dict get $m body }
+    } -result {x y}
 
 # =============================================================================
 # History: sentinel-aware
