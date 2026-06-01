@@ -12,6 +12,7 @@ snit::widget chatlistview {
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
     option -open-bookmark-command -default ""
+    option -new-chat-command -default ""
     option -menubar -default "" -readonly yes
 
     component treeview
@@ -58,9 +59,16 @@ snit::widget chatlistview {
         ::tacky observe -tag $win setting <Changed> -key show_avatars \
             [mymethod OnShowAvatarsSetting]
 
-        # Search entry
-        install searchentry using ttk::entry $win.search \
+        # Search entry + new-chat button
+        ttk::frame $win.header
+        install searchentry using ttk::entry $win.header.search \
             -textvariable [myvar searchquery]
+        ttk::button $win.header.new \
+            -image mate/16x16/actions/contact-new.png \
+            -style Toolbutton -takefocus 0 \
+            -command [mymethod OnNewChat]
+        pack $win.header.new -side right -padx {2 0}
+        pack $searchentry -side left -expand yes -fill x
         bind $searchentry <KeyRelease> [mymethod Rebuild]
 
         # Treeview
@@ -76,7 +84,7 @@ snit::widget chatlistview {
         $treeview configure -yscrollcommand [list $win.scroll set]
 
         # Layout
-        grid $searchentry -row 0 -column 0 -columnspan 2 -sticky ew \
+        grid $win.header -row 0 -column 0 -columnspan 2 -sticky ew \
             -padx 2 -pady 2
         grid $treeview    -row 1 -column 0 -sticky nsew
         grid $win.scroll  -row 1 -column 1 -sticky ns
@@ -453,6 +461,11 @@ snit::widget chatlistview {
         set item [$treeview selection]
         if {$item ne "" && [$self IsLeaf $item]} {
             $self ActivateItem $item
+        }
+    }
+    method OnNewChat {} {
+        if {$options(-new-chat-command) ne ""} {
+            {*}$options(-new-chat-command)
         }
     }
 

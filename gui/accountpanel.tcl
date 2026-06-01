@@ -21,6 +21,7 @@ snit::widget accountpanel {
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
     option -open-bookmark-command -default ""
+    option -new-chat-command -default ""
     option -menubar -default "" -readonly yes
 
     delegate option -width to hull
@@ -44,6 +45,7 @@ snit::widget accountpanel {
             -tacky $options(-tacky) \
             -open-chat-command $options(-open-chat-command) \
             -open-bookmark-command $options(-open-bookmark-command) \
+            -new-chat-command $options(-new-chat-command) \
             -menubar $options(-menubar)
         pack $win.clv -fill both -expand yes
     }

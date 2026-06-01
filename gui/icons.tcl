@@ -22,6 +22,8 @@ image create photo mate/22x22/actions/call-start.png \
     -file [file join $_icondir call-start-22.png]
 image create photo mate/16x16/actions/mail-reply-sender.png \
     -file [file join $_icondir mail-reply-sender-16.png]
+image create photo mate/16x16/actions/contact-new.png \
+    -file [file join $_icondir contact-new-16.png]
 
 image create photo mate/22x22/status/mail-attachment.png \
     -file [file join $_icondir mail-attachment-22.png]

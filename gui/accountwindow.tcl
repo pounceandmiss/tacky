@@ -109,6 +109,7 @@ snit::widget accountwindow {
             -account $currentAccount \
             -open-chat-command [mymethod OpenChat] \
             -open-bookmark-command [mymethod OpenBookmark] \
+            -new-chat-command [mymethod OpenNewChat] \
             -menubar $win.menubar]
         # Request a width so the pane doesn't collapse before async content arrives.
         $panel configure -width 200
@@ -233,6 +234,10 @@ snit::widget accountwindow {
     method OpenJoinRoom {} {
         if {$currentAccount eq ""} return
         joinroomdialog show $currentAccount $win
+    }
+    method OpenNewChat {} {
+        if {$currentAccount eq ""} return
+        newchatdialog show $currentAccount $win [mymethod OpenChat]
     }
 
     method OpenXmlConsole {} {
