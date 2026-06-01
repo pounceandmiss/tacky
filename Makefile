@@ -23,7 +23,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 
 # ==== Targets ====
 
-.PHONY: all tacky tackyd tackyd-json test test-gui clean dist-dir
+.PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json test test-gui clean dist-dir
 
 all: tacky tackyd tackyd-json
 
@@ -38,6 +38,27 @@ tacky tackyd tackyd-json: %: dist-dir
 	    BASEDIR=$(CURDIR)/build/$* \
 	    app
 	cp build/$*/$* dist/$*
+
+# ==== Windows cross-build ====
+# Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
+# as the native build; TARGET_OS=windows swaps in the win/ recipes and bundles
+# with a host tclsh9.0. Reuses build/$*'s fetched dep sources from the native
+# build (zippy isolates the Windows outputs under _build-win); ships $*.exe.
+
+win: win-tacky win-tackyd win-tackyd-json
+
+win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
+	$(MAKE) -f zippy/zippy.mk \
+	    TARGET_OS=windows \
+	    BIN_NAME=$* \
+	    SHELL_TYPE=$($*_SHELL) \
+	    DEPS="$($*_DEPS)" \
+	    SOURCES="$($*_SRC)" \
+	    ENTRY_SCRIPT="$($*_ENT)" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    BASEDIR=$(CURDIR)/build/$* \
+	    win-app
+	cp build/$*/$*.exe dist/$*.exe
 
 # ==== Test interpreters ====
 # Standalone zipfs interpreters with deps baked in (system tclsh9.0 can't find rtc/rtcma).
