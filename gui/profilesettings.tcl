@@ -12,6 +12,7 @@ snit::widget profilesettings {
     option -tacky -default ::tacky -readonly yes
 
     variable statusAfter ""
+    variable blindTrust 0
 
     typemethod open {account} {
         set top .profile_[string map {@ _ . _} $account]
@@ -80,12 +81,16 @@ snit::widget profilesettings {
         ttk::label $win.omemolbl -text "My OMEMO keys" \
             -font {Helvetica 12 bold}
         grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
+        ttk::checkbutton $win.omemobt \
+            -text "Trust new devices automatically (blind trust, account-wide)" \
+            -variable [myvar blindTrust] -command [mymethod ToggleBlindTrust]
+        grid $win.omemobt -row 7 -column 0 -columnspan 3 -sticky w -padx 4 -pady {2 4}
         omemokeyspanel $win.omemokeys -acc $acc -jid [jid bare $acc]
-        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
+        grid $win.omemokeys -row 8 -column 0 -columnspan 3 -sticky nsew \
             -padx 4 -pady 4
 
         grid columnconfigure $win 1 -weight 1
-        grid rowconfigure $win 7 -weight 1
+        grid rowconfigure $win 8 -weight 1
 
         # Nick: load + stay live
         $t nick get -acc $acc -jid $acc \
@@ -100,6 +105,10 @@ snit::widget profilesettings {
         $win.avatarimg configure -image $img
         $t listen -tag $win avatar <Progress> -acc $acc \
             [mymethod OnProgress]
+
+        # Blind-trust toggle: pull current value + stay live.
+        $t observe -tag $win omemo <BlindTrust> -acc $acc \
+            [mymethod OnBlindTrust]
     }
 
     destructor {
@@ -128,6 +137,13 @@ snit::widget profilesettings {
 
     method OnAvatar {img} {
         $win.avatarimg configure -image $img
+    }
+
+    method OnBlindTrust {ev} { set blindTrust [dict get $ev -value] }
+
+    method ToggleBlindTrust {} {
+        $options(-tacky) omemo setBlindTrust \
+            -acc $options(-acc) -value $blindTrust
     }
 
     # --- Actions ---
