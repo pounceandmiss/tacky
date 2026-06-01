@@ -203,6 +203,17 @@ snit::type taco_messagestore {
         return [list $lo $hi]
     }
 
+    # Blank a server_id the server rejected as not-in-archive: the row reverts
+    # to a display-only non-citizen, no longer a cursor. `store` re-fills it if
+    # MAM later returns the same message with a valid id.
+    method demote {jid serverId} {
+        if {$serverId eq ""} return
+        $options(-db) eval {
+            UPDATE chat_message SET server_id=''
+            WHERE chat_jid=$jid AND server_id=$serverId
+        }
+    }
+
     # --- Store ----------------------------------------------------------
 
     # Insert messages. Deduplicates by server_id/own_id (or content

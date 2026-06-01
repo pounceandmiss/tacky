@@ -998,3 +998,30 @@ test messagestore-reply-body-missing-target {a reply whose target is absent has 
         set reply [lindex [ms_msgs [store get latest alice@example.com]] 0]
         dict exists $reply reply_body
     } -result {0}
+
+# =============================================================================
+# demote
+# =============================================================================
+
+test messagestore-demote-blanks-server-id \
+    {demote blanks only the targeted server_id; the row still displays} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id sid1 body a] \
+            [ms_msg timestamp 200 server_id sid2 body b]]
+        store demote alice@example.com sid1
+        set msgs [ms_msgs [store get before alice@example.com 300]]
+        set m1 [lindex $msgs 0]
+        set m2 [lindex $msgs 1]
+        list [dict get $m1 body] [dict get $m1 server_id] \
+             [dict get $m2 body] [dict get $m2 server_id]
+    } -result {a {} b sid2}
+
+test messagestore-demote-empty-noop {demote with an empty server_id is a no-op} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body a]]
+        store demote alice@example.com ""
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] server_id
+    } -result {sid1}
