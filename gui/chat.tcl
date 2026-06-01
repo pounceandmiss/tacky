@@ -493,6 +493,7 @@ snit::widgetadaptor chatview {
     method OnAttachOpenReady {path} {
         if {$path eq ""} {
             tk_messageBox -icon error -title "Download Failed" \
+                -parent [winfo toplevel $win] \
                 -message "Could not download the attachment."
             return
         }
@@ -500,11 +501,12 @@ snit::widgetadaptor chatview {
     }
 
     method AttachSave {url name} {
-        set dest [tk_getSaveFile -initialfile $name]
+        set dest [tk_getSaveFile -initialfile $name -parent [winfo toplevel $win]]
         if {$dest eq ""} return
         if {[file exists $url]} {
             if {[catch {file copy -force -- $url $dest} err]} {
-                tk_messageBox -icon error -title "Save Failed" -message $err
+                tk_messageBox -icon error -title "Save Failed" \
+                    -parent [winfo toplevel $win] -message $err
             }
             return
         }
@@ -515,6 +517,7 @@ snit::widgetadaptor chatview {
     method OnAttachSaveReady {dest path} {
         if {$path eq ""} {
             tk_messageBox -icon error -title "Download Failed" \
+                -parent [winfo toplevel $win] \
                 -message "Could not download the attachment."
             return
         }
@@ -532,6 +535,7 @@ snit::widgetadaptor chatview {
     method OnAttachFolderReady {path} {
         if {$path eq ""} {
             tk_messageBox -icon error -title "Download Failed" \
+                -parent [winfo toplevel $win] \
                 -message "Could not download the attachment."
             return
         }

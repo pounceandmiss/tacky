@@ -356,6 +356,7 @@ snit::widget mucparticipantlist {
         if {$type_ eq "error"} {
             set errorType [xsearch $stanza error * -get tag]
             tk_messageBox -icon error -title "$action Failed" \
+                -parent [winfo toplevel $win] \
                 -message "$action failed: $errorType"
         }
     }

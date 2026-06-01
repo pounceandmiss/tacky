@@ -25,7 +25,7 @@ snit::widget joinroomdialog {
     variable service ""
     variable toplevelW
 
-    typemethod show {accJid} {
+    typemethod show {accJid {parent ""}} {
         set dlg .joinroomdialog
         if {[winfo exists $dlg]} {
             raise $dlg
@@ -34,6 +34,9 @@ snit::widget joinroomdialog {
         toplevel $dlg
         wm title $dlg "Join Room"
         wm minsize $dlg 400 350
+        if {$parent ne "" && [winfo exists $parent]} {
+            wm transient $dlg $parent
+        }
         joinroomdialog $dlg.content -acc $accJid
         pack $dlg.content -expand yes -fill both
     }
@@ -137,6 +140,7 @@ snit::widget joinroomdialog {
         if {![winfo exists $win]} return
         if {[lindex $rooms 0] eq "error"} {
             tk_messageBox -icon error -title "Discovery Failed" \
+                -parent $toplevelW \
                 -message "Could not discover rooms on $service"
             return
         }
@@ -163,6 +167,7 @@ snit::widget joinroomdialog {
     method DoJoin {} {
         if {$roomjid eq "" || $nick eq ""} {
             tk_messageBox -icon warning -title "Missing Info" \
+                -parent $toplevelW \
                 -message "Please enter a room JID and nickname."
             return
         }
@@ -186,6 +191,7 @@ snit::widget joinroomdialog {
             set error [dict get $ev -error]
         }
         tk_messageBox -icon error -title "Join Failed" \
+            -parent $toplevelW \
             -message "Could not join $roomjid: $error"
     }
 }

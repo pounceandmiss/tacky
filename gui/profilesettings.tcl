@@ -94,9 +94,10 @@ snit::widget profilesettings {
             [mymethod OnNickChanged]
 
         # Avatar: load + stay live
-        avatarcache track \
+        set img [avatarcache track \
             -acc $acc -jid $acc -tag $win.avatar \
-            -command [mymethod OnAvatar]
+            -command [mymethod OnAvatar]]
+        $win.avatarimg configure -image $img
         $t listen -tag $win avatar <Progress> -acc $acc \
             [mymethod OnProgress]
     }

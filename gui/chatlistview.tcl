@@ -596,6 +596,7 @@ snit::widget chatlistview {
         if {$jid eq ""} return
 
         if {[tk_messageBox -type yesno -icon question \
+                -parent [winfo toplevel $win] \
                 -message "Remove $jid from roster?"] eq "yes"} {
             $options(-tacky) roster remove \
                 -acc $options(-acc) -jid $jid
@@ -646,6 +647,7 @@ snit::widget chatlistview {
         if {$jid eq ""} return
 
         if {[tk_messageBox -type yesno -icon question \
+                -parent [winfo toplevel $win] \
                 -message "Remove bookmark $jid?"] eq "yes"} {
             $options(-tacky) bookmarks remove \
                 -acc $options(-acc) -jid $jid
