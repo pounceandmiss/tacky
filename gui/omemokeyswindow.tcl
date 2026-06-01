@@ -36,7 +36,7 @@ snit::widget omemokeyswindow {
         $self configurelist $args
 
         ttk::checkbutton $win.bt \
-            -text "Trust new devices automatically (blind trust)" \
+            -text "Trust new devices automatically (blind trust, account-wide)" \
             -variable [myvar blindTrust] -command [mymethod ToggleBlindTrust]
         ttk::button $win.close -text "Close" -command [list destroy $win]
 
@@ -79,6 +79,6 @@ snit::widget omemokeyswindow {
     method OnBlindTrust {ev} { set blindTrust [dict get $ev -value] }
 
     method ToggleBlindTrust {} {
-        ::tacky omemo setBlindTrust -value $blindTrust
+        ::tacky omemo setBlindTrust -acc $options(-acc) -value $blindTrust
     }
 }
