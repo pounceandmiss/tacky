@@ -36,6 +36,27 @@ proc _xmpp_starttls_readable_cb {chan host cb} {
             lappend extraopts -cafile $::env(SPOOF_SSL_CERT)
         }
         # </for automated testing>
-        {*}$cb ok [mtls::import $chan -servername $host {*}$extraopts]
+        if {[catch {mtls::import $chan -servername $host {*}$extraopts} tlschan]} {
+            {*}$cb error $tlschan
+            return
+        }
+        _xmpp_starttls_handshake $tlschan $cb
+    }
+}
+
+# mtls::handshake returns 1 (done), 0 (in progress), or throws the mbedTLS
+# failure reason, which we hand to $cb so callers can show it.
+proc _xmpp_starttls_handshake {tlschan cb} {
+    if {[catch {mtls::handshake $tlschan} res]} {
+        fileevent $tlschan readable {}
+        {*}$cb error $res
+        return
+    }
+    if {$res} {
+        fileevent $tlschan readable {}
+        {*}$cb ok $tlschan
+    } else {
+        fileevent $tlschan readable \
+            [list _xmpp_starttls_handshake $tlschan $cb]
     }
 }

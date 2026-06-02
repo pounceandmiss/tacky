@@ -175,9 +175,9 @@ snit::type baseconn {
         }
     }
 
-    method OnStarttlsComplete {status {tlsSocket ""}} {
+    method OnStarttlsComplete {status {detail ""}} {
         if {$status eq "ok"} {
-            set socket $tlsSocket
+            set socket $detail
             $self CreateReader
             set state connected
             if {$options(-ontransportready) ne ""} {
@@ -188,7 +188,9 @@ snit::type baseconn {
             set socket ""
             set state disconnected
             if {$options(-error-command) ne "control::no-op"} {
-                {*}$options(-error-command) "STARTTLS failed"
+                set msg "TLS handshake failed"
+                if {$detail ne ""} { set msg "TLS: $detail" }
+                {*}$options(-error-command) $msg
             }
         }
     }
@@ -386,6 +388,9 @@ snit::type conn {
     #   disconnected | connecting | authenticating | binding | connected | waiting
     variable connState disconnected
 
+    # Last failure message, "" once connected; pulled by `tacky observe`.
+    variable lastError ""
+
     # Stanzas queued before the session is ready; flushed on connect
     variable writeBuffer [list]
 
@@ -442,8 +447,31 @@ snit::type conn {
         return $connState
     }
 
+    # Re-emit current state for `tacky observe` (initial-state sync on attach).
+    method pull {args} {
+        if {$options(-emit) eq ""} return
+        array set opts $args
+        switch -- $opts(-event) {
+            <State> {
+                {*}$options(-emit) conn <State> -state $connState
+            }
+            <ConnError> {
+                if {$lastError ne ""} {
+                    {*}$options(-emit) conn <ConnError> -message $lastError
+                }
+            }
+            default {
+                return -code error \
+                    "conn pull: event $opts(-event) is not pullable"
+            }
+        }
+    }
+
     method SetConnState {s} {
         set connState $s
+        if {$s eq "connected"} {
+            set lastError ""
+        }
         if {$options(-emit) ne ""} {
             {*}$options(-emit) conn <State> -state $s
         }
@@ -673,9 +701,14 @@ snit::type conn {
     # and either schedules a silent reconnect or fires -ondisconnect.
     method OnTransportError {msg} {
         set authState disconnected
+        set lastError $msg
         $sm onDisconnect
         $base close
         if {$options(-autoreconnect)} {
+            # Report the reason even while retrying silently, so the UI can show it.
+            if {$options(-emit) ne ""} {
+                {*}$options(-emit) conn <ConnError> -message $msg
+            }
             $self ScheduleReconnect
         } else {
             $self SetConnState disconnected
@@ -694,6 +727,7 @@ snit::type conn {
         set emitCmd $options(-emit)
         set authErrCmd $options(-onautherror)
         set authState disconnected
+        set lastError $message
         $sm onDisconnect
         $base close
         $self SetConnState disconnected

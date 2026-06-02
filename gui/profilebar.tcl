@@ -50,10 +50,10 @@ snit::widget profilebar {
             bind $w <Button-3> [mymethod OnRightClick %X %Y]
         }
 
-        # Connection state events
-        $t listen -tag $win conn <State> -acc $acc [mymethod OnConnState]
         $t listen -tag $win conn <AuthError> -acc $acc [mymethod OnError]
         $t listen -tag $win conn <Disconnected> -acc $acc [mymethod OnError]
+        $t observe -tag $win conn <ConnError> -acc $acc [mymethod OnConnError]
+        $t observe -tag $win conn <State> -acc $acc [mymethod OnConnState]
 
         # Fetch display name
         $t bookmarks defaultNick -acc $acc \
@@ -84,15 +84,18 @@ snit::widget profilebar {
                 set errmsg ""
                 $win.status configure -text "\u25CF" -foreground green4
             }
-            connecting - authenticating - binding {
-                set errmsg ""
-                $win.status configure -text "\u25CF" -foreground goldenrod3
-            }
-            waiting {
-                $win.status configure -text "\u25CF" -foreground goldenrod3
+            connecting - authenticating - binding - waiting {
+                # Keep the error colour through a failing reconnect cycle.
+                if {$errmsg ne ""} {
+                    $win.status configure -text "\u25CF" -foreground red3
+                } else {
+                    $win.status configure -text "\u25CF" -foreground goldenrod3
+                }
             }
             disconnected {
-                if {$errmsg eq ""} {
+                if {$errmsg ne ""} {
+                    $win.status configure -text "\u25CF" -foreground red3
+                } else {
                     $win.status configure -text "\u25CF" -foreground gray50
                 }
             }
@@ -102,6 +105,12 @@ snit::widget profilebar {
     method OnError {ev} {
         set errmsg [dict get $ev -message]
         set connstate disconnected
+        $win.status configure -text "\u25CF" -foreground red3
+    }
+
+    # Record the reason and show red; the <State> events keep driving connstate.
+    method OnConnError {ev} {
+        set errmsg [dict get $ev -message]
         $win.status configure -text "\u25CF" -foreground red3
     }
 
