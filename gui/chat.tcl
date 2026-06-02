@@ -1161,7 +1161,11 @@ snit::widget chatarea {
             }
             $text ins msgins \n $tag
 
-            if {[info exists message(formatting)]} {
+            # Formatting offsets index into the body. An empty body draws no
+            # $tag.body characters, so $tag.body.first would not resolve -
+            # skip rather than let the index lookup throw and abort the draw.
+            if {[info exists message(formatting)]
+                && [llength [$text tag ranges $tag.body]] > 0} {
                 foreach {type offset length} $message(formatting) {
                     $text tag add entity.$type \
                         "$tag.body.first + $offset chars" \
