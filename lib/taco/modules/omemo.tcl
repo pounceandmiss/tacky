@@ -312,16 +312,10 @@ snit::type taco_omemo {
 
     method GenerateDeviceId {} {
         # 31-bit non-zero. Loop on the (vanishingly unlikely) zero draw.
-        set ch [open /dev/urandom rb]
-        try {
-            while {1} {
-                set raw [read $ch 4]
-                binary scan $raw Iu n
-                set n [expr {$n & 0x7fffffff}]
-                if {$n != 0} { return $n }
-            }
-        } finally {
-            close $ch
+        while {1} {
+            binary scan [omemo::random 4] Iu n
+            set n [expr {$n & 0x7fffffff}]
+            if {$n != 0} { return $n }
         }
     }
 
