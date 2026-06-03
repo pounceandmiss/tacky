@@ -41,16 +41,16 @@ test chats-latest-strips-join {latest strips ?join suffix from JIDs} \
         c chats latest
     } -result {room@muc.example.com}
 
-test chats-maxts-ignores-sentinel \
-    {maxTimestamp reflects the newest message, not a tail sentinel} \
+test chats-maxts-ignores-hole \
+    {maxTimestamp reflects the newest message, not a tail hole} \
     {*}$chats_common \
     -body {
         set room room@muc.example.com?join
         set ts [clock microseconds]
         chats_insert $room timestamp $ts server_id sid-1
-        # A 'newer' sentinel marks an unfetched tail gap one usec past the
+        # A 'newer' hole marks an unfetched tail gap one usec past the
         # newest message; it must not be mistaken for the newest message.
-        c message messagestore sentinel add $room newer $ts
+        c message messagestore hole add $room newer $ts
         expr {[c chats maxTimestamp -chat $room] == $ts}
     } -result 1
 

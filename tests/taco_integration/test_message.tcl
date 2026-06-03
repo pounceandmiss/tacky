@@ -191,7 +191,7 @@ namespace eval ::test::message_int {
             set found
         } -result {1}
 
-    # -- Sentinels ---
+    # -- Holes ---
 
     # `message messagestore` is a snit -public component delegate: you
     # always have to call a subcommand on the same line. ms forwards
@@ -200,8 +200,8 @@ namespace eval ::test::message_int {
         [tacky client $acc] message messagestore {*}$args
     }
 
-    test message-int-reconnect-overlap-clears-sentinel \
-        {reconnect places a sentinel; catchup overlap (preserved DB) sweeps it} \
+    test message-int-reconnect-overlap-clears-hole \
+        {reconnect places a hole; catchup overlap (preserved DB) sweeps it} \
         {*}$common \
         -body {
             variable ROMEO
@@ -225,20 +225,20 @@ namespace eval ::test::message_int {
                 }]
             after 300
 
-            # Re-enable romeo. OnReady places a reconnect sentinel for
+            # Re-enable romeo. OnReady places a reconnect hole for
             # juliet, then DoCatchup pulls both messages; overlap on
             # "before disconnect" proves the bracket empty so the
-            # sentinel sweeps.
+            # hole sweeps.
             tacky account enable -acc $ROMEO
             ::test::helpers::waitEvents {
                 {message <CatchupDone> -acc romeo@example.local}
             }
 
-            llength [ms $ROMEO sentinel list $JULIET]
+            llength [ms $ROMEO hole list $JULIET]
         } -result {0}
 
-    test message-int-history-mam-complete-removes-sentinel \
-        {history MAM with empty result + complete=true clears the bounding sentinel} \
+    test message-int-history-mam-complete-removes-hole \
+        {history MAM with empty result + complete=true clears the bounding hole} \
         {*}$common \
         -body {
             variable ROMEO
@@ -248,18 +248,18 @@ namespace eval ::test::message_int {
             set ev [sendAndReceive "anchor"]
             set ts [dict get $ev -message timestamp]
 
-            # Manually place an older-side sentinel.
-            ms $ROMEO sentinel add $JULIET older $ts
-            if {[llength [ms $ROMEO sentinel list $JULIET]] != 1} {
-                error "sentinel not placed; got [ms $ROMEO sentinel list $JULIET]"
+            # Manually place an older-side hole.
+            ms $ROMEO hole add $JULIET older $ts
+            if {[llength [ms $ROMEO hole list $JULIET]] != 1} {
+                error "hole not placed; got [ms $ROMEO hole list $JULIET]"
             }
 
             # history -before $ts: local is empty older than the anchor
-            # and bounded by the sentinel, so MAM fires. Server has
+            # and bounded by the hole, so MAM fires. Server has
             # nothing older and returns empty + complete=true, so
-            # OnFetch removes the bounding sentinel.
+            # OnFetch removes the bounding hole.
             historyWait -acc $ROMEO -chat $JULIET -before $ts -limit 50
 
-            llength [ms $ROMEO sentinel list $JULIET]
+            llength [ms $ROMEO hole list $JULIET]
         } -result {0}
 }

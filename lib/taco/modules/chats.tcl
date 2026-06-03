@@ -32,9 +32,9 @@ snit::type taco_chats {
         $self configurelist $args
         set client $options(-client)
         set db [$client cget -db]
-        # Load existing max timestamps. Sentinels sit one microsecond past
+        # Load existing max timestamps. Holes sit one microsecond past
         # the newest message to mark an unfetched gap; they are not messages,
-        # so exclude them or a tail sentinel would masquerade as the latest.
+        # so exclude them or a tail hole would masquerade as the latest.
         $db eval {
             SELECT chat_jid, MAX(timestamp) AS max_ts
             FROM chat_message
@@ -45,7 +45,7 @@ snit::type taco_chats {
         }
 
         # Trigger calls into Tcl on every new message. Gate on kind so a
-        # sentinel insert neither poisons the cached max nor churns the
+        # hole insert neither poisons the cached max nor churns the
         # chat-list ordering with a spurious <Updated>.
         $db function _chats_on_message [mymethod OnMessage]
         $db eval {
@@ -86,7 +86,7 @@ snit::type taco_chats {
         }
     }
 
-    # Not the MaxTimestamps cache: its AFTER INSERT trigger counts sentinel
+    # Not the MaxTimestamps cache: its AFTER INSERT trigger counts hole
     # rows and misses the timestamp UPDATE on MUC-echo confirmation.
     tackymethod maxTimestamp {args} {
         array set opts $args

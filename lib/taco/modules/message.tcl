@@ -50,14 +50,14 @@
 #      (<Received>); a control stanza (receipt, chat marker, chat state) or
 #      other bodyless payload is discarded.
 #
-# === Sentinels ===
+# === Holes ===
 #
-#   Sentinels mark "history may exist here that we haven't fetched."
-#   Placed at moments of doubt: OnReady (a `newer` sentinel past each
+#   Holes mark "history may exist here that we haven't fetched."
+#   Placed at moments of doubt: OnReady (a `newer` hole past each
 #   chat's newest pre-disconnect citizen) and OnFetch on MAM
 #   complete=false (at the page's far edge). Removed when a gap is proven
 #   empty: a `store` overlap, an OnFetch sweep between cursor and page edge
-#   (RSM-contiguous), or RSM complete=true on a sentinel-bounded fetch.
+#   (RSM-contiguous), or RSM complete=true on a hole-bounded fetch.
 #
 # === Retry on reconnect ===
 #
@@ -120,16 +120,16 @@ snit::type taco_message {
         # exhaust the OMEMO retry budget — give each still-pending
         # message a fresh shot on the new connection.
         array unset OmemoRetryBudget
-        $self PlaceReconnectSentinels
+        $self PlaceReconnectHoles
         $self DoCatchup
         $self RetryPending
     }
 
     # Bracket any history that arrived during the disconnect window:
-    # a `newer` sentinel after each chat's newest citizen. Catchup may
+    # a `newer` hole after each chat's newest citizen. Catchup may
     # then sweep these via store overlap; otherwise they remain and
     # bound future pagination.
-    method PlaceReconnectSentinels {} {
+    method PlaceReconnectHoles {} {
         set chatJids {}
         $client db eval {
             SELECT DISTINCT chat_jid FROM chat_message
@@ -145,7 +145,7 @@ snit::type taco_message {
                   AND server_id IS NOT NULL AND server_id != ''
             }]
             if {$newestTs ne ""} {
-                $messagestore sentinel add $jid newer $newestTs
+                $messagestore hole add $jid newer $newestTs
             }
         }
     }
@@ -161,7 +161,7 @@ snit::type taco_message {
     # replicate the batch-level overlap sweep that single-call
     # `store` would do: if any one of this chat's catchup messages
     # dedups against pre-existing cache, the entire bracket span
-    # is server-contiguous (RSM) and any sentinels in that span
+    # is server-contiguous (RSM) and any holes in that span
     # are proven false positives.
     method OnCatchup {mamResult} {
         if {[dict exists $mamResult error]} {
@@ -193,7 +193,7 @@ snit::type taco_message {
 
             set r [$self ParseResultNode $resultNode $chatJid]
             set disp [dict get $r disposition]
-            # drop = displayless new stanza; doesn't bound a sentinel (as before).
+            # drop = displayless new stanza; doesn't bound a hole (as before).
             if {$disp eq "drop"} continue
 
             set msgTs [dict get $r timestamp]
@@ -234,18 +234,18 @@ snit::type taco_message {
 
         # Per-chat sweep over the catchup span if any overlap occurred.
         dict for {jid _} $perChatOverlap {
-            $messagestore sentinel removeBetween $jid \
+            $messagestore hole removeBetween $jid \
                 [dict get $perChatMin $jid] \
                 [dict get $perChatMax $jid]
         }
 
-        # Place older-edge sentinel for any chat in this catchup if the
+        # Place older-edge hole for any chat in this catchup if the
         # global MAM query reports more older history. For chats with
-        # an existing covering sentinel (PlaceReconnectSentinels), the
+        # an existing covering hole (PlaceReconnectHoles), the
         # dedup invariant makes the add a no-op.
         if {![dict get $mamResult complete]} {
             dict for {jid minTs} $perChatMin {
-                $messagestore sentinel add $jid older $minTs
+                $messagestore hole add $jid older $minTs
             }
         }
 
@@ -952,8 +952,8 @@ snit::type taco_message {
     # -tag: if given, the callback can be cancelled via `cancel -tag $tag`.
     #
     # Local-first: tries the local store before the server. messagestore
-    # get methods truncate at sentinels and signal `bounded=1` when a
-    # sentinel forced truncation and the limit wasn't satisfied; the
+    # get methods truncate at holes and signal `bounded=1` when a
+    # hole forced truncation and the limit wasn't satisfied; the
     # MAM fill kicks in to fetch what's on the far side of the gap.
 
     # Shared local-store query: dispatches to get before/after/latest.
@@ -992,7 +992,7 @@ snit::type taco_message {
         # Return local immediately when it satisfies the request. Trigger
         # MAM only when there's a cursor to anchor the fill — initial
         # loads with bounded local data show what they have; the user
-        # scrolls into the sentinel later to trigger fill.
+        # scrolls into the hole later to trigger fill.
         if {[llength $localMessages] >= $limit
             || ([llength $localMessages] > 0
                 && (!$bounded || !$hasCursor))} {
@@ -1000,7 +1000,7 @@ snit::type taco_message {
             return
         }
 
-        # For -after queries with no sentinel ahead, skip MAM when
+        # For -after queries with no hole ahead, skip MAM when
         # cursor is at or past the latest stored message — there's
         # nothing newer in the archive.
         if {$after ne "" && !$bounded} {
@@ -1079,7 +1079,7 @@ snit::type taco_message {
         }
 
         # Only `new` messages are stored; `parsed` keeps every disposition
-        # (each carries a timestamp) so the sentinel ops below still span the
+        # (each carries a timestamp) so the hole ops below still span the
         # true archive range.
         lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
         # Store the new batch (even if cancelled - data is useful)
@@ -1115,10 +1115,10 @@ snit::type taco_message {
         # Terminal page (enough collected, archive exhausted, no cursor to
         # advance, or cancelled): finalise the queried-direction boundary.
         if {$complete} {
-            $self ClearBoundingSentinel $chatJid $direction $before $after \
+            $self ClearBoundingHole $chatJid $direction $before $after \
                 $wasBounded
         } else {
-            $self PlaceFarEdgeSentinel $chatJid $parsed $direction
+            $self PlaceFarEdgeHole $chatJid $parsed $direction
         }
 
         if {$cancelled} return
@@ -1131,18 +1131,18 @@ snit::type taco_message {
         expr {$direction eq "older" ? $before : $after}
     }
 
-    # Sweep sentinels between the cursor and the batch's far edge. RSM
-    # guarantees that range is contiguous, so any sentinel there was a false
+    # Sweep holes between the cursor and the batch's far edge. RSM
+    # guarantees that range is contiguous, so any hole there was a false
     # positive (paginated past, or stale). No-op without a cursor or batch.
     method SweepFetchedRange {chatJid messages direction before after} {
         set cursorTs [fetch_cursor_ts $direction $before $after]
         if {[llength $messages] == 0 || $cursorTs eq ""} return
         set tsList [lmap m $messages {dict get $m timestamp}]
         if {$direction eq "older"} {
-            $messagestore sentinel removeBetween $chatJid \
+            $messagestore hole removeBetween $chatJid \
                 [tcl::mathfunc::min {*}$tsList] $cursorTs
         } else {
-            $messagestore sentinel removeBetween $chatJid \
+            $messagestore hole removeBetween $chatJid \
                 $cursorTs [tcl::mathfunc::max {*}$tsList]
         }
     }
@@ -1150,23 +1150,23 @@ snit::type taco_message {
     # Mark "archive continues beyond here, not yet fetched" at the batch's far
     # edge. Only once the fill loop stops short (complete=false): on an
     # intermediate page it would truncate the next page on the cursorless path.
-    method PlaceFarEdgeSentinel {chatJid messages direction} {
+    method PlaceFarEdgeHole {chatJid messages direction} {
         if {[llength $messages] == 0} return
         set tsList [lmap m $messages {dict get $m timestamp}]
         if {$direction eq "older"} {
-            $messagestore sentinel add $chatJid older [tcl::mathfunc::min {*}$tsList]
+            $messagestore hole add $chatJid older [tcl::mathfunc::min {*}$tsList]
         } else {
-            $messagestore sentinel add $chatJid newer [tcl::mathfunc::max {*}$tsList]
+            $messagestore hole add $chatJid newer [tcl::mathfunc::max {*}$tsList]
         }
     }
 
-    # Remove the bounding sentinel proven false by complete=true: the server
+    # Remove the bounding hole proven false by complete=true: the server
     # confirms nothing exists past the cursor in this direction. Applies even
     # for an empty terminal page.
-    method ClearBoundingSentinel {chatJid direction before after wasBounded} {
+    method ClearBoundingHole {chatJid direction before after wasBounded} {
         set cursorTs [fetch_cursor_ts $direction $before $after]
         if {$wasBounded && $cursorTs ne ""} {
-            $messagestore sentinel remove $chatJid $direction $cursorTs
+            $messagestore hole remove $chatJid $direction $cursorTs
         }
     }
 
@@ -1256,11 +1256,11 @@ snit::type taco_message {
     #        ?-tag $tag? -command $cb
     #
     # Full text search via MAM. Always server-side.
-    # Results are stored to the local cache and wrapped with sentinels
+    # Results are stored to the local cache and wrapped with holes
     # on each side — a hit is an isolated island whose surroundings we
     # know nothing about, so future pagination across it must fall
-    # through to MAM. `sentinel add` is a no-op when the target gap is
-    # already sentineled, so repeated searches don't accumulate.
+    # through to MAM. `hole add` is a no-op when the target gap is
+    # already holeed, so repeated searches don't accumulate.
     # Callback receives dict: messages, complete, last
     method search {args} {
         array set opts {-limit 20 -tag "" -field ""}
@@ -1309,8 +1309,8 @@ snit::type taco_message {
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
                 set storedTs [lindex $ins 0]
-                $messagestore sentinel add $chatJid older $storedTs
-                $messagestore sentinel add $chatJid newer $storedTs
+                $messagestore hole add $chatJid older $storedTs
+                $messagestore hole add $chatJid newer $storedTs
                 lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]
             }
         }
@@ -1324,7 +1324,7 @@ snit::type taco_message {
     # Walk a single-chat MAM batch through Classify, firing <Patch> for each
     # envelope-confirmed send. Returns {parsed toStore}: `parsed` is every
     # disposition (so callers can reason about the true archive span when
-    # placing/sweeping sentinels) and `toStore` the new message dicts to
+    # placing/sweeping holes) and `toStore` the new message dicts to
     # persist in one store call.
     method IngestMamBatch {chatJid mamResult} {
         set parsed {}

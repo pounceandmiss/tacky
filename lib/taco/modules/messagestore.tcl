@@ -1,13 +1,13 @@
 if 0 {
     Contiguity is implicit: two adjacent stored messages with no
-    sentinel between them are trusted to have no gap.
+    hole between them are trusted to have no gap.
 
     chat_message holds two row kinds, discriminated by `kind`:
 
     - kind='message'  a real message (incoming, outgoing pending, or
                       outgoing confirmed). server_id is set once the
                       server has acknowledged it.
-    - kind='sentinel' a gap marker placed at moments of doubt
+    - kind='hole' a gap marker placed at moments of doubt
                       (reconnect, initial chat open). chat_jid and
                       timestamp are set; all other columns NULL.
 
@@ -15,24 +15,24 @@ if 0 {
 
         kind='message' AND server_id != ''
 
-    Sentinels and pending outgoings (server_id='') both fail it and
+    Holes and pending outgoings (server_id='') both fail it and
     are transparently skipped by neighbour lookups, cursor selection,
     and dedup.
 
-    Sentinels are placed by `sentinel add $jid $direction $anchorTs`
-    and removed either explicitly (`sentinel remove` on RSM-complete,
-    `sentinel removeBetween` for the post-MAM sweep) or implicitly
+    Holes are placed by `hole add $jid $direction $anchorTs`
+    and removed either explicitly (`hole remove` on RSM-complete,
+    `hole removeBetween` for the post-MAM sweep) or implicitly
     when `store` proves overlap against pre-existing cache (the
     batch's bracket span is swept).
 
     Pagination queries (`get before` / `get after` / `get latest`)
-    return `{messages bounded}`. `bounded=1` signals "a sentinel
+    return `{messages bounded}`. `bounded=1` signals "a hole
     truncated the result on the queried side; if you want more in
     this direction, fall through to MAM."
 
     Outgoing messages stored with server_id="" show up in `get`
     results (so the UI sees them) but fail the citizen check, so
-    they don't anchor sentinels or bound queries. On confirmation
+    they don't anchor holes or bound queries. On confirmation
     (MUC echo or own MAM result) they gain a server_id and join
     contiguity normally.
 }
@@ -77,7 +77,7 @@ snit::type taco_messagestore {
                 -- parked (OMEMO encrypt NOT_READY). OMEMO retries pick
                 -- on_wire=0 rows so they don't re-send in-flight ones.
                 on_wire        INTEGER NOT NULL DEFAULT 0,
-                -- 'message' (default) | 'sentinel'
+                -- 'message' (default) | 'hole'
                 kind           TEXT NOT NULL DEFAULT 'message',
                 -- '' = the server has this exact message (incoming, MAM,
                 --   carbon, or a confirmed send - all the same situation);
@@ -108,23 +108,23 @@ snit::type taco_messagestore {
                 ON chat_message(chat_jid, own_id) WHERE own_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_origin_id
                 ON chat_message(chat_jid, origin_id) WHERE origin_id != '';
-            CREATE INDEX IF NOT EXISTS idx_chat_message_sentinel
-                ON chat_message(chat_jid, timestamp) WHERE kind='sentinel';
+            CREATE INDEX IF NOT EXISTS idx_chat_message_hole
+                ON chat_message(chat_jid, timestamp) WHERE kind='hole';
         }
     }
 
-    # --- Sentinels ------------------------------------------------------
+    # --- Holes ------------------------------------------------------
 
-    # Insert a sentinel in the gap immediately $direction of $anchorTs.
+    # Insert a hole in the gap immediately $direction of $anchorTs.
     # direction is `older` | `newer`. Enforces at-most-one-per-gap: if a
-    # sentinel already lies between $anchorTs and the next citizen in
+    # hole already lies between $anchorTs and the next citizen in
     # $direction (treating "no citizen on that side" as +/-inf), this is a
     # no-op. Synthetic ts derived via BumpTs one step off the anchor.
-    method "sentinel add" {jid direction anchorTs} {
+    method "hole add" {jid direction anchorTs} {
         lassign [$self GapBounds $jid $direction $anchorTs] lo hi
         set exists [$options(-db) onecolumn {
             SELECT 1 FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp > $lo AND timestamp < $hi
             LIMIT 1
         }]
@@ -133,38 +133,38 @@ snit::type taco_messagestore {
         set ts [$self BumpTs $jid [expr {$anchorTs + $step}] $step]
         $options(-db) eval {
             INSERT INTO chat_message(timestamp, chat_jid, kind)
-            VALUES($ts, $jid, 'sentinel')
+            VALUES($ts, $jid, 'hole')
         }
     }
 
-    # Remove any sentinel(s) in the gap immediately $direction of
+    # Remove any hole(s) in the gap immediately $direction of
     # $anchorTs. Invariant says at most one; defensive plural costs the
     # same as a range delete.
-    method "sentinel remove" {jid direction anchorTs} {
+    method "hole remove" {jid direction anchorTs} {
         lassign [$self GapBounds $jid $direction $anchorTs] lo hi
         $options(-db) eval {
             DELETE FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp > $lo AND timestamp < $hi
         }
     }
 
-    # Internal: delete sentinels strictly between $loTs and $hiTs.
+    # Internal: delete holes strictly between $loTs and $hiTs.
     # Used by `store` overlap-proof and by post-MAM sweep in message.tcl.
-    method "sentinel removeBetween" {jid loTs hiTs} {
+    method "hole removeBetween" {jid loTs hiTs} {
         $options(-db) eval {
             DELETE FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp > $loTs AND timestamp < $hiTs
         }
     }
 
-    # Tests-only: ordered list of sentinel timestamps.
-    method "sentinel list" {jid} {
+    # Tests-only: ordered list of hole timestamps.
+    method "hole list" {jid} {
         set rows {}
         $options(-db) eval {
             SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
             ORDER BY timestamp ASC
         } row {
             lappend rows $row(timestamp)
@@ -173,7 +173,7 @@ snit::type taco_messagestore {
     }
 
     # Bounds of the gap immediately $direction of $anchorTs, inclusive
-    # of $anchorTs on the anchor side. Returns {lo hi} with sentinels
+    # of $anchorTs on the anchor side. Returns {lo hi} with holes
     # found via `timestamp > lo AND timestamp < hi`.
     method GapBounds {jid direction anchorTs} {
         switch -- $direction {
@@ -222,8 +222,8 @@ snit::type taco_messagestore {
     # (server_id captured, timestamp adjusted to server's value).
     # When the batch contains at least one real-overlap dup hit (a
     # row that already had a server_id), the entire batch's bracket
-    # is swept of sentinels — RSM guarantees the batch is server-
-    # contiguous, so any sentinel inside the bracket marked a gap
+    # is swept of holes — RSM guarantees the batch is server-
+    # contiguous, so any hole inside the bracket marked a gap
     # we've now proven empty.
     # Returns dict with `confirmed` (list of {own_id, timestamp,
     # newtimestamp}) and `inserted` (list of stored timestamps).
@@ -260,7 +260,7 @@ snit::type taco_messagestore {
                         # MAM result. Move timestamp to server's value
                         # and set server_id. Not an overlap proof —
                         # the pending row was server-invisible until
-                        # now, so it didn't bound any sentinel.
+                        # now, so it didn't bound any hole.
                         set dupTs [dict get $dup timestamp]
                         set sid $m(server_id)
                         if {$m(timestamp) == $dupTs} {
@@ -324,7 +324,7 @@ snit::type taco_messagestore {
             }
 
             if {$hadRealOverlap} {
-                $self sentinel removeBetween $jid \
+                $self hole removeBetween $jid \
                     $batchMinTs $batchMaxTs
             }
         }
@@ -335,13 +335,13 @@ snit::type taco_messagestore {
     # --- Get ------------------------------------------------------------
 
     # Messages older than cursor. Truncates at the nearest older
-    # sentinel (cannot cross a gap). Returns {messages $list bounded $b}
-    # where bounded=1 iff a sentinel exists older than cursor and we
+    # hole (cannot cross a gap). Returns {messages $list bounded $b}
+    # where bounded=1 iff a hole exists older than cursor and we
     # didn't satisfy the limit (caller should fall through to MAM).
     method "get before" {jid cursor {limit 50}} {
         set sentTs [$options(-db) onecolumn {
             SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp < $cursor
         }]
         set rows {}
@@ -380,11 +380,11 @@ snit::type taco_messagestore {
         return [dict create messages $rows bounded $bounded]
     }
 
-    # Symmetric to `get before`. Truncates at the nearest newer sentinel.
+    # Symmetric to `get before`. Truncates at the nearest newer hole.
     method "get after" {jid cursor {limit 50}} {
         set sentTs [$options(-db) onecolumn {
             SELECT MIN(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp > $cursor
         }]
         set rows {}
@@ -420,7 +420,7 @@ snit::type taco_messagestore {
     }
 
     # Most recent messages, truncated so the result never spans a
-    # sentinel that sits between citizens. A sentinel sitting newer
+    # hole that sits between citizens. A hole sitting newer
     # than every message (reconnect placement) does not truncate —
     # the existing citizens are still the latest cluster — but it
     # does flip bounded=1 to signal more might arrive via MAM.
@@ -432,17 +432,17 @@ snit::type taco_messagestore {
         if {$latestMsgTs eq ""} {
             return [dict create messages {} bounded 0]
         }
-        # Truncation sentinel = latest sentinel strictly older than the
-        # latest message. A sentinel sitting newer than all messages
+        # Truncation hole = latest hole strictly older than the
+        # latest message. A hole sitting newer than all messages
         # never separates clusters, so it cannot truncate.
         set truncTs [$options(-db) onecolumn {
             SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
               AND timestamp < $latestMsgTs
         }]
-        set anySentinel [$options(-db) exists {
+        set anyHole [$options(-db) exists {
             SELECT 1 FROM chat_message
-            WHERE chat_jid=$jid AND kind='sentinel'
+            WHERE chat_jid=$jid AND kind='hole'
         }]
         set rows {}
         if {$truncTs eq ""} {
@@ -475,15 +475,15 @@ snit::type taco_messagestore {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
-        # bounded if any sentinel exists and we didn't satisfy the
-        # limit — either a cluster-separating sentinel truncated us,
-        # or a future-edge sentinel signals more may arrive.
-        set bounded [expr {$anySentinel && [llength $rows] < $limit}]
+        # bounded if any hole exists and we didn't satisfy the
+        # limit — either a cluster-separating hole truncated us,
+        # or a future-edge hole signals more may arrive.
+        set bounded [expr {$anyHole && [llength $rows] < $limit}]
         return [dict create messages $rows bounded $bounded]
     }
 
     # Full-text search by LIKE match on body. Returns list of timestamps
-    # (newest first, capped at -limit). Sentinels have NULL body so
+    # (newest first, capped at -limit). Holes have NULL body so
     # they're naturally excluded.
     method search {jid query args} {
         array set opts {-limit 500}
@@ -503,7 +503,7 @@ snit::type taco_messagestore {
 
     # Find the nearest message to timestamp and return context around
     # it (limit/2 before + target + limit/2 after). Each side is
-    # truncated independently at the nearest sentinel.
+    # truncated independently at the nearest hole.
     # Returns dict: {messages $list anchor $nearestTs
     #                bounded_before $b bounded_after $b}.
     method "get around" {jid timestamp limit} {
