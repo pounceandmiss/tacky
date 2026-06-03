@@ -837,11 +837,13 @@ snit::widget chatarea {
                     set successor [lindex $MessageIds $idx]
                     $text mark set msgins item.$successor.first
                 }
-                # Record the id only after the draw succeeds. If DrawMessage
-                # throws, MessageIds must not keep a phantom id whose item.$id
-                # tag was never created - a later insert would pick it as a
-                # successor and fail looking up the missing item.$id.first.
-                $self DrawMessage msgins $msg
+                # On a failed draw, roll back the partial content (tagged
+                # item.$id) and leave a placeholder so the batch continues.
+                if {[catch {$self DrawMessage msgins $msg} err]} {
+                    catch {$text del item.$id.first item.$id.last}
+                    catch {jlog error "DrawMessage failed for $id: $err" -obj chatarea}
+                    $self DrawErrorPlaceholder msgins $id
+                }
                 set MessageIds [linsert $MessageIds $idx $id]
                 lappend inserted $id
             }
@@ -956,6 +958,8 @@ snit::widget chatarea {
         $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
         $text tag configure system -foreground gray50 -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
+        $text tag configure drawerror -foreground #b04040 \
+            -font "$font italic" -lmargin1 40 -lmargin2 40 -spacing3 6
     }
 
     method GetPixelsAbove {} {
@@ -1182,6 +1186,21 @@ snit::widget chatarea {
                 }
             }
         }
+    }
+
+    # Placeholder for a message that failed to draw. Field-free so it can't
+    # fail itself; carries item.$id so id lookup and successor inserts work.
+    method DrawErrorPlaceholder {textIndex id} {
+        $text mark set msgins $textIndex
+        set tag item.$id
+        if {![catch {
+            $text image create msgins \
+                -image mate/16x16/status/dialog-warning.png -padx 3
+        } imageId]} {
+            $text tag add $tag $imageId
+        }
+        $text ins msgins "This message could not be displayed" [list $tag drawerror]
+        $text ins msgins \n $tag
     }
 
     # Quoted reply preview, drawn at msgins above the body. No-op unless
