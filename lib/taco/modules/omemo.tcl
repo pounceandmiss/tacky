@@ -1366,7 +1366,8 @@ snit::type taco_omemo {
         # OMEMO encrypted message but your client doesn't support
         # OMEMO"); returning it would let that string land in the
         # user-visible body column as a phantom message on every chat
-        # reopen. ParseResultNode's caller filters empty-body messages.
+        # reopen. ParseMessage classifies an empty body as displayless
+        # and returns "", so the caller drops it.
         if {$headerNode eq ""} {
             return [$self SynthesisePlain $msgNode ""]
         }

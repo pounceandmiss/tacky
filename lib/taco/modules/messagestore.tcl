@@ -656,6 +656,53 @@ snit::type taco_messagestore {
         return $confirmed
     }
 
+    # Dedup by server_id/own_id only, for the caller to act on before any
+    # decrypt. An id-less stanza returns `new` and is content-deduped later
+    # by `store`. Verdicts:
+    #   confirmed - matched a pending send: flip received, capture
+    #               server_id, relocate to the server ts (as `store` does);
+    #               returns old/new ts for the <Patch>.
+    #   duplicate - matched a non-pending row.
+    #   new       - no id match.
+    method reconcile {jid serverId ownId originId timestamp} {
+        if {$serverId eq "" && $ownId eq ""} {
+            return [dict create verdict new]
+        }
+        set row ""
+        $options(-db) eval {
+            SELECT timestamp, server_status FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND ( ($serverId != '' AND server_id=$serverId)
+                 OR ($ownId != '' AND own_id=$ownId) )
+            LIMIT 1
+        } r {
+            set row [dict create timestamp $r(timestamp) \
+                server_status $r(server_status)]
+        }
+        if {$row eq ""} {
+            return [dict create verdict new]
+        }
+        if {[dict get $row server_status] ne "pending"} {
+            return [dict create verdict duplicate]
+        }
+        set dupTs [dict get $row timestamp]
+        if {$timestamp == $dupTs} {
+            set newTs $dupTs
+        } else {
+            set newTs [$self BumpTs $jid $timestamp 1]
+        }
+        $options(-db) eval {
+            UPDATE chat_message
+            SET timestamp=$newTs,
+                server_status='received',
+                server_id = CASE WHEN $serverId != ''
+                    THEN $serverId ELSE server_id END
+            WHERE chat_jid=$jid AND timestamp=$dupTs
+        }
+        return [dict create verdict confirmed chat_jid $jid \
+            timestamp $dupTs newtimestamp $newTs]
+    }
+
     # Single enrichment point for DB rows → message dicts.
     # All get methods funnel through here; event emitters (store,
     # send, search) read back via get ids so live messages are

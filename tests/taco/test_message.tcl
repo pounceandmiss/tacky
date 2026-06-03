@@ -211,7 +211,7 @@ test message-parseresultnode-basic {ParseResultNode extracts all fields} \
     -body {
         set rn [mam_result id sid42 from juliet@capulet.li/phone \
                     body "hello romeo" stamp 2024-06-15T12:30:00Z origin_id oid99]
-        set msg [$::_client message ParseResultNode $rn chat@example.com]
+        set msg [dict get [$::_client message ParseResultNode $rn chat@example.com] msg]
         list [dict get $msg server_id] \
              [dict get $msg from_jid] \
              [dict get $msg body] \
@@ -225,7 +225,7 @@ test message-parseresultnode-keeps-muc-resource {ParseResultNode keeps resource 
     -body {
         set rn [mam_result id sid7 from room@muc.example.com/alice \
                     body "hi all" stamp 2024-06-15T12:30:00Z]
-        set msg [$::_client message ParseResultNode $rn room@muc.example.com?join]
+        set msg [dict get [$::_client message ParseResultNode $rn room@muc.example.com?join] msg]
         dict get $msg from_jid
     } -result {room@muc.example.com/alice}
 
@@ -234,7 +234,7 @@ test message-parseresultnode-keeps-muc-pm-resource {ParseResultNode keeps resour
     -body {
         set rn [mam_result id sid8 from room@muc.example.com/alice \
                     body "psst" stamp 2024-06-15T12:30:00Z]
-        set msg [$::_client message ParseResultNode $rn room@muc.example.com/alice]
+        set msg [dict get [$::_client message ParseResultNode $rn room@muc.example.com/alice] msg]
         dict get $msg from_jid
     } -result {room@muc.example.com/alice}
 
@@ -243,7 +243,7 @@ test message-parseresultnode-1to1-captures-from-resource {1:1 from_resource capt
     -body {
         set rn [mam_result id sid9 from juliet@capulet.li/phone \
                     body "hi" stamp 2024-06-15T12:30:00Z]
-        set msg [$::_client message ParseResultNode $rn juliet@capulet.li]
+        set msg [dict get [$::_client message ParseResultNode $rn juliet@capulet.li] msg]
         dict get $msg from_resource
     } -result {phone}
 
@@ -252,7 +252,7 @@ test message-parseresultnode-muc-empty-from-resource {MUC from_resource is empty
     -body {
         set rn [mam_result id sid10 from room@muc.example.com/alice \
                     body "hi" stamp 2024-06-15T12:30:00Z]
-        set msg [$::_client message ParseResultNode $rn room@muc.example.com?join]
+        set msg [dict get [$::_client message ParseResultNode $rn room@muc.example.com?join] msg]
         dict get $msg from_resource
     } -result {}
 
@@ -483,21 +483,22 @@ test message-storedform-readable-not-ciphertext \
     } -result {om_body {secret text} om_eme eu.siacs.conversations.axolotl om_noct 0 pl_body {hi there} pl_noeme 0}
 
 # Self-echo dedup: our own message coming back (self-chat, carbon, MAM)
-# carries the @id we set on send, so ParseMessage derives own_id from it
-# (for stanzas from our own bare JID) and messagestore dedups against the
-# sent row instead of showing a duplicate. Keyed on @id, not <origin-id>.
-test message-parsemessage-ownid-from-id-when-from-self \
-    {ParseMessage sets own_id from @id for our own stanzas, '' for peers} \
+# carries the @id we set on send, so ExtractEnvelopeIds derives own_id
+# from it (for stanzas from our own bare JID) and messagestore dedups
+# against the sent row instead of showing a duplicate. Keyed on @id, not
+# <origin-id>.
+test message-extractenvelopeids-ownid-from-id-when-from-self \
+    {ExtractEnvelopeIds sets own_id from @id for our own stanzas, '' for peers} \
     {*}$msg_common -body {
         set mine [j message -from $acc/phone -to bob@example.com -type chat \
                 -id uuid-mine { j body #body "from my phone" }]
         set peer [j message -from bob@example.com/x -to $acc -type chat \
                 -id peer-id { j body #body "from bob" }]
-        set m1 [$::_client message ParseMessage $mine \
-            -chat_jid bob@example.com -timestamp 1000 -server_id ""]
-        set m2 [$::_client message ParseMessage $peer \
-            -chat_jid bob@example.com -timestamp 1001 -server_id ""]
-        list mine [dict get $m1 own_id] peer [dict get $m2 own_id]
+        lassign [$::_client message ExtractEnvelopeIds $mine bob@example.com] \
+            _s1 own1 _o1
+        lassign [$::_client message ExtractEnvelopeIds $peer bob@example.com] \
+            _s2 own2 _o2
+        list mine $own1 peer $own2
     } -result {mine uuid-mine peer {}}
 
 test message-self-echo-dedups-not-duplicate \
@@ -508,14 +509,18 @@ test message-self-echo-dedups-not-duplicate \
             from_jid $acc own_id uuid-7 server_status pending \
             on_wire 1]]
         # The echo comes back from our own jid (carbon / MAM) with same @id
-        # and a server stanza-id; ParseMessage derives own_id from @id.
+        # and a server stanza-id; ExtractEnvelopeIds derives own_id from @id,
+        # which ParseMessage carries through.
         set echo [j message -from $acc/phone -to bob@example.com -type chat \
                 -id uuid-7 {
             j body #body "hello"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-99
         }]
+        lassign [$::_client message ExtractEnvelopeIds $echo bob@example.com] \
+            sid ownId originId
         set m [$::_client message ParseMessage $echo \
-            -chat_jid bob@example.com -timestamp 2000 -server_id srv-99]
+            -chat_jid bob@example.com -timestamp 2000 \
+            -server_id $sid -own_id $ownId -origin_id $originId]
         set res [$::_client message messagestore store [list $m]]
         set rows [msg_store_latest bob@example.com]
         list nrows [llength $rows] \
@@ -571,6 +576,31 @@ test message-resend-honors-stamp \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status pending enc omemo wrote 0}
 
+# Fail-closed against a dropped stamp: if the in-flight retry dict loses
+# its `encryption` field (e.g. crossing a thread/process bridge) the
+# stored row is still authoritative. A row stamped omemo must stay omemo
+# and fail closed (NOT_READY here, store uninit) rather than going out in
+# cleartext - the downgrade we observed in the wild.
+test message-retrysend-missing-stamp-no-downgrade \
+    {RetrySend reads the omemo stamp from the DB when the dict drops it} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-drop server_status pending \
+            encryption omemo on_wire 0]]
+        set before [llength [$::_client conn get_written]]
+        # Dict deliberately omits `encryption` - the bridge-drop case.
+        $::_client message RetrySend [dict create \
+            chat_jid alice@example.com body "secret" own_id oid-drop]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, encryption, on_wire FROM chat_message
+            WHERE own_id='oid-drop'} row {}
+        list status $row(server_status) enc $row(encryption) \
+            on_wire $row(on_wire) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status pending enc omemo on_wire 0 wrote 0}
+
 # OnOmemoSelfReady (fired when omemo's store + own devicelist are ready)
 # must retry only OMEMO sends that never reached the wire, never a row
 # already on the wire awaiting ack - re-sending those would duplicate.
@@ -592,6 +622,137 @@ test message-omemo-selfready-skips-on-wire \
         # NOT_READYs (store uninit), so the wire count is unchanged.
         expr {[llength [$::_client conn get_written]] - $before}
     } -result {0}
+
+# A re-delivered own message with no displayable body (OMEMO keytransport
+# or a dropped EKEYGONE/EUSER duplicate) must still confirm a pending send
+# from its envelope - otherwise the send stays pending and gets re-sent.
+test message-catchup-displayless-confirms-send \
+    {displayless own re-delivery in catchup confirms the pending send} \
+    {*}$msg_common \
+    -body {
+        # Pending OMEMO send, already on the wire, awaiting confirmation.
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-conf server_status pending \
+            encryption omemo on_wire 1]]
+        # Our own message comes back via catchup but carries no body.
+        set rn [mam_result id arch-1 from $acc to alice@example.com \
+            origin_id oid-conf body ""]
+        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        # Confirmed in place (no duplicate inserted, original body intact).
+        set rows [msg_store_latest alice@example.com]
+        list nrows [llength $rows] \
+            status [dict get [lindex $rows 0] server_status] \
+            body [dict get [lindex $rows 0] body]
+    } -result {nrows 1 status received body secret}
+
+# =============================================================================
+# Envelope-first dedup: messagestore reconcile
+# =============================================================================
+
+# A pending send echoed back by the archive is confirmed on its envelope
+# alone: flipped to received, server_id captured, timestamp relocated to
+# the server value - no decrypt, no duplicate row.
+test message-reconcile-confirms-pending \
+    {reconcile flips a pending send by own_id, captures server_id, relocates ts} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-r1 server_status pending \
+            encryption omemo on_wire 1 timestamp 1000000]]
+        set v [$::_client message messagestore reconcile \
+            alice@example.com srv-r1 oid-r1 oid-r1 5000000]
+        set rows [msg_store_latest alice@example.com]
+        list verdict [dict get $v verdict] \
+            nrows [llength $rows] \
+            status [dict get [lindex $rows 0] server_status] \
+            sid [dict get [lindex $rows 0] server_id] \
+            ts [dict get [lindex $rows 0] timestamp]
+    } -result {verdict confirmed nrows 1 status received sid srv-r1 ts 5000000}
+
+# A match against a row we already hold (not pending) is a duplicate: drop
+# it, never decrypt.
+test message-reconcile-duplicate-on-citizen \
+    {reconcile reports duplicate for a non-pending row} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid bob@example.com/x server_id srv-r2 server_status received]]
+        dict get [$::_client message messagestore reconcile \
+            alice@example.com srv-r2 "" "" 5000000] verdict
+    } -result {duplicate}
+
+test message-reconcile-new-when-no-match \
+    {reconcile reports new when no id matches} \
+    {*}$msg_common -body {
+        dict get [$::_client message messagestore reconcile \
+            alice@example.com srv-missing "" "" 5000000] verdict
+    } -result {new}
+
+# An id-less stanza always falls through to new; store's content-based
+# dedup is the backstop for those (IRC-bridge messages etc.).
+test message-reconcile-new-when-idless \
+    {reconcile reports new for an id-less stanza} \
+    {*}$msg_common -body {
+        dict get [$::_client message messagestore reconcile \
+            alice@example.com "" "" "" 5000000] verdict
+    } -result {new}
+
+# A duplicate own re-delivery in catchup is dropped on its envelope without
+# being re-decrypted (the case that used to produce EKEYGONE noise): the
+# row stays put, no second copy.
+test message-catchup-duplicate-own-no-redecrypt \
+    {a re-delivered own message already received is dropped, not re-stored} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-dup server_id arch-9 \
+            server_status received encryption omemo on_wire 1]]
+        set rn [mam_result id arch-9 from $acc to alice@example.com \
+            origin_id oid-dup body ""]
+        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        set rows [msg_store_latest alice@example.com]
+        list nrows [llength $rows] \
+            body [dict get [lindex $rows 0] body]
+    } -result {nrows 1 body secret}
+
+# =============================================================================
+# Displayless classification (ParseMessage returns "" for control stanzas)
+# =============================================================================
+
+test message-classify-receipt {a receipt is recognised and parses to nothing} \
+    {*}$msg_common -body {
+        set n [j message -from bob@example.com/x -type chat {
+            j received -ns urn:xmpp:receipts -id abc
+        }]
+        list [ClassifyMessage $n ""] \
+            [$::_client message ParseMessage $n \
+                -chat_jid bob@example.com -timestamp 1000 -server_id ""]
+    } -result {receipt {}}
+
+test message-classify-marker {a chat marker is recognised and parses to nothing} \
+    {*}$msg_common -body {
+        set n [j message -from bob@example.com/x -type chat {
+            j displayed -ns urn:xmpp:chat-markers:0 -id abc
+        }]
+        list [ClassifyMessage $n ""] \
+            [$::_client message ParseMessage $n \
+                -chat_jid bob@example.com -timestamp 1000 -server_id ""]
+    } -result {marker {}}
+
+test message-classify-chatstate {a chat state is recognised and parses to nothing} \
+    {*}$msg_common -body {
+        set n [j message -from bob@example.com/x -type chat {
+            j composing -ns http://jabber.org/protocol/chatstates
+        }]
+        list [ClassifyMessage $n ""] \
+            [$::_client message ParseMessage $n \
+                -chat_jid bob@example.com -timestamp 1000 -server_id ""]
+    } -result {chatstate {}}
+
+test message-classify-body-is-message {a body is a normal stored message} \
+    {*}$msg_common -body {
+        set n [j message -from bob@example.com/x -type chat { j body #body "hi" }]
+        list [ClassifyMessage $n "hi"] \
+            [dict get [$::_client message ParseMessage $n \
+                -chat_jid bob@example.com -timestamp 1000 -server_id ""] body]
+    } -result {message hi}
 
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
