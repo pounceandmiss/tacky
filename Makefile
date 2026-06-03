@@ -16,6 +16,7 @@ tacky_SHELL := wish
 tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd
 tacky_SRC   := lib bin gui icons
 tacky_ENT   := bin/tacky.tcl
+tacky_ICON  := icons/tacky.ico
 
 tackyd_SHELL := tclsh
 tackyd_DEPS  := $(COMMON_DEPS)
@@ -29,7 +30,8 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 
 # ==== Targets ====
 
-.PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json test test-gui clean dist-dir
+.PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json \
+        test test-gui tools wish tclsh clean win-clean dist-dir
 
 all: tacky tackyd tackyd-json
 
@@ -64,12 +66,22 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    $(if $($*_ICON),WIN_ICON=$(CURDIR)/$($*_ICON)) \
 	    BASEDIR=$(CURDIR)/build/$* \
 	    win-app
 	cp build/$*/$*.exe dist/$*.exe
 
-# ==== Test interpreters ====
-# Standalone zipfs interpreters with deps baked in (system tclsh9.0 can't find rtc/rtcma).
+# ==== Dev interpreters ====
+# Standalone zipfs interpreters with all deps baked in (system tclsh9.0 can't
+# find rtc/rtcma). Use these to run the app or tests from source without
+# building a full bundle: e.g. `make wish && build/tools/wish bin/tacky.tcl`.
+#
+# The build/tools/* rules depend on this Makefile so that editing COMMON_DEPS
+# rebuilds the interpreter instead of silently reusing a stale one.
+
+tools: tclsh wish
+tclsh: build/tools/tclsh
+wish: build/tools/wish
 
 test: build/tools/tclsh
 	build/tools/tclsh test_all.tcl
@@ -77,7 +89,7 @@ test: build/tools/tclsh
 test-gui: build/tools/wish
 	build/tools/wish test_gui.tcl
 
-build/tools/tclsh:
+build/tools/tclsh: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=tclsh \
@@ -85,7 +97,7 @@ build/tools/tclsh:
 	    BASEDIR=$(CURDIR)/build/tools \
 	    tclsh
 
-build/tools/wish:
+build/tools/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=wish \
@@ -98,3 +110,10 @@ dist-dir:
 
 clean:
 	rm -rf build dist
+
+# Drop the Windows build trees and .exe outputs, keeping the fetched dep
+# sources under build/*/_build/deps so a rebuild doesn't re-clone. Use after a
+# dep pin bump to force a clean PE rebuild from the existing sources.
+win-clean:
+	rm -rf build/*/_build-win
+	rm -f build/*/*.exe build/*/*.exe.debug dist/*.exe
