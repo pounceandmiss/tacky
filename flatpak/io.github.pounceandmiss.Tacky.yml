@@ -1,0 +1,129 @@
+# Flatpak manifest for Tacky.
+#
+# Sources mirror zippy/zippy.mk, staged into the DEPSDIR layout zippy expects
+# (build/tacky/_build/deps); the build then runs offline. Keep versions/SHAs/
+# commits in sync with zippy.mk.
+
+app-id: io.github.pounceandmiss.Tacky
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: tacky
+
+finish-args:
+  - --share=network          # XMPP
+  - --share=ipc              # X11 MIT-SHM
+  - --socket=x11             # Tk is X11 (XWayland on wayland sessions)
+  - --socket=pulseaudio      # voice calls (rtcma audio: playback + mic capture)
+  - --filesystem=xdg-download # received/sent attachments
+
+modules:
+  - name: tacky
+    buildsystem: simple
+    # All sources pre-staged below; the build runs offline.
+    build-commands:
+      - make tacky
+      - install -Dm755 dist/tacky /app/bin/tacky
+      - install -Dm644 io.github.pounceandmiss.Tacky.desktop
+          /app/share/applications/io.github.pounceandmiss.Tacky.desktop
+      - install -Dm644 io.github.pounceandmiss.Tacky.metainfo.xml
+          /app/share/metainfo/io.github.pounceandmiss.Tacky.metainfo.xml
+      - install -Dm644 icons/tacky.svg
+          /app/share/icons/hicolor/scalable/apps/io.github.pounceandmiss.Tacky.svg
+      # PNG fallbacks for menus without an SVG loader.
+      - install -Dm644 icons/tacky-64.png
+          /app/share/icons/hicolor/64x64/apps/io.github.pounceandmiss.Tacky.png
+      - install -Dm644 icons/tacky-128.png
+          /app/share/icons/hicolor/128x128/apps/io.github.pounceandmiss.Tacky.png
+      - install -Dm644 icons/tacky-256.png
+          /app/share/icons/hicolor/256x256/apps/io.github.pounceandmiss.Tacky.png
+
+    sources:
+      # ---- Application ----
+      # Builds the pushed main branch from GitHub (reproducible). To build the
+      # local working tree instead, swap in the type: dir source below.
+      - type: git
+        url: https://github.com/pounceandmiss/tacky.git
+        branch: main
+      # - type: dir
+      #   path: ..
+      #   skip:
+      #     - build
+      #     - dist
+      #     - flatpak
+      #     - .git
+
+      # ---- Files staged beside the manifest ----
+      - type: file
+        path: io.github.pounceandmiss.Tacky.desktop
+      - type: file
+        path: io.github.pounceandmiss.Tacky.metainfo.xml
+
+      # ---- Tcl/Tk + TEA package tarballs (zippy DEPSDIR) ----
+      - type: file
+        url: http://prdownloads.sourceforge.net/tcl/tcl9.0.3-src.tar.gz
+        sha256: 2537ba0c86112c8c953f7c09d33f134dd45c0fb3a71f2d7f7691fd301d2c33a6
+        dest: build/tacky/_build/deps
+        dest-filename: tcl9.0.3-src.tar.gz
+      - type: file
+        url: http://prdownloads.sourceforge.net/tcl/tk9.0.3-src.tar.gz
+        sha256: bf344efadb618babb7933f69275620f72454d1c8220130da93e3f7feb0efbf9b
+        dest: build/tacky/_build/deps
+        dest-filename: tk9.0.3-src.tar.gz
+      # tdom: moving "latest" URL, pinned only by sha256 - re-pin if it republishes.
+      - type: file
+        url: https://tdom.org/downloads/latest-src.tar.gz
+        sha256: 6d24734aef46d1dc16f3476685414794d6a4e65f48079e1029374477104e8319
+        dest: build/tacky/_build/deps
+        dest-filename: tdom-latest-src.tar.gz
+      - type: file
+        url: https://core.tcl-lang.org/tcllib/uv/tcllib-2.0.tar.gz
+        sha256: 590263de0832ac801255501d003441a85fb180b8ba96265d50c4a9f92fde2534
+        dest: build/tacky/_build/deps
+        dest-filename: tcllib-2.0.tar.gz
+      - type: file
+        url: https://sourceforge.net/projects/tkimg/files/tkimg/2.1/tkimg%202.1.1/Img-2.1.1.tar.gz/download
+        sha256: 0e41efa886c470ca0c38663e66640eb6d89e9e5f746724535ac224e2509ae34f
+        dest: build/tacky/_build/deps
+        dest-filename: Img-2.1.1.tar.gz
+
+      # ---- git deps (with submodules) ----
+      # tclmtls: short SHA - expand to the full 40-char commit for Flathub.
+      - type: git
+        url: https://github.com/chpock/tclmtls.git
+        commit: 5b41f04
+        dest: build/tacky/_build/deps/tclmtls
+      - type: git
+        url: https://github.com/Mbed-TLS/mbedtls.git
+        commit: 5b64a9fdb979c8971561ec78221b528e3cc4e00a
+        dest: build/tacky/_build/deps/mbedtls
+      - type: git
+        url: https://github.com/pounceandmiss/libdatachannel-tcl.git
+        commit: 77a9111abf208c6e41895ca093d6a1b03e764c5a
+        dest: build/tacky/_build/deps/libdatachannel-tcl
+      - type: git
+        url: https://github.com/pounceandmiss/rtc-ma.git
+        commit: 6f1455f16947de8339835026c0f9ac1b5e038ef8
+        dest: build/tacky/_build/deps/rtc-ma
+      # libdatachannel + opus: pre-staged for rtc/rtc-ma's offline cmake build.
+      - type: git
+        url: https://github.com/paullouisageneau/libdatachannel.git
+        commit: c47f5d77c124c35c31ac8378ad613295a124d354
+        dest: build/tacky/_build/deps/libdatachannel
+      - type: file
+        url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+        dest: build/tacky/_build/deps
+        dest-filename: opus-1.6.1.tar.gz
+      - type: git
+        url: https://github.com/pounceandmiss/picomemo-tcl.git
+        commit: b354edb7c9033a94ec31d3da66bc8cb29e85d5ee
+        dest: build/tacky/_build/deps/picomemo-tcl
+      - type: git
+        url: https://github.com/pounceandmiss/tclwuffs.git
+        commit: c1d3eee88d6dec9161555e6df7e9cc3ea2348542
+        dest: build/tacky/_build/deps/tclwuffs
+      - type: git
+        url: https://github.com/petasis/tkdnd.git
+        commit: 6efca37a22b93b2336dc973f2b4a9ba1e3feceaf
+        dest: build/tacky/_build/deps/tkdnd

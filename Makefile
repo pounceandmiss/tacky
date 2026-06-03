@@ -31,6 +31,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 # ==== Targets ====
 
 .PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json \
+        flatpak flatpak-bundle flatpak-install \
         test test-gui tools wish tclsh clean win-clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -70,6 +71,43 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    BASEDIR=$(CURDIR)/build/$* \
 	    win-app
 	cp build/$*/$*.exe dist/$*.exe
+
+# ==== Flatpak ====
+# Opt-in packaging layer (not part of `all`). Needs flatpak + the
+# org.flatpak.Builder app installed; the SDK/runtime are pulled from flathub on
+# first build. The manifest re-runs `make tacky` inside the SDK sandbox, so
+# these are wrappers around flatpak-builder, not zippy build steps.
+#
+#   flatpak         build + install into the user flatpak (dev iteration)
+#   flatpak-bundle  export to an OSTree repo and pack the shareable tacky.flatpak
+#   flatpak-install install that bundle locally to test the shippable artifact
+
+FLATPAK_APP     := io.github.pounceandmiss.Tacky
+FLATPAK_BUILDER := flatpak run org.flatpak.Builder
+# Embedded so `flatpak install tacky.flatpak` can fetch the runtime itself.
+FLATPAK_RUNTIME_REPO := https://dl.flathub.org/repo/flathub.flatpakrepo
+
+# --disable-updates: reuse the cached git mirrors / downloads instead of
+#   re-fetching branch refs, git-lfs and submodules on every run; genuinely
+#   missing sources (e.g. after a commit-pin bump) are still downloaded.
+# --ccache: builder 1.4.9 doesn't auto-enable ccache (the SDK-detection
+#   auto-enable is newer), so without this every rebuild recompiles all deps
+#   from scratch. The cache persists in flatpak/.flatpak-builder/ccache and the
+#   dep sources are identical run-to-run, so this turns rebuilds into link-time.
+FLATPAK_FLAGS := --user --ccache --disable-updates --force-clean
+
+flatpak:
+	cd flatpak && $(FLATPAK_BUILDER) $(FLATPAK_FLAGS) --install \
+	    --install-deps-from=flathub build-dir $(FLATPAK_APP).yml
+
+flatpak-bundle:
+	cd flatpak && $(FLATPAK_BUILDER) $(FLATPAK_FLAGS) --repo=repo \
+	    build-dir $(FLATPAK_APP).yml
+	cd flatpak && flatpak build-bundle --runtime-repo=$(FLATPAK_RUNTIME_REPO) \
+	    repo tacky.flatpak $(FLATPAK_APP) master
+
+flatpak-install:
+	cd flatpak && flatpak install --user --reinstall -y tacky.flatpak
 
 # ==== Dev interpreters ====
 # Standalone zipfs interpreters with all deps baked in (system tclsh9.0 can't
