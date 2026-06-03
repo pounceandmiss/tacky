@@ -6,6 +6,7 @@ if {"-h" in $argv || "--help" in $argv || "-help" in $argv} {
 Options:
   --debug-dir DIR   Write per-account debug logs to DIR
   --backend MODE    Backend mode: direct (default), thread, process
+  --tackyd PATH     Path to the tackyd backend binary (process mode only)
   --transient yes   Work purely in RAM - don't read/write settings/cache
   --console 1|0     Print background errors to stderr instead of a dialog
   -h, --help        Display this help text and exit"
