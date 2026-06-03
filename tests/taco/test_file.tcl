@@ -338,7 +338,7 @@ set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)] ? $::env(XDG_CACHE_HOM
 set ::_upcache [file join /tmp tacky_upcache_[pid]]
 set ::env(XDG_CACHE_HOME) $::_upcache
 
-test file-encrypt-to-temp {EncryptToTemp writes ciphertext that mediaDecrypt recovers} \
+test file-encrypt-to-temp {EncryptToTemp writes ciphertext that media_decrypt recovers} \
     {*}[tacky_env -mock conn -account $acc] -body {
         set src [file join $::_upcache plain.bin]
         file mkdir [file dirname $src]
@@ -346,7 +346,7 @@ test file-encrypt-to-temp {EncryptToTemp writes ciphertext that mediaDecrypt rec
         set f [open $src wb]; puts -nonewline $f $plain; close $f
         lassign [$::_client file EncryptToTemp $src] tmp key iv
         set ct [up_readb $tmp]
-        set back [$::_client omemo mediaDecrypt $key $iv $ct]
+        set back [::omemo::media_decrypt $key $iv $ct]
         file delete -- $tmp
         list overhead=[expr {[string length $ct] - [string length $plain]}] \
              keylen=[string length $key] ivlen=[string length $iv] \

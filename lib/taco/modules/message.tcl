@@ -1,71 +1,29 @@
-# Durable message delivery
-# ========================
-#
+# Overview See messagestore.tcl for sparse cache complexities
+# overview.
+
 # Message dict keys: timestamp, chat_jid, from_jid, body, server_id,
-#   own_id, origin_id, reply_id, reply_to, raw_xml (debug), server_status,
-#   on_wire.
-#
-# chat_jid:  MUC groupchat room@muc?join; MUC PM room@muc/nick; 1:1 bare
-#   JID; MAM derived from @from/@to vs own bare JID.
-# own_id:    set only on our sends (= send ts = <message @id>); incoming is
-#   "". Dedup matches by server_id or own_id (content fallback for id-less
-#   bridge messages).
-#
-# server_status answers one question - "does the server have this exact
-# message?" - and nothing else (direction is is_outgoing, from own_id):
-#   ""          the server has it: incoming, MAM, carbon, or a confirmed
-#               send - all the same situation.
-#   "pending"   ours, sent, not yet confirmed on the server
-#   "uploading" ours, attachment HTTP PUT in flight (XEP-0363)
-#   "failed"    ours, didn't reach the server (retryable)
-#
-# === Outgoing ===
-#
-#   message.send: ts = clock microseconds (= own_id); derive type from
-#   chat_jid; build <message @id=own_id>; store pending; emit <Sent>
-#   (optimistic display); write to server (a throw leaves the row safe in
-#   the DB for retry).
-#
-#   A pending send flips to "" (server has it -> <Patch>, GUI checkmark) by:
-#     A. live echo / carbon  ingestLive -> reconcile by own_id
-#     B. SM ack <a h='N'/>   OnSmAck -> confirmByOwnIds
-#     C. MAM re-delivery     ParseResultNode -> reconcile by id, confirmed
-#        before decrypt, so a body-less re-delivery (keytransport or dropped
-#        duplicate) no longer stays pending for RetryPending to re-transmit.
-#   Confirmation is idempotent; for MUC, A and B may both fire.
-#
-# === Incoming ===
-#
-#   Live (OnMessage/ingestLive) and archived (ParseResultNode) stanzas
-#   share one ingestion core, Classify:
-#   1. Dedup on the envelope ids (server stanza-id / @id), before decrypt:
-#      1.1 a matching pending OWN send is confirmed - server_status flips
-#          pending -> "" (server has it), server_id captured, and the
-#          timestamp relocated to the incoming stamp (MAM archive delay, or
-#          live arrival time) when it differs from the stored one -> <Patch>.
-#      1.2 a match against an existing citizen -> discard as duplicate.
-#      1.3 no id match -> new; carry on.
-#   2. A new OMEMO stanza is decrypted.
-#   3. Classify the contents: a real body is stored and surfaced
-#      (<Received>); a control stanza (receipt, chat marker, chat state) or
-#      other bodyless payload is discarded.
-#
-# === Holes ===
-#
-#   Holes mark "history may exist here that we haven't fetched."
-#   Placed at moments of doubt: OnReady (a `newer` hole past each
-#   chat's newest pre-disconnect citizen) and OnFetch on MAM
-#   complete=false (at the page's far edge). Removed when a gap is proven
-#   empty: a `store` overlap, an OnFetch sweep between cursor and page edge
-#   (RSM-contiguous), or RSM complete=true on a hole-bounded fetch.
-#
-# === Retry on reconnect ===
-#
-#   OnReady -> RetryPending (SELECT pending): 1:1 resend now via RetrySend;
-#   MUC stash in PendingRetry, flushed on muc <Joined> (RetrySend rebuilds
-#   the stanza with the same own_id). Echo/ack then confirms normally.
-#   OnDisconnect clears PendingRetry.
-#
+#   own_id, origin_id, reply_id, reply_to, raw_xml (debug),
+#   server_status, on_wire.
+
+# chat_jid: MUC groupchat - room@muc?join; MUC PM - room@muc/nick; 1:1
+# - bare JID;
+
+# server_status answers one question - "does the server have this
+# exact message?" - and nothing else (direction is is_outgoing, from
+# own_id): "" the server has it: incoming, MAM, carbon, or a confirmed
+# send - all the same situation.  "pending" ours, sent, not yet
+# confirmed on the server "uploading" ours, attachment HTTP PUT in
+# flight (XEP-0363) "failed" ours, didn't reach the server (retryable)
+# Incoming stanzas: Live (OnMessage/ingestLive) and archived
+# (ParseResultNode) stanzas share one ingestion core, Classify:
+# 1. Dedup on the envelope ids (server stanza-id / @id), before
+# anything else: 1.1 outgoing message may be confirmed - and timestamp
+# relocated to the incoming stamp (MAM archive delay or MUC ack live
+# arrival time) 1.2 a match against an existing non-outgoing -> just
+# discard as duplicate.  1.3 no id match -> new, carry on.  2. Decrypt
+# OMEMO 3. Classify the contents: a real body is stored and surfaced
+# (<Received>); a control stanza (receipt, chat marker, chat state) or
+# other bodyless payload is currently discarded.
 # === GUI events ===
 #
 #   <Sent>     insert outgoing (no checkmark)
@@ -339,7 +297,7 @@ snit::type taco_message {
         $client emit message <Received> -jid $chatJid -message $dbMsg
     }
 
-    # Maximum BuildOutgoingStanza attempts per message before marking
+    # Maximum BuildMessageStanza attempts per message before marking
     # failed. Each <SessionReady> tick for the peer counts as one
     # attempt; warming usually settles within 1-2 ticks for live
     # peers, so 5 gives slack for slow bundle fetches without
@@ -366,81 +324,52 @@ snit::type taco_message {
             [jid resource [$client cget -jid]]]
     }
 
-    # Build the wire stanza for an outbound message. encMode is the
-    # intended encryption ('omemo' or '' for plaintext); the caller
-    # decides it (new sends from the per-chat toggle, retries from the
-    # stamped `encryption` column). Throws TACO_OMEMO_NOT_READY
-    # (transient — leave pending, retry on <SessionReady>) or
-    # TACO_OMEMO_TERMINAL (don't retry) for OMEMO failures. Plaintext
-    # path can't throw.
+    # Build a <message> for an outbound message, in one of two forms:
+    #   wire      what goes on the network. OMEMO body is the <encrypted>
+    #             payload + EME marker + a warning body; the <fallback> is
+    #             dropped (its offsets index the cleartext body, which isn't
+    #             on the wire). Encrypting can throw TACO_OMEMO_NOT_READY
+    #             (transient - leave pending, retry on <SessionReady>) or
+    #             TACO_OMEMO_TERMINAL (don't retry).
+    #   readable  the cleartext record stored in raw_xml (debug). OMEMO keeps
+    #             the real body + EME marker and the fallback; never encrypts,
+    #             never throws.
+    # Plaintext is identical in both modes.
     #
-    # OMEMO fail-closed: when encMode is 'omemo' we encrypt or throw;
-    # never fall back to cleartext. See security invariant #2 in
-    # lib/taco/modules/omemo.tcl.
-    # XEP-0461 reply markup is stanza-level metadata, so it rides on
-    # both plaintext and OMEMO sends. The textual fallback (the quoted
-    # `> ...` lines) lives inside $body and so is encrypted with it for
-    # OMEMO; the <fallback> span only makes sense against that cleartext
-    # body, so it is omitted from the OMEMO wire stanza (whose body is
-    # the EME warning) and emitted only on the plaintext path / in the
-    # stored readable form.
-    method BuildOutgoingStanza {chatJid body oid msgType toJid encMode \
+    #   chatJid  destination chat (peer to OMEMO-encrypt for; wire only)
+    #   body     readable text; for a reply, includes the `> quoted` prefix
+    #   oid      origin id (= row's own_id); matches the echo/ack back
+    #   msgType  'chat' or 'groupchat'
+    #   toJid    address the stanza is sent to
+    #   encMode  'omemo' or '' for plaintext (caller decides)
+    #   replyId  XEP-0461 reply target id, or '' when not a reply
+    #   replyTo  author of the replied-to message
+    #   fbEnd    length of the quote prefix in $body (XEP-0428 fallback span)
+    #
+    # OMEMO fail-closed: the wire form encrypts or throws, never cleartext.
+    # See security invariant #2 in lib/taco/modules/omemo.tcl.
+    method BuildMessageStanza {mode chatJid body oid msgType toJid encMode \
             {replyId ""} {replyTo ""} {fbEnd 0}} {
-        if {$encMode ne "omemo"} {
-            return [j message -to $toJid -type $msgType -id $oid {
-                j body #body $body
-                if {$replyId ne ""} {
-                    j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
-                    if {$fbEnd > 0} {
-                        j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
-                            j body -start 0 -end $fbEnd
-                        }
-                    }
-                }
-            }]
-        }
-        set encNode [$client omemo encrypt $chatJid $body]
+        set omemo   [expr {$encMode eq "omemo"}]
+        set encWire [expr {$omemo && $mode eq "wire"}]
         return [j message -to $toJid -type $msgType -id $oid {
-            j #as-is $encNode
-            j encryption -ns urn:xmpp:eme:0 \
-                -namespace eu.siacs.conversations.axolotl \
-                -name OMEMO
-            j body #body \
-                "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
-            if {$replyId ne ""} {
-                j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
+            if {$omemo} {
+                if {$encWire} {
+                    j #as-is [$client omemo encrypt $chatJid $body]
+                }
+                j encryption -ns urn:xmpp:eme:0 \
+                    -namespace eu.siacs.conversations.axolotl \
+                    -name OMEMO
             }
-        }]
-    }
-
-    # The form stored in raw_xml: always the readable message, never
-    # ciphertext. For OMEMO that's the real body + EME marker (symmetric
-    # with the synthesised stanza we store for decrypted incoming
-    # messages, and with the encryption stamp); for plaintext it's just
-    # the body. The wire stanza (BuildOutgoingStanza) is separate.
-    method StoredForm {body oid msgType toJid encMode \
-            {replyId ""} {replyTo ""} {fbEnd 0}} {
-        if {$encMode ne "omemo"} {
-            return [j message -to $toJid -type $msgType -id $oid {
+            if {$encWire} {
+                j body #body \
+                    "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            } else {
                 j body #body $body
-                if {$replyId ne ""} {
-                    j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
-                    if {$fbEnd > 0} {
-                        j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
-                            j body -start 0 -end $fbEnd
-                        }
-                    }
-                }
-            }]
-        }
-        return [j message -to $toJid -type $msgType -id $oid {
-            j body #body $body
-            j encryption -ns urn:xmpp:eme:0 \
-                -namespace eu.siacs.conversations.axolotl \
-                -name OMEMO
+            }
             if {$replyId ne ""} {
                 j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
-                if {$fbEnd > 0} {
+                if {$fbEnd > 0 && !$encWire} {
                     j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
                         j body -start 0 -end $fbEnd
                     }
@@ -489,11 +418,6 @@ snit::type taco_message {
         set ts [clock microseconds]
         set oid $ts
 
-        # NB: do not use `type` as a local - snit injects its own
-        # `type` (the snit type name like ::taco_message), and the
-        # one-armed if below previously forgot to assign it in the
-        # else branch, so the snit-injected value leaked into the
-        # outgoing <message type=...> attribute. Use msgType.
         lassign [$self DeriveAddressing $opts(-chat_jid)] \
             msgType toJid fromJid fromRes
 
@@ -519,7 +443,7 @@ snit::type taco_message {
         set status "pending"
         set failReason ""
         try {
-            set stanza [$self BuildOutgoingStanza \
+            set stanza [$self BuildMessageStanza wire \
                 $opts(-chat_jid) $wireBody $oid $msgType $toJid $encMode \
                 $replyId $replyTo $fbEnd]
         } trap TACO_OMEMO_NOT_READY {emsg} {
@@ -545,7 +469,8 @@ snit::type taco_message {
             reply_id $replyId \
             reply_to $replyTo \
             raw_xml [expr {$stanza eq "" ? "" \
-                : [jwrite [$self StoredForm $wireBody $oid $msgType $toJid $encMode \
+                : [jwrite [$self BuildMessageStanza readable $opts(-chat_jid) \
+                    $wireBody $oid $msgType $toJid $encMode \
                     $replyId $replyTo $fbEnd]]}] \
             server_status $status \
             encryption $encMode \
@@ -640,7 +565,8 @@ snit::type taco_message {
         # it and parks the row pending if the session isn't ready yet.
         if {$encMode eq "omemo"} {
             $messagestore markUploaded $chatJid $oid $url \
-                [jwrite [$self StoredForm $url $oid $msgType $toJid omemo]] \
+                [jwrite [$self BuildMessageStanza readable $chatJid $url $oid \
+                    $msgType $toJid omemo]] \
                 [OutgoingAttachment $url $path] omemo
             $self RetrySend [dict create chat_jid $chatJid body $url \
                 own_id $oid encryption omemo reply_id "" reply_to ""]
@@ -784,7 +710,7 @@ snit::type taco_message {
         }
     }
 
-    # Retry a still-pending message. Uses BuildOutgoingStanza so OMEMO
+    # Retry a still-pending message. Uses BuildMessageStanza so OMEMO
     # chats get re-encrypted against the current devicelist (the
     # devicelist may have changed since the original send; replaying a
     # stored stanza would either leak cleartext or send to a
@@ -816,7 +742,7 @@ snit::type taco_message {
 
         jlog debug "RetrySend $chatJid oid=$oid encMode=$encMode"
         try {
-            set stanza [$self BuildOutgoingStanza \
+            set stanza [$self BuildMessageStanza wire \
                 $chatJid $body $oid $msgType $toJid $encMode \
                 $replyId $replyTo]
         } trap TACO_OMEMO_NOT_READY {} {
@@ -843,7 +769,8 @@ snit::type taco_message {
         # on_wire stops a later <SessionReady> tick re-sending this row;
         # raw_xml is refreshed only as a debug record (readable form, not
         # the wire ciphertext).
-        set xml [jwrite [$self StoredForm $body $oid $msgType $toJid $encMode \
+        set xml [jwrite [$self BuildMessageStanza readable \
+            $chatJid $body $oid $msgType $toJid $encMode \
             $replyId $replyTo]]
         $client db eval {
             UPDATE chat_message SET on_wire=1, raw_xml=$xml

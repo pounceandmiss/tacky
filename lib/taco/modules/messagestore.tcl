@@ -1,41 +1,65 @@
-if 0 {
-    Contiguity is implicit: two adjacent stored messages with no
-    hole between them are trusted to have no gap.
+# Overview
+#
+# The local sparse cache, and we track which spans are
+# known-contiguous and which are gaps (holes).  Server doesn't tell us
+# what ids are assigned to outgoing messages and keeps us guessing, so
+# the outgoing messages don't participate in contiguity logic until we
+# happen to get them back in a mam page.
 
-    chat_message holds two row kinds, discriminated by `kind`:
+# Why the cache can have holes: if the user was away for a long time,
+# they re-open the app, and instead of fetching all history ever we
+# fetch it starting from latest, and we'll stop at a threshold to
+# not fetch everything ever. Therefore there's a disconnect there - a
+# hole, which we mark with a special message table entry with
+# kind=hole. Also - we may jump to date in the past (the user may
+# intentionally fetch a disconnected region). Also - we can do server
+# search - and all results in it are sparse.
 
-    - kind='message'  a real message (incoming, outgoing pending, or
-                      outgoing confirmed). server_id is set once the
-                      server has acknowledged it.
-    - kind='hole' a gap marker placed at moments of doubt
-                      (reconnect, initial chat open). chat_jid and
-                      timestamp are set; all other columns NULL.
+# === The three server-relationship fields ===
+#
+# Distinct, not redundant - each answers a different question:
+#
+#   kind           is this row a real message or a gap-marker?
+#                  'message' | 'hole'. A hole carries only timestamp +
+#                  chat_jid; see Holes.
+#   server_id      XEP-0359 stanza-id - empty until the server
+#                  hands us one.
+#   server_status  does the server have this exact message?
+#                  '' = yes (incoming, MAM, carbon, or a confirmed send);
+#                  'pending'/'uploading'/'failed' = our outgoing message,
+#                  server state not yet known.
+#
+# server_id != '' implies server_status == '', but not the reverse: a send
+# confirmed by SM ack is on the server ('') with no archive id yet.
+#
+#   An outgoing message's server_status flips to "" by:
+#     A. live echo / carbon
+#     B. SM ack <a h='N'/>
+#     C. MAM re-delivery
 
-    The "contiguity citizen" predicate is uniform across all queries:
+# === Contiguity ===
+#
+# Citizen predicate: kind='message' AND server_id != ''. Only citizens anchor
+# holes and cursors; holes and pending sends (server_id='') are skipped by
+# neighbour lookups, cursor selection, and dedup. A pending send still shows
+# in `get` results; it joins contiguity once MAM gives it a server_id.
+#
+# === Holes ===
+#
+# A hole marks "unfetched history may exist here" - e.g. we page back from the
+# newest message and stop at a threshold, leaving a gap below.
+#   place:   `hole add $jid $direction $anchorTs`
+#   remove:  `hole remove` (RSM-complete), `hole removeBetween` (post-MAM
+#            sweep), or implicitly when `store` proves overlap with cache.
+# Older/newer sense is positional, from where the hole's timestamp falls.
+#
+# === Pagination ===
+#
+# `get before`/`after`/`latest` return {messages bounded}; bounded=1 means a
+# hole truncated the queried side, so fall through to MAM. `get around`
+# returns {messages anchor bounded_before bounded_after}.
+#
 
-        kind='message' AND server_id != ''
-
-    Holes and pending outgoings (server_id='') both fail it and
-    are transparently skipped by neighbour lookups, cursor selection,
-    and dedup.
-
-    Holes are placed by `hole add $jid $direction $anchorTs`
-    and removed either explicitly (`hole remove` on RSM-complete,
-    `hole removeBetween` for the post-MAM sweep) or implicitly
-    when `store` proves overlap against pre-existing cache (the
-    batch's bracket span is swept).
-
-    Pagination queries (`get before` / `get after` / `get latest`)
-    return `{messages bounded}`. `bounded=1` signals "a hole
-    truncated the result on the queried side; if you want more in
-    this direction, fall through to MAM."
-
-    Outgoing messages stored with server_id="" show up in `get`
-    results (so the UI sees them) but fail the citizen check, so
-    they don't anchor holes or bound queries. On confirmation
-    (MUC echo or own MAM result) they gain a server_id and join
-    contiguity normally.
-}
 
 snit::type taco_messagestore {
     option -db -default ""
@@ -60,7 +84,7 @@ snit::type taco_messagestore {
                 -- server-assigned, for MAM pagination;
                 -- <stanza-id id='...' by='server.example.com'/>
                 server_id      TEXT,
-                -- set only for outgoing messages; = <message id="...">
+                -- set only for outgoing messages sent from this client; = <message id="...">
                 -- incoming messages have own_id=""
                 own_id         TEXT,
                 -- this message's own id: <origin-id> if present else @id.

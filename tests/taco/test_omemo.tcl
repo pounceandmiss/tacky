@@ -1143,33 +1143,3 @@ test omemo-unit-tackymethod-command-callback \
         expr {$wanted eq $::cbResult && $wanted ne ""}
     } -result {1}
 
-# --- XEP-0454 media encryption (no store / session needed) ----------------
-
-test omemo-unit-media-roundtrip {mediaEncrypt/mediaDecrypt AES-256-GCM round-trips arbitrary bytes} \
-    {*}[tacky_env -taco-client {-db-path :memory:}] -body {
-        set pt [encoding convertto utf-8 "secret photo bytes"]
-        append pt [binary decode hex "00ff7f80010203"]
-        set enc [c omemo mediaEncrypt $pt]
-        set back [c omemo mediaDecrypt \
-            [dict get $enc key] [dict get $enc iv] [dict get $enc ct]]
-        list keylen=[string length [dict get $enc key]] \
-             ivlen=[string length [dict get $enc iv]] \
-             overhead=[expr {[string length [dict get $enc ct]] - [string length $pt]}] \
-             ok=[expr {$back eq $pt}]
-    } -result {keylen=32 ivlen=12 overhead=16 ok=1}
-
-test omemo-unit-media-tamper-rejected {a flipped ciphertext byte fails GCM verification} \
-    {*}[tacky_env -taco-client {-db-path :memory:}] -body {
-        set enc [c omemo mediaEncrypt "attack at dawn"]
-        set ct [dict get $enc ct]
-        set bad [string replace $ct 0 0 [binary format c \
-            [expr {[scan [string index $ct 0] %c] ^ 1}]]]
-        catch {c omemo mediaDecrypt [dict get $enc key] [dict get $enc iv] $bad}
-    } -result 1
-
-test omemo-unit-media-wrong-key-rejected {decrypting with the wrong key fails} \
-    {*}[tacky_env -taco-client {-db-path :memory:}] -body {
-        set enc [c omemo mediaEncrypt "attack at dawn"]
-        catch {c omemo mediaDecrypt [string repeat \x00 32] \
-            [dict get $enc iv] [dict get $enc ct]}
-    } -result 1

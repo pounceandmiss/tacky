@@ -253,7 +253,7 @@ snit::type taco_file {
     method DecryptPart {id full} {
         set inh [open $full.part rb]
         try { set ct [read $inh] } finally { close $inh }
-        set plain [$client omemo mediaDecrypt \
+        set plain [::omemo::media_decrypt \
             [dict get $Transfers($id) mediakey] \
             [dict get $Transfers($id) mediaiv] $ct]
         set outh [open $full.dec wb]
@@ -315,7 +315,7 @@ snit::type taco_file {
     method EncryptToTemp {path} {
         set fh [open $path rb]
         try { set plain [read $fh] } finally { close $fh }
-        set enc [$client omemo mediaEncrypt $plain]
+        set enc [::omemo::media_encrypt $plain]
         set tmp [file join [appdirs cache] attachments upload \
             "[clock microseconds].enc"]
         file mkdir [file dirname $tmp]
