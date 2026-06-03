@@ -4,6 +4,12 @@ COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
+# Until the Windows cert-store fix lands upstream, pull mtls from our fork
+# (overrides zippy.mk's chpock default). No effect off Windows: the patch is
+# inside #ifdef _WIN32. Drop this once chpock merges the PR.
+MTLS_OVERRIDE := MTLS_REPO=https://github.com/pounceandmiss/tclmtls.git \
+                 MTLS_COMMIT=d52b59d
+
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
@@ -29,6 +35,7 @@ all: tacky tackyd tackyd-json
 
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
+	    $(MTLS_OVERRIDE) \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
 	    DEPS="$($*_DEPS)" \
@@ -49,6 +56,7 @@ win: win-tacky win-tackyd win-tackyd-json
 
 win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
+	    $(MTLS_OVERRIDE) \
 	    TARGET_OS=windows \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
@@ -71,6 +79,7 @@ test-gui: build/tools/wish
 
 build/tools/tclsh:
 	$(MAKE) -f zippy/zippy.mk \
+	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(COMMON_DEPS)" \
 	    BASEDIR=$(CURDIR)/build/tools \
@@ -78,6 +87,7 @@ build/tools/tclsh:
 
 build/tools/wish:
 	$(MAKE) -f zippy/zippy.mk \
+	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=wish \
 	    DEPS="$(COMMON_DEPS) tkwuffs" \
 	    BASEDIR=$(CURDIR)/build/tools \
