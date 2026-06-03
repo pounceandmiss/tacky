@@ -2,6 +2,7 @@ snit::type app_type {
     option -transient -default 0 -readonly yes
     option -backend -default direct -readonly yes
     option -debug-dir -default "" -readonly yes
+    option -tackyd -default "" -readonly yes
 
     variable windows {}
     variable winCounter 0
@@ -14,7 +15,7 @@ snit::type app_type {
         switch $options(-backend) {
             process {
                 tacky_init_process -transient $options(-transient) \
-                    -debug-dir $options(-debug-dir)
+                    -debug-dir $options(-debug-dir) -tackyd $options(-tackyd)
             }
             thread {
                 package require Thread
