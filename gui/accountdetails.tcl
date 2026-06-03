@@ -20,8 +20,8 @@ snit::widget jidpassword {
             -text "Password: "
         install passwordEntry using showableentry $win.passwordEntry \
             -textvariable  [set options(-array)](password)
-        grid $jidLabel $jidEntry -sticky ew
-        grid $passwordLabel $passwordEntry -sticky ew
+        grid $jidLabel $jidEntry -sticky ew -padx 4 -pady 4
+        grid $passwordLabel $passwordEntry -sticky ew -padx 4 -pady 4
         grid columnconfigure $win $passwordEntry -weight 1
     }
 }
@@ -50,7 +50,7 @@ snit::widget signinhull {
             -text "Proceed"
         $self configurelist $args
 
-        set inner [ttk::frame $win.inner]
+        set inner [ttk::frame $win.inner -padding 16]
         raise $win.proceed
 
         install accountdetails using jidpassword \
@@ -62,13 +62,13 @@ snit::widget signinhull {
         install statuslabel using \
             ttk::label $win.statuslabel
 
-        pack $accountdetails -in $inner -fill x
-        pack $statuslabel -in $inner -fill x
-        pack $progressbar -in $inner -fill x
-        pack $proceed -in $inner
+        pack $accountdetails -in $inner -fill x -pady 4
+        pack $statuslabel -in $inner -fill x -pady 4
+        pack $progressbar -in $inner -fill x -pady 4
+        pack $proceed -in $inner -pady 8
         if {$options(-back) ne ""} {
             install backbutton using ttk::button $win.back -command $options(-back) -text "Back"
-            pack $backbutton -in $inner
+            pack $backbutton -in $inner -pady 4
         }
         pack $inner -expand yes
     }
@@ -307,26 +307,26 @@ snit::widget signup {
 
         # Step 1 — server address
         set s1 [ttk::frame $pages.step1]
-        set s1inner [ttk::frame $s1.inner]
+        set s1inner [ttk::frame $s1.inner -padding 16]
         ttk::label $s1.label -text "Enter server address"
         ttk::entry $s1.server
         ttk::button $s1.proceed -text "Proceed" \
             -command [mymethod FetchForm]
         ttk::progressbar $s1.progressbar
         ttk::label $s1.statuslabel
-        pack $s1.label -in $s1inner -fill x
-        pack $s1.server -in $s1inner -fill x
-        pack $s1.proceed -in $s1inner
-        pack $s1.statuslabel -in $s1inner -fill x
-        pack $s1.progressbar -in $s1inner -fill x
+        pack $s1.label -in $s1inner -fill x -pady 4
+        pack $s1.server -in $s1inner -fill x -pady 4
+        pack $s1.proceed -in $s1inner -pady 8
+        pack $s1.statuslabel -in $s1inner -fill x -pady 4
+        pack $s1.progressbar -in $s1inner -fill x -pady 4
         if {$options(-back) ne ""} {
             ttk::button $s1.back -text "Back" -command $options(-back)
-            pack $s1.back -in $s1inner
+            pack $s1.back -in $s1inner -pady 4
         }
         pack $s1inner -expand yes
 
         # Step 2 — form fill (regform widget added dynamically)
-        set s2 [ttk::frame $pages.step2]
+        set s2 [ttk::frame $pages.step2 -padding 16]
         ttk::button $s2.submit -text "Submit" \
             -command [mymethod OnSubmit]
         ttk::button $s2.back -text "Back" \
@@ -399,11 +399,11 @@ snit::widget signup {
         set formwidget $scrollable
 
         # Pack step2 children in order
-        pack $formwidget -expand yes -fill both
-        pack $pages.step2.statuslabel -fill x
-        pack $pages.step2.progressbar -fill x
-        pack $pages.step2.submit
-        pack $pages.step2.back
+        pack $formwidget -expand yes -fill both -pady 4
+        pack $pages.step2.statuslabel -fill x -pady 4
+        pack $pages.step2.progressbar -fill x -pady 4
+        pack $pages.step2.submit -pady 8
+        pack $pages.step2.back -pady 4
 
         set step 2
         $pages raise $pages.step2
@@ -500,13 +500,13 @@ snit::widget initialsetupchoice {
     component signin
 
     constructor args {
-        set inner [ttk::frame $win.inner]
+        set inner [ttk::frame $win.inner -padding 16]
         install signup using ttk::button $win.signup \
             -text "Create an account"
         install signin using ttk::button $win.signin \
             -text "I already have an account"
-        pack $signup -in $inner
-        pack $signin -in $inner
+        pack $signup -in $inner -pady 4
+        pack $signin -in $inner -pady 4
         pack $inner -expand yes
     }
 }
