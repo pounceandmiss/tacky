@@ -429,11 +429,7 @@ snit::type taco_message {
             lassign [$self BuildReplyTarget $opts(-chat_jid) $opts(-reply_to_ts)] \
                 replyId replyTo quoteBody
             if {$replyId ne ""} {
-                set quote ""
-                foreach line [split $quoteBody \n] {
-                    append quote "> $line\n"
-                }
-                set fbEnd [string length $quote]
+                lassign [reply::quote $quoteBody] quote fbEnd
                 set wireBody $quote$opts(-body)
             }
         }
@@ -489,10 +485,8 @@ snit::type taco_message {
         }
     }
 
-    # Reply id another client resolves against, by chat kind: MUC uses the
-    # stanza-id (server_id); 1:1 uses the origin-id, since peers never see
-    # our server id. Falls through when an id is absent (our own pending
-    # send has no server_id yet). Returns the full body for the wire quote.
+    # Look up the replied-to row and resolve its reply id (reply::pick_id).
+    # Returns {replyId author fullBody}; the body feeds the wire quote.
     method BuildReplyTarget {chatJid ts} {
         set found 0
         $client db eval {
@@ -502,15 +496,8 @@ snit::type taco_message {
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return [list "" "" ""] }
-        if {[IsMucChatJid $chatJid]} {
-            set candidates [list $row(server_id) $row(origin_id) $row(own_id)]
-        } else {
-            set candidates [list $row(origin_id) $row(own_id) $row(server_id)]
-        }
-        set replyId ""
-        foreach c $candidates {
-            if {$c ne ""} { set replyId $c; break }
-        }
+        set replyId [reply::pick_id [IsMucChatJid $chatJid] \
+            $row(server_id) $row(origin_id) $row(own_id)]
         return [list $replyId $row(from_jid) $row(body)]
     }
 
@@ -1356,10 +1343,10 @@ snit::type taco_message {
     # for a displayless stanza (control type or bodyless payload).
     method ParseMessage {msgNode args} {
         set chatJid [dict get $args -chat_jid]
-        lassign [ParseReply $msgNode] replyId replyTo
+        lassign [reply::parse $msgNode] replyId replyTo
         set body [xsearch $msgNode body -get body]
         if {$replyId ne ""} {
-            set body [StripReplyFallback $msgNode $body]
+            set body [reply::strip_fallback $msgNode $body]
         }
         if {[ClassifyMessage $msgNode $body] ne "message"} {
             return ""
@@ -1479,40 +1466,4 @@ proc SplitFromResource {chatJid fromJid} {
 
 proc IsMucChatJid {chatJid} {
     expr {[string match {*\?join} $chatJid] || [string match */* $chatJid]}
-}
-
-# XEP-0461: extract {reply_id reply_to} from a <message> node, or {"" ""}.
-proc ParseReply {msgNode} {
-    set replyNode [lindex [xsearch $msgNode reply -ns urn:xmpp:reply:0] 0]
-    if {$replyNode eq ""} {
-        return [list "" ""]
-    }
-    list [xsearch $replyNode -get @id] [xsearch $replyNode -get @to]
-}
-
-# XEP-0428/0461: drop the quoted-reply fallback span(s) from a reply body.
-# start/end are codepoint indices, end-exclusive; spans are removed
-# right-to-left so earlier indices stay valid.
-proc StripReplyFallback {msgNode body} {
-    set ranges {}
-    foreach fb [xsearch $msgNode fallback -ns urn:xmpp:fallback:0] {
-        if {[xsearch $fb -get @for] ne "urn:xmpp:reply:0"} continue
-        foreach b [xsearch $fb body] {
-            set start [xsearch $b -get @start]
-            set end   [xsearch $b -get @end]
-            if {$start eq ""} { set start 0 }
-            if {$end eq ""}   { set end [string length $body] }
-            if {![string is integer -strict $start]
-                || ![string is integer -strict $end]} continue
-            lappend ranges [list $start $end]
-        }
-    }
-    foreach r [lsort -integer -index 0 -decreasing $ranges] {
-        lassign $r start end
-        if {$start < 0} { set start 0 }
-        if {$end > [string length $body]} { set end [string length $body] }
-        if {$start >= $end} continue
-        set body [string replace $body $start [expr {$end - 1}]]
-    }
-    return $body
 }
