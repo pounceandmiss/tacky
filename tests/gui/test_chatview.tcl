@@ -420,7 +420,7 @@ foreach {direction seedCmd} {
     incoming {cv_feed "before catchup" srv1}
 } {
     test chatview-${direction}-survives-catchup \
-        "$direction still visible after CatchupDone (no reload under sentinels)" \
+        "$direction still visible after CatchupDone (no reload under holes)" \
         {*}$cv_common \
         -body {
             eval $seedCmd

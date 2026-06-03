@@ -859,7 +859,7 @@ test message-history-local-before {local -before returns correct slice} \
              [dict get [lindex $result 1] body]
     } -result {2 a b}
 
-test message-history-local-no-sentinel-no-mam {local data with no sentinel returns without MAM} \
+test message-history-local-no-hole-no-mam {local data with no hole returns without MAM} \
     {*}$msg_common \
     -body {
         msg_store [list \
@@ -980,8 +980,8 @@ test message-history-mam-after-timestamp {-after with no at-or-before citizen se
         # Store a message newer than the cursor so MAM fires (latestTs > after)
         msg_store [list [msg_msg timestamp [expr {$ts + 1000000}] \
             chat_jid alice@example.com server_id s-later body later]]
-        # Place a sentinel between cursor and latest so get after is bounded
-        $::_client message messagestore sentinel add alice@example.com newer $ts
+        # Place a hole between cursor and latest so get after is bounded
+        $::_client message messagestore hole add alice@example.com newer $ts
         tacky message history -acc $acc -chat alice@example.com \
             -after $ts -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
@@ -1190,17 +1190,17 @@ test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page
     } -result {x y}
 
 # =============================================================================
-# History: sentinel-aware
+# History: hole-aware
 # =============================================================================
 
-test message-history-sentinel-triggers-mam-on-pagination {cursor-based pagination across a sentinel triggers MAM fill} \
+test message-history-hole-triggers-mam-on-pagination {cursor-based pagination across a hole triggers MAM fill} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body a] \
             [msg_msg timestamp 500 server_id s5 body e]]
-        $::_client message messagestore sentinel add alice@example.com newer 100
-        # -before 500: local returns empty (sentinel sits between 100
+        $::_client message messagestore hole add alice@example.com newer 100
+        # -before 500: local returns empty (hole sits between 100
         # and 500, truncating). bounded=true with cursor -> MAM fires.
         set written1 [$::_client conn get_written]
         tacky message history -acc $acc -chat alice@example.com \
@@ -1210,17 +1210,17 @@ test message-history-sentinel-triggers-mam-on-pagination {cursor-based paginatio
         expr {[llength $written2] > [llength $written1]}
     } -result {1}
 
-test message-history-sentinel-initial-no-mam {bounded result on initial load (no cursor) does not trigger MAM} \
+test message-history-hole-initial-no-mam {bounded result on initial load (no cursor) does not trigger MAM} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body a]]
-        $::_client message messagestore sentinel add alice@example.com newer 100
+        $::_client message messagestore hole add alice@example.com newer 100
         msg_store [list \
             [msg_msg timestamp 500 server_id s5 body e]]
         # get latest returns [e], bounded=true. Initial load (no
         # cursor): we show what we have without firing MAM. User
-        # triggers fill by scrolling into the sentinel.
+        # triggers fill by scrolling into the hole.
         set written1 [$::_client conn get_written]
         tacky message history -acc $acc -chat alice@example.com -limit 50 \
             -command [list apply {{r} {}}]
@@ -1228,21 +1228,21 @@ test message-history-sentinel-initial-no-mam {bounded result on initial load (no
         expr {[llength $written2] == [llength $written1]}
     } -result {1}
 
-test message-history-mam-sweeps-bounding-sentinel {MAM response with overlap sweeps prior sentinel} \
+test message-history-mam-sweeps-bounding-hole {MAM response with overlap sweeps prior hole} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body anchor]]
-        $::_client message messagestore sentinel add alice@example.com newer 100
-        set sentBefore [llength [$::_client message messagestore sentinel list alice@example.com]]
-        # Trigger -before pagination past the sentinel (should hit MAM)
+        $::_client message messagestore hole add alice@example.com newer 100
+        set sentBefore [llength [$::_client message messagestore hole list alice@example.com]]
+        # Trigger -before pagination past the hole (should hit MAM)
         tacky message history -acc $acc -chat alice@example.com \
             -before 100 -limit 50 \
             -command [list apply {{r} {}}]
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
         # MAM returns older history (no overlap with current cache,
-        # complete=false -> places a new sentinel at the far older edge)
+        # complete=false -> places a new hole at the far older edge)
         $::_client mam onResultMessage [j message -from user@test.example.com {
             j /as-is [mam_result id mam1 queryid $qid \
                 from alice@example.com/phone body older \
@@ -1256,21 +1256,21 @@ test message-history-mam-sweeps-bounding-sentinel {MAM response with overlap swe
                 }
             }
         }]
-        set sentAfter [llength [$::_client message messagestore sentinel list alice@example.com]]
-        # Sweep removed the cursor-side sentinel; placement added a new
+        set sentAfter [llength [$::_client message messagestore hole list alice@example.com]]
+        # Sweep removed the cursor-side hole; placement added a new
         # one at the far older edge. Net: still 1.
         list $sentBefore $sentAfter
     } -result {1 1}
 
-test message-history-mam-complete-removes-bounding-sentinel {MAM complete=true on a bounded fetch clears the bounding sentinel} \
+test message-history-mam-complete-removes-bounding-hole {MAM complete=true on a bounded fetch clears the bounding hole} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body anchor]]
-        $::_client message messagestore sentinel add alice@example.com older 100
-        # -before 100: local empty + bounded (sentinel older than cursor)
+        $::_client message messagestore hole add alice@example.com older 100
+        # -before 100: local empty + bounded (hole older than cursor)
         # -> MAM fires. Server says "complete=true" -> archive exhausted
-        # in the older direction. The bounding sentinel must clear.
+        # in the older direction. The bounding hole must clear.
         tacky message history -acc $acc -chat alice@example.com \
             -before 100 -limit 50 \
             -command [list apply {{r} {}}]
@@ -1280,7 +1280,7 @@ test message-history-mam-complete-removes-bounding-sentinel {MAM complete=true o
                 j set -ns http://jabber.org/protocol/rsm
             }
         }]
-        llength [$::_client message messagestore sentinel list \
+        llength [$::_client message messagestore hole list \
             alice@example.com]
     } -result {0}
 
@@ -1584,14 +1584,14 @@ test message-catchup-per-message-received {each catchup message fires its own <R
         set ::_count
     } -result {3}
 
-test message-catchup-overlap-clears-reconnect-sentinel {catchup overlap sweeps the reconnect sentinel} \
+test message-catchup-overlap-clears-reconnect-hole {catchup overlap sweeps the reconnect hole} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp [ParseTimestamp 2024-01-01T09:00:00Z] \
                 chat_jid alice@example.com server_id s_old body anchor]]
         msg_ready
-        set sentBefore [llength [$::_client message messagestore sentinel list \
+        set sentBefore [llength [$::_client message messagestore hole list \
             alice@example.com]]
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
         # Catchup returns the existing anchor + a newer message -> overlap proven
@@ -1602,12 +1602,12 @@ test message-catchup-overlap-clears-reconnect-sentinel {catchup overlap sweeps t
             [mam_result id s_new queryid $qid \
                 from alice@example.com/phone to user@test.example.com \
                 body "new live" stamp 2024-01-01T11:00:00Z]]
-        set sentAfter [llength [$::_client message messagestore sentinel list \
+        set sentAfter [llength [$::_client message messagestore hole list \
             alice@example.com]]
         list $sentBefore $sentAfter
     } -result {1 0}
 
-test message-catchup-incomplete-places-sentinel {catchup with complete=false places older-edge sentinel for new chats} \
+test message-catchup-incomplete-places-hole {catchup with complete=false places older-edge hole for new chats} \
     {*}$msg_common \
     -body {
         msg_ready
@@ -1617,15 +1617,15 @@ test message-catchup-incomplete-places-sentinel {catchup with complete=false pla
                 from alice@example.com/phone to user@test.example.com \
                 body msg1 stamp 2024-01-01T10:00:00Z]] false
         # alice@example.com had no pre-existing citizens, so catchup
-        # adds an older-edge sentinel below the catchup message.
-        llength [$::_client message messagestore sentinel list alice@example.com]
+        # adds an older-edge hole below the catchup message.
+        llength [$::_client message messagestore hole list alice@example.com]
     } -result {1}
 
 # =============================================================================
-# Reconnect sentinels
+# Reconnect holes
 # =============================================================================
 
-test message-reconnect-places-sentinels {OnReady places newer-sentinel after each chat's newest citizen} \
+test message-reconnect-places-holes {OnReady places newer-hole after each chat's newest citizen} \
     {*}$msg_common \
     -body {
         msg_store [list \
@@ -1635,13 +1635,13 @@ test message-reconnect-places-sentinels {OnReady places newer-sentinel after eac
             [msg_msg timestamp 200 chat_jid bob@example.com \
                 server_id b1 body bob-old]]
         msg_ready
-        list [llength [$::_client message messagestore sentinel list \
+        list [llength [$::_client message messagestore hole list \
                   alice@example.com]] \
-             [llength [$::_client message messagestore sentinel list \
+             [llength [$::_client message messagestore hole list \
                   bob@example.com]]
     } -result {1 1}
 
-test message-reconnect-no-sentinel-without-citizens {chats without citizens get no sentinel} \
+test message-reconnect-no-hole-without-citizens {chats without citizens get no hole} \
     {*}$msg_common \
     -body {
         # Pending outgoing exists but no real citizens
@@ -1649,10 +1649,10 @@ test message-reconnect-no-sentinel-without-citizens {chats without citizens get 
             [msg_msg timestamp 100 chat_jid alice@example.com \
                 own_id oid1 body pending server_status pending]]
         msg_ready
-        llength [$::_client message messagestore sentinel list alice@example.com]
+        llength [$::_client message messagestore hole list alice@example.com]
     } -result {0}
 
-test message-reconnect-idempotent {repeated reconnects without progress don't pile up sentinels} \
+test message-reconnect-idempotent {repeated reconnects without progress don't pile up holes} \
     {*}$msg_common \
     -body {
         msg_store [list \
@@ -1661,7 +1661,7 @@ test message-reconnect-idempotent {repeated reconnects without progress don't pi
         msg_ready
         msg_ready
         msg_ready
-        llength [$::_client message messagestore sentinel list \
+        llength [$::_client message messagestore hole list \
             alice@example.com]
     } -result {1}
 
@@ -1831,14 +1831,14 @@ test message-search-error-returns-error-dict {search error returns error dict} \
              [dict get $result complete]
     } -result {1 {} 0}
 
-# Search: sentinel wrapping
+# Search: hole wrapping
 #
 # A remote search hit is an island — we know nothing about the messages
 # surrounding it in archive time. OnSearch wraps each newly-inserted hit
-# with older+newer sentinels so future pagination across the hit falls
+# with older+newer holes so future pagination across the hit falls
 # through to MAM.
 
-test message-search-wraps-inserted-hit-with-sentinels {a new search hit gets older and newer sentinels} \
+test message-search-wraps-inserted-hit-with-holes {a new search hit gets older and newer holes} \
     {*}$msg_common \
     -body {
         msg_prime_search
@@ -1865,14 +1865,14 @@ test message-search-wraps-inserted-hit-with-sentinels {a new search hit gets old
         }]
 
         set hitTs [dict get [lindex [dict get $result messages] 0] timestamp]
-        set sents [$::_client message messagestore sentinel list alice@example.com]
-        # Two sentinels straddling the hit (BumpTs places them +-1us).
+        set sents [$::_client message messagestore hole list alice@example.com]
+        # Two holes straddling the hit (BumpTs places them +-1us).
         list [llength $sents] \
              [expr {[lindex $sents 0] < $hitTs}] \
              [expr {[lindex $sents 1] > $hitTs}]
     } -result {2 1 1}
 
-test message-search-dedup-hit-adds-no-sentinels {a search hit that dedups against a citizen adds no sentinels} \
+test message-search-dedup-hit-adds-no-holes {a search hit that dedups against a citizen adds no holes} \
     {*}$msg_common \
     -body {
         # Pre-seed an existing citizen with server_id="sid1" so the
@@ -1903,20 +1903,20 @@ test message-search-dedup-hit-adds-no-sentinels {a search hit that dedups agains
             }
         }]
 
-        # Dedup path returns empty inserted -> no sentinels and no
+        # Dedup path returns empty inserted -> no holes and no
         # message in callback output.
         list [llength [dict get $result messages]] \
-             [llength [$::_client message messagestore sentinel list \
+             [llength [$::_client message messagestore hole list \
                           alice@example.com]]
     } -result {0 0}
 
-test message-search-repeat-does-not-pile-sentinels {repeating the same search does not pile up sentinels} \
+test message-search-repeat-does-not-pile-holes {repeating the same search does not pile up holes} \
     {*}$msg_common \
     -body {
         msg_prime_search
 
         # Run the same search twice; second run dedups (same server_id),
-        # so sentinel count must not change.
+        # so hole count must not change.
         for {set i 0} {$i < 2} {incr i} {
             tacky message search -acc $acc -chat alice@example.com \
                 -query "needle" -limit 10 \
@@ -1937,10 +1937,10 @@ test message-search-repeat-does-not-pile-sentinels {repeating the same search do
                 }
             }]
         }
-        llength [$::_client message messagestore sentinel list alice@example.com]
+        llength [$::_client message messagestore hole list alice@example.com]
     } -result 2
 
-test message-search-multiple-hits-share-middle-sentinel {two hits with no citizens between them share the in-between sentinel} \
+test message-search-multiple-hits-share-middle-hole {two hits with no citizens between them share the in-between hole} \
     {*}$msg_common \
     -body {
         msg_prime_search
@@ -1973,11 +1973,11 @@ test message-search-multiple-hits-share-middle-sentinel {two hits with no citize
         }]
 
         # Three gaps total: (-inf, hit1), (hit1, hit2), (hit2, +inf) —
-        # each holds one sentinel. The "newer than hit1" sentinel
+        # each holds one hole. The "newer than hit1" hole
         # placed by hit1's wrap is in the same gap as the "older than
-        # hit2" sentinel hit2 would otherwise add, so hit2's older-add
+        # hit2" hole hit2 would otherwise add, so hit2's older-add
         # is a no-op (at-most-one-per-gap invariant).
-        set sents [$::_client message messagestore sentinel list alice@example.com]
+        set sents [$::_client message messagestore hole list alice@example.com]
         set msgs [dict get $result messages]
         set ts1 [dict get [lindex $msgs 0] timestamp]
         set ts2 [dict get [lindex $msgs 1] timestamp]
