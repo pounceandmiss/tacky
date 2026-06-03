@@ -1,137 +1,76 @@
 # Durable message delivery
 # ========================
 #
-# Message dict keys:
-#   timestamp, chat_jid, from_jid, body, server_id, own_id, origin_id,
-#   reply_id, reply_to, raw_xml (debug-only), server_status, on_wire
+# Message dict keys: timestamp, chat_jid, from_jid, body, server_id,
+#   own_id, origin_id, reply_id, reply_to, raw_xml (debug), server_status,
+#   on_wire.
 #
-# chat_jid assignment:
-#   MUC groupchat:  room@muc?join   (appended by muc.say / OnGroupchatMessage)
-#   MUC PM:         room@muc/nick   (set by OnPrivateMessage)
-#   1:1 DM:         bare JID        (set by OnMessage from stanza @from)
-#   MAM catchup:    derived from @from/@to vs own bare JID
+# chat_jid:  MUC groupchat room@muc?join; MUC PM room@muc/nick; 1:1 bare
+#   JID; MAM derived from @from/@to vs own bare JID.
+# own_id:    set only on our sends (= send ts = <message @id>); incoming is
+#   "". Dedup matches by server_id or own_id (content fallback for id-less
+#   bridge messages).
 #
-# own_id:
-#   own_id is only set for our outgoing messages (= timestamp = <message id>).
-#   Incoming messages have own_id ""; MUC echo detected by nick match.
-#   IsDuplicate matches by server_id or own_id (or content fallback).
+# server_status answers one question - "does the server have this exact
+# message?" - and nothing else (direction is is_outgoing, from own_id):
+#   ""          the server has it: incoming, MAM, carbon, or a confirmed
+#               send - all the same situation.
+#   "pending"   ours, sent, not yet confirmed on the server
+#   "uploading" ours, attachment HTTP PUT in flight (XEP-0363)
+#   "failed"    ours, didn't reach the server (retryable)
 #
-# server_status lifecycle:
-#   ""          incoming message (already delivered by definition)
-#   "uploading" outgoing attachment, HTTP PUT in flight (XEP-0363)
-#   "failed"    outgoing attachment whose upload failed (retryable)
-#   "pending"   outgoing, stored locally, not yet confirmed by server
-#   "received"  server confirmed via MUC echo or SM ack
+# === Outgoing ===
 #
-# === Outgoing: send ===
+#   message.send: ts = clock microseconds (= own_id); derive type from
+#   chat_jid; build <message @id=own_id>; store pending; emit <Sent>
+#   (optimistic display); write to server (a throw leaves the row safe in
+#   the DB for retry).
 #
-#   GUI/muc.say
-#     → message.send -chat_jid $jid -body $text
-#       1. ts = clock microseconds; own_id = ts
-#       2. Derive type from chat_jid: ?join → groupchat, else → chat
-#       3. Build stanza: <message to=$toJid type=$type id=$oid>
-#       4. Store to DB: server_status=pending, server_id=""
-#       5. Emit <Sent> → GUI displays immediately (optimistic)
-#       6. $client write $stanza → to server
-#          (if write throws, message is safe in DB for retry)
-#
-# === Confirmation path A: MUC echo ===
-#
-#   Server echoes <message> back with same @id
-#     → muc.OnGroupchatMessage
-#       → message.ingestLive
-#         → ExtractEnvelopeIds: server_id from <stanza-id>, own_id from @id
-#         → messagestore.store:
-#           IsDuplicate finds pending row by own_id
-#           UPDATE server_status='received', captures server_id
-#           Returns confirmed list
-#         → HandleConfirmation: emit <Patch> (GUI shows checkmark)
-#         → No <Received> emitted (it's our own echo)
-#
-# === Confirmation path B: SM ack (1:1 and MUC) ===
-#
-#   Server sends <a h='N'/>
-#     → sm: extracts acked stanzas from queue
-#       → sm -ack-command
-#         → conn.OnSmAck
-#           → client.emit sm <Ack>
-#             → client.emit intercepts, calls message.OnSmAck
-#               → Extract @id from acked <message> stanzas
-#               → messagestore.confirmByOwnIds:
-#                 UPDATE server_status='received' WHERE pending
-#               → Emit <Patch> per confirmed message
-#
-#   For MUC, both paths may fire — confirmation is idempotent
-#   (second confirm finds no pending rows, does nothing).
-#
-# === Confirmation path C: MAM envelope reconcile ===
-#
-#   MAM re-delivers one of our sends (often displayless: a keytransport
-#   or a dropped EKEYGONE/EUSER duplicate)
-#     → message.OnCatchup / OnFetch / OnGoto / OnSearch
-#       → ParseResultNode
-#         → ExtractEnvelopeIds (cleartext)
-#         → messagestore.reconcile: pending row by own_id/server_id,
-#           UPDATE server_status='received' → verdict `confirmed`
-#       → HandleConfirmation: emit <Patch>
-#   Confirmed before any decrypt, so a body-less re-delivery no longer
-#   leaves the send pending (which made RetryPending re-transmit it).
+#   A pending send flips to "" (server has it -> <Patch>, GUI checkmark) by:
+#     A. live echo / carbon  ingestLive -> reconcile by own_id
+#     B. SM ack <a h='N'/>   OnSmAck -> confirmByOwnIds
+#     C. MAM re-delivery     ParseResultNode -> reconcile by id, confirmed
+#        before decrypt, so a body-less re-delivery (keytransport or dropped
+#        duplicate) no longer stays pending for RetryPending to re-transmit.
+#   Confirmation is idempotent; for MUC, A and B may both fire.
 #
 # === Incoming ===
 #
-#   1:1: server stanza
-#     → message.OnMessage
-#       → message.ingestLive
-#         → store: INSERT (server_status="")
-#         → HandleInsertion: emit <Received> → GUI displays
-#
-#   MUC: server stanza
-#     → muc.OnGroupchatMessage
-#       → message.ingestLive (same path as above)
+#   Live (OnMessage/ingestLive) and archived (ParseResultNode) stanzas
+#   share one ingestion core, Classify:
+#   1. Dedup on the envelope ids (server stanza-id / @id), before decrypt:
+#      1.1 a matching pending OWN send is confirmed - server_status flips
+#          pending -> "" (server has it), server_id captured, and the
+#          timestamp relocated to the incoming stamp (MAM archive delay, or
+#          live arrival time) when it differs from the stored one -> <Patch>.
+#      1.2 a match against an existing citizen -> discard as duplicate.
+#      1.3 no id match -> new; carry on.
+#   2. A new OMEMO stanza is decrypted.
+#   3. Classify the contents: a real body is stored and surfaced
+#      (<Received>); a control stanza (receipt, chat marker, chat state) or
+#      other bodyless payload is discarded.
 #
 # === Sentinels ===
 #
-#   Sentinels mark "messages may exist here that we haven't fetched."
-#   They're placed at moments of doubt:
-#
-#   - OnReady (reconnect): a `newer` sentinel after each chat's newest
-#     pre-disconnect citizen, bracketing any history that arrived
-#     while we were offline.
-#   - OnFetch (MAM `complete=false`): a sentinel at the far edge of
-#     the MAM response in the queried direction, signalling "more
-#     server-side history exists past this point."
-#
-#   Sentinels are removed when their gap is proven empty:
-#
-#   - `store` overlap: a batch whose dups against pre-existing cache
-#     prove the batch's bracket span has no gap — `store` sweeps any
-#     sentinels in that span automatically.
-#   - OnFetch sweep: after MAM stores a non-empty page, sweep any
-#     sentinels strictly between the cursor and the batch's far edge
-#     (RSM guarantees that range is server-contiguous).
-#   - OnFetch RSM-complete: if the fetch was bounded by a sentinel on
-#     the queried side and the server returns `complete=true`, the
-#     bounding sentinel clears (direction proven exhausted).
+#   Sentinels mark "history may exist here that we haven't fetched."
+#   Placed at moments of doubt: OnReady (a `newer` sentinel past each
+#   chat's newest pre-disconnect citizen) and OnFetch on MAM
+#   complete=false (at the page's far edge). Removed when a gap is proven
+#   empty: a `store` overlap, an OnFetch sweep between cursor and page edge
+#   (RSM-contiguous), or RSM complete=true on a sentinel-bounded fetch.
 #
 # === Retry on reconnect ===
 #
-#   message.OnReady
-#     → RetryPending: SELECT WHERE server_status='pending'
-#       1:1 messages: resend immediately via RetrySend
-#       MUC messages: stash in PendingRetry($roomJid)
-#     → client.emit intercepts muc <Joined>
-#       → message.OnMucJoined: flush PendingRetry for that room
-#         → RetrySend: rebuild stanza with same own_id, $client write
-#     → Echo/ack cycle confirms them normally
-#
-#   OnDisconnect clears PendingRetry (next OnReady re-queries DB).
+#   OnReady -> RetryPending (SELECT pending): 1:1 resend now via RetrySend;
+#   MUC stash in PendingRetry, flushed on muc <Joined> (RetrySend rebuilds
+#   the stanza with the same own_id). Echo/ack then confirms normally.
+#   OnDisconnect clears PendingRetry.
 #
 # === GUI events ===
 #
-#   <Sent>      → OnMessage: insert message (is_outgoing=1, no checkmark)
-#   <Received>  → OnMessage: insert message (is_outgoing=0)
-#                  Dedup by timestamp/id — skips if already displayed
-#   <Patch>     → OnPatch: patch displayed entry's fields (checkmark)
+#   <Sent>     insert outgoing (no checkmark)
+#   <Received> insert incoming (dedup by timestamp/id)
+#   <Patch>    patch a displayed entry (checkmark / rekey)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -269,7 +208,7 @@ snit::type taco_message {
 
             switch $disp {
                 confirmed {
-                    # pending->received echo; not an overlap proof
+                    # pending->"" echo; not an overlap proof
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
                 }
@@ -331,12 +270,11 @@ snit::type taco_message {
         $self ingestLive $chatJid $stanza $isOwn
     }
 
-    # Live-stanza entry point: parse, persist, dispatch to GUI.
-    # Called from OnMessage (1:1 DMs) and from the MUC module
-    # (groupchat with room@muc?join, PMs with room@muc/nick).
-    # Two outcomes from messagestore:
-    #   confirmed → echo of one of our own pending sends → HandleConfirmation
-    #   inserted  → fresh incoming row                   → HandleInsertion
+    # Live-stanza entry point. Called from OnMessage (1:1 DMs) and from the
+    # MUC module (groupchat with room@muc?join, PMs with room@muc/nick).
+    # Builds the {serverId ownId originId} triple off the stanza (live
+    # messages carry their own stanza-id; an own echo's @id is passed
+    # explicitly via isOwn) then funnels into the shared Classify core.
     method ingestLive {chatJid stanza {isOwn 0}} {
         set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
         set ts [expr {$stamp ne "" ? [ParseTimestamp $stamp] : [clock microseconds]}]
@@ -344,26 +282,39 @@ snit::type taco_message {
         if {$isOwn} {
             set idArgs [list -own_id [xsearch $stanza -get @id]]
         }
-        lassign [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs] \
-            serverId ownId originId
-        # "" for a displayless stanza (control type / keytransport).
-        set msg [$self ParseMessage $stanza \
-            -chat_jid $chatJid -timestamp $ts \
-            -server_id $serverId -own_id $ownId -origin_id $originId]
-        if {$msg eq ""} return
-        set result [$messagestore store [list $msg]]
-        set confirmed [dict get $result confirmed]
-        if {[llength $confirmed] > 0} {
-            $self HandleConfirmation $chatJid $confirmed
-        } else {
-            $self HandleInsertion $chatJid [dict get $result inserted]
+        set ids [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs]
+        $self DispatchLive $chatJid [$self Classify $chatJid $stanza $ts $ids]
+    }
+
+    # Act on one live message's disposition (from Classify):
+    #   confirmed → echo of one of our own pending sends → <Patch>
+    #   new       → store, then surface. store may still confirm it by the
+    #               content fallback (id-less re-delivery of a pending send)
+    #               or drop it as a real overlap with an existing citizen.
+    #   duplicate → already a citizen; nothing to show.
+    #   drop      → displayless (control type / keytransport); nothing.
+    method DispatchLive {chatJid disp} {
+        switch [dict get $disp disposition] {
+            confirmed {
+                $self HandleConfirmation $chatJid \
+                    [list [dict get $disp reconciled]]
+            }
+            new {
+                set result [$messagestore store [list [dict get $disp msg]]]
+                set confirmed [dict get $result confirmed]
+                if {[llength $confirmed] > 0} {
+                    $self HandleConfirmation $chatJid $confirmed
+                } else {
+                    $self HandleInsertion $chatJid [dict get $result inserted]
+                }
+            }
         }
     }
 
     # Echo of a pending outgoing message: messagestore has already
-    # flipped server_status pending → received and captured server_id.
-    # Emit <Patch> so the GUI updates the checkmark; if the row's
-    # timestamp moved (server stamp differs from our own_id), include
+    # flipped server_status pending → '' (server has it) and captured
+    # server_id. Emit <Patch> so the GUI updates the checkmark; if the
+    # row's timestamp moved (server stamp differs from our own_id), include
     # newtimestamp so the GUI can rekey the displayed row.
     method HandleConfirmation {chatJid confirmed} {
         foreach c $confirmed {
@@ -372,10 +323,10 @@ snit::type taco_message {
             if {$oldTs != $newTs} {
                 set patchMessages [list [dict create \
                     timestamp $oldTs newtimestamp $newTs \
-                    server_status received]]
+                    server_status ""]]
             } else {
                 set patchMessages [list [dict create \
-                    timestamp $oldTs server_status received]]
+                    timestamp $oldTs server_status ""]]
             }
             $client emit message <Patch> -jid $chatJid \
                 -messages $patchMessages
@@ -522,10 +473,10 @@ snit::type taco_message {
     # the existing pending-row machinery rather than a separate
     # outbox/queue.
     #
-    # Confirmation (pending → received) happens via two paths:
+    # Confirmation (pending → "", server has it) happens via two paths:
     #   MUC:  server echoes the message back with our id; the echo hits
-    #         `ingestLive`, where `messagestore store` dedup finds
-    #         the pending row and flips it to 'received'.
+    #         `ingestLive`, where `reconcile` finds the pending row and
+    #         flips it to ''.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
     #         calls `confirmByOwnIds` on the messagestore.
     # Both paths emit <Patch> so the GUI can show the checkmark.
@@ -737,7 +688,7 @@ snit::type taco_message {
             $client emit message <Patch> -jid [dict get $c chat_jid] \
                 -messages [list [dict create \
                     timestamp [dict get $c timestamp] \
-                    server_status received]]
+                    server_status ""]]
         }
     }
 
@@ -1130,19 +1081,7 @@ snit::type taco_message {
         # Only `new` messages are stored; `parsed` keeps every disposition
         # (each carries a timestamp) so the sentinel ops below still span the
         # true archive range.
-        set parsed {}
-        set toStore {}
-        foreach resultNode [dict get $mamResult messages] {
-            set r [$self ParseResultNode $resultNode $chatJid]
-            lappend parsed $r
-            switch [dict get $r disposition] {
-                confirmed {
-                    $self HandleConfirmation $chatJid \
-                        [list [dict get $r reconciled]]
-                }
-                new { lappend toStore [dict get $r msg] }
-            }
-        }
+        lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
         # Store the new batch (even if cancelled - data is useful)
         if {[llength $toStore] > 0} {
             $messagestore store $toStore
@@ -1277,18 +1216,7 @@ snit::type taco_message {
             return
         }
 
-        set toStore {}
-        foreach resultNode [dict get $mamResult messages] {
-            set r [$self ParseResultNode $resultNode $chatJid]
-            switch [dict get $r disposition] {
-                confirmed {
-                    $self HandleConfirmation $chatJid \
-                        [list [dict get $r reconciled]]
-                }
-                new { lappend toStore [dict get $r msg] }
-            }
-        }
-
+        lassign [$self IngestMamBatch $chatJid $mamResult] _ toStore
         if {[llength $toStore] > 0} {
             $messagestore store $toStore
         }
@@ -1393,23 +1321,55 @@ snit::type taco_message {
         {*}$callback [dict create messages $messages complete $complete last $last]
     }
 
-    # Ingest one MAM <result>: reconcile on the envelope ids first, decrypt
-    # and parse only a `new` message. Returns a disposition the loops act
-    # on; `timestamp` (server stamp) is on every verdict for span tracking:
+    # Walk a single-chat MAM batch through Classify, firing <Patch> for each
+    # envelope-confirmed send. Returns {parsed toStore}: `parsed` is every
+    # disposition (so callers can reason about the true archive span when
+    # placing/sweeping sentinels) and `toStore` the new message dicts to
+    # persist in one store call.
+    method IngestMamBatch {chatJid mamResult} {
+        set parsed {}
+        set toStore {}
+        foreach resultNode [dict get $mamResult messages] {
+            set r [$self ParseResultNode $resultNode $chatJid]
+            lappend parsed $r
+            switch [dict get $r disposition] {
+                confirmed {
+                    $self HandleConfirmation $chatJid \
+                        [list [dict get $r reconciled]]
+                }
+                new { lappend toStore [dict get $r msg] }
+            }
+        }
+        return [list $parsed $toStore]
+    }
+
+    # MAM preamble: pull the envelope (archive id, server stamp, ids) off one
+    # <result>/<forwarded> wrapper, then hand to the shared Classify core.
+    method ParseResultNode {resultNode chatJid} {
+        set serverId [xsearch $resultNode -get @id]
+        set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
+        set ts [ParseTimestamp \
+            [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]]
+        set msgNode [lindex [xsearch $fwdNode message] 0]
+        set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
+        return [$self Classify $chatJid $msgNode $ts $ids]
+    }
+
+    # The single ingestion core, shared by the live path (ingestLive) and
+    # every MAM path (via ParseResultNode). Envelope-first: reconcile on the
+    # ids BEFORE decrypting, so a known send is confirmed and a known citizen
+    # flagged duplicate without a decrypt; only a genuinely new message is
+    # decrypted and parsed. `ids` is the {serverId ownId originId} triple the
+    # caller extracted (the sources differ in where each id comes from).
+    # Returns one disposition; `timestamp` (server stamp) rides every verdict
+    # so the MAM loops can reason over the true archive span:
     #   {disposition confirmed timestamp T reconciled V}  pending send echoed
     #   {disposition duplicate timestamp T}               already a citizen
     #   {disposition drop      timestamp T}               new but displayless
     #   {disposition new       timestamp T msg M}         new, store M
-    method ParseResultNode {resultNode chatJid} {
-        set serverId [xsearch $resultNode -get @id]
-        set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
-        set stamp [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]
-        set ts [ParseTimestamp $stamp]
-        set msgNode [lindex [xsearch $fwdNode message] 0]
-
-        lassign [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId] \
-            sid ownId originId
-        set v [$messagestore reconcile $chatJid $sid $ownId $originId $ts]
+    method Classify {chatJid msgNode ts ids} {
+        lassign $ids serverId ownId originId
+        set v [$messagestore reconcile $chatJid $serverId $ownId $originId $ts]
         switch [dict get $v verdict] {
             confirmed {
                 return [dict create disposition confirmed \
@@ -1421,11 +1381,13 @@ snit::type taco_message {
         }
 
         # decryptForwarded yields a synthesised plaintext stanza, or the
-        # original on failure; ParseMessage returns "" for a displayless one.
+        # original on failure / when already plaintext (the live path is
+        # decrypted upstream, so this is a no-op there); ParseMessage returns
+        # "" for a displayless one.
         set msgNode [$client omemo decryptForwarded $msgNode]
         set msg [$self ParseMessage $msgNode \
             -chat_jid $chatJid -timestamp $ts \
-            -server_id $sid -own_id $ownId -origin_id $originId]
+            -server_id $serverId -own_id $ownId -origin_id $originId]
         if {$msg eq ""} {
             return [dict create disposition drop timestamp $ts]
         }

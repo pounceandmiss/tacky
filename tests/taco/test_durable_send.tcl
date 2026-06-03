@@ -48,7 +48,7 @@ test ds-ms-store-null-status {messages without server_status default to empty} \
         dict get [lindex $msgs 0] server_status
     } -result {}
 
-test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to received} \
+test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to ''} \
     {*}$ds_ms_common \
     -body {
         # Store outgoing message as pending
@@ -59,13 +59,13 @@ test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to receiv
             [ds_msg timestamp 200 own_id oid1 body sent]]]
         set confirmed [dict get $result confirmed]
         # Check DB status changed
-        set status [testdb eval {
+        set status [testdb onecolumn {
             SELECT server_status FROM chat_message WHERE own_id='oid1'
         }]
         list $status [llength $confirmed] \
              [dict get [lindex $confirmed 0] own_id] \
              [dict get [lindex $confirmed 0] timestamp]
-    } -result {received 1 oid1 100}
+    } -result {{} 1 oid1 100}
 
 test ds-ms-no-confirm-non-pending {duplicate without pending status is not confirmed} \
     {*}$ds_ms_common \
@@ -79,7 +79,7 @@ test ds-ms-no-confirm-non-pending {duplicate without pending status is not confi
         llength [dict get $result confirmed]
     } -result {0}
 
-test ds-ms-confirm-by-own-ids {confirmByOwnIds updates pending to received} \
+test ds-ms-confirm-by-own-ids {confirmByOwnIds updates pending to ''} \
     {*}$ds_ms_common \
     -body {
         ds_batch [list \
@@ -91,7 +91,7 @@ test ds-ms-confirm-by-own-ids {confirmByOwnIds updates pending to received} \
             SELECT server_status FROM chat_message ORDER BY timestamp
         }]
         list [llength $confirmed] $statuses
-    } -result {2 {received received {}}}
+    } -result {2 {{} {} {}}}
 
 # -- message module: send method -----------------------------------------------
 
@@ -183,7 +183,7 @@ test ds-send-id-on-stanza {send sets message @id matching DB own_id} \
 
 # -- echo confirmation ---------------------------------------------------------
 
-test ds-echo-confirms-pending {MUC echo of sent message confirms pending to received} \
+test ds-echo-confirms-pending {MUC echo of sent message confirms pending to ''} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
@@ -202,13 +202,13 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to rece
             j body #body "echo me"
         }]
         # Check DB status updated
-        set status [c db eval {
+        set status [c db onecolumn {
             SELECT server_status FROM chat_message
             WHERE chat_jid='room@muc.example.com?join'
         }]
         list $status [llength $patches] \
              [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
-    } -result {received 1 received}
+    } -result {{} 1 {}}
 
 test ds-echo-no-received {echo of own message does not emit <Received>} \
     {*}$ds_msg_common \
@@ -269,13 +269,13 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
             j body #body "ack me"
         }]
         c message OnSmAck -stanzas [list $stanza]
-        set status [c db eval {
+        set status [c db onecolumn {
             SELECT server_status FROM chat_message
             WHERE chat_jid='room@muc.example.com?join'
         }]
         list $status [llength $patches] \
              [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
-    } -result {received 1 received}
+    } -result {{} 1 {}}
 
 # -- retry on connect ----------------------------------------------------------
 
@@ -450,7 +450,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
         }]
         # Only one <Patch> — SM ack finds no pending rows
         list $status [llength $patches]
-    } -result {received 1}
+    } -result {{} 1}
 
 # -- disconnect clears retry state ---------------------------------------------
 
