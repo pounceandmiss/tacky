@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tacky
+GenericName=XMPP Chat
+Comment=Desktop XMPP chat client
+Exec=tacky
+Icon=io.github.pounceandmiss.Tacky
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=XMPP;Jabber;Chat;Messaging;OMEMO;

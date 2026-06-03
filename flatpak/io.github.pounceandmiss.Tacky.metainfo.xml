@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.pounceandmiss.Tacky</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Tacky</name>
+  <summary>XMPP chat client</summary>
+
+  <description>
+    <p>
+      XMPP chat client built with Tcl/Tk.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.pounceandmiss.Tacky.desktop</launchable>
+
+  <!-- TODO -->
+  <!--
+  <screenshots>
+  </screenshots>
+  -->
+
+  <url type="homepage">https://github.com/pounceandmiss/tacky</url>
+  <url type="bugtracker">https://github.com/pounceandmiss/tacky/issues</url>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+
+  <developer id="io.github.pounceandmiss">
+    <name>pounceandmiss</name>
+  </developer>
+
+  <releases>
+    <release version="0.0.0" date="2026-06-02">
+      <description>
+        <p>Pre-alpha. Initial Flatpak packaging.</p>
+      </description>
+    </release>
+  </releases>
+</component>
