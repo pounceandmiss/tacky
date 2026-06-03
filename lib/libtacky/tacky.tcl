@@ -319,10 +319,39 @@ oo::class create tacky_process_type {
         package require lenpipe
         set Callbacks [dict create]
         set TokenCounter 0
-        set fd [open |[list [info nameofexecutable] $::_tacky_backend_script {*}$args] r+]
+        # -tackyd is a launcher concern (which daemon to spawn), not a taco
+        # option, so pull it out before forwarding the rest to the daemon.
+        set explicit ""
+        if {[dict exists $args -tackyd]} {
+            set explicit [dict get $args -tackyd]
+            dict unset args -tackyd
+        }
+        set cmd [my BackendCommand $explicit]
+        set fd [open |[list {*}$cmd {*}$args] r+]
         set Pipe [lenpipe new $fd \
             -onmessage [namespace code {my _onMessage}] \
             -oneof [namespace code {my _onEof}]]
+    }
+
+    # Resolve the daemon command to spawn. An explicit path wins; otherwise
+    # prefer a tclsh-based tackyd binary shipped next to the GUI executable
+    # (no Tk, so no stray window). Fall back to running the daemon script
+    # under the current interpreter for the dev/source layout.
+    method BackendCommand {explicit} {
+        if {$explicit ne ""} {
+            if {![file executable $explicit]} {
+                error "tackyd not executable: $explicit"
+            }
+            return [list $explicit]
+        }
+        set daemon [file join [file dirname [info nameofexecutable]] tackyd]
+        if {$::tcl_platform(platform) eq "windows"} {
+            append daemon .exe
+        }
+        if {[file executable $daemon]} {
+            return [list $daemon]
+        }
+        return [list [info nameofexecutable] $::_tacky_backend_script]
     }
 
     destructor { catch {$Pipe destroy} }
