@@ -40,7 +40,7 @@
 #   Server echoes <message> back with same @id
 #     → muc.OnGroupchatMessage
 #       → message.ingestLive
-#         → ParseMessage: extracts server_id from <stanza-id>
+#         → ExtractEnvelopeIds: server_id from <stanza-id>, own_id from @id
 #         → messagestore.store:
 #           IsDuplicate finds pending row by own_id
 #           UPDATE server_status='received', captures server_id
@@ -63,6 +63,19 @@
 #
 #   For MUC, both paths may fire — confirmation is idempotent
 #   (second confirm finds no pending rows, does nothing).
+#
+# === Confirmation path C: MAM envelope reconcile ===
+#
+#   MAM re-delivers one of our sends (often displayless: a keytransport
+#   or a dropped EKEYGONE/EUSER duplicate)
+#     → message.OnCatchup / OnFetch / OnGoto / OnSearch
+#       → ParseResultNode
+#         → ExtractEnvelopeIds (cleartext)
+#         → messagestore.reconcile: pending row by own_id/server_id,
+#           UPDATE server_status='received' → verdict `confirmed`
+#       → HandleConfirmation: emit <Patch>
+#   Confirmed before any decrypt, so a body-less re-delivery no longer
+#   leaves the send pending (which made RetryPending re-transmit it).
 #
 # === Incoming ===
 #
@@ -239,10 +252,12 @@ snit::type taco_message {
                 set chatJid $fromBare
             }
 
-            set msg [$self ParseResultNode $resultNode $chatJid]
-            if {[dict get $msg body] eq ""} continue
+            set r [$self ParseResultNode $resultNode $chatJid]
+            set disp [dict get $r disposition]
+            # drop = displayless new stanza; doesn't bound a sentinel (as before).
+            if {$disp eq "drop"} continue
 
-            set msgTs [dict get $msg timestamp]
+            set msgTs [dict get $r timestamp]
             if {![dict exists $perChatMin $chatJid]
                 || $msgTs < [dict get $perChatMin $chatJid]} {
                 dict set perChatMin $chatJid $msgTs
@@ -252,23 +267,29 @@ snit::type taco_message {
                 dict set perChatMax $chatJid $msgTs
             }
 
-            set result [$messagestore store [list $msg]]
-            set confirmed [dict get $result confirmed]
-            set inserted  [dict get $result inserted]
-
-            if {[llength $confirmed] > 0} {
-                $self HandleConfirmation $chatJid $confirmed
-                # confirmed = pending->received echo; not an overlap proof
-            } elseif {[llength $inserted] > 0} {
-                set dbMsg [lindex [$messagestore get ids \
-                    $chatJid $inserted] 0]
-                $client emit message <Received> -jid $chatJid \
-                    -message $dbMsg
-                incr totalCount
-            } else {
-                # No insertion, no confirmation: IsDuplicate hit on a
-                # citizen (real overlap).
-                dict set perChatOverlap $chatJid 1
+            switch $disp {
+                confirmed {
+                    # pending->received echo; not an overlap proof
+                    $self HandleConfirmation $chatJid \
+                        [list [dict get $r reconciled]]
+                }
+                duplicate {
+                    dict set perChatOverlap $chatJid 1
+                }
+                new {
+                    set result [$messagestore store [list [dict get $r msg]]]
+                    set inserted [dict get $result inserted]
+                    if {[llength $inserted] > 0} {
+                        set dbMsg [lindex [$messagestore get ids \
+                            $chatJid $inserted] 0]
+                        $client emit message <Received> -jid $chatJid \
+                            -message $dbMsg
+                        incr totalCount
+                    } else {
+                        # store's own dedup caught an id-less content match.
+                        dict set perChatOverlap $chatJid 1
+                    }
+                }
             }
         }
 
@@ -317,16 +338,19 @@ snit::type taco_message {
     #   confirmed → echo of one of our own pending sends → HandleConfirmation
     #   inserted  → fresh incoming row                   → HandleInsertion
     method ingestLive {chatJid stanza {isOwn 0}} {
-        set body [xsearch $stanza body -get body]
-        if {$body eq ""} return
         set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
         set ts [expr {$stamp ne "" ? [ParseTimestamp $stamp] : [clock microseconds]}]
-        set serverId [xsearch $stanza stanza-id -ns urn:xmpp:sid:0 -get @id]
-        set parseArgs [list -chat_jid $chatJid -timestamp $ts -server_id $serverId]
+        set idArgs {}
         if {$isOwn} {
-            lappend parseArgs -own_id [xsearch $stanza -get @id]
+            set idArgs [list -own_id [xsearch $stanza -get @id]]
         }
-        set msg [$self ParseMessage $stanza {*}$parseArgs]
+        lassign [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs] \
+            serverId ownId originId
+        # "" for a displayless stanza (control type / keytransport).
+        set msg [$self ParseMessage $stanza \
+            -chat_jid $chatJid -timestamp $ts \
+            -server_id $serverId -own_id $ownId -origin_id $originId]
+        if {$msg eq ""} return
         set result [$messagestore store [list $msg]]
         set confirmed [dict get $result confirmed]
         if {[llength $confirmed] > 0} {
@@ -820,8 +844,15 @@ snit::type taco_message {
         set chatJid [dict get $msg chat_jid]
         set body    [dict get $msg body]
         set oid     [dict get $msg own_id]
-        set encMode [expr {[dict exists $msg encryption] \
+        # double check encryption desire
+        set dbEnc [$client db onecolumn {
+            SELECT encryption FROM chat_message
+            WHERE chat_jid=$chatJid AND own_id=$oid AND kind='message'
+        }]
+        set dictEnc [expr {[dict exists $msg encryption] \
             ? [dict get $msg encryption] : ""}]
+        set encMode [expr {($dbEnc eq "omemo" || $dictEnc eq "omemo") \
+            ? "omemo" : ""}]
         # Preserve the reply linkage across retries. The textual quote
         # fallback isn't reconstructed (the stored body is the clean,
         # unquoted text), so fbEnd stays 0 - 0461-aware peers still see
@@ -1096,21 +1127,25 @@ snit::type taco_message {
             return
         }
 
-        # Persist only displayable stanzas (non-empty body) - receipts,
-        # markers and chat states stay out of the store, as in every other
-        # ingest path. The full parsed batch still drives the sentinel ops, so
-        # contiguity is reasoned over the true archive span.
+        # Only `new` messages are stored; `parsed` keeps every disposition
+        # (each carries a timestamp) so the sentinel ops below still span the
+        # true archive range.
         set parsed {}
+        set toStore {}
         foreach resultNode [dict get $mamResult messages] {
-            lappend parsed [$self ParseResultNode $resultNode $chatJid]
+            set r [$self ParseResultNode $resultNode $chatJid]
+            lappend parsed $r
+            switch [dict get $r disposition] {
+                confirmed {
+                    $self HandleConfirmation $chatJid \
+                        [list [dict get $r reconciled]]
+                }
+                new { lappend toStore [dict get $r msg] }
+            }
         }
-        set displayable [lmap m $parsed {
-            if {[dict get $m body] eq ""} continue
-            set m
-        }]
-        # Store the displayable batch (even if cancelled - data is useful)
-        if {[llength $displayable] > 0} {
-            $messagestore store $displayable
+        # Store the new batch (even if cancelled - data is useful)
+        if {[llength $toStore] > 0} {
+            $messagestore store $toStore
         }
         $self SweepFetchedRange $chatJid $parsed $direction $before $after
 
@@ -1242,14 +1277,20 @@ snit::type taco_message {
             return
         }
 
-        set displayable [lmap resultNode [dict get $mamResult messages] {
-            set m [$self ParseResultNode $resultNode $chatJid]
-            if {[dict get $m body] eq ""} continue
-            set m
-        }]
+        set toStore {}
+        foreach resultNode [dict get $mamResult messages] {
+            set r [$self ParseResultNode $resultNode $chatJid]
+            switch [dict get $r disposition] {
+                confirmed {
+                    $self HandleConfirmation $chatJid \
+                        [list [dict get $r reconciled]]
+                }
+                new { lappend toStore [dict get $r msg] }
+            }
+        }
 
-        if {[llength $displayable] > 0} {
-            $messagestore store $displayable
+        if {[llength $toStore] > 0} {
+            $messagestore store $toStore
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -1329,9 +1370,14 @@ snit::type taco_message {
 
         set messages {}
         foreach resultNode [dict get $mamResult messages] {
-            set msg [$self ParseResultNode $resultNode $chatJid]
-            if {[dict get $msg body] eq ""} continue
-            set result [$messagestore store [list $msg]]
+            set r [$self ParseResultNode $resultNode $chatJid]
+            set disp [dict get $r disposition]
+            if {$disp eq "confirmed"} {
+                $self HandleConfirmation $chatJid [list [dict get $r reconciled]]
+                continue
+            }
+            if {$disp ne "new"} continue
+            set result [$messagestore store [list [dict get $r msg]]]
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
                 set storedTs [lindex $ins 0]
@@ -1347,30 +1393,88 @@ snit::type taco_message {
         {*}$callback [dict create messages $messages complete $complete last $last]
     }
 
+    # Ingest one MAM <result>: reconcile on the envelope ids first, decrypt
+    # and parse only a `new` message. Returns a disposition the loops act
+    # on; `timestamp` (server stamp) is on every verdict for span tracking:
+    #   {disposition confirmed timestamp T reconciled V}  pending send echoed
+    #   {disposition duplicate timestamp T}               already a citizen
+    #   {disposition drop      timestamp T}               new but displayless
+    #   {disposition new       timestamp T msg M}         new, store M
     method ParseResultNode {resultNode chatJid} {
         set serverId [xsearch $resultNode -get @id]
         set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
         set stamp [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]
+        set ts [ParseTimestamp $stamp]
         set msgNode [lindex [xsearch $fwdNode message] 0]
 
-        # If the archived message is OMEMO-encrypted, route it through
-        # the same decrypt core that the live path uses. Returns a
-        # synthesised plaintext stanza on success, the original
-        # encrypted stanza on failure (which then parses to an empty
-        # body and gets skipped by the caller's body-empty filter).
-        set msgNode [$client omemo decryptForwarded $msgNode]
+        lassign [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId] \
+            sid ownId originId
+        set v [$messagestore reconcile $chatJid $sid $ownId $originId $ts]
+        switch [dict get $v verdict] {
+            confirmed {
+                return [dict create disposition confirmed \
+                    timestamp $ts reconciled $v]
+            }
+            duplicate {
+                return [dict create disposition duplicate timestamp $ts]
+            }
+        }
 
-        $self ParseMessage $msgNode \
-            -chat_jid $chatJid \
-            -timestamp [ParseTimestamp $stamp] \
-            -server_id $serverId
+        # decryptForwarded yields a synthesised plaintext stanza, or the
+        # original on failure; ParseMessage returns "" for a displayless one.
+        set msgNode [$client omemo decryptForwarded $msgNode]
+        set msg [$self ParseMessage $msgNode \
+            -chat_jid $chatJid -timestamp $ts \
+            -server_id $sid -own_id $ownId -origin_id $originId]
+        if {$msg eq ""} {
+            return [dict create disposition drop timestamp $ts]
+        }
+        return [dict create disposition new timestamp $ts msg $msg]
     }
 
-    # Shared parser: extract message dict from a <message> node.
-    # Caller supplies -chat_jid, -timestamp, -server_id as overrides
-    # (these come from different places for live vs MAM).
+    # {serverId ownId originId} off a <message>, derived once for the dedup
+    # check and the parser. Callers override -server_id (MAM <result @id>)
+    # and -own_id (live carbon). Otherwise server_id from <stanza-id>;
+    # origin_id from <origin-id>, else @id; own_id from @id when the stanza
+    # is from our own bare JID (it equals the own_id we stored on send, so
+    # the row confirms rather than duplicates).
+    method ExtractEnvelopeIds {msgNode chatJid args} {
+        if {[dict exists $args -server_id]} {
+            set serverId [dict get $args -server_id]
+        } else {
+            set serverId [xsearch $msgNode stanza-id -ns urn:xmpp:sid:0 -get @id]
+        }
+        set originId [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id]
+        if {$originId eq ""} {
+            set originId [xsearch $msgNode -get @id]
+        }
+        if {[dict exists $args -own_id]} {
+            set ownId [dict get $args -own_id]
+        } else {
+            set rawFrom [xsearch $msgNode -get @from]
+            if {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
+                set ownId [xsearch $msgNode -get @id]
+            } else {
+                set ownId ""
+            }
+        }
+        return [list $serverId $ownId $originId]
+    }
+
+    # Build a message dict from a (decrypted) <message> node. Caller
+    # supplies -chat_jid, -timestamp and the envelope ids
+    # (-server_id/-own_id/-origin_id) from ExtractEnvelopeIds. Returns ""
+    # for a displayless stanza (control type or bodyless payload).
     method ParseMessage {msgNode args} {
         set chatJid [dict get $args -chat_jid]
+        lassign [ParseReply $msgNode] replyId replyTo
+        set body [xsearch $msgNode body -get body]
+        if {$replyId ne ""} {
+            set body [StripReplyFallback $msgNode $body]
+        }
+        if {[ClassifyMessage $msgNode $body] ne "message"} {
+            return ""
+        }
         set rawFrom [xsearch $msgNode -get @from]
         set fromJid [NormalizeAuthorJid $chatJid $rawFrom]
         set fromRes [SplitFromResource $chatJid $rawFrom]
@@ -1379,27 +1483,10 @@ snit::type taco_message {
         # none. Drives the lock on peer messages.
         set emeNs [xsearch $msgNode encryption -ns urn:xmpp:eme:0 -get @namespace]
         set enc [expr {$emeNs eq "eu.siacs.conversations.axolotl" ? "omemo" : ""}]
-        set originId [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id]
-        if {$originId eq ""} {
-            set originId [xsearch $msgNode -get @id]
-        }
-        lassign [ParseReply $msgNode] replyId replyTo
-        set body [xsearch $msgNode body -get body]
-        if {$replyId ne ""} {
-            set body [StripReplyFallback $msgNode $body]
-        }
-        # own_id dedups messages we sent. The caller sets it on the live
-        # carbon path; otherwise, for a stanza from our own bare JID (echo:
-        # self-chat, carbon, MAM), derive it from @id - which equals the
-        # own_id we stored on send, so messagestore confirms the row rather
-        # than duplicating it.
-        if {[dict exists $args -own_id]} {
-            set ownId [dict get $args -own_id]
-        } elseif {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
-            set ownId [xsearch $msgNode -get @id]
-        } else {
-            set ownId ""
-        }
+        set ownId [expr {[dict exists $args -own_id] \
+            ? [dict get $args -own_id] : ""}]
+        set originId [expr {[dict exists $args -origin_id] \
+            ? [dict get $args -origin_id] : ""}]
         dict create \
             timestamp  [dict get $args -timestamp] \
             chat_jid   $chatJid \
@@ -1416,6 +1503,21 @@ snit::type taco_message {
             server_status "" \
             encryption $enc
     }
+}
+
+# A <body> is a "message"; a bodyless stanza is a control type
+# (receipt/marker/chatstate) or "" for any other bodyless payload (e.g. a
+# decrypted keytransport). Only "message" is stored; the rest are dropped.
+proc ClassifyMessage {msgNode body} {
+    if {$body ne ""} { return message }
+    foreach {kind ns} {
+        receipt   urn:xmpp:receipts
+        marker    urn:xmpp:chat-markers:0
+        chatstate http://jabber.org/protocol/chatstates
+    } {
+        if {[llength [xsearch $msgNode * -ns $ns]] > 0} { return $kind }
+    }
+    return ""
 }
 
 # Derive the attachment list for an incoming <message>. An attachment is
