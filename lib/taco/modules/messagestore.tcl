@@ -79,9 +79,10 @@ snit::type taco_messagestore {
                 on_wire        INTEGER NOT NULL DEFAULT 0,
                 -- 'message' (default) | 'sentinel'
                 kind           TEXT NOT NULL DEFAULT 'message',
-                -- NULL/empty = incoming (already received);
-                -- 'pending'   = stored, awaiting server confirmation;
-                -- 'received'  = server confirmed via echo or SM ack
+                -- '' = the server has this exact message (incoming, MAM,
+                --   carbon, or a confirmed send - all the same situation);
+                -- 'pending'/'uploading'/'failed' = our outgoing message
+                --   whose server storage state we don't (yet) know.
                 server_status  TEXT,
                 -- intended outgoing encryption, stamped at send time:
                 -- '' = plaintext, 'omemo' = OMEMO. Automatic retries
@@ -270,7 +271,7 @@ snit::type taco_messagestore {
                         $options(-db) eval {
                             UPDATE chat_message
                             SET timestamp=$newTs,
-                                server_status='received',
+                                server_status='',
                                 server_id = CASE WHEN $sid != ''
                                     THEN $sid ELSE server_id END
                             WHERE chat_jid=$jid AND timestamp=$dupTs
@@ -594,7 +595,7 @@ snit::type taco_messagestore {
     # An attachment send is stored as server_status='uploading' before the
     # HTTP PUT runs, so it shows immediately. On success the same row is
     # promoted to 'pending' (body/url/raw_xml filled in) and rejoins the
-    # normal pending -> received confirmation flow; on failure it becomes
+    # normal pending -> '' (server-confirmed) flow; on failure it becomes
     # 'failed'. Matched by own_id, which is stable from store time.
 
     method markUploaded {jid ownId url rawXml attachments {encryption ""}} {
@@ -633,7 +634,7 @@ snit::type taco_messagestore {
         }
     }
 
-    # Flip pending → received for each own_id (SM ack path).
+    # Flip pending → '' (server-confirmed) for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
     method confirmByOwnIds {ownIds} {
         set confirmed {}
@@ -648,7 +649,7 @@ snit::type taco_messagestore {
                         chat_jid $row(chat_jid) timestamp $row(timestamp)]
                 }
                 $options(-db) eval {
-                    UPDATE chat_message SET server_status='received'
+                    UPDATE chat_message SET server_status=''
                     WHERE own_id=$oid AND server_status='pending'
                 }
             }
@@ -659,9 +660,9 @@ snit::type taco_messagestore {
     # Dedup by server_id/own_id only, for the caller to act on before any
     # decrypt. An id-less stanza returns `new` and is content-deduped later
     # by `store`. Verdicts:
-    #   confirmed - matched a pending send: flip received, capture
-    #               server_id, relocate to the server ts (as `store` does);
-    #               returns old/new ts for the <Patch>.
+    #   confirmed - matched a pending send: flip to '' (server has it),
+    #               capture server_id, relocate to the server ts (as `store`
+    #               does); returns old/new ts for the <Patch>.
     #   duplicate - matched a non-pending row.
     #   new       - no id match.
     method reconcile {jid serverId ownId originId timestamp} {
@@ -694,7 +695,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             UPDATE chat_message
             SET timestamp=$newTs,
-                server_status='received',
+                server_status='',
                 server_id = CASE WHEN $serverId != ''
                     THEN $serverId ELSE server_id END
             WHERE chat_jid=$jid AND timestamp=$dupTs
@@ -709,6 +710,11 @@ snit::type taco_messagestore {
     # enriched too.
     method RowToDict {row} {
         set d [messagestyling::enrich $row]
+        # Direction is a protocol fact, not a display concern: a message is
+        # ours iff it carries an own_id (set on send and on any echo from
+        # our own bare JID). The GUI reads this flag rather than re-deriving
+        # it. (MUC own-detection by occupant-id/nick will refine this here.)
+        dict set d is_outgoing [expr {[dict get $d own_id] ne ""}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
             set targetTs [$self resolveReply $chatJid \

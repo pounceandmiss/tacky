@@ -527,7 +527,7 @@ test message-self-echo-dedups-not-duplicate \
             inserted [llength [dict get $res inserted]] \
             confirmed [llength [dict get $res confirmed]] \
             status [dict get [lindex $rows 0] server_status]
-    } -result {nrows 1 inserted 0 confirmed 1 status received}
+    } -result {nrows 1 inserted 0 confirmed 1 status {}}
 
 # resend: user-driven retry. Default honors the row's stamped
 # encryption; -plaintext downgrades (the only path that may).
@@ -643,7 +643,7 @@ test message-catchup-displayless-confirms-send \
         list nrows [llength $rows] \
             status [dict get [lindex $rows 0] server_status] \
             body [dict get [lindex $rows 0] body]
-    } -result {nrows 1 status received body secret}
+    } -result {nrows 1 status {} body secret}
 
 # =============================================================================
 # Envelope-first dedup: messagestore reconcile
@@ -666,7 +666,7 @@ test message-reconcile-confirms-pending \
             status [dict get [lindex $rows 0] server_status] \
             sid [dict get [lindex $rows 0] server_id] \
             ts [dict get [lindex $rows 0] timestamp]
-    } -result {verdict confirmed nrows 1 status received sid srv-r1 ts 5000000}
+    } -result {verdict confirmed nrows 1 status {} sid srv-r1 ts 5000000}
 
 # A match against a row we already hold (not pending) is a duplicate: drop
 # it, never decrypt.
@@ -674,7 +674,7 @@ test message-reconcile-duplicate-on-citizen \
     {reconcile reports duplicate for a non-pending row} \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
-            from_jid bob@example.com/x server_id srv-r2 server_status received]]
+            from_jid bob@example.com/x server_id srv-r2 server_status ""]]
         dict get [$::_client message messagestore reconcile \
             alice@example.com srv-r2 "" "" 5000000] verdict
     } -result {duplicate}
@@ -703,7 +703,7 @@ test message-catchup-duplicate-own-no-redecrypt \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-dup server_id arch-9 \
-            server_status received encryption omemo on_wire 1]]
+            server_status "" encryption omemo on_wire 1]]
         set rn [mam_result id arch-9 from $acc to alice@example.com \
             origin_id oid-dup body ""]
         $::_client message OnCatchup [dict create messages [list $rn] complete 1]
@@ -827,7 +827,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
         }]
         list $dbRows $status [llength $patches] [llength $received] \
              [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
-    } -result {1 received 1 0 received}
+    } -result {1 {} 1 0 {}}
 
 # =============================================================================
 # History: local-first (no MAM)

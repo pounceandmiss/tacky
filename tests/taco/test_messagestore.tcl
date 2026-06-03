@@ -458,7 +458,7 @@ test messagestore-pending-confirm-same-ts {echo with same timestamp confirms in 
         set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list [dict get $c timestamp] [dict get $c newtimestamp] \
              [dict get $msg server_id] [dict get $msg server_status]
-    } -result {100 100 srv1 received}
+    } -result {100 100 srv1 {}}
 
 test messagestore-pending-confirm-ts-change {echo with different timestamp moves the row} \
     {*}$ms_common \
@@ -478,7 +478,7 @@ test messagestore-pending-confirm-ts-change {echo with different timestamp moves
         }]
         list [dict get $c timestamp] [dict get $c newtimestamp] \
              $oldExists $newStatus
-    } -result {100 200 0 received}
+    } -result {100 200 0 {}}
 
 test messagestore-pending-confirm-no-bulk-update {confirming one pending does not move others} \
     {*}$ms_common \
@@ -525,12 +525,12 @@ test messagestore-pending-confirm-reorders {confirmed pending moves to its new s
         list $beforeBodies $afterBodies
     } -result {{a x b c} {a b x c}}
 
-test messagestore-pending-confirm-visible {confirmed pending (status=received) still shows up in get} \
+test messagestore-pending-confirm-visible {confirmed pending (status='') still shows up in get} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 body a]]
         ms_pending [ms_msg timestamp 200 body sent own_id oid1 \
-            server_id srv1 server_status received]
+            server_id srv1 server_status ""]
         set msgs [ms_msgs [store get latest alice@example.com]]
         list [llength $msgs] [dict get [lindex $msgs 1] body]
     } -result {2 sent}

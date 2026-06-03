@@ -906,7 +906,7 @@ proc ca_outgoing {id body {status pending}} {
 }
 
 proc ca_patch {id} {
-    dict create id $id server_status received
+    dict create id $id server_status ""
 }
 
 proc ca_reply {id body replyId replyTo author replyBody} {
@@ -1016,7 +1016,7 @@ test chatarea-patch-receipt {Patch with server_status updates receipt checkmark}
         set before [expr {[llength $ranges] > 0
             ? [.ca.text get {*}$ranges] : "MISSING"}]
         # Patch: server confirms receipt
-        .ca apply [list [dict create id 100 server_status received]]
+        .ca apply [list [dict create id 100 server_status ""]]
         set ranges [.ca.text tag ranges $tag]
         set after [expr {[llength $ranges] > 0
             ? [.ca.text get {*}$ranges] : "MISSING"}]

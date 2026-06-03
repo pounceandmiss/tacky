@@ -1084,12 +1084,14 @@ snit::widget chatarea {
         }
     }
 
+    # Receipt glyph for an outgoing message (only rendered when outgoing).
+    # "" means the server has it -> single check; failed -> "!"; pending /
+    # uploading are optimistic, no glyph yet.
     method ReceiptText {status} {
         switch -- $status {
-            received { return "\u2713" }
-            read     { return "\u2713\u2713" }
-            failed   { return "!" }
-            default   { return "" }
+            ""      { return "\u2713" }
+            failed  { return "!" }
+            default { return "" }
         }
     }
 
@@ -1316,7 +1318,10 @@ proc enrich_store_message {storeDict names} {
         if {$displayName eq ""} { set displayName $fromJid }
     }
     set serverStatus [dict get $storeDict server_status]
-    set isOutgoing [expr {$serverStatus ne ""}]
+    # Direction comes from the backend (own_id-derived); the view doesn't
+    # re-derive it. Older dicts without the flag fall back to "incoming".
+    set isOutgoing [expr {[dict exists $storeDict is_outgoing]
+        && [dict get $storeDict is_outgoing]}]
     set d [dict create \
         id           [dict get $storeDict timestamp] \
         from_jid     $fromJid \
