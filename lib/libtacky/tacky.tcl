@@ -259,8 +259,15 @@ oo::class create tacky_threaded_type {
                 option -tid -readonly yes
                 option -target -readonly yes
                 method emit {module event args} {
-                    thread::send -async $options(-tid) \
-                        [list $options(-target) emit $module $event {*}$args]
+                    # The GUI thread can vanish while the backend is still
+                    # draining queued stanzas during teardown. A dead target
+                    # makes thread::send throw; -async never surfaces
+                    # target-side errors here, so catch only swallows that
+                    # race and the late event is harmlessly dropped.
+                    catch {
+                        thread::send -async $options(-tid) \
+                            [list $options(-target) emit $module $event {*}$args]
+                    }
                 }
             }
         }
