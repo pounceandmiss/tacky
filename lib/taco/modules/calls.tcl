@@ -121,6 +121,13 @@ snit::type taco_calls {
         set Calls [dict create]
         array set PcToSid {}
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
+
+        $client caps addFeature urn:xmpp:jingle:1
+        $client caps addFeature urn:xmpp:jingle:apps:rtp:1
+        $client caps addFeature urn:xmpp:jingle:apps:rtp:audio
+        $client caps addFeature urn:xmpp:jingle:apps:dtls:0
+        $client caps addFeature urn:xmpp:jingle:transports:ice-udp:1
+        $client caps addFeature urn:xmpp:jingle-message:0
     }
 
     destructor {
