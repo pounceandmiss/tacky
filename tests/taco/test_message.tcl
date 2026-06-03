@@ -468,12 +468,14 @@ test message-incoming-eme-stamps-encryption \
 # raw_xml stores the readable form, never ciphertext: for OMEMO that's
 # the real body + EME marker (the wire stanza, with <encrypted>, is
 # separate); for plaintext just the body.
-test message-storedform-readable-not-ciphertext \
-    {StoredForm yields body (+EME for omemo), never <encrypted>} \
+test message-readable-form-not-ciphertext \
+    {readable mode yields body (+EME for omemo), never <encrypted>} \
     {*}$msg_common \
     -body {
-        set om [$::_client message StoredForm "secret text" o1 chat bob@example.com omemo]
-        set pl [$::_client message StoredForm "hi there" o2 chat bob@example.com ""]
+        set om [$::_client message BuildMessageStanza readable bob@example.com \
+            "secret text" o1 chat bob@example.com omemo]
+        set pl [$::_client message BuildMessageStanza readable bob@example.com \
+            "hi there" o2 chat bob@example.com ""]
         list \
             om_body [xsearch $om body -get body] \
             om_eme [xsearch $om encryption -ns urn:xmpp:eme:0 -get @namespace] \
