@@ -1,29 +1,33 @@
-# Overview See messagestore.tcl for sparse cache complexities
-# overview.
+# Overview: see messagestore.tcl for the sparse-cache complexities.
 
-# Message dict keys: timestamp, chat_jid, from_jid, body, server_id,
-#   own_id, origin_id, reply_id, reply_to, raw_xml (debug),
-#   server_status, on_wire.
+# Message dict keys: timestamp, chat_jid, from_jid, from_resource, body,
+#   server_id, own_id, origin_id, reply_id, reply_to, raw_xml (debug),
+#   server_status, encryption, fail_reason, attachments, on_wire.
 
-# chat_jid: MUC groupchat - room@muc?join; MUC PM - room@muc/nick; 1:1
-# - bare JID;
+# chat_jid: MUC groupchat - room@muc?join; MUC PM - room@muc/nick;
+#   1:1 - bare JID.
 
-# server_status answers one question - "does the server have this
-# exact message?" - and nothing else (direction is is_outgoing, from
-# own_id): "" the server has it: incoming, MAM, carbon, or a confirmed
-# send - all the same situation.  "pending" ours, sent, not yet
-# confirmed on the server "uploading" ours, attachment HTTP PUT in
-# flight (XEP-0363) "failed" ours, didn't reach the server (retryable)
-# Incoming stanzas: Live (OnMessage/ingestLive) and archived
+# server_status answers one question - "does the server have this exact
+# message?" - and nothing else (direction is is_outgoing, from own_id):
+#   ""          the server has it: incoming, MAM, carbon, or a confirmed
+#               send - all the same situation
+#   "pending"   ours, sent, not yet confirmed on the server
+#   "uploading" ours, attachment HTTP PUT in flight (XEP-0363)
+#   "failed"    ours, didn't reach the server (retryable)
+#
+# Incoming stanzas: live (OnMessage/ingestLive) and archived
 # (ParseResultNode) stanzas share one ingestion core, Classify:
-# 1. Dedup on the envelope ids (server stanza-id / @id), before
-# anything else: 1.1 outgoing message may be confirmed - and timestamp
-# relocated to the incoming stamp (MAM archive delay or MUC ack live
-# arrival time) 1.2 a match against an existing non-outgoing -> just
-# discard as duplicate.  1.3 no id match -> new, carry on.  2. Decrypt
-# OMEMO 3. Classify the contents: a real body is stored and surfaced
-# (<Received>); a control stanza (receipt, chat marker, chat state) or
-# other bodyless payload is currently discarded.
+#   1. Dedup on the envelope ids (server stanza-id / @id), before
+#      anything else:
+#      1.1 an outgoing message may be confirmed - and its timestamp
+#          relocated to the incoming stamp (MAM archive delay or MUC
+#          ack live arrival time)
+#      1.2 a match against an existing non-outgoing -> discard as duplicate
+#      1.3 no id match -> new, carry on
+#   2. Decrypt OMEMO
+#   3. Classify the contents: a real body is stored and surfaced
+#      (<Received>); a control stanza (receipt, chat marker, chat state)
+#      or other bodyless payload is currently discarded.
 # === GUI events ===
 #
 #   <Sent>     insert outgoing (no checkmark)
@@ -605,21 +609,36 @@ snit::type taco_message {
         }
     }
 
-    method RetryPending {} {
+    # Pending sends as RetrySend-shaped dicts, by scope:
+    #   all          every pending row (reconnect retry)
+    #   parked-omemo pending OMEMO still off the wire (on_wire=0)
+    #   peer-omemo   parked-omemo narrowed to $peerJid
+    # on_wire=1 rows are in flight awaiting an SM ack; re-sending would
+    # duplicate, so the omemo scopes exclude them.
+    method PendingSends {scope {peerJid ""}} {
+        set sql {SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
+                 FROM chat_message
+                 WHERE kind='message' AND server_status='pending'}
+        switch $scope {
+            all {}
+            parked-omemo { append sql { AND encryption='omemo' AND on_wire=0} }
+            peer-omemo   { append sql \
+                { AND chat_jid=$peerJid AND encryption='omemo' AND on_wire=0} }
+        }
+        append sql { ORDER BY timestamp}
         set pending {}
-        $client db eval {
-            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
-            FROM chat_message
-            WHERE kind='message' AND server_status='pending'
-            ORDER BY timestamp
-        } row {
+        $client db eval $sql row {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption) \
                 reply_id $row(reply_id) reply_to $row(reply_to)]
         }
+        return $pending
+    }
+
+    method RetryPending {} {
         # Group by MUC vs 1:1 — MUC messages must wait for room join
-        foreach msg $pending {
+        foreach msg [$self PendingSends all] {
             set chatJid [dict get $msg chat_jid]
             if {[string match "*?join" $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
@@ -632,28 +651,12 @@ snit::type taco_message {
 
     # Bus callback for omemo:<SessionReady>/<DevicelistResolved> on
     # $peerJid. Retries pending OMEMO sends to $peerJid still parked off
-    # the wire (on_wire=0): re-running encrypt either succeeds, stays
-    # pending (still warming), or TERMINAL-fails (empty devicelist).
-    # on_wire=1 rows are in flight awaiting SM ack; re-sending them on
-    # each tick would duplicate.
+    # the wire: re-running encrypt either succeeds, stays pending (still
+    # warming), or TERMINAL-fails (empty devicelist).
     method OnOmemoSessionReady {args} {
         array set opts $args
         set peerJid $opts(-jid)
-        set pending {}
-        $client db eval {
-            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
-            FROM chat_message
-            WHERE kind='message' AND chat_jid=$peerJid
-              AND server_status='pending'
-              AND encryption='omemo'
-              AND on_wire=0
-            ORDER BY timestamp
-        } row {
-            lappend pending [dict create \
-                chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id) encryption $row(encryption) \
-                reply_id $row(reply_id) reply_to $row(reply_to)]
-        }
+        set pending [$self PendingSends peer-omemo $peerJid]
         jlog debug "omemo:<SessionReady> $peerJid: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
             $self RetrySend $msg
@@ -665,20 +668,7 @@ snit::type taco_message {
     # to one peer: retry every pending OMEMO send that never reached the
     # wire, since they were all blocked on the same account prerequisite.
     method OnOmemoSelfReady {args} {
-        set pending {}
-        $client db eval {
-            SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
-            FROM chat_message
-            WHERE kind='message' AND server_status='pending'
-              AND encryption='omemo'
-              AND on_wire=0
-            ORDER BY timestamp
-        } row {
-            lappend pending [dict create \
-                chat_jid $row(chat_jid) body $row(body) \
-                own_id $row(own_id) encryption $row(encryption) \
-                reply_id $row(reply_id) reply_to $row(reply_to)]
-        }
+        set pending [$self PendingSends parked-omemo]
         jlog debug "omemo:<SelfReady>: [llength $pending] pending omemo send(s) to retry"
         foreach msg $pending {
             $self RetrySend $msg
