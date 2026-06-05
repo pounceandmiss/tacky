@@ -1,0 +1,11 @@
+# make linux build context: exclude all, re-include only build sources.
+*
+!Makefile
+!bin
+!lib
+!gui
+!icons
+!zippy
+# unused glibc-2.43 tclsh; drop it and git metadata
+zippy/tclsh
+**/.git
