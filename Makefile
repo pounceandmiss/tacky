@@ -31,10 +31,18 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 # ==== Targets ====
 
 .PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json \
-        flatpak flatpak-bundle flatpak-install \
+        linux flatpak flatpak-bundle flatpak-install \
         test test-gui tools wish tclsh clean win-clean dist-dir
 
 all: tacky tackyd tackyd-json
+
+# The three native binaries share one build tree so the heavy deps
+# (libdatachannel etc.) compile once, not once per binary; binaries 2 and 3 just
+# reuse the dep stamps in the shared PREFIX. Windows builds into a separate tree
+# (below) - sharing stays within an OS, so Linux and Windows never share a dep
+# source dir and their in-tree ELF/PE artifacts can't poison each other.
+LINUX_BUILD := $(CURDIR)/build/linux
+WIN_BUILD   := $(CURDIR)/build/windows
 
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
@@ -45,15 +53,15 @@ tacky tackyd tackyd-json: %: dist-dir
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    BASEDIR=$(CURDIR)/build/$* \
+	    BASEDIR=$(LINUX_BUILD) \
 	    app
-	cp build/$*/$* dist/$*
+	cp $(LINUX_BUILD)/$* dist/$*
 
 # ==== Windows cross-build ====
 # Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
 # as the native build; TARGET_OS=windows swaps in the win/ recipes and bundles
-# with a host tclsh9.0. Reuses build/$*'s fetched dep sources from the native
-# build (zippy isolates the Windows outputs under _build-win); ships $*.exe.
+# with a host tclsh9.0. All three share build/windows (deps compile once), kept
+# separate from build/linux so ELF/PE artifacts never cross; ships $*.exe.
 
 win: win-tacky win-tackyd win-tackyd-json
 
@@ -68,9 +76,22 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
 	    $(if $($*_ICON),WIN_ICON=$(CURDIR)/$($*_ICON)) \
-	    BASEDIR=$(CURDIR)/build/$* \
+	    BASEDIR=$(WIN_BUILD) \
 	    win-app
-	cp build/$*/$*.exe dist/$*.exe
+	cp $(WIN_BUILD)/$*.exe dist/$*.exe
+
+# ==== Portable Linux build ====
+# Build the native binaries against an older glibc (Debian bookworm, 2.36) so
+# they run on distros older than the Arch host (which links 2.43). The compile
+# runs in the container via docker/Dockerfile; the binaries export into dist/
+# with a -glibc<version> suffix (e.g. tacky-glibc2.36), so they sit alongside
+# the native and Windows builds without clobbering dist/tacky. Only glibc is
+# pinned older - the GUI binary still dynamically links libX11/libXft/etc.
+
+LINUX_OUT := dist
+
+linux: dist-dir
+	DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile --output $(LINUX_OUT) .
 
 # ==== Flatpak ====
 # Opt-in packaging layer (not part of `all`). Needs flatpak + the
