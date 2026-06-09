@@ -169,7 +169,7 @@
  	if (stylePtr->fgGC != NULL) {
  	    Tk_FreeGC(textPtr->display, stylePtr->fgGC);
  	}
-@@ -2585,6 +2637,230 @@
+@@ -2585,6 +2637,254 @@
  #endif /* TK_NO_DOUBLE_BUFFERING */
      linesRedrawn++;
  }
@@ -352,6 +352,30 @@
 +{
 +    int d = 2 * radius;
 +
++    /*
++     * Overlap the bands 1px into the arc boxes on rounded sides to hide the
++     * seam where a rectangle fill meets an arc (a white hairline under GDI,
++     * which rasterizes the two edges differently). Rounded sides only, so
++     * square stacked lines still abut.
++     */
++
++    int topOv = (tl || tr) ? 1 : 0;
++    int botOv = (bl || br) ? 1 : 0;
++
++    /*
++     * GDI draws XFillArc (via Pie) one pixel wider on the right and bottom than
++     * the rectangle fills (DrawOrFillArc's +1 box; fill right/bottom edges are
++     * exclusive). Pad the right edge and rounded bottom to match. No-op on X11.
++     */
++
++#ifdef _WIN32
++    int rBulge = 1;
++    int bBulge = botOv;
++#else
++    int rBulge = 0;
++    int bBulge = 0;
++#endif
++
 +    if (radius <= 0 || width <= 0 || height <= 0) {
 +	XFillRectangle(display, drawable, gc, x, y,
 +		(unsigned) width, (unsigned) height);
@@ -364,16 +388,16 @@
 +     * stacked lines of the same bubble meet seamlessly).
 +     */
 +
-+    XFillRectangle(display, drawable, gc, x, y + radius,
-+	    (unsigned) width, (unsigned) (height - d));
++    XFillRectangle(display, drawable, gc, x, y + radius - topOv,
++	    (unsigned) (width + rBulge), (unsigned) (height - d + topOv + botOv));
 +    XFillRectangle(display, drawable, gc,
-+	    x + (tl ? radius : 0), y,
-+	    (unsigned) (width - (tl ? radius : 0) - (tr ? radius : 0)),
++	    x + (tl ? radius - 1 : 0), y,
++	    (unsigned) (width - (tl ? radius - 1 : 0) - (tr ? radius - 1 : 0) + rBulge),
 +	    (unsigned) radius);
 +    XFillRectangle(display, drawable, gc,
-+	    x + (bl ? radius : 0), y + height - radius,
-+	    (unsigned) (width - (bl ? radius : 0) - (br ? radius : 0)),
-+	    (unsigned) radius);
++	    x + (bl ? radius - 1 : 0), y + height - radius,
++	    (unsigned) (width - (bl ? radius - 1 : 0) - (br ? radius - 1 : 0) + rBulge),
++	    (unsigned) (radius + bBulge));
 +
 +    /*
 +     * Rounded corners: a filled quarter disc per requested corner. X arc
@@ -400,7 +424,7 @@
  
  /*
   *--------------------------------------------------------------
-@@ -2661,6 +2937,70 @@
+@@ -2661,6 +2961,70 @@
      chunkPtr = dlPtr->chunkPtr;
  
      /*
