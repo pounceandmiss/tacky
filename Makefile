@@ -132,36 +132,37 @@ flatpak-install:
 
 # ==== Dev interpreters ====
 # Standalone zipfs interpreters with all deps baked in (system tclsh9.0 can't
-# find rtc/rtcma). Use these to run the app or tests from source without
-# building a full bundle: e.g. `make wish && build/tools/wish bin/tacky.tcl`.
+# find rtc/rtcma). Run the app or tests from source without a full bundle:
+# e.g. `make wish && build/linux/wish bin/tacky.tcl`.
 #
-# The build/tools/* rules depend on this Makefile so that editing COMMON_DEPS
-# rebuilds the interpreter instead of silently reusing a stale one.
+# Built into $(LINUX_BUILD) alongside the app so they share its dep clones and
+# compiled stamps; wish's DEPS are a subset of tacky's. Depend on this Makefile
+# so editing COMMON_DEPS forces a rebuild.
 
 tools: tclsh wish
-tclsh: build/tools/tclsh
-wish: build/tools/wish
+tclsh: $(LINUX_BUILD)/tclsh
+wish: $(LINUX_BUILD)/wish
 
-test: build/tools/tclsh
-	build/tools/tclsh test_all.tcl
+test: $(LINUX_BUILD)/tclsh
+	$(LINUX_BUILD)/tclsh test_all.tcl
 
-test-gui: build/tools/wish
-	build/tools/wish test_gui.tcl
+test-gui: $(LINUX_BUILD)/wish
+	$(LINUX_BUILD)/wish test_gui.tcl
 
-build/tools/tclsh: Makefile
+$(LINUX_BUILD)/tclsh: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(COMMON_DEPS)" \
-	    BASEDIR=$(CURDIR)/build/tools \
+	    BASEDIR=$(LINUX_BUILD) \
 	    tclsh
 
-build/tools/wish: Makefile
+$(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=wish \
 	    DEPS="$(COMMON_DEPS) tkwuffs" \
-	    BASEDIR=$(CURDIR)/build/tools \
+	    BASEDIR=$(LINUX_BUILD) \
 	    wish
 
 dist-dir:
