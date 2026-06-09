@@ -18,6 +18,7 @@ foreach {_name _file} {
     mate/16x16/actions/mail-reply-sender.png              mail-reply-sender-16.png
     mate/16x16/actions/contact-new.png                    contact-new-16.png
     mate/22x22/status/mail-attachment.png                 mail-attachment-22.png
+    mate/22x22/emotes/face-smile.png                      face-smile-22.png
     elementary/22x22/actions/mail-send.png                mail-send-22.png
     avatarcache::defaultAvatar                            avatar-default-32.png
 } {
