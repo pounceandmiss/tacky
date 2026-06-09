@@ -44,6 +44,12 @@ all: tacky tackyd tackyd-json
 LINUX_BUILD := $(CURDIR)/build/linux
 WIN_BUILD   := $(CURDIR)/build/windows
 
+# The Windows bundler (zippy/build.tcl) runs on the host, so it needs a 9.0-line
+# tclsh that runs natively; the cross-compiled PE tclsh can't. Reuse the one the
+# native build produces, falling back to a tclsh9.0 on PATH.
+WIN_HOST_TCLSH := $(LINUX_BUILD)/_build/local/bin/tclsh9.0
+HOST_TCLSH     := $(if $(wildcard $(WIN_HOST_TCLSH)),$(WIN_HOST_TCLSH),tclsh9.0)
+
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
@@ -76,6 +82,7 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
 	    $(if $($*_ICON),WIN_ICON=$(CURDIR)/$($*_ICON)) \
+	    HOST_TCLSH=$(HOST_TCLSH) \
 	    BASEDIR=$(WIN_BUILD) \
 	    win-app
 	cp $(WIN_BUILD)/$*.exe dist/$*.exe
