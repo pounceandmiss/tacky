@@ -250,9 +250,25 @@ snit::type taco_avatar {
 
     method OnMetadataNotification {stanza} {
         set from [jid norm [jid bare [xsearch $stanza -get @from]]]
+        $self ProcessMetadata $from $stanza
+    }
+
+    # Shared by PEP notifications (<event> wrapper) and the IQ result of a
+    # forced refresh (<pubsub> wrapper); the <metadata><info> shape is identical.
+    # The owning JID is passed in rather than read from @from, since a refresh
+    # result may omit it.
+    method ProcessMetadata {from stanza} {
+        set meta [lindex [xsearch $stanza event items item metadata] 0]
+        if {$meta eq ""} {
+            set meta [lindex [xsearch $stanza pubsub items item metadata] 0]
+        }
+        # No <metadata> element at all (e.g. a refresh against a JID with no PEP
+        # avatar node): leave any existing cached avatar untouched.  A real
+        # disable carries an empty-but-present <metadata/>, handled below.
+        if {$meta eq ""} return
 
         # Check for empty metadata (avatar disabled)
-        set infoNodes [xsearch $stanza event items item metadata info]
+        set infoNodes [xsearch $meta info]
         if {[llength $infoNodes] == 0} {
             set had [$client db onecolumn {
                 SELECT count(*) FROM avatar_metadata WHERE jid=$from
@@ -265,11 +281,11 @@ snit::type taco_avatar {
         }
 
         # Extract info attributes from first <info> element
-        set hash [xsearch $stanza event items item metadata info -get @id]
-        set type_ [xsearch $stanza event items item metadata info -get @type]
-        set bytes [xsearch $stanza event items item metadata info -get @bytes]
-        set width [xsearch $stanza event items item metadata info -get @width]
-        set height [xsearch $stanza event items item metadata info -get @height]
+        set hash [xsearch $meta info -get @id]
+        set type_ [xsearch $meta info -get @type]
+        set bytes [xsearch $meta info -get @bytes]
+        set width [xsearch $meta info -get @width]
+        set height [xsearch $meta info -get @height]
 
         # Upsert metadata
         $client db eval {
@@ -387,12 +403,32 @@ snit::type taco_avatar {
         $client emit avatar <Update> -jid $jid -hash $hash
     }
 
+    # Force a re-fetch from the server, bypassing the hash cache.  Re-requests
+    # the PEP metadata node; the result is parsed by the same code as a PEP
+    # notification, which then re-fetches the data when the hash differs.
+    method refresh {args} {
+        set jid [jid norm [dict get $args -jid]]
+        $client iq request -to $jid -payload \
+            [j pubsub -ns http://jabber.org/protocol/pubsub {
+                j items -node urn:xmpp:avatar:metadata
+            }] -command [mymethod OnRefreshResult $jid]
+    }
+
+    method OnRefreshResult {jid stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} return
+        $self ProcessMetadata $jid $stanza
+    }
+
+    # Fetch the current avatar image from the data node.  We request the
+    # latest item rather than the item whose id equals $hash: XEP-0084 says
+    # the data item id should be the image SHA-1 (matching the metadata info
+    # id), but some servers (e.g. yax.im via mod_vcard_legacy) store the data
+    # under a different id, so a by-id request comes back empty.  $hash is
+    # still the key we store under, so the metadata->data join stays intact.
     method FetchData {jid hash} {
         $client iq request -to $jid -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
-                j items -node urn:xmpp:avatar:data {
-                    j item -id $hash
-                }
+                j items -node urn:xmpp:avatar:data -max_items 1
             }] -command [mymethod OnDataResult $jid $hash]
     }
 
