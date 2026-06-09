@@ -115,6 +115,8 @@ snit::widget chatlistview {
         $contactmenu add command -label "Remove" \
             -command [mymethod OnRemoveContact]
         $contactmenu add separator
+        $contactmenu add command -label "Refresh avatar" \
+            -command [mymethod OnRefreshAvatar]
         $contactmenu add command -label "Copy JID" \
             -command [mymethod OnCopyJid]
 
@@ -135,6 +137,8 @@ snit::widget chatlistview {
         $bookmarkmenu add command -label "Remove Bookmark" \
             -command [mymethod OnRemoveBookmark]
         $bookmarkmenu add separator
+        $bookmarkmenu add command -label "Refresh avatar" \
+            -command [mymethod OnRefreshAvatar]
         $bookmarkmenu add command -label "Copy JID" \
             -command [mymethod OnCopyJid]
 
@@ -563,6 +567,12 @@ snit::widget chatlistview {
         if {$jid eq ""} return
         clipboard clear
         clipboard append $jid
+    }
+
+    method OnRefreshAvatar {} {
+        set jid [$self SelectedLeafJid]
+        if {$jid eq ""} return
+        $options(-tacky) avatar refresh -acc $options(-acc) -jid [jid bare $jid]
     }
 
     method OnSettingsRightClick {X Y} {
