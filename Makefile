@@ -168,7 +168,7 @@ $(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=wish \
-	    DEPS="$(COMMON_DEPS) tkwuffs" \
+	    DEPS="$(COMMON_DEPS) tkwuffs tkdnd" \
 	    BASEDIR=$(LINUX_BUILD) \
 	    wish
 
