@@ -4,8 +4,7 @@ A desktop XMPP chat client built with Tcl/Tk. Pre-alpha.
 
 ## Screenshots
 
-![Multi-window chat](doc/screenshots/multiwindow.png)
-![XML Console](doc/screenshots/xmlconsole.png)
+![Main window](doc/screenshots/main.png)
 ![Call](doc/screenshots/call.png)
 
 
