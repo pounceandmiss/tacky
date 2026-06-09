@@ -1,0 +1,473 @@
+--- a/generic/tkText.h
++++ b/generic/tkText.h
+@@ -391,6 +391,16 @@
+     int rMargin;		/* No longer used, but kept for binary compatibility. */
+     Tk_3DBorder rMarginColor;	/* Used for drawing background in right margin.
+ 				 * NULL means no value specified here. */
++    Tcl_Obj *bubbleRadiusObj;	/* -bubbleradius: corner radius in pixels for
++				 * the rounded "bubble" shape. NULL means not a
++				 * bubble. */
++    Tk_3DBorder bubbleBorder;	/* -bubblecolor: fill colour of the bubble
++				 * shape, kept separate from -background so the
++				 * bubble is independent of character/selection
++				 * backgrounds. NULL means no value here. */
++    Tcl_Obj *bubblePadXObj;	/* -bubblepadx: internal horizontal padding in
++				 * pixels between the text and the bubble edge.
++				 * NULL means no value specified here. */
+     Tk_3DBorder selBorder;	/* Used for drawing background for selected text.
+ 				 * NULL means no value specified here. */
+     XColor *selFgColor;		/* Foreground color for selected text. NULL means
+--- a/generic/tkTextTag.c
++++ b/generic/tkTextTag.c
+@@ -24,6 +24,15 @@
+     {TK_OPTION_PIXELS, "-borderwidth", NULL, NULL,
+ 	NULL, offsetof(TkTextTag, borderWidthObj), TCL_INDEX_NONE,
+ 	TK_OPTION_NULL_OK, 0, 0},
++    {TK_OPTION_BORDER, "-bubblecolor", NULL, NULL,
++	NULL, TCL_INDEX_NONE, offsetof(TkTextTag, bubbleBorder),
++	TK_OPTION_NULL_OK, 0, 0},
++    {TK_OPTION_PIXELS, "-bubbleradius", NULL, NULL,
++	NULL, offsetof(TkTextTag, bubbleRadiusObj), TCL_INDEX_NONE,
++	TK_OPTION_NULL_OK, 0, 0},
++    {TK_OPTION_PIXELS, "-bubblepadx", NULL, NULL,
++	NULL, offsetof(TkTextTag, bubblePadXObj), TCL_INDEX_NONE,
++	TK_OPTION_NULL_OK, 0, 0},
+     {TK_OPTION_BOOLEAN, "-elide", NULL, NULL,
+ 	NULL, TCL_INDEX_NONE, offsetof(TkTextTag, elide),
+ 	TK_OPTION_NULL_OK, 0, 0},
+@@ -502,7 +511,10 @@
+ 		    || (tagPtr->underline >= 0)
+ 		    || (tagPtr->underlineColor != NULL)
+ 		    || (tagPtr->lMarginColor != NULL)
+-		    || (tagPtr->rMarginColor != NULL)) {
++		    || (tagPtr->rMarginColor != NULL)
++		    || (tagPtr->bubbleRadiusObj != NULL)
++		    || (tagPtr->bubbleBorder != NULL)
++		    || (tagPtr->bubblePadXObj != NULL)) {
+ 		tagPtr->affectsDisplay = 1;
+ 	    }
+ 	    if (!newTag) {
+@@ -1004,6 +1016,9 @@
+     tagPtr->rMarginObj = NULL;
+     tagPtr->rMargin = 0;
+     tagPtr->rMarginColor = NULL;
++    tagPtr->bubbleRadiusObj = NULL;
++    tagPtr->bubbleBorder = NULL;
++    tagPtr->bubblePadXObj = NULL;
+     tagPtr->selBorder = NULL;
+     tagPtr->selFgColor = NULL;
+     tagPtr->spacing1Obj = NULL;
+--- a/generic/tkTextDisp.c
++++ b/generic/tkTextDisp.c
+@@ -143,6 +143,15 @@
+ 				 * text. */
+     int rMargin;		/* Right margin, in pixels. */
+     Tk_3DBorder rMarginColor;	/* Color of right margin. */
++    int bubbleRadius;		/* Corner radius in pixels for the rounded
++				 * "bubble" shape. 0 means no bubble. */
++    Tk_3DBorder bubbleBorder;	/* Fill colour of the bubble shape (the
++				 * -bubblecolor option). Kept separate from
++				 * -background/selection so the bubble outline
++				 * is independent of character backgrounds.
++				 * NULL means no bubble. */
++    int bubblePadX;		/* Internal horizontal padding in pixels between
++				 * the text and the bubble edge (-bubblepadx). */
+     int spacing1;		/* Spacing above first dline in text line. */
+     int spacing2;		/* Spacing between lines of dline. */
+     int spacing3;		/* Spacing below last dline in text line. */
+@@ -171,6 +180,8 @@
+ 				 * referenced in Chunks. */
+     GC bgGC;			/* Graphics context for background. None means
+ 				 * use widget background. */
++    GC bubbleGC;		/* Graphics context for the bubble fill. None
++				 * means this style has no bubble. */
+     GC fgGC;			/* Graphics context for foreground. */
+     GC ulGC;			/* Graphics context for underline. */
+     GC ovGC;			/* Graphics context for overstrike. */
+@@ -192,6 +203,17 @@
+ 	&& ((s1)->sValuePtr->bgStipple == (s2)->sValuePtr->bgStipple))
+ 
+ /*
++ * The following macro determines whether two styles belong to the same bubble
++ * (same -bubblecolor and -bubbleradius). It is deliberately independent of the
++ * character background, so a selection inside a bubble does not split it.
++ */
++
++#define SAME_BUBBLE(s1, s2) \
++    (((s1)->sValuePtr->bubbleBorder == (s2)->sValuePtr->bubbleBorder) \
++	&& ((s1)->sValuePtr->bubbleRadius == (s2)->sValuePtr->bubbleRadius) \
++	&& ((s1)->sValuePtr->bubblePadX == (s2)->sValuePtr->bubblePadX))
++
++/*
+  * The following macro is used to compare two floating-point numbers to within
+  * a certain degree of scale. Direct comparison fails on processors where the
+  * processor and memory representations of FP numbers of a particular
+@@ -779,7 +801,8 @@
+     Tcl_Size fgPrio, fontPrio, fgStipplePrio;
+     Tcl_Size underlinePrio, elidePrio, justifyPrio, offsetPrio;
+     Tcl_Size lMargin1Prio, lMargin2Prio, rMarginPrio;
+-    Tcl_Size lMarginColorPrio, rMarginColorPrio;
++    Tcl_Size lMarginColorPrio, rMarginColorPrio, bubbleRadiusPrio, bubbleBorderPrio;
++    Tcl_Size bubblePadXPrio;
+     Tcl_Size spacing1Prio, spacing2Prio, spacing3Prio;
+     Tcl_Size overstrikePrio, tabPrio, tabStylePrio, wrapPrio;
+ 
+@@ -795,6 +818,8 @@
+     underlinePrio = elidePrio = justifyPrio = offsetPrio = -1;
+     lMargin1Prio = lMargin2Prio = rMarginPrio = -1;
+     lMarginColorPrio = rMarginColorPrio = -1;
++    bubbleRadiusPrio = bubbleBorderPrio = -1;
++    bubblePadXPrio = -1;
+     spacing1Prio = spacing2Prio = spacing3Prio = -1;
+     overstrikePrio = tabPrio = tabStylePrio = wrapPrio = -1;
+     memset(&styleValues, 0, sizeof(StyleValues));
+@@ -935,6 +960,23 @@
+ 	    styleValues.rMarginColor = tagPtr->rMarginColor;
+ 	    rMarginColorPrio = tagPtr->priority;
+ 	}
++	if ((tagPtr->bubbleRadiusObj != NULL)
++		&& (tagPtr->priority > bubbleRadiusPrio)) {
++	    Tk_GetPixelsFromObj(NULL, textPtr->tkwin, tagPtr->bubbleRadiusObj,
++		    &styleValues.bubbleRadius);
++	    bubbleRadiusPrio = tagPtr->priority;
++	}
++	if ((tagPtr->bubbleBorder != NULL)
++		&& (tagPtr->priority > bubbleBorderPrio)) {
++	    styleValues.bubbleBorder = tagPtr->bubbleBorder;
++	    bubbleBorderPrio = tagPtr->priority;
++	}
++	if ((tagPtr->bubblePadXObj != NULL)
++		&& (tagPtr->priority > bubblePadXPrio)) {
++	    Tk_GetPixelsFromObj(NULL, textPtr->tkwin, tagPtr->bubblePadXObj,
++		    &styleValues.bubblePadX);
++	    bubblePadXPrio = tagPtr->priority;
++	}
+ 	if ((tagPtr->spacing1Obj != NULL)
+ 		&& (tagPtr->priority > spacing1Prio)) {
+ 	    Tk_GetPixelsFromObj(NULL, textPtr->tkwin, tagPtr->spacing1Obj, &styleValues.spacing1);
+@@ -1016,6 +1058,13 @@
+     } else {
+ 	stylePtr->bgGC = NULL;
+     }
++    if (styleValues.bubbleBorder != NULL) {
++	gcValues.foreground = Tk_3DBorderColor(styleValues.bubbleBorder)->pixel;
++	mask = GCForeground;
++	stylePtr->bubbleGC = Tk_GetGC(textPtr->tkwin, mask, &gcValues);
++    } else {
++	stylePtr->bubbleGC = NULL;
++    }
+     mask = GCFont;
+     gcValues.font = Tk_FontId(styleValues.tkfont);
+     mask |= GCForeground;
+@@ -1067,6 +1116,9 @@
+ 	if (stylePtr->bgGC != NULL) {
+ 	    Tk_FreeGC(textPtr->display, stylePtr->bgGC);
+ 	}
++	if (stylePtr->bubbleGC != NULL) {
++	    Tk_FreeGC(textPtr->display, stylePtr->bubbleGC);
++	}
+ 	if (stylePtr->fgGC != NULL) {
+ 	    Tk_FreeGC(textPtr->display, stylePtr->fgGC);
+ 	}
+@@ -2585,6 +2637,230 @@
+ #endif /* TK_NO_DOUBLE_BUFFERING */
+     linesRedrawn++;
+ }
++
++/*
++ *--------------------------------------------------------------
++ *
++ * BubbleAdjacent --
++ *
++ *	Determine whether a neighboring display line continues the same bubble,
++ *	i.e. whether it carries a chunk with the same -bubblecolor. Keyed on the
++ *	bubble colour (not the style pointer) so that a selection inside the
++ *	bubble -- which changes the character style but not the bubble colour --
++ *	does not look like a bubble boundary. Used to decide which corners of a
++ *	bubble's per-line rectangle to round: a corner is rounded only on the
++ *	edge where the bubble is not continued by the line above/below.
++ *
++ * Results:
++ *	1 if neighborPtr is non-NULL and carries the same bubbleBorder, else 0.
++ *
++ *--------------------------------------------------------------
++ */
++
++static int
++BubbleAdjacent(
++    DLine *neighborPtr,		/* Display line above or below, or NULL. */
++    Tk_3DBorder bubbleBorder)	/* Bubble colour being drawn. */
++{
++    TkTextDispChunk *chunkPtr;
++
++    if (neighborPtr == NULL) {
++	return 0;
++    }
++    for (chunkPtr = neighborPtr->chunkPtr; chunkPtr != NULL;
++	    chunkPtr = chunkPtr->nextPtr) {
++	if (chunkPtr->stylePtr->sValuePtr->bubbleBorder == bubbleBorder) {
++	    return 1;
++	}
++    }
++    return 0;
++}
++
++/*
++ *--------------------------------------------------------------
++ *
++ * BubbleLineExtent --
++ *
++ *	Find the horizontal extent of the chunks on a single display line that
++ *	carry bubble colour bb: the left edge of the first such chunk and the
++ *	right edge of the last. Keyed on bubbleBorder so a selection inside the
++ *	bubble (which changes the character style but not the bubble colour)
++ *	does not affect the result.
++ *
++ * Results:
++ *	1 if the line carries bb (with leftPtr, rightPtr filled), else 0.
++ *
++ *--------------------------------------------------------------
++ */
++
++static int
++BubbleLineExtent(
++    DLine *dlPtr,
++    Tk_3DBorder bb,
++    int *leftPtr,
++    int *rightPtr)
++{
++    TkTextDispChunk *chunkPtr;
++    int found = 0, left = 0, right = 0;
++
++    for (chunkPtr = dlPtr->chunkPtr; chunkPtr != NULL;
++	    chunkPtr = chunkPtr->nextPtr) {
++	if (chunkPtr->stylePtr->sValuePtr->bubbleBorder == bb) {
++	    if (!found) {
++		left = chunkPtr->x;
++		found = 1;
++	    }
++	    right = chunkPtr->x + chunkPtr->width;
++	}
++    }
++    if (found) {
++	*leftPtr = left;
++	*rightPtr = right;
++    }
++    return found;
++}
++
++/*
++ *--------------------------------------------------------------
++ *
++ * BubbleRunBounds --
++ *
++ *	Compute the bounding-box left/right extent of the whole bubble that
++ *	dlPtr belongs to. A bubble spans a maximal run of vertically-contiguous
++ *	display lines that all carry bubble colour bb; this returns the minimum
++ *	left and maximum right over every line in that run, so that each line is
++ *	drawn out to the widest line's edge (a clean rectangle) instead of
++ *	hugging its own ragged text width. The display-line list (sorted top to
++ *	bottom) is scanned to locate the run containing dlPtr.
++ *
++ *--------------------------------------------------------------
++ */
++
++static void
++BubbleRunBounds(
++    TkText *textPtr,
++    DLine *dlPtr,
++    Tk_3DBorder bb,
++    int *leftPtr,
++    int *rightPtr)
++{
++    DLine *p;
++    int l, r;
++
++    /*
++     * Fall back to this line alone; overwritten below once the run containing
++     * dlPtr is found.
++     */
++
++    if (!BubbleLineExtent(dlPtr, bb, leftPtr, rightPtr)) {
++	return;
++    }
++    for (p = textPtr->dInfoPtr->dLinePtr; p != NULL; ) {
++	if (BubbleLineExtent(p, bb, &l, &r)) {
++	    int runLeft = l, runRight = r, contains = (p == dlPtr);
++	    DLine *n = p->nextPtr;
++
++	    while ((n != NULL) && BubbleLineExtent(n, bb, &l, &r)) {
++		if (l < runLeft) {
++		    runLeft = l;
++		}
++		if (r > runRight) {
++		    runRight = r;
++		}
++		if (n == dlPtr) {
++		    contains = 1;
++		}
++		n = n->nextPtr;
++	    }
++	    if (contains) {
++		*leftPtr = runLeft;
++		*rightPtr = runRight;
++		return;
++	    }
++	    p = n;
++	} else {
++	    p = p->nextPtr;
++	}
++    }
++}
++
++/*
++ *--------------------------------------------------------------
++ *
++ * FillRoundedBubble --
++ *
++ *	Fill a rectangle whose corners may individually be rounded with a
++ *	quarter disc of the given radius. Drawing uses plain server-side
++ *	primitives (no anti-aliasing); that is intentional for the bubble MVP.
++ *	A square corner is requested by passing 0 for that corner.
++ *
++ * Results:
++ *	None.
++ *
++ * Side effects:
++ *	Paints onto drawable with gc.
++ *
++ *--------------------------------------------------------------
++ */
++
++static void
++FillRoundedBubble(
++    Display *display,
++    Drawable drawable,
++    GC gc,
++    int x, int y,		/* Top-left of the rectangle. */
++    int width, int height,
++    int radius,			/* Corner radius (already clamped by caller). */
++    int tl, int tr, int bl, int br)
++				/* Non-zero => round that corner. */
++{
++    int d = 2 * radius;
++
++    if (radius <= 0 || width <= 0 || height <= 0) {
++	XFillRectangle(display, drawable, gc, x, y,
++		(unsigned) width, (unsigned) height);
++	return;
++    }
++
++    /*
++     * Body: a full-width middle band, plus top and bottom bands that stop
++     * short of any rounded corner (square corners run flush to the edge so
++     * stacked lines of the same bubble meet seamlessly).
++     */
++
++    XFillRectangle(display, drawable, gc, x, y + radius,
++	    (unsigned) width, (unsigned) (height - d));
++    XFillRectangle(display, drawable, gc,
++	    x + (tl ? radius : 0), y,
++	    (unsigned) (width - (tl ? radius : 0) - (tr ? radius : 0)),
++	    (unsigned) radius);
++    XFillRectangle(display, drawable, gc,
++	    x + (bl ? radius : 0), y + height - radius,
++	    (unsigned) (width - (bl ? radius : 0) - (br ? radius : 0)),
++	    (unsigned) radius);
++
++    /*
++     * Rounded corners: a filled quarter disc per requested corner. X arc
++     * angles are in 64ths of a degree, counter-clockwise from 3 o'clock.
++     */
++
++    if (tl) {
++	XFillArc(display, drawable, gc, x, y,
++		(unsigned) d, (unsigned) d, 90 * 64, 90 * 64);
++    }
++    if (tr) {
++	XFillArc(display, drawable, gc, x + width - d, y,
++		(unsigned) d, (unsigned) d, 0, 90 * 64);
++    }
++    if (bl) {
++	XFillArc(display, drawable, gc, x, y + height - d,
++		(unsigned) d, (unsigned) d, 180 * 64, 90 * 64);
++    }
++    if (br) {
++	XFillArc(display, drawable, gc, x + width - d, y + height - d,
++		(unsigned) d, (unsigned) d, 270 * 64, 90 * 64);
++    }
++}
+ 
+ /*
+  *--------------------------------------------------------------
+@@ -2661,6 +2937,70 @@
+     chunkPtr = dlPtr->chunkPtr;
+ 
+     /*
++     * Pass 0: draw rounded "bubble" backgrounds underneath everything else. A
++     * bubble is defined by -bubblecolor/-bubbleradius and is coalesced by
++     * bubble colour (SAME_BUBBLE), independent of the character background, so
++     * a selection inside a bubble does not fragment it. The normal background
++     * pass below then paints selection/other backgrounds on top. Bubbles hug
++     * the text (no extension to the right edge) and round a corner only on the
++     * side where the bubble is not continued by the neighbouring line.
++     */
++
++    {
++	TkTextDispChunk *bChunkPtr = dlPtr->chunkPtr;
++	StyleValues *bsv;
++
++	for (; bChunkPtr != NULL; bChunkPtr = bChunkPtr->nextPtr) {
++	    /*
++	     * Coalesce a run of chunks belonging to the same bubble; only the
++	     * last chunk of the run actually draws.
++	     */
++
++	    if ((bChunkPtr->nextPtr != NULL)
++		    && SAME_BUBBLE(bChunkPtr->nextPtr->stylePtr,
++		    bChunkPtr->stylePtr)) {
++		continue;
++	    }
++	    bsv = bChunkPtr->stylePtr->sValuePtr;
++	    if ((bChunkPtr->stylePtr->bubbleGC != NULL) && (bsv->bubbleRadius > 0)) {
++		int pad = bsv->bubblePadX;
++		int runLeft = bChunkPtr->x;
++		int runRight = bChunkPtr->x + bChunkPtr->width;
++		int bLeftX, bRightX, bx, bwid, bhgt, r, topOpen, botOpen;
++
++		/*
++		 * Draw every line out to the bubble's overall (bounding-box)
++		 * left/right extent, so a multi-line bubble is one clean
++		 * rectangle rather than a staircase that hugs each line's text.
++		 */
++
++		BubbleRunBounds(textPtr, dlPtr, bsv->bubbleBorder,
++			&runLeft, &runRight);
++		bLeftX = runLeft - pad;
++		bRightX = runRight + pad;
++		bx = bLeftX + xOffset;
++		bwid = bRightX - bLeftX;
++		bhgt = dlPtr->height;
++		r = bsv->bubbleRadius;
++		topOpen = !BubbleAdjacent(prevPtr, bsv->bubbleBorder);
++		botOpen = !BubbleAdjacent(dlPtr->nextPtr, bsv->bubbleBorder);
++
++		if ((bRightX + xOffset > 0) && (bx < maxX)) {
++		    if (2 * r > bwid) {
++			r = bwid / 2;
++		    }
++		    if (2 * r > bhgt) {
++			r = bhgt / 2;
++		    }
++		    FillRoundedBubble(display, pixmap,
++			    bChunkPtr->stylePtr->bubbleGC, bx, y, bwid, bhgt, r,
++			    topOpen, topOpen, botOpen, botOpen);
++		}
++	    }
++	}
++    }
++
++    /*
+      * Note A: in the following statement, and a few others later in this file
+      * marked with "See Note A above", the right side of the assignment was
+      * replaced with 0 on 6/18/97. This has the effect of highlighting the
