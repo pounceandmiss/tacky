@@ -38,7 +38,8 @@ snit::widget messageentry {
             -command [list $win.text yview]
 
         install sendbutton using ttk::button $win.send \
-            -text "Send" \
+            -style Toolbutton \
+            -image elementary/22x22/actions/mail-send.png \
             -command [mymethod Send]
 
         install attachbutton using ttk::button $win.attach \
@@ -52,9 +53,9 @@ snit::widget messageentry {
 
         grid $win.grip -row 0 -column 0 -columnspan 4 -sticky ew
         grid $win.text -row 1 -column 0 -sticky nsew
-        grid $win.attach -row 1 -column 1 -sticky nsew -padx {4 0}
-        grid $win.accessory -row 1 -column 2 -sticky nsew -padx {4 0}
-        grid $win.send -row 1 -column 3 -sticky nsew -padx {4 0}
+        grid $win.attach -row 1 -column 1 -sticky n -padx {4 0}
+        grid $win.accessory -row 1 -column 2 -sticky n -padx {4 0}
+        grid $win.send -row 1 -column 3 -sticky n -padx {4 0}
         grid rowconfigure $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
 
@@ -116,12 +117,13 @@ snit::widget messageentry {
     method setVoiceState {state} {
         set voiceState $state
         if {$state eq "visitor"} {
-            $sendbutton configure -text "Request Voice" \
+            $sendbutton configure -image "" -text "Request Voice" \
                 -command [mymethod RequestVoice]
             $text configure -state disabled
             $attachbutton configure -state disabled
         } else {
-            $sendbutton configure -text "Send" \
+            $sendbutton configure -text "" \
+                -image elementary/22x22/actions/mail-send.png \
                 -command [mymethod Send]
             $text configure -state normal
             $attachbutton configure -state normal
