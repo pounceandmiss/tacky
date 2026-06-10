@@ -37,7 +37,7 @@ package require tkwuffs
 package require tkdnd
 
 proc bgerror {message} {
-    if {[info commands jlog] ne "" && [jlog cget -logproc] ne ""} {
+    if {[info commands jlog] ne "" && ![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
         catch {jlog error $::errorInfo -obj bgerror}
     }
     if {$::consoleErrors} {

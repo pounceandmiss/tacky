@@ -245,7 +245,7 @@ oo::class create tacky_threaded_type {
                 thread::send $TacoTid {
                     proc bgerror {message} {
                         puts stderr $::errorInfo
-                        if {[jlog cget -logproc] ne ""} {
+                        if {![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
                             catch {jlog error $::errorInfo -obj bgerror}
                         }
                     }
