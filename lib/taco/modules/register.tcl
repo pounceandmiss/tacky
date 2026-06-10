@@ -290,13 +290,26 @@ snit::type taco_register_session {
     }
 
     method HandleRegForm {queryNode} {
-        # Prefer XEP-0004 data form if present
-        set xForm [xsearch $queryNode x -get node]
+        # Match the data-form namespace, not any <x> (could be an OOB redirect)
+        set xForm [xsearch $queryNode x -ns jabber:x:data -get node]
         if {$xForm ne ""} {
             set formList [::tacky::forms::tolist $xForm]
         } else {
             # Legacy fields — synthesise a forms-compatible list
             set formList [::tacky::forms::tolist [$self LegacyToForm $queryNode]]
+        }
+
+        array set parsed $formList
+        if {[llength $parsed(fields)] == 0} {
+            # No in-band fields; server may redirect to a web page via OOB
+            set url [string trim [xsearch $queryNode x -ns jabber:x:oob url -get body]]
+            if {$url ne ""} {
+                $self FireEvent <Error> -message "This server requires web registration at $url"
+            } else {
+                set instr [string trim [xsearch $queryNode instructions -get body]]
+                $self FireEvent <Error> -message [expr {$instr ne "" ? $instr : "Server offered no registration fields"}]
+            }
+            return
         }
 
         set oldForm $currentForm

@@ -65,12 +65,19 @@ proc ::tacky::forms::tolist {formNode {formarray ""}} {
         upvar $formarray form
     }
 
+    set form(fields) {}
     if {[xsearch $formNode instructions] ne ""} {
         set form(instructions) [xsearch $formNode instructions -get body]
     }
 
+    set fixedCounter 0
     foreach fieldNode [xsearch $formNode field] {
-        set formVar [dict get $fieldNode attrs var]
+        if {[dict exists $fieldNode attrs var]} {
+            set formVar [dict get $fieldNode attrs var]
+        } else {
+            # var is optional for fixed fields; synthesise an internal key
+            set formVar _fixed[incr fixedCounter]
+        }
         lappend form(fields) $formVar
         set pref field,$formVar
         set form($pref,type) text-single
@@ -81,7 +88,7 @@ proc ::tacky::forms::tolist {formNode {formarray ""}} {
         }
         # If no label supplied, display var name
         if {![info exists form($pref,label)]} {
-            set form($pref,label) $form($pref,var)
+            set form($pref,label) $formVar
         }
         set form($pref,required) [expr {[xsearch $fieldNode required] ne ""}]
         if {[xsearch $fieldNode value] ne ""} {
