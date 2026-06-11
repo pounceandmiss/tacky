@@ -10,12 +10,13 @@ A desktop XMPP chat client built with Tcl/Tk. Pre-alpha.
 
 ## Core ideas
 - Portable backend aiming for a very high level api: libtacky doesn't just help you form and send stanzas, it aims to take care of all the business logic, local caching and settings storage, now also calls, etc. The gui should stay as simple as possible, only concerning itself with displaying stuff. All methods and events are routed through a bridge ready to transparently be called either in the same thread or a different process, or even a different language via JSON.
-- Lightweight, tries to be easily distributable - self-contained statically-linked executable with all dependencies including calls at <20mb
+- Lightweight, tries to be easily distributable - self-contained statically-linked executable with all dependencies including calls at ~15mb
 - Advanced MAM handling: it's aware that the message history it has is not full. Lazy loads from server, aims to support server-side search.
 
-## Features support
+## Key features support
 - Modern calls compatible with Conversations and Dino
 - OMEMO (only direct messages)
+- Attachments
 
 ## Running
 
@@ -28,6 +29,10 @@ You can have the backend run in a separate thread by calling `tacky --backend th
 `make`
 
 will download and build all the dependencies for you, and package them all into a single executable with the client: `./dist/tacky`.
+
+`make linux`
+
+will do the same in a debian docker 
 
 ### Windows
 `make win`
@@ -60,16 +65,6 @@ flatpak run io.github.pounceandmiss.Tacky
 ```
 make test
 ```
-
-### Integration tests:
-
-Run with an XMPP server for integration tests:
-
-```sh
-./tests/servers/with_prosody.sh ./test_all.tcl 
-```
-You need to have docker installed and running and have permissions. Run at your own risk - server scripts are entirely AI-generated and might screw up your system.
-There's also a script for mongoose and ejabberd - very slow to launch.
 
 ## Architecture
 
