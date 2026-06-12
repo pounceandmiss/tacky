@@ -279,6 +279,10 @@ test chatview-sendfile-image-thumbnail \
 test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
     {*}$cv_common \
     -body {
+        # Plaintext chat: with OMEMO on, the send would park on
+        # devicelist warming (mock server never answers) and no
+        # message would reach the wire to be acked
+        tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
         tacky message send -acc $::acc -chat_jid alice@example.com \
             -body "outgoing msg"
         wait

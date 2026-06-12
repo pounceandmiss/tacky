@@ -1124,21 +1124,23 @@ test message-history-mam-drops-empty-body {empty-body MAM stanzas (receipts/mark
              [llength [msg_store_latest alice@example.com]]
     } -result {1 real 1}
 
-test message-history-mam-fill-loop-continues {a short page (mostly empty-body) triggers another MAM page} \
+test message-history-mam-fill-loop-stops-on-progress {a page with any displayable message responds immediately} \
     {*}$msg_common \
     -body {
+        set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 3 \
             -command [list apply {{r} { set ::result $r }}]
         set pagesBefore [mam_iq_count]
-        # 3 stanzas but only 1 displayable, and the archive isn't exhausted
+        # 3 stanzas, 1 displayable, archive not exhausted: one message is
+        # progress enough; scroll-back paging fetches the rest later
         msg_mam_respond {
             {id e1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
             {id r1 from bob@example.com body "one" stamp 2024-01-01T09:01:00Z}
             {id e2 from bob@example.com body "" stamp 2024-01-01T09:02:00Z}
         } -complete false
-        # the fill loop should have requested a further page
-        expr {[mam_iq_count] > $pagesBefore}
-    } -result {1}
+        list [lmap m $result { dict get $m body }] \
+            [expr {[mam_iq_count] == $pagesBefore}]
+    } -result {one 1}
 
 test message-history-mam-fill-loop-stops-on-complete {fill loop stops at archive end even with a short page} \
     {*}$msg_common \
@@ -1152,25 +1154,6 @@ test message-history-mam-fill-loop-stops-on-complete {fill loop stops at archive
         } -complete true
         list [llength $result] [expr {[mam_iq_count] == $pagesBefore}]
     } -result {1 1}
-
-test message-history-mam-fill-loop-accumulates {fill loop pages until a full screen of displayable messages is collected} \
-    {*}$msg_common \
-    -body {
-        set result {}
-        tacky message history -acc $acc -chat alice@example.com -limit 3 \
-            -command [list apply {{r} { set ::result $r }}]
-        # page 1: one real message (newest) plus a trailing marker
-        msg_mam_respond {
-            {id r1 from bob@example.com body "c" stamp 2024-01-01T09:03:00Z}
-            {id e1 from bob@example.com body "" stamp 2024-01-01T09:04:00Z}
-        } -complete false
-        # page 2: the two older real messages that top us up to the limit
-        msg_mam_respond {
-            {id r2 from bob@example.com body "a" stamp 2024-01-01T09:01:00Z}
-            {id r3 from bob@example.com body "b" stamp 2024-01-01T09:02:00Z}
-        } -complete true
-        lmap m $result { dict get $m body }
-    } -result {a b c}
 
 test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page is paged through, not surfaced as a stall} \
     {*}$msg_common \
