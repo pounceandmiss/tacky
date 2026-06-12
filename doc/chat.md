@@ -60,6 +60,9 @@ applies regardless of source - there is no separate "backfill" or
 - `tacky message goto -acc $a -chat $j -date $ts -source local|remote ...` -
   jump to anchor. Result: `{messages $list anchor $nearestTs}`. `-source
   remote` fetches from MAM first.
+- `tacky message gotoReply -acc $a -chat $j -reply_id $rid ?-reply_to $jid? ...` -
+  jump to a reply's target (XEP-0461). Same result shape as `goto`; an
+  unresolved target yields empty `messages`.
 - `tacky message cancel -acc $a -tag $t` - mark in-flight callbacks for `$t`
   inactive.
 - `tacky chats maxTimestamp -acc $a -chat $j` - newest known timestamp for
@@ -165,15 +168,15 @@ pending timestamp. On confirmation (MUC echo or own message via MAM)
 the message may receive a timestamp-move `<Patch>` along with an
 updated `server_status`.
 
-`server_status` evolves through `<Patch>` field updates:
+`server_status` answers one question - "does the server have this
+exact message?" - and evolves through `<Patch>` field updates:
 
-- `""` - incoming (no indicator).
-- `"pending"` - sent locally, awaiting confirmation.
-- `"received"` - server confirmed.
-- `"read"` - recipient acknowledged.
-
-A timestamp-move `<Patch>` (e.g. MUC echo with a different server time)
-relocates the message.
+- `""` - the server has it: incoming, or a confirmed send.
+- `"pending"` - ours, sent, not yet confirmed.
+- `"uploading"` - ours, attachment upload in flight (see
+  attachments.md).
+- `"failed"` - ours, didn't reach the server (retryable);
+  `fail_reason` holds the error.
 
 ## 9. Search
 

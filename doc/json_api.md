@@ -90,77 +90,21 @@ Either way, exactly one reply is sent per token.
 Fire-and-forget requests (no token) have neither callback wired, so
 any error from the underlying method is silently discarded.
 
-## Attachments (XEP-0363 HTTP File Upload)
+## Attachments
 
-Attachments build on the request and event framing above: two
-file-specific requests, an `attachments` array on message objects, and a
-single transfer-progress event.
-
-### Sending a file
-
-Share a local file: the backend discovers the server's upload service,
-PUTs the file, and sends a message whose body is the public URL plus an
-XEP-0066 Out-of-Band `<x>`. Fire-and-forget; the optimistic message
-appears as a `<Sent>` event immediately, and transfer progress arrives
-as `file <Update>` events.
+Attachment semantics - sending, downloading, caching, thumbnails, the
+`attachments` and `caption` message keys, `file <Update>` progress -
+are documented in attachments.md and map onto the framing above like
+everything else. The encoding, one example per direction:
 
 ```json
 ["message", "sendFile",
   {"acc": "user@example.com", "chat_jid": "alice@example.com",
    "path": "/home/user/pic.png"}]
-```
-
-### Downloading and caching
-
-Fetch (and cache) an attachment for display; for an image this also
-derives a thumbnail. Progress/result arrive as `file <Update>`; an
-optional token additionally returns the cached full-file path ("" on
-failure):
-
-```json
 ["file", "download",
   {"acc": "user@example.com",
    "url": "https://share.example.com/abc/pic.png"}, 7]
 ```
-
-Other file verbs: `file uncache {url}` deletes the cached copy and its
-thumbnails; `file cancel {id}` or `{url}` aborts an in-flight transfer.
-
-### The `attachments` array
-
-Messages with attachments carry an `attachments` array on the `message`
-object. Each entry has `url`, `type` (`image` or `file`), `name`,
-`size`, and `mime`; `type=image` entries are meant to render inline.
-
-Such messages also carry `caption`: the human text to render alongside
-the attachments. XEP-0066 senders duplicate the share URL into `body`
-so OOB-unaware clients still see something, so `caption` is `body` with
-a redundant attachment URL removed (empty when the body was only the
-URL, kept verbatim when there is real text). Render `caption` if
-present, else `body`.
-
-```json
-["event", "message", "<Sent>",
-  {"acc": "user@example.com", "jid": "alice@example.com",
-   "message": {"timestamp": 1700000000,
-               "body": "https://share.example.com/abc/pic.png",
-               "caption": "",
-               "patch": false,
-               "attachments": [
-                 {"url": "https://share.example.com/abc/pic.png",
-                  "type": "image", "name": "pic.png",
-                  "size": 20480, "mime": "image/png"}]}}]
-```
-
-### Transfer progress (`file <Update>`)
-
-File transfers (upload and download) report progress and completion
-through a single `file <Update>` event keyed by `id`. For an outgoing
-attachment `id` is the message's timestamp; for a download, correlate by
-`url`. `direction` is `upload` | `download`; `state` is `active` | `done`
-| `failed`. On a completed image download `thumbpath` is the inline
-thumbnail and `localpath` the full file; on failure `error` explains why
-(no upload service, file too large, network/PUT failure):
 
 ```json
 ["event", "file", "<Update>",
@@ -172,6 +116,9 @@ thumbnail and `localpath` the full file; on failure `error` explains why
    "thumbpath": "/home/user/.cache/tacky/attachments/thumb/<hash>_320.png",
    "error": ""}]
 ```
+
+A `download` request with a token additionally replies with the cached
+file path ("" on failure).
 
 ## Launching
 
