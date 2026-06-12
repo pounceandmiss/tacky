@@ -11,7 +11,6 @@ snit::widget chatlistview {
     option -acc -readonly yes
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
-    option -open-bookmark-command -default ""
     option -new-chat-command -default ""
     option -menubar -default "" -readonly yes
 
@@ -189,6 +188,10 @@ snit::widget chatlistview {
         set acc $options(-acc)
         $t listen -tag $win chatlist <Changed> -acc $acc \
             [mymethod Rebuild]
+        $t listen -tag $win chatlist <Item> -acc $acc \
+            [mymethod OnItem]
+        $t listen -tag $win chatlist <Remove> -acc $acc \
+            [mymethod OnSectionRemove]
         $t listen -tag $win chatlist <RecentTop> -acc $acc \
             [mymethod OnRecentTop]
         $t listen -tag $win chatlist <RecentDrop> -acc $acc \
@@ -222,42 +225,43 @@ snit::widget chatlistview {
 
     method OnData {data} {
         set model $data
+        foreach section {recent roster bookmarks} {
+            $self RenderSection $section
+        }
+        $self UntrackStale
+    }
 
-        # Remember which group nodes are open
-        set openGroups {}
-        foreach child [$treeview children Roster] {
-            if {[$treeview item $child -open]} {
-                lappend openGroups $child
+    # Repaint one section's rows from the model
+    method RenderSection {section} {
+        set root [dict get {recent RecentChats roster Roster \
+            bookmarks Bookmarks} $section]
+        set items [dict get $model $section]
+
+        if {$root eq "Roster"} {
+            # Remember which group nodes are open
+            set openGroups {}
+            foreach child [$treeview children Roster] {
+                if {[$treeview item $child -open]} {
+                    lappend openGroups $child
+                }
             }
         }
 
-        # Clear all sections
-        $treeview delete [$treeview children RecentChats]
-        $treeview delete [$treeview children Roster]
-        $treeview delete [$treeview children Bookmarks]
-
-        # Populate RecentChats
-        $self PopulateSection RecentChats [dict get $data recent]
-
-        # Populate Roster
-        set rosterItems [dict get $data roster]
-        if {$grouping} {
-            $self PopulateGrouped $rosterItems
+        $treeview delete [$treeview children $root]
+        if {$root eq "Roster" && $grouping} {
+            $self PopulateGrouped $items
+            foreach gid $openGroups {
+                if {[$treeview exists $gid]} {
+                    $treeview item $gid -open 1
+                }
+            }
         } else {
-            $self PopulateSection Roster $rosterItems
+            $self PopulateSection $root $items
         }
+    }
 
-        # Populate Bookmarks
-        $self PopulateSection Bookmarks [dict get $data bookmarks]
-
-        # Restore open state
-        foreach gid $openGroups {
-            if {[$treeview exists $gid]} {
-                $treeview item $gid -open 1
-            }
-        }
-
-        # Untrack avatars for JIDs no longer displayed
+    # Untrack avatars for JIDs no longer displayed
+    method UntrackStale {} {
         set displayed [dict create]
         foreach root {RecentChats Roster Bookmarks} {
             foreach child [$treeview children $root] {
@@ -281,7 +285,7 @@ snit::widget chatlistview {
         if {![$self MatchesQueryLocal $jid $name]} return
 
         # Room state is not carried on the event; take it from the
-        # model's own bookmarks section
+        # model's own bookmarks section (keyed by the same ?join form)
         set entry [list jid $jid name $name source $opts(-source)]
         if {[info exists opts(-autojoin)]} {
             lappend entry autojoin $opts(-autojoin)
@@ -338,6 +342,80 @@ snit::widget chatlistview {
         }
     }
 
+    method OnItem {ev} {
+        array set opts {-section "" -jid "" -item ""}
+        array set opts $ev
+        set section $opts(-section)
+        set jid $opts(-jid)
+        set entry $opts(-item)
+        if {![dict exists $model $section]} return
+
+        # A change can move the item out of the active filter
+        if {![$self MatchesQueryLocal $jid [dict get $entry name]]} {
+            $self OnSectionRemove [list -section $section -jid $jid]
+            return
+        }
+
+        if {$section eq "recent"} {
+            if {[$self ModelItem recent $jid] eq ""} {
+                # Was filtered out; its recency position is unknown
+                $self Rebuild
+                return
+            }
+            set items {}
+            foreach item [dict get $model recent] {
+                if {[dict get $item jid] eq $jid} { set item $entry }
+                lappend items $item
+            }
+            dict set model recent $items
+            set itemId "RecentChats/$jid"
+            if {[$treeview exists $itemId]} {
+                set tags {}
+                if {[dict exists $entry room-state]} {
+                    set tags muc_[dict get $entry room-state]
+                }
+                $treeview item $itemId -text [$self DisplayText $entry] \
+                    -tags $tags
+            }
+            return
+        }
+
+        set items [$self ModelRemove $section $jid]
+        lappend items $entry
+        dict set model $section [lsort -command [mymethod CmpEntries] $items]
+        $self RenderSection $section
+    }
+
+    method OnSectionRemove {ev} {
+        array set opts {-section "" -jid ""}
+        array set opts $ev
+        set section $opts(-section)
+        set jid $opts(-jid)
+        if {![dict exists $model $section]} return
+        if {$section eq "recent"} {
+            $self OnRecentDrop [list -jid $jid]
+            return
+        }
+        if {[$self ModelItem $section $jid] eq ""} return
+        dict set model $section [$self ModelRemove $section $jid]
+        $self RenderSection $section
+        $self UntrackStale
+    }
+
+    # Mirrors the backend's search sort so patched-in items land where a
+    # fresh search would put them
+    method CmpEntries {a b} {
+        if {$sortby eq "jid"} {
+            return [string compare -nocase \
+                [dict get $a jid] [dict get $b jid]]
+        }
+        set na [dict get $a name]
+        set nb [dict get $b name]
+        if {$na eq ""} { set na [dict get $a jid] }
+        if {$nb eq ""} { set nb [dict get $b jid] }
+        string compare -nocase $na $nb
+    }
+
     method MatchesQueryLocal {jid name} {
         if {$searchquery eq ""} { return 1 }
         set q [string tolower $searchquery]
@@ -367,7 +445,7 @@ snit::widget chatlistview {
         foreach section {recent bookmarks} {
             set items {}
             foreach item [dict get $model $section] {
-                if {[dict get $item jid] eq $jid \
+                if {[regsub {\?join$} [dict get $item jid] {}] eq $jid \
                         && [dict exists $item room-state]} {
                     dict set item room-state $state
                     dict set item room-reason $reason
@@ -524,10 +602,9 @@ snit::widget chatlistview {
         } elseif {[$self IsLeaf $item]} {
             set section [$self GetSection $item]
             if {$section eq "RecentChats"} {
+                # ?join is the group-chat tell; bookmark ops accept it
                 set jid [$self ItemJid $item]
-                set entry [$self ModelItem recent $jid]
-                set source [expr {$entry eq "" ? "" : [dict get $entry source]}]
-                set section [expr {$source in {bookmark both} \
+                set section [expr {[string match {*\?join} $jid] \
                     ? "Bookmarks" : "Roster"}]
             }
             if {$section eq "Bookmarks"} {
@@ -592,7 +669,8 @@ snit::widget chatlistview {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
         clipboard clear
-        clipboard append $jid
+        # The ?join suffix is tacky-internal, not part of the real JID
+        clipboard append [regsub {\?join$} $jid {}]
     }
 
     method OnRefreshAvatar {} {
@@ -727,17 +805,28 @@ snit::widget chatlistview {
         }
     }
 
+    # Rows for $jid in any section; a bare JID also matches suffixed
+    # chat-JID rows ($jid?join)
     method FindItemsByJid {jid} {
         set result {}
+        set patterns [list "*/$jid" "*/$jid\\?join"]
         foreach root {RecentChats Roster Bookmarks} {
             foreach child [$treeview children $root] {
-                if {[string match "*/$jid" $child]} {
-                    lappend result $child
-                } else {
-                    # Check grouped children
-                    foreach grandchild [$treeview children $child] {
-                        if {[string match "*/$jid" $grandchild]} {
+                set matched 0
+                foreach pattern $patterns {
+                    if {[string match $pattern $child]} {
+                        lappend result $child
+                        set matched 1
+                        break
+                    }
+                }
+                if {$matched} continue
+                # Check grouped children
+                foreach grandchild [$treeview children $child] {
+                    foreach pattern $patterns {
+                        if {[string match $pattern $grandchild]} {
                             lappend result $grandchild
+                            break
                         }
                     }
                 }
@@ -768,18 +857,11 @@ snit::widget chatlistview {
     }
 
     method ActivateItem {item} {
-        set section [$self GetSection $item]
-        set jid [$self ItemJid $item]
-        if {$section eq "RecentChats"} {
-            set entry [$self ModelItem recent $jid]
-            set source [expr {$entry eq "" ? "" : [dict get $entry source]}]
-            set section [expr {$source in {bookmark both} \
-                ? "Bookmarks" : "Roster"}]
-        }
-        set opt [dict get {Roster -open-chat-command \
-            Bookmarks -open-bookmark-command} $section]
-        if {$options($opt) ne ""} {
-            {*}$options($opt) -acc $options(-acc) -jid $jid
+        # Every row's jid is a chat JID; pass it through verbatim
+        # (bare opens the 1:1, ?join the group chat, /nick the room PM)
+        if {$options(-open-chat-command) ne ""} {
+            {*}$options(-open-chat-command) \
+                -acc $options(-acc) -jid [$self ItemJid $item]
         }
     }
 }

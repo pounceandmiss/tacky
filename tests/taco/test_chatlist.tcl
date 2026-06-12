@@ -96,7 +96,7 @@ test chatlist-source-classification {recent source reflects roster/bookmark pres
         set sources
     } -result {stranger@example.com none friend@example.com both room@muc.example.com bookmark contact@example.com roster}
 
-test chatlist-name-resolution {roster name wins over bookmark name in all sections} \
+test chatlist-name-resolution {recent resolves roster name over bookmark name; sections keep their own} \
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert alice@example.com
@@ -105,7 +105,7 @@ test chatlist-name-resolution {roster name wins over bookmark name in all sectio
         set result [c chatlist search]
         list [dict get [lindex [dict get $result recent] 0] name] \
             [dict get [lindex [dict get $result bookmarks] 0] name]
-    } -result {{Alice R} {Alice R}}
+    } -result {{Alice R} {Alice B}}
 
 test chatlist-search-filter {query matches name or JID case-insensitively} \
     {*}$chatlist_common \
@@ -184,26 +184,68 @@ test chatlist-recent-limit {recent section capped at 20} \
         llength [dict get $result recent]
     } -result {20}
 
-test chatlist-changed-event {chatlist <Changed> fires on roster change} \
+test chatlist-changed-on-clear {chatlist <Changed> fires on wholesale source replacement} \
     {*}$chatlist_common \
     -body {
         set got 0
         tacky listen chatlist <Changed> \
-            {apply {{args} { set ::got 1 }}}
-        # Simulate roster change via bus
-        c bus publish roster:<Changed> -action add -jid alice@example.com
+            {apply {{args} { incr ::got }}}
+        c bus publish roster:<Changed> -action clear
+        c bus publish bookmarks:<Changed> -action clear
         set got
-    } -result {1}
+    } -result {2}
 
-test chatlist-changed-on-bookmarks {chatlist <Changed> fires on bookmarks change} \
+test chatlist-item-roster-change {roster change patches roster and recent sections} \
     {*}$chatlist_common \
     -body {
-        set got 0
+        chatlist_chat_insert alice@example.com
+        roster_insert alice@example.com name "Alice R"
+        bookmark_insert alice@example.com name "Alice B" autojoin 1
+        c chatlist search ;# init RecentJids
+        set evs {}
         tacky listen chatlist <Changed> \
-            {apply {{args} { set ::got 1 }}}
-        c bus publish bookmarks:<Changed> -action add -jid room@muc.example.com
-        set got
-    } -result {1}
+            {apply {{args} { lappend ::evs changed }}}
+        tacky listen chatlist <Item> \
+            {apply {{ev} { lappend ::evs [dict get $ev -section] \
+                [dict get [dict get $ev -item] name] }}}
+        c bus publish roster:<Changed> -action update -jid alice@example.com
+        set evs
+    } -result {roster {Alice R} recent {Alice R}}
+
+test chatlist-remove-bookmark {bookmark removal emits <Remove> and re-sources the recent entry} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert friend@example.com
+        roster_insert friend@example.com name Friend
+        bookmark_insert friend@example.com name "Friend BM"
+        c chatlist search ;# init RecentJids
+        c db eval {DELETE FROM bookmark WHERE jid='friend@example.com'}
+        set evs {}
+        tacky listen chatlist <Remove> \
+            {apply {{ev} { lappend ::evs remove [dict get $ev -section] \
+                [dict get $ev -jid] }}}
+        tacky listen chatlist <Item> \
+            {apply {{ev} {
+                set item [dict get $ev -item]
+                lappend ::evs item [dict get $ev -section] \
+                    [dict get $item source] [dict exists $item room-state]
+            }}}
+        c bus publish bookmarks:<Changed> -action remove -jid friend@example.com
+        set evs
+    } -result {remove bookmarks friend@example.com?join item recent roster 0}
+
+test chatlist-item-bookmark-add {bookmark add patches the bookmarks section} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert alice@example.com name "Alice R"
+        bookmark_insert alice@example.com name "Alice B"
+        set evs {}
+        tacky listen chatlist <Item> \
+            {apply {{ev} { lappend ::evs [dict get $ev -section] \
+                [dict get [dict get $ev -item] name] }}}
+        c bus publish bookmarks:<Changed> -action add -jid alice@example.com
+        set evs
+    } -result {bookmarks {Alice B}}
 
 test chatlist-changed-on-chats {chats:<Updated> emits <RecentTop> not <Changed>} \
     {*}$chatlist_common \
@@ -258,6 +300,71 @@ test chatlist-recent-drop {<RecentDrop> fires when JID falls off top-20} \
         c bus publish chats:<Updated> -jid new@example.com
         set dropped
     } -result {user0@example.com}
+
+test chatlist-bookmarks-section-chat-jids {bookmarks section presents chat JIDs (?join)} \
+    {*}$chatlist_common \
+    -body {
+        bookmark_insert room@muc.example.com name "Room"
+        set evs {}
+        tacky listen chatlist <Item> \
+            {apply {{ev} { lappend ::evs [dict get $ev -jid] \
+                [dict get [dict get $ev -item] jid] }}}
+        c bus publish bookmarks:<Changed> -action add -jid room@muc.example.com
+        set bm [lindex [dict get [c chatlist search] bookmarks] 0]
+        list [dict get $bm jid] {*}$evs
+    } -result {room@muc.example.com?join room@muc.example.com?join room@muc.example.com?join}
+
+test chatlist-recent-shape-matches-sections {recent entries carry their counterpart section's fields} \
+    {*}$chatlist_common \
+    -body {
+        set ts [clock microseconds]
+        chatlist_chat_insert friend@example.com timestamp $ts
+        chatlist_chat_insert room@muc.example.com?join \
+            timestamp [expr {$ts + 1}]
+        roster_insert friend@example.com name Friend \
+            subscription both groups {Pals}
+        bookmark_insert room@muc.example.com name Room \
+            autojoin 1 nick me password pw
+        set byjid [dict create]
+        foreach e [dict get [c chatlist search] recent] {
+            dict set byjid [dict get $e jid] $e
+        }
+        set fr [dict get $byjid friend@example.com]
+        set rm [dict get $byjid room@muc.example.com?join]
+        list [dict get $fr subscription] [dict get $fr groups] \
+            [dict get $rm nick] [dict get $rm password] \
+            [dict get $rm room-state]
+    } -result {both Pals me pw idle}
+
+test chatlist-recent-muc-jid-verbatim {recent group chats keep ?join and resolve via the bare room} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert room@muc.example.com?join
+        bookmark_insert room@muc.example.com name "Room" autojoin 1
+        set rec [lindex [dict get [c chatlist search] recent] 0]
+        set ev {}
+        tacky listen chatlist <RecentTop> \
+            {apply {{ev} { set ::ev $ev }}}
+        chatlist_chat_insert room@muc.example.com?join
+        c bus publish chats:<Updated> -jid room@muc.example.com?join
+        list [dict get $rec jid] [dict get $rec name] \
+            [dict get $rec source] [dict get $rec room-state] \
+            [dict get $ev -jid] [dict get $ev -name]
+    } -result {room@muc.example.com?join Room bookmark idle room@muc.example.com?join Room}
+
+test chatlist-item-recent-muc-fanout {bookmark change patches the ?join recent row} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert room@muc.example.com?join
+        bookmark_insert room@muc.example.com name "Room"
+        c chatlist search ;# init RecentJids
+        set evs {}
+        tacky listen chatlist <Item> \
+            {apply {{ev} { lappend ::evs [dict get $ev -section] \
+                [dict get $ev -jid] }}}
+        c bus publish bookmarks:<Changed> -action update -jid room@muc.example.com
+        set evs
+    } -result {bookmarks room@muc.example.com?join recent room@muc.example.com?join}
 
 test chatlist-bookmark-fields-propagate {recent and bookmarks sections carry autojoin and room state} \
     {*}$chatlist_common \

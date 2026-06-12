@@ -23,8 +23,8 @@ snit::type taco_chats {
     variable client
     variable db
     # chat_jid (raw, may have ?join) → max timestamp (usec)
-    variable MaxTimestamps {} 
-    # JID (stripped of ?join) → 1, flushed on idle
+    variable MaxTimestamps {}
+    # chat_jid (raw, may have ?join) → 1, flushed on idle
     variable PendingEmits {}
     variable AfterToken ""
 
@@ -70,8 +70,7 @@ snit::type taco_chats {
         }
         dict set MaxTimestamps $chat_jid $timestamp
 
-        set bareJid [regsub {\?join$} $chat_jid {}]
-        dict set PendingEmits $bareJid 1
+        dict set PendingEmits $chat_jid 1
         after cancel $AfterToken
         set AfterToken [after idle [mymethod FlushEmits]]
         return ""
@@ -98,22 +97,14 @@ snit::type taco_chats {
         return [expr {$ts eq "" ? "" : $ts}]
     }
 
-    # latest — returns ordered list of bare JIDs, most recent message first.
+    # latest — returns ordered list of chat JIDs (verbatim, so group
+    # chats carry their ?join suffix), most recent message first.
     tackymethod latest {args} {
-        set seen [dict create]
-        set result {}
         $db eval {
             SELECT chat_jid FROM chat_message
             WHERE kind='message'
             GROUP BY chat_jid
             ORDER BY MAX(timestamp) DESC
-        } row {
-            set bareJid [regsub {\?join$} $row(chat_jid) {}]
-            if {![dict exists $seen $bareJid]} {
-                dict set seen $bareJid 1
-                lappend result $bareJid
-            }
         }
-        return $result
     }
 }
