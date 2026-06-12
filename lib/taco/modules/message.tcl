@@ -997,13 +997,16 @@ snit::type taco_message {
         set complete [dict get $mamResult complete]
         set pageSize [llength [dict get $mamResult messages]]
 
-        # A page can be mostly empty-body stanzas, leaving fewer than `limit`
-        # displayable messages; a short page would stall the GUI's scroll-back
-        # cursor on stanzas it can't display. Keep paging by this page's far
-        # edge until we have a full page or hit the archive end. The pageSize>0
-        # guard stops a complete=false empty response from spinning.
+        # A page can be entirely empty-body stanzas (receipts, chatstates).
+        # Responding with nothing displayable would strand the GUI: its
+        # scroll-back cursor only advances on displayed messages, so it
+        # would re-issue the same query forever. Page on by this page's far
+        # edge only while the local read still has nothing; short pages are
+        # returned immediately and the GUI's thirst loop drives further
+        # fetching. The pageSize>0 guard stops a complete=false empty
+        # response from spinning.
         if {!$cancelled
-            && [llength [dict get $local messages]] < $limit
+            && [llength [dict get $local messages]] == 0
             && !$complete && $pageSize > 0} {
             set nextCursor [expr {$direction eq "older"
                 ? [dict get $mamResult first] : [dict get $mamResult last]}]
