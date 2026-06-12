@@ -34,12 +34,23 @@ test chats-latest-ordered {latest returns JIDs ordered by most recent message} \
         c chats latest
     } -result {carol@example.com bob@example.com alice@example.com}
 
-test chats-latest-strips-join {latest strips ?join suffix from JIDs} \
+test chats-latest-keeps-join {latest passes group-chat JIDs through verbatim} \
     {*}$chats_common \
     -body {
         chats_insert room@muc.example.com?join
         c chats latest
-    } -result {room@muc.example.com}
+    } -result {room@muc.example.com?join}
+
+test chats-event-muc-jid-verbatim {<Updated> carries the chat JID with ?join} \
+    {*}$chats_common \
+    -body {
+        set got {}
+        tacky listen chats <Updated> \
+            {apply {{ev} { set ::got $ev }}}
+        chats_insert room@muc.example.com?join
+        update idletasks
+        dict get $got -jid
+    } -result {room@muc.example.com?join}
 
 test chats-maxts-ignores-hole \
     {maxTimestamp reflects the newest message, not a tail hole} \

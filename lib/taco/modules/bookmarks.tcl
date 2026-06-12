@@ -83,7 +83,9 @@ snit::type taco_bookmarks {
     method item {args} {
         # Load existing bookmark or defaults
         array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
-        set bm(jid) [jid norm [dict get $args -jid]]
+        # jid bare canonicalizes chat-JID input (drops a ?join suffix);
+        # bookmarks are keyed by bare room JID
+        set bm(jid) [jid norm [jid bare [dict get $args -jid]]]
         set existed 0
         $client db eval {
             SELECT name, autojoin, nick, password, extensions_xml
@@ -144,14 +146,14 @@ snit::type taco_bookmarks {
     # Change nickname in a room and update the bookmark.
     method nick {args} {
         array set opts $args
-        set opts(-jid) [jid norm $opts(-jid)]
+        set opts(-jid) [jid norm [jid bare $opts(-jid)]]
         $self item -jid $opts(-jid) -nick $opts(-nick)
         $client muc nick -jid $opts(-jid) -nick $opts(-nick)
     }
 
     # Leave a room and disable autojoin.
     method leave {args} {
-        set jid [jid norm [dict get $args -jid]]
+        set jid [jid norm [jid bare [dict get $args -jid]]]
         $self item -jid $jid -autojoin 0
         $client muc leave -jid $jid
     }
@@ -160,7 +162,7 @@ snit::type taco_bookmarks {
     # without touching the autojoin flag.  Used to re-attempt a room that
     # was dropped (e.g. an IRC gateway disconnect) without auto-retrying.
     tackymethod forceJoin {args} {
-        set jid [jid norm [dict get $args -jid]]
+        set jid [jid norm [jid bare [dict get $args -jid]]]
         set nick ""
         set password ""
         $client db eval {
@@ -201,7 +203,7 @@ snit::type taco_bookmarks {
 
     # Query autojoin state for a single JID
     tackymethod autojoin {args} {
-        set jid [jid norm [dict get $args -jid]]
+        set jid [jid norm [jid bare [dict get $args -jid]]]
         set row [$client db eval {SELECT autojoin FROM bookmark WHERE jid=$jid}]
         if {[llength $row] == 0} { return 0 }
         return [lindex $row 0]
@@ -287,7 +289,7 @@ snit::type taco_bookmarks {
 
     # Remove a bookmark and leave the room if joined
     method remove {args} {
-        set jid [jid norm [dict get $args -jid]]
+        set jid [jid norm [jid bare [dict get $args -jid]]]
         if {[$client muc isJoined -jid $jid]} {
             $client muc leave -jid $jid
         }

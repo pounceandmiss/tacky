@@ -20,7 +20,6 @@ snit::widget accountpanel {
     option -account -readonly yes
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
-    option -open-bookmark-command -default ""
     option -new-chat-command -default ""
     option -menubar -default "" -readonly yes
 
@@ -44,7 +43,6 @@ snit::widget accountpanel {
             -acc $options(-account) \
             -tacky $options(-tacky) \
             -open-chat-command $options(-open-chat-command) \
-            -open-bookmark-command $options(-open-bookmark-command) \
             -new-chat-command $options(-new-chat-command) \
             -menubar $options(-menubar)
         pack $win.clv -fill both -expand yes

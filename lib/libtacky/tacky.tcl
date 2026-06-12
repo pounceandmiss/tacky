@@ -467,7 +467,9 @@ oo::class create avatarcache_base {
     method track {args} {
         array set opts $args
         set acc [jid norm $opts(-acc)]
-        set jid [jid norm $opts(-jid)]
+        # Accept chat JIDs: a group chat's ?join suffix is not part of
+        # the JID the avatar lives under (resource kept for occupants)
+        set jid [jid norm [regsub {\?join$} $opts(-jid) {}]]
         set tag $opts(-tag)
         set command $opts(-command)
         set key "$acc\n$jid"

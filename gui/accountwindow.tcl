@@ -108,7 +108,6 @@ snit::widget accountwindow {
         set panel [accountpanel $paned.panel \
             -account $currentAccount \
             -open-chat-command [mymethod OpenChat] \
-            -open-bookmark-command [mymethod OpenBookmark] \
             -new-chat-command [mymethod OpenNewChat] \
             -menubar $win.menubar]
         # Request a width so the pane doesn't collapse before async content arrives.
@@ -198,11 +197,6 @@ snit::widget accountwindow {
         array set opts $args
         set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
         chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid)
-    }
-
-    method OpenBookmark {args} {
-        array set opts $args
-        $self OpenChat -acc $opts(-acc) -jid $opts(-jid)?join
     }
 
     method CloseInlineChat {} {

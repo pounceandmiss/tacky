@@ -36,6 +36,13 @@ test bookmarks-get-item-shape {get returns the full item dict incl. derived room
         c bookmarks get
     } -result {{jid room@muc.example.com name Room autojoin 1 nick me password pw room-state idle room-reason {}}}
 
+test bookmarks-jid-input-canonicalized {-jid accepts a chat JID with ?join suffix} \
+    {*}$bookmarks_common \
+    -body {
+        bm_insert room@muc.example.com autojoin 1
+        c bookmarks autojoin -jid room@muc.example.com?join
+    } -result {1}
+
 test bookmarks-room-state-lifecycle {room state follows the muc join lifecycle, last event wins} \
     {*}$bookmarks_common \
     -body {

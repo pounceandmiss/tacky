@@ -47,12 +47,18 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
     message <Patch>       -jid $chatJid -messages $patchList
     message <CatchupDone> -acc $acc -count $n
 
-**chatlist**
+**chatlist** (see chatlist.md)
 
     chatlist <Changed>
-    chatlist <RecentTop>  -jid $jid -name $name -source $source ?-autojoin $val? ?-muc-status $s?
+    chatlist <Item>       -section recent|roster|bookmarks -jid $jid -item $entry
+    chatlist <Remove>     -section recent|roster|bookmarks -jid $jid
+    chatlist <RecentTop>  -jid $jid -name $name -source $source ?-autojoin $val?
     chatlist <RecentDrop> -jid $jid
-    chatlist <MucStatus>  -jid $jid -muc-status joined|error|""
+
+**bookmarks** (see chatlist.md)
+
+    bookmarks <Changed>   -action clear|add|update|remove ?-jid $jid?
+    bookmarks <RoomState> -jid $jid -state $state -reason $reason
 
 **setting**
 
@@ -79,6 +85,10 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
     tacky message goto -acc $acc -chat $jid -date $timestamp -source local|remote -limit 50 ?-tag $tag? ?-command $cb?
     tacky message cancel -acc $acc -tag $tag
     tacky message rawxml -acc $acc -chat $jid -timestamp $id ?-command $cb?
+
+### chat lists
+
+`tacky chatlist search` builds all chat lists; see chatlist.md.
 
 ### omemo
 
