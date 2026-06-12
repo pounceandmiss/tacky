@@ -17,9 +17,16 @@
 # tacky listen bookmarks <Changed> -acc $jid $command
 #   -action clear | add | update | remove
 #   -jid $roomJid  (present when action is add/update/remove)
+#
+# tacky listen bookmarks <RoomState> -acc $jid $command
+#   -jid $roomJid
+#   -state joined | joining | error | disconnected | idle
+#   -reason $errorCondition  (empty unless state is error)
 
 snit::type taco_bookmarks {
     variable client
+    variable mucStatus {}
+    variable mucReason {}
 
     option -client -readonly yes
 
@@ -31,6 +38,11 @@ snit::type taco_bookmarks {
             [mymethod OnNotification]
         $client caps addFeature urn:xmpp:bookmarks:1+notify
         $client bus subscribe $self <Ready> [mymethod OnReady]
+        $client bus subscribe $self muc:<Joining> [mymethod OnMucJoining]
+        $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
+        $client bus subscribe $self muc:<Error> [mymethod OnMucError]
+        $client bus subscribe $self muc:<Left> [mymethod OnMucLeft]
+        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
     destructor {
@@ -42,16 +54,17 @@ snit::type taco_bookmarks {
         $self request
     }
 
-    # Return full list of bookmarks from local store
+    # Return full list of bookmarks from local store, with derived
+    # room-state/room-reason per item.
     tackymethod get {args} {
         set results {}
-        $client db eval {
+        foreach {jid name autojoin nick password} [$client db eval {
             SELECT jid, name, autojoin, nick, password FROM bookmark
-        } row {
-            set entry [list jid $row(jid) name $row(name) \
-                autojoin $row(autojoin) nick $row(nick) \
-                password $row(password)]
-            lappend results $entry
+        }] {
+            lappend results [list jid $jid name $name \
+                autojoin $autojoin nick $nick password $password \
+                room-state [$self RoomState $jid] \
+                room-reason [$self ResolveMucReason $jid]]
         }
         return $results
     }
@@ -194,6 +207,84 @@ snit::type taco_bookmarks {
         return [lindex $row 0]
     }
 
+    # --- Room join-state tracking (muc status folded with membership) ---
+
+    method OnMucJoining {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) joining
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
+    }
+
+    method OnMucJoined {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) joined
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
+    }
+
+    method OnMucError {args} {
+        array set opts {-jid "" -error ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) error
+        dict set mucReason $opts(-jid) $opts(-error)
+        $self EmitRoomState $opts(-jid)
+    }
+
+    method OnMucLeft {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        dict set mucStatus $opts(-jid) left
+        dict unset mucReason $opts(-jid)
+        $self EmitRoomState $opts(-jid)
+    }
+
+    method EmitRoomState {jid} {
+        $client emit bookmarks <RoomState> -jid $jid \
+            -state [$self RoomState $jid] -reason [$self ResolveMucReason $jid]
+    }
+
+    method OnDisconnect {args} {
+        set mucStatus {}
+        set mucReason {}
+    }
+
+    method ResolveMucStatus {jid} {
+        if {[dict exists $mucStatus $jid]} {
+            return [dict get $mucStatus $jid]
+        }
+        return ""
+    }
+
+    method ResolveMucReason {jid} {
+        if {[dict exists $mucReason $jid]} {
+            return [dict get $mucReason $jid]
+        }
+        return ""
+    }
+
+    # Derived room state for the UI, folding raw join status together with
+    # membership (autojoin).  A room we joined and dropped out of reads as
+    # "disconnected" only if we're still a member; the initial unattempted
+    # state is plain "idle".
+    #   joined | joining | error | disconnected | idle
+    method RoomState {jid} {
+        switch -- [$self ResolveMucStatus $jid] {
+            joined  { return joined }
+            joining { return joining }
+            error   { return error }
+            left {
+                if {[$self autojoin -jid $jid] in {1 true}} {
+                    return disconnected
+                }
+                return idle
+            }
+            default { return idle }
+        }
+    }
+
     # Remove a bookmark and leave the room if joined
     method remove {args} {
         set jid [jid norm [dict get $args -jid]]
@@ -262,7 +353,8 @@ snit::type taco_bookmarks {
     }
 
     # Build a standalone <item><conference>...</conference></item> node.
-    # bmVar is the name of an array with keys: jid, name, autojoin, nick, password.
+    # bmVar is the name of an array with keys: jid, name, autojoin, nick,
+    # password, extensions_xml.
     # Must be called outside a j context; insert with j #as-is.
     method BookmarkItemNode {bmVar} {
         upvar 1 $bmVar bm
@@ -278,6 +370,11 @@ snit::type taco_bookmarks {
                 }
                 if {$bm(password) ne ""} {
                     j password #body $bm(password)
+                }
+                if {$bm(extensions_xml) ne ""} {
+                    # XEP-0402 4.2: extensions from other clients MUST be
+                    # preserved on republish
+                    j #as-is [xmppreader string $bm(extensions_xml)]
                 }
             }
         }
@@ -335,7 +432,7 @@ snit::type taco_bookmarks {
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node urn:xmpp:bookmarks:1 {
                     $client db eval {
-                        SELECT jid, name, autojoin, nick, password
+                        SELECT jid, name, autojoin, nick, password, extensions_xml
                         FROM bookmark
                     } bm {
                         j #as-is [$self BookmarkItemNode bm]
