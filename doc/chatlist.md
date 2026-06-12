@@ -4,10 +4,10 @@ One method builds every chat list the GUI shows:
 
     tacky chatlist search -acc $acc ?-query $text? ?-sort name|jid? -command $cb
 
-It merges recent chats, the roster, and bookmarks, resolves display
-names, and filters. `-query` matches case-insensitive substrings
-against both JID and resolved name. `-sort` orders the roster and
-bookmarks sections (default name; unnamed items sort by their JID).
+It merges recent chats, the roster, and bookmarks, and filters.
+`-query` matches case-insensitive substrings against each entry's
+`jid` and `name`. `-sort` orders the roster and bookmarks sections
+(default name; unnamed items sort by their JID).
 
 The callback receives a dict with three keys:
 
@@ -31,13 +31,7 @@ is known from; `none` is a conversation with no roster or bookmark
 entry.
 
 Beyond the three fields above, a recent entry is the union of its
-counterpart's entries from the other sections, in their exact shapes:
-source `roster` or `both` adds the roster fields (`subscription`,
-`ask`, `approved`, `groups`), source `bookmark` or `both` adds the
-bookmark fields (`autojoin`, `nick`, `password`, `room-state`,
-`room-reason`). Three fields are recent-specific overrides: `jid`
-(the stored chat JID), `name` (resolved: roster name if set, else
-bookmark name) and `source`.
+counterpart's entries from the other sections.
 
 ## roster
 
@@ -74,11 +68,12 @@ and may be empty. `room-state` is the live join state:
 
 A list view keeps itself current with one resync signal and a set of
 incremental patches. Patches carry full entries in the section shapes
-above and are idempotent (re-applying one is a no-op). They are not
-filtered or sorted: a consumer maintaining a filtered or sorted view
-applies its own query match and ordering, and an `<Item>` may arrive
-for a JID its current filter previously excluded (e.g. after a
-rename).
+above, with `-jid` in that section's form (so `?join` for the
+bookmarks section), and are idempotent (re-applying one is a no-op).
+They are not filtered or sorted: a consumer maintaining a filtered or
+sorted view applies its own query match and ordering, and an `<Item>`
+may arrive for a JID its current filter previously excluded (e.g.
+after a rename).
 
     tacky listen chatlist <Changed> -acc $acc $command
 
@@ -104,8 +99,8 @@ The entry left that section (roster item or bookmark deleted).
 A chat got a new message. `-jid` is the chat JID (verbatim, forms as
 in the recent section). Insert it at position 0 of the recent section,
 or move it there if already present. Room state is not included: take
-it from the bookmarks section of your last search result (keyed by the
-bare room JID) and keep it current via `<RoomState>`.
+it from the bookmarks section of your last search result (keyed by
+the same `?join` chat JID) and keep it current via `<RoomState>`.
 
     tacky listen chatlist <RecentDrop> -acc $acc $command
         -jid $jid
