@@ -706,6 +706,9 @@ snit::type taco_muc {
         set roomJid [jid norm [jid bare $from]]
             set nick [jid resource $from]
 
+            # Drop groupchat from rooms we never requested to join
+            if {![info exists Rooms($roomJid)]} { return 1 }
+
             # Subject change: has <subject>, no <body>
             set subjectText [xsearch $stanza subject -get body]
             set subjectNodes [xsearch $stanza subject]

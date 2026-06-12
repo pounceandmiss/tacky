@@ -25,6 +25,10 @@ snit::type iq {
     # requests or responses) in the form {*}$cmdPrefix $jid $stanza
     option -send-command
 
+    # Command prefix returning our bound JID ("" before bind); used to
+    # decide which senders may answer server-directed requests
+    option -own-jid-command -default ""
+
     constructor args {
         $self configurelist $args
     }
@@ -54,27 +58,37 @@ snit::type iq {
             }
             "error" -
             "result" {
-                # Try exact match first, then fall back to empty-from key,
-                # then fall back to any handler matching the id.
-                # Requests with no -to store handlers at ("",$id), but real
-                # servers include from= in the response (RFC 6120 §8.1.2.1).
-                # Conversely, requests with -to may get from="" responses
-                # when addressed to the user's own bare JID.
-                set key "$from,$id"
-                if {![info exists ResponseHandlers($key)] && $from ne ""} {
-                    set key ",$id"
+                # RFC 6120 8.1.2.1: a response only counts when it comes
+                # from the entity the request was addressed to.  Requests
+                # with no -to (stored at ",$id") are answered by our own
+                # server with no from, our bare JID, or the bare domain;
+                # conversely a request to our own bare JID may be answered
+                # with no from.
+                set own ""
+                if {$options(-own-jid-command) ne ""} {
+                    set own [{*}$options(-own-jid-command)]
                 }
-                if {![info exists ResponseHandlers($key)]} {
-                    # IQ ids are unique per stream, so matching by id alone
-                    # is safe when the from doesn't match.
-                    foreach k [array names ResponseHandlers *,$id] {
-                        set key $k
+                set fromSelf [jid fromMe $from $own]
+                if {!$fromSelf && $own ne "" && [jid valid $from]} {
+                    set fromSelf [string equal -nocase \
+                        [jid norm $from] [jid domain $own]]
+                }
+                set keys [list "$from,$id"]
+                if {$fromSelf} {
+                    lappend keys ",$id"
+                    if {$own ne ""} {
+                        lappend keys "[jid bare $own],$id"
+                    }
+                }
+                set handler ""
+                foreach key $keys {
+                    if {[info exists ResponseHandlers($key)]} {
+                        set handler $ResponseHandlers($key)
+                        unset ResponseHandlers($key)
                         break
                     }
                 }
-                if {[info exists ResponseHandlers($key)]} {
-                    set handler $ResponseHandlers($key)
-                    unset ResponseHandlers($key)
+                if {$handler ne ""} {
                     {*}$handler $stanza
                 } else {
                     jlog debug "Unrequested response?" -stanza $stanza

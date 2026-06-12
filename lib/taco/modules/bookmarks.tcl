@@ -34,7 +34,7 @@ snit::type taco_bookmarks {
         $self configurelist $args
         set client $options(-client)
         $self Migrate
-        $client pubsub handler urn:xmpp:bookmarks:1 \
+        $client pubsub handler urn:xmpp:bookmarks:1 -own-only \
             [mymethod OnNotification]
         $client caps addFeature urn:xmpp:bookmarks:1+notify
         $client bus subscribe $self <Ready> [mymethod OnReady]

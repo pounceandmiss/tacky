@@ -868,3 +868,13 @@ test muc-store-extracts-stanza-id {stored MUC message extracts stanza-id} \
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg server_id
     } -result {srv99}
+
+test muc-groupchat-unknown-room-dropped {groupchat from a room we never joined is ignored} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [j message -type groupchat -from evil@muc.evil.example/mallory {
+            j body #body "injected"
+        }]
+        list [llength [dict get [c message messagestore get latest evil@muc.evil.example?join] messages]] \
+            [c muc getSubject -jid evil@muc.evil.example]
+    } -result {0 {}}

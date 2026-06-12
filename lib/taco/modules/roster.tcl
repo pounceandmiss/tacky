@@ -181,7 +181,7 @@ snit::type taco_roster {
         # RFC 6121 2.1.6: MUST ignore unless from is absent or matches
         # the user's bare JID
         set from [xsearch $stanza -get @from]
-        if {$from ne "" && ![jid matches-bare $from [$client cget -jid]]} {
+        if {![jid fromMe $from [$client cget -jid]]} {
             return
         }
 

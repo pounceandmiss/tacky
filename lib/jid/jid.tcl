@@ -60,6 +60,21 @@ proc jid {cmd args} {
             }
         }
 
+        fromMe {lassign $args from myjid
+            # True when from is empty (our server acting for our account)
+            # or bare-matches our own JID (resource ignored). The bare
+            # server domain does NOT match: that is the server speaking as
+            # itself, which only IQ response routing accepts (separately).
+            # False for malformed JIDs and when myjid is "" (pre-bind).
+            if {$from eq ""} {
+                return 1
+            }
+            if {$myjid eq "" || ![jid valid $from]} {
+                return 0
+            }
+            jid matches-bare $from $myjid
+        }
+
         valid {lassign $args jid
             if {![regexp $pattern $jid -> username domain]} {
                 return 0
