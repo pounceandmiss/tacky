@@ -55,7 +55,8 @@ snit::type taco_client {
         }
 
         # Create IQ handler
-        install iq using iq $self.iq -send-command [mymethod write]
+        install iq using iq $self.iq -send-command [mymethod write] \
+            -own-jid-command [mymethod cget -jid]
 
         # Create internal pub/sub bus
         install bus using taco_client_bus $self.bus
@@ -165,8 +166,7 @@ snit::type taco_client {
             set wrap [xsearch $stanza $kind -ns $ns -get node]
             if {$wrap eq ""} continue
             set from [xsearch $stanza -get @from]
-            set myBare [jid bare $options(-jid)]
-            if {$from ne "" && [jid bare $from] ne $myBare} return
+            if {![jid fromMe $from $options(-jid)]} return
             set fwd [xsearch $wrap forwarded \
                 -ns urn:xmpp:forward:0 -get node]
             if {$fwd eq ""} return

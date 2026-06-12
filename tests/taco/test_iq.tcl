@@ -10,9 +10,13 @@ proc iqTestSendCmd {stanza} {
     lappend ::iq_test_sent $stanza
 }
 
+proc iqTestOwnJid {} {
+    return user@server.example.org/res
+}
+
 set common {-setup {
     set iq_test_sent {}
-    iq .iq -send-command iqTestSendCmd
+    iq .iq -send-command iqTestSendCmd -own-jid-command iqTestOwnJid
 } -cleanup {
     .iq destroy
 }}
@@ -138,6 +142,37 @@ test iq-feed-response-no-handler "feed ignores response without handler" {*}$com
     .iq feed [j iq -type result -id 999 -from user@example.org]
     llength $iq_test_sent
 } -result {0}
+
+test iq-feed-response-own-bare-matches-no-to "own bare jid answers server-directed request" {*}$common -body {
+    set received {}
+    .iq request -payload [j query -ns urn:test] \
+        -command {apply {{stanza} { set ::received got }}}
+    set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
+    .iq feed [j iq -type result -id $sentId -from user@server.example.org]
+    set received
+} -result {got}
+
+test iq-feed-response-no-from-matches-own-bare "no-from response answers own-bare-directed request" {*}$common -body {
+    set received {}
+    .iq request -to user@server.example.org -payload [j query -ns urn:test] \
+        -command {apply {{stanza} { set ::received got }}}
+    set sentId [xsearch [lindex $iq_test_sent 0] -get @id]
+    .iq feed [j iq -type result -id $sentId]
+    set received
+} -result {got}
+
+test iq-feed-response-spoofed-from-ignored "response from an unrelated sender does not match" {*}$common -body {
+    set received {}
+    .iq request -to room@muc.example.org -payload [j query -ns urn:a] \
+        -command {apply {{stanza} { set ::received got }}}
+    .iq request -payload [j query -ns urn:b] \
+        -command {apply {{stanza} { set ::received got }}}
+    set idA [xsearch [lindex $iq_test_sent 0] -get @id]
+    set idB [xsearch [lindex $iq_test_sent 1] -get @id]
+    .iq feed [j iq -type result -id $idA -from evil@evil.example]
+    .iq feed [j iq -type result -id $idB -from evil@evil.example]
+    set received
+} -result {}
 
 # --- request tests ---
 

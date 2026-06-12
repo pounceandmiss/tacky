@@ -28,6 +28,7 @@ snit::type taco_mam {
     variable client
     variable Results     ;# array: Results($queryId) = list of <result> node dicts
     variable Callbacks   ;# array: Callbacks($queryId) = command prefix
+    variable Archives    ;# array: Archives($queryId) = bare archive JID ("" = own archive)
     variable FieldCache  ;# array: FieldCache($target) = fulltext field name or ""
 
     variable idCounter 0
@@ -39,6 +40,7 @@ snit::type taco_mam {
         set client $options(-client)
         array set Results {}
         array set Callbacks {}
+        array set Archives {}
         array set FieldCache {}
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
@@ -50,6 +52,7 @@ snit::type taco_mam {
     method OnDisconnect {args} {
         array unset Results
         array unset Callbacks
+        array unset Archives
         array unset FieldCache
     }
 
@@ -76,6 +79,9 @@ snit::type taco_mam {
 
         set Results($queryId) {}
         set Callbacks($queryId) [dict get $opts -command]
+        set archiveTo [dict get $opts -to]
+        set Archives($queryId) [expr {$archiveTo eq "" \
+            ? "" : [jid norm [jid bare $archiveTo]]}]
 
         set ftVal [dict get $opts -fulltext]
         set cacheKey [dict get $opts -to]
@@ -139,6 +145,7 @@ snit::type taco_mam {
     method cancel {queryId} {
         unset -nocomplain Results($queryId)
         unset -nocomplain Callbacks($queryId)
+        unset -nocomplain Archives($queryId)
     }
 
     # =================================================================
@@ -375,6 +382,24 @@ snit::type taco_mam {
             return 0
         }
 
+        # XEP-0313 6: only accept results from the archive we queried.
+        # Own-archive results arrive with no from or our own bare JID.
+        set from [xsearch $stanza -get @from]
+        set archive ""
+        if {[info exists Archives($queryId)]} {
+            set archive $Archives($queryId)
+        }
+        if {$archive eq ""} {
+            set ok [jid fromMe $from [$client cget -jid]]
+        } else {
+            set ok [expr {[jid valid $from] && [jid matches-bare $from $archive]}]
+        }
+        if {!$ok} {
+            jlog error "Dropping MAM result from '$from' for archive '$archive'" \
+                -stanza $stanza
+            return 1
+        }
+
         lappend Results($queryId) $resultNode
         return 1
     }
@@ -417,6 +442,7 @@ snit::type taco_mam {
         # Cleanup
         unset -nocomplain Results($queryId)
         unset -nocomplain Callbacks($queryId)
+        unset -nocomplain Archives($queryId)
 
         if {$iqType eq "error"} {
             set errCond ""

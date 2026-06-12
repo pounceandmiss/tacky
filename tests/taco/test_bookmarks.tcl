@@ -147,6 +147,7 @@ test bookmarks-wire-result {items result populates the store and triggers autojo
 test bookmarks-wire-notification {pubsub notifications add and retract bookmarks} \
     {*}$bookmarks_common \
     -body {
+        c configure -jid user@test.example.com/res
         set actions {}
         tacky listen bookmarks <Changed> \
             {apply {{ev} { lappend ::actions [dict get $ev -action] }}}
@@ -178,6 +179,7 @@ test bookmarks-wire-notification {pubsub notifications add and retract bookmarks
 test bookmarks-wire-extensions-preserved {republish keeps extensions from the server copy} \
     {*}$bookmarks_common \
     -body {
+        c configure -jid user@test.example.com/res
         c.conn feed [j message -from user@test.example.com {
             j event -ns http://jabber.org/protocol/pubsub#event {
                 j items -node urn:xmpp:bookmarks:1 {
@@ -200,3 +202,22 @@ test bookmarks-wire-extensions-preserved {republish keeps extensions from the se
         list [xsearch $conf -get @name] \
             [llength [xsearch $conf extensions pinned -ns urn:example:pinning]]
     } -result {Renamed 1}
+
+test bookmarks-wire-foreign-notification-dropped {bookmark events from other senders are ignored} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        c.conn feed [j message -from attacker@evil.example {
+            j event -ns http://jabber.org/protocol/pubsub#event {
+                j items -node urn:xmpp:bookmarks:1 {
+                    j item -id trap@muc.evil.example {
+                        j conference -ns urn:xmpp:bookmarks:1 \
+                            -autojoin true -name "Trap" {
+                            j nick #body me
+                        }
+                    }
+                }
+            }
+        }]
+        list [bm_state trap@muc.evil.example] [llength [c.conn get_written]]
+    } -result {missing 0}
