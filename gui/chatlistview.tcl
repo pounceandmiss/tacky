@@ -30,11 +30,10 @@ snit::widget chatlistview {
     variable showAvatars 1
     variable bookmarkMember 0
     variable trackedAvatars {}
-    variable itemSources {}
-    variable roomStates {}
-    variable roomReasons {}
+    # Last search payload in the backend's shape, patched by incremental events
+    variable model {recent {} roster {} bookmarks {}}
 
-    # Row style per backend room-state enum (taco_chatlist RoomState).  Tags
+    # Row style per backend room-state enum (taco_bookmarks RoomState).  Tags
     # are named muc_<state>, so the state name IS the tag - no translation.
     #   joined = normal; idle = dimmed grey (not a member / unattempted);
     #   joining = grey italic (transient); disconnected = amber (a member
@@ -194,7 +193,7 @@ snit::widget chatlistview {
             [mymethod OnRecentTop]
         $t listen -tag $win chatlist <RecentDrop> -acc $acc \
             [mymethod OnRecentDrop]
-        $t listen -tag $win chatlist <RoomState> -acc $acc \
+        $t listen -tag $win bookmarks <RoomState> -acc $acc \
             [mymethod OnRoomState]
 
         # Initial load
@@ -222,6 +221,8 @@ snit::widget chatlistview {
     }
 
     method OnData {data} {
+        set model $data
+
         # Remember which group nodes are open
         set openGroups {}
         foreach child [$treeview children Roster] {
@@ -230,24 +231,13 @@ snit::widget chatlistview {
             }
         }
 
-        # Reset room-state tracking; PopulateSection repopulates from fresh data
-        set roomStates {}
-        set roomReasons {}
-
         # Clear all sections
         $treeview delete [$treeview children RecentChats]
         $treeview delete [$treeview children Roster]
         $treeview delete [$treeview children Bookmarks]
 
         # Populate RecentChats
-        set recentItems [dict get $data recent]
-        $self PopulateSection RecentChats $recentItems
-
-        # Build itemSources from recent items
-        set itemSources {}
-        foreach item $recentItems {
-            dict set itemSources [dict get $item jid] [dict get $item source]
-        }
+        $self PopulateSection RecentChats [dict get $data recent]
 
         # Populate Roster
         set rosterItems [dict get $data roster]
@@ -287,9 +277,22 @@ snit::widget chatlistview {
         array set opts $ev
         set jid $opts(-jid)
         set name $opts(-name)
-        set source $opts(-source)
 
         if {![$self MatchesQueryLocal $jid $name]} return
+
+        # Room state is not carried on the event; take it from the
+        # model's own bookmarks section
+        set entry [list jid $jid name $name source $opts(-source)]
+        if {[info exists opts(-autojoin)]} {
+            lappend entry autojoin $opts(-autojoin)
+        }
+        set bm [$self ModelItem bookmarks $jid]
+        if {$bm ne ""} {
+            lappend entry room-state [dict get $bm room-state] \
+                room-reason [dict get $bm room-reason]
+        }
+        dict set model recent \
+            [linsert [$self ModelRemove recent $jid] 0 $entry]
 
         set itemId "RecentChats/$jid"
         if {[$treeview exists $itemId]} {
@@ -298,10 +301,13 @@ snit::widget chatlistview {
             set text $name
             if {$text eq ""} { set text $jid }
             set img [$self TrackAvatar $jid]
+            set tags {}
+            if {[dict exists $entry room-state]} {
+                set tags muc_[dict get $entry room-state]
+            }
             $treeview insert RecentChats 0 -id $itemId -text $text \
-                -image $img
+                -image $img -tags $tags
         }
-        dict set itemSources $jid $source
     }
 
     method OnRecentDrop {ev} {
@@ -316,17 +322,14 @@ snit::widget chatlistview {
                 dict unset trackedAvatars $jid
             }
         }
-        if {[dict exists $itemSources $jid]} {
-            dict unset itemSources $jid
-        }
+        dict set model recent [$self ModelRemove recent $jid]
     }
 
     method OnRoomState {ev} {
         array set opts {-jid "" -state idle -reason ""}
         array set opts $ev
         set jid $opts(-jid)
-        dict set roomStates $jid $opts(-state)
-        dict set roomReasons $jid $opts(-reason)
+        $self ModelSetRoomState $jid $opts(-state) $opts(-reason)
         foreach item [$self FindItemsByJid $jid] {
             foreach {state _} $mucStateStyle {
                 $treeview tag remove muc_$state $item
@@ -343,6 +346,38 @@ snit::widget chatlistview {
         return 0
     }
 
+    # Returns the model item for $jid in $section, or "" if absent.
+    method ModelItem {section jid} {
+        foreach item [dict get $model $section] {
+            if {[dict get $item jid] eq $jid} { return $item }
+        }
+        return {}
+    }
+
+    # Returns $section's item list without any entry for $jid.
+    method ModelRemove {section jid} {
+        set items {}
+        foreach item [dict get $model $section] {
+            if {[dict get $item jid] ne $jid} { lappend items $item }
+        }
+        return $items
+    }
+
+    method ModelSetRoomState {jid state reason} {
+        foreach section {recent bookmarks} {
+            set items {}
+            foreach item [dict get $model $section] {
+                if {[dict get $item jid] eq $jid \
+                        && [dict exists $item room-state]} {
+                    dict set item room-state $state
+                    dict set item room-reason $reason
+                }
+                lappend items $item
+            }
+            dict set model $section $items
+        }
+    }
+
     method PopulateSection {parent items} {
         foreach item $items {
             set jid  [dict get $item jid]
@@ -350,12 +385,7 @@ snit::widget chatlistview {
             set img  [$self TrackAvatar $jid]
             set tags {}
             if {[dict exists $item room-state]} {
-                set state [dict get $item room-state]
-                set tags muc_$state
-                dict set roomStates $jid $state
-                if {[dict exists $item room-reason]} {
-                    dict set roomReasons $jid [dict get $item room-reason]
-                }
+                set tags muc_[dict get $item room-state]
             }
             $treeview insert $parent end -id "$parent/$jid" -text $text \
                 -image $img -tags $tags
@@ -495,10 +525,8 @@ snit::widget chatlistview {
             set section [$self GetSection $item]
             if {$section eq "RecentChats"} {
                 set jid [$self ItemJid $item]
-                set source ""
-                if {[dict exists $itemSources $jid]} {
-                    set source [dict get $itemSources $jid]
-                }
+                set entry [$self ModelItem recent $jid]
+                set source [expr {$entry eq "" ? "" : [dict get $entry source]}]
                 set section [expr {$source in {bookmark both} \
                     ? "Bookmarks" : "Roster"}]
             }
@@ -526,16 +554,14 @@ snit::widget chatlistview {
     # User-facing copy for a room's state, shown as a disabled status line in
     # the bookmark menu.  Empty string = no line for this state.
     method BookmarkStatusLabel {jid} {
+        set item [$self ModelItem bookmarks $jid]
         set state idle
-        if {[dict exists $roomStates $jid]} {
-            set state [dict get $roomStates $jid]
+        if {$item ne ""} {
+            set state [dict get $item room-state]
         }
         switch -- $state {
             error {
-                set reason ""
-                if {[dict exists $roomReasons $jid]} {
-                    set reason [dict get $roomReasons $jid]
-                }
+                set reason [dict get $item room-reason]
                 return "Join failed: [$self MucErrorText $reason]"
             }
             joining      { return "Joining..." }
@@ -745,10 +771,8 @@ snit::widget chatlistview {
         set section [$self GetSection $item]
         set jid [$self ItemJid $item]
         if {$section eq "RecentChats"} {
-            set source ""
-            if {[dict exists $itemSources $jid]} {
-                set source [dict get $itemSources $jid]
-            }
+            set entry [$self ModelItem recent $jid]
+            set source [expr {$entry eq "" ? "" : [dict get $entry source]}]
             set section [expr {$source in {bookmark both} \
                 ? "Bookmarks" : "Roster"}]
         }
