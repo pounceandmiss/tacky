@@ -45,6 +45,12 @@ proc jid {cmd args} {
             jid assemble e
         }
 
+        noquery {lassign $args jid
+            jid explode $jid e
+            set e(query) ""
+            jid assemble e
+        }
+
         matches-bare {lassign $args a b
             string equal -nocase [jid bare $a] [jid bare $b]
         }
