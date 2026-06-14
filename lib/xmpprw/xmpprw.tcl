@@ -12,6 +12,7 @@ namespace eval ::jab {}
 #       -header-command $cmd  Callback for the stream header element
 #       -footer-command $cmd  Callback for the stream footer (closing </stream:stream>)
 #       -error-command $cmd   Callback for read errors and EOF
+#       -zap $bool          Drop whitespace-only character data (default no)
 #     Methods:
 #       start               Begin reading from -channel via fileevent
 #       pause               Stop reading (remove fileevent)
@@ -22,8 +23,14 @@ namespace eval ::jab {}
 #   ::jab::readChannel $chan ?options?   Create an xmppreader for $chan and start it
 #   ::jab::cancelRead $chan              Stop and destroy a channel's reader
 #
-#   j $tag ?-attr val ...? ?body?   Build a node dict (nestable DSL)
+#   j $tag ?key val ...? ?script?   Build a node dict (nestable DSL)
+#     Keys: -attr $val / @attr $val   set an attribute
+#           -ns $uri                  set the namespace
+#           #body $text / .body $text set the text content
+#     The trailing script adds children by calling j again (see example).
 #   j #as-is $node                  Insert a pre-built node dict as a child
+#
+#   xesc $text                      XML-escape a string
 #
 #   jwrite $stanza                  Serialize a node dict to XML string
 #   jwrite $chan $stanza            Serialize and write to channel
