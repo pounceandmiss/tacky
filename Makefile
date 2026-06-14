@@ -4,12 +4,6 @@ COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
-# Until the Windows cert-store fix lands upstream, pull mtls from our fork
-# (overrides zippy.mk's chpock default). No effect off Windows: the patch is
-# inside #ifdef _WIN32. Drop this once chpock merges the PR.
-MTLS_OVERRIDE := MTLS_REPO=https://github.com/pounceandmiss/tclmtls.git \
-                 MTLS_COMMIT=d52b59d
-
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
@@ -31,7 +25,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 # ==== Targets ====
 
 .PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json \
-        linux flatpak flatpak-bundle flatpak-install \
+        android linux flatpak flatpak-bundle flatpak-install \
         test test-gui tools wish tclsh clean win-clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -52,7 +46,6 @@ HOST_TCLSH     := $(if $(wildcard $(WIN_HOST_TCLSH)),$(WIN_HOST_TCLSH),tclsh9.0)
 
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
-	    $(MTLS_OVERRIDE) \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
 	    DEPS="$($*_DEPS)" \
@@ -73,7 +66,6 @@ win: win-tacky win-tackyd win-tackyd-json
 
 win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
-	    $(MTLS_OVERRIDE) \
 	    TARGET_OS=windows \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
@@ -86,6 +78,35 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    BASEDIR=$(WIN_BUILD) \
 	    win-app
 	cp $(WIN_BUILD)/$*.exe dist/$*.exe
+
+# ==== Android cross-build ====
+# The daemon (tackyd-json) for arm64-v8a, staged as a jniLibs/<abi>/ subtree an
+# Android app drops straight into app/src/main/jniLibs/. There is no host NDK, so
+# this routes through zippy's ndk docker profile (like `make linux`). The inner
+# make runs in the container at /src, so BASEDIR is the container path, not
+# $(CURDIR)/...; pre-create build/android host-owned so its tree (and the output
+# binary/jniLibs) land back in the bind-mounted project as the host user. No
+# cache-mount isolation is needed - nothing host-native ever builds Android, so
+# build/android can't be poisoned. Output:
+# dist/jniLibs/arm64-v8a/{libtackyd_json.so, libc++_shared.so}.
+
+ANDROID_BUILD := build/android
+
+android: dist-dir
+	mkdir -p $(ANDROID_BUILD)
+	zippy/in_docker.sh ndk \
+	make -f zippy/zippy.mk \
+	    TARGET_OS=android \
+	    BIN_NAME=tackyd-json \
+	    SHELL_TYPE=$(tackyd-json_SHELL) \
+	    DEPS="$(tackyd-json_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="$(tackyd-json_ENT)" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    BASEDIR=/src/$(ANDROID_BUILD) \
+	    android-jnilibs
+	mkdir -p dist/jniLibs
+	cp -r $(ANDROID_BUILD)/jniLibs/. dist/jniLibs/
 
 # ==== Portable Linux build ====
 # Build the native binaries against an older glibc (Debian bookworm, 2.36) so
@@ -158,7 +179,6 @@ test-gui: $(LINUX_BUILD)/wish
 
 $(LINUX_BUILD)/tclsh: Makefile
 	$(MAKE) -f zippy/zippy.mk \
-	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(COMMON_DEPS)" \
 	    BASEDIR=$(LINUX_BUILD) \
@@ -166,7 +186,6 @@ $(LINUX_BUILD)/tclsh: Makefile
 
 $(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
-	    $(MTLS_OVERRIDE) \
 	    SHELL_TYPE=wish \
 	    DEPS="$(COMMON_DEPS) tkwuffs tkdnd" \
 	    BASEDIR=$(LINUX_BUILD) \
