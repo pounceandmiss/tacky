@@ -10,10 +10,12 @@ json::write indented false
 # Type expressions:
 #   string         -> JSON string (default for unlisted fields)
 #   int            -> JSON number
+#   double         -> JSON number (floating point)
 #   bool           -> JSON true/false
 #   list           -> JSON array of strings
 #   {list T}       -> JSON array of T
 #   {dict S}       -> JSON object, S is {field type ...}, unlisted fields -> string
+#   {map T}        -> JSON object with arbitrary keys, every value coerced to T
 #   base64         -> binary data encoded as base64 JSON string
 #   {tuples S}     -> flat list grouped by fields of S into JSON array of objects
 #   <name>         -> named type lookup (always a dict schema)
@@ -42,6 +44,10 @@ snit::type jsonify_type {
             int {
                 if {$value eq ""} { return "null" }
                 return [expr {entier($value)}]
+            }
+            double {
+                if {$value eq ""} { return "null" }
+                return [expr {double($value)}]
             }
             bool {
                 if {$value eq ""} { return "false" }
@@ -82,6 +88,15 @@ snit::type jsonify_type {
                 }
                 return [json::write object {*}$pairs]
             }
+            map {
+                set vhint [lindex $hint 1]
+                if {$vhint eq ""} { set vhint string }
+                set pairs {}
+                dict for {k v} $value {
+                    lappend pairs $k [$self to_json $v $vhint]
+                }
+                return [json::write object {*}$pairs]
+            }
             default {
                 # Named type lookup
                 if {[dict exists $types $base]} {
@@ -105,12 +120,15 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int prev int patch bool formatting {tuples {type string offset int length int}} attachments {list {dict {url string type string name string size int mime string}}} caption string}
+        message     {timestamp int newtimestamp int is_outgoing bool formatting {tuples {type string offset int length int}} attachments {list {dict {url string type string name string size int mime string}}} caption string}
         occupant    {}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
+        recent_item {approved bool groups list autojoin bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int}
+        omemo_trust {device int active bool}
+        audio_device {default bool}
     } \
     -schemas {
         message/local_search    {list int}
@@ -142,6 +160,11 @@ jsonify_type jsonify \
         chats/maxTimestamp      int
         presence/get            presence
         presence/isOnline       bool
+        presence/resources      {map presence}
+        audio/getVolume         double
+        audio/getPreferredDevice string
+        audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
+        register/media          base64
         avatar/metadata         avatar_meta
         avatar/thumb            base64
         avatar/data             base64
@@ -153,8 +176,16 @@ jsonify_type jsonify \
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list
+        omemo/trustList         {list omemo_trust}
+        omemo/devicelist        {list int}
+        omemo/own_fingerprint   string
+        omemo/device_id         int
+        omemo/account_jid       string
+        omemo/blindTrust        bool
+        omemo/setBlindTrust     bool
+        omemo/setEnabled        bool
         chatlist/search         {dict {
-            recent    {list roster_item}
+            recent    {list recent_item}
             roster    {list roster_item}
             bookmarks {list bookmark}
         }}
@@ -168,7 +199,18 @@ jsonify_type jsonify \
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<NickChanged>       {dict {self bool}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
+        chatlist/<Item>         {dict {item recent_item}}
         chatlist/<RecentTop>    {dict {autojoin bool}}
+
+        omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
+        omemo/<BlindTrust>         {dict {value bool}}
+        omemo/<Enabled>            {dict {value bool}}
+        omemo/<TrustChanged>       {dict {device int}}
+        omemo/<FingerprintChanged> {dict {device int}}
+        omemo/<DecryptFailed>      {dict {device int}}
+
+        audio/<Volume>          {dict {volume double}}
+        debugtap/<Stanza>       {dict {tap int}}
     }
 
 # -- helpers shared with entry-point dispatch ---------------------------

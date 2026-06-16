@@ -67,7 +67,7 @@ test json-backend-callback-search {callback result with schema} -setup {
     _test_clear
 } -body {
     set result [dict create \
-        messages [list [dict create timestamp 100 body hi patch 0]] \
+        messages [list [dict create timestamp 100 body hi is_outgoing 0]] \
         complete 1]
     _test_on_result 42 message/search $result
     lindex [_test_sent] 0
@@ -75,7 +75,7 @@ test json-backend-callback-search {callback result with schema} -setup {
     {"result"} 42 \
     [json::write object \
         messages [json::write array \
-            [json::write object timestamp 100 body {"hi"} patch false]] \
+            [json::write object timestamp 100 body {"hi"} is_outgoing false]] \
         complete true]]
 
 test json-backend-callback-list {callback with list of ints} -setup {
@@ -105,6 +105,46 @@ test json-backend-callback-roster {roster items use dashless keys} -setup {
     [json::write array \
         [json::write object jid {"a@b"} approved true groups [json::write array {"x"}]]]]
 
+# -- double / map hint tests -------------------------------------------------
+
+test json-type-double {double hint emits a JSON number} -body {
+    jsonify to_json 1.0 double
+} -result 1.0
+
+test json-type-double-empty {empty double is null} -body {
+    jsonify to_json "" double
+} -result null
+
+test json-type-map {map hint coerces every value to T} -body {
+    jsonify to_json [dict create a 100 b 200] {map int}
+} -result [json::write object a 100 b 200]
+
+test json-type-map-named {map of a named type coerces nested objects} -body {
+    jsonify to_json \
+        [dict create laptop [dict create priority 5] phone [dict create priority 3]] \
+        {map presence}
+} -result [json::write object \
+    laptop [json::write object priority 5] \
+    phone [json::write object priority 3]]
+
+test json-backend-callback-volume {getVolume result is a JSON number} -setup {
+    _test_clear
+} -body {
+    _test_on_result 8 audio/getVolume 0.75
+    lindex [_test_sent] 0
+} -result [json::write array {"result"} 8 0.75]
+
+test json-backend-callback-resources {resources is a map of presence objects} -setup {
+    _test_clear
+} -body {
+    _test_on_result 9 presence/resources \
+        [dict create laptop [dict create priority 5 show away]]
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"result"} 9 \
+    [json::write object \
+        laptop [json::write object priority 5 show {"away"}]]]
+
 # -- _on_error tests ---------------------------------------------------------
 
 test json-backend-error {error message} -setup {
@@ -129,12 +169,12 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
     _test_emit message <Received> \
-        -message [dict create timestamp 100 body hello patch 0]
+        -message [dict create timestamp 100 body hello is_outgoing 0]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<Received>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"hello"} patch false]]]
+        message [json::write object timestamp 100 body {"hello"} is_outgoing false]]]
 
 test json-backend-emit-formatting {emit message with formatting entities} -setup {
     _test_clear
