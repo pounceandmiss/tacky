@@ -4,12 +4,19 @@ if {"-h" in $argv || "--help" in $argv || "-help" in $argv} {
     puts "Usage: tacky \[options\]
 
 Options:
-  --debug-dir DIR   Write per-account debug logs to DIR
-  --backend MODE    Backend mode: direct (default), thread, process
-  --tackyd PATH     Path to the tackyd backend binary (process mode only)
-  --transient yes   Work purely in RAM - don't read/write settings/cache
-  --console 1|0     Print background errors to stderr instead of a dialog
-  -h, --help        Display this help text and exit"
+  --backend MODE      Backend mode: direct (default), thread, process
+  --tackyd PATH       Path to the tackyd backend binary (process mode only)
+  --transient yes     Work purely in RAM - don't read/write settings/cache
+  --console 1|0       Print background errors to stderr instead of a dialog
+  --debug-level LVL   jlog verbosity: debug, info, warn (default), error
+  --debug-file PATH   Write all logs to PATH instead of stderr
+  --libdatachannel-debug-level LVL
+                      libdatachannel native log level (default: none)
+  --rtcma-debug-level LVL
+                      rtc-ma native log level (default: none)
+  -h, --help          Display this help text and exit
+
+Native log levels: none, fatal, error, warning, info, debug, verbose"
     exit 0
 }
 

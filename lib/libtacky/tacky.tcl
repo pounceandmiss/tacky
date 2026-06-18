@@ -1,6 +1,27 @@
 package provide libtacky 0.1
 package require jid
 
+# Split the --debug-* flags out of an args list into {debugFlags restArgs},
+# renaming them to configure_debug's option names.
+proc tacky_split_debug {arglist} {
+    set map {
+        -debug-level                 -level
+        -debug-file                  -file
+        -libdatachannel-debug-level  -libdatachannel-level
+        -rtcma-debug-level           -rtcma-level
+    }
+    set debug {}
+    set rest {}
+    foreach {k v} $arglist {
+        if {[dict exists $map $k]} {
+            lappend debug [dict get $map $k] $v
+        } else {
+            lappend rest $k $v
+        }
+    }
+    return [list $debug $rest]
+}
+
 # tacky — event router bridging the GUI and the taco XMPP backend.
 #
 # Class hierarchy:
@@ -208,7 +229,9 @@ oo::class create tacky_type {
     constructor {args} {
         next
         package require taco
-        taco_type taco {*}$args
+        lassign [tacky_split_debug $args] debug rest
+        taco_type taco {*}$rest
+        configure_debug {*}$debug
     }
 
     destructor {
@@ -235,23 +258,20 @@ oo::class create tacky_threaded_type {
         set TacoTid [thread::create]
         thread::send $TacoTid [list set auto_path $::auto_path]
         thread::send $TacoTid {package require taco}
-        if {[dict exists $args -debug-dir]} {
-            set debugDir [dict get $args -debug-dir]
-            dict unset args -debug-dir
-            if {$debugDir ne ""} {
-                thread::send $TacoTid [list file mkdir $debugDir]
-                thread::send $TacoTid [list jlog configure \
-                    -logproc [list jlog_file_writer $debugDir] -defaultlevel debug]
-                thread::send $TacoTid {
-                    proc bgerror {message} {
-                        puts stderr $::errorInfo
-                        if {![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
-                            catch {jlog error $::errorInfo -obj bgerror}
-                        }
-                    }
+        lassign [tacky_split_debug $args] debug rest
+        set args $rest
+        # Route backend-thread background errors through jlog, falling back to
+        # raw stderr if no sink is set.
+        thread::send $TacoTid {
+            proc bgerror {message} {
+                if {![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
+                    catch {jlog error $::errorInfo -obj bgerror}
+                } else {
+                    puts stderr $::errorInfo
                 }
             }
         }
+        thread::send $TacoTid [list configure_debug {*}$debug]
         # Define the proxy in the backend thread: it forwards every emit
         # back to the GUI thread asynchronously.
         thread::send $TacoTid {
