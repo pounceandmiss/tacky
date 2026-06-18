@@ -88,33 +88,67 @@ snit::type jlog_type {
 
 }
 
-proc jlog_file_writer {dir opts_list} {
+proc jlog_stderr_writer {opts_list} {
     array set opts {-obj "" -level debug -text ""}
     array set opts $opts_list
-    # Extract account JID from object path
-    # e.g. ::tacky.taco.client(user@example.com).conn.sm → user@example.com
-    set filename "general"
-    if {[info exists opts(-acc)] && $opts(-acc) ne ""} {
-        set filename $opts(-acc)
-    } elseif {[regexp {client\((.+?)\)} $opts(-obj) -> jid]} {
-        set filename $jid
+    set ts [clock format [clock seconds] -format %H:%M:%S]
+    puts stderr "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
+    if {[info exists opts(-stanza)]} {
+        puts stderr [jwrite -pretty $opts(-stanza)]
     }
-    set fd [open [file join $dir $filename] a]
+}
+
+# One file for every account plus native (libdatachannel / rtc-ma) lines.
+# Open/append/close per line so it survives a crash.
+proc jlog_file_writer_single {file opts_list} {
+    array set opts {-obj "" -level debug -text ""}
+    array set opts $opts_list
+    set fd [open $file a]
     set ts [clock format [clock seconds] -format %H:%M:%S]
     puts $fd "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
     if {[info exists opts(-stanza)]} {
         puts $fd [jwrite -pretty $opts(-stanza)]
     }
-    puts $fd ""
     close $fd
 }
 
-proc jlog_stderr_writer {opts_list} {
-    array set opts {-obj "" -level debug -text ""}
-    array set opts $opts_list
-    puts stderr "\[$opts(-level)\] $opts(-obj): $opts(-text)"
-    if {[info exists opts(-stanza)]} {
-        puts stderr [jwrite -pretty $opts(-stanza)]
+# Sink for native log callbacks, invoked as `native_jlog source id level msg`;
+# id is unused. configure_debug pins the source level so this only maps the
+# native level to a jlog method (info uses inform).
+proc native_jlog {source id level message} {
+    set method [dict get {
+        none debug fatal error error error warning warn
+        info inform debug debug verbose debug
+    } $level]
+    jlog $method $message -obj ::$source
+}
+
+# Apply resolved debug settings in this process. Native loggers are wired only
+# where rtc / rtc-ma are loaded, so they're skipped in the process-mode GUI.
+proc configure_debug {args} {
+    array set o {-level "" -file "" -libdatachannel-level "" -rtcma-level ""}
+    array set o $args
+    if {$o(-level) ne ""} {
+        jlog configure -defaultlevel $o(-level)
+    }
+    if {$o(-file) ne ""} {
+        # Create the parent dir; the per-line writer fails otherwise.
+        file mkdir [file dirname $o(-file)]
+        jlog configure -logproc [list jlog_file_writer_single $o(-file)]
+    } else {
+        jlog configure -logproc jlog_stderr_writer
+    }
+    if {$o(-libdatachannel-level) ne "" \
+            && [info commands ::rtc::set-log-level] ne ""} {
+        # Native verbosity is the library's job; don't let jlog re-filter.
+        jlog setLevel libdatachannel debug
+        ::rtc::set-log-level $o(-libdatachannel-level) \
+            [list native_jlog libdatachannel]
+    }
+    if {$o(-rtcma-level) ne "" \
+            && [info commands ::rtcma::set-log-level] ne ""} {
+        jlog setLevel rtcma debug
+        ::rtcma::set-log-level $o(-rtcma-level) [list native_jlog rtcma]
     }
 }
 

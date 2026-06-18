@@ -100,22 +100,24 @@ proc bgerror {message} {
     }
 }
 
-set _debug_dir ""
+set _debug {}
 set _taco_args {}
 foreach {_k _v} $::argv {
-    if {$_k in {-debug-dir --debug-dir}} {
-        set _debug_dir $_v
-    } else {
-        lappend _taco_args $_k $_v
+    switch -- $_k {
+        -debug-level - --debug-level { lappend _debug -level $_v }
+        -debug-file  - --debug-file  { lappend _debug -file $_v }
+        -libdatachannel-debug-level - --libdatachannel-debug-level {
+            lappend _debug -libdatachannel-level $_v
+        }
+        -rtcma-debug-level - --rtcma-debug-level {
+            lappend _debug -rtcma-level $_v
+        }
+        default { lappend _taco_args $_k $_v }
     }
 }
-# stdout is the lenpipe wire, so logs must never go there.
-if {$_debug_dir ne ""} {
-    file mkdir $_debug_dir
-    jlog configure -logproc [list jlog_file_writer $_debug_dir] -defaultlevel debug
-} else {
-    jlog configure -logproc jlog_stderr_writer
-}
+# stdout is the lenpipe wire; configure_debug routes logs to stderr or
+# the --debug-file, never stdout.
+configure_debug {*}$_debug
 
 taco_type create taco {*}$_taco_args
 vwait forever

@@ -1,7 +1,10 @@
 snit::type app_type {
     option -transient -default 0 -readonly yes
     option -backend -default direct -readonly yes
-    option -debug-dir -default "" -readonly yes
+    option -debug-level -default "" -readonly yes
+    option -debug-file -default "" -readonly yes
+    option -libdatachannel-debug-level -default "" -readonly yes
+    option -rtcma-debug-level -default "" -readonly yes
     option -tackyd -default "" -readonly yes
 
     variable windows {}
@@ -15,21 +18,16 @@ snit::type app_type {
         switch $options(-backend) {
             process {
                 tacky_init_process -transient $options(-transient) \
-                    -debug-dir $options(-debug-dir) -tackyd $options(-tackyd)
+                    -tackyd $options(-tackyd) {*}[$self DebugArgs]
             }
             thread {
                 package require Thread
                 tacky_init_threaded -transient $options(-transient) \
-                    -debug-dir $options(-debug-dir)
+                    {*}[$self DebugArgs]
             }
             default {
-                tacky_init -transient $options(-transient)
+                tacky_init -transient $options(-transient) {*}[$self DebugArgs]
             }
-        }
-        if {$options(-debug-dir) ne ""} {
-            file mkdir $options(-debug-dir)
-            jlog configure -logproc [list jlog_file_writer $options(-debug-dir)] \
-                -defaultlevel debug
         }
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
@@ -43,6 +41,18 @@ snit::type app_type {
             catch {destroy $w}
         }
         catch {::tacky destroy}
+    }
+
+    # Non-empty --debug-* options to forward to the backend init.
+    method DebugArgs {} {
+        set out {}
+        foreach opt {-debug-level -debug-file \
+                     -libdatachannel-debug-level -rtcma-debug-level} {
+            if {$options($opt) ne ""} {
+                lappend out $opt $options($opt)
+            }
+        }
+        return $out
     }
 
     method OnAccountList {result} {

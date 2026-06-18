@@ -95,6 +95,10 @@ snit::type taco_type {
     }
 
     destructor {
+        # Detach native log callbacks before teardown so no queued line
+        # dispatches onto a dead thread.
+        catch {::rtc::set-log-level none}
+        catch {::rtcma::set-log-level none}
         catch {
             foreach jid [$db eval {SELECT jid FROM account}] {
                 set client $self.client($jid)
