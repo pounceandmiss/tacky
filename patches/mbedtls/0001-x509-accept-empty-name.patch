@@ -1,0 +1,23 @@
+diff --git a/library/x509.c b/library/x509.c
+index f97fb44589..22e0adce4e 100644
+--- a/library/x509.c
++++ b/library/x509.c
+@@ -503,6 +503,18 @@ int mbedtls_x509_get_name(unsigned char **p, const unsigned char *end,
+     const unsigned char *end_set;
+     mbedtls_x509_name *head = cur;
+ 
++    /*
++     * An empty RDNSequence (zero-length Name) is legal DER and is emitted by
++     * some WebRTC DTLS peers that set no subject/issuer DN (e.g. GnuTLS-based
++     * stacks such as Dino). Stock Mbed TLS parses a SET here and fails with
++     * X509_INVALID_NAME + ASN1_OUT_OF_DATA; accept the empty name instead,
++     * matching OpenSSL/BoringSSL. Authentication still happens downstream
++     * (DTLS fingerprint for WebRTC; CA + hostname for TLS).
++     */
++    if (*p == end) {
++        return 0;
++    }
++
+     /* don't use recursion, we'd risk stack overflow if not optimized */
+     while (1) {
+         /*
