@@ -104,20 +104,20 @@ set _debug {}
 set _taco_args {}
 foreach {_k _v} $::argv {
     switch -- $_k {
-        -debug-level - --debug-level { lappend _debug -level $_v }
-        -debug-file  - --debug-file  { lappend _debug -file $_v }
+        -debug-level - --debug-level { lappend _debug -debug-level $_v }
+        -debug-file  - --debug-file  { lappend _debug -debug-file $_v }
         -libdatachannel-debug-level - --libdatachannel-debug-level {
-            lappend _debug -libdatachannel-level $_v
+            lappend _debug -libdatachannel-debug-level $_v
         }
         -rtcma-debug-level - --rtcma-debug-level {
-            lappend _debug -rtcma-level $_v
+            lappend _debug -rtcma-debug-level $_v
         }
         default { lappend _taco_args $_k $_v }
     }
 }
-# stdout is the lenpipe wire; configure_debug routes logs to stderr or
+# stdout is the lenpipe wire; jlog configureDebug routes logs to stderr or
 # the --debug-file, never stdout.
-configure_debug {*}$_debug
+jlog configureDebug {*}$_debug
 
 taco_type create taco {*}$_taco_args
 vwait forever

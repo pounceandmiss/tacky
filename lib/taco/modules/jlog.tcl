@@ -3,9 +3,11 @@ package require snit
 snit::type jlog_type {
     variable levels
     option -logproc
-    option -defaultlevel warn
-    
-    typevariable LEVELS {debug info warn error}
+    option -defaultlevel warning
+
+    # Shared with the native loggers (libdatachannel / rtc-ma); ordered least
+    # to most severe, with "none" last as a silence-everything threshold.
+    typevariable LEVELS {verbose debug info warning error fatal none}
     
     constructor args {
         array set levels {}
@@ -40,7 +42,7 @@ snit::type jlog_type {
         }
     }
     method warn {text args} {
-        $self Log -level warn -text $text {*}$args
+        $self Log -level warning -text $text {*}$args
     }
     method inform {text args} {
         $self Log -level info -text $text {*}$args
@@ -86,69 +88,71 @@ snit::type jlog_type {
         return ::$obj
     }
 
-}
+    # -logproc target: one timestamped line per record on stderr.
+    method stderrWriter {opts_list} {
+        array set opts {-obj "" -level debug -text ""}
+        array set opts $opts_list
+        set ts [clock format [clock seconds] -format %H:%M:%S]
+        puts stderr "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
+        if {[info exists opts(-stanza)]} {
+            puts stderr [jwrite -pretty $opts(-stanza)]
+        }
+    }
 
-proc jlog_stderr_writer {opts_list} {
-    array set opts {-obj "" -level debug -text ""}
-    array set opts $opts_list
-    set ts [clock format [clock seconds] -format %H:%M:%S]
-    puts stderr "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
-    if {[info exists opts(-stanza)]} {
-        puts stderr [jwrite -pretty $opts(-stanza)]
+    # -logproc target: one file for every account plus native (libdatachannel /
+    # rtc-ma) lines. Open/append/close per line so it survives a crash.
+    method fileWriter {file opts_list} {
+        array set opts {-obj "" -level debug -text ""}
+        array set opts $opts_list
+        set fd [open $file a]
+        set ts [clock format [clock seconds] -format %H:%M:%S]
+        puts $fd "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
+        if {[info exists opts(-stanza)]} {
+            puts $fd [jwrite -pretty $opts(-stanza)]
+        }
+        close $fd
     }
-}
 
-# One file for every account plus native (libdatachannel / rtc-ma) lines.
-# Open/append/close per line so it survives a crash.
-proc jlog_file_writer_single {file opts_list} {
-    array set opts {-obj "" -level debug -text ""}
-    array set opts $opts_list
-    set fd [open $file a]
-    set ts [clock format [clock seconds] -format %H:%M:%S]
-    puts $fd "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
-    if {[info exists opts(-stanza)]} {
-        puts $fd [jwrite -pretty $opts(-stanza)]
+    # Native log callback sink, invoked as `jlog nativeLog source id level msg`
+    # (id unused). jlog shares the native level vocabulary, so level passes
+    # through unchanged.
+    method nativeLog {source id level message} {
+        $self log $level $message -obj ::$source
     }
-    close $fd
-}
 
-# Sink for native log callbacks, invoked as `native_jlog source id level msg`;
-# id is unused. configure_debug pins the source level so this only maps the
-# native level to a jlog method (info uses inform).
-proc native_jlog {source id level message} {
-    set method [dict get {
-        none debug fatal error error error warning warn
-        info inform debug debug verbose debug
-    } $level]
-    jlog $method $message -obj ::$source
-}
-
-# Apply resolved debug settings in this process. Native loggers are wired only
-# where rtc / rtc-ma are loaded, so they're skipped in the process-mode GUI.
-proc configure_debug {args} {
-    array set o {-level "" -file "" -libdatachannel-level "" -rtcma-level ""}
-    array set o $args
-    if {$o(-level) ne ""} {
-        jlog configure -defaultlevel $o(-level)
-    }
-    if {$o(-file) ne ""} {
-        # Create the parent dir; the per-line writer fails otherwise.
-        file mkdir [file dirname $o(-file)]
-        jlog configure -logproc [list jlog_file_writer_single $o(-file)]
-    } else {
-        jlog configure -logproc jlog_stderr_writer
-    }
-    if {$o(-libdatachannel-level) ne "" \
-            && [info commands ::rtc::set-log-level] ne ""} {
-        # Native verbosity is the library's job; don't let jlog re-filter.
-        jlog setLevel libdatachannel debug
-        ::rtc::set-log-level $o(-libdatachannel-level) \
-            [list native_jlog libdatachannel]
-    }
-    if {$o(-rtcma-level) ne "" \
-            && [info commands ::rtcma::set-log-level] ne ""} {
-        jlog setLevel rtcma debug
-        ::rtcma::set-log-level $o(-rtcma-level) [list native_jlog rtcma]
+    # Apply resolved debug settings in this process. Native loggers are wired
+    # only where rtc / rtc-ma are loaded, so they're skipped in the process-mode
+    # GUI; there the daemon (tackyd / tackyd-json) calls configureDebug on its
+    # own side and captures the native logs.
+    method configureDebug {args} {
+        array set o {
+            -debug-level "" -debug-file ""
+            -libdatachannel-debug-level "" -rtcma-debug-level ""
+        }
+        array set o $args
+        if {$o(-debug-level) ne ""} {
+            $self configure -defaultlevel $o(-debug-level)
+        }
+        if {$o(-debug-file) ne ""} {
+            # Create the parent dir; the per-line writer fails otherwise.
+            file mkdir [file dirname $o(-debug-file)]
+            $self configure -logproc [list $self fileWriter $o(-debug-file)]
+        } else {
+            $self configure -logproc [list $self stderrWriter]
+        }
+        if {$o(-libdatachannel-debug-level) ne "" \
+                && [info commands ::rtc::set-log-level] ne ""} {
+            # Native verbosity is the library's job; don't let jlog re-filter.
+            $self setLevel libdatachannel verbose
+            ::rtc::set-log-level $o(-libdatachannel-debug-level) \
+                [list $self nativeLog libdatachannel]
+        }
+        if {$o(-rtcma-debug-level) ne "" \
+                && [info commands ::rtcma::set-log-level] ne ""} {
+            $self setLevel rtcma verbose
+            ::rtcma::set-log-level $o(-rtcma-debug-level) \
+                [list $self nativeLog rtcma]
+        }
     }
 }
 

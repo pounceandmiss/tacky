@@ -68,17 +68,17 @@ snit::type taco_extdisco {
                 if {$url ne ""} { lappend servers $url }
             }
             if {[llength $servers] == 0} {
-                jlog info "extdisco: server advertised no STUN/TURN entries"
+                jlog inform "extdisco: server advertised no STUN/TURN entries"
             }
         } else {
-            jlog info "extdisco: server returned type=$type_; assuming unsupported"
+            jlog inform "extdisco: server returned type=$type_; assuming unsupported"
         }
         $self Resolve $id $servers
     }
 
     method OnTimeout {id} {
         if {![info exists Pending($id)]} return
-        jlog info "extdisco: no response after ${TIMEOUT_MS}ms"
+        jlog inform "extdisco: no response after ${TIMEOUT_MS}ms"
         $self Resolve $id [list]
     }
 

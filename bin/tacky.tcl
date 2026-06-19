@@ -8,7 +8,7 @@ Options:
   --tackyd PATH       Path to the tackyd backend binary (process mode only)
   --transient yes     Work purely in RAM - don't read/write settings/cache
   --console 1|0       Print background errors to stderr instead of a dialog
-  --debug-level LVL   jlog verbosity: debug, info, warn (default), error
+  --debug-level LVL   jlog verbosity (default: warning)
   --debug-file PATH   Write all logs to PATH instead of stderr
   --libdatachannel-debug-level LVL
                       libdatachannel native log level (default: none)
@@ -16,7 +16,7 @@ Options:
                       rtc-ma native log level (default: none)
   -h, --help          Display this help text and exit
 
-Native log levels: none, fatal, error, warning, info, debug, verbose"
+Log levels: none, fatal, error, warning, info, debug, verbose"
     exit 0
 }
 
