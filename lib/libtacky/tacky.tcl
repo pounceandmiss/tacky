@@ -1,20 +1,19 @@
 package provide libtacky 0.1
 package require jid
 
-# Split the --debug-* flags out of an args list into {debugFlags restArgs},
-# renaming them to configure_debug's option names.
+# Split the --debug-* flags (jlog configureDebug's options) out of an args list
+# into {debugFlags restArgs}; the rest go to taco_type, which rejects unknown
+# options.
 proc tacky_split_debug {arglist} {
-    set map {
-        -debug-level                 -level
-        -debug-file                  -file
-        -libdatachannel-debug-level  -libdatachannel-level
-        -rtcma-debug-level           -rtcma-level
+    set flags {
+        -debug-level -debug-file
+        -libdatachannel-debug-level -rtcma-debug-level
     }
     set debug {}
     set rest {}
     foreach {k v} $arglist {
-        if {[dict exists $map $k]} {
-            lappend debug [dict get $map $k] $v
+        if {$k in $flags} {
+            lappend debug $k $v
         } else {
             lappend rest $k $v
         }
@@ -231,7 +230,7 @@ oo::class create tacky_type {
         package require taco
         lassign [tacky_split_debug $args] debug rest
         taco_type taco {*}$rest
-        configure_debug {*}$debug
+        jlog configureDebug {*}$debug
     }
 
     destructor {
@@ -271,7 +270,7 @@ oo::class create tacky_threaded_type {
                 }
             }
         }
-        thread::send $TacoTid [list configure_debug {*}$debug]
+        thread::send $TacoTid [list jlog configureDebug {*}$debug]
         # Define the proxy in the backend thread: it forwards every emit
         # back to the GUI thread asynchronously.
         thread::send $TacoTid {
