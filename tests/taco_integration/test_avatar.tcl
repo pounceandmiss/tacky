@@ -197,6 +197,77 @@ namespace eval ::test::avatar_int {
             [expr {[dict get $meta bytes] > 0}]
     } -result {1 image/png 1}
 
+    # --- Fresh-startup: Juliet loads Romeo's pre-existing avatar on connect ---
+
+    test avatar-int-fresh-startup "Juliet loads Romeo's pre-existing avatar via initial PEP push on a fresh connect" {*}$common -body {
+        variable SAMPLE_PNG_RAW
+        variable SAMPLE_PNG_HASH
+        variable ROMEO
+        variable JULIET
+
+        # Juliet goes offline (simulate app shutdown).
+        awaitEvent conn <State> -acc $JULIET -state disconnected {
+            tacky account disable -acc $JULIET
+        }
+
+        # Romeo publishes an avatar while Juliet is offline, so Juliet never
+        # sees a live notification and has nothing cached.
+        set pubVar [namespace current]::_pubDone
+        set $pubVar 0
+        tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
+            -command [list apply {{var result} {
+                set $var 1
+            }} $pubVar]
+        ::test::helpers::waitVar $pubVar 5000
+
+        # Juliet starts fresh: reconnect, mark Romeo visible, and expect the
+        # avatar to arrive via the server's initial PEP push.
+        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -jid $ROMEO {
+            tacky account enable -acc $JULIET
+            ::test::helpers::waitEvents {
+                {conn <Ready> -acc juliet@example.local}
+            }
+            tacky avatar visible -acc $JULIET -jid $ROMEO
+        }]
+
+        set hash [dict get $eventArgs -hash]
+        expr {$hash eq $SAMPLE_PNG_HASH}
+    } -result 1
+
+    # --- Reconnect: visibility set once (as the GUI does) survives a reconnect ---
+
+    test avatar-int-reconnect-visibility "Avatar still fetched after a reconnect without re-marking visible" {*}$common -body {
+        variable SAMPLE_PNG_RAW
+        variable SAMPLE_PNG_HASH
+        variable ROMEO
+        variable JULIET
+
+        # setup already marked Romeo visible for Juliet, once. The GUI never
+        # re-marks visibility across a reconnect, so model that: bounce Juliet's
+        # connection without calling `avatar visible` again.
+        awaitEvent conn <State> -acc $JULIET -state disconnected {
+            tacky account disable -acc $JULIET
+        }
+        tacky account enable -acc $JULIET
+        ::test::helpers::waitEvents {
+            {conn <Ready> -acc juliet@example.local}
+        }
+
+        # Romeo now publishes. Juliet should still receive and fetch it.
+        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -jid $ROMEO {
+            set pubVar [namespace current]::_pubDone
+            set $pubVar 0
+            tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
+                -command [list apply {{var result} {
+                    set $var 1
+                }} $pubVar]
+            ::test::helpers::waitVar $pubVar 5000
+        }]
+
+        set hash [dict get $eventArgs -hash]
+        expr {$hash eq $SAMPLE_PNG_HASH}
+    } -result 1
+
     # --- Romeo disables avatar ---
 
     test avatar-int-disable "Romeo disables avatar, Juliet receives disabled Update" {*}$common -body {
