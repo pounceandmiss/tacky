@@ -19,7 +19,7 @@ snit::type taco_account {
     option -taco -default ""
     option -cache-dir -default ""
 
-    variable valid_columns {username domain password enabled}
+    variable valid_columns {username domain password resource enabled}
 
     constructor args {
         $self configurelist $args
@@ -29,6 +29,7 @@ snit::type taco_account {
                 username,
                 domain,
                 password,
+                resource,
                 enabled INTEGER DEFAULT 0
             );
         }
@@ -112,6 +113,35 @@ snit::type taco_account {
                 $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
             }
         }
+    }
+
+    # Stable per-account resource (tacky.<hex>). Generated and persisted on
+    # first use, reused across reconnects. See rerollResource for conflicts.
+    tackymethod resource {args} {
+        set jid [dict get $args -acc]
+        if {![$self exists -acc $jid]} {
+            error "Account doesn't exist: $jid"
+        }
+        set res [$options(-db) onecolumn {SELECT resource FROM account WHERE jid=$jid}]
+        if {$res eq ""} {
+            set res [GenResource]
+            $options(-db) eval {UPDATE account SET resource=$res WHERE jid=$jid}
+        }
+        return $res
+    }
+
+    tackymethod rerollResource {args} {
+        set jid [dict get $args -acc]
+        if {![$self exists -acc $jid]} {
+            error "Account doesn't exist: $jid"
+        }
+        set res [GenResource]
+        $options(-db) eval {UPDATE account SET resource=$res WHERE jid=$jid}
+        return $res
+    }
+
+    proc GenResource {} {
+        return "tacky.[format %08x [expr {int(rand()*0x100000000)}]]"
     }
 
     method remove {args} {

@@ -366,6 +366,9 @@ snit::type conn {
     option -onbound -default ""
     # Called on SASL/bind failure; receives message string
     option -onautherror -default ""
+    # Called when the server rejects the bind with <conflict/>; the handler
+    # is expected to pick a new resource and reconnect
+    option -onresourceconflict -default ""
     # Called when conn gives up (autoreconnect off + transport error); receives message
     option -ondisconnect -default ""
     # Called with each received stanza dict
@@ -655,7 +658,19 @@ snit::type conn {
                     # Check if sm went straight to running (no SM support)
                     $self CheckSmReady
                 } elseif {$type eq "error"} {
-                    $self OnAuthError "Resource binding failed"
+                    set cond ""
+                    set errChild [xsearch $stanza error 0 -get node]
+                    if {$errChild ne ""} {
+                        set cond [dict get $errChild tag]
+                    }
+                    if {$cond eq "conflict" && $options(-onresourceconflict) ne ""} {
+                        set authState disconnected
+                        $sm onDisconnect
+                        $base close
+                        {*}$options(-onresourceconflict)
+                    } else {
+                        $self OnAuthError "Resource binding failed"
+                    }
                 }
             }
         }

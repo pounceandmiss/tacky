@@ -62,3 +62,35 @@ tacky_test account-get-badfield {get emits MethodError for invalid field name} \
     -body {
         tacky_await_error tacky account get -acc user@example.com -field bogus
     } -result {Invalid field: bogus}
+
+# -- resource --------------------------------------------------------------
+
+tacky_test account-resource-format {resource returns tacky.<hex>} \
+    {*}$common \
+    -body {
+        regexp {^tacky\.[0-9a-f]{8}$} [tacky_await tacky account resource -acc user@example.com]
+    } -result 1
+
+tacky_test account-resource-stable {resource is stable across calls} \
+    {*}$common \
+    -body {
+        set a [tacky_await tacky account resource -acc user@example.com]
+        set b [tacky_await tacky account resource -acc user@example.com]
+        expr {$a eq $b}
+    } -result 1
+
+tacky_test account-resource-persisted {resource is stored in the resource column} \
+    {*}$common \
+    -body {
+        set r [tacky_await tacky account resource -acc user@example.com]
+        expr {$r eq [tacky_await tacky account get -acc user@example.com -field resource]}
+    } -result 1
+
+tacky_test account-reroll-changes {rerollResource yields a new persisted resource} \
+    {*}$common \
+    -body {
+        set a [tacky_await tacky account resource -acc user@example.com]
+        set b [tacky_await tacky account rerollResource -acc user@example.com]
+        set c [tacky_await tacky account resource -acc user@example.com]
+        expr {$a ne $b && $b eq $c}
+    } -result 1
