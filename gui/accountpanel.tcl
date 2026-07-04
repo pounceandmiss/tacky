@@ -43,8 +43,7 @@ snit::widget accountpanel {
             -acc $options(-account) \
             -tacky $options(-tacky) \
             -open-chat-command $options(-open-chat-command) \
-            -new-chat-command $options(-new-chat-command) \
-            -menubar $options(-menubar)
+            -new-chat-command $options(-new-chat-command)
         pack $win.clv -fill both -expand yes
     }
 }
