@@ -145,6 +145,13 @@ test json-backend-callback-resources {resources is a map of presence objects} -s
     [json::write object \
         laptop [json::write object priority 5 show {"away"}]]]
 
+test json-backend-callback-call-start {start returns a scalar sid string} -setup {
+    _test_clear
+} -body {
+    _test_on_result 11 calls/start "sid-abc123"
+    lindex [_test_sent] 0
+} -result [json::write array {"result"} 11 {"sid-abc123"}]
+
 # -- _on_error tests ---------------------------------------------------------
 
 test json-backend-error {error message} -setup {

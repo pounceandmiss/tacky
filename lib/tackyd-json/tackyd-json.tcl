@@ -164,6 +164,7 @@ jsonify_type jsonify \
         audio/getVolume         double
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
+        calls/start             string
         register/media          base64
         avatar/metadata         avatar_meta
         avatar/thumb            base64
