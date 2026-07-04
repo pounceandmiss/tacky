@@ -3,6 +3,9 @@ namespace import ::tcltest::*
 package require tacky::testhelpers::integration
 package require libtacky
 package require taco
+package require base64
+package require sha1
+package require tclwuffs
 
 namespace eval ::test::tacky_avatar {
 
@@ -13,9 +16,27 @@ namespace eval ::test::tacky_avatar {
     variable ROMEO "romeo@example.local"
     variable JULIET "juliet@example.local"
 
-    # 1x1 transparent PNG pixel (~68 bytes)
+    # 1x1 transparent PNG pixel (~68 bytes). publish re-encodes through wuffs,
+    # so the on-wire hash is over wuffs's output, not the original bytes. Mirror
+    # taco_avatar's ResizeForPublish (decode, fit within 128x128 shrink-only,
+    # re-encode PNG) so the fixture hash matches.
     variable SAMPLE_PNG_B64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-    variable SAMPLE_PNG_RAW [::base64::decode $SAMPLE_PNG_B64]
+    proc resizeLikePublish {rawData} {
+        set d [::tclwuffs::decode $rawData]
+        set w [dict get $d width]
+        set h [dict get $d height]
+        if {$w > 128 || $h > 128} {
+            if {$w >= $h} {
+                set h [expr {int(round(double($h) * 128 / $w))}]
+                set w 128
+            } else {
+                set w [expr {int(round(double($w) * 128 / $h))}]
+                set h 128
+            }
+        }
+        return [::tclwuffs::resize_bytes $rawData [expr {max($w, 1)}] [expr {max($h, 1)}]]
+    }
+    variable SAMPLE_PNG_RAW [resizeLikePublish [::base64::decode $SAMPLE_PNG_B64]]
     variable SAMPLE_PNG_HASH [::sha1::sha1 -hex $SAMPLE_PNG_RAW]
 
     # Helper: awaitEvent
