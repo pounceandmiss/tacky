@@ -121,6 +121,14 @@ proc make_bind_error {} {
     }
 }
 
+proc make_bind_conflict {} {
+    j iq -type error -id bind {
+        j error -type cancel {
+            j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+        }
+    }
+}
+
 proc make_sm_enabled {id} {
     j enabled -ns urn:xmpp:sm:3 -id $id
 }
@@ -263,6 +271,19 @@ test conn-bind-error-fires-onautherror {bind error fires -onautherror} \
         c.base inject [make_bind_error]
         list [lindex $_tauth_err 0] [c.base state]
     } -result {{Resource binding failed} disconnected}
+
+test conn-bind-conflict-fires-onresourceconflict {bind <conflict/> fires -onresourceconflict, not -onautherror} \
+    {*}$common \
+    -body {
+        set ::_tconflict 0
+        c configure -onresourceconflict {apply {{} {incr ::_tconflict}}}
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_conflict]
+        list $::_tconflict [llength $_tauth_err] [c.base state]
+    } -result {1 0 disconnected}
 
 # -- SM negotiation --------------------------------------------------------
 

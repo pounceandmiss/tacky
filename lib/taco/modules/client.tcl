@@ -35,6 +35,7 @@ snit::type taco_client {
             -onbound [mymethod OnBound] \
             -onready [mymethod OnReady] \
             -onautherror [mymethod OnAuthError] \
+            -onresourceconflict [mymethod OnResourceConflict] \
             -ondisconnect [mymethod OnDisconnect] \
             -onstanza [mymethod OnStanza]
 
@@ -106,6 +107,15 @@ snit::type taco_client {
     }
 
     method OnAuthError {msg} {
+    }
+
+    # Server rejected the bind with <conflict/> (our resource is already in
+    # use): mint a fresh one, persist it, and reconnect with it.
+    method OnResourceConflict {} {
+        set acc [jid bare $options(-jid)]
+        set new [$options(-taco) account rerollResource -acc $acc]
+        $conn configure -resource $new
+        $conn connect
     }
 
     # XEP-0077 password change.

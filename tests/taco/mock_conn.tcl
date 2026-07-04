@@ -22,6 +22,7 @@ snit::type mock_conn {
     option -onready -default ""
     option -onbound -default ""
     option -onautherror -default ""
+    option -onresourceconflict -default ""
     option -ondisconnect -default ""
     option -onstanza -default ""
     option -ondebugstanza -default ""

@@ -134,6 +134,7 @@ snit::type taco_type {
         if {[info commands $client] eq ""} {
             lassign [$db eval {SELECT username, password, domain FROM account WHERE jid=$jid}] \
                 username password domain
+            set resource [$account resource -acc $jid]
             set extra {}
             if {$options(-cache-dir) ne ""} {
                 file mkdir $options(-cache-dir)
@@ -143,6 +144,7 @@ snit::type taco_type {
                 -username $username \
                 -password $password \
                 -host $domain \
+                -resource $resource \
                 -taco $self \
                 {*}$extra
         }
