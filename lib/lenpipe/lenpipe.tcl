@@ -76,7 +76,14 @@ oo::class create lenpipe {
                 set Buf ""
                 set Expected 0
                 if {$OnMessage ne {}} {
-                    {*}$OnMessage $msg
+                    # A throwing handler must not unwind the drain loop: doing so
+                    # abandons any frames already buffered behind this one, and the
+                    # readable event won't re-fire without fresh OS data - so the
+                    # reader goes permanently deaf and every later request hangs.
+                    # Catch it, report via bgerror (preserving -errorinfo), keep going.
+                    if {[catch {{*}$OnMessage $msg} _res _opts]} {
+                        after idle [list return -options $_opts $_res]
+                    }
                 }
             }
         }
