@@ -57,6 +57,22 @@ applies regardless of source - there is no separate "backfill" or
   initial page (no `-before` / `-after` returns the newest).
 - `tacky message history -before $ts ...` - older page.
 - `tacky message history -after $ts ...` - newer page.
+
+  `-before` / `-after` are **exclusive**: a page is messages strictly older
+  (`timestamp < $ts`) or newer (`timestamp > $ts`) than the cursor, so the edge
+  message is never re-sent. Pass the window's oldest (resp. newest) timestamp to
+  extend it; the result is a contiguous run sorted oldest-first, capped at
+  `-limit` (default 50).
+
+  `history` is **local-first**: it returns local store rows immediately when they
+  satisfy the request, and only reaches the server (MAM) when a cursor
+  (`-before` / `-after`) anchors a fill *and* the local read hit a hole short of
+  `-limit`. A cursorless initial load therefore shows only the contiguous local
+  tail and does **not** auto-fetch older history from the server even when more
+  exists - scrolling up (issuing a `-before` page) is what transparently pulls
+  the next page from MAM. The single `-command` callback fires once per call,
+  after any such fill, with the assembled list (empty list = nothing more on
+  that side).
 - `tacky message goto -acc $a -chat $j -date $ts -source local|remote ...` -
   jump to anchor. Result: `{messages $list anchor $nearestTs}`. `-source
   remote` fetches from MAM first.
