@@ -230,10 +230,10 @@ test json-backend-parse-no-id {parse array request without id} -body {
 } -result {account list 3}
 
 test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -body {
-    set parts [::json::json2dict {["chatlist","search",{"acc":"a@b.c","query":"hello"}]}]
+    set parts [::json::json2dict {["chatlist","get",{"acc":"a@b.c","tag":"w1"}]}]
     set args [add_dashes [lindex $parts 2]]
-    list [dict get $args -acc] [dict get $args -query]
-} -result {a@b.c hello}
+    list [dict get $args -acc] [dict get $args -tag]
+} -result {a@b.c w1}
 
 # -- integration: dispatch through taco via process --------------------------
 

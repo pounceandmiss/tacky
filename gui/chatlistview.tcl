@@ -12,25 +12,21 @@ snit::widget chatlistview {
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
     option -new-chat-command -default ""
-    option -menubar -default "" -readonly yes
 
     component treeview
     component searchentry
     component contactmenu
     component bookmarkmenu
-    component rosterrootmenu
-    component bookmarkrootmenu
     component settingsmenu
 
     variable searchquery ""
-    variable sortby "name"
-    variable grouping 0
+    variable sortby "recent"
     variable prescolors 1
     variable showAvatars 1
     variable bookmarkMember 0
     variable trackedAvatars {}
-    # Last search payload in the backend's shape, patched by incremental events
-    variable model {recent {} roster {} bookmarks {}}
+    # Flat list of chat entries (chatlist get shape), patched by <Item>/<Remove>
+    variable model {}
 
     # Row style per backend room-state enum (taco_bookmarks RoomState).  Tags
     # are named muc_<state>, so the state name IS the tag - no translation.
@@ -67,7 +63,7 @@ snit::widget chatlistview {
             -command [mymethod OnNewChat]
         pack $win.header.new -side right -padx {2 0}
         pack $searchentry -side left -expand yes -fill x
-        bind $searchentry <KeyRelease> [mymethod Rebuild]
+        bind $searchentry <KeyRelease> [mymethod Render]
 
         # Treeview
         install treeview using ttk::treeview $win.tree \
@@ -88,11 +84,6 @@ snit::widget chatlistview {
         grid $win.scroll  -row 1 -column 1 -sticky ns
         grid rowconfigure    $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
-
-        # Root items
-        $treeview insert {} end -id RecentChats -text "Recent Chats" -open 1
-        $treeview insert {} end -id Roster    -text "Contacts"   -open 1
-        $treeview insert {} end -id Bookmarks -text "Bookmarks"  -open 1
 
         $self ConfigurePresenceTags
         $self ConfigureMucTags
@@ -140,42 +131,27 @@ snit::widget chatlistview {
         $bookmarkmenu add command -label "Copy JID" \
             -command [mymethod OnCopyJid]
 
-        # Roster root menu
-        install rosterrootmenu using menu $win.rosterrootmenu -tearoff 0
-        $rosterrootmenu add command -label "Expand all" \
-            -command [mymethod SetChildrenOpen 1]
-        $rosterrootmenu add command -label "Collapse all" \
-            -command [mymethod SetChildrenOpen 0]
-        $rosterrootmenu add separator
-        $rosterrootmenu add command -label "Refresh" \
-            -command [mymethod OnRefresh]
-
-        # Bookmarks root menu
-        install bookmarkrootmenu using menu $win.bookmarkrootmenu -tearoff 0
-        $bookmarkrootmenu add command -label "Refresh" \
-            -command [mymethod OnRefresh]
-
         # Settings menu (right-click on search entry)
         install settingsmenu using menu $win.settingsmenu -tearoff 0
         $settingsmenu add cascade -label "Sort by" \
             -menu $win.settingsmenu.sort
         menu $win.settingsmenu.sort -tearoff 0
+        $win.settingsmenu.sort add radiobutton -label "Recent activity" \
+            -variable [myvar sortby] -value "recent" \
+            -command [mymethod Render]
         $win.settingsmenu.sort add radiobutton -label "Name" \
             -variable [myvar sortby] -value "name" \
-            -command [mymethod Rebuild]
-        $win.settingsmenu.sort add radiobutton -label "JID" \
-            -variable [myvar sortby] -value "jid" \
-            -command [mymethod Rebuild]
+            -command [mymethod Render]
         $settingsmenu add separator
-        $settingsmenu add checkbutton -label "Group contacts" \
-            -variable [myvar grouping] \
-            -command [mymethod Rebuild]
         $settingsmenu add checkbutton -label "Show presence colors" \
             -variable [myvar prescolors] \
             -command [mymethod OnPresenceColorsChanged]
         $settingsmenu add checkbutton -label "Show avatars" \
             -variable [myvar showAvatars] \
             -command [mymethod OnShowAvatarsChanged]
+        $settingsmenu add separator
+        $settingsmenu add command -label "Refresh" \
+            -command [mymethod OnRefresh]
 
         # --- Bindings ---
         bind $treeview <Double-1> [mymethod OnDoubleClick %x %y]
@@ -183,7 +159,7 @@ snit::widget chatlistview {
         bind $treeview <Button-3> [mymethod OnRightClick %x %y %X %Y]
         bind $searchentry <Button-3> [mymethod OnSettingsRightClick %X %Y]
 
-        # Listen for data changes
+        # Listen for data changes: one collection, three verbs
         set t $options(-tacky)
         set acc $options(-acc)
         $t listen -tag $win chatlist <Changed> -acc $acc \
@@ -191,13 +167,7 @@ snit::widget chatlistview {
         $t listen -tag $win chatlist <Item> -acc $acc \
             [mymethod OnItem]
         $t listen -tag $win chatlist <Remove> -acc $acc \
-            [mymethod OnSectionRemove]
-        $t listen -tag $win chatlist <RecentTop> -acc $acc \
-            [mymethod OnRecentTop]
-        $t listen -tag $win chatlist <RecentDrop> -acc $acc \
-            [mymethod OnRecentDrop]
-        $t listen -tag $win bookmarks <RoomState> -acc $acc \
-            [mymethod OnRoomState]
+            [mymethod OnRemove]
 
         # Initial load
         $self Rebuild
@@ -217,203 +187,66 @@ snit::widget chatlistview {
         }
     }
 
+    # -- data ------------------------------------------------------------
+
     method Rebuild {args} {
-        $options(-tacky) chatlist search -acc $options(-acc) \
-            -query $searchquery -sort $sortby \
+        $options(-tacky) chatlist get -acc $options(-acc) \
             -tag $win -command [mymethod OnData]
     }
 
     method OnData {data} {
         set model $data
-        foreach section {recent roster bookmarks} {
-            $self RenderSection $section
-        }
-        $self UntrackStale
+        $self Render
     }
 
-    # Repaint one section's rows from the model
-    method RenderSection {section} {
-        set root [dict get {recent RecentChats roster Roster \
-            bookmarks Bookmarks} $section]
-        set items [dict get $model $section]
-
-        if {$root eq "Roster"} {
-            # Remember which group nodes are open
-            set openGroups {}
-            foreach child [$treeview children Roster] {
-                if {[$treeview item $child -open]} {
-                    lappend openGroups $child
-                }
-            }
-        }
-
-        $treeview delete [$treeview children $root]
-        if {$root eq "Roster" && $grouping} {
-            $self PopulateGrouped $items
-            foreach gid $openGroups {
-                if {[$treeview exists $gid]} {
-                    $treeview item $gid -open 1
-                }
-            }
-        } else {
-            $self PopulateSection $root $items
-        }
-    }
-
-    # Untrack avatars for JIDs no longer displayed
-    method UntrackStale {} {
-        set displayed [dict create]
-        foreach root {RecentChats Roster Bookmarks} {
-            foreach child [$treeview children $root] {
-                if {[string match "*/*" $child]} {
-                    dict set displayed [$self ItemJid $child] 1
-                }
-                foreach grandchild [$treeview children $child] {
-                    dict set displayed [$self ItemJid $grandchild] 1
-                }
-            }
-        }
-        $self UntrackAvatars $displayed
-    }
-
-    method OnRecentTop {ev} {
-        array set opts {-jid "" -name "" -source "none"}
+    method OnItem {ev} {
+        array set opts {-jid "" -item ""}
         array set opts $ev
-        set jid $opts(-jid)
-        set name $opts(-name)
+        set model [$self ModelUpsert $opts(-jid) $opts(-item)]
+        $self Render
+    }
 
-        if {![$self MatchesQueryLocal $jid $name]} return
+    method OnRemove {ev} {
+        array set opts {-jid ""}
+        array set opts $ev
+        set model [$self ModelRemove $opts(-jid)]
+        $self Render
+    }
 
-        # Room state is not carried on the event; take it from the
-        # model's own bookmarks section (keyed by the same ?join form)
-        set entry [list jid $jid name $name source $opts(-source)]
-        if {[info exists opts(-autojoin)]} {
-            lappend entry autojoin $opts(-autojoin)
-        }
-        set bm [$self ModelItem bookmarks $jid]
-        if {$bm ne ""} {
-            lappend entry room-state [dict get $bm room-state] \
-                room-reason [dict get $bm room-reason]
-        }
-        dict set model recent \
-            [linsert [$self ModelRemove recent $jid] 0 $entry]
+    # -- rendering -------------------------------------------------------
 
-        set itemId "RecentChats/$jid"
-        if {[$treeview exists $itemId]} {
-            $treeview move $itemId RecentChats 0
-        } else {
-            set text $name
-            if {$text eq ""} { set text $jid }
-            set img [$self TrackAvatar $jid]
+    # Repaint the whole flat list: filter by the search box, sort, insert.
+    # Row ids are the chat JID verbatim.
+    method Render {} {
+        set sel [$treeview selection]
+        $treeview delete [$treeview children {}]
+        set displayed {}
+        foreach entry [$self VisibleEntries] {
+            set jid [dict get $entry jid]
             set tags {}
             if {[dict exists $entry room-state]} {
                 set tags muc_[dict get $entry room-state]
             }
-            $treeview insert RecentChats 0 -id $itemId -text $text \
-                -image $img -tags $tags
+            $treeview insert {} end -id $jid \
+                -text [$self DisplayText $entry] \
+                -image [$self TrackAvatar $jid] -tags $tags
+            dict set displayed $jid 1
+        }
+        $self UntrackAvatars $displayed
+        if {[llength $sel] && [$treeview exists [lindex $sel 0]]} {
+            $treeview selection set [lindex $sel 0]
         }
     }
 
-    method OnRecentDrop {ev} {
-        array set opts {-jid ""}
-        array set opts $ev
-        set jid $opts(-jid)
-        set itemId "RecentChats/$jid"
-        if {[$treeview exists $itemId]} {
-            $treeview delete $itemId
-            catch {avatarcache untrack -tag $win/$jid}
-            if {[dict exists $trackedAvatars $jid]} {
-                dict unset trackedAvatars $jid
+    method VisibleEntries {} {
+        set out {}
+        foreach entry $model {
+            if {[$self MatchesQueryLocal [dict get $entry jid] \
+                    [dict get $entry name]]} {
+                lappend out $entry
             }
         }
-        dict set model recent [$self ModelRemove recent $jid]
-    }
-
-    method OnRoomState {ev} {
-        array set opts {-jid "" -state idle -reason ""}
-        array set opts $ev
-        set jid $opts(-jid)
-        $self ModelSetRoomState $jid $opts(-state) $opts(-reason)
-        foreach item [$self FindItemsByJid $jid] {
-            foreach {state _} $mucStateStyle {
-                $treeview tag remove muc_$state $item
-            }
-            $treeview tag add muc_$opts(-state) $item
-        }
-    }
-
-    method OnItem {ev} {
-        array set opts {-section "" -jid "" -item ""}
-        array set opts $ev
-        set section $opts(-section)
-        set jid $opts(-jid)
-        set entry $opts(-item)
-        if {![dict exists $model $section]} return
-
-        # A change can move the item out of the active filter
-        if {![$self MatchesQueryLocal $jid [dict get $entry name]]} {
-            $self OnSectionRemove [list -section $section -jid $jid]
-            return
-        }
-
-        if {$section eq "recent"} {
-            if {[$self ModelItem recent $jid] eq ""} {
-                # Was filtered out; its recency position is unknown
-                $self Rebuild
-                return
-            }
-            set items {}
-            foreach item [dict get $model recent] {
-                if {[dict get $item jid] eq $jid} { set item $entry }
-                lappend items $item
-            }
-            dict set model recent $items
-            set itemId "RecentChats/$jid"
-            if {[$treeview exists $itemId]} {
-                set tags {}
-                if {[dict exists $entry room-state]} {
-                    set tags muc_[dict get $entry room-state]
-                }
-                $treeview item $itemId -text [$self DisplayText $entry] \
-                    -tags $tags
-            }
-            return
-        }
-
-        set items [$self ModelRemove $section $jid]
-        lappend items $entry
-        dict set model $section [lsort -command [mymethod CmpEntries] $items]
-        $self RenderSection $section
-    }
-
-    method OnSectionRemove {ev} {
-        array set opts {-section "" -jid ""}
-        array set opts $ev
-        set section $opts(-section)
-        set jid $opts(-jid)
-        if {![dict exists $model $section]} return
-        if {$section eq "recent"} {
-            $self OnRecentDrop [list -jid $jid]
-            return
-        }
-        if {[$self ModelItem $section $jid] eq ""} return
-        dict set model $section [$self ModelRemove $section $jid]
-        $self RenderSection $section
-        $self UntrackStale
-    }
-
-    # Mirrors the backend's search sort so patched-in items land where a
-    # fresh search would put them
-    method CmpEntries {a b} {
-        if {$sortby eq "jid"} {
-            return [string compare -nocase \
-                [dict get $a jid] [dict get $b jid]]
-        }
-        set na [dict get $a name]
-        set nb [dict get $b name]
-        if {$na eq ""} { set na [dict get $a jid] }
-        if {$nb eq ""} { set nb [dict get $b jid] }
-        string compare -nocase $na $nb
+        return [lsort -command [mymethod CmpEntries] $out]
     }
 
     method MatchesQueryLocal {jid name} {
@@ -424,75 +257,59 @@ snit::widget chatlistview {
         return 0
     }
 
-    # Returns the model item for $jid in $section, or "" if absent.
-    method ModelItem {section jid} {
-        foreach item [dict get $model $section] {
+    # Recent activity (newest first) by default, name as tiebreak; name-only
+    # when the user picks "Name".
+    method CmpEntries {a b} {
+        if {$sortby ne "name"} {
+            set ta [dict get $a last_activity]
+            set tb [dict get $b last_activity]
+            # Newest first. Return the sign, not the raw microsecond
+            # difference, which overflows lsort's integer compare.
+            if {$ta > $tb} { return -1 }
+            if {$ta < $tb} { return 1 }
+        }
+        string compare -nocase [$self SortName $a] [$self SortName $b]
+    }
+
+    method SortName {entry} {
+        set n [dict get $entry name]
+        if {$n eq ""} { set n [dict get $entry jid] }
+        return $n
+    }
+
+    # -- model helpers ---------------------------------------------------
+
+    method ModelItem {jid} {
+        foreach item $model {
             if {[dict get $item jid] eq $jid} { return $item }
         }
         return {}
     }
 
-    # Returns $section's item list without any entry for $jid.
-    method ModelRemove {section jid} {
+    method ModelRemove {jid} {
         set items {}
-        foreach item [dict get $model $section] {
+        foreach item $model {
             if {[dict get $item jid] ne $jid} { lappend items $item }
         }
         return $items
     }
 
-    method ModelSetRoomState {jid state reason} {
-        foreach section {recent bookmarks} {
-            set items {}
-            foreach item [dict get $model $section] {
-                if {[regsub {\?join$} [dict get $item jid] {}] eq $jid \
-                        && [dict exists $item room-state]} {
-                    dict set item room-state $state
-                    dict set item room-reason $reason
-                }
+    method ModelUpsert {jid entry} {
+        set items {}
+        set replaced 0
+        foreach item $model {
+            if {[dict get $item jid] eq $jid} {
+                lappend items $entry
+                set replaced 1
+            } else {
                 lappend items $item
             }
-            dict set model $section $items
         }
+        if {!$replaced} { lappend items $entry }
+        return $items
     }
 
-    method PopulateSection {parent items} {
-        foreach item $items {
-            set jid  [dict get $item jid]
-            set text [$self DisplayText $item]
-            set img  [$self TrackAvatar $jid]
-            set tags {}
-            if {[dict exists $item room-state]} {
-                set tags muc_[dict get $item room-state]
-            }
-            $treeview insert $parent end -id "$parent/$jid" -text $text \
-                -image $img -tags $tags
-        }
-    }
-
-    method PopulateGrouped {items} {
-        foreach item $items {
-            set jid    [dict get $item jid]
-            set text   [$self DisplayText $item]
-            set groups [dict get $item groups]
-            set img [$self TrackAvatar $jid]
-
-            if {[llength $groups] == 0} {
-                set groups [list "(ungrouped)"]
-            }
-
-            foreach group $groups {
-                set gid "Roster/$group"
-                if {![$treeview exists $gid]} {
-                    $treeview insert Roster end \
-                        -id $gid -text $group -open 1
-                }
-                $treeview insert $gid end \
-                    -id "$gid/$jid" -text $text \
-                    -image $img
-            }
-        }
-    }
+    # -- presence / muc row styling -------------------------------------
 
     method ConfigurePresenceTags {} {
         if {$prescolors} {
@@ -549,7 +366,7 @@ snit::widget chatlistview {
 
     method OnShowAvatarsChanged {} {
         ::tacky setting set -key show_avatars -value $showAvatars
-        $self Rebuild
+        $self Render
     }
 
     method OnShowAvatarsSetting {ev} {
@@ -557,24 +374,27 @@ snit::widget chatlistview {
         if {$val ne ""} {
             set showAvatars $val
             if {[winfo exists $treeview]} {
-                $self Rebuild
+                $self Render
             }
         }
     }
 
+    # -- interaction -----------------------------------------------------
+
     method OnDoubleClick {x y} {
         set item [$treeview identify item $x $y]
-        if {$item ne "" && [$self IsLeaf $item]} {
+        if {[$self IsRow $item]} {
             $self ActivateItem $item
         }
     }
 
     method OnOpenChat {} {
         set item [$treeview selection]
-        if {$item ne "" && [$self IsLeaf $item]} {
+        if {$item ne "" && [$self IsRow $item]} {
             $self ActivateItem $item
         }
     }
+
     method OnNewChat {} {
         if {$options(-new-chat-command) ne ""} {
             {*}$options(-new-chat-command)
@@ -590,33 +410,19 @@ snit::widget chatlistview {
 
     method OnRightClick {x y X Y} {
         set item [$treeview identify item $x $y]
-        if {$item eq ""} return
+        if {![$self IsRow $item]} return
         $treeview selection set $item
+        set jid [$self ItemJid $item]
 
-        if {$item eq "RecentChats"} {
-            return
-        } elseif {$item eq "Roster"} {
-            tk_popup $rosterrootmenu $X $Y
-        } elseif {$item eq "Bookmarks"} {
-            tk_popup $bookmarkrootmenu $X $Y
-        } elseif {[$self IsLeaf $item]} {
-            set section [$self GetSection $item]
-            if {$section eq "RecentChats"} {
-                # ?join is the group-chat tell; bookmark ops accept it
-                set jid [$self ItemJid $item]
-                set section [expr {[string match {*\?join} $jid] \
-                    ? "Bookmarks" : "Roster"}]
-            }
-            if {$section eq "Bookmarks"} {
-                set jid [$self ItemJid $item]
-                $options(-tacky) bookmarks autojoin \
-                    -acc $options(-acc) -jid $jid \
-                    -tag $win -command [mymethod OnAutojoinResult $X $Y]
-            } else {
-                set jid [$self ItemJid $item]
-                $contactmenu entryconfigure 0 -label [string range $jid 0 39]
-                tk_popup $contactmenu $X $Y
-            }
+        # ?join is the group-chat tell: rooms get the bookmark menu, 1:1 and
+        # free chats get the contact menu.
+        if {[string match {*\?join} $jid]} {
+            $options(-tacky) bookmarks autojoin \
+                -acc $options(-acc) -jid $jid \
+                -tag $win -command [mymethod OnAutojoinResult $X $Y]
+        } else {
+            $contactmenu entryconfigure 0 -label [string range $jid 0 39]
+            tk_popup $contactmenu $X $Y
         }
     }
 
@@ -631,9 +437,9 @@ snit::widget chatlistview {
     # User-facing copy for a room's state, shown as a disabled status line in
     # the bookmark menu.  Empty string = no line for this state.
     method BookmarkStatusLabel {jid} {
-        set item [$self ModelItem bookmarks $jid]
+        set item [$self ModelItem $jid]
         set state idle
-        if {$item ne ""} {
+        if {$item ne "" && [dict exists $item room-state]} {
             set state [dict get $item room-state]
         }
         switch -- $state {
@@ -683,12 +489,6 @@ snit::widget chatlistview {
         tk_popup $settingsmenu $X $Y
     }
 
-    method SetChildrenOpen {open} {
-        foreach child [$treeview children Roster] {
-            $treeview item $child -open $open
-        }
-    }
-
     method OnRefresh {} {
         $self Rebuild
         $options(-tacky) roster request -acc $options(-acc)
@@ -698,7 +498,7 @@ snit::widget chatlistview {
     # Returns the JID of the selected leaf item, or "" if none.
     method SelectedLeafJid {} {
         set item [$treeview selection]
-        if {$item eq "" || ![$self IsLeaf $item]} { return "" }
+        if {$item eq "" || ![$self IsRow $item]} { return "" }
         return [$self ItemJid $item]
     }
 
@@ -781,6 +581,8 @@ snit::widget chatlistview {
         }
     }
 
+    # -- avatars ---------------------------------------------------------
+
     method TrackAvatar {jid} {
         if {!$showAvatars} {
             return ""
@@ -796,64 +598,31 @@ snit::widget chatlistview {
     }
 
     method OnAvatar {jid img} {
-        # Keep cache in sync — avatarcache deletes the old Tk image when
+        # Keep cache in sync - avatarcache deletes the old Tk image when
         # a real avatar arrives, so the handle in trackedAvatars would be
         # stale.
         dict set trackedAvatars $jid $img
-        foreach item [$self FindItemsByJid $jid] {
-            $treeview item $item -image $img
+        # Row ids are the chat JID verbatim.
+        if {[$treeview exists $jid]} {
+            $treeview item $jid -image $img
         }
     }
 
-    # Rows for $jid in any section; a bare JID also matches suffixed
-    # chat-JID rows ($jid?join)
-    method FindItemsByJid {jid} {
-        set result {}
-        set patterns [list "*/$jid" "*/$jid\\?join"]
-        foreach root {RecentChats Roster Bookmarks} {
-            foreach child [$treeview children $root] {
-                set matched 0
-                foreach pattern $patterns {
-                    if {[string match $pattern $child]} {
-                        lappend result $child
-                        set matched 1
-                        break
-                    }
-                }
-                if {$matched} continue
-                # Check grouped children
-                foreach grandchild [$treeview children $child] {
-                    foreach pattern $patterns {
-                        if {[string match $pattern $grandchild]} {
-                            lappend result $grandchild
-                            break
-                        }
-                    }
-                }
-            }
-        }
-        return $result
-    }
+    # -- item id helpers -------------------------------------------------
 
     method DisplayText {item} {
         set name [dict get $item name]
         if {$name ne ""} { return $name }
-        return [dict get $item jid]
+        return [regsub {\?join$} [dict get $item jid] {}]
     }
 
-    method IsLeaf {item} {
-        expr {[$treeview parent $item] ne {} && [$treeview children $item] eq {}}
+    method IsRow {item} {
+        expr {$item ne "" && [$treeview exists $item]}
     }
 
-    # Section is always the first component of the item ID.
-    method GetSection {item} {
-        lindex [split $item /] 0
-    }
-
-    # JID is always the last slash-separated component of the item ID.
+    # Row ids are the chat JID verbatim.
     method ItemJid {item} {
-        set idx [string last / $item]
-        string range $item $idx+1 end
+        return $item
     }
 
     method ActivateItem {item} {

@@ -49,11 +49,9 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
 
 **chatlist** (see chatlist.md)
 
+    chatlist <Item>       -jid $jid -item $entry
+    chatlist <Remove>     -jid $jid
     chatlist <Changed>
-    chatlist <Item>       -section recent|roster|bookmarks -jid $jid -item $entry
-    chatlist <Remove>     -section recent|roster|bookmarks -jid $jid
-    chatlist <RecentTop>  -jid $jid -name $name -source $source ?-autojoin $val?
-    chatlist <RecentDrop> -jid $jid
 
 **bookmarks** (see chatlist.md)
 
@@ -88,7 +86,8 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
 
 ### chat lists
 
-`tacky chatlist search` builds all chat lists; see chatlist.md.
+`tacky chatlist get` returns the whole chat list as one flat list;
+see chatlist.md.
 
 ### omemo
 

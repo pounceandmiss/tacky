@@ -1,34 +1,37 @@
-# taco_chatlist - aggregated contact list (roster + bookmarks + recent chats).
+# taco_chatlist - one flat list of chat entries (roster + bookmarks + chats).
 #
-# Merges data from roster, bookmarks, and chats into a single search
-# result with three sections: recent, roster, bookmarks.  Single-item
-# source changes are forwarded as itemized section patches:
-#   chatlist <Item>   -section recent|roster|bookmarks -jid $jid -item $entry
-#   chatlist <Remove> -section recent|roster|bookmarks -jid $jid
-# A wholesale source replacement (roster/bookmarks -action clear) emits
-# chatlist <Changed> instead, meaning: refetch via search.
+# The list is the union of roster contacts, bookmarked rooms, and any chat
+# with message history. Each entry is keyed by its chat JID and carries a
+# `source`:
+#   roster     - a roster contact (bare JID)
+#   bookmarks  - a bookmarked room (room@muc?join)
+#   free       - has chat history but is in neither roster nor bookmarks
 #
-# Every jid in the result is a chat JID, to be opened verbatim:
-# bare = 1:1 chat, room@muc?join = group chat, room@muc/nick = MUC PM.
-# Recent entries pass the stored chat JID through; bookmarks-section
-# entries (and their patches) carry room@muc?join. The ?join suffix is
-# the tell for group vs 1:1; `source` only says where the counterpart
-# is known from.
+# Every jid is a chat JID, opened verbatim: bare = 1:1, room@muc?join = group
+# chat, room@muc/nick = MUC PM. The ?join suffix is the tell for group vs 1:1.
+#
+# The module is the sole funnel: it consumes roster/bookmarks/chats/room-state
+# signals and normalizes them into three protocol-agnostic events over the
+# flat collection:
+#   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
+#   chatlist <Remove> -jid $jid                delete
+#   chatlist <Changed>                         reset (refetch via `get`)
+# Sorting, filtering, and any windowing are the frontend's job.
 
 snit::type taco_chatlist {
     option -client -readonly yes
 
     variable client
     variable db
-    variable RecentJids {}
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
         set db [$client cget -db]
 
-        $client bus subscribe $self roster:<Changed> [mymethod OnSourceChanged roster]
-        $client bus subscribe $self bookmarks:<Changed> [mymethod OnSourceChanged bookmarks]
+        $client bus subscribe $self roster:<Changed> [mymethod OnRosterChanged]
+        $client bus subscribe $self bookmarks:<Changed> [mymethod OnBookmarkChanged]
+        $client bus subscribe $self bookmarks:<RoomState> [mymethod OnRoomState]
         $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
     }
 
@@ -36,201 +39,152 @@ snit::type taco_chatlist {
         catch {$client bus unsubscribe $self}
     }
 
-    method OnSourceChanged {source args} {
+    # -- the whole list -------------------------------------------------
+
+    tackymethod get {args} {
+        set activity [$self ActivityMap]
+
+        set entries {}
+        set seen {}
+
+        foreach item [$client roster get] {
+            set bare [dict get $item jid]
+            lappend entries \
+                [$self MakeEntry $bare roster $item [$self MapTs $activity $bare]]
+            dict set seen $bare 1
+        }
+        foreach item [$client bookmarks get] {
+            set chatJid [dict get $item jid]?join
+            lappend entries \
+                [$self MakeEntry $chatJid bookmarks $item [$self MapTs $activity $chatJid]]
+            dict set seen $chatJid 1
+        }
+        dict for {chatJid ts} $activity {
+            if {[dict exists $seen $chatJid]} continue
+            lappend entries [$self MakeEntry $chatJid free {} $ts]
+        }
+        return $entries
+    }
+
+    # -- single-entry resolution (event path) ---------------------------
+
+    # The unified entry for one chat JID, or "" if it belongs to no source
+    # and has no chat history.
+    method EntryFor {chatJid} {
+        set bare [regsub {\?join$} $chatJid {}]
+        set isRoom [expr {$bare ne $chatJid}]
+        if {$isRoom} {
+            set bm [$self BookmarkEntry $bare]
+            if {$bm ne ""} {
+                return [$self MakeEntry $chatJid bookmarks $bm [$self Activity $chatJid]]
+            }
+        } else {
+            set r [$self RosterEntry $bare]
+            if {$r ne ""} {
+                return [$self MakeEntry $chatJid roster $r [$self Activity $chatJid]]
+            }
+        }
+        set ts [$self Activity $chatJid]
+        if {$ts > 0} {
+            return [$self MakeEntry $chatJid free {} $ts]
+        }
+        return ""
+    }
+
+    method MakeEntry {chatJid source base ts} {
+        set entry $base
+        dict set entry jid $chatJid
+        dict set entry source $source
+        dict set entry groupchat [expr {[string match {*\?join} $chatJid] ? 1 : 0}]
+        dict set entry last_activity $ts
+        if {![dict exists $entry name]} { dict set entry name "" }
+        if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
+        return $entry
+    }
+
+    # -- source lookups -------------------------------------------------
+
+    method RosterEntry {bare} {
+        foreach item [$client roster get] {
+            if {[dict get $item jid] eq $bare} { return $item }
+        }
+        return ""
+    }
+
+    method BookmarkEntry {bare} {
+        foreach item [$client bookmarks get] {
+            if {[dict get $item jid] eq $bare} { return $item }
+        }
+        return ""
+    }
+
+    method ActivityMap {} {
+        set activity {}
+        $db eval {
+            SELECT chat_jid, MAX(timestamp) AS ts FROM chat_message
+            WHERE kind='message' GROUP BY chat_jid
+        } row {
+            dict set activity $row(chat_jid) $row(ts)
+        }
+        return $activity
+    }
+
+    method Activity {chatJid} {
+        set ts [$db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+        }]
+        if {$ts eq ""} { return 0 }
+        return $ts
+    }
+
+    method MapTs {activity key} {
+        if {[dict exists $activity $key]} { return [dict get $activity $key] }
+        return 0
+    }
+
+    # -- event funnel ---------------------------------------------------
+
+    method OnRosterChanged {args} {
         array set opts {-action "" -jid ""}
         array set opts $args
-        if {$opts(-jid) eq "" || $opts(-action) ni {add update remove}} {
+        if {$opts(-action) eq "clear" || $opts(-jid) eq ""} {
             $client emit chatlist <Changed>
             return
         }
-        set jid $opts(-jid)
-
-        # Patch with the jid's current state rather than trusting the
-        # action: present -> <Item>, absent -> <Remove>
-        if {$source eq "roster"} {
-            $self EmitSectionPatch roster $jid [$self RosterEntry $jid]
-        } else {
-            $self EmitSectionPatch bookmarks $jid?join \
-                [$self BookmarkEntry $jid]
-        }
-
-        # Recent entries are keyed by chat JID (rooms carry ?join)
-        foreach chatJid $RecentJids {
-            if {[regsub {\?join$} $chatJid {}] ne $jid} continue
-            $client emit chatlist <Item> -section recent -jid $chatJid \
-                -item [$self RecentEntry $chatJid]
-        }
+        $self EmitEntry $opts(-jid)
     }
 
-    method EmitSectionPatch {section jid entry} {
-        if {$entry eq ""} {
-            $client emit chatlist <Remove> -section $section -jid $jid
-        } else {
-            $client emit chatlist <Item> -section $section -jid $jid \
-                -item $entry
+    method OnBookmarkChanged {args} {
+        array set opts {-action "" -jid ""}
+        array set opts $args
+        if {$opts(-action) eq "clear" || $opts(-jid) eq ""} {
+            $client emit chatlist <Changed>
+            return
         }
+        $self EmitEntry $opts(-jid)?join
     }
 
-    method RosterEntry {jid} {
-        foreach item [$client roster get] {
-            if {[dict get $item jid] eq $jid} { return $item }
-        }
-        return {}
-    }
-
-    # Bookmark entry as presented by this module: the bookmark item
-    # with jid as the chat JID ($jid?join)
-    method BookmarkEntry {jid} {
-        foreach item [$client bookmarks get] {
-            if {[dict get $item jid] ne $jid} continue
-            dict set item jid $jid?join
-            return $item
-        }
-        return {}
-    }
-
-    # Union of the counterpart's roster/bookmark section entries plus
-    # recent-specific overrides: jid (the chat JID, verbatim), name
-    # (resolved: roster wins, else bookmark), source
-    method RecentEntry {chatJid} {
-        set jid [regsub {\?join$} $chatJid {}]
-        set source [$self ResolveSource $jid]
-        set entry [dict create]
-        if {$source in {bookmark both}} {
-            set entry [$self BookmarkEntry $jid]
-        }
-        if {$source in {roster both}} {
-            set entry [dict merge $entry [$self RosterEntry $jid]]
-        }
-        dict set entry jid $chatJid
-        dict set entry name [$self ResolveName $jid]
-        dict set entry source $source
-        return $entry
+    method OnRoomState {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        if {$opts(-jid) eq ""} return
+        $self EmitEntry $opts(-jid)?join
     }
 
     method OnChatUpdated {args} {
         array set opts {-jid ""}
         array set opts $args
-        set jid $opts(-jid)
-
-        set allJids [$client chats latest]
-        set newTop20 [lrange $allJids 0 19]
-
-        set entry [$self RecentEntry $jid]
-        set ev [list -jid $jid -name [dict get $entry name] \
-            -source [dict get $entry source]]
-        if {[dict exists $entry autojoin]} {
-            lappend ev -autojoin [dict get $entry autojoin]
-        }
-        $client emit chatlist <RecentTop> {*}$ev
-
-        # Check if a JID fell off the old top-20
-        foreach old $RecentJids {
-            if {$old ni $newTop20} {
-                $client emit chatlist <RecentDrop> -jid $old
-            }
-        }
-
-        set RecentJids $newTop20
+        if {$opts(-jid) eq ""} return
+        $self EmitEntry $opts(-jid)
     }
 
-    method ResolveName {jid} {
-        set name [$db onecolumn {
-            SELECT name FROM roster_item WHERE jid=$jid
-        }]
-        if {$name ne ""} { return $name }
-        $db onecolumn {
-            SELECT name FROM bookmark WHERE jid=$jid
+    method EmitEntry {chatJid} {
+        set entry [$self EntryFor $chatJid]
+        if {$entry eq ""} {
+            $client emit chatlist <Remove> -jid $chatJid
+        } else {
+            $client emit chatlist <Item> -jid $chatJid -item $entry
         }
-    }
-
-    method ResolveSource {jid} {
-        set inRoster [$db onecolumn {
-            SELECT count(*) FROM roster_item WHERE jid=$jid
-        }]
-        set inBookmark [$db onecolumn {
-            SELECT count(*) FROM bookmark WHERE jid=$jid
-        }]
-        if {$inRoster && $inBookmark} { return "both" }
-        if {$inRoster} { return "roster" }
-        if {$inBookmark} { return "bookmark" }
-        return "none"
-    }
-
-    tackymethod search {args} {
-        array set opts {-query "" -sort name}
-        array set opts $args
-
-        set query $opts(-query)
-        set sort $opts(-sort)
-
-        # 1. Gather raw data
-        set rosterItems [$client roster get]
-        set bookmarkItems [$client bookmarks get]
-        set chatJids [$client chats latest]
-
-        # 2. Recent section
-        set recent {}
-        set count 0
-        foreach jid $chatJids {
-            set entry [$self RecentEntry $jid]
-            if {![$self MatchesQuery $jid [dict get $entry name] $query]} continue
-            lappend recent $entry
-            if {[incr count] >= 20} break
-        }
-
-        # Sync RecentJids from unfiltered top-20 for incremental updates
-        set RecentJids [lrange $chatJids 0 19]
-
-        # 3. Roster section
-        set roster {}
-        foreach item $rosterItems {
-            set jid [dict get $item jid]
-            set name [dict get $item name]
-            if {![$self MatchesQuery $jid $name $query]} continue
-            lappend roster $item
-        }
-        set roster [$self SortItems $roster $sort]
-
-        # 4. Bookmarks section
-        set bookmarks {}
-        foreach item $bookmarkItems {
-            set jid [dict get $item jid]
-            if {![$self MatchesQuery $jid?join [dict get $item name] $query]} continue
-            # Present the jid as a chat JID (open verbatim)
-            set entry $item
-            dict set entry jid $jid?join
-            lappend bookmarks $entry
-        }
-        set bookmarks [$self SortItems $bookmarks $sort]
-
-        return [dict create recent $recent roster $roster bookmarks $bookmarks]
-    }
-
-    method MatchesQuery {jid name query} {
-        if {$query eq ""} { return 1 }
-        set q [string tolower $query]
-        if {[string first $q [string tolower $jid]] >= 0} { return 1 }
-        if {[string first $q [string tolower $name]] >= 0} { return 1 }
-        return 0
-    }
-
-    method SortItems {items sort} {
-        if {$sort eq "jid"} {
-            return [lsort -command [mymethod CmpJid] $items]
-        }
-        lsort -command [mymethod CmpName] $items
-    }
-
-    method CmpName {a b} {
-        set na [dict get $a name]
-        set nb [dict get $b name]
-        if {$na eq ""} { set na [dict get $a jid] }
-        if {$nb eq ""} { set nb [dict get $b jid] }
-        string compare -nocase $na $nb
-    }
-
-    method CmpJid {a b} {
-        string compare -nocase [dict get $a jid] [dict get $b jid]
     }
 }

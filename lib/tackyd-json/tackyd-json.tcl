@@ -124,7 +124,7 @@ jsonify_type jsonify \
         occupant    {}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        recent_item {approved bool groups list autojoin bool}
+        chat_entry  {groupchat bool autojoin bool last_activity int approved bool groups list}
         avatar_meta {bytes int width int height int}
         presence    {priority int}
         omemo_trust {device int active bool}
@@ -184,11 +184,7 @@ jsonify_type jsonify \
         omemo/blindTrust        bool
         omemo/setBlindTrust     bool
         omemo/setEnabled        bool
-        chatlist/search         {dict {
-            recent    {list recent_item}
-            roster    {list roster_item}
-            bookmarks {list bookmark}
-        }}
+        chatlist/get            {list chat_entry}
 
         message/<Received>      {dict {message message}}
         message/<Sent>          {dict {message message}}
@@ -199,8 +195,7 @@ jsonify_type jsonify \
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<NickChanged>       {dict {self bool}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
-        chatlist/<Item>         {dict {item recent_item}}
-        chatlist/<RecentTop>    {dict {autojoin bool}}
+        chatlist/<Item>         {dict {item chat_entry}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
         omemo/<BlindTrust>         {dict {value bool}}
