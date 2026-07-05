@@ -414,9 +414,9 @@ snit::widget chatlistview {
         $treeview selection set $item
         set jid [$self ItemJid $item]
 
-        # ?join is the group-chat tell: rooms get the bookmark menu, 1:1 and
+        # groupchat selects the menu: rooms get the bookmark menu, 1:1 and
         # free chats get the contact menu.
-        if {[string match {*\?join} $jid]} {
+        if {[dict get [$self ModelItem $jid] groupchat]} {
             $options(-tacky) bookmarks autojoin \
                 -acc $options(-acc) -jid $jid \
                 -tag $win -command [mymethod OnAutojoinResult $X $Y]
@@ -475,8 +475,7 @@ snit::widget chatlistview {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
         clipboard clear
-        # The ?join suffix is tacky-internal, not part of the real JID
-        clipboard append [regsub {\?join$} $jid {}]
+        clipboard append $jid
     }
 
     method OnRefreshAvatar {} {
@@ -613,7 +612,7 @@ snit::widget chatlistview {
     method DisplayText {item} {
         set name [dict get $item name]
         if {$name ne ""} { return $name }
-        return [regsub {\?join$} [dict get $item jid] {}]
+        return [dict get $item jid]
     }
 
     method IsRow {item} {
@@ -626,8 +625,7 @@ snit::widget chatlistview {
     }
 
     method ActivateItem {item} {
-        # Every row's jid is a chat JID; pass it through verbatim
-        # (bare opens the 1:1, ?join the group chat, /nick the room PM)
+        # jid is an opaque chat identity; pass it back verbatim to open the chat.
         if {$options(-open-chat-command) ne ""} {
             {*}$options(-open-chat-command) \
                 -acc $options(-acc) -jid [$self ItemJid $item]
