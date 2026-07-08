@@ -15,7 +15,7 @@ when the body was only the URL). Render `caption` if present, else
 
 ## Sending
 
-    tacky message sendFile -acc $a -chat_jid $j -path $localPath
+    tacky message sendFile -acc $a -chat $j -path $localPath
 
 Optimistic: the message appears immediately via `<Sent>` with
 `server_status uploading` and the local path as the attachment `url`.
@@ -23,7 +23,7 @@ The backend uploads, then sends the actual message with the public
 URL; from there confirmation proceeds like any send (chat.md section
 8). A failed upload marks the row `failed`;
 
-    tacky message retryUpload -acc $a -chat_jid $j -timestamp $ts
+    tacky message retryUpload -acc $a -chat $j -timestamp $ts
 
 re-runs it from the local path recorded on the row.
 

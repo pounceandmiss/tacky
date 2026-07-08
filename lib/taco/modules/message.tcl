@@ -422,7 +422,7 @@ snit::type taco_message {
         set ts [clock microseconds]
         set oid $ts
 
-        lassign [$self DeriveAddressing $opts(-chat_jid)] \
+        lassign [$self DeriveAddressing $opts(-chat)] \
             msgType toJid fromJid fromRes
 
         set replyId ""
@@ -430,7 +430,7 @@ snit::type taco_message {
         set wireBody $opts(-body)
         set fbEnd 0
         if {[info exists opts(-reply_to_ts)] && $opts(-reply_to_ts) ne ""} {
-            lassign [$self BuildReplyTarget $opts(-chat_jid) $opts(-reply_to_ts)] \
+            lassign [$self BuildReplyTarget $opts(-chat) $opts(-reply_to_ts)] \
                 replyId replyTo quoteBody
             if {$replyId ne ""} {
                 lassign [reply::quote $quoteBody] quote fbEnd
@@ -438,28 +438,28 @@ snit::type taco_message {
             }
         }
 
-        set encMode [$self OutgoingEncMode $opts(-chat_jid) $msgType]
+        set encMode [$self OutgoingEncMode $opts(-chat) $msgType]
         set stanza ""
         set status "pending"
         set failReason ""
         try {
             set stanza [$self BuildMessageStanza wire \
-                $opts(-chat_jid) $wireBody $oid $msgType $toJid $encMode \
+                $opts(-chat) $wireBody $oid $msgType $toJid $encMode \
                 $replyId $replyTo $fbEnd]
         } trap TACO_OMEMO_NOT_READY {emsg} {
             # Stays pending; warming kicks via encrypt side effect.
             # Initial attempt counts toward the budget.
-            jlog debug "send $opts(-chat_jid): OMEMO not ready ($emsg), parking pending oid=$oid"
+            jlog debug "send $opts(-chat): OMEMO not ready ($emsg), parking pending oid=$oid"
             set OmemoRetryBudget($oid) [expr {$OMEMO_RETRY_LIMIT - 1}]
         } trap TACO_OMEMO_TERMINAL {emsg} {
-            jlog debug "send $opts(-chat_jid): OMEMO terminal ($emsg), marking failed oid=$oid"
+            jlog debug "send $opts(-chat): OMEMO terminal ($emsg), marking failed oid=$oid"
             set status "failed"
             set failReason "encrypt"
         }
 
         set msg [dict create \
             timestamp $ts \
-            chat_jid $opts(-chat_jid) \
+            chat_jid $opts(-chat) \
             from_jid $fromJid \
             from_resource $fromRes \
             body $opts(-body) \
@@ -469,7 +469,7 @@ snit::type taco_message {
             reply_id $replyId \
             reply_to $replyTo \
             raw_xml [expr {$stanza eq "" ? "" \
-                : [jwrite [$self BuildMessageStanza readable $opts(-chat_jid) \
+                : [jwrite [$self BuildMessageStanza readable $opts(-chat) \
                     $wireBody $oid $msgType $toJid $encMode \
                     $replyId $replyTo $fbEnd]]}] \
             server_status $status \
@@ -479,10 +479,10 @@ snit::type taco_message {
 
         set result [$messagestore store [list $msg]]
         set inserted [dict get $result inserted]
-        set dbMsg [lindex [$messagestore get ids $opts(-chat_jid) $inserted] 0]
+        set dbMsg [lindex [$messagestore get ids $opts(-chat) $inserted] 0]
 
         $client emit message <Sent> \
-            -jid $opts(-chat_jid) -message $dbMsg
+            -jid $opts(-chat) -message $dbMsg
 
         if {$stanza ne ""} {
             $client write $stanza
@@ -515,7 +515,7 @@ snit::type taco_message {
     #   4. on failure mark 'failed' (the file module's <Update> shows it).
     method sendFile {args} {
         array set opts $args
-        set chatJid $opts(-chat_jid)
+        set chatJid $opts(-chat)
         set path $opts(-path)
         set oid [clock microseconds]
         lassign [$self DeriveAddressing $chatJid] msgType toJid fromJid fromRes
@@ -577,7 +577,7 @@ snit::type taco_message {
     # readability), so no separate guard is needed here.
     method retryUpload {args} {
         array set opts $args
-        set chatJid $opts(-chat_jid)
+        set chatJid $opts(-chat)
         set ts $opts(-timestamp)
         set row [lindex [$messagestore get ids $chatJid [list $ts]] 0]
         if {$row eq "" || [llength [dict get $row attachments]] == 0} return
@@ -756,7 +756,7 @@ snit::type taco_message {
         $client write $stanza
     }
 
-    # resend -chat_jid X -timestamp T ?-plaintext 0|1?
+    # resend -chat X -timestamp T ?-plaintext 0|1?
     #
     # User-driven resend of a pending/failed outgoing message, keyed by
     # the GUI's stable (chat_jid, timestamp) id. Default honors the
@@ -771,7 +771,7 @@ snit::type taco_message {
     method resend {args} {
         array set opts {-plaintext 0}
         array set opts $args
-        set chatJid $opts(-chat_jid)
+        set chatJid $opts(-chat)
         set ts      $opts(-timestamp)
 
         set row [$client db eval {

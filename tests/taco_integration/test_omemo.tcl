@@ -87,7 +87,7 @@ namespace eval ::test::omemo_int {
         variable BOT
         variable TESTER
         set ev [awaitEvent message <Received> -acc $TESTER -jid $BOT {
-            tacky message send -acc $TESTER -chat_jid $BOT -body $body
+            tacky message send -acc $TESTER -chat $BOT -body $body
         }]
         return $ev
     }
@@ -178,7 +178,7 @@ namespace eval ::test::omemo_int {
             set ev [awaitEvent message <Received> -acc $::test::omemo_int::TESTER \
                     -jid $bot {
                 tacky message send -acc $::test::omemo_int::TESTER \
-                    -chat_jid $bot -body "cold hello"
+                    -chat $bot -body "cold hello"
                 # Synchronous post-send: encrypt threw NOT_READY, so the
                 # row is pending and has no wire stanza yet.
                 set ::test::omemo_int::_coldStatus [$client db onecolumn {
@@ -216,7 +216,7 @@ namespace eval ::test::omemo_int {
             set N $::test::omemo_int::BURST_N
             set bodies [collectReceived $N {
                 tacky message send -acc $::test::omemo_int::TESTER \
-                    -chat_jid $::test::omemo_int::BOT \
+                    -chat $::test::omemo_int::BOT \
                     -body "BURST:$::test::omemo_int::BURST_N"
             }]
             set want [lmap i [lseq 0 [expr {$N - 1}]] {string cat "burst " $i}]
@@ -352,7 +352,7 @@ namespace eval ::test::omemo_int {
             # server_status='failed' so the GUI can surface a tap-to-
             # retry indicator. Verify by reading back the row.
             tacky message send -acc $::test::omemo_int::TESTER \
-                -chat_jid $bot -body "while untrusted"
+                -chat $bot -body "while untrusted"
             set sendFailed [$client db onecolumn {
                 SELECT server_status='failed' AND fail_reason='encrypt'
                 FROM chat_message

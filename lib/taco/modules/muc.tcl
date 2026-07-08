@@ -168,7 +168,7 @@ snit::type taco_muc {
 
     method say {args} {
         array set opts $args
-        $client message send -chat_jid $opts(-jid)?join -body $opts(-body)
+        $client message send -chat $opts(-jid)?join -body $opts(-body)
     }
 
     method pm {args} {

@@ -481,7 +481,7 @@ snit::widgetadaptor chatview {
     method AttachRetry {id} {
         $hull attachment state $id 0 upload active 0 0
         ::tacky message retryUpload -acc $options(-acc) \
-            -chat_jid $options(-jid) -timestamp $id
+            -chat $options(-jid) -timestamp $id
     }
 
     method AttachOpen {url} {

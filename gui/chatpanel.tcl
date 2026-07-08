@@ -131,7 +131,7 @@ snit::widget chatpanel {
     }
 
     method Send {text} {
-        set sendArgs [list -acc $options(-acc) -chat_jid $options(-jid) -body $text]
+        set sendArgs [list -acc $options(-acc) -chat $options(-jid) -body $text]
         if {$replyToTs ne ""} {
             lappend sendArgs -reply_to_ts $replyToTs
         }
@@ -175,7 +175,7 @@ snit::widget chatpanel {
             -parent [winfo toplevel $win]]
         if {$path eq ""} return
         ::tacky message sendFile -acc $options(-acc) \
-            -chat_jid $options(-jid) -path $path
+            -chat $options(-jid) -path $path
     }
 
     # Register $w as a drop target so files dragged onto it are sent to this
@@ -206,7 +206,7 @@ snit::widget chatpanel {
         foreach path $files {
             if {![file isfile $path]} continue
             ::tacky message sendFile -acc $options(-acc) \
-                -chat_jid $options(-jid) -path $path
+                -chat $options(-jid) -path $path
         }
         return copy
     }
