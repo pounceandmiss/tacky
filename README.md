@@ -67,6 +67,45 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub --f
 flatpak run io.github.pounceandmiss.Tacky
 ```
 
+## C library
+
+The backend can also be built as a self-contained static library and linked
+straight into a native app, instead of shipped as an executable. 
+
+```sh
+make lib        # native   -> dist/libtacky.a
+make win-lib    # MinGW/PE -> dist/libtacky-win.a
+```
+
+The result is one self-contained archive - the whole Tcl runtime, taco and every
+dependency are merged in, so it links with no `--start-group`. It contains C++
+(libdatachannel), so link the host app with `g++`, not `gcc`.
+
+The C surface (`embed/tacky.h`) is just a pipe to the real API is taco's JSON
+contract. Three functions and one callback:
+
+```c
+tacky_client *tacky_create(const char *const *taco_args,
+                           tacky_emit_fn emit, void *ud);
+void tacky_send(tacky_client *client, const char *json, size_t len);
+void tacky_destroy(tacky_client *client);
+
+typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
+```
+
+You send requests and receive replies and events as UTF-8 JSON:
+
+- request: `["module","method",{args}]`, optionally with a token `[...,token]`
+- reply: `["result",token,data]` or `["error",token,msg]`
+- event: `["event",module,"<Event>",{args}]`
+
+The `token` is an optional correlation id echoed back on the matching reply.
+
+The emit callback fires on the backend thread, not the caller's: copy the bytes,
+hand them to your own loop, return promptly, and don't re-enter tacky from
+inside it. `tacky_send` is safe to call from any thread; create and destroy from
+one owning thread.
+
 ## Tests
 
 ```

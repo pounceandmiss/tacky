@@ -24,9 +24,12 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 
 # ==== Targets ====
 
-.PHONY: all tacky tackyd tackyd-json win win-tacky win-tackyd win-tackyd-json \
-        android linux flatpak flatpak-bundle flatpak-install \
-        test test-gui tools wish tclsh clean win-clean dist-dir
+.PHONY: all \
+	tacky tackyd tackyd-json lib \
+	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
+        android \
+	linux flatpak flatpak-bundle flatpak-install \
+        test test-gui tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
 
@@ -56,6 +59,23 @@ tacky tackyd tackyd-json: %: dist-dir
 	    app
 	cp $(LINUX_BUILD)/$* dist/$*
 
+# libtacky.a: the taco backend as a linked C library (embed/tacky.c drives the
+# interp on a private thread; see embed/tacky.h). Same deps/sources as the
+# tackyd-json daemon, but with no entry script - the shim, not a main.tcl, runs
+# the show. Shares the native build tree so it reuses the already-built deps.
+lib: dist-dir
+	$(MAKE) -f zippy/zippy.mk \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(tackyd-json_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    LIB_SHIM_SRC=$(CURDIR)/embed/tacky.c \
+	    LIB_NAME=tacky \
+	    BASEDIR=$(LINUX_BUILD) \
+	    lib
+	cp $(LINUX_BUILD)/libtacky.a dist/libtacky.a
+
 # ==== Windows cross-build ====
 # Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
 # as the native build; TARGET_OS=windows swaps in the win/ recipes and bundles
@@ -78,6 +98,23 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    BASEDIR=$(WIN_BUILD) \
 	    win-app
 	cp $(WIN_BUILD)/$*.exe dist/$*.exe
+
+# Windows libtacky.a: the same static-library build as `lib`, cross-compiled to
+# a MinGW PE archive. Ships alongside the native one as dist/libtacky-win.a.
+win-lib: dist-dir
+	$(MAKE) -f zippy/zippy.mk \
+	    TARGET_OS=windows \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(tackyd-json_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    LIB_SHIM_SRC=$(CURDIR)/embed/tacky.c \
+	    LIB_NAME=tacky \
+	    HOST_TCLSH=$(HOST_TCLSH) \
+	    BASEDIR=$(WIN_BUILD) \
+	    win-lib
+	cp $(WIN_BUILD)/libtacky.a dist/libtacky-win.a
 
 # ==== Android cross-build ====
 # The daemon (tackyd-json) for arm64-v8a, staged as a jniLibs/<abi>/ subtree an
