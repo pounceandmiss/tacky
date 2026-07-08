@@ -414,7 +414,7 @@ test message-send-stored-as-pending {sent message stored with empty server_id an
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
         $::_client omemo setEnabled -jid alice@example.com -value 0
-        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        tacky message send -acc $acc -chat alice@example.com -body "outgoing"
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg server_id] \
              [dict get $msg server_status] \
@@ -544,7 +544,7 @@ test message-resend-plaintext-downgrades \
             encryption omemo on_wire 0]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
-        tacky message resend -acc $acc -chat_jid alice@example.com \
+        tacky message resend -acc $acc -chat alice@example.com \
             -timestamp $ts -plaintext 1
         set last [lindex [$::_client conn get_written] end]
         set db [$::_client message messagestore cget -db]
@@ -565,7 +565,7 @@ test message-resend-honors-stamp \
             encryption omemo on_wire 0]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
-        tacky message resend -acc $acc -chat_jid alice@example.com \
+        tacky message resend -acc $acc -chat alice@example.com \
             -timestamp $ts
         set db [$::_client message messagestore cget -db]
         $db eval {
@@ -759,7 +759,7 @@ test message-classify-body-is-message {a body is a normal stored message} \
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
     -body {
-        tacky message send -acc $acc -chat_jid alice@example.com -body "outgoing"
+        tacky message send -acc $acc -chat alice@example.com -body "outgoing"
         set sentTs [dict get \
             [lindex [msg_store_latest alice@example.com] 0] timestamp]
         # Incoming message with delay stamp placing it 1 second before our send
@@ -783,7 +783,7 @@ test message-get-latest-real-plus-pending {get latest returns real + pending int
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body a] \
             [msg_msg timestamp 200 server_id s2 body b]]
-        tacky message send -acc $acc -chat_jid alice@example.com -body "sent"
+        tacky message send -acc $acc -chat alice@example.com -body "sent"
         set all [msg_store_latest alice@example.com]
         list [llength $all] \
              [dict get [lindex $all 0] body] \
@@ -796,7 +796,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
         $::_client omemo setEnabled -jid alice@example.com -value 0
-        tacky message send -acc $acc -chat_jid alice@example.com -body "echo me"
+        tacky message send -acc $acc -chat alice@example.com -body "echo me"
         set msgs [msg_store_latest alice@example.com]
         set oid [dict get [lindex $msgs 0] own_id]
 
@@ -2083,7 +2083,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
             j origin-id -ns urn:xmpp:sid:0 -id ORIG1
         }]
         set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message send -acc $acc -chat_jid alice@example.com \
+        tacky message send -acc $acc -chat alice@example.com \
             -body "my answer" -reply_to_ts $tgtTs
         set stanza [lindex [$::_client conn get_written] end]
         set fb [lindex [xsearch $stanza fallback -ns urn:xmpp:fallback:0] 0]
@@ -2104,11 +2104,11 @@ test message-send-reply-own-pending {replying to our own pending message cites i
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
         $::_client omemo setEnabled -jid alice@example.com -value 0
-        tacky message send -acc $acc -chat_jid alice@example.com -body "mine"
+        tacky message send -acc $acc -chat alice@example.com -body "mine"
         set own [lindex [msg_store_latest alice@example.com] end]
         set ownTs [dict get $own timestamp]
         set ownOid [dict get $own own_id]
-        tacky message send -acc $acc -chat_jid alice@example.com \
+        tacky message send -acc $acc -chat alice@example.com \
             -body "follow up" -reply_to_ts $ownTs
         set stanza [lindex [$::_client conn get_written] end]
         set reply [lindex [msg_store_latest alice@example.com] end]

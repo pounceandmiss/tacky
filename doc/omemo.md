@@ -54,7 +54,7 @@ Optional — the backend does the same lazily on first send.
 
 ### Message resend
 
-    tacky message resend -acc $jid -chat_jid X -timestamp T ?-plaintext 0|1?
+    tacky message resend -acc $jid -chat X -timestamp T ?-plaintext 0|1?
 
 Default honors the row's stamped `encryption`. `-plaintext 1` rewrites
 that one row to send cleartext (for a peer that can't do OMEMO); it does
@@ -108,7 +108,7 @@ the row dict.
 
 ```tcl
 # retry encrypted (keys arrived):
-tacky message resend -acc $acc -chat_jid $peer -timestamp $ts
+tacky message resend -acc $acc -chat $peer -timestamp $ts
 # give up on encryption for this one message:
-tacky message resend -acc $acc -chat_jid $peer -timestamp $ts -plaintext 1
+tacky message resend -acc $acc -chat $peer -timestamp $ts -plaintext 1
 ```

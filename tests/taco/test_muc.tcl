@@ -774,7 +774,7 @@ test muc-groupchat-other-id-no-false-confirm {other user's @id matching pending 
     -body {
         muc_join room@muc.example.com me
         # Send a message (stores as pending with own_id)
-        c message send -chat_jid room@muc.example.com?join -body "test"
+        c message send -chat room@muc.example.com?join -body "test"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
         # Someone else sends a message with that same @id

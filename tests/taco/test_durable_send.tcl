@@ -127,7 +127,7 @@ test ds-send-stores-pending {send stores message with pending status before writ
     -body {
         ds_muc_join room@muc.example.com me
         c.conn clear
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "hello"
         # Check DB
         set status [c db eval {
@@ -151,7 +151,7 @@ test ds-send-emits-sent {send emits message <Sent> event} \
         tacky listen message <Sent> \
             -jid room@muc.example.com?join \
             {apply {{ev} { set ::got $ev }}}
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "hi"
         list [dict get $got -jid] [dict get $got -message body] \
              [dict get $got -message server_status]
@@ -161,7 +161,7 @@ test ds-send-from-jid-muc {send sets correct from_jid for MUC} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "test"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         dict get [lindex $msgs 0] from_jid
@@ -172,7 +172,7 @@ test ds-send-id-on-stanza {send sets message @id matching DB own_id} \
     -body {
         ds_muc_join room@muc.example.com me
         c.conn clear
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "test"
         set m [lindex [c.conn get_written] end]
         set stanzaId [xsearch $m -get @id]
@@ -188,7 +188,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to ''} 
     -body {
         ds_muc_join room@muc.example.com me
         # Send a message (stores as pending)
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "echo me"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -214,7 +214,7 @@ test ds-echo-no-received {echo of own message does not emit <Received>} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "echo me"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -233,7 +233,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "echo me"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -256,7 +256,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
     -body {
         ds_muc_join room@muc.example.com me
         # Send a message
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "ack me"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -426,7 +426,7 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "double"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -484,7 +484,7 @@ test ds-own-id-equals-timestamp {own_id is same as timestamp} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
-        c message send -chat_jid room@muc.example.com?join \
+        c message send -chat room@muc.example.com?join \
             -body "test"
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set msg [lindex $msgs 0]

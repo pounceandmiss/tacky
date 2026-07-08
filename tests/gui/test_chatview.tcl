@@ -168,7 +168,7 @@ proc cv_overflow_setup {{direction incoming}} {
     for {set i 0} {$i < 15} {incr i} {
         if {$direction eq "outgoing"} {
             tacky message send -acc $::acc \
-                -chat_jid alice@example.com -body "fill $i"
+                -chat alice@example.com -body "fill $i"
         } else {
             cv_feed "fill $i" seed$i
         }
@@ -220,7 +220,7 @@ test chatview-no-body-ignored {message without body does not appear} \
 test chatview-sent-appears {sent message appears in chatview} \
     {*}$cv_common \
     -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com \
+        tacky message send -acc $::acc -chat alice@example.com \
             -body "outgoing msg"
         wait
         llength [.cv messages ids]
@@ -234,7 +234,7 @@ test chatview-sendfile-optimistic {sendFile shows the message immediately in an 
         # Upload stalls at service discovery (mock server never replies),
         # so the optimistic message stays in the uploading state.
         tacky message sendFile -acc $::acc \
-            -chat_jid alice@example.com -path $tmp
+            -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
         set res [list n=[llength [.cv messages ids]] \
@@ -268,7 +268,7 @@ test chatview-sendfile-image-thumbnail \
         set f [open $tmp wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        tacky message sendFile -acc $::acc -chat_jid alice@example.com -path $tmp
+        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
         set res [winfo exists .cv.text.att_${id}_0.img]
@@ -283,7 +283,7 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         # devicelist warming (mock server never answers) and no
         # message would reach the wire to be acked
         tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
-        tacky message send -acc $::acc -chat_jid alice@example.com \
+        tacky message send -acc $::acc -chat alice@example.com \
             -body "outgoing msg"
         wait
         set sentId [.cv messages newest]
@@ -304,11 +304,11 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
 test chatview-multiple-outgoing-order {multiple outgoing messages appear in send order} \
     {*}$cv_common \
     -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "one"
+        tacky message send -acc $::acc -chat alice@example.com -body "one"
         wait
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "two"
+        tacky message send -acc $::acc -chat alice@example.com -body "two"
         wait
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "three"
+        tacky message send -acc $::acc -chat alice@example.com -body "three"
         wait
         llength [.cv messages ids]
     } -result {3}
@@ -316,12 +316,12 @@ test chatview-multiple-outgoing-order {multiple outgoing messages appear in send
 test chatview-outgoing-interleaved {outgoing interleaved with incoming in correct order} \
     {*}$cv_common \
     -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "out1"
+        tacky message send -acc $::acc -chat alice@example.com -body "out1"
         wait
         set ts1 [.cv messages newest]
         cv_feed "incoming" srv-in
         wait
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "out2"
+        tacky message send -acc $::acc -chat alice@example.com -body "out2"
         wait
         set ids [.cv messages ids]
         list [llength $ids] [expr {[lindex $ids 0] == $ts1}]
@@ -330,7 +330,7 @@ test chatview-outgoing-interleaved {outgoing interleaved with incoming in correc
 test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
     {*}$cv_common \
     -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "hello"
+        tacky message send -acc $::acc -chat alice@example.com -body "hello"
         wait
         set sentId [.cv messages newest]
         cv_muc_echo $sentId echo-sid1
@@ -344,7 +344,7 @@ test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
 test chatview-muc-echo-different-ts {echo with different timestamp moves message} \
     {*}$cv_common \
     -body {
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "hello"
+        tacky message send -acc $::acc -chat alice@example.com -body "hello"
         wait
         set sentId [.cv messages newest]
         # Echo at 1 second later
@@ -368,7 +368,7 @@ test chatview-muc-echo-reorders {echo reorders message among interleaved message
         cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
         wait
         set tsA [.cv messages newest]
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "X"
+        tacky message send -acc $::acc -chat alice@example.com -body "X"
         wait
         set tsX [.cv messages newest]
         cv_feed "B" srv-b
@@ -395,7 +395,7 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
         cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
         wait
         set tsA [.cv messages newest]
-        tacky message send -acc $::acc -chat_jid alice@example.com -body "X"
+        tacky message send -acc $::acc -chat alice@example.com -body "X"
         wait
         set tsX [.cv messages newest]
         cv_feed "B" srv-b
@@ -420,7 +420,7 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
     } -result {4 4 1 1 1 1}
 
 foreach {direction seedCmd} {
-    outgoing {tacky message send -acc $::acc -chat_jid alice@example.com -body "pending"}
+    outgoing {tacky message send -acc $::acc -chat alice@example.com -body "pending"}
     incoming {cv_feed "before catchup" srv1}
 } {
     test chatview-${direction}-survives-catchup \
@@ -460,7 +460,7 @@ foreach {direction scrollPos result} {
             set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
             if {$direction eq "outgoing"} {
                 tacky message send -acc $::acc \
-                    -chat_jid alice@example.com -body "one more"
+                    -chat alice@example.com -body "one more"
             } else {
                 cv_feed "new msg" srv-new
             }
@@ -522,7 +522,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
         set f [open $tmp wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        tacky message sendFile -acc $::acc -chat_jid alice@example.com -path $tmp
+        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
         set hasImg [winfo exists .cv.text.att_${id}_0.img]

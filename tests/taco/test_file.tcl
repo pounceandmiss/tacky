@@ -314,7 +314,7 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
     set tmp /tmp/uptest_[pid].bin
     set f [open $tmp w]; puts -nonewline $f "data"; close $f
     # Upload stalls at discovery (mock server never replies) -> stays uploading.
-    tacky message sendFile -acc $acc -chat_jid bob@example.com -path $tmp
+    tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
     set msgs [dict get \
         [$::_client message messagestore get latest bob@example.com] messages]
     set m [lindex $msgs 0]
