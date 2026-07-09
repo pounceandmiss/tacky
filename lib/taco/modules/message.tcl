@@ -908,9 +908,12 @@ snit::type taco_message {
         set hasCursor [expr {$before ne "" || $after ne ""}]
 
         # Return local immediately when it satisfies the request. Trigger
-        # MAM only when there's a cursor to anchor the fill — initial
-        # loads with bounded local data show what they have; the user
-        # scrolls into the hole later to trigger fill.
+        # MAM only when there's a cursor to anchor the fill - initial
+        # loads with some local data show what they have; the user
+        # scrolls into the hole later to trigger fill. Empty local is the
+        # exception: a cursorless load with nothing stored falls through
+        # to a cursorless MAM fetch (first open of a chat pulls its
+        # newest archive page).
         if {[llength $localMessages] >= $limit
             || ([llength $localMessages] > 0
                 && (!$bounded || !$hasCursor))} {
