@@ -55,7 +55,7 @@ snit::type taco_bookmarks {
     }
 
     # Return full list of bookmarks from local store, with derived
-    # room-state/room-reason per item.
+    # room_state/room_reason per item.
     tackymethod get {args} {
         set results {}
         foreach {jid name autojoin nick password} [$client db eval {
@@ -63,8 +63,8 @@ snit::type taco_bookmarks {
         }] {
             lappend results [list jid $jid name $name \
                 autojoin $autojoin nick $nick password $password \
-                room-state [$self RoomState $jid] \
-                room-reason [$self ResolveMucReason $jid]]
+                room_state [$self RoomState $jid] \
+                room_reason [$self ResolveMucReason $jid]]
         }
         return $results
     }

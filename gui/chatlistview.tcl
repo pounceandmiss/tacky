@@ -28,7 +28,7 @@ snit::widget chatlistview {
     # Flat list of chat entries (chatlist get shape), patched by <Item>/<Remove>
     variable model {}
 
-    # Row style per backend room-state enum (taco_bookmarks RoomState).  Tags
+    # Row style per backend room_state enum (taco_bookmarks RoomState).  Tags
     # are named muc_<state>, so the state name IS the tag - no translation.
     #   joined = normal; idle = dimmed grey (not a member / unattempted);
     #   joining = grey italic (transient); disconnected = amber (a member
@@ -224,8 +224,8 @@ snit::widget chatlistview {
         foreach entry [$self VisibleEntries] {
             set jid [dict get $entry jid]
             set tags {}
-            if {[dict exists $entry room-state]} {
-                set tags muc_[dict get $entry room-state]
+            if {[dict exists $entry room_state]} {
+                set tags muc_[dict get $entry room_state]
             }
             $treeview insert {} end -id $jid \
                 -text [$self DisplayText $entry] \
@@ -439,12 +439,12 @@ snit::widget chatlistview {
     method BookmarkStatusLabel {jid} {
         set item [$self ModelItem $jid]
         set state idle
-        if {$item ne "" && [dict exists $item room-state]} {
-            set state [dict get $item room-state]
+        if {$item ne "" && [dict exists $item room_state]} {
+            set state [dict get $item room_state]
         }
         switch -- $state {
             error {
-                set reason [dict get $item room-reason]
+                set reason [dict get $item room_reason]
                 return "Join failed: [$self MucErrorText $reason]"
             }
             joining      { return "Joining..." }

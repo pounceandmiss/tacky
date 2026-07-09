@@ -114,14 +114,14 @@ test chatlist-roster-groups {roster entries include the groups field} \
         dict get [lindex [c chatlist get] 0] groups
     } -result {Friends Work}
 
-test chatlist-bookmark-fields {bookmark entries carry autojoin, nick, password, room-state} \
+test chatlist-bookmark-fields {bookmark entries carry autojoin, nick, password, room_state} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name Room \
             autojoin 1 nick me password pw
         set bm [lindex [c chatlist get] 0]
         list [dict get $bm autojoin] [dict get $bm nick] \
-            [dict get $bm password] [dict get $bm room-state]
+            [dict get $bm password] [dict get $bm room_state]
     } -result {1 me pw idle}
 
 test chatlist-changed-on-clear {wholesale source replacement emits <Changed>} \
@@ -221,7 +221,7 @@ test chatlist-chats-updated-item {chats:<Updated> emits <Item>, not <RecentTop>,
             [expr {[dict get $item last_activity] == $ts}]
     } -result {alice@example.com free 1}
 
-test chatlist-roomstate-funnel {a room-state change funnels as a single <Item> carrying room-state} \
+test chatlist-roomstate-funnel {a room_state change funnels as a single <Item> carrying room_state} \
     {*}$chatlist_common \
     -body {
         bookmark_insert room@muc.example.com name Room autojoin 1
@@ -229,7 +229,7 @@ test chatlist-roomstate-funnel {a room-state change funnels as a single <Item> c
         tacky listen chatlist <Item> \
             {apply {{ev} {
                 if {[dict get $ev -jid] eq "room@muc.example.com?join"} {
-                    lappend ::states [dict get [dict get $ev -item] room-state]
+                    lappend ::states [dict get [dict get $ev -item] room_state]
                 }
             }}}
         c bus publish muc:<Error> -jid room@muc.example.com \

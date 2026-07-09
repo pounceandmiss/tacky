@@ -18,12 +18,12 @@ proc bm_insert {jid args} {
     }
 }
 
-# Helper: {room-state room-reason} for $jid as reported by bookmarks get
+# Helper: {room_state room_reason} for $jid as reported by bookmarks get
 proc bm_state {jid} {
     foreach item [c bookmarks get] {
         if {[dict get $item jid] eq $jid} {
-            return [list [dict get $item room-state] \
-                [dict get $item room-reason]]
+            return [list [dict get $item room_state] \
+                [dict get $item room_reason]]
         }
     }
     return missing
@@ -34,7 +34,7 @@ test bookmarks-get-item-shape {get returns the full item dict incl. derived room
     -body {
         bm_insert room@muc.example.com name "Room" autojoin 1 nick me password pw
         c bookmarks get
-    } -result {{jid room@muc.example.com name Room autojoin 1 nick me password pw room-state idle room-reason {}}}
+    } -result {{jid room@muc.example.com name Room autojoin 1 nick me password pw room_state idle room_reason {}}}
 
 test bookmarks-jid-input-canonicalized {-jid accepts a chat JID with ?join suffix} \
     {*}$bookmarks_common \
