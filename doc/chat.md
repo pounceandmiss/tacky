@@ -126,9 +126,17 @@ After any fresh load, the window is a fresh slice and the at-tail flag
 reflects whether that slice contains the tail.
 
 On chat-view open, issue `tacky message history` with no
-`-before`/`-after`. The newest page comes back; the flag is vacuously
+`-before`/`-after`. The newest page comes back - the newest local page
+if anything is stored, else (empty local, e.g. first open of a chat)
+the newest page fetched from the MAM archive. The flag is vacuously
 true going in (empty window) and stays true on completion (the newest
 page contains the tail by definition, even when empty).
+
+That empty-local fetch is the one case a cursorless load reaches the
+server, and it has no request timeout: if the server is unreachable the
+callback may never fire. Treat a per-request callback as best-effort -
+don't let a spinner hang on one - and rely on live `<Received>` events
+to populate an empty window once the connection is up.
 
 A "scroll to bottom" affordance cancels in-flight requests, clears the
 window, sets the flag false, and re-runs the initial load. The flag

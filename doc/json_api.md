@@ -65,8 +65,8 @@ Example:
 
 ## Request/response (backend → client)
 
-When a request includes a token, the backend replies with exactly one
-result or error message for that token.
+When a request includes a token, the backend replies with at most one
+result or error message for that token (see the caveats below).
 
 ```json
 ["result", token, data]
@@ -85,7 +85,9 @@ Internally, the backend wires the token to both a `-command` and an
 succeeds, `-command` fires and produces a `["result", …]` reply. If the
 method fails, `-onerror` fires and produces an
 `["error", token, message]` reply instead.
-Either way, exactly one reply is sent per token.
+
+A token yields at most one reply: exactly one when the method runs
+to a result or error, and none if request is cancelled or never completes for other reasons (e.g. unresponsive server).
 
 Fire-and-forget requests (no token) have neither callback wired, so
 any error from the underlying method is silently discarded.
