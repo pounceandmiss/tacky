@@ -90,7 +90,7 @@ namespace eval ::test::message_int {
         variable ROMEO
         variable JULIET
 
-        set ev [awaitEvent message <Received> -acc $ROMEO -jid $JULIET {
+        set ev [awaitEvent message <New> -acc $ROMEO -jid $JULIET {
             set client [tacky client $JULIET]
             $client conn writeImmediate [j message \
                 -type chat -to $ROMEO {

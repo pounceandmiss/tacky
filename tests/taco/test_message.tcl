@@ -373,11 +373,11 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
              [string match {*<message*} $xml]
     } -result {1 1 1}
 
-test message-live-emits-event {incoming message emits message <Received>} \
+test message-live-emits-event {incoming message emits message <New>} \
     {*}$msg_common \
     -body {
         set ::_got {}
-        tacky listen message <Received> {apply {{ev} {
+        tacky listen message <New> {apply {{ev} {
             set ::_got $ev
         }}}
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
@@ -388,11 +388,11 @@ test message-live-emits-event {incoming message emits message <Received>} \
              [dict get $_got -message body]
     } -result {alice@example.com alice@example.com {event test}}
 
-test message-live-dup-no-event {duplicate message does not emit <Received>} \
+test message-live-dup-no-event {duplicate message does not emit <New>} \
     {*}$msg_common \
     -body {
         set ::_count 0
-        tacky listen message <Received> {apply {{ev} {
+        tacky listen message <New> {apply {{ev} {
             incr ::_count
         }}}
         set stanza [j message -type chat -from alice@example.com/phone \
@@ -804,7 +804,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
         set received {}
         tacky listen -tag selfecho message <Patch> -jid alice@example.com \
             {apply {{ev} { lappend ::patches $ev }}}
-        tacky listen -tag selfecho message <Received> -jid alice@example.com \
+        tacky listen -tag selfecho message <New> -jid alice@example.com \
             {apply {{ev} { lappend ::received $ev }}}
 
         # Server reflects the message back: from=self, to=contact, same @id
@@ -1549,11 +1549,11 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
         }
     } -result {2}
 
-test message-catchup-per-message-received {each catchup message fires its own <Received>} \
+test message-catchup-per-message-received {each catchup message fires its own <New>} \
     {*}$msg_common \
     -body {
         set ::_count 0
-        tacky listen message <Received> {apply {{ev} { incr ::_count }}}
+        tacky listen message <New> {apply {{ev} { incr ::_count }}}
         msg_ready
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
         msg_catchup_finish [list \

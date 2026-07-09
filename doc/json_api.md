@@ -51,7 +51,7 @@ Pushed whenever something happens in the backend. Not tied to a request.
 Example:
 ```json
 ["event", "account", "<Added>", {"acc": "user@example.com"}]
-["event", "message", "<Received>",
+["event", "message", "<New>",
   {"acc": "user@example.com", "jid": "room@muc",
    "body": "hello",
    "message": {"timestamp": 1700000000,
@@ -94,11 +94,11 @@ any error from the underlying method is silently discarded.
 
 Not every method uses the token contract. Action methods that report
 progress through events - notably `message send` / `sendFile` / `resend` -
-are event-acked, not token-acked: they emit `message <Sent>` on success
+are event-acked, not token-acked: they emit `message <New>` on success
 (even when the message is stored `server_status: failed`, e.g. an
 undeliverable encryption) and report later delivery outcomes as `<Patch>`
 field updates. A token on such a call gets no `result`/`error` reply. The
-only unsignalled case is a hard failure before the `<Sent>` emit (e.g. a
+only unsignalled case is a hard failure before the `<New>` emit (e.g. a
 malformed address); that propagates to the backend's error log.
 
 ## Attachments

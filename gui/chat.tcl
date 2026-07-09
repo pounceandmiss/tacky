@@ -89,9 +89,7 @@ snit::widgetadaptor chatview {
         set Names [dict create]
         set TrackedAvatars [list]
         set DownloadPending [dict create]
-        ::tacky listen -tag $win message <Received> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
-        ::tacky listen -tag $win message <Sent> \
+        ::tacky listen -tag $win message <New> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Patch> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
@@ -261,7 +259,7 @@ snit::widgetadaptor chatview {
             -command [mymethod OnGotoDone]
     }
 
-    # Catchup messages now flow through <Received> under the AtTail
+    # Catchup messages now flow through <New> under the AtTail
     # gate; no reload needed. Kept as a stub for future UI-settling
     # work (spinners, badges).
     method OnCatchupDone {ev} {}
@@ -300,7 +298,7 @@ snit::widgetadaptor chatview {
         $self ProcessBatch $messages
         if {$direction eq "new"} {
             # If thirst caught up to DB-newest, rejoin the live tail
-            # so subsequent <Received> events insert again. Comparing
+            # so subsequent <New> events insert again. Comparing
             # to maxTimestamp is robust to changes in -limit.
             set newest [$hull messages newest]
             set dbNewest [::tacky message maxTimestamp \
@@ -317,7 +315,7 @@ snit::widgetadaptor chatview {
 
     # Live-message flow.
     #
-    # <Received> / <Sent> arrive only after the backend persists the
+    # <New> arrives only after the backend persists the
     # message to the local store. So a live event we drop here is
     # durable in the DB and reachable by a subsequent `tacky message
     # history` query.

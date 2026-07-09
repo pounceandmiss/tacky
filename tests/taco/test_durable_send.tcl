@@ -143,12 +143,12 @@ test ds-send-stores-pending {send stores message with pending status before writ
              [expr {[xsearch $m -get @id] ne ""}]
     } -result {pending groupchat hello 1}
 
-test ds-send-emits-sent {send emits message <Sent> event} \
+test ds-send-emits-sent {send emits message <New> event} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
         set got {}
-        tacky listen message <Sent> \
+        tacky listen message <New> \
             -jid room@muc.example.com?join \
             {apply {{ev} { set ::got $ev }}}
         c message send -chat room@muc.example.com?join \
@@ -210,7 +210,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to ''} 
              [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
     } -result {{} 1 {}}
 
-test ds-echo-no-received {echo of own message does not emit <Received>} \
+test ds-echo-no-received {echo of own message does not emit <New>} \
     {*}$ds_msg_common \
     -body {
         ds_muc_join room@muc.example.com me
@@ -219,7 +219,7 @@ test ds-echo-no-received {echo of own message does not emit <Received>} \
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         set oid [dict get [lindex $msgs 0] own_id]
         set received {}
-        tacky listen message <Received> \
+        tacky listen message <New> \
             -jid room@muc.example.com?join \
             {apply {{ev} { lappend ::received $ev }}}
         c.conn feed [j message -type groupchat -id $oid \
@@ -385,7 +385,7 @@ test ds-parse-message-has-server-status {ParseMessage includes server_status in 
     {*}$ds_msg_common \
     -body {
         set got {}
-        tacky listen message <Received> \
+        tacky listen message <New> \
             {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -from alice@example.com/phone {
             j body #body "incoming"
@@ -393,11 +393,11 @@ test ds-parse-message-has-server-status {ParseMessage includes server_status in 
         dict get [dict get $got -message] server_status
     } -result {}
 
-test ds-incoming-emits-received {incoming 1:1 message emits <Received>} \
+test ds-incoming-emits-received {incoming 1:1 message emits <New>} \
     {*}$ds_msg_common \
     -body {
         set got {}
-        tacky listen message <Received> \
+        tacky listen message <New> \
             -jid alice@example.com \
             {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -from alice@example.com/phone {
