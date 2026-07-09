@@ -33,6 +33,12 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
 
 ### Event examples
 
+Every event emitted by a per-account client carries `-acc` (the
+account's bare JID), injected by the backend so a multi-account
+frontend can route it; the examples below show it explicitly. A few
+global events that are not account-scoped (e.g. `setting <Changed>`)
+omit it.
+
 **account**
 
     account <Added>       -acc $jid
@@ -44,19 +50,19 @@ E.g. if a widget called a method and asks for a result, but the destructor is ca
 
     message <Received>    -acc $acc -jid $chatJid -message $msgDict
     message <Sent>        -acc $acc -jid $chatJid -message $msgDict
-    message <Patch>       -jid $chatJid -messages $patchList
+    message <Patch>       -acc $acc -jid $chatJid -messages $patchList
     message <CatchupDone> -acc $acc -count $n
 
 **chatlist** (see chatlist.md)
 
-    chatlist <Item>       -jid $jid -item $entry
-    chatlist <Remove>     -jid $jid
-    chatlist <Changed>
+    chatlist <Item>       -acc $acc -jid $jid -item $entry
+    chatlist <Remove>     -acc $acc -jid $jid
+    chatlist <Changed>    -acc $acc
 
 **bookmarks** (see chatlist.md)
 
-    bookmarks <Changed>   -action clear|add|update|remove ?-jid $jid?
-    bookmarks <RoomState> -jid $jid -state $state -reason $reason
+    bookmarks <Changed>   -acc $acc -action clear|add|update|remove ?-jid $jid?
+    bookmarks <RoomState> -acc $acc -jid $jid -state $state -reason $reason
 
 **setting**
 
