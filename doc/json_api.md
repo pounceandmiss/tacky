@@ -99,7 +99,7 @@ everything else. The encoding, one example per direction:
 
 ```json
 ["message", "sendFile",
-  {"acc": "user@example.com", "chat_jid": "alice@example.com",
+  {"acc": "user@example.com", "chat": "alice@example.com",
    "path": "/home/user/pic.png"}]
 ["file", "download",
   {"acc": "user@example.com",
