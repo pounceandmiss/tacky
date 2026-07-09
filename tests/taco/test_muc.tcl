@@ -631,6 +631,58 @@ test muc-voice-request-event {<VoiceRequest> event fires} \
         list [dict get $got -jid] [dict get $got -from] [dict get $got -nick]
     } -result {room@muc.example.com visitor@example.com newbie}
 
+# -- Room configuration -------------------------------------------------------
+
+test muc-config-get-returns-form {configGet delivers a parsed form dict} \
+    {*}$muc_common \
+    -body {
+        set got {}
+        c muc configGet -jid room@muc.example.com \
+            -command [list apply {{form} { set ::got $form }}]
+        set req [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+            -from room@muc.example.com {
+            j query -ns http://jabber.org/protocol/muc#owner {
+                j x -ns jabber:x:data -type form {
+                    j field -var FORM_TYPE -type hidden {
+                        j value #body http://jabber.org/protocol/muc#roomconfig
+                    }
+                    j field -var muc#roomconfig_roomname -type text-single {
+                        j value #body Lobby
+                    }
+                }
+            }
+        }]
+        list [dict get $got type] \
+             [lmap f [dict get $got fields] {dict get $f var}]
+    } -result {form {FORM_TYPE muc#roomconfig_roomname}}
+
+test muc-discover-rooms-occupants-from-form {discoverRooms reads occupancy from the disco form} \
+    {*}$muc_common \
+    -body {
+        set got {}
+        c muc discoverRooms -jid muc.example.com \
+            -command [list apply {{rooms} { set ::got $rooms }}]
+        set req [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+            -from muc.example.com {
+            j query -ns http://jabber.org/protocol/disco#items {
+                j item -jid room@muc.example.com -name Lobby {
+                    j x -ns jabber:x:data -type result {
+                        j field -var FORM_TYPE -type hidden {
+                            j value #body http://jabber.org/protocol/muc#roominfo
+                        }
+                        j field -var muc#roominfo_occupants {
+                            j value #body 42
+                        }
+                    }
+                }
+            }
+        }]
+        set room [lindex $got 0]
+        list [dict get $room jid] [dict get $room occupants]
+    } -result {room@muc.example.com 42}
+
 # -- Role/affiliation change via presence ------------------------------------
 
 test muc-role-change-updates-state {role change via presence updates haveVoice} \

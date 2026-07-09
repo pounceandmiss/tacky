@@ -23,7 +23,7 @@ if 0 {
         → Start registration handshake. Fires <Form> on success.
 
     tacky register form ?-token $tok?
-        → Returns form data as flat array-get list (see formctrl).
+        → Returns the form as a dict (see lib/taco/modules/form.tcl).
 
     tacky register media ?-token $tok? -var $v
         → Returns raw media bytes for field $v, or "".
@@ -122,8 +122,8 @@ snit::type taco_register {
 
 # taco_register_session — one registration session (internal)
 #
-# Owns one bareconn + one formctrl. Contains all the XMPP protocol
-# logic for XEP-0077 in-band registration.
+# Owns one bareconn and the current form (a dict) plus its media bytes.
+# Contains all the XMPP protocol logic for XEP-0077 in-band registration.
 
 snit::type taco_register_session {
     component conn -public conn
@@ -135,6 +135,7 @@ snit::type taco_register_session {
     variable idCounter 0
     variable headerSent 0
     variable currentForm ""
+    variable mediaBytes {}
     variable submitting 0
 
     constructor {args} {
@@ -145,9 +146,6 @@ snit::type taco_register_session {
         if {[info commands $self.conn] ne ""} {
             $conn close
             $conn destroy
-        }
-        if {$currentForm ne "" && [info commands $currentForm] ne ""} {
-            $currentForm destroy
         }
     }
 
@@ -165,7 +163,7 @@ snit::type taco_register_session {
         if {$currentForm eq ""} {
             error "No registration form available"
         }
-        $currentForm dump
+        return $currentForm
     }
 
     method media {args} {
@@ -173,7 +171,10 @@ snit::type taco_register_session {
             error "No registration form available"
         }
         set var [dict get $args -var]
-        $currentForm media $var
+        if {[dict exists $mediaBytes $var]} {
+            return [dict get $mediaBytes $var]
+        }
+        return ""
     }
 
     method submit {args} {
@@ -181,26 +182,21 @@ snit::type taco_register_session {
         if {$currentForm eq ""} {
             error "No registration form available"
         }
-        foreach {var val} $values {
-            $currentForm setValue $var $val
-        }
+        set filled [::tacky::forms::apply $currentForm $values]
         set submitting 1
         set id [incr idCounter]
 
         # Check whether the original form was XEP-0004 (has FORM_TYPE)
-        array set form [$currentForm dump]
         set useDataForm 0
-        if {[info exists form(fields)]} {
-            foreach f $form(fields) {
-                if {$f eq "FORM_TYPE"} {
-                    set useDataForm 1
-                    break
-                }
+        foreach field [dict get $filled fields] {
+            if {[dict get $field var] eq "FORM_TYPE"} {
+                set useDataForm 1
+                break
             }
         }
 
         if {$useDataForm} {
-            set formNode [$currentForm tonode]
+            set formNode [::tacky::forms::serialize $filled]
             $conn writeStanza [j iq -type set -id reg-$id {
                 j query -ns jabber:iq:register {
                     j /as-is $formNode
@@ -210,11 +206,13 @@ snit::type taco_register_session {
             # Legacy submission — emit plain field elements
             $conn writeStanza [j iq -type set -id reg-$id {
                 j query -ns jabber:iq:register {
-                    foreach f $form(fields) {
-                        if {[info exists form(field,$f,value)]} {
-                            j $f .body $form(field,$f,value)
+                    foreach field [dict get $filled fields] {
+                        set var [dict get $field var]
+                        set vals [dict get $field value]
+                        if {[llength $vals] > 0} {
+                            j $var .body [lindex $vals 0]
                         } else {
-                            j $f
+                            j $var
                         }
                     }
                 }
@@ -293,14 +291,13 @@ snit::type taco_register_session {
         # Match the data-form namespace, not any <x> (could be an OOB redirect)
         set xForm [xsearch $queryNode x -ns jabber:x:data -get node]
         if {$xForm ne ""} {
-            set formList [::tacky::forms::tolist $xForm]
+            set form [::tacky::forms::parse $xForm]
         } else {
-            # Legacy fields — synthesise a forms-compatible list
-            set formList [::tacky::forms::tolist [$self LegacyToForm $queryNode]]
+            # Legacy fields — synthesise a forms-compatible node
+            set form [::tacky::forms::parse [$self LegacyToForm $queryNode]]
         }
 
-        array set parsed $formList
-        if {[llength $parsed(fields)] == 0} {
+        if {[llength [dict get $form fields]] == 0} {
             # No in-band fields; server may redirect to a web page via OOB
             set url [string trim [xsearch $queryNode x -ns jabber:x:oob url -get body]]
             if {$url ne ""} {
@@ -312,25 +309,24 @@ snit::type taco_register_session {
             return
         }
 
-        set oldForm $currentForm
-        set currentForm [formctrl $self.form-[clock microseconds] $formList]
-        if {$oldForm ne ""} {
-            $currentForm restore $oldForm
-            catch {$oldForm destroy}
+        if {$currentForm ne ""} {
+            set form [::tacky::forms::restore $currentForm $form]
         }
+        set currentForm $form
+        set mediaBytes {}
 
         # Extract inline BOB <data> elements and push media data.
         # Collect media vars first, then emit <Form> before <MediaReady>
         # so the GUI creates the form widget before requesting media data
         # via async callbacks.
-        set mediaFields [$currentForm mediaFields]
+        set mediaFields [::tacky::forms::mediaMap $currentForm]
         set readyVars {}
         foreach dataNode [xsearch $queryNode data -ns urn:xmpp:bob] {
             set cid [xsearch $dataNode -get @cid]
             if {[dict exists $mediaFields $cid]} {
                 set var [dict get $mediaFields $cid]
                 set base64data [string trim [dict get $dataNode body]]
-                $currentForm setMedia $var $base64data
+                dict set mediaBytes $var $base64data
                 lappend readyVars $var
             }
         }

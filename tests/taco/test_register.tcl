@@ -251,17 +251,17 @@ test reg-form-fields {form returns expected field list} \
     -body {
         tacky register connect -host example.com
         drive_to_form
-        array set form [tacky register form]
-        set form(fields)
+        set form [tacky register form]
+        lmap field [dict get $form fields] {dict get $field var}
     } -result {FORM_TYPE username password captcha-fallback-text captcha-fallback-url from challenge sid ocr}
 
-test reg-form-instructions {form dump contains instructions} \
+test reg-form-instructions {form contains instructions} \
     {*}$common \
     -body {
         tacky register connect -host example.com
         drive_to_form
-        array set form [tacky register form]
-        expr {[info exists form(instructions)] && $form(instructions) ne ""}
+        set form [tacky register form]
+        expr {[dict exists $form instructions] && [dict get $form instructions] ne ""}
     } -result 1
 
 # -- Media -----------------------------------------------------------------
