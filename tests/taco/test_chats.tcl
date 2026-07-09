@@ -52,33 +52,6 @@ test chats-event-muc-jid-verbatim {<Updated> carries the chat JID with ?join} \
         dict get $got -jid
     } -result {room@muc.example.com?join}
 
-test chats-maxts-ignores-hole \
-    {maxTimestamp reflects the newest message, not a tail hole} \
-    {*}$chats_common \
-    -body {
-        set room room@muc.example.com?join
-        set ts [clock microseconds]
-        chats_insert $room timestamp $ts server_id sid-1
-        # A 'newer' hole marks an unfetched tail gap one usec past the
-        # newest message; it must not be mistaken for the newest message.
-        c message messagestore hole add $room newer $ts
-        expr {[c chats maxTimestamp -chat $room] == $ts}
-    } -result 1
-
-test chats-maxts-after-confirm-move \
-    {maxTimestamp tracks a pending row whose timestamp moves on confirmation} \
-    {*}$chats_common \
-    -body {
-        set room room@muc.example.com?join
-        set oid [clock microseconds]
-        chats_insert $room timestamp $oid own_id $oid server_status pending
-        # Room echoes it back with a later stamp; the pending row's timestamp
-        # is moved in place via UPDATE (which the insert trigger misses).
-        set echoTs [expr {$oid + 5000}]
-        chats_insert $room timestamp $echoTs own_id $oid server_id sid-echo
-        expr {[c chats maxTimestamp -chat $room] == $echoTs}
-    } -result 1
-
 test chats-event-new-message {<Updated> fires for new message} \
     {*}$chats_common \
     -body {

@@ -850,6 +850,20 @@ snit::type taco_message {
         }
     }
 
+    # maxTimestamp -chat $chatJid -command $cb — newest real message
+    # timestamp for the chat, used by the chat view's at-tail check.
+    # A fresh query, not the chats-module MaxTimestamps cache: that cache
+    # counts hole rows and misses the timestamp UPDATE on MUC-echo
+    # confirmation, so it can't answer this authoritatively.
+    tackymethod maxTimestamp {args} {
+        array set opts $args
+        set ts [$client db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$opts(-chat) AND kind='message'
+        }]
+        return [expr {$ts eq "" ? "" : $ts}]
+    }
+
     # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50?
     #         ?-tag $tag? -command $cb
     # Always async — calls -command with result list.

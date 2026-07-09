@@ -2116,3 +2116,33 @@ test message-send-reply-own-pending {replying to our own pending message cites i
              [expr {[xsearch $stanza reply -ns urn:xmpp:reply:0 -get @id] eq $ownOid}] \
              [expr {[dict get $reply reply_id] eq $ownOid}]
     } -result {{} 1 1}
+
+test message-maxts-ignores-hole \
+    {maxTimestamp reflects the newest message, not a tail hole} \
+    {*}$msg_common \
+    -body {
+        set room room@muc.example.com?join
+        set ts [clock microseconds]
+        msg_store [list [msg_msg chat_jid $room timestamp $ts \
+            from_jid $room/someone server_id sid-1]]
+        # A 'newer' hole marks an unfetched tail gap one usec past the
+        # newest message; it must not be mistaken for the newest message.
+        $::_client message messagestore hole add $room newer $ts
+        expr {[$::_client message maxTimestamp -chat $room] == $ts}
+    } -result 1
+
+test message-maxts-after-confirm-move \
+    {maxTimestamp tracks a pending row whose timestamp moves on confirmation} \
+    {*}$msg_common \
+    -body {
+        set room room@muc.example.com?join
+        set oid [clock microseconds]
+        msg_store [list [msg_msg chat_jid $room timestamp $oid \
+            from_jid $room/someone own_id $oid server_status pending]]
+        # Room echoes it back with a later stamp; the pending row's timestamp
+        # is moved in place via UPDATE (which the insert trigger misses).
+        set echoTs [expr {$oid + 5000}]
+        msg_store [list [msg_msg chat_jid $room timestamp $echoTs \
+            from_jid $room/someone own_id $oid server_id sid-echo]]
+        expr {[$::_client message maxTimestamp -chat $room] == $echoTs}
+    } -result 1
