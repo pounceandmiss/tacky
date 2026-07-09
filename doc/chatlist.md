@@ -30,17 +30,17 @@ Per source, an entry also carries:
 
     roster      subscription (none|to|from|both), ask (subscribe|""),
                 approved (0|1), groups (list)
-    bookmarks   nick, password, room-state, room-reason
+    bookmarks   nick, password, room_state, room_reason
 
-`room-state` is the live join state:
+`room_state` is the live join state:
 
     joined        in the room
     joining       join sent, no answer yet
-    error         join failed; room-reason has the condition
+    error         join failed; room_reason has the condition
     disconnected  dropped from a room we still belong to (autojoin)
     idle          not joined, not trying
 
-`room-reason` is empty unless `error`.
+`room_reason` is empty unless `error`.
 
 ## Events
 
@@ -49,14 +49,14 @@ Per source, an entry also carries:
     chatlist <Changed>
 
 `<Item>` upserts an entry (add, rename, new message, source change,
-room-state change); a new message just updates `last_activity`, so
+room_state change); a new message just updates `last_activity`, so
 there is no separate top/drop event. `<Remove>` deletes it, except a
 removed roster contact that still has history becomes an `<Item>` with
 `source free`. `<Changed>` means a source was replaced wholesale (first
 fetch, reconnect): refetch with `get`.
 
 Patches carry the full entry and are idempotent. The module funnels the
-roster, bookmarks, chats, and room-state signals into these three
+roster, bookmarks, chats, and room_state signals into these three
 events, so a consumer listens to `chatlist` alone.
 
 ## Notes
