@@ -92,6 +92,15 @@ to a result or error, and none if request is cancelled or never completes for ot
 Fire-and-forget requests (no token) have neither callback wired, so
 any error from the underlying method is silently discarded.
 
+Not every method uses the token contract. Action methods that report
+progress through events - notably `message send` / `sendFile` / `resend` -
+are event-acked, not token-acked: they emit `message <Sent>` on success
+(even when the message is stored `server_status: failed`, e.g. an
+undeliverable encryption) and report later delivery outcomes as `<Patch>`
+field updates. A token on such a call gets no `result`/`error` reply. The
+only unsignalled case is a hard failure before the `<Sent>` emit (e.g. a
+malformed address); that propagates to the backend's error log.
+
 ## Attachments
 
 Attachment semantics - sending, downloading, caching, thumbnails, the
