@@ -192,6 +192,15 @@ pending timestamp. On confirmation (MUC echo or own message via MAM)
 the message may receive a timestamp-move `<Patch>` along with an
 updated `server_status`.
 
+`send` is fire-and-forget: it returns nothing and never replies to a
+request token. The `<Sent>` event is its acknowledgement, and it fires
+on every send - including one that is stored `server_status: failed`
+right away (e.g. an undeliverable encryption), so a failed send is still
+visible in the window. Routine delivery failures surface afterwards as
+`<Patch>` field updates. The only send that produces no signal at all is
+one that throws before `<Sent>` is emitted (a malformed request); don't
+rely on a per-send callback to catch that.
+
 `server_status` answers one question - "does the server have this
 exact message?" - and evolves through `<Patch>` field updates:
 
