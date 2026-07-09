@@ -135,7 +135,7 @@ page contains the tail by definition, even when empty).
 That empty-local fetch is the one case a cursorless load reaches the
 server, and it has no request timeout: if the server is unreachable the
 callback may never fire. Treat a per-request callback as best-effort -
-don't let a spinner hang on one - and rely on live `<Received>` events
+don't let a spinner hang on one - and rely on live `<New>` events
 to populate an empty window once the connection is up.
 
 A "scroll to bottom" affordance cancels in-flight requests, clears the
@@ -152,13 +152,13 @@ happens to reach the tail, it does not flip back. The user rejoins the
 live tail either by clicking "scroll to bottom" or by paging forward
 until the at-tail check flips.
 
-MAM catchup messages arrive as live `<Received>` events under the
+MAM catchup messages arrive as live `<New>` events under the
 AtTail gate - no reload required. `<CatchupDone>` is a UI-settling
 signal only (e.g. hide spinners); it does not drive any reload.
 
 ### Live messages
 
-When a `<Received>` or `<Sent>` event arrives, apply the message via
+When a `<New>` event arrives, apply the message via
 the insertion rule if the at-tail flag is set; otherwise drop. The
 gate is required because inserting a live message when the window
 does not reach the tail would advance the newer-direction cursor past
@@ -187,18 +187,18 @@ section 4).
 
 ## 8. Outgoing messages
 
-Outgoing messages appear immediately on `<Sent>` (optimistic) at their
+Outgoing messages appear immediately on `<New>` (optimistic) at their
 pending timestamp. On confirmation (MUC echo or own message via MAM)
 the message may receive a timestamp-move `<Patch>` along with an
 updated `server_status`.
 
 `send` is fire-and-forget: it returns nothing and never replies to a
-request token. The `<Sent>` event is its acknowledgement, and it fires
+request token. The `<New>` event is its acknowledgement, and it fires
 on every send - including one that is stored `server_status: failed`
 right away (e.g. an undeliverable encryption), so a failed send is still
 visible in the window. Routine delivery failures surface afterwards as
 `<Patch>` field updates. The only send that produces no signal at all is
-one that throws before `<Sent>` is emitted (a malformed request); don't
+one that throws before `<New>` is emitted (a malformed request); don't
 rely on a per-send callback to catch that.
 
 `server_status` answers one question - "does the server have this

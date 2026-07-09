@@ -26,12 +26,13 @@
 #      1.3 no id match -> new, carry on
 #   2. Decrypt OMEMO
 #   3. Classify the contents: a real body is stored and surfaced
-#      (<Received>); a control stanza (receipt, chat marker, chat state)
+#      (<New>); a control stanza (receipt, chat marker, chat state)
 #      or other bodyless payload is currently discarded.
 # === GUI events ===
 #
-#   <Sent>     insert outgoing (no checkmark)
-#   <Received> insert incoming (dedup by timestamp/id)
+#   <New>      insert a newly-persisted message; direction (outgoing vs
+#              incoming) and checkmark derive from the message dict
+#              (is_outgoing / server_status), not the event name
 #   <Patch>    patch a displayed entry (checkmark / rekey)
 #
 snit::type taco_message {
@@ -117,7 +118,7 @@ snit::type taco_message {
             -command [mymethod OnCatchup]
     }
 
-    # Per-message walk: each catchup arrival fires <Received> (or
+    # Per-message walk: each catchup arrival fires <New> (or
     # <Patch> for confirmations) individually so the GUI's AtTail
     # gate applies uniformly. Per-chat bracket tracking lets us
     # replicate the batch-level overlap sweep that single-call
@@ -183,7 +184,7 @@ snit::type taco_message {
                     if {[llength $inserted] > 0} {
                         set dbMsg [lindex [$messagestore get ids \
                             $chatJid $inserted] 0]
-                        $client emit message <Received> -jid $chatJid \
+                        $client emit message <New> -jid $chatJid \
                             -message $dbMsg
                         incr totalCount
                     } else {
@@ -298,7 +299,7 @@ snit::type taco_message {
     method HandleInsertion {chatJid inserted} {
         if {[llength $inserted] == 0} return
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
-        $client emit message <Received> -jid $chatJid -message $dbMsg
+        $client emit message <New> -jid $chatJid -message $dbMsg
     }
 
     # Maximum BuildMessageStanza attempts per message before marking
@@ -397,7 +398,7 @@ snit::type taco_message {
     # 1. Generate a unique ID, build the stanza (may need OMEMO).
     # 2. Persist to DB. server_status='pending' if we wrote to the wire
     #    or expect to retry; 'failed' if the build said TERMINAL.
-    # 3. Emit <Sent> so the GUI can display immediately (optimistic).
+    # 3. Emit <New> so the GUI can display immediately (optimistic).
     # 4. Write stanza to server if one exists.
     #
     # OMEMO cold-cache path: encrypt throws TACO_OMEMO_NOT_READY,
@@ -481,7 +482,7 @@ snit::type taco_message {
         set inserted [dict get $result inserted]
         set dbMsg [lindex [$messagestore get ids $opts(-chat) $inserted] 0]
 
-        $client emit message <Sent> \
+        $client emit message <New> \
             -jid $opts(-chat) -message $dbMsg
 
         if {$stanza ne ""} {
@@ -507,7 +508,7 @@ snit::type taco_message {
 
     # Attachment send (XEP-0363 + XEP-0066), optimistic + progress:
     #   1. store now as 'uploading' (attachment url = local path) and emit
-    #      <Sent> so it shows immediately;
+    #      <New> so it shows immediately;
     #   2. hand the file to the file module, which PUTs it and reports bytes
     #      via `file <Update>` (keyed by the message id);
     #   3. on success promote to 'pending' with the public URL + OOB stanza and
@@ -530,7 +531,7 @@ snit::type taco_message {
         set inserted [dict get [$messagestore store [list $msg]] inserted]
         set ts [lindex $inserted 0]
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
-        $client emit message <Sent> -jid $chatJid -message $dbMsg
+        $client emit message <New> -jid $chatJid -message $dbMsg
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 

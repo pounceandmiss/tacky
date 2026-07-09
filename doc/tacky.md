@@ -48,8 +48,7 @@ omit it.
 
 **message**
 
-    message <Received>    -acc $acc -jid $chatJid -message $msgDict
-    message <Sent>        -acc $acc -jid $chatJid -message $msgDict
+    message <New>         -acc $acc -jid $chatJid -message $msgDict
     message <Patch>       -acc $acc -jid $chatJid -messages $patchList
     message <CatchupDone> -acc $acc -count $n
 

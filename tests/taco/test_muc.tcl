@@ -344,12 +344,12 @@ test muc-say-sends-groupchat {say sends groupchat message with id} \
              [expr {[xsearch $m -get @id] ne ""}]
     } -result {groupchat room@muc.example.com {hello room} 1}
 
-test muc-message-event {groupchat message emits message <Received> only} \
+test muc-message-event {groupchat message emits message <New> only} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
         set got {}
-        tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
+        tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "hi all"
         }]
@@ -367,12 +367,12 @@ test muc-pm-sends-chat {pm sends chat message with muc#user marker} \
              [expr {[xsearch $m x -ns http://jabber.org/protocol/muc#user] ne ""}]
     } -result {chat room@muc.example.com/someone psst 1}
 
-test muc-private-message-event {private message emits message <Received> only} \
+test muc-private-message-event {private message emits message <New> only} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
         set got {}
-        tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
+        tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret"
         }]
@@ -662,13 +662,13 @@ test muc-disconnect-clears-rooms {disconnect clears all room state} \
 
 # -- tacky listen filtering ---------------------------------------------------
 
-test muc-listen-filters-by-jid {tacky listen filters message <Received> by -jid} \
+test muc-listen-filters-by-jid {tacky listen filters message <New> by -jid} \
     {*}$muc_common \
     -body {
         muc_join room1@muc.example.com me
         muc_join room2@muc.example.com me
         set got {}
-        tacky listen message <Received> -jid room1@muc.example.com?join \
+        tacky listen message <New> -jid room1@muc.example.com?join \
             {apply {{ev} { lappend ::got [dict get $ev -jid] }}}
         c.conn feed [j message -type groupchat -from room1@muc.example.com/nick {
             j body #body "yes"
@@ -733,12 +733,12 @@ test muc-groupchat-stored {groupchat messages stored under room@muc?join} \
         list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {stored msg}}
 
-test muc-groupchat-emits-received {groupchat message emits message <Received> with ?join jid} \
+test muc-groupchat-emits-received {groupchat message emits message <New> with ?join jid} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
         set got {}
-        tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
+        tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "event msg"
         }]
@@ -800,12 +800,12 @@ test muc-pm-stored {private messages stored under room@muc/nick} \
         list [llength $msgs] [dict get [lindex $msgs 0] body]
     } -result {1 {secret msg}}
 
-test muc-pm-emits-received {private message emits message <Received> with full occupant jid} \
+test muc-pm-emits-received {private message emits message <New> with full occupant jid} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
         set got {}
-        tacky listen message <Received> {apply {{ev} { set ::got $ev }}}
+        tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret event"
         }]

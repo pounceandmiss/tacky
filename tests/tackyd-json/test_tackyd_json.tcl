@@ -175,23 +175,23 @@ test json-backend-error-special-chars {error with special chars} -setup {
 test json-backend-emit-event {emit event with schema, dashless keys} -setup {
     _test_clear
 } -body {
-    _test_emit message <Received> \
+    _test_emit message <New> \
         -message [dict create timestamp 100 body hello is_outgoing 0]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<Received>"} \
+    {"event"} {"message"} {"<New>"} \
     [json::write object \
         message [json::write object timestamp 100 body {"hello"} is_outgoing false]]]
 
 test json-backend-emit-formatting {emit message with formatting entities} -setup {
     _test_clear
 } -body {
-    _test_emit message <Received> \
+    _test_emit message <New> \
         -message [dict create timestamp 100 body {hello bold world} \
                       formatting {bold 6 4}]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<Received>"} \
+    {"event"} {"message"} {"<New>"} \
     [json::write object \
         message [json::write object timestamp 100 body {"hello bold world"} \
             formatting [json::write array \
@@ -200,13 +200,13 @@ test json-backend-emit-formatting {emit message with formatting entities} -setup
 test json-backend-emit-attachments {emit message with attachments and caption} -setup {
     _test_clear
 } -body {
-    _test_emit message <Sent> \
+    _test_emit message <New> \
         -message [dict create timestamp 100 body https://h/p.png caption "" \
                       attachments [list [dict create url https://h/p.png \
                           type image name p.png size 20480 mime image/png]]]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<Sent>"} \
+    {"event"} {"message"} {"<New>"} \
     [json::write object \
         message [json::write object timestamp 100 body {"https://h/p.png"} \
             caption {""} \

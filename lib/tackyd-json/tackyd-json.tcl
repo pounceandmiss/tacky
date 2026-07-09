@@ -187,8 +187,7 @@ jsonify_type jsonify \
         omemo/setEnabled        bool
         chatlist/get            {list chat_entry}
 
-        message/<Received>      {dict {message message}}
-        message/<Sent>          {dict {message message}}
+        message/<New>           {dict {message message}}
         message/<Patch>         {dict {messages {list message}}}
         message/<CatchupDone>   {dict {count int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}

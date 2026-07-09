@@ -886,7 +886,7 @@ test chatview-live-dropped-when-tail-culled {live message ignored after new-dire
         wait
         set countBefore [llength [.cv messages ids]]
         # Simulate chatarea culling the tail. AtTail flips false, so
-        # subsequent live <Received> events should be dropped.
+        # subsequent live <New> events should be dropped.
         .cv OnCulled {new}
         cv_feed "while-paused" srv-paused
         wait

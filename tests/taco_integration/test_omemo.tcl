@@ -86,7 +86,7 @@ namespace eval ::test::omemo_int {
     proc sendOmemo {body} {
         variable BOT
         variable TESTER
-        set ev [awaitEvent message <Received> -acc $TESTER -jid $BOT {
+        set ev [awaitEvent message <New> -acc $TESTER -jid $BOT {
             tacky message send -acc $TESTER -chat $BOT -body $body
         }]
         return $ev
@@ -121,7 +121,7 @@ namespace eval ::test::omemo_int {
         set acc [namespace current]::_collect_[incr [namespace current]::_awaitCounter]
         set $acc [list]
         set ::test::omemo_int::_collectDone 0
-        set tag [tacky listen message <Received> -acc $TESTER -jid $BOT \
+        set tag [tacky listen message <New> -acc $TESTER -jid $BOT \
             [list apply {{accVar want ev} {
                 lappend $accVar [string trimright \
                     [dict get [dict get $ev -message] body]]
@@ -175,7 +175,7 @@ namespace eval ::test::omemo_int {
         {*}$coldCommon -body {
             set client [tacky client $::test::omemo_int::TESTER]
             set bot $::test::omemo_int::BOT
-            set ev [awaitEvent message <Received> -acc $::test::omemo_int::TESTER \
+            set ev [awaitEvent message <New> -acc $::test::omemo_int::TESTER \
                     -jid $bot {
                 tacky message send -acc $::test::omemo_int::TESTER \
                     -chat $bot -body "cold hello"

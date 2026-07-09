@@ -17,7 +17,7 @@ when the body was only the URL). Render `caption` if present, else
 
     tacky message sendFile -acc $a -chat $j -path $localPath
 
-Optimistic: the message appears immediately via `<Sent>` with
+Optimistic: the message appears immediately via `<New>` with
 `server_status uploading` and the local path as the attachment `url`.
 The backend uploads, then sends the actual message with the public
 URL; from there confirmation proceeds like any send (chat.md section
@@ -56,7 +56,7 @@ One event covers both directions:
         -localpath $path -thumbpath $path -error $msg
 
 For an upload `-id` is the message's timestamp, so progress correlates
-with the row shown by `<Sent>`; for a download, correlate by `-url`.
+with the row shown by `<New>`; for a download, correlate by `-url`.
 Progress is throttled to whole-percent steps. The terminal event
 carries `-localpath` (and `-thumbpath` for an image) on `done`, or
 `-error` on `failed` (no upload service, file too large, network
