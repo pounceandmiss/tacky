@@ -157,7 +157,6 @@ jsonify_type jsonify \
         account/exists          bool
         account/get             {dict {enabled bool}}
         chats/latest            list
-        chats/maxTimestamp      int
         presence/get            presence
         presence/isOnline       bool
         presence/resources      {map presence}
@@ -174,6 +173,7 @@ jsonify_type jsonify \
         setting/list            list
         debugtap/on             int
         message/rawxml          string
+        message/maxTimestamp    int
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list

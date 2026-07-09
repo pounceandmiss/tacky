@@ -81,7 +81,7 @@ applies regardless of source - there is no separate "backfill" or
   unresolved target yields empty `messages`.
 - `tacky message cancel -acc $a -tag $t` - mark in-flight callbacks for `$t`
   inactive.
-- `tacky chats maxTimestamp -acc $a -chat $j` - newest known timestamp for
+- `tacky message maxTimestamp -acc $a -chat $j` - newest known timestamp for
   the chat. Used to decide whether the window has reached the tail.
 - `tacky listen -tag $t message <Received|Sent|Patch|CatchupDone> ... $cb` -
   subscribe to live events.
@@ -117,7 +117,7 @@ may no longer reach the tail.
 
 When a page result arrives, apply each message via the insertion rule.
 For a newer-page result, additionally check whether the window's
-newest timestamp equals `tacky chats maxTimestamp`; if so, the window
+newest timestamp equals `tacky message maxTimestamp`; if so, the window
 is back at the tail and the flag is set.
 
 ### Initial load, goto, catchup

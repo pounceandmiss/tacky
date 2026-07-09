@@ -85,18 +85,6 @@ snit::type taco_chats {
         }
     }
 
-    # Not the MaxTimestamps cache: its AFTER INSERT trigger counts hole
-    # rows and misses the timestamp UPDATE on MUC-echo confirmation.
-    tackymethod maxTimestamp {args} {
-        array set opts $args
-        set jid $opts(-chat)
-        set ts [$db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='message'
-        }]
-        return [expr {$ts eq "" ? "" : $ts}]
-    }
-
     # latest — returns ordered list of chat JIDs (verbatim, so group
     # chats carry their ?join suffix), most recent message first.
     tackymethod latest {args} {

@@ -303,7 +303,7 @@ snit::widgetadaptor chatview {
             # so subsequent <Received> events insert again. Comparing
             # to maxTimestamp is robust to changes in -limit.
             set newest [$hull messages newest]
-            set dbNewest [::tacky chats maxTimestamp \
+            set dbNewest [::tacky message maxTimestamp \
                 -acc $options(-acc) -chat $options(-jid)]
             if {$newest ne "" && $newest eq $dbNewest} {
                 set AtTail 1
@@ -365,7 +365,7 @@ snit::widgetadaptor chatview {
 
     method UpdateViewAtTail {} {
         set newest [$hull messages newest]
-        set dbNewest [::tacky chats maxTimestamp \
+        set dbNewest [::tacky message maxTimestamp \
             -acc $options(-acc) -chat $options(-jid)]
         set hasNewest [expr {$newest ne "" && $newest eq $dbNewest}]
         set ViewAtTail [expr {$hasNewest && [$hull atEnd]}]
