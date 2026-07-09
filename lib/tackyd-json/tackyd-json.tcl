@@ -129,6 +129,8 @@ jsonify_type jsonify \
         presence    {priority int}
         omemo_trust {device int active bool}
         audio_device {default bool}
+        form        {fields {list form_field}}
+        form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
     } \
     -schemas {
         message/local_search    {list int}
@@ -148,6 +150,8 @@ jsonify_type jsonify \
         muc/occupant            occupant
         muc/occupants           {list occupant}
         muc/rooms               list
+        muc/configGet           form
+        muc/registerGet         form
         roster/get              {list roster_item}
         roster/subscription     string
         bookmarks/get           {list bookmark}
@@ -165,6 +169,7 @@ jsonify_type jsonify \
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
         calls/start             string
         register/media          base64
+        register/form           form
         avatar/metadata         avatar_meta
         avatar/thumb            base64
         avatar/data             base64
@@ -195,6 +200,7 @@ jsonify_type jsonify \
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<NickChanged>       {dict {self bool}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
+        muc/<VoiceRequest>      {dict {form form}}
         chatlist/<Item>         {dict {item chat_entry}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}

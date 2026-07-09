@@ -12,13 +12,13 @@
 # tacky muc role -acc $jid -jid $room -nick $nick -role $role ?-reason $text? ?-command $cb?
 # tacky muc affiliation -acc $jid -jid $room -target $bareJid -affiliation $a ?-reason $t? ?-nick $n? ?-command $cb?
 # tacky muc getList -acc $jid -jid $room -what $what ?-command $cb?
-# tacky muc configGet -acc $jid -jid $room ?-command $cb?
-# tacky muc configSet -acc $jid -jid $room -fields $formFields ?-command $cb?
+# tacky muc configGet -acc $jid -jid $room ?-command $cb?      ;# cb gets a form dict
+# tacky muc configSet -acc $jid -jid $room -form $formDict ?-command $cb?
 # tacky muc configCancel -acc $jid -jid $room ?-command $cb?
 # tacky muc createInstant -acc $jid -jid $room ?-command $cb?
 # tacky muc destroyRoom -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
-# tacky muc registerGet -acc $jid -jid $room ?-command $cb?
-# tacky muc registerSet -acc $jid -jid $room -fields $formFields ?-command $cb?
+# tacky muc registerGet -acc $jid -jid $room ?-command $cb?    ;# cb gets a form dict
+# tacky muc registerSet -acc $jid -jid $room -form $formDict ?-command $cb?
 # tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb?
 # tacky muc reservedNick -acc $jid -jid $room ?-command $cb?
 #
@@ -47,7 +47,7 @@
 # tacky listen muc <ConfigChanged> $cmd      ;# -jid $room -codes $statusCodes
 # tacky listen muc <RoomCreated> $cmd        ;# -jid $room
 # tacky listen muc <Destroyed> $cmd          ;# -jid $room -altRoom $jidOrEmpty -reason $text
-# tacky listen muc <VoiceRequest> $cmd       ;# -jid $room -from $jid -nick $nick -form $formStanza
+# tacky listen muc <VoiceRequest> $cmd       ;# -jid $room -from $jid -nick $nick -form $formDict
 # tacky listen muc <AffiliationChanged> $cmd ;# -jid $room -target $bareJid -affiliation $new
 
 snit::type taco_muc {
@@ -318,15 +318,14 @@ snit::type taco_muc {
     }
 
     method configSet {args} {
-        array set opts {-command ""}
+        array set opts {-form "" -command ""}
         array set opts $args
 
         $client iq request -type set -to $opts(-jid) \
             -command [mymethod OnIqResult $opts(-command)] \
-            -payload [$self FormSubmitPayload \
-                http://jabber.org/protocol/muc#owner \
-                http://jabber.org/protocol/muc#roomconfig \
-                $opts(-fields)]
+            -payload [j query -ns http://jabber.org/protocol/muc#owner {
+                j /as-is [::tacky::forms::serialize $opts(-form)]
+            }]
     }
 
     method configCancel {args} {
@@ -392,15 +391,14 @@ snit::type taco_muc {
     }
 
     method registerSet {args} {
-        array set opts {-command ""}
+        array set opts {-form "" -command ""}
         array set opts $args
 
         $client iq request -type set -to $opts(-jid) \
             -command [mymethod OnIqResult $opts(-command)] \
-            -payload [$self FormSubmitPayload \
-                jabber:iq:register \
-                http://jabber.org/protocol/muc#register \
-                $opts(-fields)]
+            -payload [j query -ns jabber:iq:register {
+                j /as-is [::tacky::forms::serialize $opts(-form)]
+            }]
     }
 
     # =====================================================================
@@ -811,7 +809,8 @@ snit::type taco_muc {
         set reqNick [xsearch $xdataNode field @var muc#roomnick value -get body]
 
         $client emit muc <VoiceRequest> \
-            -jid $roomJid -from $reqJid -nick $reqNick -form $xdataNode
+            -jid $roomJid -from $reqJid -nick $reqNick \
+            -form [::tacky::forms::parse $xdataNode]
     }
 
     # =====================================================================
@@ -859,7 +858,7 @@ snit::type taco_muc {
 
         set formNode [xsearch $stanza query x -ns jabber:x:data]
         if {[llength $formNode] > 0} {
-            {*}$command [lindex $formNode 0]
+            {*}$command [::tacky::forms::parse [lindex $formNode 0]]
         } else {
             {*}$command {}
         }
@@ -882,9 +881,12 @@ snit::type taco_muc {
                 set occupants ""
                 set formNodes [xsearch $itemNode x -ns jabber:x:data]
                 if {[llength $formNodes] > 0} {
-                    array set form [::tacky::forms::tolist [lindex $formNodes 0]]
-                    if {[info exists form(field,muc#roominfo_occupants,value)]} {
-                        set occupants $form(field,muc#roominfo_occupants,value)
+                    set form [::tacky::forms::parse [lindex $formNodes 0]]
+                    foreach field [dict get $form fields] {
+                        if {[dict get $field var] eq "muc#roominfo_occupants"} {
+                            set occupants [lindex [dict get $field value] 0]
+                            break
+                        }
                     }
                 }
                 if {$occupants eq "" && [regexp {^(.*)\s+\((\d+)\)\s*$} $name -> stripped count]} {
@@ -962,25 +964,6 @@ snit::type taco_muc {
             return [dict get [dict get $occs $nick] $field]
         }
         return ""
-    }
-
-    method FormSubmitPayload {queryNs formType fieldSpecs} {
-        j query -ns $queryNs {
-            j x -ns jabber:x:data -type submit {
-                j field -var FORM_TYPE -type hidden {
-                    j value #body $formType
-                }
-                foreach fieldSpec $fieldSpecs {
-                    set var [lindex $fieldSpec 0]
-                    set values [lrange $fieldSpec 1 end]
-                    j field -var $var {
-                        foreach v $values {
-                            j value #body $v
-                        }
-                    }
-                }
-            }
-        }
     }
 
     method CleanupRoom {roomJid} {

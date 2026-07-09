@@ -105,6 +105,32 @@ test json-backend-callback-roster {roster items use dashless keys} -setup {
     [json::write array \
         [json::write object jid {"a@b"} approved true groups [json::write array {"x"}]]]]
 
+# -- form type tests ---------------------------------------------------------
+
+test json-type-form {form dict serializes to a nested JSON object} -body {
+    jsonify to_json \
+        [dict create \
+            instructions Configure \
+            fields [list \
+                [dict create var FORM_TYPE type hidden label FORM_TYPE \
+                    required 0 value urn:x] \
+                [dict create var langs type list-multi label Languages \
+                    required 1 value {en de} \
+                    options [list \
+                        [dict create label English value en] \
+                        [dict create label German value de]]]]] \
+        form
+} -result [json::write object \
+    instructions {"Configure"} \
+    fields [json::write array \
+        [json::write object var {"FORM_TYPE"} type {"hidden"} label {"FORM_TYPE"} \
+            required false value [json::write array {"urn:x"}]] \
+        [json::write object var {"langs"} type {"list-multi"} label {"Languages"} \
+            required true value [json::write array {"en"} {"de"}] \
+            options [json::write array \
+                [json::write object label {"English"} value {"en"}] \
+                [json::write object label {"German"} value {"de"}]]]]]
+
 # -- double / map hint tests -------------------------------------------------
 
 test json-type-double {double hint emits a JSON number} -body {

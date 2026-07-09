@@ -176,35 +176,33 @@ snit::widgetadaptor signin {
 snit::widget regform {
     hulltype ttk::frame
     option -formdata -default {} -readonly yes
-    variable FormData -array {}
+    variable FormDict {}
     variable Widgets -array {}
     variable MediaImages -array {}
 
     constructor args {
         $self configurelist $args
-        array set FormData $options(-formdata)
+        set FormDict $options(-formdata)
 
         set row 0
-        if {[info exists FormData(instructions)] && $FormData(instructions) ne ""} {
-            ttk::label $win.instructions -text $FormData(instructions) \
+        if {[dict exists $FormDict instructions] && [dict get $FormDict instructions] ne ""} {
+            ttk::label $win.instructions -text [dict get $FormDict instructions] \
                 -wraplength 400
             grid $win.instructions -row $row -columnspan 2 -sticky ew -pady {0 5}
             incr row
         }
 
-        foreach var $FormData(fields) {
-            set type $FormData(field,$var,type)
-            set label $FormData(field,$var,label)
+        foreach field [dict get $FormDict fields] {
+            set var [dict get $field var]
+            set type [dict get $field type]
+            set label [dict get $field label]
+            set val [lindex [dict get $field value] 0]
 
             switch -- $type {
                 hidden {
                     continue
                 }
                 fixed {
-                    set val ""
-                    if {[info exists FormData(field,$var,value)]} {
-                        set val $FormData(field,$var,value)
-                    }
                     ttk::label $win.f$row -text $val
                     grid $win.f$row -row $row -columnspan 2 -sticky ew
                 }
@@ -212,8 +210,8 @@ snit::widget regform {
                     ttk::label $win.l$row -text "$label:"
                     set w [showableentry $win.f$row]
                     set Widgets($var) $w
-                    if {[info exists FormData(field,$var,value)]} {
-                        $w.entry insert 0 $FormData(field,$var,value)
+                    if {$val ne ""} {
+                        $w.entry insert 0 $val
                     }
                     grid $win.l$row -row $row -column 0 -sticky w
                     grid $w -row $row -column 1 -sticky ew
@@ -221,15 +219,15 @@ snit::widget regform {
                 list-single {
                     ttk::label $win.l$row -text "$label:"
                     set values {}
-                    if {[info exists FormData(field,$var,options)]} {
-                        foreach opt $FormData(field,$var,options) {
+                    if {[dict exists $field options]} {
+                        foreach opt [dict get $field options] {
                             lappend values [dict get $opt value]
                         }
                     }
                     set w [ttk::combobox $win.f$row -values $values -state readonly]
                     set Widgets($var) $w
-                    if {[info exists FormData(field,$var,value)]} {
-                        $w set $FormData(field,$var,value)
+                    if {$val ne ""} {
+                        $w set $val
                     }
                     grid $win.l$row -row $row -column 0 -sticky w
                     grid $w -row $row -column 1 -sticky ew
@@ -238,15 +236,15 @@ snit::widget regform {
                     ttk::label $win.l$row -text "$label:"
                     set w [ttk::entry $win.f$row]
                     set Widgets($var) $w
-                    if {[info exists FormData(field,$var,value)]} {
-                        $w insert 0 $FormData(field,$var,value)
+                    if {$val ne ""} {
+                        $w insert 0 $val
                     }
                     grid $win.l$row -row $row -column 0 -sticky w
                     grid $w -row $row -column 1 -sticky ew
                 }
             }
 
-            if {[info exists FormData(field,$var,media)]} {
+            if {[dict exists $field media]} {
                 incr row
                 ttk::label $win.media_$row -text "(loading media...)"
                 set Widgets(media,$var) $win.media_$row
@@ -274,8 +272,9 @@ snit::widget regform {
 
     method values {} {
         set result {}
-        foreach var $FormData(fields) {
-            set type $FormData(field,$var,type)
+        foreach field [dict get $FormDict fields] {
+            set var [dict get $field var]
+            set type [dict get $field type]
             if {$type in {hidden fixed}} continue
             if {![info exists Widgets($var)]} continue
             set w $Widgets($var)
