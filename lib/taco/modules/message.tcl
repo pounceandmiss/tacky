@@ -230,7 +230,39 @@ snit::type taco_message {
         } else {
             set chatJid $fromBare
         }
+        if {!$isOwn && [$self HandleMarker $chatJid $stanza]} return
         $self ingestLive $chatJid $stanza $isOwn
+    }
+
+    # A bodyless XEP-0184 receipt / XEP-0333 chat marker from the peer
+    # advances the referenced outgoing message's remote_status
+    # (delivered/read) and emits a <Patch>. Returns 1 if the stanza was a
+    # marker (consumed here), else 0 so OnMessage falls through to
+    # ingestLive. A 'displayed' outranks a co-present 'received'.
+    method HandleMarker {chatJid stanza} {
+        set targetId [xsearch $stanza displayed \
+            -ns urn:xmpp:chat-markers:0 -get @id]
+        if {$targetId ne ""} {
+            set tier read
+        } else {
+            set tier ""
+            foreach ns {urn:xmpp:receipts urn:xmpp:chat-markers:0} {
+                set targetId [xsearch $stanza received -ns $ns -get @id]
+                if {$targetId ne ""} {
+                    set tier delivered
+                    break
+                }
+            }
+        }
+        if {$tier eq ""} { return 0 }
+        set changed [$messagestore markRemoteStatus $chatJid $targetId $tier]
+        if {$changed ne ""} {
+            $client emit message <Patch> -jid $chatJid \
+                -messages [list [dict create \
+                    timestamp [dict get $changed timestamp] \
+                    remote_status [dict get $changed remote_status]]]
+        }
+        return 1
     }
 
     # Live-stanza entry point. Called from OnMessage (1:1 DMs) and from the
