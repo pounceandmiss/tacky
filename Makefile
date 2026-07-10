@@ -29,7 +29,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
         android \
 	linux flatpak flatpak-bundle flatpak-install \
-        test test-gui tools wish tclsh clean dist-dir
+        test test-gui test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
 
@@ -213,6 +213,16 @@ test: $(LINUX_BUILD)/tclsh
 
 test-gui: $(LINUX_BUILD)/wish
 	$(LINUX_BUILD)/wish test_gui.tcl
+
+# C-ABI smoke test: compile the standalone driver against dist/libtacky.a and run
+# the create -> request -> destroy cycle. Exercises the static-archive link
+# boundary that test_embed.tcl (Tcl-level) can't. Opt-in - not part of `test`,
+# which builds no C. Extend the link line if a bundled dep needs more system libs.
+test-lib: lib
+	$(CXX) -pthread -I embed -o $(LINUX_BUILD)/lib_driver tests/lib_driver.c \
+	    -Wl,--start-group dist/libtacky.a -Wl,--end-group \
+	    -ldl -lz -lm -static-libstdc++
+	$(LINUX_BUILD)/lib_driver
 
 $(LINUX_BUILD)/tclsh: Makefile
 	$(MAKE) -f zippy/zippy.mk \
