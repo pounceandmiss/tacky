@@ -13,6 +13,7 @@ snit::widget chatpanel {
 
     option -acc -readonly yes
     option -jid -readonly yes
+    option -groupchat -default 0 -readonly yes
     option -menubar -default ""
 
     variable cv
@@ -37,7 +38,7 @@ snit::widget chatpanel {
     constructor args {
         $self configurelist $args
 
-        set isMuc [expr {[jid query $options(-jid)] eq "join"}]
+        set isMuc $options(-groupchat)
         if {$isMuc} {
             set roomJid [jid bare $options(-jid)]
         }
@@ -46,7 +47,8 @@ snit::widget chatpanel {
         set leftFrame [ttk::frame $paned.left]
 
         set cv [chatview $leftFrame.cv \
-            -acc $options(-acc) -jid $options(-jid)]
+            -acc $options(-acc) -jid $options(-jid) \
+            -groupchat $options(-groupchat)]
         set entry [messageentry $leftFrame.entry \
             -send-command [mymethod Send] \
             -attach-command [mymethod Attach] \

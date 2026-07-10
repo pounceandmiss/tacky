@@ -786,6 +786,10 @@ snit::type taco_messagestore {
         dict set d is_outgoing [expr {[dict get $d own_id] ne ""}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
+            # Normalize the replied-to author the same way from_jid is
+            # normalized, so the GUI reads it instead of parsing chat_jid.
+            dict set d reply_author_jid \
+                [NormalizeAuthorJid $chatJid [dict get $d reply_to]]
             set targetTs [$self resolveReply $chatJid \
                 [dict get $d reply_id] [dict get $d reply_to]]
             if {$targetTs ne ""} {

@@ -1,6 +1,7 @@
 snit::widgetadaptor chatwindow {
     option -acc -readonly yes
     option -jid -readonly yes
+    option -groupchat -default 0 -readonly yes
 
     typemethod open {w args} {
         if {[winfo exists $w]} {
@@ -20,7 +21,8 @@ snit::widgetadaptor chatwindow {
         menu $win.menubar -tearoff 0
         menu $win.menubar.file -tearoff 0
         $win.menubar.file add command -label "MAM Info..." \
-            -command [list maminfo open $options(-acc) -target $options(-jid)]
+            -command [list maminfo open $options(-acc) \
+                -target $options(-jid) -groupchat $options(-groupchat)]
         $win.menubar.file add separator
         $win.menubar.file add command -label "Close" \
             -command [list destroy $win] -accelerator "Ctrl+W"
@@ -33,7 +35,7 @@ snit::widgetadaptor chatwindow {
 
         # Chat widgets
         chatpanel $win.cp -acc $options(-acc) -jid $options(-jid) \
-            -menubar $win.menubar
+            -groupchat $options(-groupchat) -menubar $win.menubar
         pack $win.cp -expand yes -fill both
     }
 }

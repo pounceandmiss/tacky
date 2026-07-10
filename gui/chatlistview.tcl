@@ -610,8 +610,10 @@ snit::widget chatlistview {
     method ActivateItem {item} {
         # jid is an opaque chat identity; pass it back verbatim to open the chat.
         if {$options(-open-chat-command) ne ""} {
+            set jid [$self ItemJid $item]
+            set gc [dict getdef [$self ModelItem $jid] groupchat 0]
             {*}$options(-open-chat-command) \
-                -acc $options(-acc) -jid [$self ItemJid $item]
+                -acc $options(-acc) -jid $jid -groupchat $gc
         }
     }
 }
