@@ -2205,3 +2205,118 @@ test message-maxts-after-confirm-move \
             from_jid $room/someone own_id $oid server_id sid-echo]]
         expr {[$::_client message maxTimestamp -chat $room] == $echoTs}
     } -result 1
+
+# XEP-0184/0333 marker sending.
+
+# Id of the first written marker <element> in namespace $ns, or "".
+proc msg_written_marker {element ns} {
+    foreach s [$::_client conn get_written] {
+        set id [xsearch $s $element -ns $ns -get @id]
+        if {$id ne ""} { return $id }
+    }
+    return ""
+}
+
+# Count of written <message> stanzas bearing <element xmlns=ns>.
+proc msg_written_marker_count {element ns} {
+    set n 0
+    foreach s [$::_client conn get_written] {
+        if {[llength [xsearch $s $element -ns $ns]] > 0} { incr n }
+    }
+    return $n
+}
+
+test message-autoreceipt-request \
+    {incoming <request> triggers a XEP-0184 received echoing the message id} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id m1 -from alice@example.com/phone {
+            j body #body hi
+            j request -ns urn:xmpp:receipts
+        }]
+        msg_written_marker received urn:xmpp:receipts
+    } -result m1
+
+test message-autoreceipt-markable \
+    {incoming <markable> triggers a XEP-0333 received echoing the message id} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id m2 -from alice@example.com/phone {
+            j body #body hi
+            j markable -ns urn:xmpp:chat-markers:0
+        }]
+        msg_written_marker received urn:xmpp:chat-markers:0
+    } -result m2
+
+test message-autoreceipt-none \
+    {a plain message triggers no receipt} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id m3 -from alice@example.com/phone {
+            j body #body hi
+        }]
+        list [msg_written_marker_count received urn:xmpp:receipts] \
+             [msg_written_marker_count received urn:xmpp:chat-markers:0]
+    } -result {0 0}
+
+test message-autoreceipt-disabled \
+    {send_chat_markers=0 suppresses the auto receipt} \
+    {*}$msg_common \
+    -body {
+        [$::_client cget -taco] setting set -key send_chat_markers -value 0
+        $::_client conn feed [j message -type chat -id m4 -from alice@example.com/phone {
+            j body #body hi
+            j request -ns urn:xmpp:receipts
+        }]
+        msg_written_marker_count received urn:xmpp:receipts
+    } -result 0
+
+test message-markdisplayed-sends \
+    {markDisplayed sends a displayed marker referencing the stored origin id} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 5000000 origin_id oid9]]
+        tacky message markDisplayed -acc $acc \
+            -chat alice@example.com -timestamp 5000000
+        msg_written_marker displayed urn:xmpp:chat-markers:0
+    } -result oid9
+
+test message-markdisplayed-muc-noop \
+    {markDisplayed is a no-op for MUC chats} \
+    {*}$msg_common \
+    -body {
+        tacky message markDisplayed -acc $acc \
+            -chat room@conf.example.com?join -timestamp 6000000
+        msg_written_marker_count displayed urn:xmpp:chat-markers:0
+    } -result 0
+
+test message-markdisplayed-disabled \
+    {send_chat_markers=0 suppresses the displayed marker} \
+    {*}$msg_common \
+    -body {
+        [$::_client cget -taco] setting set -key send_chat_markers -value 0
+        msg_store [list [msg_msg timestamp 7000000 origin_id oid7]]
+        tacky message markDisplayed -acc $acc \
+            -chat alice@example.com -timestamp 7000000
+        msg_written_marker_count displayed urn:xmpp:chat-markers:0
+    } -result 0
+
+test message-outgoing-requests-markers \
+    {1:1 outgoing message asks for delivery and read markers} \
+    {*}$msg_common \
+    -body {
+        set s [$::_client message BuildMessageStanza wire \
+            alice@example.com body oid1 chat alice@example.com ""]
+        list [llength [xsearch $s request -ns urn:xmpp:receipts]] \
+             [llength [xsearch $s markable -ns urn:xmpp:chat-markers:0]]
+    } -result {1 1}
+
+test message-outgoing-groupchat-no-markers \
+    {groupchat outgoing omits receipt/marker requests} \
+    {*}$msg_common \
+    -body {
+        set s [$::_client message BuildMessageStanza wire \
+            room@conf.example.com body oid2 groupchat room@conf.example.com ""]
+        list [llength [xsearch $s request -ns urn:xmpp:receipts]] \
+             [llength [xsearch $s markable -ns urn:xmpp:chat-markers:0]]
+    } -result {0 0}

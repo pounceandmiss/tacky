@@ -232,6 +232,39 @@ snit::type taco_message {
         }
         if {!$isOwn && [$self HandleMarker $chatJid $stanza]} return
         $self ingestLive $chatJid $stanza $isOwn
+        if {!$isOwn} {
+            $self AutoReceipt $chatJid $stanza
+        }
+    }
+
+    # send_chat_markers setting; unset means on. Gates all outgoing markers.
+    method MarkersEnabled {} {
+        if {[catch {[$client cget -taco] setting get -key send_chat_markers} v]} {
+            return 1
+        }
+        return [expr {$v ne "0"}]
+    }
+
+    # Send a bodyless receipt/marker stanza referencing $refId. Not stored
+    # (ClassifyMessage drops bodyless control stanzas).
+    method SendMarker {toJid element ns refId} {
+        $client write [j message -to $toJid -type chat -id [clock microseconds] {
+            j $element -ns $ns -id $refId
+        }]
+    }
+
+    # Reply with a `received` marker if a live 1:1 message asked for one
+    # (XEP-0184 <request> / XEP-0333 <markable>). Read is GUI-driven.
+    method AutoReceipt {chatJid stanza} {
+        if {![$self MarkersEnabled]} return
+        set refId [xsearch $stanza -get @id]
+        if {$refId eq ""} return
+        if {[llength [xsearch $stanza request -ns urn:xmpp:receipts]] > 0} {
+            $self SendMarker $chatJid received urn:xmpp:receipts $refId
+        }
+        if {[llength [xsearch $stanza markable -ns urn:xmpp:chat-markers:0]] > 0} {
+            $self SendMarker $chatJid received urn:xmpp:chat-markers:0 $refId
+        }
     }
 
     # A bodyless XEP-0184 receipt / XEP-0333 chat marker from the peer
@@ -411,6 +444,11 @@ snit::type taco_message {
                         j body -start 0 -end $fbEnd
                     }
                 }
+            }
+            # Ask 1:1 peers for delivery/read markers (XEP-0184/0333).
+            if {$msgType eq "chat"} {
+                j request -ns urn:xmpp:receipts
+                j markable -ns urn:xmpp:chat-markers:0
             }
         }]
     }
@@ -895,6 +933,21 @@ snit::type taco_message {
             WHERE chat_jid=$opts(-chat) AND kind='message'
         }]
         return [expr {$ts eq "" ? "" : $ts}]
+    }
+
+    # markDisplayed -chat $chatJid -timestamp $ts
+    # Send a `displayed` marker for a read message. No-op for MUC, when
+    # disabled, or when the row has no origin id to reference.
+    tackymethod markDisplayed {args} {
+        array set opts $args
+        if {![$self MarkersEnabled]} return
+        if {[string match "*?join" $opts(-chat)]} return
+        set originId [$client db onecolumn {
+            SELECT origin_id FROM chat_message
+            WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
+        }]
+        if {$originId eq ""} return
+        $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId
     }
 
     # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50?

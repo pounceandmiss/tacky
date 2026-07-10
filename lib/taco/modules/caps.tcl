@@ -40,6 +40,8 @@ snit::type taco_caps {
         set features [lsort {
             http://jabber.org/protocol/caps
             http://jabber.org/protocol/disco#info
+            urn:xmpp:receipts
+            urn:xmpp:chat-markers:0
         }]
 
         # Register disco#info IQ handler
