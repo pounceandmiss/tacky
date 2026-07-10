@@ -296,6 +296,36 @@ test muc-occupant-caps-none {a plain participant gets no caps over others} \
         list [dict get $caps kick] [dict get $caps make_moderator] [dict get $caps ban]
     } -result {0 0 0}
 
+test muc-action-error-maps-condition {a failed moderation action reports friendly text} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator -affiliation admin
+        set got ""
+        c muc role -jid room@muc.example.com -nick other -role none \
+            -onerror [list apply {{msg} { set ::got $msg }}]
+        set req [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type error -id [xsearch $req -get @id] \
+            -from room@muc.example.com {
+            j error -type auth {
+                j forbidden -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set got
+    } -result {You do not have permission to do that}
+
+test muc-action-success-invokes-command {a successful moderation action invokes -command} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator -affiliation admin
+        set got no
+        c muc kick -jid room@muc.example.com -nick other \
+            -command [list apply {{stanza} { set ::got yes }}]
+        set req [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+            -from room@muc.example.com {}]
+        set got
+    } -result {yes}
+
 test muc-presence-event {<Presence> event fires for occupant} \
     {*}$muc_common \
     -body {
