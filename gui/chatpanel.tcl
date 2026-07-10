@@ -23,6 +23,7 @@ snit::widget chatpanel {
     variable roomJid ""
     variable showParticipants 0
     variable showJidIn1to1 0
+    variable sendReceipts 1
     variable omemoEnabled 1
     variable mucList ""
     variable findBar ""
@@ -77,6 +78,8 @@ snit::widget chatpanel {
         } else {
             ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
                 [mymethod OnShowJidIn1to1Setting]
+            ::tacky observe -tag $win setting <Changed> -key send_chat_markers \
+                [mymethod OnSendReceiptsSetting]
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
                 [mymethod OnOmemoEnabled]
@@ -105,6 +108,16 @@ snit::widget chatpanel {
 
     method ToggleShowJidIn1to1 {} {
         ::tacky setting set -key show_jid_in_1to1 -value $showJidIn1to1
+    }
+
+    method OnSendReceiptsSetting {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} { set val 1 }
+        set sendReceipts [expr {!!$val}]
+    }
+
+    method ToggleSendReceipts {} {
+        ::tacky setting set -key send_chat_markers -value $sendReceipts
     }
 
     method BuildOmemoToggle {} {
@@ -233,6 +246,9 @@ snit::widget chatpanel {
             $mb.chat add checkbutton -label "Show JID Instead of Name" \
                 -variable [myvar showJidIn1to1] \
                 -command [mymethod ToggleShowJidIn1to1]
+            $mb.chat add checkbutton -label "Send Read Receipts" \
+                -variable [myvar sendReceipts] \
+                -command [mymethod ToggleSendReceipts]
             $mb.chat add command -label "Start Call" \
                 -command [mymethod StartCall]
         }
