@@ -65,6 +65,11 @@ snit::widgetadaptor chatview {
     # thumbnail. A `file <Update>` for that url routes progress/result to each.
     variable DownloadPending
 
+    # Read markers: newest incoming id shown, and the last one we sent a
+    # `displayed` for. See MaybeSendDisplayed.
+    variable NewestIncoming ""
+    variable LastDisplayedSent ""
+
     constructor args {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
@@ -112,6 +117,13 @@ snit::widgetadaptor chatview {
         }
         bind $win.text <<Yview>> +[mymethod OnScroll]
         bind $win.text <Configure> [mymethod OnFirstConfigure]
+        # Refocusing marks the tail read (live arrivals go via OnMessage).
+        # The toplevel outlives us, so guard on $win still existing.
+        if {!$IsMuc} {
+            bind [winfo toplevel $win] <FocusIn> +[list apply {{w} {
+                if {[winfo exists $w]} { $w MaybeSendDisplayed }
+            }} $win]
+        }
     }
 
     # Initial snapshot of author names for this chat. Applies cached
@@ -174,6 +186,7 @@ snit::widgetadaptor chatview {
         set AtTail 1
         $self UpdateViewAtTail
         $hull see end
+        $self MaybeSendDisplayed
     }
 
     destructor {
@@ -311,6 +324,7 @@ snit::widgetadaptor chatview {
         if {$direction eq "new" && $atEnd} {
             $hull see end
         }
+        $self MaybeSendDisplayed
     }
 
     # Live-message flow.
@@ -337,6 +351,7 @@ snit::widgetadaptor chatview {
         $self ProcessBatch [list $m]
         $self UpdateViewAtTail
         if {$atEnd} { $hull see end }
+        $self MaybeSendDisplayed
     }
 
     method OnPatch {ev} {
@@ -387,9 +402,33 @@ snit::widgetadaptor chatview {
         enrich_store_message $storeDict $names
     }
 
+    # This chat is viewable and its toplevel holds the OS focus.
+    method WindowFocused {} {
+        if {![winfo viewable $win]} { return 0 }
+        set f [focus -displayof $win]
+        return [expr {$f ne "" && [winfo toplevel $f] eq [winfo toplevel $win]}]
+    }
+
+    # Mark the newest incoming message read once it's on screen.
+    method MaybeSendDisplayed {} {
+        if {$IsMuc || !$AtTail || $NewestIncoming eq ""} return
+        if {$LastDisplayedSent ne "" && $NewestIncoming <= $LastDisplayedSent} return
+        if {![$self WindowFocused]} return
+        ::tacky message markDisplayed -acc $options(-acc) \
+            -chat $options(-jid) -timestamp $NewestIncoming
+        set LastDisplayedSent $NewestIncoming
+    }
+
     method ProcessBatch {messages} {
         set enriched {}
         foreach msg $messages {
+            if {(![dict exists $msg is_outgoing] || ![dict get $msg is_outgoing])
+                    && (![dict exists $msg kind] || [dict get $msg kind] eq "message")} {
+                set id [dict get $msg timestamp]
+                if {$NewestIncoming eq "" || $id > $NewestIncoming} {
+                    set NewestIncoming $id
+                }
+            }
             set emsg [$self EnrichMessage $msg]
             set ajid [dict get $emsg avatar_jid]
             if {$ajid ne ""} {
@@ -851,9 +890,28 @@ snit::widget chatarea {
     }
 
     method patchFields {id patchDict} {
-        if {[dict exists $patchDict server_status]} {
-            $self receipt update $id [dict get $patchDict server_status]
+        if {![dict exists $patchDict server_status]
+                && ![dict exists $patchDict remote_status]} return
+        # Merge onto the stored dict so a single-axis patch keeps the other
+        # axis; a bare `apply` patch has none, so assume server-confirmed.
+        if {[dict exists $Messages $id]} {
+            set stored [dict get $Messages $id]
+        } else {
+            set stored [dict create server_status "" remote_status none]
         }
+        foreach k {server_status remote_status} {
+            if {[dict exists $patchDict $k]} {
+                dict set stored $k [dict get $patchDict $k]
+            }
+        }
+        if {[dict exists $Messages $id]} {
+            dict set Messages $id $stored
+        }
+        set serverStatus [expr {[dict exists $stored server_status]
+            ? [dict get $stored server_status] : ""}]
+        set remoteStatus [expr {[dict exists $stored remote_status]
+            ? [dict get $stored remote_status] : "none"}]
+        $self receipt update $id $serverStatus $remoteStatus
     }
 
     method OnYview {} {
@@ -953,6 +1011,7 @@ snit::widget chatarea {
             }
         }
         $text tag configure receipt -foreground #888888
+        $text tag configure receipt.read -foreground #2d6da3
         $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
         $text tag configure system -foreground gray50 -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
@@ -1082,24 +1141,40 @@ snit::widget chatarea {
         }
     }
 
-    # Receipt glyph for an outgoing message (only rendered when outgoing).
-    # "" means the server has it -> single check; failed -> "!"; pending /
-    # uploading are optimistic, no glyph yet.
-    method ReceiptText {status} {
-        switch -- $status {
-            ""      { return "\u2713" }
-            failed  { return "!" }
-            default { return "" }
+    # Outgoing receipt glyph: "!" failed, "" while pending, single check
+    # once the server has it, double on delivered/read (read is coloured).
+    method ReceiptText {serverStatus remoteStatus} {
+        if {$serverStatus eq "failed"} { return "!" }
+        if {$serverStatus ne ""} { return "" }
+        switch -- $remoteStatus {
+            read - delivered { return "\u2713\u2713" }
+            default          { return "\u2713" }
         }
     }
 
-    method {receipt update} {id status} {
+    # Read gets an accent colour via receipt.read.
+    method ReceiptTags {id serverStatus remoteStatus} {
+        set tags [list item.$id item.$id.receipt receipt]
+        if {$serverStatus eq "" && $remoteStatus eq "read"} {
+            lappend tags receipt.read
+        }
+        return $tags
+    }
+
+    # Insert the receipt glyph at msgins.
+    method DrawReceiptGlyph {id serverStatus remoteStatus} {
+        set rt [$self ReceiptText $serverStatus $remoteStatus]
+        $text ins msgins " $rt" [$self ReceiptTags $id $serverStatus $remoteStatus]
+    }
+
+    method {receipt update} {id serverStatus remoteStatus} {
         set tag item.$id.receipt
         set ranges [$text tag ranges $tag]
         if {[llength $ranges] == 0} return
         lassign $ranges start end
-        set rt [$self ReceiptText $status]
-        $text replace $start $end " $rt" [list item.$id $tag receipt]
+        set rt [$self ReceiptText $serverStatus $remoteStatus]
+        $text replace $start $end " $rt" \
+            [$self ReceiptTags $id $serverStatus $remoteStatus]
     }
 
     # Draws message, doesn't store info about it, doesn't adjust the
@@ -1158,10 +1233,15 @@ snit::widget chatarea {
             # URLs removed) for attachment messages; plain messages have none.
             set displayBody [expr {[info exists message(caption)]
                 ? $message(caption) : $message(body)}]
+            set hasAttachments [expr {[info exists message(attachments)]
+                && [llength $message(attachments)] > 0}]
+            set remoteStatus [expr {[info exists message(remote_status)]
+                ? $message(remote_status) : "none"}]
             $text ins msgins $displayBody [list $tag body message $tag.body]
-            if {$message(is_outgoing)} {
-                set rt [$self ReceiptText $message(server_status)]
-                $text ins msgins " $rt" [list $tag $tag.receipt receipt]
+            # Plain message: receipt trails the body. Attachment: below.
+            if {$message(is_outgoing) && !$hasAttachments} {
+                $self DrawReceiptGlyph $message(id) \
+                    $message(server_status) $remoteStatus
             }
             $text ins msgins \n $tag
 
@@ -1177,12 +1257,19 @@ snit::widget chatarea {
                 }
             }
 
-            if {[info exists message(attachments)]} {
+            if {$hasAttachments} {
                 set aidx 0
                 foreach att $message(attachments) {
                     $self DrawAttachment $tag $message(id) $aidx $att \
                         $message(server_status)
                     incr aidx
+                }
+                if {$message(is_outgoing)} {
+                    # Receipt right of the last attachment, before its newline.
+                    set lastWin $text.att_$message(id)_[expr {$aidx - 1}]
+                    $text mark set msgins "$lastWin + 1 chars"
+                    $self DrawReceiptGlyph $message(id) \
+                        $message(server_status) $remoteStatus
                 }
             }
         }
@@ -1316,6 +1403,8 @@ proc enrich_store_message {storeDict names} {
         if {$displayName eq ""} { set displayName $fromJid }
     }
     set serverStatus [dict get $storeDict server_status]
+    set remoteStatus [expr {[dict exists $storeDict remote_status]
+        ? [dict get $storeDict remote_status] : "none"}]
     # Direction comes from the backend (own_id-derived); the view doesn't
     # re-derive it. Older dicts without the flag fall back to "incoming".
     set isOutgoing [expr {[dict exists $storeDict is_outgoing]
@@ -1329,6 +1418,7 @@ proc enrich_store_message {storeDict names} {
         body         [dict get $storeDict body] \
         is_outgoing  $isOutgoing \
         server_status $serverStatus \
+        remote_status $remoteStatus \
         encryption   [expr {[dict exists $storeDict encryption] ? [dict get $storeDict encryption] : ""}] \
         fail_reason  [expr {[dict exists $storeDict fail_reason] ? [dict get $storeDict fail_reason] : ""}]]
     if {[dict exists $storeDict formatting]} {

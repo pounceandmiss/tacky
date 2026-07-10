@@ -23,6 +23,7 @@ snit::widget chatlistview {
     variable sortby "recent"
     variable prescolors 1
     variable showAvatars 1
+    variable sendReceipts 1
     variable bookmarkMember 0
     variable trackedAvatars {}
     # Flat list of chat entries (chatlist get shape), patched by <Item>/<Remove>
@@ -52,6 +53,8 @@ snit::widget chatlistview {
             [mymethod OnPresenceColorsSetting]
         ::tacky observe -tag $win setting <Changed> -key show_avatars \
             [mymethod OnShowAvatarsSetting]
+        ::tacky observe -tag $win setting <Changed> -key send_chat_markers \
+            [mymethod OnSendReceiptsSetting]
 
         # Search entry + new-chat button
         ttk::frame $win.header
@@ -149,6 +152,9 @@ snit::widget chatlistview {
         $settingsmenu add checkbutton -label "Show avatars" \
             -variable [myvar showAvatars] \
             -command [mymethod OnShowAvatarsChanged]
+        $settingsmenu add checkbutton -label "Send read receipts" \
+            -variable [myvar sendReceipts] \
+            -command [mymethod OnSendReceiptsChanged]
         $settingsmenu add separator
         $settingsmenu add command -label "Refresh" \
             -command [mymethod OnRefresh]
@@ -367,6 +373,17 @@ snit::widget chatlistview {
     method OnShowAvatarsChanged {} {
         ::tacky setting set -key show_avatars -value $showAvatars
         $self Render
+    }
+
+    method OnSendReceiptsChanged {} {
+        ::tacky setting set -key send_chat_markers -value $sendReceipts
+    }
+
+    method OnSendReceiptsSetting {ev} {
+        set val [dict get $ev -value]
+        if {$val ne ""} {
+            set sendReceipts $val
+        }
     }
 
     method OnShowAvatarsSetting {ev} {
