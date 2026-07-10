@@ -1025,3 +1025,66 @@ test messagestore-demote-empty-noop {demote with an empty server_id is a no-op} 
         store demote alice@example.com ""
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] server_id
     } -result {sid1}
+
+# remote_status (XEP-0184/0333 markers).
+proc ms_remote {jid {ts 100}} {
+    dict get [lindex [ms_msgs [store get latest $jid]] 0] remote_status
+}
+
+test messagestore-remote-status-default-none {a fresh row has remote_status none} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
+        ms_remote alice@example.com
+    } -result none
+
+test messagestore-mark-remote-status-advances {markers advance none->delivered->read} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
+        set d [store markRemoteStatus alice@example.com oid1 delivered]
+        set r [store markRemoteStatus alice@example.com oid1 read]
+        list [dict get $d remote_status] [dict get $r remote_status] \
+             [ms_remote alice@example.com]
+    } -result {delivered read read}
+
+test messagestore-mark-remote-status-forward-only {a lower-rank marker after a higher one is a no-op} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
+        store markRemoteStatus alice@example.com oid1 read
+        set back [store markRemoteStatus alice@example.com oid1 delivered]
+        list $back [ms_remote alice@example.com]
+    } -result {{} read}
+
+test messagestore-mark-remote-status-matches-origin-id {marker matches origin_id when own_id differs} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 origin_id orig1 body a]]
+        store markRemoteStatus alice@example.com orig1 delivered
+        ms_remote alice@example.com
+    } -result delivered
+
+test messagestore-mark-remote-status-unknown-id-noop {an unmatched target id changes nothing} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
+        set r [store markRemoteStatus alice@example.com nosuch read]
+        list $r [ms_remote alice@example.com]
+    } -result {{} none}
+
+test messagestore-mark-remote-status-incoming-ignored {an incoming row (own_id empty) is never marked} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id "" origin_id "" body a]]
+        set r [store markRemoteStatus alice@example.com "" read]
+        list $r [ms_remote alice@example.com]
+    } -result {{} none}
+
+test messagestore-mark-remote-status-wrong-chat-noop {a marker scoped to another chat changes nothing} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
+        set r [store markRemoteStatus bob@example.com oid1 read]
+        list $r [ms_remote alice@example.com]
+    } -result {{} none}

@@ -108,6 +108,11 @@ snit::type taco_messagestore {
                 -- 'pending'/'uploading'/'failed' = our outgoing message
                 --   whose server storage state we don't (yet) know.
                 server_status  TEXT,
+                -- far-side delivery/read progress from XEP-0184/0333
+                -- markers, distinct from server_status (the send pipeline).
+                -- 'none' (default) | 'delivered' | 'read'. Forward-only.
+                -- Meaningful for outgoing rows only.
+                remote_status  TEXT NOT NULL DEFAULT 'none',
                 -- intended outgoing encryption, stamped at send time:
                 -- '' = plaintext, 'omemo' = OMEMO. Automatic retries
                 -- honor this so a later toggle change can't silently
@@ -373,7 +378,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -389,7 +394,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -415,7 +420,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -429,7 +434,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
@@ -473,7 +478,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -487,7 +492,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -549,7 +554,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
@@ -570,7 +575,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, encryption, fail_reason,
+                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
@@ -679,6 +684,46 @@ snit::type taco_messagestore {
             }
         }
         return $confirmed
+    }
+
+    # Rank of a remote_status value; higher is further along the
+    # delivered/read progression. Unknown values sort as 'none'.
+    proc RemoteStatusRank {status} {
+        switch -- $status {
+            read      { return 2 }
+            delivered { return 1 }
+            default   { return 0 }
+        }
+    }
+
+    # Advance an outgoing message's remote_status from an incoming
+    # XEP-0184/0333 marker. $targetId is the marker's referenced id,
+    # matched against our own_id (fallback origin_id). Forward-only: a
+    # lower or equal rank (duplicate / out-of-order marker) is a no-op.
+    # Returns {chat_jid, timestamp, remote_status} if a row changed,
+    # else "" so the caller can skip the <Patch>.
+    method markRemoteStatus {chatJid targetId status} {
+        if {$targetId eq ""} { return "" }
+        set changed ""
+        $options(-db) transaction {
+            $options(-db) eval {
+                SELECT timestamp, remote_status FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND own_id != ''
+                  AND (own_id=$targetId OR origin_id=$targetId)
+                LIMIT 1
+            } row {
+                if {[RemoteStatusRank $status] > [RemoteStatusRank $row(remote_status)]} {
+                    set ts $row(timestamp)
+                    $options(-db) eval {
+                        UPDATE chat_message SET remote_status=$status
+                        WHERE chat_jid=$chatJid AND timestamp=$ts
+                    }
+                    set changed [dict create \
+                        chat_jid $chatJid timestamp $ts remote_status $status]
+                }
+            }
+        }
+        return $changed
     }
 
     # Dedup by server_id/own_id only, for the caller to act on before any

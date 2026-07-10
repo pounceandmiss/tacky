@@ -756,6 +756,65 @@ test message-classify-body-is-message {a body is a normal stored message} \
                 -chat_jid bob@example.com -timestamp 1000 -server_id ""] body]
     } -result {message hi}
 
+# Incoming read receipts / chat markers advance remote_status (XEP-0184/0333).
+test message-marker-received-marks-delivered \
+    {a XEP-0184 receipt from the peer advances the sent message to delivered} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j received -ns urn:xmpp:receipts -id $oid
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] remote_status
+    } -result delivered
+
+test message-marker-displayed-marks-read \
+    {a XEP-0333 displayed marker advances the sent message to read} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j displayed -ns urn:xmpp:chat-markers:0 -id $oid
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] remote_status
+    } -result read
+
+test message-marker-displayed-then-received-no-regress \
+    {a receipt arriving after a displayed marker does not downgrade read} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j displayed -ns urn:xmpp:chat-markers:0 -id $oid
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j received -ns urn:xmpp:receipts -id $oid
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] remote_status
+    } -result read
+
+test message-marker-wrong-peer-ignored \
+    {a marker from a different peer leaves the sent message untouched} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from carol@example.com/x {
+            j displayed -ns urn:xmpp:chat-markers:0 -id $oid
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] remote_status
+    } -result none
+
+test message-marker-not-stored-as-message \
+    {a marker stanza is consumed, not stored as its own message row} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j received -ns urn:xmpp:receipts -id $oid
+        }]
+        llength [msg_store_latest alice@example.com]
+    } -result 1
+
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
     -body {
