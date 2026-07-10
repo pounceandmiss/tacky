@@ -439,7 +439,7 @@ snit::type taco_muc {
         if {![info exists Rooms($jid)]} {return {}}
         set result {}
         dict for {nick occ} [dict get $Rooms($jid) occupants] {
-            lappend result $occ
+            lappend result [$self WithCaps $jid $occ]
         }
         return $result
     }
@@ -450,7 +450,7 @@ snit::type taco_muc {
         if {![info exists Rooms($opts(-jid))]} {return ""}
         set occs [dict get $Rooms($opts(-jid)) occupants]
         if {[dict exists $occs $opts(-nick)]} {
-            return [dict get $occs $opts(-nick)]
+            return [$self WithCaps $opts(-jid) [dict get $occs $opts(-nick)]]
         }
         return ""
     }
@@ -586,14 +586,24 @@ snit::type taco_muc {
         }
 
         $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
-        $client emit muc <Presence> -jid $roomJid -nick $nick -occupant $occupant
+        $client emit muc <Presence> -jid $roomJid -nick $nick \
+            -occupant [$self WithCaps $roomJid $occupant]
+
+        # Every occupant's caps are relative to my role/affiliation, which may
+        # have just changed; refresh them all.
+        dict for {onick occ} [dict get $Rooms($roomJid) occupants] {
+            if {$onick eq $nick} continue
+            $client emit muc <Presence> -jid $roomJid -nick $onick \
+                -occupant [$self WithCaps $roomJid $occ]
+        }
     }
 
     method OnOccupantPresence {roomJid nick stanza mucX} {
         set occupant [$self ParseItem $mucX $nick $stanza]
         dict set Rooms($roomJid) occupants $nick $occupant
         $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
-        $client emit muc <Presence> -jid $roomJid -nick $nick -occupant $occupant
+        $client emit muc <Presence> -jid $roomJid -nick $nick \
+            -occupant [$self WithCaps $roomJid $occupant]
     }
 
     method OnUnavailable {roomJid nick stanza mucX} {
@@ -964,6 +974,76 @@ snit::type taco_muc {
             return [dict get [dict get $occs $nick] $field]
         }
         return ""
+    }
+
+    method AffilLevel {affiliation} {
+        switch -- $affiliation {
+            owner   { return 4 }
+            admin   { return 3 }
+            member  { return 2 }
+            none    { return 1 }
+            outcast { return 0 }
+            default { return 1 }
+        }
+    }
+
+    method EmptyCaps {} {
+        return {kick 0 ban 0 make_moderator 0 grant_voice 0 \
+            revoke_voice 0 grant_membership 0 revoke_membership 0}
+    }
+
+    # Moderation actions the current user (myRole/myAffil) may take against one
+    # occupant, per XEP-0045 role/affiliation rules. Computed here so the GUI
+    # reads flags rather than re-deriving the authorization policy.
+    method OccupantCaps {myRole myAffil target} {
+        set caps [$self EmptyCaps]
+        set targetRole [dict get $target role]
+        set targetAffil [dict get $target affiliation]
+        set targetJid [dict get $target jid]
+        set iModerate [expr {$myRole eq "moderator"}]
+        set iAdmin [expr {[$self AffilLevel $myAffil] >= [$self AffilLevel admin]}]
+
+        if {$iModerate && $targetAffil ni {admin owner}} {
+            dict set caps kick 1
+        }
+        if {$iAdmin && [$self AffilLevel $targetAffil] < [$self AffilLevel $myAffil] \
+            && $targetJid ne ""} {
+            dict set caps ban 1
+        }
+        if {$iAdmin && $targetRole ne "moderator"} {
+            dict set caps make_moderator 1
+        }
+        if {$iModerate && $targetRole eq "visitor"} {
+            dict set caps grant_voice 1
+        }
+        if {$iModerate && $targetRole eq "participant"} {
+            dict set caps revoke_voice 1
+        }
+        if {$iAdmin && $targetAffil eq "none" && $targetJid ne ""} {
+            dict set caps grant_membership 1
+        }
+        if {$iAdmin && $targetAffil eq "member" && $targetJid ne ""} {
+            dict set caps revoke_membership 1
+        }
+        return $caps
+    }
+
+    # Stamp an occupant dict with the current user's caps against it. Self gets
+    # no caps (you don't moderate yourself).
+    method WithCaps {roomJid occupant} {
+        if {![info exists Rooms($roomJid)]} {
+            dict set occupant caps [$self EmptyCaps]
+            return $occupant
+        }
+        set myNick [dict get $Rooms($roomJid) nick]
+        if {$myNick eq "" || [dict get $occupant nick] eq $myNick} {
+            dict set occupant caps [$self EmptyCaps]
+            return $occupant
+        }
+        set myRole [$self MyOccupantField $roomJid role]
+        set myAffil [$self MyOccupantField $roomJid affiliation]
+        dict set occupant caps [$self OccupantCaps $myRole $myAffil $occupant]
+        return $occupant
     }
 
     method CleanupRoom {roomJid} {

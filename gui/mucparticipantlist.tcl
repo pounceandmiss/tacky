@@ -196,24 +196,13 @@ snit::widget mucparticipantlist {
         if {$nick eq ""} return
         if {![info exists OccupantData($nick)]} return
 
-        set targetData $OccupantData($nick)
-
-        # Get our own data
-        ::tacky muc myNick -acc $options(-acc) -jid $options(-jid) \
-            -tag $win -command [mymethod OnMyNickForMenu $nick $targetData $X $Y]
+        $self ShowMenu $nick $X $Y
     }
 
-    method OnMyNickForMenu {nick targetData X Y myNick} {
-        if {![winfo exists $win]} return
-        if {$myNick eq "" || $myNick eq $nick} return
-        if {![info exists OccupantData($myNick)]} return
-        set myData $OccupantData($myNick)
-
-        set myRole [dict get $myData role]
-        set myAffil [dict get $myData affiliation]
-        set targetRole [dict get $targetData role]
-        set targetAffil [dict get $targetData affiliation]
-        set targetJid [dict get $targetData jid]
+    method ShowMenu {nick X Y} {
+        set caps [dict merge [$self ZeroCaps] \
+            [dict getdef $OccupantData($nick) caps {}]]
+        set targetJid [dict get $OccupantData($nick) jid]
 
         set m $win.__ctxmenu
         if {![winfo exists $m]} {
@@ -221,76 +210,58 @@ snit::widget mucparticipantlist {
         }
         $m delete 0 end
 
-        set hasItems 0
-
-        # Kick: our role=moderator, target affiliation < admin
-        if {$myRole eq "moderator" && $targetAffil ni {admin owner}} {
-            $m add command -label "Kick..." \
-                -command [mymethod DoKick $nick]
-            set hasItems 1
+        set n 0
+        if {[dict get $caps kick]} {
+            $m add command -label "Kick..." -command [mymethod DoKick $nick]
+            incr n
+        }
+        if {[dict get $caps ban]} {
+            $m add command -label "Ban..." -command [mymethod DoBan $nick $targetJid]
+            incr n
         }
 
-        # Ban: our affiliation >= admin, target affiliation < ours, jid known
-        if {[$self AffilLevel $myAffil] >= [$self AffilLevel admin]
-            && [$self AffilLevel $targetAffil] < [$self AffilLevel $myAffil]
-            && $targetJid ne ""} {
-            $m add command -label "Ban..." \
-                -command [mymethod DoBan $nick $targetJid]
-            set hasItems 1
+        if {[dict get $caps make_moderator] || [dict get $caps grant_voice]
+            || [dict get $caps revoke_voice]} {
+            if {$n} { $m add separator }
         }
-
-        # Role changes
-        if {$hasItems} {
-            $m add separator
-        }
-        set roleItems 0
-
-        # Make Moderator: our affiliation >= admin, target not already moderator
-        if {[$self AffilLevel $myAffil] >= [$self AffilLevel admin]
-            && $targetRole ne "moderator"} {
+        if {[dict get $caps make_moderator]} {
             $m add command -label "Make Moderator" \
                 -command [mymethod DoRole $nick moderator]
-            set roleItems 1
+            incr n
         }
-
-        # Grant Voice: our role=moderator, target role=visitor
-        if {$myRole eq "moderator" && $targetRole eq "visitor"} {
+        if {[dict get $caps grant_voice]} {
             $m add command -label "Grant Voice" \
                 -command [mymethod DoRole $nick participant]
-            set roleItems 1
+            incr n
         }
-
-        # Revoke Voice: our role=moderator, target role=participant
-        if {$myRole eq "moderator" && $targetRole eq "participant"} {
+        if {[dict get $caps revoke_voice]} {
             $m add command -label "Revoke Voice" \
                 -command [mymethod DoRole $nick visitor]
-            set roleItems 1
+            incr n
         }
 
-        set hasItems [expr {$hasItems || $roleItems}]
-
-        # Affiliation changes
-        if {[$self AffilLevel $myAffil] >= [$self AffilLevel admin]} {
-            if {$roleItems} {
-                $m add separator
-            }
-            # Grant Membership: target affiliation=none
-            if {$targetAffil eq "none" && $targetJid ne ""} {
-                $m add command -label "Grant Membership" \
-                    -command [mymethod DoAffiliation $targetJid member]
-                set hasItems 1
-            }
-            # Revoke Membership: target affiliation=member
-            if {$targetAffil eq "member" && $targetJid ne ""} {
-                $m add command -label "Revoke Membership" \
-                    -command [mymethod DoAffiliation $targetJid none]
-                set hasItems 1
-            }
+        if {[dict get $caps grant_membership] || [dict get $caps revoke_membership]} {
+            if {$n} { $m add separator }
+        }
+        if {[dict get $caps grant_membership]} {
+            $m add command -label "Grant Membership" \
+                -command [mymethod DoAffiliation $targetJid member]
+            incr n
+        }
+        if {[dict get $caps revoke_membership]} {
+            $m add command -label "Revoke Membership" \
+                -command [mymethod DoAffiliation $targetJid none]
+            incr n
         }
 
-        if {$hasItems} {
+        if {$n} {
             tk_popup $m $X $Y
         }
+    }
+
+    method ZeroCaps {} {
+        return {kick 0 ban 0 make_moderator 0 grant_voice 0 \
+            revoke_voice 0 grant_membership 0 revoke_membership 0}
     }
 
     method NickFromItem {item} {
@@ -300,18 +271,6 @@ snit::widget mucparticipantlist {
             }
         }
         return ""
-    }
-
-    # Numeric affiliation level for comparison
-    method AffilLevel {affiliation} {
-        switch -- $affiliation {
-            owner  { return 4 }
-            admin  { return 3 }
-            member { return 2 }
-            none   { return 1 }
-            outcast { return 0 }
-            default { return 1 }
-        }
     }
 
     method DoKick {nick} {

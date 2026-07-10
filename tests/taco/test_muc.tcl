@@ -15,13 +15,14 @@ set muc_common [tacky_env -mock conn -taco-client {
 proc muc_presence {args} {
     set defaults {
         from room@muc.example.com/me
-        role participant affiliation member
+        role participant affiliation member jid ""
         self 1 codes {} type ""
     }
     set opts [dict merge $defaults $args]
     set from [dict get $opts from]
     set role [dict get $opts role]
     set affil [dict get $opts affiliation]
+    set realJid [dict get $opts jid]
     set isSelf [dict get $opts self]
     set extraCodes [dict get $opts codes]
     set type_ [dict get $opts type]
@@ -31,9 +32,14 @@ proc muc_presence {args} {
         lappend presAttrs -type $type_
     }
 
+    set itemAttrs [list -role $role -affiliation $affil]
+    if {$realJid ne ""} {
+        lappend itemAttrs -jid $realJid
+    }
+
     j presence {*}$presAttrs {
         j x -ns http://jabber.org/protocol/muc#user {
-            j item -role $role -affiliation $affil
+            j item {*}$itemAttrs
             if {$isSelf} {
                 j status -code 110
             }
@@ -246,6 +252,49 @@ test muc-occupant-unknown-nick {occupant returns empty for unknown nick} \
         muc_join room@muc.example.com me
         c muc occupant -jid room@muc.example.com -nick ghost
     } -result {}
+
+test muc-occupant-caps-moderator {owner gets role caps on a participant} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator -affiliation owner
+        c.conn feed [muc_presence \
+            from room@muc.example.com/other \
+            role participant affiliation member self 0]
+        set caps [dict get [c muc occupant -jid room@muc.example.com -nick other] caps]
+        list [dict get $caps kick] [dict get $caps make_moderator] \
+             [dict get $caps revoke_voice] [dict get $caps grant_voice]
+    } -result {1 1 1 0}
+
+test muc-occupant-caps-ban {admin can ban/revoke a member with a known jid} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator -affiliation admin
+        c.conn feed [muc_presence \
+            from room@muc.example.com/other \
+            role participant affiliation member self 0 jid other@example.com]
+        set caps [dict get [c muc occupant -jid room@muc.example.com -nick other] caps]
+        list [dict get $caps ban] [dict get $caps revoke_membership] \
+             [dict get $caps grant_membership]
+    } -result {1 1 0}
+
+test muc-occupant-caps-self {self carries no moderation caps} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator -affiliation owner
+        set caps [dict get [c muc occupant -jid room@muc.example.com -nick me] caps]
+        list [dict get $caps kick] [dict get $caps ban] [dict get $caps make_moderator]
+    } -result {0 0 0}
+
+test muc-occupant-caps-none {a plain participant gets no caps over others} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role participant -affiliation member
+        c.conn feed [muc_presence \
+            from room@muc.example.com/other \
+            role participant affiliation member self 0]
+        set caps [dict get [c muc occupant -jid room@muc.example.com -nick other] caps]
+        list [dict get $caps kick] [dict get $caps make_moderator] [dict get $caps ban]
+    } -result {0 0 0}
 
 test muc-presence-event {<Presence> event fires for occupant} \
     {*}$muc_common \
