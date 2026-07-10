@@ -247,13 +247,13 @@ snit::type taco_muc {
     }
 
     method role {args} {
-        array set opts {-reason "" -command ""}
+        array set opts {-reason "" -command "" -onerror ""}
         array set opts $args
 
         set itemAttrs [list -nick $opts(-nick) -role $opts(-role)]
 
         $client iq request -type set -to $opts(-jid) \
-            -command [mymethod OnIqResult $opts(-command)] \
+            -command [mymethod OnActionResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item {*}$itemAttrs {
                     if {$opts(-reason) ne ""} {
@@ -268,7 +268,7 @@ snit::type taco_muc {
     # =====================================================================
 
     method affiliation {args} {
-        array set opts {-reason "" -nick "" -command ""}
+        array set opts {-reason "" -nick "" -command "" -onerror ""}
         array set opts $args
 
         set itemAttrs [list -jid $opts(-target) -affiliation $opts(-affiliation)]
@@ -277,7 +277,7 @@ snit::type taco_muc {
         }
 
         $client iq request -type set -to $opts(-jid) \
-            -command [mymethod OnIqResult $opts(-command)] \
+            -command [mymethod OnActionResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item {*}$itemAttrs {
                     if {$opts(-reason) ne ""} {
@@ -830,6 +830,32 @@ snit::type taco_muc {
     method OnIqResult {command stanza} {
         if {$command ne ""} {
             {*}$command $stanza
+        }
+    }
+
+    # Result handler for moderation actions (kick/ban/role/affiliation). On an
+    # error stanza it hands -onerror a ready message; success goes to -command.
+    method OnActionResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} {
+                set condition [dict get [stanza_error $stanza] condition]
+                {*}$onerror [$self ActionErrorText $condition]
+            }
+            return
+        }
+        if {$command ne ""} {
+            {*}$command $stanza
+        }
+    }
+
+    method ActionErrorText {condition} {
+        switch -- $condition {
+            forbidden      { return "You do not have permission to do that" }
+            not-allowed    { return "The server does not allow that action" }
+            not-acceptable { return "The server rejected that action" }
+            conflict       { return "That conflicts with the room's current state" }
+            item-not-found { return "That participant is no longer in the room" }
+            default        { return "The action could not be completed" }
         }
     }
 

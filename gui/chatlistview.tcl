@@ -335,22 +335,6 @@ snit::widget chatlistview {
         }
     }
 
-    method MucErrorText {condition} {
-        switch -- $condition {
-            not-authorized          { return "Password required or incorrect" }
-            forbidden               { return "You are banned from this room" }
-            registration-required   { return "Membership required to join" }
-            conflict                { return "Nickname already in use" }
-            service-unavailable     { return "Room is full" }
-            item-not-found          { return "Room does not exist" }
-            remote-server-not-found -
-            remote-server-timeout   { return "Room server unreachable" }
-            jid-malformed           { return "Invalid nickname" }
-            gone                    { return "Room no longer exists" }
-            default                 { return "Could not join room" }
-        }
-    }
-
     method OnPresenceColorsChanged {} {
         ::tacky setting set -key show_presence_colors -value $prescolors
         $self ConfigurePresenceTags
@@ -444,8 +428,7 @@ snit::widget chatlistview {
         }
         switch -- $state {
             error {
-                set reason [dict get $item room_reason]
-                return "Join failed: [$self MucErrorText $reason]"
+                return "Join failed: [dict get $item room_reason]"
             }
             joining      { return "Joining..." }
             disconnected { return "Not connected" }

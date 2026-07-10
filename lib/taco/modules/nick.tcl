@@ -38,9 +38,10 @@ snit::type taco_nick {
     # Set own nick via PEP, vcard-temp, and bookmarks.
     # Updates all existing bookmarks and joined rooms unless -bookmarks skip.
     method set {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
-        $self publish -nick $opts(-nick) -command $opts(-command)
+        $self publish -nick $opts(-nick) \
+            -command $opts(-command) -onerror $opts(-onerror)
         $client vcard setNick -nick $opts(-nick)
         if {[dict getdef $args -bookmarks ""] eq "skip"} {
             $client bookmarks defaultNick -nick $opts(-nick)
@@ -57,11 +58,12 @@ snit::type taco_nick {
 
     # Publish own nick via PubSub.
     method publish {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         $client iq request -type set \
-            -command [mymethod OnPublishResult $opts(-nick) $opts(-command)] \
+            -command [mymethod OnPublishResult $opts(-nick) \
+                $opts(-command) $opts(-onerror)] \
             -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node "http://jabber.org/protocol/nick" {
@@ -82,16 +84,21 @@ snit::type taco_nick {
             }] -command [mymethod OnFetchResult $jid]
     }
 
-    method OnPublishResult {nick userCmd stanza} {
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ ne "error"} {
-        set jid [jid norm [jid bare [$client cget -jid]]]
-            $client db eval {
-                INSERT OR REPLACE INTO pep_nick(jid, nick)
-                VALUES ($jid, $nick)
+    method OnPublishResult {nick userCmd onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} {
+                set text [dict get [stanza_error $stanza] text]
+                if {$text eq ""} { set text "Could not update nickname" }
+                {*}$onerror $text
             }
-            $client emit nick <Changed> -jid $jid
+            return
         }
+        set jid [jid norm [jid bare [$client cget -jid]]]
+        $client db eval {
+            INSERT OR REPLACE INTO pep_nick(jid, nick)
+            VALUES ($jid, $nick)
+        }
+        $client emit nick <Changed> -jid $jid
         if {$userCmd ne ""} {
             {*}$userCmd $stanza
         }

@@ -262,9 +262,27 @@ snit::type taco_bookmarks {
 
     method ResolveMucReason {jid} {
         if {[dict exists $mucReason $jid]} {
-            return [dict get $mucReason $jid]
+            return [$self JoinErrorText [dict get $mucReason $jid]]
         }
         return ""
+    }
+
+    # Ready join-failure copy for a raw stanza error condition, so the GUI
+    # displays it without interpreting the condition itself.
+    method JoinErrorText {condition} {
+        switch -- $condition {
+            not-authorized          { return "Password required or incorrect" }
+            forbidden               { return "You are banned from this room" }
+            registration-required   { return "Membership required to join" }
+            conflict                { return "Nickname already in use" }
+            service-unavailable     { return "Room is full" }
+            item-not-found          { return "Room does not exist" }
+            remote-server-not-found -
+            remote-server-timeout   { return "Room server unreachable" }
+            jid-malformed           { return "Invalid nickname" }
+            gone                    { return "Room no longer exists" }
+            default                 { return "Could not join room" }
+        }
     }
 
     # Derived room state for the UI, folding raw join status together with

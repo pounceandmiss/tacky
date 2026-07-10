@@ -151,19 +151,17 @@ snit::widget profilesettings {
     method SaveName {} {
         set name [$win.nameentry get]
         $options(-tacky) nick set \
-            -acc $options(-acc) -nick $name \
-            -tag $win -command [mymethod OnNameSaved]
+            -acc $options(-acc) -nick $name -tag $win \
+            -command [mymethod OnNameSaved] \
+            -onerror [mymethod OnNameError]
     }
 
-    method OnNameSaved {stanza} {
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ ne "error"} {
-            $self OnResult Name [list ok ""]
-        } else {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} { set errText "Nick publish failed" }
-            $self OnResult Name [list error $errText]
-        }
+    method OnNameSaved {args} {
+        $self OnResult Name [list ok ""]
+    }
+
+    method OnNameError {message} {
+        $self OnResult Name [list error $message]
     }
 
     method ChangeAvatar {} {

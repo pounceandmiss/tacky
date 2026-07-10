@@ -281,7 +281,7 @@ snit::widget mucparticipantlist {
         if {$reason ne ""} {
             lappend args -reason $reason
         }
-        lappend args -tag $win -command [mymethod OnActionError "Kick"]
+        lappend args -tag $win -onerror [mymethod ShowActionError "Kick"]
         ::tacky muc kick {*}$args
     }
 
@@ -294,30 +294,27 @@ snit::widget mucparticipantlist {
         if {$reason ne ""} {
             lappend args -reason $reason
         }
-        lappend args -tag $win -command [mymethod OnActionError "Ban"]
+        lappend args -tag $win -onerror [mymethod ShowActionError "Ban"]
         ::tacky muc affiliation {*}$args
     }
 
     method DoRole {nick role} {
         ::tacky muc role -acc $options(-acc) -jid $options(-jid) \
             -nick $nick -role $role \
-            -tag $win -command [mymethod OnActionError "Role change"]
+            -tag $win -onerror [mymethod ShowActionError "Role change"]
     }
 
     method DoAffiliation {jid affiliation} {
         ::tacky muc affiliation -acc $options(-acc) -jid $options(-jid) \
             -target $jid -affiliation $affiliation \
-            -tag $win -command [mymethod OnActionError "Affiliation change"]
+            -tag $win -onerror [mymethod ShowActionError "Affiliation change"]
     }
 
-    method OnActionError {action stanza} {
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ eq "error"} {
-            set errorType [xsearch $stanza error * -get tag]
-            tk_messageBox -icon error -title "$action Failed" \
-                -parent [winfo toplevel $win] \
-                -message "$action failed: $errorType"
-        }
+    method ShowActionError {action message} {
+        if {![winfo exists $win]} return
+        tk_messageBox -icon error -title "$action Failed" \
+            -parent [winfo toplevel $win] \
+            -message $message
     }
 
     # ------------------------------------------------------------------

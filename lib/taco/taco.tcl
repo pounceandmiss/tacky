@@ -7,6 +7,20 @@ package require snit
 package require control
 package require jid
 
+# Pull the condition and optional human text out of a response stanza's
+# <error> child. Returns {condition <c> text <t>}: condition is "unknown" when
+# absent, text is "" when the server sent no <text>. Keeps stanza parsing in
+# the backend so callers can hand the GUI a ready message.
+proc stanza_error {stanza} {
+    set condition [xsearch $stanza error * -get tag]
+    if {$condition eq ""} {
+        set condition unknown
+    }
+    return [dict create \
+        condition $condition \
+        text [xsearch $stanza error text -get body]]
+}
+
 # Declare a set of modules as public components.
 # Usage:  taco_modules roster bookmarks muc ...
 # Effect: each module gets `component $mod -public $mod` and an instance

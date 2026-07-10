@@ -57,7 +57,7 @@ test bookmarks-room-state-lifecycle {room state follows the muc join lifecycle, 
         c bus publish muc:<Joined> -jid room@muc.example.com -nick me
         lappend states [bm_state room@muc.example.com]
         set states
-    } -result {{idle {}} {joining {}} {joined {}} {error not-authorized} {joined {}}}
+    } -result {{idle {}} {joining {}} {joined {}} {error {Password required or incorrect}} {joined {}}}
 
 test bookmarks-room-state-left {a dropped room reads disconnected for members, idle otherwise} \
     {*}$bookmarks_common \
@@ -82,7 +82,7 @@ test bookmarks-room-state-event {<RoomState> carries jid, state and reason} \
         c bus publish muc:<Joined> -jid room@muc.example.com -nick me
         set ok [list [dict get $ev -state] [dict get $ev -reason]]
         list $err $ok
-    } -result {{room@muc.example.com error forbidden} {joined {}}}
+    } -result {{room@muc.example.com error {You are banned from this room}} {joined {}}}
 
 test bookmarks-room-state-disconnect-resets {disconnect clears tracked room state back to idle} \
     {*}$bookmarks_common \
