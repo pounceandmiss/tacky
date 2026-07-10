@@ -78,7 +78,8 @@ snit::widget newchatdialog {
         }
 
         if {$options(-open-chat-command) ne ""} {
-            {*}$options(-open-chat-command) -acc $options(-acc) -jid $target
+            {*}$options(-open-chat-command) \
+                -acc $options(-acc) -jid $target -groupchat 0
         }
 
         destroy $toplevelW

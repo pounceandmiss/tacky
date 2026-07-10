@@ -11,6 +11,7 @@ snit::widget maminfo {
 
     option -acc -readonly yes
     option -target -default "" -readonly yes
+    option -groupchat -default 0 -readonly yes
 
     variable version_text ""
     variable version_error ""
@@ -33,6 +34,9 @@ snit::widget maminfo {
         set wargs [list -acc $account]
         if {[info exists opts(-target)]} {
             lappend wargs -target $opts(-target)
+        }
+        if {[info exists opts(-groupchat)]} {
+            lappend wargs -groupchat $opts(-groupchat)
         }
         pack [maminfo $top.mi {*}$wargs] \
             -expand yes -fill both -padx 10 -pady 10
@@ -79,7 +83,7 @@ snit::widget maminfo {
         $t tag configure error -foreground red
         $t tag configure indent -lmargin1 14 -lmargin2 14
 
-        if {$options(-target) ne "" && [jid query $options(-target)] eq "join"} {
+        if {$options(-target) ne "" && $options(-groupchat)} {
             $win.target insert 0 [jid bare $options(-target)]
         } else {
             $win.target insert 0 [jid domain $options(-acc)]

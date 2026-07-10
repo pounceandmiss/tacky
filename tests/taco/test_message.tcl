@@ -957,6 +957,27 @@ test message-history-preserves-join {history preserves ?join suffix in chatJid} 
         list [llength $result] [dict get [lindex $result 0] body]
     } -result {1 hi}
 
+test message-reply-author-muc {reply_author_jid keeps the room nick for MUC replies} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg \
+            timestamp 100 chat_jid room@muc.example.com?join \
+            from_jid room@muc.example.com/alice body hi \
+            reply_id abc reply_to room@muc.example.com/bob]]
+        set m [lindex [msg_history -chat room@muc.example.com?join -limit 1] 0]
+        dict get $m reply_author_jid
+    } -result {room@muc.example.com/bob}
+
+test message-reply-author-direct {reply_author_jid is bare for 1:1 replies} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg \
+            timestamp 100 chat_jid alice@example.com body hi \
+            reply_id abc reply_to alice@example.com/phone]]
+        set m [lindex [msg_history -chat alice@example.com -limit 1] 0]
+        dict get $m reply_author_jid
+    } -result {alice@example.com}
+
 # =============================================================================
 # History: MAM fallback
 # =============================================================================

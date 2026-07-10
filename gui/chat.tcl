@@ -30,6 +30,7 @@ snit::widgetadaptor chatview {
 
     option -acc -readonly yes
     option -jid
+    option -groupchat -default 0 -readonly yes
     option -menubar -default ""
 
     # True if AtTail is true AND the viewport is scrolled to the
@@ -90,7 +91,7 @@ snit::widgetadaptor chatview {
         # InitialLoad / OnLoadDone(new) re-affirm; OnCulled(new) and
         # goto-non-end flip false.
         set AtTail 1
-        set IsMuc [expr {[jid query $options(-jid)] eq "join"}]
+        set IsMuc $options(-groupchat)
         set Names [dict create]
         set TrackedAvatars [list]
         set DownloadPending [dict create]
@@ -1428,13 +1429,14 @@ proc enrich_store_message {storeDict names} {
         set rto [dict get $storeDict reply_to]
         dict set d reply_id [dict get $storeDict reply_id]
         dict set d reply_to $rto
-        set cj [dict get $storeDict chat_jid]
-        if {[dict exists $names $rto]} {
-            set ra [dict get $names $rto]
-        } elseif {[string match {*\?join} $cj] || [string match */* $cj]} {
-            set ra [jid resource $rto]
+        # reply_author_jid is normalized by the backend (nick for MUC, bare for
+        # 1:1), matching how names is keyed; resolve its display name here.
+        set raj [expr {[dict exists $storeDict reply_author_jid]
+            ? [dict get $storeDict reply_author_jid] : $rto}]
+        if {[dict exists $names $raj]} {
+            set ra [dict get $names $raj]
         } else {
-            set ra [jid bare $rto]
+            set ra $raj
         }
         if {$ra eq ""} { set ra $rto }
         dict set d reply_author $ra

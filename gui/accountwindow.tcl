@@ -23,6 +23,7 @@ snit::widget accountwindow {
     variable panel ""
     variable accmenu ""
     variable inlineJid ""
+    variable inlineGroupchat 0
     variable chatModeVar "inline"
 
     constructor args {
@@ -168,15 +169,19 @@ snit::widget accountwindow {
     # --- Chat routing ---
 
     method OpenChat {args} {
+        array set opts {-groupchat 0}
         array set opts $args
         if {$chatModeVar eq "inline"} {
-            $self OpenChatInline -acc $opts(-acc) -jid $opts(-jid)
+            $self OpenChatInline -acc $opts(-acc) -jid $opts(-jid) \
+                -groupchat $opts(-groupchat)
         } else {
-            $self Openchatwindow -acc $opts(-acc) -jid $opts(-jid)
+            $self Openchatwindow -acc $opts(-acc) -jid $opts(-jid) \
+                -groupchat $opts(-groupchat)
         }
     }
 
     method OpenChatInline {args} {
+        array set opts {-groupchat 0}
         array set opts $args
         if {$inlineJid eq $opts(-jid)} return
 
@@ -184,8 +189,9 @@ snit::widget accountwindow {
             destroy $child
         }
         set inlineJid $opts(-jid)
+        set inlineGroupchat $opts(-groupchat)
         chatpanel $cpFrame.cp -acc $opts(-acc) -jid $opts(-jid) \
-            -menubar $win.menubar
+            -groupchat $opts(-groupchat) -menubar $win.menubar
         pack $cpFrame.cp -expand yes -fill both
 
         if {$cpFrame ni [$paned panes]} {
@@ -194,9 +200,11 @@ snit::widget accountwindow {
     }
 
     method Openchatwindow {args} {
+        array set opts {-groupchat 0}
         array set opts $args
         set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
-        chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid)
+        chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid) \
+            -groupchat $opts(-groupchat)
     }
 
     method CloseInlineChat {} {
@@ -205,6 +213,7 @@ snit::widget accountwindow {
             destroy $child
         }
         set inlineJid ""
+        set inlineGroupchat 0
         if {$cpFrame in [$paned panes]} {
             $paned forget $cpFrame
         }
@@ -242,7 +251,8 @@ snit::widget accountwindow {
     method OpenMamInfo {} {
         if {$currentAccount eq ""} return
         if {$inlineJid ne ""} {
-            maminfo open $currentAccount -target $inlineJid
+            maminfo open $currentAccount -target $inlineJid \
+                -groupchat $inlineGroupchat
         } else {
             maminfo open $currentAccount
         }
