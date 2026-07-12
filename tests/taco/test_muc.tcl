@@ -1009,3 +1009,38 @@ test muc-groupchat-unknown-room-dropped {groupchat from a room we never joined i
         list [llength [dict get [c message messagestore get latest evil@muc.evil.example?join] messages]] \
             [c muc getSubject -jid evil@muc.evil.example]
     } -result {0 {}}
+
+# -- Reactions (XEP-0444) -----------------------------------------------------
+
+test muc-reaction-occupant-id {a groupchat reaction keyed by occupant-id aggregates onto the target} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/someone {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j body #body "hi all"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+        }]
+        set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
+        dict get [lindex $msgs 0] reactions
+    } -result {👍 {reactors other mine 0}}
+
+test muc-reaction-no-occupant-id-dropped {a groupchat reaction with no occupant-id is dropped (fail-closed)} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/someone {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j body #body "hi all"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+        }]
+        set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
+        dict exists [lindex $msgs 0] reactions
+    } -result 0

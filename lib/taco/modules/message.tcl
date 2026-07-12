@@ -156,6 +156,12 @@ snit::type taco_message {
 
             set r [$self ParseResultNode $resultNode $chatJid]
             set disp [dict get $r disposition]
+            # A reaction updates a stored message's display; it isn't a
+            # citizen and doesn't bound a hole (like drop).
+            if {$disp eq "reaction"} {
+                $self ApplyReactionDisp $chatJid $r
+                continue
+            }
             # drop = displayless new stanza; doesn't bound a hole (as before).
             if {$disp eq "drop"} continue
 
@@ -323,6 +329,9 @@ snit::type taco_message {
     #   drop      → displayless (control type / keytransport); nothing.
     method DispatchLive {chatJid disp} {
         switch [dict get $disp disposition] {
+            reaction {
+                $self ApplyReactionDisp $chatJid $disp
+            }
             confirmed {
                 $self HandleConfirmation $chatJid \
                     [list [dict get $disp reconciled]]
@@ -950,6 +959,83 @@ snit::type taco_message {
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId
     }
 
+    # react -chat $chatJid -timestamp $targetTs -emoji $emoji
+    # Toggle one emoji in our XEP-0444 reaction set for a message. The set
+    # is recomputed and sent whole (the protocol sends the complete set, not
+    # a delta); toggling off the last emoji sends an empty <reactions/>.
+    tackymethod react {args} {
+        array set opts $args
+        set targetTs $opts(-timestamp)
+        set targetId [$self ReactionTargetId $opts(-chat) $targetTs]
+        if {$targetId eq ""} return
+        set ownId [$self OwnReactionSenderId $opts(-chat)]
+        set current [$messagestore ownReactions $opts(-chat) $targetId $ownId]
+        set idx [lsearch -exact $current $opts(-emoji)]
+        if {$idx >= 0} {
+            set current [lreplace $current $idx $idx]
+        } else {
+            lappend current $opts(-emoji)
+        }
+        $self SetReactions $opts(-chat) $targetTs $current
+    }
+
+    # reactClear -chat $chatJid -timestamp $targetTs — drop all our reactions.
+    tackymethod reactClear {args} {
+        array set opts $args
+        $self SetReactions $opts(-chat) $opts(-timestamp) {}
+    }
+
+    # Persist our full reaction set for a message (optimistic, is_own=1),
+    # patch the local view, and put the set on the wire. In a MUC the room
+    # reflects it back, re-applying idempotently to the same own-keyed row.
+    method SetReactions {chatJid targetTs emojis} {
+        set targetId [$self ReactionTargetId $chatJid $targetTs]
+        if {$targetId eq ""} return
+        set ownId [$self OwnReactionSenderId $chatJid]
+        $messagestore applyReaction $chatJid $targetId $ownId $ownId 1 \
+            $emojis [clock microseconds]
+        $self EmitReactionPatch $chatJid $targetTs
+        lassign [$self DeriveAddressing $chatJid] msgType toJid
+        $self SendReactions $toJid $msgType $targetId $emojis
+    }
+
+    # Wire id a reaction references, by the target message's stored ids:
+    # MUC stanza-id, else 1:1 origin/own (reply::pick_id). "" if unresolved.
+    method ReactionTargetId {chatJid targetTs} {
+        set found 0
+        $client db eval {
+            SELECT server_id, origin_id, own_id FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$targetTs
+            LIMIT 1
+        } row { set found 1 }
+        if {!$found} { return "" }
+        return [reply::pick_id [IsMucChatJid $chatJid] \
+            $row(server_id) $row(origin_id) $row(own_id)]
+    }
+
+    # Our stable reactor key for a chat: own nick in a MUC, bare jid in 1:1.
+    # Used as both the sender_id and the display label for our own row.
+    method OwnReactionSenderId {chatJid} {
+        if {[IsMucChatJid $chatJid]} {
+            regsub {\?join$} $chatJid {} roomJid
+            return [$client muc myNick -jid [jid bare $roomJid]]
+        }
+        return [jid bare [$client cget -jid]]
+    }
+
+    # Send our current reaction set for $targetId. An empty set sends an
+    # empty <reactions/> (retract all). <store/> asks the server to archive
+    # it so the set reconstructs from MAM.
+    method SendReactions {toJid msgType targetId emojis} {
+        $client write [j message -to $toJid -type $msgType \
+                -id [clock microseconds] {
+            j reactions -ns urn:xmpp:reactions:0 -id $targetId {
+                foreach e $emojis { j reaction #body $e }
+            }
+            j store -ns urn:xmpp:hints
+        }]
+    }
+
     # history -chat $chatJid ?-before $ts? ?-after $ts? ?-limit 50?
     #         ?-tag $tag? -command $cb
     # Always async — calls -command with result list.
@@ -1310,6 +1396,10 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
             set disp [dict get $r disposition]
+            if {$disp eq "reaction"} {
+                $self ApplyReactionDisp $chatJid $r
+                continue
+            }
             if {$disp eq "confirmed"} {
                 $self HandleConfirmation $chatJid [list [dict get $r reconciled]]
                 continue
@@ -1343,6 +1433,9 @@ snit::type taco_message {
             set r [$self ParseResultNode $resultNode $chatJid]
             lappend parsed $r
             switch [dict get $r disposition] {
+                reaction {
+                    $self ApplyReactionDisp $chatJid $r
+                }
                 confirmed {
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
@@ -1377,7 +1470,15 @@ snit::type taco_message {
     #   {disposition duplicate timestamp T}               already a citizen
     #   {disposition drop      timestamp T}               new but displayless
     #   {disposition new       timestamp T msg M}         new, store M
+    #   {disposition reaction  timestamp T ...}           XEP-0444 reaction
     method Classify {chatJid msgNode ts ids} {
+        set reaction [$self ParseReaction $chatJid $msgNode]
+        if {$reaction ne ""} {
+            # `timestamp` keeps the reaction disposition uniform with the
+            # others so the MAM parsed-list consumers (SweepFetchedRange /
+            # PlaceFarEdgeHole) can span it; it's also the LWW ts.
+            return [dict create disposition reaction timestamp $ts {*}$reaction]
+        }
         lassign $ids serverId ownId originId
         set v [$messagestore reconcile $chatJid $serverId $ownId $originId $ts]
         switch [dict get $v verdict] {
@@ -1402,6 +1503,61 @@ snit::type taco_message {
             return [dict create disposition drop timestamp $ts]
         }
         return [dict create disposition new timestamp $ts msg $msg]
+    }
+
+    # Extract an XEP-0444 reaction from a <message> node into a descriptor,
+    # or "" when the stanza carries no reactions. Resolves reactor identity
+    # per chat kind: 1:1 uses the bare sender jid; MUC uses the XEP-0421
+    # occupant-id (fail-closed - a groupchat reaction with no occupant-id
+    # that isn't our own is dropped). Own-detection: bare jid in 1:1, nick
+    # in a MUC (own reactions are keyed by nick, since we don't track our
+    # own occupant-id). `emojis` is the reactor's full set ('' = retracted).
+    method ParseReaction {chatJid msgNode} {
+        set rxNode [lindex [xsearch $msgNode reactions -ns urn:xmpp:reactions:0] 0]
+        if {$rxNode eq ""} { return "" }
+        set targetId [xsearch $rxNode -get @id]
+        if {$targetId eq ""} { return "" }
+        set emojis [xsearch $rxNode reaction -gather body]
+        set rawFrom [xsearch $msgNode -get @from]
+        if {[IsMucChatJid $chatJid]} {
+            regsub {\?join$} $chatJid {} roomJid
+            set roomJid [jid bare $roomJid]
+            set nick [jid resource $rawFrom]
+            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]}]
+            if {$isOwn} {
+                set senderId $nick
+            } else {
+                set senderId [xsearch $msgNode occupant-id \
+                    -ns urn:xmpp:occupant-id:0 -get @id]
+                if {$senderId eq ""} { return "" }
+            }
+            set senderLabel $nick
+        } else {
+            set bare [jid norm [jid bare $rawFrom]]
+            set isOwn [expr {$bare eq [jid bare [$client cget -jid]]}]
+            set senderId $bare
+            set senderLabel $bare
+        }
+        return [dict create target_id $targetId sender_id $senderId \
+            sender_label $senderLabel is_own $isOwn emojis $emojis]
+    }
+
+    # Apply a `reaction` disposition to the store and, when the target
+    # message is present locally, emit a <Patch> refreshing its aggregated
+    # reactions. Shared by the live and every MAM dispatch path.
+    method ApplyReactionDisp {chatJid disp} {
+        set targetTs [$messagestore applyReaction $chatJid \
+            [dict get $disp target_id] [dict get $disp sender_id] \
+            [dict get $disp sender_label] [dict get $disp is_own] \
+            [dict get $disp emojis] [dict get $disp timestamp]]
+        if {$targetTs eq ""} return
+        $self EmitReactionPatch $chatJid $targetTs
+    }
+
+    method EmitReactionPatch {chatJid targetTs} {
+        set agg [$messagestore reactionsForMessage $chatJid $targetTs]
+        $client emit message <Patch> -jid $chatJid \
+            -messages [list [dict create timestamp $targetTs reactions $agg]]
     }
 
     # {serverId ownId originId} off a <message>, derived once for the dedup
@@ -1486,6 +1642,7 @@ proc ClassifyMessage {msgNode body} {
         receipt   urn:xmpp:receipts
         marker    urn:xmpp:chat-markers:0
         chatstate http://jabber.org/protocol/chatstates
+        reaction  urn:xmpp:reactions:0
     } {
         if {[llength [xsearch $msgNode * -ns $ns]] > 0} { return $kind }
     }

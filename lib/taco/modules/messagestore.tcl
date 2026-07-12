@@ -139,6 +139,26 @@ snit::type taco_messagestore {
                 ON chat_message(chat_jid, origin_id) WHERE origin_id != '';
             CREATE INDEX IF NOT EXISTS idx_chat_message_hole
                 ON chat_message(chat_jid, timestamp) WHERE kind='hole';
+
+            -- XEP-0444 reactions. One row per (message, reactor); a
+            -- reactor's full current emoji set is a Tcl list in `emojis`
+            -- ('' = retracted). Keyed by the wire target_id (referenced
+            -- stanza/origin id) so a reaction arriving before its target
+            -- message is still stored and surfaced later.
+            CREATE TABLE IF NOT EXISTS message_reaction(
+                chat_jid     TEXT NOT NULL,
+                target_id    TEXT NOT NULL,
+                -- dedup key: bare jid (1:1), occupant-id (MUC peer),
+                -- own nick (MUC self); is_own distinguishes ours.
+                sender_id    TEXT NOT NULL,
+                -- display label: bare jid (1:1) / nick (MUC).
+                sender_label TEXT,
+                is_own       INTEGER NOT NULL DEFAULT 0,
+                emojis       TEXT,
+                -- last-writer-wins high-water mark per reactor.
+                ts           INTEGER NOT NULL,
+                PRIMARY KEY(chat_jid, target_id, sender_id)
+            );
         }
     }
 
@@ -726,6 +746,90 @@ snit::type taco_messagestore {
         return $changed
     }
 
+    # --- Reactions (XEP-0444) --------------------------------------
+
+    # Apply a reactor's full emoji set. Last-writer-wins: a set with an
+    # older-or-equal ts than the reactor's stored one is ignored. Returns
+    # the target message's local timestamp (so the caller can <Patch>), or
+    # "" when LWW skipped it or the target message isn't stored yet.
+    method applyReaction {chatJid targetId senderId senderLabel isOwn emojis ts} {
+        if {$targetId eq "" || $senderId eq ""} { return "" }
+        set prev [$options(-db) onecolumn {
+            SELECT ts FROM message_reaction
+            WHERE chat_jid=$chatJid AND target_id=$targetId
+              AND sender_id=$senderId
+        }]
+        if {$prev ne "" && $ts <= $prev} { return "" }
+        $options(-db) eval {
+            INSERT OR REPLACE INTO message_reaction(chat_jid, target_id,
+                    sender_id, sender_label, is_own, emojis, ts)
+            VALUES($chatJid, $targetId, $senderId, $senderLabel, $isOwn,
+                   $emojis, $ts)
+        }
+        return [$self resolveReactionTarget $chatJid $targetId]
+    }
+
+    # My current emoji set for a target - the toggle source of truth.
+    method ownReactions {chatJid targetId ownSenderId} {
+        return [$options(-db) onecolumn {
+            SELECT emojis FROM message_reaction
+            WHERE chat_jid=$chatJid AND target_id=$targetId
+              AND sender_id=$ownSenderId
+        }]
+    }
+
+    # Local timestamp of the message a reaction targets, matched against the
+    # stored envelope ids (mirrors resolveReply's id match). "" if not stored.
+    method resolveReactionTarget {chatJid targetId} {
+        if {$targetId eq ""} { return "" }
+        return [$options(-db) onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+              AND ( (server_id != '' AND server_id=$targetId)
+                 OR (origin_id != '' AND origin_id=$targetId)
+                 OR (own_id    != '' AND own_id=$targetId) )
+            LIMIT 1
+        }]
+    }
+
+    # Per-emoji aggregation of reactions on a displayed message, for the
+    # GUI. Joins reaction rows against the message's envelope ids so it
+    # works whether reactors targeted the origin-id (1:1) or stanza-id
+    # (MUC). Emoji order is first-seen; count is left to the GUI. Shape:
+    #   {emoji {reactors {Alice Bob} mine 0|1} ...}
+    method reactionsForMessage {chatJid ts} {
+        set order {}
+        array set reactors {}
+        array set mine {}
+        $options(-db) eval {
+            SELECT r.sender_label AS label, r.is_own AS own,
+                   r.emojis AS emojis
+            FROM message_reaction r
+            JOIN chat_message m
+              ON m.chat_jid = r.chat_jid
+             AND m.kind = 'message'
+             AND ( (m.server_id != '' AND m.server_id = r.target_id)
+                OR (m.origin_id != '' AND m.origin_id = r.target_id)
+                OR (m.own_id    != '' AND m.own_id    = r.target_id) )
+            WHERE m.chat_jid = $chatJid AND m.timestamp = $ts
+        } r {
+            foreach e $r(emojis) {
+                if {![info exists reactors($e)]} {
+                    set reactors($e) {}
+                    set mine($e) 0
+                    lappend order $e
+                }
+                lappend reactors($e) $r(label)
+                if {$r(own)} { set mine($e) 1 }
+            }
+        }
+        set agg [dict create]
+        foreach e $order {
+            dict set agg $e [dict create reactors $reactors($e) mine $mine($e)]
+        }
+        return $agg
+    }
+
     # Dedup by server_id/own_id only, for the caller to act on before any
     # decrypt. An id-less stanza returns `new` and is content-deduped later
     # by `store`. Verdicts:
@@ -807,6 +911,11 @@ snit::type taco_messagestore {
             dict set d caption \
                 [attachment_caption [dict get $d body] \
                     [dict get $d attachments]]
+        }
+        set reactions [$self reactionsForMessage \
+            [dict get $d chat_jid] [dict get $d timestamp]]
+        if {[dict size $reactions] > 0} {
+            dict set d reactions $reactions
         }
         return $d
     }
