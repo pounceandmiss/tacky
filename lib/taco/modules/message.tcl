@@ -155,15 +155,15 @@ snit::type taco_message {
             }
 
             set r [$self ParseResultNode $resultNode $chatJid]
-            set disp [dict get $r disposition]
+            set verdict [dict get $r verdict]
             # A reaction updates a stored message's display; it isn't a
             # citizen and doesn't bound a hole (like drop).
-            if {$disp eq "reaction"} {
-                $self ApplyReactionDisp $chatJid $r
+            if {$verdict eq "reaction"} {
+                $self ApplyReactionVerdict $chatJid $r
                 continue
             }
             # drop = displayless new stanza; doesn't bound a hole (as before).
-            if {$disp eq "drop"} continue
+            if {$verdict eq "drop"} continue
 
             set msgTs [dict get $r timestamp]
             if {![dict exists $perChatMin $chatJid]
@@ -175,7 +175,7 @@ snit::type taco_message {
                 dict set perChatMax $chatJid $msgTs
             }
 
-            switch $disp {
+            switch $verdict {
                 confirmed {
                     # pending->"" echo; not an overlap proof
                     $self HandleConfirmation $chatJid \
@@ -320,24 +320,24 @@ snit::type taco_message {
         $self DispatchLive $chatJid [$self Classify $chatJid $stanza $ts $ids]
     }
 
-    # Act on one live message's disposition (from Classify):
+    # Act on one live message's verdict (from Classify):
     #   confirmed → echo of one of our own pending sends → <Patch>
     #   new       → store, then surface. store may still confirm it by the
     #               content fallback (id-less re-delivery of a pending send)
     #               or drop it as a real overlap with an existing citizen.
     #   duplicate → already a citizen; nothing to show.
     #   drop      → displayless (control type / keytransport); nothing.
-    method DispatchLive {chatJid disp} {
-        switch [dict get $disp disposition] {
+    method DispatchLive {chatJid verdict} {
+        switch [dict get $verdict verdict] {
             reaction {
-                $self ApplyReactionDisp $chatJid $disp
+                $self ApplyReactionVerdict $chatJid $verdict
             }
             confirmed {
                 $self HandleConfirmation $chatJid \
-                    [list [dict get $disp reconciled]]
+                    [list [dict get $verdict reconciled]]
             }
             new {
-                set result [$messagestore store [list [dict get $disp msg]]]
+                set result [$messagestore store [list [dict get $verdict msg]]]
                 set confirmed [dict get $result confirmed]
                 if {[llength $confirmed] > 0} {
                     $self HandleConfirmation $chatJid $confirmed
@@ -1171,7 +1171,7 @@ snit::type taco_message {
             return
         }
 
-        # Only `new` messages are stored; `parsed` keeps every disposition
+        # Only `new` messages are stored; `parsed` keeps every verdict
         # (each carries a timestamp) so the hole ops below still span the
         # true archive range.
         lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
@@ -1395,16 +1395,16 @@ snit::type taco_message {
         set messages {}
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
-            set disp [dict get $r disposition]
-            if {$disp eq "reaction"} {
-                $self ApplyReactionDisp $chatJid $r
+            set verdict [dict get $r verdict]
+            if {$verdict eq "reaction"} {
+                $self ApplyReactionVerdict $chatJid $r
                 continue
             }
-            if {$disp eq "confirmed"} {
+            if {$verdict eq "confirmed"} {
                 $self HandleConfirmation $chatJid [list [dict get $r reconciled]]
                 continue
             }
-            if {$disp ne "new"} continue
+            if {$verdict ne "new"} continue
             set result [$messagestore store [list [dict get $r msg]]]
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
@@ -1423,7 +1423,7 @@ snit::type taco_message {
 
     # Walk a single-chat MAM batch through Classify, firing <Patch> for each
     # envelope-confirmed send. Returns {parsed toStore}: `parsed` is every
-    # disposition (so callers can reason about the true archive span when
+    # verdict (so callers can reason about the true archive span when
     # placing/sweeping holes) and `toStore` the new message dicts to
     # persist in one store call.
     method IngestMamBatch {chatJid mamResult} {
@@ -1432,9 +1432,9 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
             lappend parsed $r
-            switch [dict get $r disposition] {
+            switch [dict get $r verdict] {
                 reaction {
-                    $self ApplyReactionDisp $chatJid $r
+                    $self ApplyReactionVerdict $chatJid $r
                 }
                 confirmed {
                     $self HandleConfirmation $chatJid \
@@ -1464,30 +1464,30 @@ snit::type taco_message {
     # flagged duplicate without a decrypt; only a genuinely new message is
     # decrypted and parsed. `ids` is the {serverId ownId originId} triple the
     # caller extracted (the sources differ in where each id comes from).
-    # Returns one disposition; `timestamp` (server stamp) rides every verdict
+    # Returns one verdict; `timestamp` (server stamp) rides every verdict
     # so the MAM loops can reason over the true archive span:
-    #   {disposition confirmed timestamp T reconciled V}  pending send echoed
-    #   {disposition duplicate timestamp T}               already a citizen
-    #   {disposition drop      timestamp T}               new but displayless
-    #   {disposition new       timestamp T msg M}         new, store M
-    #   {disposition reaction  timestamp T ...}           XEP-0444 reaction
+    #   {verdict confirmed timestamp T reconciled V}  pending send echoed
+    #   {verdict duplicate timestamp T}               already a citizen
+    #   {verdict drop      timestamp T}               new but displayless
+    #   {verdict new       timestamp T msg M}         new, store M
+    #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
     method Classify {chatJid msgNode ts ids} {
         set reaction [$self ParseReaction $chatJid $msgNode]
         if {$reaction ne ""} {
-            # `timestamp` keeps the reaction disposition uniform with the
+            # `timestamp` keeps the reaction verdict uniform with the
             # others so the MAM parsed-list consumers (SweepFetchedRange /
             # PlaceFarEdgeHole) can span it; it's also the LWW ts.
-            return [dict create disposition reaction timestamp $ts {*}$reaction]
+            return [dict create verdict reaction timestamp $ts {*}$reaction]
         }
         lassign $ids serverId ownId originId
         set v [$messagestore reconcile $chatJid $serverId $ownId $originId $ts]
         switch [dict get $v verdict] {
             confirmed {
-                return [dict create disposition confirmed \
+                return [dict create verdict confirmed \
                     timestamp $ts reconciled $v]
             }
             duplicate {
-                return [dict create disposition duplicate timestamp $ts]
+                return [dict create verdict duplicate timestamp $ts]
             }
         }
 
@@ -1500,9 +1500,9 @@ snit::type taco_message {
             -chat_jid $chatJid -timestamp $ts \
             -server_id $serverId -own_id $ownId -origin_id $originId]
         if {$msg eq ""} {
-            return [dict create disposition drop timestamp $ts]
+            return [dict create verdict drop timestamp $ts]
         }
-        return [dict create disposition new timestamp $ts msg $msg]
+        return [dict create verdict new timestamp $ts msg $msg]
     }
 
     # Extract an XEP-0444 reaction from a <message> node into a descriptor,
@@ -1542,14 +1542,14 @@ snit::type taco_message {
             sender_label $senderLabel is_own $isOwn emojis $emojis]
     }
 
-    # Apply a `reaction` disposition to the store and, when the target
+    # Apply a `reaction` verdict to the store and, when the target
     # message is present locally, emit a <Patch> refreshing its aggregated
     # reactions. Shared by the live and every MAM dispatch path.
-    method ApplyReactionDisp {chatJid disp} {
+    method ApplyReactionVerdict {chatJid verdict} {
         set targetTs [$messagestore applyReaction $chatJid \
-            [dict get $disp target_id] [dict get $disp sender_id] \
-            [dict get $disp sender_label] [dict get $disp is_own] \
-            [dict get $disp emojis] [dict get $disp timestamp]]
+            [dict get $verdict target_id] [dict get $verdict sender_id] \
+            [dict get $verdict sender_label] [dict get $verdict is_own] \
+            [dict get $verdict emojis] [dict get $verdict timestamp]]
         if {$targetTs eq ""} return
         $self EmitReactionPatch $chatJid $targetTs
     }
