@@ -2341,3 +2341,94 @@ test message-outgoing-groupchat-no-markers \
         list [llength [xsearch $s request -ns urn:xmpp:receipts]] \
              [llength [xsearch $s markable -ns urn:xmpp:chat-markers:0]]
     } -result {0 0}
+
+# =============================================================================
+# Reactions (XEP-0444)
+# =============================================================================
+
+test message-classify-reaction {a reactions stanza is recognised as a reaction control kind} \
+    {*}$msg_common -body {
+        set n [j message -from bob@example.com/x -type chat {
+            j reactions -ns urn:xmpp:reactions:0 -id abc { j reaction #body 👍 }
+        }]
+        ClassifyMessage $n ""
+    } -result reaction
+
+test message-reaction-incoming-1to1 {a peer reaction aggregates onto the target message} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j reactions -ns urn:xmpp:reactions:0 -id $oid { j reaction #body 👍 }
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] reactions
+    } -result {👍 {reactors alice@example.com mine 0}}
+
+test message-react-sends-reactions {react writes a <reactions> carrying the emoji and a store hint} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        set stanza [lindex [$::_client conn get_written] end]
+        list [xsearch $stanza reactions -ns urn:xmpp:reactions:0 reaction -get body] \
+             [llength [xsearch $stanza store -ns urn:xmpp:hints]]
+    } -result {👍 1}
+
+test message-react-own-shows-mine {our own reaction is marked mine on the message} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        dict get [lindex [msg_store_latest alice@example.com] 0] reactions
+    } -result {👍 {reactors user@test.example.com mine 1}}
+
+test message-react-toggle-off-retracts {toggling the same emoji twice sends an empty reactions set} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        set stanza [lindex [$::_client conn get_written] end]
+        list [llength [xsearch $stanza reactions -ns urn:xmpp:reactions:0 reaction]] \
+             [dict exists [lindex [msg_store_latest alice@example.com] 0] reactions]
+    } -result {0 0}
+
+test message-reaction-from-mam {a reaction arriving via MAM catchup aggregates onto the target} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set rn [j result -ns urn:xmpp:mam:2 -id arch-r {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-02T00:00:00Z
+                j message -type chat -from alice@example.com/phone -to $acc {
+                    j reactions -ns urn:xmpp:reactions:0 -id $oid {
+                        j reaction #body 👍
+                    }
+                }
+            }
+        }]
+        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        dict get [lindex [msg_store_latest alice@example.com] 0] reactions
+    } -result {👍 {reactors alice@example.com mine 0}}
+
+test message-reaction-mam-parsed-has-timestamp \
+    {a reaction in a scroll-back MAM page carries a timestamp so hole-sweep can span it} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set rn [j result -ns urn:xmpp:mam:2 -id arch-r {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-02T00:00:00Z
+                j message -type chat -from alice@example.com/phone -to $acc {
+                    j reactions -ns urn:xmpp:reactions:0 -id $oid {
+                        j reaction #body 👍
+                    }
+                }
+            }
+        }]
+        lassign [$::_client message IngestMamBatch alice@example.com \
+            [dict create messages [list $rn]]] parsed toStore
+        # SweepFetchedRange / PlaceFarEdgeHole lmap `dict get $m timestamp`
+        # over parsed; a reaction disp lacking the key would throw here.
+        list [llength [lmap m $parsed {dict get $m timestamp}]] [llength $toStore]
+    } -result {1 0}

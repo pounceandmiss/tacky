@@ -1088,3 +1088,66 @@ test messagestore-mark-remote-status-wrong-chat-noop {a marker scoped to another
         set r [store markRemoteStatus bob@example.com oid1 read]
         list $r [ms_remote alice@example.com]
     } -result {{} none}
+
+# --- Reactions (XEP-0444) ----------------------------------------------------
+
+test messagestore-reaction-aggregate {reactions aggregate per emoji with reactor lists} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1 body hi]]
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍 ❤️} 100
+        store applyReaction alice@example.com sid1 carol@x carol@x 0 {👍} 110
+        set agg [store reactionsForMessage alice@example.com 5000]
+        list [dict get $agg 👍 reactors] [dict get $agg 👍 mine] \
+             [dict get $agg ❤️ reactors]
+    } -result {{bob@x carol@x} 0 bob@x}
+
+test messagestore-reaction-mine-flag {our own reaction marks the emoji as mine} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store applyReaction alice@example.com sid1 me@x me@x 1 {🎉} 100
+        dict get [store reactionsForMessage alice@example.com 5000] 🎉 mine
+    } -result 1
+
+test messagestore-reaction-lww {an older reaction set does not overwrite a newer one} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 200
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {❤️} 150
+        dict keys [store reactionsForMessage alice@example.com 5000]
+    } -result 👍
+
+test messagestore-reaction-retract {an empty set retracts a reactor's reactions} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {} 110
+        dict size [store reactionsForMessage alice@example.com 5000]
+    } -result 0
+
+test messagestore-reaction-before-message {a reaction stored before its target surfaces once the message lands} \
+    {*}$ms_common \
+    -body {
+        set early [store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100]
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        list $early [dict keys [store reactionsForMessage alice@example.com 5000]]
+    } -result {{} 👍}
+
+test messagestore-reaction-own-set {ownReactions returns our current set for toggling} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store applyReaction alice@example.com sid1 me@x me@x 1 {👍 🎉} 100
+        store ownReactions alice@example.com sid1 me@x
+    } -result {👍 🎉}
+
+test messagestore-reaction-enriches-rowtodict {a message dict carries its reactions} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] reactions
+    } -result {👍 {reactors bob@x mine 0}}

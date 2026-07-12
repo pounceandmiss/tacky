@@ -727,7 +727,12 @@ snit::type taco_muc {
                 return 1
             }
 
-            if {$bodyText ne ""} {
+            # A bodyless groupchat message carrying an XEP-0444 <reactions>
+            # is forwarded too; ingestLive/Classify handle it. Other bodyless
+            # groupchat stanzas fall through to the status-code handling below.
+            set hasReactions [expr {[llength \
+                [xsearch $stanza reactions -ns urn:xmpp:reactions:0]] > 0}]
+            if {$bodyText ne "" || $hasReactions} {
                 $self OnGroupchatMessage $roomJid $nick $stanza
                 return 1
             }

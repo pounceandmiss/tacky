@@ -1,5 +1,6 @@
 package require control
 package require snit
+package require emojipicker
 
 # Scroll-driven message loading algorithm
 # ========================================
@@ -113,6 +114,7 @@ snit::widgetadaptor chatview {
         }
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
         bind $self <<ReplyJump>> [mymethod OnReplyJump %d]
+        bind $self <<ReactToggle>> [mymethod OnReactToggle %d]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
@@ -367,6 +369,8 @@ snit::widgetadaptor chatview {
                 dict set storeDict timestamp $newTs
                 dict set storeDict server_status [dict get $msg server_status]
                 $self ProcessBatch [list $storeDict]
+            } elseif {[dict exists $msg reactions]} {
+                $hull reactions update $ts [dict get $msg reactions]
             } else {
                 $hull patchFields $ts $msg
             }
@@ -623,11 +627,68 @@ snit::widgetadaptor chatview {
         $m delete 0 end
         $m add command -label "Reply" \
             -command [mymethod OnReplySelected $id]
+        $m add command -label "Add Reaction" \
+            -command [mymethod OnReactSelected $id $rootX $rootY]
         $m add command -label "View XML" \
             -command [mymethod OnViewXml $id]
         $m add command -label "Find in Chat" \
             -command [list event generate $win <<FindInChat>>]
         tk_popup $m $rootX $rootY
+    }
+
+    # Open an emoji picker at the click point; the chosen glyph toggles our
+    # reaction on the message. Override-redirect + global grab so a click
+    # anywhere else dismisses it (mirrors messageentry's emoji popup).
+    method OnReactSelected {id rootX rootY} {
+        # Unique name per open: a pending idle-destroy of a prior popup must
+        # never land on a freshly reopened one at the same path.
+        set pop $win.__reactpop[clock microseconds]
+        toplevel $pop -borderwidth 1 -relief solid
+        wm withdraw $pop
+        wm overrideredirect $pop 1
+        if {[tk windowingsystem] eq "x11"} {
+            catch {wm attributes $pop -type popup_menu}
+        }
+        emojipicker $pop.p -command [mymethod OnReactPicked $id $pop]
+        pack $pop.p -expand yes -fill both
+        bind $pop <Escape> [list destroy $pop]
+        bind $pop <ButtonPress> [mymethod OnReactGrabClick $pop %X %Y]
+        wm transient $pop [winfo toplevel $win]
+        wm geometry $pop +$rootX+$rootY
+        wm deiconify $pop
+        raise $pop
+        if {[catch {ttk::globalGrab $pop}]} { catch {grab $pop} }
+        $pop.p focusSearch
+    }
+
+    method OnReactPicked {id pop glyph} {
+        # Hide immediately for instant feedback, but defer destroy: emojipicker's
+        # Click still generates <<EmojiSelected>> on $pop.p after this -command
+        # returns, so the window must outlive this callback.
+        catch {ttk::releaseGrab $pop}
+        catch {wm withdraw $pop}
+        ::tacky message react -acc $options(-acc) -chat $options(-jid) \
+            -timestamp $id -emoji $glyph
+        after idle [list destroy $pop]
+    }
+
+    method OnReactGrabClick {pop X Y} {
+        if {![winfo exists $pop]} return
+        set x0 [winfo rootx $pop]
+        set y0 [winfo rooty $pop]
+        if {$X < $x0 || $X >= $x0 + [winfo width $pop]
+         || $Y < $y0 || $Y >= $y0 + [winfo height $pop]} {
+            catch {ttk::releaseGrab $pop}
+            destroy $pop
+        }
+    }
+
+    # Chip click: toggle our reaction (add if absent, retract if present).
+    # The backend recomputes and sends the full set either way.
+    method OnReactToggle {data} {
+        lassign $data id emoji
+        ::tacky message react -acc $options(-acc) -chat $options(-jid) \
+            -timestamp $id -emoji $emoji
     }
 
     method OnReplySelected {id} {
@@ -1013,6 +1074,9 @@ snit::widget chatarea {
         }
         $text tag configure receipt -foreground #888888
         $text tag configure receipt.read -foreground #2d6da3
+        # XEP-0444 reaction chips
+        $text tag configure reaction -lmargin1 40 -lmargin2 40 \
+            -font "Helvetica 11" -spacing1 2 -spacing3 4
         $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
         $text tag configure system -foreground gray50 -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
@@ -1178,6 +1242,25 @@ snit::widget chatarea {
             [$self ReceiptTags $id $serverStatus $remoteStatus]
     }
 
+    # Swap the chip row in place; body stays put, viewport doesn't jump.
+    method {reactions update} {id reactions} {
+        if {$id ni $MessageIds} return
+        if {[dict exists $Messages $id]} {
+            dict set Messages $id reactions $reactions
+        }
+        compensate $text {
+            set ranges [$text tag ranges item.$id.reactions]
+            if {[llength $ranges] > 0} {
+                lassign $ranges start end
+                $text del $start $end
+            }
+            if {[dict size $reactions] > 0} {
+                $text mark set msgins item.$id.last
+                $self DrawReactions $id $reactions
+            }
+        }
+    }
+
     # Draws message, doesn't store info about it, doesn't adjust the
     # text accordingly. Internal use only!
     method DrawMessage {textIndex messageDict} {
@@ -1273,7 +1356,31 @@ snit::widget chatarea {
                         $message(server_status) $remoteStatus
                 }
             }
+
+            if {[info exists message(reactions)]
+                && [dict size $message(reactions)] > 0} {
+                $text mark set msgins item.$message(id).last
+                $self DrawReactions $message(id) $message(reactions)
+            }
         }
+    }
+
+    # Chip row below a message; each chip is emoji + count, click toggles.
+    method DrawReactions {id reactions} {
+        set tag item.$id
+        set rtag item.$id.reactions
+        set i 0
+        dict for {emoji info} $reactions {
+            set count [llength [dict get $info reactors]]
+            set bindTag react.$id.[incr i]
+            $text ins msgins " $emoji $count " \
+                [list $tag $rtag reaction $bindTag]
+            $text tag bind $bindTag <Button-1> \
+                [list event generate $win <<ReactToggle>> \
+                    -data [list $id $emoji]]
+            $text ins msgins "  " [list $tag $rtag reaction]
+        }
+        $text ins msgins \n [list $tag $rtag reaction]
     }
 
     # Placeholder for a message that failed to draw. Field-free so it can't
@@ -1450,6 +1557,12 @@ proc enrich_store_message {storeDict names} {
     if {[dict exists $storeDict attachments]
         && [llength [dict get $storeDict attachments]] > 0} {
         dict set d attachments [dict get $storeDict attachments]
+    }
+    # XEP-0444 reactions: backend hands per-emoji {reactors mine}; the count
+    # is derived from the reactor list at render time.
+    if {[dict exists $storeDict reactions]
+        && [dict size [dict get $storeDict reactions]] > 0} {
+        dict set d reactions [dict get $storeDict reactions]
     }
     return $d
 }

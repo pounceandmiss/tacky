@@ -42,6 +42,7 @@ snit::type taco_caps {
             http://jabber.org/protocol/disco#info
             urn:xmpp:receipts
             urn:xmpp:chat-markers:0
+            urn:xmpp:reactions:0
         }]
 
         # Register disco#info IQ handler

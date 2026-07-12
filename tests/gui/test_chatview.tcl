@@ -1036,6 +1036,42 @@ test chatarea-reply-preview-rendered {a reply renders a clickable preview with a
              [expr {"item.100.replyref" in [.ca.text tag names]}]
     } -result {1 1}
 
+test chatarea-reactions-rendered {a message's reactions render emoji+count chips, styled and clickable} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [dict merge [ca_msg 100 "hi"] {
+            reactions {
+                👍 {reactors {bob carol} mine 1}
+                ❤️ {reactors {bob} mine 0}
+            }
+        }]]
+        set content [.ca.text get 1.0 end-1c]
+        list [string match "*👍 2*❤️ 1*" $content] \
+             [expr {"item.100.reactions" in [.ca.text tag names]}] \
+             [expr {[.ca.text tag bind react.100.1 <Button-1>] ne ""}]
+    } -result {1 1 1}
+
+test chatarea-reactions-update-in-place {reactions update swaps only the chip row, leaving the body intact} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 "hi there"]]
+        # Add a chip row where there was none.
+        .ca reactions update 100 {👍 {reactors {bob} mine 0}}
+        set added [list \
+            [string match "*hi there*👍 1*" [.ca.text get 1.0 end-1c]] \
+            [expr {[llength [.ca.text tag ranges item.100.reactions]] > 0}]]
+        # Change the set.
+        .ca reactions update 100 {👍 {reactors {bob carol} mine 1}}
+        set changed [string match "*👍 2*" [.ca.text get 1.0 end-1c]]
+        # Retract everything: chip row gone, body still present, message kept.
+        .ca reactions update 100 {}
+        set cleared [list \
+            [llength [.ca.text tag ranges item.100.reactions]] \
+            [string match "*hi there*" [.ca.text get 1.0 end-1c]] \
+            [expr {100 in [.ca messages ids]}]]
+        concat $added $changed $cleared
+    } -result {1 1 1 0 1 1}
+
 # -- attachments ----------------------------------------------------------------
 
 test chatarea-attachment-image-caption {image attachment renders a clickable caption frame} \
