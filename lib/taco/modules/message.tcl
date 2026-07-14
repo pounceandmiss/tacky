@@ -992,7 +992,8 @@ snit::type taco_message {
         set targetId [$self ReactionTargetId $chatJid $targetTs]
         if {$targetId eq ""} return
         set ownId [$self OwnReactionSenderId $chatJid]
-        $messagestore applyReaction $chatJid $targetId $ownId $ownId 1 \
+        set ownLabel [$self OwnReactionLabel $chatJid]
+        $messagestore applyReaction $chatJid $targetId $ownId $ownLabel 1 \
             $emojis [clock microseconds]
         $self EmitReactionPatch $chatJid $targetTs
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -1013,9 +1014,24 @@ snit::type taco_message {
             $row(server_id) $row(origin_id) $row(own_id)]
     }
 
-    # Our stable reactor key for a chat: own nick in a MUC, bare jid in 1:1.
-    # Used as both the sender_id and the display label for our own row.
+    # Our stable reactor key for a chat: own occupant-id in a MUC (nick
+    # fallback when the room has no XEP-0421), bare jid in 1:1. Must agree
+    # with resolveSender's own sender_id so the optimistic local row and the
+    # reflected echo land on the same key.
     method OwnReactionSenderId {chatJid} {
+        if {[IsMucChatJid $chatJid]} {
+            regsub {\?join$} $chatJid {} roomJid
+            set roomJid [jid bare $roomJid]
+            set myOcc [$client muc myOccupantId -jid $roomJid]
+            if {$myOcc ne ""} { return $myOcc }
+            return [$client muc myNick -jid $roomJid]
+        }
+        return [jid bare [$client cget -jid]]
+    }
+
+    # Display label for our own reaction row: our nick in a MUC, bare jid in
+    # 1:1. Separate from the sender key, which is the opaque occupant-id.
+    method OwnReactionLabel {chatJid} {
         if {[IsMucChatJid $chatJid]} {
             regsub {\?join$} $chatJid {} roomJid
             return [$client muc myNick -jid [jid bare $roomJid]]
@@ -1518,28 +1534,57 @@ snit::type taco_message {
         set targetId [xsearch $rxNode -get @id]
         if {$targetId eq ""} { return "" }
         set emojis [xsearch $rxNode reaction -gather body]
-        set rawFrom [xsearch $msgNode -get @from]
+        set sender [$self resolveSender $chatJid $msgNode]
+        set senderId [dict get $sender sender_id]
+        set isOwn [dict get $sender is_own]
+        # Fail-closed: a remote MUC reaction with no occupant-id has no
+        # stable identity to attribute it to, so drop it.
+        if {!$isOwn && $senderId eq ""} { return "" }
         if {[IsMucChatJid $chatJid]} {
-            regsub {\?join$} $chatJid {} roomJid
-            set roomJid [jid bare $roomJid]
-            set nick [jid resource $rawFrom]
-            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]}]
-            if {$isOwn} {
-                set senderId $nick
-            } else {
-                set senderId [xsearch $msgNode occupant-id \
-                    -ns urn:xmpp:occupant-id:0 -get @id]
-                if {$senderId eq ""} { return "" }
-            }
-            set senderLabel $nick
+            set senderLabel [jid resource [xsearch $msgNode -get @from]]
         } else {
-            set bare [jid norm [jid bare $rawFrom]]
-            set isOwn [expr {$bare eq [jid bare [$client cget -jid]]}]
-            set senderId $bare
-            set senderLabel $bare
+            set senderLabel $senderId
         }
         return [dict create target_id $targetId sender_id $senderId \
             sender_label $senderLabel is_own $isOwn emojis $emojis]
+    }
+
+    # Resolve who sent a stanza into {sender_id is_own}. sender_id is the
+    # stable identity to key/compare on: bare jid in 1:1, XEP-0421
+    # occupant-id in a MUC. is_own carries the fail-open-to-nick policy, so
+    # it is not derivable from sender_id alone (in a non-0421 room every
+    # occupant-id is "", including ours). The display label is a per-feature
+    # concern the caller attaches from the nick it already holds.
+    method resolveSender {chatJid msgNode} {
+        set rawFrom [xsearch $msgNode -get @from]
+        if {![IsMucChatJid $chatJid]} {
+            set bare [jid norm [jid bare $rawFrom]]
+            return [dict create sender_id $bare \
+                is_own [expr {$bare eq [jid bare [$client cget -jid]]}]]
+        }
+        regsub {\?join$} $chatJid {} roomJid
+        set roomJid [jid bare $roomJid]
+        set occ [xsearch $msgNode occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        set myOcc [$client muc myOccupantId -jid $roomJid]
+        set nick [jid resource $rawFrom]
+        # Compare by occupant-id only when both ours and the stanza's are
+        # known; otherwise fall back to nick equality.
+        if {$occ ne "" && $myOcc ne ""} {
+            set isOwn [expr {$occ eq $myOcc}]
+        } else {
+            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]}]
+        }
+        # Key on the occupant-id whenever the stanza carries one (stable, ours
+        # and peers'); else our nick for our own row (fail-open); else "" -
+        # a remote sender with no stable identity, which the caller drops.
+        if {$occ ne ""} {
+            set senderId $occ
+        } elseif {$isOwn} {
+            set senderId $nick
+        } else {
+            set senderId ""
+        }
+        return [dict create sender_id $senderId is_own $isOwn]
     }
 
     # Apply a `reaction` verdict to the store and, when the target
@@ -1624,6 +1669,8 @@ snit::type taco_message {
             server_id  [dict get $args -server_id] \
             own_id     $ownId \
             origin_id  $originId \
+            occupant_id [xsearch $msgNode occupant-id \
+                -ns urn:xmpp:occupant-id:0 -get @id] \
             reply_id   $replyId \
             reply_to   $replyTo \
             raw_xml    [jwrite $msgNode] \

@@ -1151,3 +1151,17 @@ test messagestore-reaction-enriches-rowtodict {a message dict carries its reacti
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] reactions
     } -result {👍 {reactors bob@x mine 0}}
+
+test messagestore-occupant-id-roundtrips {occupant_id is stored and read back} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 occupant_id occ-abc]]
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
+    } -result {occ-abc}
+
+test messagestore-occupant-id-defaults-empty {a message dict without occupant_id stores empty} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100]]
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
+    } -result {}
