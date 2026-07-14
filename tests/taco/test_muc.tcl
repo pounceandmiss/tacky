@@ -16,7 +16,7 @@ proc muc_presence {args} {
     set defaults {
         from room@muc.example.com/me
         role participant affiliation member jid ""
-        self 1 codes {} type ""
+        self 1 codes {} type "" occupant ""
     }
     set opts [dict merge $defaults $args]
     set from [dict get $opts from]
@@ -26,6 +26,7 @@ proc muc_presence {args} {
     set isSelf [dict get $opts self]
     set extraCodes [dict get $opts codes]
     set type_ [dict get $opts type]
+    set occ [dict get $opts occupant]
 
     set presAttrs [list -from $from]
     if {$type_ ne ""} {
@@ -38,6 +39,9 @@ proc muc_presence {args} {
     }
 
     j presence {*}$presAttrs {
+        if {$occ ne ""} {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+        }
         j x -ns http://jabber.org/protocol/muc#user {
             j item {*}$itemAttrs
             if {$isSelf} {
@@ -52,13 +56,14 @@ proc muc_presence {args} {
 
 # Simulate a full join: send the join command, then feed self-presence back.
 proc muc_join {room nick args} {
-    set defaults {-role participant -affiliation member}
+    set defaults {-role participant -affiliation member -occupant ""}
     set opts [dict merge $defaults $args]
     c muc join -jid $room -nick $nick
     c.conn feed [muc_presence \
         from $room/$nick \
         role [dict get $opts -role] \
         affiliation [dict get $opts -affiliation] \
+        occupant [dict get $opts -occupant] \
         self 1]
 }
 
@@ -1044,3 +1049,80 @@ test muc-reaction-no-occupant-id-dropped {a groupchat reaction with no occupant-
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         dict exists [lindex $msgs 0] reactions
     } -result 0
+
+# -- Own occupant-id (XEP-0421) -----------------------------------------------
+
+test muc-self-occupant-id-tracked {self-presence occupant-id is captured and exposed} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c muc myOccupantId -jid room@muc.example.com
+    } -result {occ-me}
+
+test muc-self-occupant-id-absent {no occupant-id in self-presence leaves it empty (non-0421 room)} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c muc myOccupantId -jid room@muc.example.com
+    } -result {}
+
+test muc-own-message-by-occupant-id-despite-nick \
+    {our own message is detected by occupant-id even when the nick was service-rewritten} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id my-msg-id \
+            -from room@muc.example.com/me-renamed {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j body #body "still mine"
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg is_outgoing
+    } -result {1}
+
+test muc-own-message-not-fooled-by-nick-spoof \
+    {a message using our nick but a different occupant-id is not treated as ours} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id spoof-id \
+            -from room@muc.example.com/me {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-impostor
+            j body #body "not mine"
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg is_outgoing
+    } -result {0}
+
+test muc-own-reaction-keyed-by-occupant-id \
+    {our own reaction keys by occupant-id, so the reflected echo does not double-count} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/someone {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j body #body "hi all"
+        }]
+        set ts [dict get [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0] timestamp]
+        c message react -chat room@muc.example.com?join -timestamp $ts -emoji 👍
+        # Room reflects our reaction back stamped with our occupant-id.
+        c.conn feed [j message -type groupchat -from room@muc.example.com/me {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+        }]
+        set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
+        dict get [lindex $msgs 0] reactions
+    } -result {👍 {reactors me mine 1}}
+
+test muc-occupant-id-stored-on-message {a peer message persists its occupant-id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-someone
+            j body #body "hi"
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg occupant_id
+    } -result {occ-someone}

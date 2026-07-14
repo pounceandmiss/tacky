@@ -88,7 +88,8 @@ snit::type taco_muc {
 
         # Initialize room tracking state
         set Rooms($opts(-jid)) [dict create \
-            nick $opts(-nick) subject "" joined 0 occupants [dict create]]
+            nick $opts(-nick) myOccupantId "" subject "" joined 0 \
+            occupants [dict create]]
 
         if {$opts(-command) ne ""} {
             set JoinCallbacks($opts(-jid)) $opts(-command)
@@ -461,6 +462,15 @@ snit::type taco_muc {
         return [dict get $Rooms($jid) nick]
     }
 
+    # Our own XEP-0421 occupant-id in the room, captured from self-presence.
+    # Non-empty iff the service stamps occupant-ids (i.e. the room supports
+    # XEP-0421); "" otherwise.
+    tackymethod myOccupantId {args} {
+        set jid [jid norm [dict get $args -jid]]
+        if {![info exists Rooms($jid)]} {return ""}
+        return [dict get $Rooms($jid) myOccupantId]
+    }
+
     tackymethod myRole {args} {
         $self MyOccupantField [jid norm [dict get $args -jid]] role
     }
@@ -563,6 +573,13 @@ snit::type taco_muc {
         # Nick may have been rewritten by service (status 210)
         dict set Rooms($roomJid) nick $nick
         dict set Rooms($roomJid) occupants $nick $occupant
+
+        # Our own occupant-id is stable across nick changes, so capture it
+        # once; a stray self-presence without one must not clobber it.
+        set occId [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        if {$occId ne ""} {
+            dict set Rooms($roomJid) myOccupantId $occId
+        }
 
         if {![dict get $Rooms($roomJid) joined]} {
             # First self-presence = join complete
@@ -786,7 +803,13 @@ snit::type taco_muc {
 
     method OnGroupchatMessage {roomJid nick stanza} {
         if {![info exists Rooms($roomJid)]} { return }
-        set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+        set myOcc [dict get $Rooms($roomJid) myOccupantId]
+        set occ [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        if {$occ ne "" && $myOcc ne ""} {
+            set isOwn [expr {$occ eq $myOcc}]
+        } else {
+            set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+        }
         $client message ingestLive ${roomJid}?join $stanza $isOwn
     }
 

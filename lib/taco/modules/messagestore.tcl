@@ -90,6 +90,10 @@ snit::type taco_messagestore {
                 -- this message's own id: <origin-id> if present else @id.
                 -- reply-target lookup key; NOT used for dedup.
                 origin_id      TEXT,
+                -- XEP-0421 sender occupant-id (MUC only, "" for 1:1 and
+                -- rooms without 0421). Stable identity for authorizing
+                -- edits/retractions and attribution across nick changes.
+                occupant_id    TEXT,
                 -- XEP-0461 reply: target message id + addressed author.
                 -- reply_id resolves against server_id/origin_id/own_id;
                 -- reply_to disambiguates client-generated id matches.
@@ -148,8 +152,9 @@ snit::type taco_messagestore {
             CREATE TABLE IF NOT EXISTS message_reaction(
                 chat_jid     TEXT NOT NULL,
                 target_id    TEXT NOT NULL,
-                -- dedup key: bare jid (1:1), occupant-id (MUC peer),
-                -- own nick (MUC self); is_own distinguishes ours.
+                -- dedup key: bare jid (1:1), occupant-id (MUC, ours and
+                -- peers'; nick fallback when the room has no XEP-0421).
+                -- is_own distinguishes ours.
                 sender_id    TEXT NOT NULL,
                 -- display label: bare jid (1:1) / nick (MUC).
                 sender_label TEXT,
@@ -352,6 +357,8 @@ snit::type taco_messagestore {
                     ? $m(on_wire) : 0}]
                 set originId [expr {[info exists m(origin_id)] \
                     ? $m(origin_id) : ""}]
+                set occId [expr {[info exists m(occupant_id)] \
+                    ? $m(occupant_id) : ""}]
                 set replyId [expr {[info exists m(reply_id)] \
                     ? $m(reply_id) : ""}]
                 set replyTo [expr {[info exists m(reply_to)] \
@@ -361,11 +368,11 @@ snit::type taco_messagestore {
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
-                        reply_id, reply_to, raw_xml, server_status,
+                        occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, fail_reason, on_wire, attachments)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
-                        $replyId, $replyTo, $m(raw_xml), $status, $enc,
+                        $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $failReason, $onWire, $attach)
                 }
                 set prevTs $ts
@@ -398,7 +405,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -414,7 +421,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -440,7 +447,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -454,7 +461,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
@@ -498,7 +505,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -512,7 +519,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -574,7 +581,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
@@ -595,7 +602,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
@@ -884,9 +891,9 @@ snit::type taco_messagestore {
     method RowToDict {row} {
         set d [messagestyling::enrich $row]
         # Direction is a protocol fact, not a display concern: a message is
-        # ours iff it carries an own_id (set on send and on any echo from
-        # our own bare JID). The GUI reads this flag rather than re-deriving
-        # it. (MUC own-detection by occupant-id/nick will refine this here.)
+        # ours iff it carries an own_id, which ingest sets when it resolves
+        # the sender as us (bare JID in 1:1, occupant-id in a MUC). The GUI
+        # reads this flag rather than re-deriving it.
         dict set d is_outgoing [expr {[dict get $d own_id] ne ""}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
