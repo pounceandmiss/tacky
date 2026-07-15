@@ -209,7 +209,14 @@ snit::widget chatpanel {
             -message "Retract this message for everyone in the room?"]
         if {$ans ne "yes"} return
         ::tacky message moderate -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $id
+            -chat $options(-jid) -timestamp $id \
+            -tag $win -onerror [mymethod ShowModerateError]
+    }
+
+    method ShowModerateError {message} {
+        if {![winfo exists $win]} return
+        tk_messageBox -icon error -title "Delete Failed" \
+            -parent [winfo toplevel $win] -message $message
     }
 
     method StartReply {data} {
