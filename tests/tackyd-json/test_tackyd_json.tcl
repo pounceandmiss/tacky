@@ -178,6 +178,31 @@ test json-backend-callback-call-start {start returns a scalar sid string} -setup
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 11 {"sid-abc123"}]
 
+# -- goto tests --------------------------------------------------------------
+#
+# goto and gotoReply return the same dict; gotoReply delegates to goto.
+
+test json-type-goto {goto is a dict, not a bare list of messages} -body {
+    jsonify convert message/goto \
+        [dict create \
+            messages [list [dict create timestamp 1700 body hi]] \
+            anchor 1700 bounded_before 0 bounded_after 1]
+} -result [json::write object \
+    messages [json::write array \
+        [json::write object timestamp 1700 body {"hi"}]] \
+    anchor 1700 bounded_before false bounded_after true]
+
+test json-type-gotoreply {gotoReply serializes identically to goto} -body {
+    set r [dict create \
+        messages [list [dict create timestamp 1700 body hi]] \
+        anchor 1700 bounded_before 0 bounded_after 1]
+    expr {[jsonify convert message/goto $r] eq [jsonify convert message/gotoReply $r]}
+} -result 1
+
+test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
+    jsonify convert message/gotoReply [dict create messages {} anchor ""]
+} -result [json::write object messages [json::write array] anchor null]
+
 # -- _on_error tests ---------------------------------------------------------
 
 test json-backend-error {error message} -setup {
