@@ -43,6 +43,26 @@ test bookmarks-jid-input-canonicalized {-jid accepts a chat JID with ?join suffi
         c bookmarks autojoin -jid room@muc.example.com?join
     } -result {1}
 
+test bookmarks-item-join-suffix-one-row \
+    {item -jid with a ?join suffix updates the bare-keyed row, not a second one} \
+    {*}$bookmarks_common \
+    -body {
+        bm_insert room@muc.example.com name "Room" nick me
+        c bookmarks item -jid room@muc.example.com?join -autojoin 1
+        c db eval {SELECT jid, name, autojoin FROM bookmark ORDER BY jid}
+    } -result {room@muc.example.com Room 1}
+
+test bookmarks-item-join-suffix-publishes-bare-jid \
+    {the published item id is the bare room JID, not the ?join chat JID} \
+    {*}$bookmarks_common \
+    -body {
+        bm_insert room@muc.example.com name "Room" nick me
+        c.conn clear
+        c bookmarks item -jid room@muc.example.com?join -autojoin 1
+        set iq [lindex [c.conn get_written] end]
+        xsearch $iq pubsub publish item -get @id
+    } -result {room@muc.example.com}
+
 test bookmarks-room-state-lifecycle {room state follows the muc join lifecycle, last event wins} \
     {*}$bookmarks_common \
     -body {
