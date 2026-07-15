@@ -2452,7 +2452,7 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
 
 test message-edit-own-1to1 {editing our own message swaps its body and marks edited} \
     {*}$msg_common -body {
-        [$::_client cget -taco] setting set -key omemo.enabled.alice@example.com -value 0
+        $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
@@ -2462,7 +2462,7 @@ test message-edit-own-1to1 {editing our own message swaps its body and marks edi
 
 test message-edit-sends-replace {edit puts <replace> referencing the original id on the wire} \
     {*}$msg_common -body {
-        [$::_client cget -taco] setting set -key omemo.enabled.alice@example.com -value 0
+        $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
