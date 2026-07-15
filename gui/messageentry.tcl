@@ -280,4 +280,10 @@ snit::widget messageentry {
     method insert {txt} {
         $text insert end $txt
     }
+
+    # Replace the whole composer content (used when starting an edit).
+    method set {txt} {
+        $text delete 1.0 end
+        $text insert end $txt
+    }
 }

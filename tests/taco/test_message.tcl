@@ -2432,3 +2432,84 @@ test message-reaction-mam-parsed-has-timestamp \
         # over parsed; a reaction disp lacking the key would throw here.
         list [llength [lmap m $parsed {dict get $m timestamp}]] [llength $toStore]
     } -result {1 0}
+
+# --- Edits (XEP-0308) / retractions (XEP-0424), 1:1 ------------------------
+
+test message-edit-incoming-1to1 {a peer correction swaps the body and marks edited} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body #body "helo"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
+            j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body #body "hello world"
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m body] [dict get $m edited] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {{hello world} 1 1}
+
+test message-edit-own-1to1 {editing our own message swaps its body and marks edited} \
+    {*}$msg_common -body {
+        [$::_client cget -taco] setting set -key omemo.enabled.alice@example.com -value 0
+        tacky message send -acc $acc -chat alice@example.com -body "helo"
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m body] [dict get $m edited]
+    } -result {hello 1}
+
+test message-edit-sends-replace {edit puts <replace> referencing the original id on the wire} \
+    {*}$msg_common -body {
+        [$::_client cget -taco] setting set -key omemo.enabled.alice@example.com -value 0
+        tacky message send -acc $acc -chat alice@example.com -body "helo"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
+        set stanza [lindex [$::_client conn get_written] end]
+        list [expr {[xsearch $stanza replace -ns urn:xmpp:message-correct:0 -get @id] eq $oid}] \
+             [xsearch $stanza body -get body]
+    } -result {1 hello}
+
+test message-edit-preserves-reaction-target \
+    {a reaction still resolves onto a message after it is edited} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body #body "hi"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body #body "hi there"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j reactions -ns urn:xmpp:reactions:0 -id m1 { j reaction #body 👍 }
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] reactions
+    } -result {👍 {reactors alice@example.com mine 0}}
+
+test message-retract-incoming-1to1 {a peer self-retraction tombstones the message} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body #body "secret"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j retract -ns urn:xmpp:message-retract:1 -id m1
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m retracted] [llength [msg_store_latest alice@example.com]]
+    } -result {1 1}
+
+test message-retract-own-1to1 {retract tombstones our message and sends <retract>} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "oops"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message retract -acc $acc -chat alice@example.com -timestamp $ts
+        set stanza [lindex [$::_client conn get_written] end]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [expr {[xsearch $stanza retract -ns urn:xmpp:message-retract:1 -get @id] eq $oid}] \
+             [dict get $m retracted]
+    } -result {1 1}

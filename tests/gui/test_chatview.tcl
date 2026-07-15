@@ -1408,3 +1408,102 @@ test chatarea-no-thirst-for-just-culled-direction {a direction culled this pass 
         }
         list culled=$::ca_culled hasOldThirst=$hasOld
     } -result {culled=old hasOldThirst=0}
+
+# -- edits (XEP-0308) / retractions (XEP-0424/0425) -----------------------------
+
+test chatarea-edited-marker {an edited message renders the (edited) marker} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [dict merge [ca_outgoing 100 "hello"] {edited 1}]]
+        set r [.ca.text tag ranges edited]
+        list [expr {[llength $r] > 0}] \
+             [string match "*(edited)*" [.ca.text get 1.0 end-1c]]
+    } -result {1 1}
+
+test chatarea-retracted-tombstone {a retracted message renders a tombstone and keeps its slot} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list \
+            [ca_msg 100 "msg A"] \
+            [dict merge [ca_msg 200 "secret"] {retracted 1}] \
+            [ca_msg 300 "msg C"]]
+        set tomb [.ca.text tag ranges tombstone]
+        list [expr {[llength $tomb] > 0}] \
+             [string match "*deleted*" [.ca.text get 1.0 end-1c]] \
+             [expr {![string match "*secret*" [.ca.text get 1.0 end-1c]]}] \
+             [.ca messages ids]
+    } -result {1 1 1 {100 200 300}}
+
+test chatview-edit-redraws-body {a received correction redraws the message body in place} \
+    -setup { cv_setup; cv_create } -cleanup cv_cleanup \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body #body "helo"
+        }]
+        wait
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body #body "hello world"
+        }]
+        wait
+        set txt [.cv.text get 1.0 end-1c]
+        list [string match "*hello world*" $txt] \
+             [string match "*(edited)*" $txt]
+    } -result {1 1}
+
+test chatview-retract-tombstones {a received self-retraction redraws the message as a tombstone} \
+    -setup { cv_setup; cv_create } -cleanup cv_cleanup \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body #body "secret"
+        }]
+        wait
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j retract -ns urn:xmpp:message-retract:1 -id m1
+        }]
+        wait
+        set txt [.cv.text get 1.0 end-1c]
+        list [string match "*deleted*" $txt] \
+             [expr {![string match "*secret*" $txt]}]
+    } -result {1 1}
+
+test chatview-edit-at-tail-keeps-tail-pinned \
+    {editing the newest message while at the bottom keeps it in view} \
+    -setup { cv_overflow_setup } -cleanup cv_cleanup \
+    -body {
+        .cv.text see end
+        wait
+        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        # Grow the last message ("fill 14" -> seed14) by several lines. Without
+        # re-pinning the tail, the new content drifts below the fold and the
+        # view is no longer at the bottom.
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j replace -ns urn:xmpp:message-correct:0 -id seed14
+            j body #body "edited\nmuch\ntaller\nnow"
+        }]
+        wait
+        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list $atEndBefore $atEndAfter
+    } -result {1 1}
+
+test chatview-send-confirm-timestamp-move-keeps-tail \
+    {a sent message whose confirm moves its timestamp stays pinned to the tail} \
+    -setup { cv_overflow_setup } -cleanup cv_cleanup \
+    -body {
+        # OMEMO on would park the send on devicelist warming; disable it so
+        # the message reaches the wire and can be confirmed.
+        tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
+        tacky message send -acc $::acc -chat alice@example.com -body "hello"
+        wait
+        set atEndAfterSend [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        set sentId [.cv messages newest]
+        # Server confirms with a stamp 1s later: this fires a newtimestamp
+        # <Patch> that deletes and re-inserts (moves) the row. Without
+        # re-pinning, the top-anchored reinsert drifts the view off the tail.
+        cv_muc_echo $sentId echo-move [FormatTimestampISO [expr {$sentId + 1000000}]]
+        wait
+        set atEndAfterMove [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        list $atEndAfterSend $atEndAfterMove
+    } -result {1 1}

@@ -33,6 +33,8 @@ snit::widget chatpanel {
     variable findQuery ""
     variable replyBar ""
     variable replyToTs ""
+    variable editBar ""
+    variable editingTs ""
     variable dropBg -array {}
 
     constructor args {
@@ -64,6 +66,9 @@ snit::widget chatpanel {
 
         bind $cv <<FindInChat>> [mymethod OpenFind]
         bind $cv <<ReplyTo>> [mymethod StartReply %d]
+        bind $cv <<EditMessage>> [mymethod StartEdit %d]
+        bind $cv <<RetractMessage>> [mymethod ConfirmRetract %d]
+        bind $cv <<ModerateMessage>> [mymethod ConfirmModerate %d]
 
         $paned add $leftFrame -weight 1
         pack $paned -expand yes -fill both
@@ -146,6 +151,12 @@ snit::widget chatpanel {
     }
 
     method Send {text} {
+        if {$editingTs ne ""} {
+            ::tacky message edit -acc $options(-acc) -chat $options(-jid) \
+                -timestamp $editingTs -body $text
+            $self CancelEdit
+            return
+        }
         set sendArgs [list -acc $options(-acc) -chat $options(-jid) -body $text]
         if {$replyToTs ne ""} {
             lappend sendArgs -reply_to_ts $replyToTs
@@ -154,8 +165,56 @@ snit::widget chatpanel {
         $self CancelReply
     }
 
+    # Begin an XEP-0308 correction: banner + prefill the composer with the
+    # current body. The next Send routes to `message edit` (see Send).
+    method StartEdit {data} {
+        lassign $data ts body
+        $self CancelReply
+        set editingTs $ts
+        if {$editBar eq "" || ![winfo exists $editBar]} {
+            set editBar [ttk::frame $leftFrame.editbar]
+            ttk::label $editBar.lbl -anchor w -text "Editing message"
+            ttk::button $editBar.close -text "×" -style Toolbutton \
+                -command [mymethod CancelEdit]
+            pack $editBar.close -side right -padx 2
+            pack $editBar.lbl -side left -fill x -expand yes -padx {6 2}
+        }
+        pack propagate $leftFrame 0
+        pack $editBar -fill x -before $entry
+        $entry set $body
+        $entry focus
+    }
+
+    method CancelEdit {} {
+        set editingTs ""
+        if {$editBar ne "" && [winfo exists $editBar]} {
+            destroy $editBar
+            pack propagate $leftFrame 1
+        }
+        set editBar ""
+    }
+
+    method ConfirmRetract {id} {
+        set ans [tk_messageBox -type yesno -icon question \
+            -parent [winfo toplevel $win] -title "Delete message" \
+            -message "Delete this message? This cannot be undone."]
+        if {$ans ne "yes"} return
+        ::tacky message retract -acc $options(-acc) \
+            -chat $options(-jid) -timestamp $id
+    }
+
+    method ConfirmModerate {id} {
+        set ans [tk_messageBox -type yesno -icon question \
+            -parent [winfo toplevel $win] -title "Delete for everyone" \
+            -message "Retract this message for everyone in the room?"]
+        if {$ans ne "yes"} return
+        ::tacky message moderate -acc $options(-acc) \
+            -chat $options(-jid) -timestamp $id
+    }
+
     method StartReply {data} {
         lassign $data ts author snippet
+        $self CancelEdit
         set replyToTs $ts
         if {$replyBar eq "" || ![winfo exists $replyBar]} {
             set replyBar [ttk::frame $leftFrame.replybar]

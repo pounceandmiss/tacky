@@ -1126,3 +1126,189 @@ test muc-occupant-id-stored-on-message {a peer message persists its occupant-id}
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg occupant_id
     } -result {occ-someone}
+
+# -- Edits (XEP-0308) / moderation (XEP-0425) in a MUC ------------------------
+
+proc muc_msgs {} {
+    dict get [c message messagestore get latest room@muc.example.com?join] messages
+}
+
+test muc-edit-by-occupant-id \
+    {a groupchat correction from the same occupant-id swaps the body} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body #body "helo"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j replace -ns urn:xmpp:message-correct:0 -id srv1
+            j body #body "hello"
+        }]
+        set m [lindex [muc_msgs] 0]
+        list [dict get $m body] [dict get $m edited] [llength [muc_msgs]]
+    } -result {hello 1 1}
+
+test muc-edit-occupant-spoof-rejected \
+    {a correction from a different occupant-id does not edit the original} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body #body "helo"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/impostor {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-impostor
+            j replace -ns urn:xmpp:message-correct:0 -id srv1
+            j body #body "HACKED"
+        }]
+        set m [lindex [muc_msgs] 0]
+        list [dict get $m body] [dict get $m edited]
+    } -result {helo 0}
+
+test muc-moderation-tombstones \
+    {a moderated retraction broadcast from the room bare jid tombstones the message} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body #body "spam"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com {
+            j retract -ns urn:xmpp:message-retract:1 -id srv1 {
+                j moderated -ns urn:xmpp:message-moderate:1 \
+                    -by room@muc.example.com/mod
+            }
+        }]
+        dict get [lindex [muc_msgs] 0] retracted
+    } -result {1}
+
+test muc-occupant-retract-ignored \
+    {a <retract> from an occupant (not the room bare jid) is not honored} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body #body "keep me"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j retract -ns urn:xmpp:message-retract:1 -id srv1
+        }]
+        dict get [lindex [muc_msgs] 0] retracted
+    } -result {0}
+
+test muc-moderate-sends-iq \
+    {moderate sends a XEP-0425 moderate IQ to the room referencing the stanza-id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body #body "spam"
+        }]
+        set ts [dict get [lindex [muc_msgs] 0] timestamp]
+        c message moderate -chat room@muc.example.com?join -timestamp $ts
+        set iq [lindex [c.conn get_written] end]
+        list [xsearch $iq moderate -ns urn:xmpp:message-moderate:1 -get @id] \
+             [llength [xsearch $iq moderate retract \
+                 -ns urn:xmpp:message-retract:1]]
+    } -result {srv1 1}
+
+# -- Editing our OWN MUC message (occupant-id backfill + auth) ----------------
+
+test muc-own-edit-roundtrip-no-duplicate \
+    {our own message's echo backfills occupant_id, and the correction echo re-applies without duplicating} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c message send -chat room@muc.example.com?join -body "а"
+        set oid [dict get [lindex [muc_msgs] 0] own_id]
+        # Room echoes our message back with a stanza-id + our occupant-id.
+        c.conn feed [j message -type groupchat -id $oid \
+            -from room@muc.example.com/me {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j body #body "а"
+        }]
+        set m [lindex [muc_msgs] 0]
+        set backfilled [dict get $m occupant_id]
+        # Correct it. The edit references the origin-id (our @id, oid), NOT
+        # the stanza-id, so a strict peer can correlate it (XEP-0308).
+        c message edit -chat room@muc.example.com?join \
+            -timestamp [dict get $m timestamp] -body "б"
+        # Room echoes the correction back, reflecting our <replace id=oid>.
+        c.conn feed [j message -type groupchat -id corr1 \
+            -from room@muc.example.com/me {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvB -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j replace -ns urn:xmpp:message-correct:0 -id $oid
+            j body #body "б"
+        }]
+        set msgs [muc_msgs]
+        list $backfilled [llength $msgs] \
+            [dict get [lindex $msgs 0] body] [dict get [lindex $msgs 0] edited]
+    } -result {occ-me 1 б 1}
+
+test muc-edit-replace-id-is-origin-not-stanza-id \
+    {a MUC correction references the origin-id, never the room stanza-id (XEP-0308)} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c message send -chat room@muc.example.com?join -body "а"
+        set oid [dict get [lindex [muc_msgs] 0] own_id]
+        # Confirm the send so the row carries a stanza-id distinct from oid.
+        c.conn feed [j message -type groupchat -id $oid \
+            -from room@muc.example.com/me {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j body #body "а"
+        }]
+        set m [lindex [muc_msgs] 0]
+        c message edit -chat room@muc.example.com?join \
+            -timestamp [dict get $m timestamp] -body "б"
+        set sent [lindex [c.conn get_written] end]
+        set replaceId [xsearch $sent replace \
+            -ns urn:xmpp:message-correct:0 -get @id]
+        list [expr {$replaceId eq $oid}] [expr {$replaceId eq "srvA"}]
+    } -result {1 0}
+
+test muc-own-edit-spoof-still-rejected \
+    {a correction of our own message from a different occupant-id is not applied to it} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c message send -chat room@muc.example.com?join -body "mine"
+        set oid [dict get [lindex [muc_msgs] 0] own_id]
+        c.conn feed [j message -type groupchat -id $oid \
+            -from room@muc.example.com/me {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+            j body #body "mine"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/impostor {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-evil
+            j replace -ns urn:xmpp:message-correct:0 -id srvA
+            j body #body "HACKED"
+        }]
+        set mine ""
+        foreach msg [muc_msgs] {
+            if {[dict get $msg own_id] eq $oid} { set mine $msg }
+        }
+        list [dict get $mine body] [dict get $mine edited]
+    } -result {mine 0}

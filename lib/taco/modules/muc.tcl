@@ -745,11 +745,14 @@ snit::type taco_muc {
             }
 
             # A bodyless groupchat message carrying an XEP-0444 <reactions>
-            # is forwarded too; ingestLive/Classify handle it. Other bodyless
+            # or an XEP-0424/0425 <retract> (moderation broadcast) is
+            # forwarded too; ingestLive/Classify handle it. Other bodyless
             # groupchat stanzas fall through to the status-code handling below.
             set hasReactions [expr {[llength \
                 [xsearch $stanza reactions -ns urn:xmpp:reactions:0]] > 0}]
-            if {$bodyText ne "" || $hasReactions} {
+            set hasRetract [expr {[llength \
+                [xsearch $stanza retract -ns urn:xmpp:message-retract:1]] > 0}]
+            if {$bodyText ne "" || $hasReactions || $hasRetract} {
                 $self OnGroupchatMessage $roomJid $nick $stanza
                 return 1
             }
