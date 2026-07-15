@@ -1165,3 +1165,64 @@ test messagestore-occupant-id-defaults-empty {a message dict without occupant_id
         ms_batch [list [ms_msg timestamp 100]]
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
     } -result {}
+
+# --- Edits (XEP-0308) / retractions (XEP-0424) ------------------------------
+
+test messagestore-edit-swaps-body {applyEdit replaces body and sets edited} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store applyEdit alice@example.com sid1 corrected "<xml/>" 200
+        set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
+        list [dict get $m body] [dict get $m edited]
+    } -result {corrected 1}
+
+test messagestore-edit-defaults-not-edited {an unedited message reports edited 0} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1]]
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] edited
+    } -result {0}
+
+test messagestore-edit-lww-rejects-older {an older edit does not overwrite a newer one} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store applyEdit alice@example.com sid1 newer "<xml/>" 300
+        store applyEdit alice@example.com sid1 older "<xml/>" 200
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] body
+    } -result {newer}
+
+test messagestore-edit-target-not-found {applyEdit on an unknown target returns empty} \
+    {*}$ms_common \
+    -body {
+        store applyEdit alice@example.com nope corrected "<xml/>" 200
+    } -result {}
+
+test messagestore-retract-tombstones {applyRetract sets retracted} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1]]
+        store applyRetract alice@example.com sid1
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] retracted
+    } -result {1}
+
+test messagestore-retract-is-sticky {a retracted message cannot be edited afterwards} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store applyRetract alice@example.com sid1
+        set skipped [store applyEdit alice@example.com sid1 sneaky "<xml/>" 500]
+        set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
+        list $skipped [dict get $m body] [dict get $m retracted]
+    } -result {{} original 1}
+
+test messagestore-reconcile-backfills-occupant-id \
+    {confirming a pending own send backfills its occupant_id from the echo} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id o1 origin_id o1 \
+            server_status pending occupant_id ""]]
+        store reconcile alice@example.com sidA o1 o1 100 occ-me
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
+    } -result {occ-me}

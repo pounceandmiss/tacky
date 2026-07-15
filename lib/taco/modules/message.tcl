@@ -156,10 +156,18 @@ snit::type taco_message {
 
             set r [$self ParseResultNode $resultNode $chatJid]
             set verdict [dict get $r verdict]
-            # A reaction updates a stored message's display; it isn't a
-            # citizen and doesn't bound a hole (like drop).
+            # A reaction/edit/retract updates a stored message's display; it
+            # isn't a citizen and doesn't bound a hole (like drop).
             if {$verdict eq "reaction"} {
                 $self ApplyReactionVerdict $chatJid $r
+                continue
+            }
+            if {$verdict eq "edit"} {
+                $self ApplyEditVerdict $chatJid $r
+                continue
+            }
+            if {$verdict eq "retract"} {
+                $self ApplyRetractVerdict $chatJid $r
                 continue
             }
             # drop = displayless new stanza; doesn't bound a hole (as before).
@@ -332,6 +340,12 @@ snit::type taco_message {
             reaction {
                 $self ApplyReactionVerdict $chatJid $verdict
             }
+            edit {
+                $self ApplyEditVerdict $chatJid $verdict
+            }
+            retract {
+                $self ApplyRetractVerdict $chatJid $verdict
+            }
             confirmed {
                 $self HandleConfirmation $chatJid \
                     [list [dict get $verdict reconciled]]
@@ -428,10 +442,15 @@ snit::type taco_message {
     # OMEMO fail-closed: the wire form encrypts or throws, never cleartext.
     # See security invariant #2 in lib/taco/modules/omemo.tcl.
     method BuildMessageStanza {mode chatJid body oid msgType toJid encMode \
-            {replyId ""} {replyTo ""} {fbEnd 0}} {
+            {replyId ""} {replyTo ""} {fbEnd 0} {replaceId ""}} {
         set omemo   [expr {$encMode eq "omemo"}]
         set encWire [expr {$omemo && $mode eq "wire"}]
         return [j message -to $toJid -type $msgType -id $oid {
+            # XEP-0308 correction hint: plaintext even when the body is
+            # OMEMO-encrypted, so a peer can match it to the original.
+            if {$replaceId ne ""} {
+                j replace -ns urn:xmpp:message-correct:0 -id $replaceId
+            }
             if {$omemo} {
                 if {$encWire} {
                     j #as-is [$client omemo encrypt $chatJid $body]
@@ -966,7 +985,7 @@ snit::type taco_message {
     tackymethod react {args} {
         array set opts $args
         set targetTs $opts(-timestamp)
-        set targetId [$self ReactionTargetId $opts(-chat) $targetTs]
+        set targetId [$self ReferenceId $opts(-chat) $targetTs]
         if {$targetId eq ""} return
         set ownId [$self OwnReactionSenderId $opts(-chat)]
         set current [$messagestore ownReactions $opts(-chat) $targetId $ownId]
@@ -985,11 +1004,92 @@ snit::type taco_message {
         $self SetReactions $opts(-chat) $opts(-timestamp) {}
     }
 
+    # edit -chat $chatJid -timestamp $targetTs -body $newText
+    # XEP-0308 correction of our own message: send a fresh message carrying
+    # <replace id=original> + the new body, then optimistically swap the
+    # stored body and <Patch>. The MUC echo / 1:1 carbon re-applies
+    # idempotently. Build first so an OMEMO failure aborts before we mutate.
+    tackymethod edit {args} {
+        array set opts $args
+        set chatJid $opts(-chat)
+        set targetId [$self CorrectionAnchorId $chatJid $opts(-timestamp)]
+        if {$targetId eq ""} return
+        set newBody $opts(-body)
+        set oid [clock microseconds]
+        lassign [$self DeriveAddressing $chatJid] msgType toJid
+        set encMode [$self OutgoingEncMode $chatJid $msgType]
+        try {
+            set stanza [$self BuildMessageStanza wire $chatJid $newBody \
+                $oid $msgType $toJid $encMode "" "" 0 $targetId]
+        } trap TACO_OMEMO_NOT_READY {emsg} {
+            jlog debug "edit $chatJid: OMEMO not ready ($emsg), aborting edit"
+            return
+        } trap TACO_OMEMO_TERMINAL {emsg} {
+            jlog debug "edit $chatJid: OMEMO terminal ($emsg), aborting edit"
+            return
+        }
+        $client write $stanza
+        set readable [jwrite [$self BuildMessageStanza readable $chatJid \
+            $newBody $oid $msgType $toJid $encMode "" "" 0 $targetId]]
+        set targetTs [$messagestore applyEdit $chatJid $targetId \
+            $newBody $readable [clock microseconds]]
+        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+    }
+
+    # retract -chat $chatJid -timestamp $targetTs
+    # XEP-0424 self-retraction of our own 1:1 message (MUC retraction is
+    # moderation - see `moderate`). Sends a <retract> with a 0428 fallback
+    # body + 0334 store hint, then tombstones locally.
+    tackymethod retract {args} {
+        array set opts $args
+        set chatJid $opts(-chat)
+        if {[IsMucChatJid $chatJid]} return
+        set targetId [$self CorrectionAnchorId $chatJid $opts(-timestamp)]
+        if {$targetId eq ""} return
+        lassign [$self DeriveAddressing $chatJid] msgType toJid
+        $client write [j message -to $toJid -type $msgType \
+                -id [clock microseconds] {
+            j retract -ns urn:xmpp:message-retract:1 -id $targetId
+            j body #body "This message was retracted."
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
+            j store -ns urn:xmpp:hints
+        }]
+        set targetTs [$messagestore applyRetract $chatJid $targetId]
+        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+    }
+
+    # moderate -chat $chatJid -timestamp $targetTs ?-reason $text?
+    # XEP-0425 moderated retraction: a moderator asks the room (IQ set) to
+    # retract a message. We do NOT tombstone here - the room's broadcast
+    # drives it through the receive path, so a rejected request leaves the
+    # message intact. Role is enforced by the service (and gated in the GUI).
+    tackymethod moderate {args} {
+        array set opts $args
+        set chatJid $opts(-chat)
+        set targetId [$self ReferenceId $chatJid $opts(-timestamp)]
+        if {$targetId eq ""} return
+        regsub {\?join$} $chatJid {} roomJid
+        set roomJid [jid bare $roomJid]
+        set reason [expr {[info exists opts(-reason)] ? $opts(-reason) : ""}]
+        $client iq request -type set -to $roomJid \
+            -command [mymethod OnModerateResult] \
+            -payload [j moderate -ns urn:xmpp:message-moderate:1 -id $targetId {
+                j retract -ns urn:xmpp:message-retract:1
+                if {$reason ne ""} { j reason #body $reason }
+            }]
+    }
+
+    method OnModerateResult {result} {
+        if {[dict exists $result -error]} {
+            jlog debug "moderate rejected: [dict get $result -error]"
+        }
+    }
+
     # Persist our full reaction set for a message (optimistic, is_own=1),
     # patch the local view, and put the set on the wire. In a MUC the room
     # reflects it back, re-applying idempotently to the same own-keyed row.
     method SetReactions {chatJid targetTs emojis} {
-        set targetId [$self ReactionTargetId $chatJid $targetTs]
+        set targetId [$self ReferenceId $chatJid $targetTs]
         if {$targetId eq ""} return
         set ownId [$self OwnReactionSenderId $chatJid]
         set ownLabel [$self OwnReactionLabel $chatJid]
@@ -1000,9 +1100,29 @@ snit::type taco_message {
         $self SendReactions $toJid $msgType $targetId $emojis
     }
 
-    # Wire id a reaction references, by the target message's stored ids:
-    # MUC stanza-id, else 1:1 origin/own (reply::pick_id). "" if unresolved.
-    method ReactionTargetId {chatJid targetTs} {
+    # Wire id an XEP-0308 correction / XEP-0424 retraction must reference:
+    # the target's origin-id (its @id when no origin-id was stored), NEVER the
+    # MUC stanza-id. Peers (Conversations, Dino) correlate a <replace>/<retract>
+    # against the reflected origin-id/id, so a stanza-id here makes every edit
+    # render as a fresh message on their side. Contrast ReferenceId, whose
+    # MUC-uses-the-stanza-id rule is right for replies (0461), reactions (0444),
+    # and moderation (0425). "" if the target is not stored.
+    method CorrectionAnchorId {chatJid targetTs} {
+        set found 0
+        $client db eval {
+            SELECT origin_id, own_id FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$targetTs
+            LIMIT 1
+        } row { set found 1 }
+        if {!$found} { return "" }
+        if {$row(origin_id) ne ""} { return $row(origin_id) }
+        return $row(own_id)
+    }
+
+    # Wire id that references a stored message: MUC stanza-id, else 1:1
+    # origin/own (reply::pick_id). "" if unresolved. Shared by reactions,
+    # replies, and moderation; corrections/retractions use CorrectionAnchorId.
+    method ReferenceId {chatJid targetTs} {
         set found 0
         $client db eval {
             SELECT server_id, origin_id, own_id FROM chat_message
@@ -1416,6 +1536,14 @@ snit::type taco_message {
                 $self ApplyReactionVerdict $chatJid $r
                 continue
             }
+            if {$verdict eq "edit"} {
+                $self ApplyEditVerdict $chatJid $r
+                continue
+            }
+            if {$verdict eq "retract"} {
+                $self ApplyRetractVerdict $chatJid $r
+                continue
+            }
             if {$verdict eq "confirmed"} {
                 $self HandleConfirmation $chatJid [list [dict get $r reconciled]]
                 continue
@@ -1451,6 +1579,12 @@ snit::type taco_message {
             switch [dict get $r verdict] {
                 reaction {
                     $self ApplyReactionVerdict $chatJid $r
+                }
+                edit {
+                    $self ApplyEditVerdict $chatJid $r
+                }
+                retract {
+                    $self ApplyRetractVerdict $chatJid $r
                 }
                 confirmed {
                     $self HandleConfirmation $chatJid \
@@ -1495,8 +1629,23 @@ snit::type taco_message {
             # PlaceFarEdgeHole) can span it; it's also the LWW ts.
             return [dict create verdict reaction timestamp $ts {*}$reaction]
         }
+        # Corrections/retractions mutate an existing stored row, so - like
+        # reactions - they short-circuit before reconcile/ParseMessage
+        # (a <replace> carries a body and a <retract> may carry a fallback
+        # body, either of which would otherwise store as a fresh message).
+        set edit [$self ParseCorrection $chatJid $msgNode]
+        if {$edit ne ""} {
+            return [dict create verdict edit timestamp $ts {*}$edit]
+        }
+        set retract [$self ParseRetraction $chatJid $msgNode]
+        if {$retract ne ""} {
+            return [dict create verdict retract timestamp $ts {*}$retract]
+        }
         lassign $ids serverId ownId originId
-        set v [$messagestore reconcile $chatJid $serverId $ownId $originId $ts]
+        # Pass the echo's occupant-id so confirming our own send backfills it
+        # (the original send stored occupant_id empty).
+        set occ [xsearch $msgNode occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        set v [$messagestore reconcile $chatJid $serverId $ownId $originId $ts $occ]
         switch [dict get $v verdict] {
             confirmed {
                 return [dict create verdict confirmed \
@@ -1587,6 +1736,92 @@ snit::type taco_message {
         return [dict create sender_id $senderId is_own $isOwn]
     }
 
+    # Authorization fields of a stored target message, matched by its wire id
+    # (the id-triple): {occupant_id from_jid isOwn}, where isOwn is whether the
+    # target is our own send (own_id set). Returns "" when none is stored.
+    method TargetAuthFields {chatJid targetId} {
+        set found 0
+        $client db eval {
+            SELECT occupant_id, from_jid, own_id FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+              AND ( (server_id != '' AND server_id=$targetId)
+                 OR (origin_id != '' AND origin_id=$targetId)
+                 OR (own_id    != '' AND own_id=$targetId) )
+            LIMIT 1
+        } row { set found 1 }
+        if {!$found} { return "" }
+        return [list $row(occupant_id) $row(from_jid) \
+            [expr {$row(own_id) ne ""}]]
+    }
+
+    # True iff a stanza from $chatJid may correct/retract a stored target:
+    # same occupant-id in a MUC, same bare jid in 1:1. `sender` is a
+    # resolveSender dict for the incoming stanza. Also authorizes our own
+    # correction of our own message via is_own - our sent messages may carry
+    # no stored occupant_id yet (backfilled only when their echo confirms).
+    method SameAuthor {chatJid sender targetOcc targetFrom targetOwn} {
+        if {[dict get $sender is_own] && $targetOwn} { return 1 }
+        if {[IsMucChatJid $chatJid]} {
+            set sid [dict get $sender sender_id]
+            return [expr {$sid ne "" && $sid eq $targetOcc}]
+        }
+        set from [jid bare [dict get $sender from]]
+        return [expr {$from eq [jid bare $targetFrom]}]
+    }
+
+    # Extract an XEP-0308 correction into {target_id new_body raw_xml}, or ""
+    # when the stanza carries none / the target is unknown / the sender is not
+    # the original author. The body is read after OMEMO decrypt (the <replace>
+    # hint itself is plaintext, but the corrected body may be encrypted).
+    method ParseCorrection {chatJid msgNode} {
+        set rep [lindex [xsearch $msgNode replace \
+            -ns urn:xmpp:message-correct:0] 0]
+        if {$rep eq ""} { return "" }
+        set targetId [xsearch $rep -get @id]
+        if {$targetId eq ""} { return "" }
+        set plainNode [$client omemo decryptForwarded $msgNode]
+        set body [xsearch $plainNode body -get body]
+        lassign [reply::parse $plainNode] replyId replyTo
+        if {$replyId ne ""} {
+            set body [reply::strip_fallback $plainNode $body]
+        }
+        if {$body eq ""} { return "" }
+        set auth [$self TargetAuthFields $chatJid $targetId]
+        if {$auth eq ""} { return "" }
+        lassign $auth targetOcc targetFrom targetOwn
+        set sender [$self resolveSender $chatJid $msgNode]
+        dict set sender from [xsearch $msgNode -get @from]
+        if {![$self SameAuthor $chatJid $sender $targetOcc $targetFrom $targetOwn]} {
+            return ""
+        }
+        return [dict create target_id $targetId new_body $body \
+            raw_xml [jwrite $plainNode]]
+    }
+
+    # Extract an XEP-0424/0425 retraction into {target_id}, or "" when the
+    # stanza carries none / the target is unknown / it is not authorized. In a
+    # MUC only the room's moderated broadcast (from the bare room jid) is
+    # honored; in 1:1 only the original sender may self-retract.
+    method ParseRetraction {chatJid msgNode} {
+        set ret [lindex [xsearch $msgNode retract \
+            -ns urn:xmpp:message-retract:1] 0]
+        if {$ret eq ""} { return "" }
+        set targetId [xsearch $ret -get @id]
+        if {$targetId eq ""} { return "" }
+        set auth [$self TargetAuthFields $chatJid $targetId]
+        if {$auth eq ""} { return "" }
+        lassign $auth targetOcc targetFrom
+        set rawFrom [xsearch $msgNode -get @from]
+        if {[IsMucChatJid $chatJid]} {
+            # Moderation: the room broadcasts from its bare jid. A <retract>
+            # from an occupant (room/nick) is not honored.
+            if {[jid resource $rawFrom] ne ""} { return "" }
+        } else {
+            if {[jid bare $rawFrom] ne [jid bare $targetFrom]} { return "" }
+        }
+        return [dict create target_id $targetId]
+    }
+
     # Apply a `reaction` verdict to the store and, when the target
     # message is present locally, emit a <Patch> refreshing its aggregated
     # reactions. Shared by the live and every MAM dispatch path.
@@ -1603,6 +1838,33 @@ snit::type taco_message {
         set agg [$messagestore reactionsForMessage $chatJid $targetTs]
         $client emit message <Patch> -jid $chatJid \
             -messages [list [dict create timestamp $targetTs reactions $agg]]
+    }
+
+    # Apply an `edit`/`retract` verdict to the store and, when the target is
+    # stored, <Patch> its full row so the GUI redraws (edited body/marker or
+    # tombstone). Shared by the live and every MAM dispatch path.
+    method ApplyEditVerdict {chatJid verdict} {
+        set targetTs [$messagestore applyEdit $chatJid \
+            [dict get $verdict target_id] [dict get $verdict new_body] \
+            [dict get $verdict raw_xml] [dict get $verdict timestamp]]
+        if {$targetTs eq ""} return
+        $self EmitMessagePatch $chatJid $targetTs
+    }
+
+    method ApplyRetractVerdict {chatJid verdict} {
+        set targetTs [$messagestore applyRetract $chatJid \
+            [dict get $verdict target_id]]
+        if {$targetTs eq ""} return
+        $self EmitMessagePatch $chatJid $targetTs
+    }
+
+    # <Patch> a message's whole row (used by edits/retractions). Unlike the
+    # minimal reaction patch, this carries the enriched dict so the GUI can
+    # redraw the body, the "(edited)" marker, or the tombstone.
+    method EmitMessagePatch {chatJid targetTs} {
+        set dbMsg [lindex [$messagestore get ids $chatJid [list $targetTs]] 0]
+        if {$dbMsg eq ""} return
+        $client emit message <Patch> -jid $chatJid -messages [list $dbMsg]
     }
 
     # {serverId ownId originId} off a <message>, derived once for the dedup

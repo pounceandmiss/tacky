@@ -91,6 +91,10 @@ VirtualHost "${DOMAIN}"
       key = "/etc/prosody/certs/${DOMAIN}.key";
       certificate = "/etc/prosody/certs/${DOMAIN}.crt";
     }
+
+Component "conference.${DOMAIN}" "muc"
+    restrict_room_creation = false
+    muc_room_default_public = true
 EOF
 
 # ─── Start & wait ────────────────────────────────────────────────────────────

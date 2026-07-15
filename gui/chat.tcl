@@ -362,13 +362,28 @@ snit::widgetadaptor chatview {
             set ts [dict get $msg timestamp]
             if {$ts ni [$hull messages ids]} continue
             if {[dict exists $msg newtimestamp]} {
-                # Timestamp move: grab stored dict, update, re-insert
+                # Timestamp move: grab stored dict, update, re-insert. Re-pin
+                # the tail if we were at it, so a just-sent message whose
+                # server stamp moves the row doesn't drift the view up (the
+                # reinsert is otherwise top-anchored by compensate).
+                set atEnd [$hull atEnd]
                 set newTs [dict get $msg newtimestamp]
                 set storeDict [$hull messages get $ts]
                 $hull deleteById $ts
                 dict set storeDict timestamp $newTs
                 dict set storeDict server_status [dict get $msg server_status]
                 $self ProcessBatch [list $storeDict]
+                if {$atEnd} { $hull see end }
+            } elseif {[dict exists $msg body]} {
+                # Full-row patch (edit/retract): the backend re-sends the
+                # whole enriched dict, so redraw the message in place. Re-pin
+                # the tail if we were at it, so editing the newest message
+                # keeps it visible instead of drifting below the fold as the
+                # body grows (matches the live-insert path).
+                set atEnd [$hull atEnd]
+                $hull deleteById $ts
+                $self ProcessBatch [list $msg]
+                if {$atEnd} { $hull see end }
             } elseif {[dict exists $msg reactions]} {
                 $hull reactions update $ts [dict get $msg reactions]
             } else {
@@ -625,15 +640,62 @@ snit::widgetadaptor chatview {
             menu $m -tearoff 0
         }
         $m delete 0 end
+        set sd [$hull messages get $id]
+        set isOutgoing [expr {[dict exists $sd is_outgoing]
+            && [dict get $sd is_outgoing]}]
+        set retracted [expr {[dict exists $sd retracted]
+            && [dict get $sd retracted]}]
+
         $m add command -label "Reply" \
             -command [mymethod OnReplySelected $id]
         $m add command -label "Add Reaction" \
             -command [mymethod OnReactSelected $id $rootX $rootY]
+        # Edit our own, non-retracted message (XEP-0308).
+        if {$isOutgoing && !$retracted} {
+            $m add command -label "Edit" \
+                -command [mymethod OnEditSelected $id]
+        }
+        # Deletion: MUC is moderation (moderators only, XEP-0425); 1:1 is a
+        # self-retraction of our own message (XEP-0424).
+        if {!$retracted} {
+            if {$IsMuc} {
+                if {[$self CanModerate]} {
+                    $m add command -label "Delete for everyone" \
+                        -command [mymethod OnModerateSelected $id]
+                }
+            } elseif {$isOutgoing} {
+                $m add command -label "Delete" \
+                    -command [mymethod OnRetractSelected $id]
+            }
+        }
         $m add command -label "View XML" \
             -command [mymethod OnViewXml $id]
         $m add command -label "Find in Chat" \
             -command [list event generate $win <<FindInChat>>]
         tk_popup $m $rootX $rootY
+    }
+
+    # True iff we currently hold the moderator role in this room.
+    method CanModerate {} {
+        if {!$IsMuc} { return 0 }
+        regsub {\?join$} $options(-jid) {} roomBare
+        set roomBare [jid bare $roomBare]
+        return [expr {[::tacky muc myRole \
+            -acc $options(-acc) -jid $roomBare] eq "moderator"}]
+    }
+
+    method OnEditSelected {id} {
+        set sd [$hull messages get $id]
+        event generate $win <<EditMessage>> \
+            -data [list $id [dict get $sd body]]
+    }
+
+    method OnRetractSelected {id} {
+        event generate $win <<RetractMessage>> -data $id
+    }
+
+    method OnModerateSelected {id} {
+        event generate $win <<ModerateMessage>> -data $id
     }
 
     # Open an emoji picker at the click point; the chosen glyph toggles our
@@ -1082,6 +1144,9 @@ snit::widget chatarea {
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
         $text tag configure drawerror -foreground #b04040 \
             -font "$font italic" -lmargin1 40 -lmargin2 40 -spacing3 6
+        # XEP-0308 "(edited)" marker and XEP-0424/0425 retraction tombstone
+        $text tag configure edited -foreground #888888
+        $text tag configure tombstone -foreground gray50 -font "$font italic"
     }
 
     method GetPixelsAbove {} {
@@ -1278,6 +1343,13 @@ snit::widget chatarea {
             $text ins msgins \n $tag
         }
 
+        # A retracted (XEP-0424/0425) message renders as a tombstone: header
+        # for context, then a placeholder in place of the (now gone) content.
+        if {[info exists message(retracted)] && $message(retracted)} {
+            $self DrawTombstone $messageDict $tag
+            return
+        }
+
         eval {
             # Pick the avatar: per-JID if tracked, else default
             set avatarJid ""
@@ -1322,6 +1394,9 @@ snit::widget chatarea {
             set remoteStatus [expr {[info exists message(remote_status)]
                 ? $message(remote_status) : "none"}]
             $text ins msgins $displayBody [list $tag body message $tag.body]
+            if {[info exists message(edited)] && $message(edited)} {
+                $text ins msgins "  (edited)" [list $tag edited]
+            }
             # Plain message: receipt trails the body. Attachment: below.
             if {$message(is_outgoing) && !$hasAttachments} {
                 $self DrawReceiptGlyph $message(id) \
@@ -1395,6 +1470,32 @@ snit::widget chatarea {
             $text tag add $tag $imageId
         }
         $text ins msgins "This message could not be displayed" [list $tag drawerror]
+        $text ins msgins \n $tag
+    }
+
+    # Tombstone for a retracted message: avatar/author/timestamp header (so it
+    # keeps its slot and attribution) followed by a greyed placeholder. Whole
+    # row carries item.$id so id lookup and successor inserts still work.
+    method DrawTombstone {messageDict tag} {
+        array set message $messageDict
+        set avatarJid [expr {[info exists message(avatar_jid)]
+            ? $message(avatar_jid) : ""}]
+        if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
+            set avatarImg [dict get $AvatarImages $avatarJid]
+        } else {
+            set avatarImg mate/32x32/status/avatar-default.png
+        }
+        set imageId [$text image create msgins -image $avatarImg]
+        $text tag add $tag $imageId
+        $text tag add $tag.avatar $imageId
+        set authorTags [list $tag $tag.author author]
+        if {[info exists message(from_jid)] && $message(from_jid) ne ""} {
+            lappend authorTags author.$message(from_jid)
+        }
+        $text ins msgins $message(display_name) $authorTags
+        $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
+        $text ins msgins \n $tag
+        $text ins msgins "This message was deleted" [list $tag body tombstone]
         $text ins msgins \n $tag
     }
 
@@ -1529,6 +1630,12 @@ proc enrich_store_message {storeDict names} {
         remote_status $remoteStatus \
         encryption   [expr {[dict exists $storeDict encryption] ? [dict get $storeDict encryption] : ""}] \
         fail_reason  [expr {[dict exists $storeDict fail_reason] ? [dict get $storeDict fail_reason] : ""}]]
+    # XEP-0308/0424 state (backend booleans). A retracted message renders as
+    # a tombstone; an edited one gets an "(edited)" marker.
+    dict set d edited [expr {[dict exists $storeDict edited]
+        && [dict get $storeDict edited]}]
+    dict set d retracted [expr {[dict exists $storeDict retracted]
+        && [dict get $storeDict retracted]}]
     if {[dict exists $storeDict formatting]} {
         dict set d formatting [dict get $storeDict formatting]
     }

@@ -120,7 +120,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int newtimestamp int is_outgoing bool formatting {tuples {type string offset int length int}} attachments {list {dict {url string type string name string size int mime string}}} caption string}
+        message     {timestamp int newtimestamp int is_outgoing bool edited bool retracted bool formatting {tuples {type string offset int length int}} attachments {list {dict {url string type string name string size int mime string}}} caption string}
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}

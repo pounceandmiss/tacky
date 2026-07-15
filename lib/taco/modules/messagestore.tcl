@@ -94,6 +94,11 @@ snit::type taco_messagestore {
                 -- rooms without 0421). Stable identity for authorizing
                 -- edits/retractions and attribution across nick changes.
                 occupant_id    TEXT,
+                -- XEP-0308 correction: timestamp of the applied edit
+                -- (0 = not edited). Doubles as the last-writer-wins guard.
+                edited_ts      INTEGER NOT NULL DEFAULT 0,
+                -- XEP-0424/0425 retraction tombstone (sticky once set).
+                retracted      INTEGER NOT NULL DEFAULT 0,
                 -- XEP-0461 reply: target message id + addressed author.
                 -- reply_id resolves against server_id/origin_id/own_id;
                 -- reply_to disambiguates client-generated id matches.
@@ -317,6 +322,10 @@ snit::type taco_messagestore {
                         # now, so it didn't bound any hole.
                         set dupTs [dict get $dup timestamp]
                         set sid $m(server_id)
+                        # Backfill our own occupant-id from the echo/MAM copy;
+                        # the original send inserted it empty.
+                        set occ [expr {[info exists m(occupant_id)] \
+                            ? $m(occupant_id) : ""}]
                         if {$m(timestamp) == $dupTs} {
                             set newTs $dupTs
                         } else {
@@ -327,7 +336,9 @@ snit::type taco_messagestore {
                             SET timestamp=$newTs,
                                 server_status='',
                                 server_id = CASE WHEN $sid != ''
-                                    THEN $sid ELSE server_id END
+                                    THEN $sid ELSE server_id END,
+                                occupant_id = CASE WHEN $occ != ''
+                                    THEN $occ ELSE occupant_id END
                             WHERE chat_jid=$jid AND timestamp=$dupTs
                         }
                         lappend confirmed [dict create \
@@ -374,6 +385,8 @@ snit::type taco_messagestore {
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $failReason, $onWire, $attach)
+                    -- edited_ts/retracted take table defaults (only ever set
+                    -- by applyEdit/applyRetract, never at insert time)
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
@@ -405,7 +418,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -421,7 +434,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -447,7 +460,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -461,7 +474,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
@@ -505,7 +518,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -519,7 +532,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -581,7 +594,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
@@ -602,7 +615,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
@@ -773,7 +786,7 @@ snit::type taco_messagestore {
             VALUES($chatJid, $targetId, $senderId, $senderLabel, $isOwn,
                    $emojis, $ts)
         }
-        return [$self resolveReactionTarget $chatJid $targetId]
+        return [$self resolveTargetTs $chatJid $targetId]
     }
 
     # My current emoji set for a target - the toggle source of truth.
@@ -785,9 +798,10 @@ snit::type taco_messagestore {
         }]
     }
 
-    # Local timestamp of the message a reaction targets, matched against the
-    # stored envelope ids (mirrors resolveReply's id match). "" if not stored.
-    method resolveReactionTarget {chatJid targetId} {
+    # Local timestamp of a stored message matched by its wire id, against
+    # the stored envelope ids (mirrors resolveReply's id match). "" if not
+    # stored. Shared by reactions, edits, and retractions.
+    method resolveTargetTs {chatJid targetId} {
         if {$targetId eq ""} { return "" }
         return [$options(-db) onecolumn {
             SELECT timestamp FROM chat_message
@@ -797,6 +811,44 @@ snit::type taco_messagestore {
                  OR (own_id    != '' AND own_id=$targetId) )
             LIMIT 1
         }]
+    }
+
+    # --- Corrections (XEP-0308) / retractions (XEP-0424/0425) ------
+
+    # Replace a stored message's body with a correction. Last-writer-wins on
+    # edited_ts; a retracted message is immutable. Returns the target's local
+    # timestamp (so the caller can <Patch>), or "" when not stored or skipped.
+    method applyEdit {chatJid targetId newBody rawXml ts} {
+        set targetTs [$self resolveTargetTs $chatJid $targetId]
+        if {$targetTs eq ""} { return "" }
+        set prev [$options(-db) onecolumn {
+            SELECT edited_ts FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$targetTs
+        }]
+        set retracted [$options(-db) onecolumn {
+            SELECT retracted FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$targetTs
+        }]
+        if {$retracted} { return "" }
+        if {$ts <= $prev} { return "" }
+        $options(-db) eval {
+            UPDATE chat_message
+            SET body=$newBody, raw_xml=$rawXml, edited_ts=$ts
+            WHERE chat_jid=$chatJid AND timestamp=$targetTs
+        }
+        return $targetTs
+    }
+
+    # Tombstone a stored message. Sticky: once retracted, later edits no-op.
+    # Returns the target's local timestamp, or "" when not stored.
+    method applyRetract {chatJid targetId} {
+        set targetTs [$self resolveTargetTs $chatJid $targetId]
+        if {$targetTs eq ""} { return "" }
+        $options(-db) eval {
+            UPDATE chat_message SET retracted=1
+            WHERE chat_jid=$chatJid AND timestamp=$targetTs
+        }
+        return $targetTs
     }
 
     # Per-emoji aggregation of reactions on a displayed message, for the
@@ -845,7 +897,7 @@ snit::type taco_messagestore {
     #               does); returns old/new ts for the <Patch>.
     #   duplicate - matched a non-pending row.
     #   new       - no id match.
-    method reconcile {jid serverId ownId originId timestamp} {
+    method reconcile {jid serverId ownId originId timestamp {occupantId ""}} {
         if {$serverId eq "" && $ownId eq ""} {
             return [dict create verdict new]
         }
@@ -877,7 +929,9 @@ snit::type taco_messagestore {
             SET timestamp=$newTs,
                 server_status='',
                 server_id = CASE WHEN $serverId != ''
-                    THEN $serverId ELSE server_id END
+                    THEN $serverId ELSE server_id END,
+                occupant_id = CASE WHEN $occupantId != ''
+                    THEN $occupantId ELSE occupant_id END
             WHERE chat_jid=$jid AND timestamp=$dupTs
         }
         return [dict create verdict confirmed chat_jid $jid \
@@ -895,6 +949,10 @@ snit::type taco_messagestore {
         # the sender as us (bare JID in 1:1, occupant-id in a MUC). The GUI
         # reads this flag rather than re-deriving it.
         dict set d is_outgoing [expr {[dict get $d own_id] ne ""}]
+        # XEP-0308/0424 state as booleans for the GUI (edited_ts is also the
+        # LWW guard, but the GUI only cares whether an edit happened).
+        dict set d edited [expr {[dict get $d edited_ts] != 0}]
+        dict set d retracted [expr {[dict get $d retracted] != 0}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
             # Normalize the replied-to author the same way from_jid is
