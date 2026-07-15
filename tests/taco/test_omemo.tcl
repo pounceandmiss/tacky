@@ -14,27 +14,6 @@ namespace eval ::test::omemo_unit {
     variable JULIET      "juliet@capulet.lit/balcony"
     variable JULIET_BARE "juliet@capulet.lit"
     variable ROMEO       "romeo@montague.lit"
-
-    proc stubTacoBtbv {value args} {
-        if {[lrange $args 0 1] eq {setting get}} { return $value }
-        return ""
-    }
-
-    # Settings stub that backs `setting get`/`setting set` with an
-    # in-memory array. ::test::omemo_unit::stubStore is keyed by `-key`.
-    variable stubStore
-    array set stubStore {}
-    proc stubTacoSetting {args} {
-        variable stubStore
-        if {[lindex $args 0] ne "setting"} { return "" }
-        set verb [lindex $args 1]
-        array set opts [lrange $args 2 end]
-        switch -- $verb {
-            get { return [expr {[info exists stubStore($opts(-key))]
-                                ? $stubStore($opts(-key)) : ""}] }
-            set { set stubStore($opts(-key)) $opts(-value); return $opts(-value) }
-        }
-    }
 }
 
 # taco_client's constructor derives -jid from -username + -host and
@@ -405,14 +384,18 @@ test omemo-unit-mam-nonnumeric-sid-blanks-body \
     } -result {}
 
 # BTBV gating: a transient setting-fetch error used to silently
-# re-enable blind trust (fail open). With `-taco ""`, `$taco setting get`
-# errors and the catch branch must return 0.
+# re-enable blind trust (fail open). The catch branch must return 0.
 
 test omemo-unit-blindtrust-setting-error-fails-closed \
     {blindTrust returns 0 when setting fetch errors (fail closed)} \
     {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        c configure -jid $::test::omemo_unit::JULIET -taco ""
+        c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        rename ::c.db ::c.db.real
+        proc ::c.db {args} { error "db unavailable" }
+    } -extra-cleanup {
+        rename ::c.db {}
+        rename ::c.db.real ::c.db
     }] -body {
         c omemo blindTrust
     } -result {0}
@@ -423,25 +406,14 @@ test omemo-unit-blindtrust-setting-error-fails-closed \
 
 test omemo-unit-isdeviceblocked-no-row-btbv-on-allows \
     {IsDeviceBlocked with no trust row allows when BTBV is on} \
-    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        interp alias {} ::test_taco_btbv_on {} ::test::omemo_unit::stubTacoBtbv true
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_btbv_on
-        c omemo OnReady
-    } -extra-cleanup {
-        interp alias {} ::test_taco_btbv_on {}
-    }] -body {
+    {*}$jid_common -body {
         c omemo IsDeviceBlocked $::test::omemo_unit::ROMEO 42
     } -result {0}
 
 test omemo-unit-isdeviceblocked-no-row-btbv-off-blocks \
     {IsDeviceBlocked with no trust row blocks when BTBV is off (fail closed)} \
-    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        interp alias {} ::test_taco_btbv_off {} ::test::omemo_unit::stubTacoBtbv false
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_btbv_off
-        c omemo OnReady
-    } -extra-cleanup {
-        interp alias {} ::test_taco_btbv_off {}
-    }] -body {
+    {*}$jid_common -body {
+        c omemo setBlindTrust -value 0
         c omemo IsDeviceBlocked $::test::omemo_unit::ROMEO 42
     } -result {1}
 
@@ -890,13 +862,9 @@ test omemo-unit-event-decrypt-failed \
 test omemo-unit-event-blindtrust \
     {setBlindTrust persists value and emits <BlindTrust>} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
-        array unset ::test::omemo_unit::stubStore
-        interp alias {} ::test_taco_setting {} ::test::omemo_unit::stubTacoSetting
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_setting
+        c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         set ::_emitted {}
-    } -extra-cleanup {
-        interp alias {} ::test_taco_setting {}
     }] -body {
         set v1 [c omemo blindTrust]
         c omemo setBlindTrust -value 0
@@ -979,14 +947,10 @@ test omemo-unit-trustlist-event-fires-on-new-device \
 test omemo-unit-pull-blindtrust \
     {pull -event <BlindTrust> re-emits current BTBV} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
-        array unset ::test::omemo_unit::stubStore
-        interp alias {} ::test_taco_setting {} ::test::omemo_unit::stubTacoSetting
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_setting
+        c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         c omemo setBlindTrust -value 0
         set ::_emitted {}
-    } -extra-cleanup {
-        interp alias {} ::test_taco_setting {}
     }] -body {
         c omemo pull -event <BlindTrust>
         ::test::omemo_unit::emittedOmemo <BlindTrust>
@@ -1004,14 +968,7 @@ test omemo-unit-pull-rejects-non-pullable \
 
 test omemo-unit-enabled-default-on \
     {IsEnabled defaults to on (encrypted) when unset, regardless of capability} \
-    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        array unset ::test::omemo_unit::stubStore
-        interp alias {} ::test_taco_setting {} ::test::omemo_unit::stubTacoSetting
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_setting
-        c omemo OnReady
-    } -extra-cleanup {
-        interp alias {} ::test_taco_setting {}
-    }] -body {
+    {*}$jid_common -body {
         # On by default with no cached devicelist, and still on once one
         # is cached - capability does not drive the toggle.
         set noCache [c omemo IsEnabled $::test::omemo_unit::ROMEO]
@@ -1022,14 +979,7 @@ test omemo-unit-enabled-default-on \
 
 test omemo-unit-enabled-explicit-overrides \
     {explicit setEnabled wins over the default-on} \
-    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        array unset ::test::omemo_unit::stubStore
-        interp alias {} ::test_taco_setting {} ::test::omemo_unit::stubTacoSetting
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_setting
-        c omemo OnReady
-    } -extra-cleanup {
-        interp alias {} ::test_taco_setting {}
-    }] -body {
+    {*}$jid_common -body {
         c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
         set off [c omemo IsEnabled $::test::omemo_unit::ROMEO]
         c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 1
@@ -1040,13 +990,9 @@ test omemo-unit-enabled-explicit-overrides \
 test omemo-unit-event-enabled \
     {setEnabled emits <Enabled>; pull re-emits current effective value} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
-        array unset ::test::omemo_unit::stubStore
-        interp alias {} ::test_taco_setting {} ::test::omemo_unit::stubTacoSetting
-        c configure -jid $::test::omemo_unit::JULIET -taco ::test_taco_setting
+        c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         set ::_emitted {}
-    } -extra-cleanup {
-        interp alias {} ::test_taco_setting {}
     }] -body {
         c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
         set onSet [::test::omemo_unit::emittedOmemo <Enabled>]

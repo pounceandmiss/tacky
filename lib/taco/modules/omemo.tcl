@@ -1747,8 +1747,7 @@ snit::type taco_omemo {
     # blindTrust -> 0|1 (current BTBV setting; defaults to 1 if unset,
     # 0 if the settings store is unreachable - fail closed).
     tackymethod blindTrust {args} {
-        set taco [$client cget -taco]
-        if {[catch {$taco setting get -key omemo_blindly_trust} v]} {
+        if {[catch {$client setting get -key omemo_blindly_trust} v]} {
             return 0
         }
         if {$v eq ""} { return 1 }
@@ -1759,24 +1758,22 @@ snit::type taco_omemo {
     tackymethod setBlindTrust {args} {
         array set opts $args
         set v [expr {!![string is true -strict $opts(-value)]}]
-        set taco [$client cget -taco]
-        $taco setting set -key omemo_blindly_trust -value $v
+        $client setting set -key omemo_blindly_trust -value $v
         $client emit omemo <BlindTrust> -value $v
         return $v
     }
 
     # Per-chat OMEMO toggle - a genuine boolean, the user's choice.
-    # Stored per peer under setting key omemo.enabled.<jid>; defaults to
-    # ON (chats are encrypted by default, Dino-style). Peer capability
-    # is a separate concern (`ready`); when a peer can't do OMEMO the
-    # GUI warns and the message stays pending until the user turns the
-    # toggle off and resends. Read at send time by taco_message; the GUI
-    # observes <Enabled>, so there's no public getter - IsEnabled is
-    # internal.
+    # Stored per peer under setting key omemo.enabled.<jid> in this
+    # account's own setting store; defaults to ON (chats are encrypted
+    # by default, Dino-style). Peer capability is a separate concern
+    # (`ready`); when a peer can't do OMEMO the GUI warns and the
+    # message stays pending until the user turns the toggle off and
+    # resends. Read at send time by taco_message; the GUI observes
+    # <Enabled>, so there's no public getter - IsEnabled is internal.
     method IsEnabled {peerJid} {
-        set taco [$client cget -taco]
         set v ""
-        catch {set v [$taco setting get -key omemo.enabled.$peerJid]}
+        catch {set v [$client setting get -key omemo.enabled.$peerJid]}
         if {$v eq ""} { return 1 }
         return [expr {!![string is true -strict $v]}]
     }
@@ -1788,8 +1785,7 @@ snit::type taco_omemo {
         array set opts $args
         set peerJid $opts(-jid)
         set v [expr {!![string is true -strict $opts(-value)]}]
-        set taco [$client cget -taco]
-        $taco setting set -key omemo.enabled.$peerJid -value $v
+        $client setting set -key omemo.enabled.$peerJid -value $v
         $client emit omemo <Enabled> -jid $peerJid -value $v
         return $v
     }

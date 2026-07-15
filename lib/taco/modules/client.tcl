@@ -5,6 +5,9 @@ snit::type taco_client {
     component iq -public iq
     component bus -public bus
 
+    # Per-account settings - the taco-level store is shared by all accounts
+    component setting -public setting
+
     # Database handle (exposed as component for direct access: $client db eval {...})
     component db -public db
 
@@ -54,6 +57,8 @@ snit::type taco_client {
                 PRAGMA synchronous = NORMAL;
             }
         }
+
+        install setting using taco_setting $self.setting -db $db -taco $self
 
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write] \
@@ -238,6 +243,7 @@ snit::type taco_client {
         catch {$bus destroy}
         catch {$conn destroy}
         catch {$iq destroy}
+        catch {$setting destroy}
         # Only destroy db if we created it
         if {[info commands $self.db] ne ""} {
             catch {$self.db close}
