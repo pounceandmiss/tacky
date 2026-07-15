@@ -129,14 +129,15 @@ jsonify_type jsonify \
         presence    {priority int}
         omemo_trust {device int active bool}
         audio_device {default bool}
+        goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
     } \
     -schemas {
         message/local_search    {list int}
         message/history         {list message}
-        message/goto            {list message}
-        message/gotoReply       {dict {messages {list message}}}
+        message/goto            goto_result
+        message/gotoReply       goto_result
         message/search          {dict {messages {list message} complete bool}}
         muc/getList             {list {dict {}}}
         muc/discoverRooms       {list {dict {}}}
