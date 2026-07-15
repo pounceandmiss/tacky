@@ -178,6 +178,21 @@ test json-backend-callback-call-start {start returns a scalar sid string} -setup
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 11 {"sid-abc123"}]
 
+test json-type-reactions {reactions serialize as an object keyed by emoji} -body {
+    jsonify to_json \
+        [dict create timestamp 1700 \
+            reactions [dict create \
+                "+1" [dict create reactors {Alice Bob} mine 1] \
+                "tada" [dict create reactors {Carol} mine 0]]] \
+        message
+} -result [json::write object \
+    timestamp 1700 \
+    reactions [json::write object \
+        +1 [json::write object \
+            reactors [json::write array {"Alice"} {"Bob"}] mine true] \
+        tada [json::write object \
+            reactors [json::write array {"Carol"}] mine false]]]
+
 # -- goto tests --------------------------------------------------------------
 #
 # goto and gotoReply return the same dict; gotoReply delegates to goto.
