@@ -2513,3 +2513,78 @@ test message-retract-own-1to1 {retract tombstones our message and sends <retract
         list [expr {[xsearch $stanza retract -ns urn:xmpp:message-retract:1 -get @id] eq $oid}] \
              [dict get $m retracted]
     } -result {1 1}
+
+# Helper: store an incoming room message and return its timestamp. Enters via
+# ingestLive, the same door the MUC module uses for groupchat.
+proc msg_feed_room {{id srv1}} {
+    $::_client message ingestLive room@conf.example.com?join \
+        [j message -type groupchat -from room@conf.example.com/bob {
+            j body #body "spam"
+            j stanza-id -ns urn:xmpp:sid:0 -id $id
+        }]
+    dict get [lindex [msg_store_latest room@conf.example.com?join] 0] timestamp
+}
+
+# Helper: reply to the last written IQ with an error condition.
+proc msg_fail_last_iq {condition} {
+    set req [lindex [$::_client conn get_written] end]
+    $::_client iq feed [j iq -type error -id [xsearch $req -get @id] \
+        -from room@conf.example.com {
+        j error -type auth {
+            j $condition -ns urn:ietf:params:xml:ns:xmpp-stanzas
+        }
+    }]
+}
+
+test message-moderate-sends-request {moderate asks the room to retract by stanza-id} \
+    {*}$msg_common -body {
+        set ts [msg_feed_room srv1]
+        tacky message moderate -acc $acc -chat room@conf.example.com?join \
+            -timestamp $ts -reason spam
+        set req [lindex [$::_client conn get_written] end]
+        list [xsearch $req moderate -ns urn:xmpp:message-moderate:1 -get @id] \
+             [xsearch $req moderate reason -get body]
+    } -result {srv1 spam}
+
+test message-moderate-error-maps-condition \
+    {a rejected moderation request reports friendly text} \
+    {*}$msg_common -body {
+        set ts [msg_feed_room srv1]
+        set got ""
+        tacky message moderate -acc $acc -chat room@conf.example.com?join \
+            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        msg_fail_last_iq forbidden
+        set got
+    } -result {You do not have permission to delete messages in this room}
+
+test message-moderate-error-unknown-condition {an unmapped condition still reports} \
+    {*}$msg_common -body {
+        set ts [msg_feed_room srv1]
+        set got ""
+        tacky message moderate -acc $acc -chat room@conf.example.com?join \
+            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        msg_fail_last_iq service-unavailable
+        set got
+    } -result {The message could not be deleted}
+
+test message-moderate-rejection-leaves-message-intact \
+    {a rejected moderation request does not tombstone the message} \
+    {*}$msg_common -body {
+        set ts [msg_feed_room srv1]
+        tacky message moderate -acc $acc -chat room@conf.example.com?join \
+            -timestamp $ts -onerror [list apply {{msg} {}}]
+        msg_fail_last_iq forbidden
+        dict get [lindex [msg_store_latest room@conf.example.com?join] 0] retracted
+    } -result {0}
+
+test message-moderate-success-is-silent {a successful moderation request does not report an error} \
+    {*}$msg_common -body {
+        set ts [msg_feed_room srv1]
+        set got none
+        tacky message moderate -acc $acc -chat room@conf.example.com?join \
+            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        set req [lindex [$::_client conn get_written] end]
+        $::_client iq feed [j iq -type result -id [xsearch $req -get @id] \
+            -from room@conf.example.com]
+        set got
+    } -result {none}

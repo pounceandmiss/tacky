@@ -1058,30 +1058,46 @@ snit::type taco_message {
         if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
     }
 
-    # moderate -chat $chatJid -timestamp $targetTs ?-reason $text?
+    # moderate -chat $chatJid -timestamp $targetTs ?-reason $text? ?-onerror $cb?
     # XEP-0425 moderated retraction: a moderator asks the room (IQ set) to
     # retract a message. We do NOT tombstone here - the room's broadcast
     # drives it through the receive path, so a rejected request leaves the
     # message intact. Role is enforced by the service (and gated in the GUI).
     tackymethod moderate {args} {
+        array set opts {-reason "" -onerror ""}
         array set opts $args
         set chatJid $opts(-chat)
         set targetId [$self ReferenceId $chatJid $opts(-timestamp)]
         if {$targetId eq ""} return
         regsub {\?join$} $chatJid {} roomJid
         set roomJid [jid bare $roomJid]
-        set reason [expr {[info exists opts(-reason)] ? $opts(-reason) : ""}]
+        set reason $opts(-reason)
         $client iq request -type set -to $roomJid \
-            -command [mymethod OnModerateResult] \
+            -command [mymethod OnModerateResult $opts(-onerror)] \
             -payload [j moderate -ns urn:xmpp:message-moderate:1 -id $targetId {
                 j retract -ns urn:xmpp:message-retract:1
                 if {$reason ne ""} { j reason #body $reason }
             }]
     }
 
-    method OnModerateResult {result} {
-        if {[dict exists $result -error]} {
-            jlog debug "moderate rejected: [dict get $result -error]"
+    # Success needs no handling: the room broadcasts the retraction and the
+    # receive path tombstones. Only a rejection has to reach the caller.
+    method OnModerateResult {onerror stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} return
+        set condition [dict get [stanza_error $stanza] condition]
+        jlog debug "moderate rejected: $condition"
+        if {$onerror ne ""} {
+            {*}$onerror [$self ModerateErrorText $condition]
+        }
+    }
+
+    method ModerateErrorText {condition} {
+        switch -- $condition {
+            forbidden      { return "You do not have permission to delete messages in this room" }
+            not-allowed    { return "This room does not allow deleting messages" }
+            not-acceptable { return "The room rejected that deletion" }
+            item-not-found { return "That message is no longer in the room's archive" }
+            default        { return "The message could not be deleted" }
         }
     }
 
