@@ -28,6 +28,11 @@ snit::type taco_bookmarks {
     variable mucStatus {}
     variable mucReason {}
 
+    # Fields `item` accepts from a caller. jid is excluded: it is the key and
+    # is canonicalized separately, so a caller's raw ?join form must not
+    # overwrite it.
+    variable item_fields {name autojoin nick password extensions_xml}
+
     option -client -readonly yes
 
     constructor args {
@@ -96,7 +101,10 @@ snit::type taco_bookmarks {
 
         # Apply caller overrides
         foreach {k v} $args {
-            set bm([string range $k 1 end]) $v
+            set field [string range $k 1 end]
+            if {$field in $item_fields} {
+                set bm($field) $v
+            }
         }
 
         if {$bm(nick) eq ""} {
