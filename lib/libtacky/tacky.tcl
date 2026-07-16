@@ -428,20 +428,25 @@ if 0 {
     avatarcache_base - shared avatar image cache with refcounting.
 
     Frontend-agnostic base class: handles refcounting, tag management,
-    visibility tracking, thumb fetching, update listening, and
-    notification fanout.  Subclasses override three methods to provide
-    image primitives:
+    visibility tracking, master-image fetching, update listening, and
+    notification fanout.  It fetches the master avatar bytes (avatar
+    metadata -> avatar data) and hands them to the subclass to scale;
+    the backend does no resizing.  Subclasses override three methods to
+    provide image primitives:
 
-        CreateImage $data   - create image from PNG bytes, return handle
-        DeleteImage $img    - destroy image handle
-        CreateDefault       - create a default/placeholder image, return handle
+        CreateImage $data $size - decode master bytes, crop/scale to a
+                                  $size square, return an image handle
+        DeleteImage $img        - destroy image handle
+        CreateDefault           - create a default/placeholder image handle
 
     tk_avatarcache (gui/avatarcache.tcl) provides the Tk implementation.
 
     API:
-        avatarcache track -acc $acc -jid $jid -tag $tag -command $cmd
+        avatarcache track -acc $acc -jid $jid -tag $tag ?-size 32? -command $cmd
             Returns an image handle (default initially).
             Calls {*}$cmd $img whenever the image changes.
+            -size is the target square edge in px (default 32); the same
+            jid can be tracked at several sizes independently.
             -tag identifies this registration for untrack.
 
         avatarcache untrack -tag $tag
@@ -475,15 +480,16 @@ oo::class create avatarcache_base {
         catch {my DeleteImage $DefaultImage}
     }
 
-    method CreateImage {data} { error "abstract: subclass must override" }
-    method DeleteImage {img}  { error "abstract: subclass must override" }
-    method CreateDefault {}   { error "abstract: subclass must override" }
+    method CreateImage {data size} { error "abstract: subclass must override" }
+    method DeleteImage {img}       { error "abstract: subclass must override" }
+    method CreateDefault {}        { error "abstract: subclass must override" }
 
     method default {} {
         return $DefaultImage
     }
 
     method track {args} {
+        array set opts {-size 32}
         array set opts $args
         set acc [jid norm $opts(-acc)]
         # Accept chat JIDs: a group chat's ?join suffix is not part of
@@ -491,9 +497,10 @@ oo::class create avatarcache_base {
         set jid [jid norm [regsub {\?join$} $opts(-jid) {}]]
         set tag $opts(-tag)
         set command $opts(-command)
-        set key "$acc\n$jid"
+        set size $opts(-size)
+        set key "$acc\n$jid\n$size"
 
-        dict set Tags $tag [list $acc $jid $command]
+        dict set Tags $tag [list $acc $jid $size $command]
 
         if {[dict exists $Images $key]} {
             dict set Refcounts $key [expr {[dict get $Refcounts $key] + 1}]
@@ -506,11 +513,10 @@ oo::class create avatarcache_base {
         dict set Refcounts $key 1
 
         ::tacky avatar visible -acc $acc -jid $jid
-        ::tacky avatar thumb -acc $acc -jid $jid \
-            -command [namespace code [list my OnThumb $key]]
+        my Fetch $acc $jid $size
 
         # Return current image — may have been replaced by a
-        # synchronous OnThumb callback during the thumb call above.
+        # synchronous fetch callback during the Fetch above.
         return [dict get $Images $key]
     }
 
@@ -519,9 +525,9 @@ oo::class create avatarcache_base {
         set tag $opts(-tag)
         if {![dict exists $Tags $tag]} return
 
-        lassign [dict get $Tags $tag] acc jid _command
+        lassign [dict get $Tags $tag] acc jid size _command
         dict unset Tags $tag
-        set key "$acc\n$jid"
+        set key "$acc\n$jid\n$size"
 
         if {![dict exists $Refcounts $key]} return
 
@@ -536,10 +542,27 @@ oo::class create avatarcache_base {
         }
     }
 
-    method OnThumb {key data} {
-        if {$data eq "" || ![dict exists $Images $key]} return
+    # Fetch the master avatar for a (jid, size): resolve the current hash
+    # via metadata, then pull the master bytes by hash. Both are backend
+    # calls; in the same-thread transport they resolve synchronously.
+    method Fetch {acc jid size} {
+        ::tacky avatar metadata -acc $acc -jid $jid \
+            -command [namespace code [list my OnMeta $acc $jid $size]]
+    }
+
+    method OnMeta {acc jid size meta} {
+        if {![dict exists $meta hash] || [dict get $meta hash] eq ""} return
+        set hash [dict get $meta hash]
+        ::tacky avatar data -acc $acc -hash $hash \
+            -command [namespace code [list my OnData $acc $jid $size]]
+    }
+
+    method OnData {acc jid size data} {
+        if {$data eq ""} return
+        set key "$acc\n$jid\n$size"
+        if {![dict exists $Images $key]} return
         set oldImg [dict get $Images $key]
-        set newImg [my CreateImage $data]
+        set newImg [my CreateImage $data $size]
         dict set Images $key $newImg
         catch {my DeleteImage $oldImg}
         my Notify $key $newImg
@@ -548,26 +571,40 @@ oo::class create avatarcache_base {
     method OnUpdate {ev} {
         set acc [jid norm [dict get $ev -acc]]
         set jid [jid norm [dict get $ev -jid]]
-        set key "$acc\n$jid"
-        if {![dict exists $Images $key]} return
+        set sizes [my SizesFor $acc $jid]
+        if {[llength $sizes] == 0} return
 
         if {[dict exists $ev -action] && [dict get $ev -action] eq "disabled"} {
-            set oldImg [dict get $Images $key]
-            set newImg [my CreateDefault]
-            dict set Images $key $newImg
-            catch {my DeleteImage $oldImg}
-            my Notify $key $newImg
+            foreach size $sizes {
+                set key "$acc\n$jid\n$size"
+                set oldImg [dict get $Images $key]
+                set newImg [my CreateDefault]
+                dict set Images $key $newImg
+                catch {my DeleteImage $oldImg}
+                my Notify $key $newImg
+            }
             return
         }
 
-        ::tacky avatar thumb -acc $acc -jid $jid \
-            -command [namespace code [list my OnThumb $key]]
+        foreach size $sizes {
+            my Fetch $acc $jid $size
+        }
+    }
+
+    # Sizes currently tracked for a (acc, jid), across all slots.
+    method SizesFor {acc jid} {
+        set out {}
+        dict for {key _} $Images {
+            lassign [split $key \n] a j s
+            if {$a eq $acc && $j eq $jid} { lappend out $s }
+        }
+        return $out
     }
 
     method Notify {key img} {
         dict for {tag info} $Tags {
-            lassign $info acc jid command
-            if {"$acc\n$jid" eq $key} {
+            lassign $info acc jid size command
+            if {"$acc\n$jid\n$size" eq $key} {
                 {*}$command $img
             }
         }

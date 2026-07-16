@@ -12,8 +12,8 @@ oo::class create test_avatarcache {
         next
     }
 
-    method CreateImage {data} {
-        return "img[incr Counter]:$data"
+    method CreateImage {data size} {
+        return "img[incr Counter]:$data:$size"
     }
 
     method DeleteImage {img} {
@@ -111,6 +111,56 @@ test avatarcache-notify-untracked-not-called {untracked tag not notified} \
         tacky emit avatar <Update> -acc user@test -jid c@d -action disabled
         list [llength $::n1] [llength $::n2]
     } -result {0 1}
+
+# -- master fetch + scaling -------------------------------------------------
+
+# Seed a cached avatar (metadata + data) for c@d on the account's client.
+proc ac_seed_avatar {hash data} {
+    [tacky client user@test] db eval {
+        INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
+        VALUES ('c@d', $hash, 'image/png', 3, 0, 0)
+    }
+    [tacky client user@test] db eval {
+        INSERT OR REPLACE INTO avatar_data(hash, data) VALUES ($hash, $data)
+    }
+}
+
+test avatarcache-track-builds-from-master {track fetches metadata+data and builds a sized image} \
+    {*}$ac_common \
+    -body {
+        ac_seed_avatar H1 PNGBYTES
+        set ::built {}
+        set img [avatarcache track -acc user@test -jid c@d -size 48 -tag t1 \
+            -command {apply {{img} {set ::built $img}}}]
+        # The mock CreateImage encodes data:size, so both prove the master
+        # bytes and target size reached the scaler.
+        list [string match "*:PNGBYTES:48" $img] [expr {$img eq $::built}]
+    } -result {1 1}
+
+test avatarcache-track-independent-sizes {same jid at two sizes builds two images} \
+    {*}$ac_common \
+    -body {
+        ac_seed_avatar H1 PNGBYTES
+        set i32 [avatarcache track -acc user@test -jid c@d -size 32 -tag t32 \
+            -command {apply {{img} {}}}]
+        set i64 [avatarcache track -acc user@test -jid c@d -size 64 -tag t64 \
+            -command {apply {{img} {}}}]
+        list [string match "*:PNGBYTES:32" $i32] \
+             [string match "*:PNGBYTES:64" $i64] \
+             [expr {$i32 ne $i64}]
+    } -result {1 1 1}
+
+test avatarcache-update-refetches-master {<Update> rebuilds from the new master} \
+    {*}$ac_common \
+    -body {
+        ac_seed_avatar H1 FIRST
+        set ::built {}
+        avatarcache track -acc user@test -jid c@d -size 32 -tag t1 \
+            -command {apply {{img} {set ::built $img}}}
+        ac_seed_avatar H2 SECOND
+        tacky emit avatar <Update> -acc user@test -jid c@d -hash H2
+        string match "*:SECOND:32" $::built
+    } -result 1
 
 # -- isolation -------------------------------------------------------------
 

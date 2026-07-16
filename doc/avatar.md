@@ -1,23 +1,27 @@
 # Avatars
 
-The backend fetches, caches, and re-encodes avatars (XEP-0084 PEP and
-XEP-0153 vCard). The frontend tells it which JIDs are on screen, reads
-the cached bytes, and reacts to change events. JIDs may be bare,
-`room@muc/nick` for MUC participants, or a `room@muc?join` chat JID
-(the `?join` suffix is accepted and ignored).
+The backend fetches and caches avatars (XEP-0084 PEP and XEP-0153 vCard)
+and serves the master bytes as-is; it does no resizing. The frontend tells
+it which JIDs are on screen, reads the master, scales/crops for its own
+slots, and reacts to change events. JIDs may be bare, `room@muc/nick` for
+MUC participants, or a `room@muc?join` chat JID (the `?join` suffix is
+accepted and ignored).
 
 ## Reading
 
-    tacky avatar thumb -acc $acc -jid $jid -command $cb
-        PNG bytes scaled to fit within 32x32, aspect preserved (so a
-        non-square avatar is smaller than 32 on one side), or "" if none.
-        For lists and small slots.
-    tacky avatar data -acc $acc -hash $hash
-        Full-size bytes for a hash, as published - the peer's original
-        format, often JPEG via vCard, not necessarily PNG. Our own avatar
-        is always PNG (see Publishing). For a full-resolution view.
+The master image is content-addressed by hash; fetch it in two steps -
+`metadata` maps a JID to its current hash, `data` returns the bytes.
+
     tacky avatar metadata -acc $acc -jid $jid
         Dict: hash type bytes width height. Empty if none.
+    tacky avatar data -acc $acc -hash $hash
+        Master bytes for a hash, as published - the peer's original format,
+        often JPEG via vCard, not necessarily PNG. "" if not cached yet.
+
+Scale to your slot on the frontend. There is no server-side thumbnail:
+`data` is the same master whether a 32px list row or a full-resolution
+view asks for it, so decode it and resize (and, for a square slot,
+center-crop) to the size you need.
 
 ## Visibility
 
@@ -38,21 +42,23 @@ leak a `visible` or call `invisible` without one.
     tacky listen avatar <Progress> -acc ... $cb
         -acc <bare-jid> -message <status>   during your own publish
 
-On a hash update, re-request `thumb`/`data` and swap it in. On
+On a hash update, re-request `metadata`/`data` and swap it in. On
 `disabled`, drop to your placeholder.
 
 ## Publishing
 
-    tacky avatar publish -acc $acc -data $rawBytes ?-tag $tag? ?-command $cb?
+    tacky avatar publish -acc $acc -data $bytes ?-type $mime? ?-width $w? ?-height $h? ?-tag $tag? ?-command $cb?
     tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb?
     tacky avatar cancel  -acc $acc -tag $tag
 
-`publish` takes raw bytes in any common format and always re-encodes: the
-image is scaled to fit within 128x128 (aspect preserved) and published as
-PNG. The format and dimensions are not selectable. `disable` removes the
-avatar. `-command` is invoked as `{*}$cb [list ok ""]` or
-`{*}$cb [list error $msg]`; `cancel` drops a still-pending callback by
-its `-tag`.
+`publish` stores and sends `-data` verbatim - prepare it on the frontend
+(crop, scale, encode) before calling. `-type`/`-width`/`-height` describe
+those bytes and are advertised in the XEP-0084 `<info>`. The published
+blob is the exact bytes every subscriber downloads (PEP has no server-side
+regeneration), so keep it modest - a ~128px PNG is a safe size against
+server stanza caps. `disable` removes the avatar. `-command` is invoked as
+`{*}$cb [list ok ""]` or `{*}$cb [list error $msg]`; `cancel` drops a
+still-pending callback by its `-tag`.
 
 ## Refresh
 
@@ -63,7 +69,7 @@ Re-fetches a JID's avatar, bypassing the hash cache. Backs an explicit
 
 ## Caching (optional)
 
-When one avatar shows in many slots, refcount it by `(acc, jid)`: call
-`visible`/`thumb` on the first slot and `invisible` on the last, reusing
-one decoded image between. See `avatarcache_base`
-(`lib/libtacky/tacky.tcl`) for a worked example.
+When one avatar shows in many slots, refcount it by `(acc, jid, size)`:
+call `visible` and fetch the master on the first slot of a size,
+`invisible` on the last, reusing one scaled image between. See
+`avatarcache_base` (`lib/libtacky/tacky.tcl`) for a worked example.
