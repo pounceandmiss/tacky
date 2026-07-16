@@ -36,11 +36,13 @@ Per source, an entry also carries:
 
     joined        in the room
     joining       join sent, no answer yet
-    error         join failed; room_reason has the condition
+    error         join failed; room_reason explains why
     disconnected  dropped from a room we still belong to (autojoin)
     idle          not joined, not trying
 
-`room_reason` is empty unless `error`.
+`room_reason` is empty unless `error`. It is a human-readable sentence
+ready to show the user (e.g. "You are banned from this room"), not the
+raw stanza error condition - the backend maps the condition to copy.
 
 ## Events
 
@@ -66,4 +68,7 @@ events, so a consumer listens to `chatlist` alone.
   room JID).
 - Room methods (`bookmarks item/leave/autojoin`) accept the `?join`
   form and canonicalize it.
-- Presence is not provided yet.
+- Presence is a separate module, not a chat-list field. For a 1:1 peer,
+  query `tacky presence get -jid $bare` (best-resource
+  `{show status priority}`), `resources` (per-resource dict), or
+  `isOnline`, and subscribe to `presence <Changed> -jid $bare` to refresh.

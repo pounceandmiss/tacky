@@ -5,15 +5,19 @@ Message Initiation (XEP-0353).
 
 ## API
 
-    tacky calls start  -acc $jid -to $barejid -command $cb   ;# returns sid
+    tacky calls start  -acc $jid -to $barejid
     tacky calls accept -acc $jid -sid $sid
     tacky calls reject -acc $jid -sid $sid ?-reason decline?
     tacky calls hangup -acc $jid -sid $sid ?-reason success?
     tacky calls setDevices -acc $jid -sid $sid ?-input $id? ?-output $id?
 
-`start` returns the session id used to address the call. `setDevices`
-overrides mic/speaker for this one call; empty id means system
-default.  
+`start` rings the peer and the session id arrives on the `calls
+<Outgoing>` event (`-sid`) - that is the reliable source, since a
+threaded or process backend does not hand a method's return value back
+across the bridge. `start` takes no `-command`; it is fire-and-emit, not
+request/reply. All the `-sid` methods address a call by the id `<Outgoing>`
+gave you. `setDevices` overrides mic/speaker for this one call; empty id
+means system default.
 
 ## Events
 

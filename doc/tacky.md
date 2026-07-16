@@ -20,7 +20,7 @@ general form:
 
     tacky $module $method  ?...args? ?-tag $tag? ?-command $cb? ?-onerror $errcb?
 
-All args are keyword args. Some args are special and intercepted by tacky, including -command, -tag, -onerror. -command and -onerror are command prefixes that will be called on result or error. 
+All args are keyword args. Some args are special and intercepted by tacky, including -command, -tag, -onerror. -command and -onerror are command prefixes called on result and error respectively. A body error is routed by which of the two you passed: with -command and -onerror, it goes to -onerror; with -command but no -onerror, it surfaces as an `error <MethodError>` event (`-module -method -message -errorinfo`); with no -command it is re-thrown to the caller synchronously. So -onerror is only consulted alongside -command.
 
 ### cancellation
 -tag when supplied to a command can be used in two ways:
@@ -102,16 +102,23 @@ explicit toggle; the methods here exist for the verification UI (showing and
 comparing identity-key fingerprints, marking devices trusted / untrusted).
 
     tacky omemo own_fingerprint -acc $acc ?-command $cb?
-    tacky omemo fingerprint     -acc $acc -jid $peerJid -device $deviceId ?-command $cb?
+    tacky omemo trustList       -acc $acc -jid $peerJid ?-command $cb?
     tacky omemo devicelist      -acc $acc -jid $peerJid ?-command $cb?
     tacky omemo trust           -acc $acc -jid $peerJid -device $deviceId -state $state ?-command $cb?
 
 `own_fingerprint` returns the hex SHA-256 fingerprint of this device's
 identity key, or `{}` before the account has finished OMEMO setup
-(pre-`<Ready>`). `fingerprint` returns the equivalent for a peer device, or
-`{}` if we have no record (no bundle ever fetched, no message decrypted).
-Fingerprints are 64-hex-character strings; the GUI typically chunks them
-into 8 groups of 8 for display.
+(pre-`<Ready>`). Fingerprints are 64-hex-character strings; the GUI
+typically chunks them into 8 groups of 8 for display.
+
+Peer fingerprints have no method of their own - they ride along on each
+`trustList` row, which returns every known device for `-jid` (including
+inactive ones):
+
+    {device $id trust $state active $bool fingerprint $hex} ...
+
+`fingerprint` is `{}` for a device we have no identity key for. `device` is
+an opaque row handle to pass back to `trust`; it is not user-facing.
 
 `devicelist` returns the cached list of integer device ids for `$peerJid`
 as last seen via PEP. An empty list means either the peer doesn't publish
