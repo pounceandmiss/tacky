@@ -647,6 +647,7 @@ snit::type taco_message {
     method OnUploaded {chatJid oid ts path encMode url} {
         if {$url eq ""} {
             $messagestore markUploadFailed $chatJid $oid
+            $self EmitMessagePatch $chatJid $ts
             return
         }
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -658,6 +659,7 @@ snit::type taco_message {
                 [jwrite [$self BuildMessageStanza readable $chatJid $url $oid \
                     $msgType $toJid omemo]] \
                 [OutgoingAttachment $url $path] omemo
+            $self EmitMessagePatch $chatJid $ts
             $self RetrySend [dict create chat_jid $chatJid body $url \
                 own_id $oid encryption omemo reply_id "" reply_to ""]
             return
@@ -668,6 +670,7 @@ snit::type taco_message {
         }]
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
             [OutgoingAttachment $url $path] ""
+        $self EmitMessagePatch $chatJid $ts
         $client write $stanza
     }
 
@@ -685,6 +688,7 @@ snit::type taco_message {
         set encMode [expr {[dict exists $row encryption] \
             ? [dict get $row encryption] : ""}]
         $messagestore markUploading $chatJid $oid
+        $self EmitMessagePatch $chatJid $ts
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
