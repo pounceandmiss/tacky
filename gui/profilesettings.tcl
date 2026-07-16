@@ -11,6 +11,12 @@ snit::widget profilesettings {
     option -acc -readonly yes
     option -tacky -default ::tacky -readonly yes
 
+    # Published avatars are cropped square and scaled to this edge (px).
+    # The published PNG is the exact blob every subscriber downloads, so it
+    # must stay under the server's stanza cap: a 128px photo PNG is ~30-70KB
+    # base64, comfortable on typical servers.
+    typevariable PublishEdge 128
+
     variable statusAfter ""
     variable blindTrust 0
 
@@ -173,8 +179,31 @@ snit::widget profilesettings {
         set fd [open $path rb]
         set data [read $fd]
         close $fd
+
+        # Prepare the image client-side: decode, center-crop to a square,
+        # scale to PublishEdge, and PNG-encode. The backend stores and
+        # sends these bytes verbatim.
+        set src [image create photo]
+        if {[catch {::tkwuffs::decode_to_photo $data $src}]} {
+            catch {image delete $src}
+            $self OnResult Avatar [list error "Unsupported image format"]
+            return
+        }
+        set w [image width $src]
+        set h [image height $src]
+        set side [expr {min($w, $h)}]
+        set x [expr {($w - $side) / 2}]
+        set y [expr {($h - $side) / 2}]
+        set out [image create photo]
+        ::tkwuffs::crop_photo $src $out $x $y $side $side
+        image delete $src
+        ::tkwuffs::resize_photo $out $out $PublishEdge $PublishEdge
+        set png [::tkwuffs::encode_png_from_photo $out]
+        image delete $out
+
         $options(-tacky) avatar publish \
-            -acc $options(-acc) -data $data -type image/png \
+            -acc $options(-acc) -data $png -type image/png \
+            -width $PublishEdge -height $PublishEdge \
             -tag $win -command [mymethod OnResult "Avatar"]
     }
 

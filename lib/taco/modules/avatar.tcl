@@ -1,20 +1,21 @@
 package require sha1
-package require tclwuffs
 
 if 0 {
     taco_avatar - manages XEP-0084 User Avatar support.
 
     Listens for avatar metadata PubSub notifications, auto-fetches
-    avatar image data, caches in SQLite with pre-generated thumbnails,
-    and emits events through the tacky event system.
+    avatar image data, caches the master image in SQLite, and emits
+    events through the tacky event system. Resizing/cropping is the
+    frontend's job: the backend stores and serves the master bytes as-is.
 
     Tacky API:
         tacky avatar metadata -acc $acc -jid $jid
             Returns metadata dict: hash type bytes width height
         tacky avatar data -acc $acc -hash $hash
-            Returns raw image bytes
-        tacky avatar publish -acc $acc -data $rawData ?-type image/png? ?-tag $tag? ?-command $cb?
-            Publish own avatar
+            Returns raw master image bytes
+        tacky avatar publish -acc $acc -data $bytes ?-type $mime? ?-width $w? ?-height $h? ?-tag $tag? ?-command $cb?
+            Publish own avatar. Bytes are stored and sent as-is; the
+            frontend prepares them (crop/scale/encode) before calling.
         tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb?
             Disable own avatar
         tacky avatar cancel -acc $acc -tag $tag
@@ -94,18 +95,9 @@ snit::type taco_avatar {
         }
     }
 
-    # Get pre-generated 32x32 thumbnail bytes for a JID; returns "" if none.
-    tackymethod thumb {args} {
-        set jid [jid norm [jid noquery [dict get $args -jid]]]
-        $client db eval {
-            SELECT d.thumb FROM avatar_metadata m
-            JOIN avatar_data d ON d.hash = m.hash
-            WHERE m.jid=$jid
-        } row { return $row(thumb) }
-        return ""
-    }
-
-    # Publish own avatar (rawData = raw image bytes)
+    # Publish own avatar. -data is stored and sent verbatim - the frontend
+    # crops/scales/encodes before calling. -type/-width/-height describe those
+    # bytes and are advertised in the XEP-0084 <info>.
     # Optional -command callback: {*}$command [list ok ""] / {*}$command [list error $msg]
     method publish {args} {
         array set opts {-type image/png -width "" -height "" -command "" -tag ""}
@@ -114,11 +106,7 @@ snit::type taco_avatar {
         if {$opts(-tag) ne ""} {
             set ActiveTags($opts(-tag)) 1
         }
-        $client emit avatar <Progress> -acc $acc -message "Resizing image..."
-        set rawData [$self ResizeForPublish $opts(-data)]
-        set opts(-type) image/png
-        set opts(-width) ""
-        set opts(-height) ""
+        set rawData $opts(-data)
 
         # Compute SHA-1 from raw bytes
         set hash [::sha1::sha1 -hex $rawData]
@@ -197,10 +185,9 @@ snit::type taco_avatar {
                 set bytes [dict get $publishCtx bytes]
                 set width [dict get $publishCtx width]
                 set height [dict get $publishCtx height]
-                set thumbData [$self MakeThumb $rawData "publish jid=$jid"]
                 $client db eval {
-                    INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
-                    VALUES ($hash, $rawData, $thumbData)
+                    INSERT OR REPLACE INTO avatar_data(hash, data)
+                    VALUES ($hash, $rawData)
                 }
                 $client db eval {
                     INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
@@ -389,11 +376,10 @@ snit::type taco_avatar {
         set rawData [::base64::decode $base64Data]
         set hash [::sha1::sha1 $rawData]
 
-        set thumbData [$self MakeThumb $rawData "OnVCardResult jid=$jid"]
         set bytes [string length $rawData]
         $client db eval {
-            INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
-            VALUES ($hash, $rawData, $thumbData)
+            INSERT OR REPLACE INTO avatar_data(hash, data)
+            VALUES ($hash, $rawData)
         }
         $client db eval {
             INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
@@ -447,37 +433,12 @@ snit::type taco_avatar {
         set base64Data [string map {\n "" \r "" " " "" \t ""} $base64Data]
         set rawData [::base64::decode $base64Data]
 
-        set thumbData [$self MakeThumb $rawData "OnDataResult jid=$jid hash=$hash"]
         $client db eval {
-            INSERT OR REPLACE INTO avatar_data(hash, data, thumb)
-            VALUES ($hash, $rawData, $thumbData)
+            INSERT OR REPLACE INTO avatar_data(hash, data)
+            VALUES ($hash, $rawData)
         }
 
         $client emit avatar <Update> -jid $jid -hash $hash
-    }
-
-    # Re-encoding through wuffs strips source metadata, so identical input
-    # yields identical PNG bytes (and hash) regardless of when it runs.
-    method ResizeForPublish {rawData} {
-        try {
-            set d [::tclwuffs::decode $rawData]
-            lassign [fit_within [dict get $d width] [dict get $d height] 128] tw th
-            return [::tclwuffs::resize_bytes $rawData $tw $th]
-        } on error {err} {
-            jlog warn "Avatar resize failed: $err"
-            return $rawData
-        }
-    }
-
-    method MakeThumb {rawData caller} {
-        try {
-            set d [::tclwuffs::decode $rawData]
-            lassign [fit_within [dict get $d width] [dict get $d height] 32] tw th
-            return [::tclwuffs::resize_bytes $rawData $tw $th]
-        } on error {err} {
-            jlog warn "Thumbnail generation failed: $err"
-            return ""
-        }
     }
 
     method Migrate {} {
@@ -492,8 +453,7 @@ snit::type taco_avatar {
             );
             CREATE TABLE IF NOT EXISTS avatar_data(
                 hash TEXT PRIMARY KEY,
-                data BLOB NOT NULL,
-                thumb BLOB
+                data BLOB NOT NULL
             );
         }
     }

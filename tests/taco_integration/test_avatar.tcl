@@ -5,7 +5,6 @@ package require libtacky
 package require taco
 package require base64
 package require sha1
-package require tclwuffs
 
 namespace eval ::test::avatar_int {
 
@@ -16,27 +15,10 @@ namespace eval ::test::avatar_int {
     variable ROMEO "romeo@example.local"
     variable JULIET "juliet@example.local"
 
-    # 1x1 transparent PNG pixel (~68 bytes). publish re-encodes through wuffs,
-    # so the on-wire hash is over wuffs's output, not the original bytes. Mirror
-    # taco_avatar's ResizeForPublish (decode, fit within 128x128 shrink-only,
-    # re-encode PNG) so the fixture hash matches.
+    # 1x1 transparent PNG pixel (~68 bytes). publish is passthrough: the bytes
+    # are stored and sent verbatim, so the on-wire hash is over these bytes.
     variable SAMPLE_PNG_B64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-    proc resizeLikePublish {rawData} {
-        set d [::tclwuffs::decode $rawData]
-        set w [dict get $d width]
-        set h [dict get $d height]
-        if {$w > 128 || $h > 128} {
-            if {$w >= $h} {
-                set h [expr {int(round(double($h) * 128 / $w))}]
-                set w 128
-            } else {
-                set w [expr {int(round(double($w) * 128 / $h))}]
-                set h 128
-            }
-        }
-        return [::tclwuffs::resize_bytes $rawData [expr {max($w, 1)}] [expr {max($h, 1)}]]
-    }
-    variable SAMPLE_PNG_RAW [resizeLikePublish [::base64::decode $SAMPLE_PNG_B64]]
+    variable SAMPLE_PNG_RAW [::base64::decode $SAMPLE_PNG_B64]
     variable SAMPLE_PNG_HASH [::sha1::sha1 -hex $SAMPLE_PNG_RAW]
 
     # Helper: awaitEvent
@@ -185,17 +167,20 @@ namespace eval ::test::avatar_int {
             set pubVar [namespace current]::_pubDone
             set $pubVar 0
             tacky avatar publish -acc $ROMEO -data $SAMPLE_PNG_RAW -type image/png \
+                -width 128 -height 128 \
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
             ::test::helpers::waitVar $pubVar 5000
         }
 
+        # Passthrough advertises the caller-supplied type/width/height in <info>.
         set meta [tacky avatar metadata -acc $JULIET -jid $ROMEO]
         list [expr {[dict get $meta hash] eq $SAMPLE_PNG_HASH}] \
             [dict get $meta type] \
-            [expr {[dict get $meta bytes] > 0}]
-    } -result {1 image/png 1}
+            [expr {[dict get $meta bytes] > 0}] \
+            [dict get $meta width] [dict get $meta height]
+    } -result {1 image/png 1 128 128}
 
     # --- Fresh-startup: Juliet loads Romeo's pre-existing avatar on connect ---
 
