@@ -324,6 +324,51 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
     set res
 } -result [list 1 uploading [file join /tmp uptest_[pid].bin]]
 
+# Collect server_status off every message <Patch> fired during $script.
+proc up_patch_statuses {script} {
+    set ::_up_patches {}
+    set tag [tacky listen message <Patch> {apply {{ev} {
+        foreach m [dict get $ev -messages] {
+            if {[dict exists $m server_status]} {
+                lappend ::_up_patches [dict get $m server_status]
+            }
+        }
+    }}}]
+    uplevel 1 $script
+    tacky unlisten $tag
+    set ::_up_patches
+}
+
+test file-upload-success-patches-pending {a completed upload emits a <Patch> flipping the row to pending} {*}$file_env -body {
+    up_store_uploading bob@example.com 7300000
+    up_patch_statuses {
+        $::_client message OnUploaded bob@example.com 7300000 7300000 \
+            /tmp/a.png "" https://h/a.png
+    }
+} -result pending
+
+test file-upload-failure-patches-failed {a failed upload emits a <Patch> flipping the row to failed} {*}$file_env -body {
+    up_store_uploading bob@example.com 7400000
+    up_patch_statuses {
+        $::_client message OnUploaded bob@example.com 7400000 7400000 \
+            /tmp/a.png "" ""
+    }
+} -result failed
+
+test file-retryupload-patches-uploading {retryUpload emits a <Patch> flipping the failed row back to uploading} {*}$file_env -body {
+    # A readable source file lets the retry stall at slot discovery (the mock
+    # server never replies) instead of failing straight back on an unreadable
+    # path, so the only transition is failed -> uploading.
+    set f [open /tmp/a.png w]; puts -nonewline $f data; close $f
+    up_store_uploading bob@example.com 7500000
+    up_ms markUploadFailed bob@example.com 7500000
+    set res [up_patch_statuses {
+        tacky message retryUpload -acc $acc -chat bob@example.com -timestamp 7500000
+    }]
+    file delete /tmp/a.png
+    set res
+} -result uploading
+
 # --- transfer events / download / thumbnails -------------------------------
 #
 # Sandbox the cache so generated files land in /tmp, not the real ~/.cache.
