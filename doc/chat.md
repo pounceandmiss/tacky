@@ -74,16 +74,18 @@ applies regardless of source - there is no separate "backfill" or
   after any such fill, with the assembled list (empty list = nothing more on
   that side).
 - `tacky message goto -acc $a -chat $j -date $ts -source local|remote ...` -
-  jump to anchor. Result: `{messages $list anchor $nearestTs}`. `-source
-  remote` fetches from MAM first.
+  jump to anchor. Result: `{messages $list anchor $nearestTs bounded_before
+  $bool bounded_after $bool}`. `-source remote` fetches from MAM first.
+  The `bounded_*` flags mark a side truncated at a hole - more history exists
+  that way, but a gap intervenes; paging that direction fills it.
 - `tacky message gotoReply -acc $a -chat $j -reply_id $rid ?-reply_to $jid? ...` -
   jump to a reply's target (XEP-0461). Same result shape as `goto`; an
-  unresolved target yields empty `messages`.
+  unresolved target yields empty `messages` and an empty `anchor`.
 - `tacky message cancel -acc $a -tag $t` - mark in-flight callbacks for `$t`
   inactive.
 - `tacky message maxTimestamp -acc $a -chat $j` - newest known timestamp for
   the chat. Used to decide whether the window has reached the tail.
-- `tacky listen -tag $t message <Received|Sent|Patch|CatchupDone> ... $cb` -
+- `tacky listen -tag $t message <New|Patch|CatchupDone> ... $cb` -
   subscribe to live events.
 - `tacky unlisten $t` - remove all listeners under `$t`.
 

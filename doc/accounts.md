@@ -27,18 +27,23 @@ otherwise quit.
     tacky account disable -acc $jid
     tacky account changePassword -acc $jid -password $new -command $cb
 
-Fields are `username`, `domain`, `password`, `enabled`. `add` creates
-or updates; on create, username and domain default to the JID's
+Fields are `username`, `domain`, `password`, `resource`, `enabled`. `add`
+creates or updates; on create, username and domain default to the JID's
 parts. `enable` persists the flag and connects; `disable` disconnects
 and persists. `remove` disconnects and deletes the account row and
 its per-account cache database. `changePassword` changes the password
 server-side (XEP-0077) and, on success, updates the stored one; the
 callback gets `ok ""` or `error $message`.
 
-Store changes arrive as events, one per transition:
+Store changes arrive as events:
 
     tacky listen account <Added|Removed|Enabled|Disabled> $command
         -acc $jid
+
+`<Added>`, `<Removed>`, and `<Enabled>` fire once per real transition
+(enabling an already-enabled account is a no-op and emits nothing).
+`<Disabled>` fires on every `disable` call, including one that was
+already disabled - treat it as idempotent, not as an edge signal.
 
 ## Connection state
 

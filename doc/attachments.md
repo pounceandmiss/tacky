@@ -7,11 +7,17 @@ A message with attachments carries two extra keys:
     attachments {{url $u type image|file name $n size $s mime $m} ...}
     caption $text
 
-`type image` is meant to render inline. `file` as a chip with open/save. `caption` is the display
-text: senders duplicate the share URL into `body` for OOB-unaware
-clients, so `caption` is `body` with the redundant URL removed (empty
-when the body was only the URL). Render `caption` if present, else
+`type image` is meant to render inline. `file` as a chip with open/save.
+`caption` is the display text: senders duplicate the share URL into `body`
+for OOB-unaware clients, so `caption` is `""` when `body` was nothing but
+that URL, and `body` verbatim otherwise. Render `caption` if present, else
 `body`.
+
+Only a body that is exactly the attachment URL is emptied; a URL inside a
+larger sentence stays in `caption`.
+
+`size` and `mime` are set only on outgoing attachments, from the local
+file. On received attachments both are `""`.
 
 ## Sending
 
@@ -26,6 +32,18 @@ URL; from there confirmation proceeds like any send (chat.md section
     tacky message retryUpload -acc $a -chat $j -timestamp $ts
 
 re-runs it from the local path recorded on the row.
+
+Every upload `server_status` transition arrives as a `message <Patch>`
+(chat.md section 8): `uploading` -> `pending` on success (the `url` also
+flips from the local path to the public URL, so redraw the attachment),
+`uploading` -> `failed` on error, and `failed` -> `uploading` on
+`retryUpload`. Byte-level progress rides `file <Update>` in parallel;
+`<Patch>` carries the coarse state, `<Update>` the progress bar.
+
+In an OMEMO chat the file is AES-256-GCM encrypted before the PUT, and the
+attachment `url` is an `aesgcm://` URL (XEP-0454) whose fragment holds the
+media key. `file download` handles the scheme itself - fetching the
+`https://` form and decrypting - so a frontend passes it like any other URL.
 
 ## Downloading
 
