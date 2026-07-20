@@ -78,15 +78,9 @@ snit::widget chatpanel {
         }
 
         if {$isMuc} {
-            ::tacky observe -tag $win setting <Changed> -key show_participants \
-                [mymethod OnShowParticipantsSetting]
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
         } else {
-            ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
-                [mymethod OnShowJidIn1to1Setting]
-            ::tacky observe -tag $win setting <Changed> -key send_chat_markers \
-                [mymethod OnSendReceiptsSetting]
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
                 [mymethod OnOmemoEnabled]
@@ -99,32 +93,12 @@ snit::widget chatpanel {
         catch {$self DestroyParticipants}
     }
 
-    method OnShowParticipantsSetting {ev} {
-        set val [dict get $ev -value]
-        if {$val ne "" && $val} {
-            set showParticipants 1
+    method ApplyParticipants {} {
+        if {$showParticipants} {
             $self ShowParticipants
+        } else {
+            $self DestroyParticipants
         }
-    }
-
-    method OnShowJidIn1to1Setting {ev} {
-        set val [dict get $ev -value]
-        if {$val eq ""} { set val 0 }
-        set showJidIn1to1 [expr {!!$val}]
-    }
-
-    method ToggleShowJidIn1to1 {} {
-        ::tacky setting set -key show_jid_in_1to1 -value $showJidIn1to1
-    }
-
-    method OnSendReceiptsSetting {ev} {
-        set val [dict get $ev -value]
-        if {$val eq ""} { set val 1 }
-        set sendReceipts [expr {!!$val}]
-    }
-
-    method ToggleSendReceipts {} {
-        ::tacky setting set -key send_chat_markers -value $sendReceipts
     }
 
     method BuildOmemoToggle {} {
@@ -311,12 +285,10 @@ snit::widget chatpanel {
             $mb.chat add command -label "OMEMO Keys..." \
                 -command [mymethod OpenOmemoKeys]
             $mb.chat add separator
-            $mb.chat add checkbutton -label "Show JID Instead of Name" \
-                -variable [myvar showJidIn1to1] \
-                -command [mymethod ToggleShowJidIn1to1]
-            $mb.chat add checkbutton -label "Send Read Receipts" \
-                -variable [myvar sendReceipts] \
-                -command [mymethod ToggleSendReceipts]
+            settingmenu::checkbutton $mb.chat "Show JID Instead of Name" \
+                -var [myvar showJidIn1to1] -key show_jid_in_1to1 -tag $win
+            settingmenu::checkbutton $mb.chat "Send Read Receipts" \
+                -var [myvar sendReceipts] -key send_chat_markers -tag $win
             $mb.chat add command -label "Start Call" \
                 -command [mymethod StartCall]
         }
@@ -336,9 +308,9 @@ snit::widget chatpanel {
         $mb.chat add separator
 
         # Always-visible items
-        $mb.chat add checkbutton -label "Participants" \
-            -variable [myvar showParticipants] \
-            -command [mymethod ToggleParticipants]
+        settingmenu::checkbutton $mb.chat "Participants" \
+            -var [myvar showParticipants] -key show_participants \
+            -tag $win -onchange [mymethod ApplyParticipants]
         $mb.chat add separator
         $mb.chat add command -label "Invite User..." \
             -command [mymethod InviteUser]
@@ -417,15 +389,6 @@ snit::widget chatpanel {
             return
         }
         $cv goto [expr {$secs * 1000000}] -source remote
-    }
-
-    method ToggleParticipants {} {
-        if {$showParticipants} {
-            $self ShowParticipants
-        } else {
-            $self DestroyParticipants
-        }
-        ::tacky setting set -key show_participants -value $showParticipants
     }
 
     method ShowParticipants {} {

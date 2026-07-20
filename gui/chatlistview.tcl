@@ -48,11 +48,6 @@ snit::widget chatlistview {
             error "chatlistview requires -acc"
         }
 
-        ::tacky observe -tag $win setting <Changed> -key show_presence_colors \
-            [mymethod OnPresenceColorsSetting]
-        ::tacky observe -tag $win setting <Changed> -key show_avatars \
-            [mymethod OnShowAvatarsSetting]
-
         # Search entry + new-chat button
         ttk::frame $win.header
         install searchentry using ttk::entry $win.header.search \
@@ -143,12 +138,14 @@ snit::widget chatlistview {
             -variable [myvar sortby] -value "name" \
             -command [mymethod Render]
         $settingsmenu add separator
-        $settingsmenu add checkbutton -label "Show presence colors" \
-            -variable [myvar prescolors] \
-            -command [mymethod OnPresenceColorsChanged]
-        $settingsmenu add checkbutton -label "Show avatars" \
-            -variable [myvar showAvatars] \
-            -command [mymethod OnShowAvatarsChanged]
+        settingmenu::checkbutton $settingsmenu "Show presence colors" \
+            -var [myvar prescolors] -key show_presence_colors \
+            -tag $win -tacky $options(-tacky) \
+            -onchange [mymethod ConfigurePresenceTags]
+        settingmenu::checkbutton $settingsmenu "Show avatars" \
+            -var [myvar showAvatars] -key show_avatars \
+            -tag $win -tacky $options(-tacky) \
+            -onchange [mymethod Render]
         $settingsmenu add separator
         $settingsmenu add command -label "Refresh" \
             -command [mymethod OnRefresh]
@@ -332,34 +329,6 @@ snit::widget chatlistview {
         }
         foreach {state opts} $mucStateStyle {
             $treeview tag configure muc_$state {*}$opts
-        }
-    }
-
-    method OnPresenceColorsChanged {} {
-        ::tacky setting set -key show_presence_colors -value $prescolors
-        $self ConfigurePresenceTags
-    }
-
-    method OnPresenceColorsSetting {ev} {
-        set val [dict get $ev -value]
-        if {$val ne ""} {
-            set prescolors $val
-            $self ConfigurePresenceTags
-        }
-    }
-
-    method OnShowAvatarsChanged {} {
-        ::tacky setting set -key show_avatars -value $showAvatars
-        $self Render
-    }
-
-    method OnShowAvatarsSetting {ev} {
-        set val [dict get $ev -value]
-        if {$val ne ""} {
-            set showAvatars $val
-            if {[winfo exists $treeview]} {
-                $self Render
-            }
         }
     }
 
