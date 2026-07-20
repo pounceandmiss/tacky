@@ -31,6 +31,7 @@ snit::type app_type {
         }
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
+        ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
 
         ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
@@ -61,6 +62,20 @@ snit::type app_type {
         } else {
             $self ShowSetup
         }
+    }
+
+    # The controller root is withdrawn, so account-less errors go to any window.
+    method OnMethodError {eargs} {
+        set msg [dict get $eargs -message]
+        if {[dict exists $eargs -errorinfo]} {
+            catch {::tacky jlog error [dict get $eargs -errorinfo] -obj gui.methoderror}
+        }
+        set w ""
+        if {[dict exists $eargs -acc]} {
+            set w [$self WindowForAccount [dict get $eargs -acc]]
+        }
+        if {$w eq ""} { set w [$self AnyVisibleWindow] }
+        if {$w ne "" && [winfo exists $w]} { $w ShowStatus $msg }
     }
 
     # --- Account windows ---

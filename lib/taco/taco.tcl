@@ -40,11 +40,16 @@ snit::macro tackymethod {name arglist body} {
                 if {[dict exists $args -onerror]} {
                     {*}[dict get $args -onerror] $_result
                 } else {
+                    set _extra {}
+                    if {[dict exists $args -acc]} {
+                        lappend _extra -acc [dict get $args -acc]
+                    }
                     tacky emit error <MethodError> \
-                        -module [regsub {^taco_} $type {}] \
+                        -module [regsub {^::taco_} $type {}] \
                         -method %NAME% \
                         -message $_result \
-                        -errorinfo [dict get $_opts -errorinfo]
+                        -errorinfo [dict get $_opts -errorinfo] \
+                        {*}$_extra
                 }
                 return
             }

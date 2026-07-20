@@ -45,6 +45,24 @@ proc tacky_await_error {args} {
     return $::_await_err
 }
 
+# Wait for the `error <MethodError>` event a failing call emits when it has a
+# -command but no -onerror. tacky_await_error can't see this path: it supplies
+# -onerror, which takes the error to the callback instead.
+proc tacky_await_methoderror {args} {
+    set ::_await_me_done 0
+    set ::_await_me {}
+    set tag [tacky listen error <MethodError> [list apply {{eargs} {
+        set ::_await_me $eargs
+        set ::_await_me_done 1
+    }}]]
+    {*}$args -command {apply {{result} {}}}
+    if {!$::_await_me_done} {
+        vwait ::_await_me_done
+    }
+    tacky unlisten $tag
+    return $::_await_me
+}
+
 # Emit two test calls: direct/ and threaded/.
 # Wraps caller's -setup/-cleanup with tacky create/destroy.
 proc tacky_test {name desc args} {
