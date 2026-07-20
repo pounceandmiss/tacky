@@ -29,7 +29,7 @@
 extern const unsigned char _binary_scripts_zip_start[];
 extern const unsigned char _binary_scripts_zip_end[];
 
-struct tacky_client {
+struct tacky {
     Tcl_ThreadId  tid;      /* backend thread */
     Tcl_Interp   *interp;   /* backend-thread-owned */
     tacky_emit_fn emit;
@@ -50,20 +50,20 @@ struct tacky_client {
 
 typedef struct {
     Tcl_Event     header;
-    tacky_client *client;
+    tacky *t;
     size_t        len;
     char          json[1];  /* flexible; allocated with len+1 trailing bytes */
 } DispatchEvent;
 
 typedef struct {
     Tcl_Event     header;
-    tacky_client *client;
+    tacky *t;
 } StopEvent;
 
 static int DispatchEventProc(Tcl_Event *evPtr, int flags) {
     (void)flags;
     DispatchEvent *ev = (DispatchEvent *)evPtr;
-    Tcl_Interp *interp = ev->client->interp;
+    Tcl_Interp *interp = ev->t->interp;
     Tcl_Obj *objv[2];
 
     objv[0] = Tcl_NewStringObj("tackyd_dispatch", -1);
@@ -82,15 +82,15 @@ static int DispatchEventProc(Tcl_Event *evPtr, int flags) {
 static int StopEventProc(Tcl_Event *evPtr, int flags) {
     (void)flags;
     StopEvent *ev = (StopEvent *)evPtr;
-    Tcl_Eval(ev->client->interp, "catch {taco destroy}");
-    ev->client->stop = 1;
+    Tcl_Eval(ev->t->interp, "catch {taco destroy}");
+    ev->t->stop = 1;
     return 1;
 }
 
 /* ---- the C command the Tcl side calls to emit a message out ---- */
 
 static int EmitCmd(void *cd, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]) {
-    tacky_client *c = (tacky_client *)cd;
+    tacky *c = (tacky *)cd;
     Tcl_Size len;
     const char *s;
 
@@ -118,7 +118,7 @@ static Tcl_Mutex g_mount_lock;
 static int       g_mounted = 0;
 
 /* Bring up the interpreter and construct taco. Returns TCL_OK on success. */
-static int BackendInit(tacky_client *c) {
+static int BackendInit(tacky *c) {
     Tcl_Interp *interp = Tcl_CreateInterp();
     size_t ziplen = (size_t)(_binary_scripts_zip_end - _binary_scripts_zip_start);
     Tcl_Obj **objv;
@@ -134,7 +134,7 @@ static int BackendInit(tacky_client *c) {
     /* Mount the script tree before Tcl_Init so init.tcl loads from the zip.
      * The zipfs mount is process-global (shared across interps), not per-interp,
      * so mount exactly once: a second tacky_create in the same process (restart,
-     * or more than one client) would otherwise fail with "already mounted". The
+     * or more than one instance) would otherwise fail with "already mounted". The
      * guard is under a global mutex; the mount outlives any single interp. */
     Tcl_MutexLock(&g_mount_lock);
     if (!g_mounted) {
@@ -176,7 +176,7 @@ static int BackendInit(tacky_client *c) {
 }
 
 static Tcl_ThreadCreateType BackendThreadProc(void *cd) {
-    tacky_client *c = (tacky_client *)cd;
+    tacky *c = (tacky *)cd;
     int rc = BackendInit(c);
 
     Tcl_MutexLock(&c->lock);
@@ -210,7 +210,7 @@ static Tcl_ThreadCreateType BackendThreadProc(void *cd) {
      * leaks per-thread notifier state and, after a few cycles, a fresh backend
      * thread's Tcl_DoOneEvent stops servicing queued events (replies never fire).
      * Must be the last Tcl call on this thread; it touches only this thread's
-     * data, not *c, so it is safe even if reap() has already freed the client. */
+     * data, not *c, so it is safe even if reap() has already freed the handle. */
     Tcl_FinalizeThread();
     TCL_THREAD_CREATE_RETURN;
 }
@@ -230,7 +230,7 @@ static void free_args(char **args) {
  * finalize and free them. The thread is detached, so there is no handle to
  * join - the OS reaps it on return. Bounded wait: if the backend never reports
  * done (a wedged interp), leak *c rather than free it under a live thread. */
-static void reap(tacky_client *c) {
+static void reap(tacky *c) {
     int done, waited_ms = 0;
 
     Tcl_MutexLock(&c->lock);
@@ -250,16 +250,16 @@ static void reap(tacky_client *c) {
     free(c);
 }
 
-tacky_client *tacky_create(const char *const *taco_args,
+tacky *tacky_create(const char *const *taco_args,
                            tacky_emit_fn emit, void *ud) {
-    tacky_client *c;
+    tacky *c;
     size_t n = 0, i;
 
     /* Initialise the Tcl library (notifier, threads, encodings) before the
      * first Tcl_CreateThread / mutex call. Idempotent; safe to repeat. */
     Tcl_FindExecutable(NULL);
 
-    c = (tacky_client *)calloc(1, sizeof *c);
+    c = (tacky *)calloc(1, sizeof *c);
     if (!c) return NULL;
     c->emit = emit;
     c->ud = ud;
@@ -292,14 +292,14 @@ tacky_client *tacky_create(const char *const *taco_args,
     return c;
 }
 
-void tacky_send(tacky_client *c, const char *json, size_t len) {
+void tacky_send(tacky *c, const char *json, size_t len) {
     DispatchEvent *ev;
     if (!c) return;
 
     ev = (DispatchEvent *)Tcl_Alloc(offsetof(DispatchEvent, json) + len + 1);
     ev->header.proc = DispatchEventProc;
     ev->header.nextPtr = NULL;
-    ev->client = c;
+    ev->t = c;
     ev->len = len;
     memcpy(ev->json, json, len);
     ev->json[len] = '\0';
@@ -308,14 +308,14 @@ void tacky_send(tacky_client *c, const char *json, size_t len) {
     Tcl_ThreadAlert(c->tid);
 }
 
-void tacky_destroy(tacky_client *c) {
+void tacky_destroy(tacky *c) {
     StopEvent *ev;
     if (!c) return;
 
     ev = (StopEvent *)Tcl_Alloc(sizeof *ev);
     ev->header.proc = StopEventProc;
     ev->header.nextPtr = NULL;
-    ev->client = c;
+    ev->t = c;
     Tcl_ThreadQueueEvent(c->tid, (Tcl_Event *)ev, TCL_QUEUE_TAIL);
     Tcl_ThreadAlert(c->tid);
 

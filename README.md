@@ -85,10 +85,10 @@ The C surface (`embed/tacky.h`) is just a pipe to the real API is taco's JSON
 contract. Three functions and one callback:
 
 ```c
-tacky_client *tacky_create(const char *const *taco_args,
-                           tacky_emit_fn emit, void *ud);
-void tacky_send(tacky_client *client, const char *json, size_t len);
-void tacky_destroy(tacky_client *client);
+tacky *tacky_create(const char *const *taco_args,
+                    tacky_emit_fn emit, void *ud);
+void tacky_send(tacky *t, const char *json, size_t len);
+void tacky_destroy(tacky *t);
 
 typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
 ```
