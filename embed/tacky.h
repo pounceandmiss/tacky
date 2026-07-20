@@ -12,6 +12,8 @@
  *   - The emit callback fires on the BACKEND thread, not the caller's. Copy the
  *     bytes out, hand them to your own thread/loop, and return promptly. Do NOT
  *     block inside it and do NOT re-enter tacky (no tacky_send/destroy from it).
+ *     It can fire before tacky_create() returns - have `ud` fully initialized
+ *     before calling.
  *   - tacky_send() is safe to call from any thread; it queues the request onto
  *     the backend thread and returns immediately.
  *   - Create/destroy should be driven from a single owning thread.
@@ -34,7 +36,12 @@ typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
 
 /* Start the backend thread and construct `taco`. `taco_args` is a NULL-
  * terminated array of C strings forwarded to the taco constructor (may be NULL
- * for none). Blocks until the backend is ready. Returns NULL on failure. */
+ * for none). Returns as soon as requests can be queued; the backend
+ * initializes asynchronously and processes queued requests, in order, once it
+ * is up. Returns NULL only on immediate failure (allocation, thread spawn).
+ * If initialization fails, the backend emits
+ * ["event","backend","<Dead>",{"error":...}] and goes dead: no replies ever
+ * arrive, and the handle must still be passed to tacky_destroy(). */
 tacky *tacky_create(const char *const *taco_args,
                     tacky_emit_fn emit, void *ud);
 
