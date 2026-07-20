@@ -104,12 +104,19 @@ void tacky_send(tacky *t, const char *json, size_t len);
 void tacky_destroy(tacky *t);
 ```
 
-`tacky_create` starts the backend on a dedicated thread and blocks
-until it is ready. `taco_args` is a NULL-terminated array of taco_type
+`tacky_create` starts the backend on a dedicated thread and returns
+immediately; requests sent right away are queued and processed in
+order once the backend is up, so readiness is observed as replies
+arriving. `taco_args` is a NULL-terminated array of taco_type
 constructor args (e.g. `"-transient", "0"`), or NULL. Each
 `tacky_send` carries one complete JSON request; each emit callback
 delivers one complete JSON reply or event. No length prefixes -
 message boundaries are the call boundaries.
+
+If the backend fails to initialize it emits
+`["event", "backend", "<Dead>", {"error": "..."}]` and goes dead: no
+replies ever arrive, and the handle must still be destroyed. This is
+the library-mode analog of the subprocess exiting.
 
 Threading: `tacky_send` is safe from any thread and returns
 immediately. The emit callback fires on the backend thread - copy the

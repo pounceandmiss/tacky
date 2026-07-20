@@ -35,12 +35,12 @@ struct tacky {
     tacky_emit_fn emit;
     void         *ud;
     char        **args;     /* NULL-terminated copy of taco_args */
+    char         *err;      /* init failure message for the <Dead> event */
 
-    /* create()/teardown handshake (lock+cond guard ready/rc, then done) */
+    /* create()/teardown handshake (lock+cond guard ready, then done) */
     Tcl_Mutex     lock;
     Tcl_Condition cond;
-    int           ready;    /* backend has finished init (ok or fail) */
-    int           rc;       /* TCL_OK / TCL_ERROR from init */
+    int           ready;    /* backend thread registered its notifier */
 
     int           stop;     /* backend-only: set by the stop event */
     int           done;     /* backend loop exited + interp deleted; safe to free */
@@ -107,9 +107,44 @@ static int EmitCmd(void *cd, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]
 
 /* ---- backend thread ---- */
 
-static int fail(Tcl_Interp *interp, const char *stage) {
-    fprintf(stderr, "tacky: %s failed: %s\n", stage, Tcl_GetStringResult(interp));
+static int fail(tacky *c, const char *stage) {
+    const char *msg = Tcl_GetStringResult(c->interp);
+    size_t n = strlen(stage) + strlen(msg) + 16;
+
+    fprintf(stderr, "tacky: %s failed: %s\n", stage, msg);
+    free(c->err);
+    c->err = (char *)malloc(n);
+    if (c->err) {
+        snprintf(c->err, n, "%s failed: %s", stage, msg);
+    }
     return TCL_ERROR;
+}
+
+/* Emit ["event","backend","<Dead>",{"error":"..."}] when init failed. The
+ * message is JSON-escaped by hand; the interp may already be unusable. */
+static void emit_dead(tacky *c) {
+    const char *msg = c->err ? c->err : "backend init failed";
+    size_t n = strlen(msg), w, i;
+    char *buf;
+
+    if (!c->emit) return;
+    buf = (char *)malloc(n * 6 + 64);
+    if (!buf) return;
+    w = (size_t)sprintf(buf, "[\"event\",\"backend\",\"<Dead>\",{\"error\":\"");
+    for (i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)msg[i];
+        if (ch == '"' || ch == '\\') {
+            buf[w++] = '\\';
+            buf[w++] = (char)ch;
+        } else if (ch < 0x20) {
+            w += (size_t)sprintf(buf + w, "\\u%04x", ch);
+        } else {
+            buf[w++] = (char)ch;
+        }
+    }
+    w += (size_t)sprintf(buf + w, "\"}]");
+    c->emit(c->ud, buf, w);
+    free(buf);
 }
 
 /* Process-global guard for the shared //zipfs:/app mount (see BackendInit).
@@ -141,7 +176,7 @@ static int BackendInit(tacky *c) {
         if (TclZipfs_MountBuffer(interp, _binary_scripts_zip_start, ziplen,
                                  "//zipfs:/app", 0) != TCL_OK) {
             Tcl_MutexUnlock(&g_mount_lock);
-            return fail(interp, "TclZipfs_MountBuffer");
+            return fail(c, "TclZipfs_MountBuffer");
         }
         g_mounted = 1;
     }
@@ -149,7 +184,7 @@ static int BackendInit(tacky *c) {
     Tcl_SetVar2Ex(interp, "tcl_library", NULL,
                   Tcl_NewStringObj("//zipfs:/app/tcl_library", -1), TCL_GLOBAL_ONLY);
     if (Tcl_Init(interp) != TCL_OK) {
-        return fail(interp, "Tcl_Init");
+        return fail(c, "Tcl_Init");
     }
 
     /* Must exist before taco is constructed: the constructor may emit for
@@ -157,7 +192,7 @@ static int BackendInit(tacky *c) {
     Tcl_CreateObjCommand(interp, "tacky_native_emit", EmitCmd, c, NULL);
 
     if (Tcl_EvalFile(interp, "//zipfs:/app/bin/tackyd-embed.tcl") != TCL_OK) {
-        return fail(interp, "source tackyd-embed.tcl");
+        return fail(c, "source tackyd-embed.tcl");
     }
 
     /* tackyd_embed_init {*}$args  -> taco_type create taco {*}$args */
@@ -172,23 +207,32 @@ static int BackendInit(tacky *c) {
     for (i = 0; i <= n; i++) { Tcl_DecrRefCount(objv[i]); }
     Tcl_Free((char *)objv);
 
-    return (rc == TCL_OK) ? TCL_OK : fail(interp, "tackyd_embed_init");
+    return (rc == TCL_OK) ? TCL_OK : fail(c, "tackyd_embed_init");
 }
 
 static Tcl_ThreadCreateType BackendThreadProc(void *cd) {
     tacky *c = (tacky *)cd;
-    int rc = BackendInit(c);
+    int rc;
+
+    /* Register this thread's notifier before signalling ready: until it is
+     * registered, Tcl_ThreadQueueEvent to this thread silently drops the
+     * event. Idempotent - Tcl_CreateInterp would do the same later. */
+    Tcl_InitSubsystems();
 
     Tcl_MutexLock(&c->lock);
-    c->rc = rc;
     c->ready = 1;
     Tcl_ConditionNotify(&c->cond);
     Tcl_MutexUnlock(&c->lock);
 
+    /* tacky_create has returned; requests queue on this thread's event queue
+     * during init and drain in order once the loop starts. */
+    rc = BackendInit(c);
     if (rc == TCL_OK) {
         while (!c->stop) {
             Tcl_DoOneEvent(TCL_ALL_EVENTS);
         }
+    } else {
+        emit_dead(c);
     }
     if (c->interp) {
         Tcl_DeleteInterp(c->interp);
@@ -247,6 +291,7 @@ static void reap(tacky *c) {
     Tcl_MutexFinalize(&c->lock);
     Tcl_ConditionFinalize(&c->cond);
     free_args(c->args);
+    free(c->err);
     free(c);
 }
 
@@ -280,15 +325,12 @@ tacky *tacky_create(const char *const *taco_args,
         return NULL;
     }
 
+    /* Near-instant: only until the backend thread can queue requests. Init
+     * itself runs on after this returns; failure arrives as backend <Dead>. */
     Tcl_MutexLock(&c->lock);
     while (!c->ready) { Tcl_ConditionWait(&c->cond, &c->lock, NULL); }
     Tcl_MutexUnlock(&c->lock);
 
-    if (c->rc != TCL_OK) {
-        /* Init failed; the backend tears its interp down and reports done. */
-        reap(c);
-        return NULL;
-    }
     return c;
 }
 

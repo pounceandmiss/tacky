@@ -71,11 +71,34 @@ static int one_cycle(int n) {
     return 1;
 }
 
+/* create -> send -> destroy with no wait: teardown while the backend may
+ * still be initializing must not hang or crash. */
+static int churn_cycle(int n) {
+    struct ctx c;
+    pthread_mutex_init(&c.lock, NULL);
+    pthread_cond_init(&c.cond, NULL);
+    c.got = 0;
+
+    printf("cycle %d: create+destroy churn\n", n);
+    tacky *t = tacky_create(NULL, on_emit, &c);
+    if (!t) {
+        fprintf(stderr, "cycle %d: FAIL tacky_create returned NULL\n", n);
+        return 0;
+    }
+    const char *req = "[\"account\",\"list\",{},1]";
+    tacky_send(t, req, strlen(req));
+    tacky_destroy(t);
+    printf("cycle %d: ok\n", n);
+    return 1;
+}
+
 int main(void) {
     for (int i = 1; i <= 3; i++) {
         if (!one_cycle(i))
             return 1;
     }
+    if (!churn_cycle(4))
+        return 1;
     printf("PASS: all cycles ok\n");
     return 0;
 }
