@@ -41,14 +41,14 @@ static int one_cycle(int n) {
     c.got = 0;
 
     printf("cycle %d: create\n", n);
-    tacky_client *cl = tacky_create(NULL, on_emit, &c);
-    if (!cl) {
+    tacky *t = tacky_create(NULL, on_emit, &c);
+    if (!t) {
         fprintf(stderr, "cycle %d: FAIL tacky_create returned NULL\n", n);
         return 0;
     }
 
     const char *req = "[\"account\",\"list\",{},1]";
-    tacky_send(cl, req, strlen(req));
+    tacky_send(t, req, strlen(req));
 
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -61,7 +61,7 @@ static int one_cycle(int n) {
     int got = c.got;
     pthread_mutex_unlock(&c.lock);
 
-    tacky_destroy(cl);
+    tacky_destroy(t);
 
     if (!got) {
         fprintf(stderr, "cycle %d: FAIL timed out\n", n);
