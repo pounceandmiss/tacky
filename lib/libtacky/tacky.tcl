@@ -315,11 +315,14 @@ set _tacky_backend_script [file join [file dirname [info script]] .. .. bin tack
 # Wire shape mirrors tackyd-json.tcl, just with Tcl lists/dicts on the
 # wire instead of JSON:
 #
-#   out: [module method args]          fire-and-forget
-#        [module method args token]    request/response
-#   in:  [event module <Event> args]   broadcast
-#        [result token data]           success reply
-#        [error  token message]        error reply
+#   out: [module method args]              fire-and-forget
+#        [module method args token wants]  request/response
+#   in:  [event module <Event> args]       broadcast
+#        [result token data]               success reply
+#        [error  token message]            error reply
+#
+# `wants` is a subset of {cmd err}: the child wires only the callbacks the
+# caller gave, so a -command with no -onerror still reaches <MethodError>.
 #
 # Unlike tacky_type / tacky_threaded_type — which round-trip the
 # original callback by replacing -command with a magic string that
@@ -384,7 +387,10 @@ oo::class create tacky_process_type {
             dict set Callbacks $token [list $tag $cmd $err]
             dict unset args -command
             dict unset args -onerror
-            $Pipe send [list $module $method $args $token]
+            set wants {}
+            if {$cmd ne ""} { lappend wants cmd }
+            if {$err ne ""} { lappend wants err }
+            $Pipe send [list $module $method $args $token $wants]
         } else {
             $Pipe send [list $module $method $args]
         }

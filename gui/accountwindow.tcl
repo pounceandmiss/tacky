@@ -25,6 +25,8 @@ snit::widget accountwindow {
     variable inlineJid ""
     variable inlineGroupchat 0
     variable chatModeVar "inline"
+    variable statusLabel ""
+    variable statusAfter ""
 
     constructor args {
         $self configurelist $args
@@ -58,6 +60,7 @@ snit::widget accountwindow {
 
     destructor {
         catch {::tacky unlisten $win}
+        if {$statusAfter ne ""} { catch {after cancel $statusAfter} }
         if {$accmenu ne ""} { catch {$accmenu destroy} }
     }
 
@@ -101,8 +104,23 @@ snit::widget accountwindow {
         set paned [ttk::panedwindow $win.paned -orient horizontal]
         set cpFrame [ttk::frame $paned.chatpanel]
         $self BuildPanel
+        # Packed only while a message is showing, so there's no empty strip.
+        set statusLabel [ttk::label $win.status -anchor w -padding {6 2}]
         pack $paned -expand yes -fill both
         wm title $win "Tacky - $currentAccount"
+    }
+
+    method ShowStatus {msg} {
+        if {![winfo exists $statusLabel]} return
+        if {$statusAfter ne ""} { after cancel $statusAfter }
+        $statusLabel configure -text $msg
+        pack $statusLabel -side bottom -fill x -before $paned
+        set statusAfter [after 8000 [mymethod ClearStatus]]
+    }
+
+    method ClearStatus {} {
+        set statusAfter ""
+        catch {pack forget $statusLabel}
     }
 
     method BuildPanel {} {

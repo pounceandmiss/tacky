@@ -2,11 +2,14 @@
 # Child process entry point for tacky_process_type.
 # Speaks length-prefixed Tcl lists over stdin/stdout (lenpipe).
 #
-# Incoming (stdin):  [module method args]            fire-and-forget
-#                    [module method args token]      request/response
-# Outgoing (stdout): [event module <Event> args]     broadcast
-#                    [result token data]             success reply
-#                    [error  token message]          error reply
+# Incoming (stdin):  [module method args]              fire-and-forget
+#                    [module method args token wants]  request/response
+# Outgoing (stdout): [event module <Event> args]       broadcast
+#                    [result token data]               success reply
+#                    [error  token message]            error reply
+#
+# `wants` is a subset of {cmd err}: only those callbacks are wired, so a
+# -command with no -onerror still reaches the macro's <MethodError> branch.
 
 lappend auto_path [file normalize [file join [file dirname [info script]] .. lib]]
 package require taco
@@ -48,10 +51,15 @@ lenpipe create _pipe stdin \
         lassign $msg module method args
         if {[llength $msg] > 3} {
             set token [lindex $msg 3]
-            dict set args -command \
-                [list tacky emit callback <Result> -token $token -result]
-            dict set args -onerror \
-                [list tacky emit callback <Error> -token $token -result]
+            set wants [lindex $msg 4]
+            if {"cmd" in $wants} {
+                dict set args -command \
+                    [list tacky emit callback <Result> -token $token -result]
+            }
+            if {"err" in $wants} {
+                dict set args -onerror \
+                    [list tacky emit callback <Error> -token $token -result]
+            }
         }
         taco $module $method {*}$args
     }}} \

@@ -51,17 +51,35 @@ tacky_test account-get-field {get -field returns single value} \
         tacky_await tacky account get -acc user@example.com -field username
     } -result user
 
-tacky_test account-get-noexist {get emits MethodError for missing account} \
+tacky_test account-get-noexist {get routes missing account to -onerror} \
     {*}$common \
     -body {
         tacky_await_error tacky account get -acc nobody@example.com
     } -result {Account doesn't exist: nobody@example.com}
 
-tacky_test account-get-badfield {get emits MethodError for invalid field name} \
+tacky_test account-get-badfield {get routes invalid field name to -onerror} \
     {*}$common \
     -body {
         tacky_await_error tacky account get -acc user@example.com -field bogus
     } -result {Invalid field: bogus}
+
+# -- MethodError -----------------------------------------------------------
+# Must behave identically in all three transports; process used to swallow it.
+
+tacky_test account-methoderror-fields {-command without -onerror emits MethodError} \
+    {*}$common \
+    -body {
+        set e [tacky_await_methoderror tacky account get -acc nobody@example.com]
+        list [dict get $e -module] [dict get $e -method] \
+            [dict get $e -acc] [dict get $e -message]
+    } -result {account get nobody@example.com {Account doesn't exist: nobody@example.com}}
+
+tacky_test account-methoderror-no-acc {MethodError omits -acc when the call had none} \
+    {*}$common \
+    -body {
+        set e [tacky_await_methoderror tacky account get]
+        list [dict get $e -module] [dict exists $e -acc]
+    } -result {account 0}
 
 # -- resource --------------------------------------------------------------
 
