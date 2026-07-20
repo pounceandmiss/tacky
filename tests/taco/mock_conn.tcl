@@ -6,6 +6,7 @@ snit::type mock_conn {
     variable connected
     variable closed
     variable mockState disconnected
+    variable mockLastError ""
 
     # Connection options (stored, not used)
     option -host -default ""
@@ -59,6 +60,27 @@ snit::type mock_conn {
         lappend written $stanza
     }
 
+    # Mirrors taco_connection pull. `tacky observe` calls it, so a widget that
+    # observes conn cannot be built against the mock without this.
+    method pull {args} {
+        if {$options(-emit) eq ""} return
+        array set opts $args
+        switch -- $opts(-event) {
+            <State> {
+                {*}$options(-emit) conn <State> -state $mockState
+            }
+            <ConnError> {
+                if {$mockLastError ne ""} {
+                    {*}$options(-emit) conn <ConnError> -message $mockLastError
+                }
+            }
+            default {
+                return -code error \
+                    "conn pull: event $opts(-event) is not pullable"
+            }
+        }
+    }
+
     # -- Test helpers --
 
     method feed {stanza} {
@@ -69,8 +91,17 @@ snit::type mock_conn {
 
     method fire_state {s} {
         set mockState $s
+        # Real conn drops the last error once it reaches connected.
+        if {$s eq "connected"} { set mockLastError "" }
         if {$options(-emit) ne ""} {
             {*}$options(-emit) conn <State> -state $s
+        }
+    }
+
+    method fire_connerror {msg} {
+        set mockLastError $msg
+        if {$options(-emit) ne ""} {
+            {*}$options(-emit) conn <ConnError> -message $msg
         }
     }
 
