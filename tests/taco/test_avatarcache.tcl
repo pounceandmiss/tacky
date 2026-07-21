@@ -81,7 +81,7 @@ test avatarcache-untrack-unknown {untrack unknown tag is a no-op} \
 
 # -- notify ----------------------------------------------------------------
 
-test avatarcache-notify-disabled {disabled action reverts to default} \
+test avatarcache-notify-disabled {empty hash reverts to default} \
     {*}$ac_common \
     -body {
         set ::notified {}
@@ -89,7 +89,7 @@ test avatarcache-notify-disabled {disabled action reverts to default} \
             -acc user@test -jid c@d -tag t1 \
             -command {apply {{img} {lappend ::notified $img}}}
         set ::deleted_images {}
-        tacky emit avatar <Update> -acc user@test -jid c@d -action disabled
+        tacky emit avatar <Update> -acc user@test -jid c@d -hash ""
         list \
             [llength $::notified] \
             [string match "default*" [lindex $::notified 0]] \
@@ -108,7 +108,7 @@ test avatarcache-notify-untracked-not-called {untracked tag not notified} \
             -acc user@test -jid c@d -tag t2 \
             -command {apply {{img} {lappend ::n2 $img}}}
         avatarcache untrack -tag t1
-        tacky emit avatar <Update> -acc user@test -jid c@d -action disabled
+        tacky emit avatar <Update> -acc user@test -jid c@d -hash ""
         list [llength $::n1] [llength $::n2]
     } -result {0 1}
 

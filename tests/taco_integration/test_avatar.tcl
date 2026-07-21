@@ -271,8 +271,8 @@ namespace eval ::test::avatar_int {
             ::test::helpers::waitVar $pubVar 5000
         }
 
-        # Disable and wait for disabled notification
-        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -action disabled {
+        # Disable and wait for the empty-hash removal notification
+        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -hash "" {
             set disVar [namespace current]::_disDone
             set $disVar 0
             tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
@@ -282,6 +282,6 @@ namespace eval ::test::avatar_int {
         }]
 
         set meta [tacky avatar metadata -acc $JULIET -jid $ROMEO]
-        list [dict get $eventArgs -action] [expr {$meta eq {}}]
-    } -result {disabled 1}
+        list [dict get $eventArgs -hash] [expr {$meta eq {}}]
+    } -result {{} 1}
 }

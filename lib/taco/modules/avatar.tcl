@@ -24,7 +24,7 @@ if 0 {
     Events:
         tacky listen avatar <Update> -acc ...
             Payload: -jid <bare-jid> -hash <sha1>
-                  or -jid <bare-jid> -action disabled
+                  (-hash "" when the avatar was removed)
         tacky listen avatar <Progress> -acc ...
             Payload: -acc <bare-jid> -message <status string>
 }
@@ -262,7 +262,7 @@ snit::type taco_avatar {
             }]
             $client db eval {DELETE FROM avatar_metadata WHERE jid=$from}
             if {$had} {
-                $client emit avatar <Update> -jid $from -action disabled
+                $client emit avatar <Update> -jid $from -hash ""
             }
             return
         }
@@ -341,7 +341,7 @@ snit::type taco_avatar {
             }]
             if {$existing ne ""} {
                 $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
-                $client emit avatar <Update> -jid $jid -action disabled
+                $client emit avatar <Update> -jid $jid -hash ""
             }
             return
         }
