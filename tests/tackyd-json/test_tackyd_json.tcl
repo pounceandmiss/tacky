@@ -218,6 +218,20 @@ test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
     jsonify convert message/gotoReply [dict create messages {} anchor ""]
 } -result [json::write object messages [json::write array] anchor null]
 
+# -- unregistered-key default ------------------------------------------------
+#
+# The result path passes `string`, so an undeclared method returning a scalar
+# serializes as a JSON string. Without it, a scalar hits the dict-parse and
+# throws (odd word count) or fabricates an object (even).
+
+test json-convert-default-string {unregistered key with string default} -body {
+    jsonify convert some/unregistered "a b c" string
+} -result {"a b c"}
+
+test json-convert-default-dict {unregistered key defaults to dict for events} -body {
+    jsonify convert some/unregistered {k v}
+} -result [json::write object k {"v"}]
+
 # -- _on_error tests ---------------------------------------------------------
 
 test json-backend-error {error message} -setup {

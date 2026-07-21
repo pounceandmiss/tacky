@@ -49,7 +49,7 @@ namespace eval ::tacky_ns {
                 tacky_native_emit [json::write array \
                     [json::write string result] \
                     $token \
-                    [jsonify convert $schema $result]]
+                    [jsonify convert $schema $result string]]
             }
             return
         }
