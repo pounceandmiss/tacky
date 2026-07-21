@@ -108,11 +108,14 @@ snit::type jsonify_type {
         }
     }
 
-    method convert {schema_key value} {
+    # `default` is the hint used when schema_key is unregistered. Events pass a
+    # dict (the built-in default); the result path passes `string`, so a scalar
+    # return serializes as a JSON string instead of being parsed as a dict.
+    method convert {schema_key value {default {dict {}}}} {
         if {[dict exists $schemas $schema_key]} {
             set hint [dict get $schemas $schema_key]
         } else {
-            set hint {dict {}}
+            set hint $default
         }
         return [$self to_json $value $hint]
     }
@@ -169,6 +172,7 @@ jsonify_type jsonify \
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
         calls/start             string
+        author/get              {dict {}}
         register/media          base64
         register/form           form
         avatar/metadata         avatar_meta
