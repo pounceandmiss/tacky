@@ -580,7 +580,7 @@ oo::class create avatarcache_base {
         set sizes [my SizesFor $acc $jid]
         if {[llength $sizes] == 0} return
 
-        if {[dict exists $ev -action] && [dict get $ev -action] eq "disabled"} {
+        if {[dict get $ev -hash] eq ""} {
             foreach size $sizes {
                 set key "$acc\n$jid\n$size"
                 set oldImg [dict get $Images $key]

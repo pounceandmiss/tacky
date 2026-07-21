@@ -175,7 +175,7 @@ namespace eval ::test::tacky_avatar {
             [dict get $meta width] [dict get $meta height]
     } -result {1 image/png 1 128 128}
 
-    test tacky-avatar-disable "Romeo disables avatar, Juliet receives Update with disabled action" {*}$common -body {
+    test tacky-avatar-disable "Romeo disables avatar, Juliet receives Update with empty hash" {*}$common -body {
         variable SAMPLE_PNG_RAW
         variable ROMEO
         variable JULIET
@@ -191,8 +191,8 @@ namespace eval ::test::tacky_avatar {
             ::test::helpers::waitVar $pubVar 5000
         }
 
-        # Now disable and wait for the disabled notification
-        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -action disabled {
+        # Now disable and wait for the empty-hash removal notification
+        set eventArgs [awaitEvent avatar <Update> -acc $JULIET -hash "" {
             set disVar [namespace current]::_disDone
             set $disVar 0
             tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
@@ -201,8 +201,8 @@ namespace eval ::test::tacky_avatar {
             ::test::helpers::waitVar $disVar 5000
         }]
 
-        dict get $eventArgs -action
-    } -result disabled
+        dict get $eventArgs -hash
+    } -result {}
 
     test tacky-avatar-metadata-cleared "Juliet has empty metadata after Romeo disables avatar" {*}$common -body {
         variable SAMPLE_PNG_RAW
@@ -220,8 +220,8 @@ namespace eval ::test::tacky_avatar {
             ::test::helpers::waitVar $pubVar 5000
         }
 
-        # Disable and wait for disabled notification
-        awaitEvent avatar <Update> -acc $JULIET -action disabled {
+        # Disable and wait for the empty-hash removal notification
+        awaitEvent avatar <Update> -acc $JULIET -hash "" {
             set disVar [namespace current]::_disDone
             set $disVar 0
             tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
