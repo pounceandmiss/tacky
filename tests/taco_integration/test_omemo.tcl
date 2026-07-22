@@ -124,7 +124,7 @@ namespace eval ::test::omemo_int {
         set tag [tacky listen message <New> -acc $TESTER -jid $BOT \
             [list apply {{accVar want ev} {
                 lappend $accVar [string trimright \
-                    [dict get [dict get $ev -message] body]]
+                    [::test::helpers::msgText [dict get $ev -message]]]
                 if {[llength [set $accVar]] >= $want} {
                     set ::test::omemo_int::_collectDone 1
                 }
@@ -162,7 +162,7 @@ namespace eval ::test::omemo_int {
         {*}$common -body {
             set ev [sendOmemo "hello bot"]
             set msg [dict get $ev -message]
-            string trimright [dict get $msg body]
+            string trimright [::test::helpers::msgText $msg]
         } -result {hello bot}
 
     # 1b. Cold-cache optimistic send: no prepareChat warming. The first
@@ -190,7 +190,7 @@ namespace eval ::test::omemo_int {
                     WHERE chat_jid=$bot AND body='cold hello'
                 }]
             }]
-            set recv [string trimright [dict get [dict get $ev -message] body]]
+            set recv [string trimright [::test::helpers::msgText [dict get $ev -message]]]
             list pending $::test::omemo_int::_coldStatus \
                 no_wire $::test::omemo_int::_coldRaw \
                 delivered $recv
@@ -202,7 +202,7 @@ namespace eval ::test::omemo_int {
         for {set i 0} {$i < 10} {incr i} {
             set ev [sendOmemo "msg $i"]
             lappend bodies [string trimright \
-                [dict get [dict get $ev -message] body]]
+                [::test::helpers::msgText [dict get $ev -message]]]
         }
         set bodies
     } -result {{msg 0} {msg 1} {msg 2} {msg 3} {msg 4} {msg 5} {msg 6} {msg 7} {msg 8} {msg 9}}
@@ -233,7 +233,7 @@ namespace eval ::test::omemo_int {
         {*}$common -body {
             set msg "你好 \U0001F44B"
             set ev [sendOmemo $msg]
-            expr {[string trimright [dict get [dict get $ev -message] body]] eq $msg}
+            expr {[string trimright [::test::helpers::msgText [dict get $ev -message]]] eq $msg}
         } -result 1
 
     # 4. Heal convergence against a real peer. The echo bot only replies
@@ -263,7 +263,7 @@ namespace eval ::test::omemo_int {
             set rebuilt [::test::omemo_int::waitSessionRow $client $tester $bot $dev]
             set converged timeout
             if {![catch {sendOmemo "after heal"} ev]} {
-                set converged [string trimright [dict get [dict get $ev -message] body]]
+                set converged [string trimright [::test::helpers::msgText [dict get $ev -message]]]
             }
             list rebuilt $rebuilt converged $converged
         } -result {rebuilt 1 converged {after heal}}
@@ -278,7 +278,7 @@ namespace eval ::test::omemo_int {
             tacky_init
             ::test::omemo_int::extraSetup
             set ev [sendOmemo "second"]
-            string trimright [dict get [dict get $ev -message] body]
+            string trimright [::test::helpers::msgText [dict get $ev -message]]
         } -result {second}
 
     # 6. Reflected message guard: a stanza whose @from is our own bare
@@ -364,7 +364,7 @@ namespace eval ::test::omemo_int {
                 $client omemo trust -jid $bot -device $d -state trusted
             }
             set ev [sendOmemo "after re-trust"]
-            set recv [string trimright [dict get [dict get $ev -message] body]]
+            set recv [string trimright [::test::helpers::msgText [dict get $ev -message]]]
             # trust -> compromised refused via API.
             set comprRefused 0
             if {[catch {$client omemo trust -jid $bot -device $botDev -state compromised} \

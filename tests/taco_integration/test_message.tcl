@@ -118,7 +118,7 @@ namespace eval ::test::message_int {
 
             set found 0
             foreach msg $result {
-                if {[dict get $msg body] eq "hello from juliet"} {
+                if {[::test::helpers::msgText $msg] eq "hello from juliet"} {
                     set found 1
                 }
             }
@@ -139,7 +139,7 @@ namespace eval ::test::message_int {
 
             set count 0
             foreach msg $result {
-                if {[string match "msg *" [dict get $msg body]]} {
+                if {[string match "msg *" [::test::helpers::msgText $msg]]} {
                     incr count
                 }
             }
@@ -184,7 +184,7 @@ namespace eval ::test::message_int {
 
             set found 0
             foreach msg $result {
-                if {[dict get $msg body] eq "catchup test msg"} {
+                if {[::test::helpers::msgText $msg] eq "catchup test msg"} {
                     set found 1
                 }
             }
