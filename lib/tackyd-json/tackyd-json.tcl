@@ -196,7 +196,10 @@ jsonify_type jsonify \
         chatlist/get            {list chat_entry}
 
         message/<New>           {dict {message message}}
-        message/<Patch>         {dict {messages {list message}}}
+        message/<Status>        {dict {timestamp int server_status string remote_status string fail_reason string}}
+        message/<Confirmed>     {dict {timestamp int newtimestamp int server_status string}}
+        message/<Reactions>     {dict {timestamp int reactions {map {dict {reactors list mine bool}}}}}
+        message/<Edited>        {dict {message message}}
         message/<CatchupDone>   {dict {count int}}
         message/<Tail>          {dict {timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}

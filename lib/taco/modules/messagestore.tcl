@@ -741,7 +741,7 @@ snit::type taco_messagestore {
     # matched against our own_id (fallback origin_id). Forward-only: a
     # lower or equal rank (duplicate / out-of-order marker) is a no-op.
     # Returns {chat_jid, timestamp, remote_status} if a row changed,
-    # else "" so the caller can skip the <Patch>.
+    # else "" so the caller can skip the <Status>.
     method markRemoteStatus {chatJid targetId status} {
         if {$targetId eq ""} { return "" }
         set changed ""
@@ -770,7 +770,7 @@ snit::type taco_messagestore {
 
     # Apply a reactor's full emoji set. Last-writer-wins: a set with an
     # older-or-equal ts than the reactor's stored one is ignored. Returns
-    # the target message's local timestamp (so the caller can <Patch>), or
+    # the target message's local timestamp (so the caller can <Reactions>), or
     # "" when LWW skipped it or the target message isn't stored yet.
     method applyReaction {chatJid targetId senderId senderLabel isOwn emojis ts} {
         if {$targetId eq "" || $senderId eq ""} { return "" }
@@ -817,7 +817,7 @@ snit::type taco_messagestore {
 
     # Replace a stored message's body with a correction. Last-writer-wins on
     # edited_ts; a retracted message is immutable. Returns the target's local
-    # timestamp (so the caller can <Patch>), or "" when not stored or skipped.
+    # timestamp (so the caller can <Edited>), or "" when not stored or skipped.
     method applyEdit {chatJid targetId newBody rawXml ts} {
         set targetTs [$self resolveTargetTs $chatJid $targetId]
         if {$targetTs eq ""} { return "" }
@@ -894,7 +894,7 @@ snit::type taco_messagestore {
     # by `store`. Verdicts:
     #   confirmed - matched a pending send: flip to '' (server has it),
     #               capture server_id, relocate to the server ts (as `store`
-    #               does); returns old/new ts for the <Patch>.
+    #               does); returns old/new ts for the <Confirmed>.
     #   duplicate - matched a non-pending row.
     #   new       - no id match.
     method reconcile {jid serverId ownId originId timestamp {occupantId ""}} {

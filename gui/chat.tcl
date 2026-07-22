@@ -110,8 +110,14 @@ snit::widgetadaptor chatview {
         set DownloadPending [dict create]
         ::tacky listen -tag $win message <New> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
-        ::tacky listen -tag $win message <Patch> \
-            -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
+        ::tacky listen -tag $win message <Status> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnStatus]
+        ::tacky listen -tag $win message <Confirmed> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnConfirmed]
+        ::tacky listen -tag $win message <Reactions> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnReactions]
+        ::tacky listen -tag $win message <Edited> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnEdited]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
@@ -375,39 +381,60 @@ snit::widgetadaptor chatview {
         $self MaybeSendDisplayed
     }
 
-    method OnPatch {ev} {
-        foreach msg [dict get $ev -messages] {
-            set ts [dict get $msg timestamp]
-            if {$ts ni [$hull messages ids]} continue
-            if {[dict exists $msg newtimestamp]} {
-                # Timestamp move: grab stored dict, update, re-insert. Re-pin
-                # the tail if we were at it, so a just-sent message whose
-                # server stamp moves the row doesn't drift the view up (the
-                # reinsert is otherwise top-anchored by compensate).
-                set atEnd [$hull atEnd]
-                set newTs [dict get $msg newtimestamp]
-                set storeDict [$hull messages get $ts]
-                $hull deleteById $ts
-                dict set storeDict timestamp $newTs
-                dict set storeDict server_status [dict get $msg server_status]
-                $self ProcessBatch [list $storeDict]
-                if {$atEnd} { $hull see end }
-            } elseif {[dict exists $msg body]} {
-                # Full-row patch (edit/retract): the backend re-sends the
-                # whole enriched dict, so redraw the message in place. Re-pin
-                # the tail if we were at it, so editing the newest message
-                # keeps it visible instead of drifting below the fold as the
-                # body grows (matches the live-insert path).
-                set atEnd [$hull atEnd]
-                $hull deleteById $ts
-                $self ProcessBatch [list $msg]
-                if {$atEnd} { $hull see end }
-            } elseif {[dict exists $msg reactions]} {
-                $hull reactions update $ts [dict get $msg reactions]
-            } else {
-                $hull patchFields $ts $msg
-            }
+    # Send/receipt/upload status change: merge onto the checkmark row. Carries
+    # any of server_status / remote_status / fail_reason.
+    method OnStatus {ev} {
+        set ts [dict get $ev -timestamp]
+        if {$ts ni [$hull messages ids]} return
+        set patch [dict create]
+        foreach k {server_status remote_status fail_reason} {
+            if {[dict exists $ev -$k]} { dict set patch $k [dict get $ev -$k] }
         }
+        $hull patchFields $ts $patch
+    }
+
+    # A pending send was acknowledged by the server. When the stamp held
+    # (newtimestamp == timestamp) just update the checkmark in place; when the
+    # server relocated the row, rekey the stored dict to the new timestamp and
+    # re-insert. Re-pin the tail if we were at it, so a just-sent message
+    # doesn't drift the view up (the reinsert is otherwise top-anchored by
+    # compensate).
+    method OnConfirmed {ev} {
+        set ts [dict get $ev -timestamp]
+        if {$ts ni [$hull messages ids]} return
+        set newTs [dict get $ev -newtimestamp]
+        if {$newTs == $ts} {
+            $hull patchFields $ts \
+                [dict create server_status [dict get $ev -server_status]]
+            return
+        }
+        set atEnd [$hull atEnd]
+        set storeDict [$hull messages get $ts]
+        $hull deleteById $ts
+        dict set storeDict timestamp $newTs
+        dict set storeDict server_status [dict get $ev -server_status]
+        $self ProcessBatch [list $storeDict]
+        if {$atEnd} { $hull see end }
+    }
+
+    method OnReactions {ev} {
+        set ts [dict get $ev -timestamp]
+        if {$ts ni [$hull messages ids]} return
+        $hull reactions update $ts [dict get $ev -reactions]
+    }
+
+    # Full-row redraw (edit/retract): the backend re-sends the whole enriched
+    # dict. Re-pin the tail if we were at it, so editing the newest message
+    # keeps it visible instead of drifting below the fold as the body grows
+    # (matches the live-insert path).
+    method OnEdited {ev} {
+        set msg [dict get $ev -message]
+        set ts [dict get $msg timestamp]
+        if {$ts ni [$hull messages ids]} return
+        set atEnd [$hull atEnd]
+        $hull deleteById $ts
+        $self ProcessBatch [list $msg]
+        if {$atEnd} { $hull see end }
     }
 
     method OnScroll {} {

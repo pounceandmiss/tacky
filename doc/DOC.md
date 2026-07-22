@@ -18,9 +18,10 @@ and get back replies and events.
   - [message](#message)
   - [omemo](#omemo)
   - [avatar](#avatar)
+  - [nick](#nick)
   - [file](#file)
   - [calls](#calls)
-  - [Undocumented modules](#undocumented-modules)
+  - [audio](#audio)
 - [Guides](#guides)
   - [Accounts and sign-in](#accounts-and-sign-in)
   - [The chat window](#the-chat-window)
@@ -337,9 +338,25 @@ exclusive cursors; `source` on `goto` is `local` or `remote`.
 Events:
 
     message <New>         {jid: string, message: message}
-    message <Patch>       {jid: string, messages: [message]}
+    message <Status>      {jid: string, timestamp: int, server_status?: string, remote_status?: string, fail_reason?: string}
+    message <Confirmed>   {jid: string, timestamp: int, newtimestamp: int, server_status: string}
+    message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
+    message <Edited>      {jid: string, message: message}
     message <CatchupDone> {count: int}
     message <Tail>        {jid: string, timestamp: int}
+
+The four patch events each carry one kind of change to an already-inserted
+message, keyed by `timestamp`; if the target isn't displayed, drop it (none
+go through the insertion rule). `<Status>` updates send/receipt state in
+place (`server_status` `pending`/`uploading`/`failed`, `remote_status`
+delivery/read, `fail_reason`). `<Confirmed>` is a pending send the server
+acknowledged: it always carries `newtimestamp` (equal to `timestamp` when the
+stamp held, the relocated server stamp when it moved) and clears
+`server_status` to `""` - patch in place when equal, rekey and re-sort when
+it moved. It's the only event that clears to `""`, and the only one that
+shifts a message's slot. `<Reactions>` replaces the aggregated reaction map.
+`<Edited>` re-sends the whole `message` row for a content change (an edit or
+a retraction tombstone); redraw it in place.
 
 ## omemo
 
@@ -398,6 +415,23 @@ Events:
     avatar <Update>   {jid: string, hash: string}      changed, arrived, or removed (hash "")
     avatar <Progress> {acc: string, message: string}   during your own publish
 
+## nick
+
+    nick get {jid: string}                  -> string   cached nick ("" if none)
+    nick set {nick: string}                 -> ""       publish + vcard + bookmarks
+    nick publish {nick: string}             -> ""       PEP only
+    nick fetch {jid: string}                            refresh from the server
+
+XEP-0172 user nicknames over PEP. `get` is a local cache read; `fetch`
+pulls a JID's published nick and caches it, and `set` publishes your own
+(PEP node, vcard-temp, and every bookmark's nick unless you pass
+`bookmarks: skip`, in which case only the default nick is updated).
+`publish` is the PEP-only slice of `set`.
+
+Event:
+
+    nick <Changed> {jid: string}   a JID's cached nick changed; re-read with `nick get`
+
 ## file
 
     file download {acc: string, url: string}   -> string   cached path ("" on failure)
@@ -448,11 +482,27 @@ Events:
 A call ends on exactly one of `<Ended>` or `<Failed>`. `<Warning>` is just
 informational and doesn't end anything.
 
-## Undocumented modules
+## audio
 
-These are in the backend and typed in the JSON schema, but not written up
-here yet: `muc`, `mam`, `roster`, `nick`, `vcard`, `audio`, `author`,
-`debugtap`.
+    audio enumerateDevices {}                              -> {capture: [audio_device], playback: [audio_device]}
+    audio getPreferredDevice {kind: string}                -> string   device id ("" = system default)
+    audio setPreferredDevice {kind: string, id: string}    -> ""
+    audio getVolume {kind: string}                         -> double   linear gain, 1.0 if unset
+    audio setVolume {kind: string, volume: double}         -> ""
+
+    audio_device = {name: string, id: string, default: bool}
+
+Machine-wide capture (mic) and playback (speaker) selection and gain -
+these belong to the host, not an account, so they live here rather than on
+`calls`. `kind` is `capture` or `playback`. Setting a device or volume
+persists it and hot-swaps every live call on every account. Volume is a
+linear gain in `[0.0, 1.0]`. Per-call device overrides are
+`calls setDevices`; there's no per-call volume.
+
+Events:
+
+    audio <PreferredDevice> {kind: string, id: string}       preferred device changed
+    audio <Volume>          {kind: string, volume: double}   gain changed
 
 # Guides
 
@@ -517,7 +567,7 @@ cursors are just the first and last timestamps in the window, passed as
 
 **Insertion rule.** For every message in any batch - initial, paginated,
 goto, or live - insert it at its timestamp-sorted spot. Same rule no
-matter where it came from. `<Patch>` events go a different way (below).
+matter where it came from. The patch events (below) go a different way.
 
 **Paging.** `message history` with no cursor gives you the newest page;
 `before` (exclusive) pages older, `after` (exclusive) pages newer; always
@@ -559,23 +609,26 @@ a live message while the window doesn't reach the tail would push the newer
 cursor past a range you never fetched, and the next page request would skip
 right over it - a gap that never closes.
 
-**Patches.** `<Patch>` comes in two shapes, told apart by whether
-`newtimestamp` is there. A *field update* (a `timestamp` plus changed
-fields like `server_status`) patches the target where it sits. A
-*timestamp move* (`timestamp`, `newtimestamp`, and an updated
-`server_status`) shifts the message to its new sorted slot. Either way, if
-the target isn't on screen, drop it. `<Patch>` filters up front on "is the
-target displayed?" and never goes through the insertion rule.
+**Patches.** Four events patch an already-inserted message, each self-
+describing - switch on the event, never sniff which field is present. All
+four key on `timestamp` and drop silently if the target isn't displayed;
+none go through the insertion rule. `<Status>` updates the send/receipt
+state where the row sits. `<Reactions>` swaps the reaction map. `<Edited>`
+carries a full `message` row to redraw in place (edit or retraction).
+`<Confirmed>` acknowledges a pending send: patch its checkmark in place when
+`newtimestamp == timestamp`, or rekey to `newtimestamp` and re-sort when the
+server relocated it - the only patch that shifts a message's slot.
 
 **Outgoing.** Your own messages show up right away on `<New>`
 (optimistically) at their pending timestamp; once they're confirmed - a MUC
-echo, or your own message coming back via MAM - a timestamp-move `<Patch>`
-updates the timestamp and `server_status`. `send` is fire-and-forget, so
+echo, or your own message coming back via MAM - a `<Confirmed>` clears
+`server_status` and, if the server relocated the row, moves it to
+`newtimestamp`. `send` is fire-and-forget, so
 `<New>` is its acknowledgement, and it fires on every send - even one
 that's stored `failed` immediately, like an encryption that can't go
 through. The only send that gives you nothing is one that throws before
 `<New>` (a malformed request). `server_status` answers "does the server
-have this exact message?" and moves through `<Patch>` field updates: `""`
+have this exact message?" and moves through `<Status>` events: `""`
 (it does), `pending`, `uploading`, `failed` (with the error in
 `fail_reason`).
 
@@ -583,6 +636,15 @@ have this exact message?" and moves through `<Patch>` field updates: `""`
 through it with `before: last`. The results aren't chat-view content - show
 them somewhere separate, and jump to one with
 `message goto {date: ts, source: remote}`.
+
+**Sender names.** A message row carries a `from_jid`, not a display name.
+`author get {chat: string} -> {from_jid: name, ...}` resolves the names for
+one chat: in a MUC that's the participant nick, in a 1:1 it's the roster
+name, then the PEP nick, then the bare JID. Fetch it once when the chat
+opens, key rows off `from_jid`, and subscribe to
+`author <Changed> {chat: string, from: string, name: string}` to re-resolve
+a single sender in place (a roster edit, a nick change, a new occupant)
+without refetching the whole map.
 
 ## Attachments
 
@@ -600,11 +662,13 @@ standing in as the attachment `url`. The backend uploads the file, sends
 the real message with the public URL, and confirmation carries on like any
 other send. A failed upload marks the row `failed`, and
 `message retryUpload` runs it again from the local path it recorded. Each
-upload transition comes as a `message <Patch>` field update:
-`uploading -> pending` on success (the `url` also switches from local path
-to public URL, so redraw it), `uploading -> failed` on error, and
-`failed -> uploading` on retry. Byte-level progress rides along on
-`file <Update>` at the same time. In an OMEMO chat the file is AES-256-GCM
+upload transition rides `message <Status>` as a `server_status` change:
+`uploading -> pending` on success, `uploading -> failed` on error, and
+`failed -> uploading` on retry. Byte-level progress and terminal state come
+on `file <Update>` (keyed by the message `timestamp`), which is also where
+the attachment's public URL lands - the message row keeps the local path it
+was drawn with, and the stored row carries the public URL for reload. In an
+OMEMO chat the file is AES-256-GCM
 encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 `file download` grabs the `https://` version and decrypts it for you.
 

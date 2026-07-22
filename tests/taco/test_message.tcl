@@ -850,7 +850,7 @@ test message-get-latest-real-plus-pending {get latest returns real + pending int
              [dict get [lindex $all 2] body]
     } -result {3 a b sent}
 
-test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not Received} \
+test message-self-echo-confirms {1:1 self-echo confirms pending, emits Confirmed not New} \
     {*}$msg_common \
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
@@ -861,7 +861,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
 
         set patches {}
         set received {}
-        tacky listen -tag selfecho message <Patch> -jid alice@example.com \
+        tacky listen -tag selfecho message <Confirmed> -jid alice@example.com \
             {apply {{ev} { lappend ::patches $ev }}}
         tacky listen -tag selfecho message <New> -jid alice@example.com \
             {apply {{ev} { lappend ::received $ev }}}
@@ -887,7 +887,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Patch not
             WHERE chat_jid='alice@example.com' AND kind='message'
         }]
         list $dbRows $status [llength $patches] [llength $received] \
-             [dict get [lindex [dict get [lindex $patches 0] -messages] 0] server_status]
+             [dict get [lindex $patches 0] -server_status]
     } -result {1 {} 1 0 {}}
 
 # =============================================================================
