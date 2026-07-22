@@ -938,7 +938,7 @@ snit::type taco_messagestore {
             timestamp $dupTs newtimestamp $newTs]
     }
 
-    # Single enrichment point for DB rows → message dicts.
+    # Single enrichment point for DB rows -> message dicts.
     # All get methods funnel through here; event emitters (store,
     # send, search) read back via get ids so live messages are
     # enriched too.
@@ -971,12 +971,23 @@ snit::type taco_messagestore {
                 }
             }
         }
-        if {[dict exists $d attachments]
-            && [llength [dict get $d attachments]] > 0} {
-            dict set d caption \
-                [attachment_caption [dict get $d body] \
-                    [dict get $d attachments]]
+        # Fold the payload into a typed content union; a retracted row is a
+        # tombstone with no content (its body/attachments never reach the wire).
+        set fmt [expr {[dict exists $d formatting] ? [dict get $d formatting] : ""}]
+        if {![dict get $d retracted]} {
+            if {[dict exists $d attachments]
+                && [llength [dict get $d attachments]] > 0} {
+                set content [dict create type media \
+                    attachments [dict get $d attachments] \
+                    caption [attachment_caption [dict get $d body] \
+                        [dict get $d attachments]]]
+            } else {
+                set content [dict create type text body [dict get $d body]]
+            }
+            if {$fmt ne ""} { dict set content formatting $fmt }
+            dict set d content $content
         }
+        foreach k {body caption attachments formatting} { dict unset d $k }
         set reactions [$self reactionsForMessage \
             [dict get $d chat_jid] [dict get $d timestamp]]
         if {[dict size $reactions] > 0} {

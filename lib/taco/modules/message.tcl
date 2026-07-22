@@ -684,8 +684,10 @@ snit::type taco_message {
         set chatJid $opts(-chat)
         set ts $opts(-timestamp)
         set row [lindex [$messagestore get ids $chatJid [list $ts]] 0]
-        if {$row eq "" || [llength [dict get $row attachments]] == 0} return
-        set path [dict get [lindex [dict get $row attachments] 0] url]
+        if {$row eq "" || ![dict exists $row content] \
+            || [dict get $row content type] ne "media"} return
+        set atts [dict get $row content attachments]
+        set path [dict get [lindex $atts 0] url]
         set oid [dict get $row own_id]
         set encMode [expr {[dict exists $row encryption] \
             ? [dict get $row encryption] : ""}]

@@ -744,7 +744,7 @@ snit::widgetadaptor chatview {
     method OnEditSelected {id} {
         set sd [$hull messages get $id]
         event generate $win <<EditMessage>> \
-            -data [list $id [dict get $sd body]]
+            -data [list $id [message_text $sd]]
     }
 
     method OnRetractSelected {id} {
@@ -813,7 +813,7 @@ snit::widgetadaptor chatview {
     method OnReplySelected {id} {
         set sd [$hull messages get $id]
         set author [dict get [$self EnrichMessage $sd] display_name]
-        set snippet [lindex [split [dict get $sd body] \n] 0]
+        set snippet [lindex [split [message_text $sd] \n] 0]
         if {[string length $snippet] > 80} {
             set snippet "[string range $snippet 0 79]…"
         }
@@ -1660,6 +1660,18 @@ snit::widget chatarea {
 # the dict means a late-arriving author the cache hasn't been told about
 # yet, in which case we fall back to the resource of from_jid (the MUC
 # nick) or the from_jid itself (1:1 bare JID after Phase 1 normalisation).
+# The user-visible text of a stored message dict: a text message's body or a
+# media message's caption; "" for a tombstone or a caption-less attachment.
+proc message_text {storeDict} {
+    if {![dict exists $storeDict content]} { return "" }
+    set content [dict get $storeDict content]
+    switch -- [dict get $content type] {
+        media { return [dict get $content caption] }
+        text  { return [dict get $content body] }
+    }
+    return ""
+}
+
 proc enrich_store_message {storeDict names} {
     set fromJid [dict get $storeDict from_jid]
     if {[dict exists $names $fromJid]} {
@@ -1681,7 +1693,7 @@ proc enrich_store_message {storeDict names} {
         display_name $displayName \
         avatar_jid   $fromJid \
         timestamp    [dict get $storeDict timestamp] \
-        body         [dict get $storeDict body] \
+        body         "" \
         is_outgoing  $isOutgoing \
         server_status $serverStatus \
         remote_status $remoteStatus \
@@ -1693,8 +1705,19 @@ proc enrich_store_message {storeDict names} {
         && [dict get $storeDict edited]}]
     dict set d retracted [expr {[dict exists $storeDict retracted]
         && [dict get $storeDict retracted]}]
-    if {[dict exists $storeDict formatting]} {
-        dict set d formatting [dict get $storeDict formatting]
+    # Typed content union (payload kind). Absent on a retracted tombstone,
+    # which DrawMessage handles via the `retracted` flag before reading content.
+    if {[dict exists $storeDict content]} {
+        set content [dict get $storeDict content]
+        if {[dict get $content type] eq "media"} {
+            dict set d attachments [dict get $content attachments]
+            dict set d caption [dict get $content caption]
+        } else {
+            dict set d body [dict get $content body]
+        }
+        if {[dict exists $content formatting]} {
+            dict set d formatting [dict get $content formatting]
+        }
     }
     if {[dict exists $storeDict reply_id] && [dict get $storeDict reply_id] ne ""} {
         set rto [dict get $storeDict reply_to]
@@ -1714,13 +1737,6 @@ proc enrich_store_message {storeDict names} {
         if {[dict exists $storeDict reply_body]} {
             dict set d reply_body [dict get $storeDict reply_body]
         }
-    }
-    if {[dict exists $storeDict caption]} {
-        dict set d caption [dict get $storeDict caption]
-    }
-    if {[dict exists $storeDict attachments]
-        && [llength [dict get $storeDict attachments]] > 0} {
-        dict set d attachments [dict get $storeDict attachments]
     }
     # XEP-0444 reactions: backend hands per-emoji {reactors mine}; the count
     # is derived from the reactor list at render time.

@@ -143,7 +143,8 @@ request.
     ["event", "module", "<EventName>", {payload}]
     ["event", "message", "<New>",
       {"acc": "me@host", "jid": "peer@host",
-       "message": {"timestamp": 1700000000, "body": "hi", "is_outgoing": false}}]
+       "message": {"timestamp": 1700000000, "is_outgoing": false,
+                   "content": {"type": "text", "body": "hi"}}}]
 
 Event subscription and filtering is up to the frontend. Per-account events
 carry an `acc` - you'll almost always want to filter based on that. When
@@ -317,12 +318,16 @@ Event:
     message markDisplayed {chat: string, timestamp: int}
 
     message = {timestamp: int, newtimestamp: int, is_outgoing: bool,
-               body: string, caption: string, server_status: string,
-               encryption: string, fail_reason: string,
+               server_status: string, encryption: string, fail_reason: string,
                edited: bool, edited_ts: int, retracted: bool,
-               formatting: [{type: string, offset: int, length: int}],
-               attachments: [{url: string, type: string, name: string, size: int, mime: string}],
+               content: content,
                reactions: {*: {reactors: [string], mine: bool}}}
+
+    content = {type: "text",  body: string, formatting?: formatting}
+            | {type: "media", attachments: [attachment], caption: string, formatting?: formatting}
+
+    formatting = [{type: string, offset: int, length: int}]
+    attachment = {url: string, type: string, name: string, size: int, mime: string}
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool, last: string}
@@ -331,7 +336,14 @@ Event:
 by a microsecond if two would collide. `before`/`after` on `history` are
 exclusive cursors; `source` on `goto` is `local` or `remote`.
 `server_status` is `""` (the server has it), `pending`, `uploading`, or
-`failed`. `encryption` is `"omemo"` or `""`. See
+`failed`. `encryption` is `"omemo"` or `""`. `content` is the typed payload:
+`type: "text"` carries a `body`, `type: "media"` carries an `attachments` list
+plus a `caption` (grouped attachments are just more than one entry). `formatting`
+(XEP-0393 spans) indexes into whichever of `body`/`caption` the variant has.
+A **retracted** message carries no `content` (the tombstone has no payload, and
+its former body/attachments are never shipped); the `retracted` flag is the
+signal. Deletion is a message-level state, not a content type (matching TDLib);
+future kinds like `call` or `system` events extend the `content` union. See
 [The chat window](#the-chat-window), [Attachments](#attachments),
 [OMEMO](#omemo-1).
 
@@ -648,12 +660,13 @@ without refetching the whole map.
 
 ## Attachments
 
-A message with attachments carries `attachments` and `caption` (see the
-`message` type). Render `type: "image"` inline and `type: "file"` as a
-chip. `caption` is the text to show: senders copy the share URL into `body`
-for clients that don't understand OOB, so `caption` is `""` when `body` was
-nothing but that URL, and it's `body` verbatim otherwise. Show `caption` if
-it's there, else `body`. `size` and `mime` are only set on outgoing
+A message with attachments has `content.type: "media"`, carrying an
+`attachments` list and a `caption` (see the `message` type). Render each
+attachment `type: "image"` inline and `type: "file"` as a chip; more than one
+entry is a grouped/album message under a single `caption`. `caption` is the
+text to show: senders copy the share URL into the body for clients that don't
+understand OOB, so `caption` is `""` when the body was nothing but that URL, and
+the body verbatim otherwise. `size` and `mime` are only set on outgoing
 attachments; on received ones they're `0` and `""`.
 
 **Sending.** `message sendFile` is optimistic: the message shows up right

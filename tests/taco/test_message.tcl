@@ -270,7 +270,7 @@ test message-live-fields {stored live message has correct fields} \
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg chat_jid] \
              [dict get $msg from_jid] \
-             [dict get $msg body] \
+             [dict get $msg content body] \
              [dict get $msg server_id] \
              [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
@@ -385,7 +385,7 @@ test message-live-emits-event {incoming message emits message <New>} \
         }]
         list [dict get $_got -jid] \
              [dict get $_got -message from_jid] \
-             [dict get $_got -message body]
+             [dict get $_got -message content body]
     } -result {alice@example.com alice@example.com {event test}}
 
 test message-live-dup-no-event {duplicate message does not emit <New>} \
@@ -644,7 +644,7 @@ test message-catchup-displayless-confirms-send \
         set rows [msg_store_latest alice@example.com]
         list nrows [llength $rows] \
             status [dict get [lindex $rows 0] server_status] \
-            body [dict get [lindex $rows 0] body]
+            body [dict get [lindex $rows 0] content body]
     } -result {nrows 1 status {} body secret}
 
 # =============================================================================
@@ -711,7 +711,7 @@ test message-catchup-duplicate-own-no-redecrypt \
         $::_client message OnCatchup [dict create messages [list $rn] complete 1]
         set rows [msg_store_latest alice@example.com]
         list nrows [llength $rows] \
-            body [dict get [lindex $rows 0] body]
+            body [dict get [lindex $rows 0] content body]
     } -result {nrows 1 body secret}
 
 # =============================================================================
@@ -832,8 +832,8 @@ test message-send-then-receive-earlier-ts {incoming with earlier timestamp inser
         set all [msg_store_latest alice@example.com]
         # Chronological order: earlier first, then our sent
         list [llength $all] \
-             [dict get [lindex $all 0] body] \
-             [dict get [lindex $all 1] body]
+             [dict get [lindex $all 0] content body] \
+             [dict get [lindex $all 1] content body]
     } -result {2 earlier outgoing}
 
 test message-get-latest-real-plus-pending {get latest returns real + pending interleaved} \
@@ -845,9 +845,9 @@ test message-get-latest-real-plus-pending {get latest returns real + pending int
         tacky message send -acc $acc -chat alice@example.com -body "sent"
         set all [msg_store_latest alice@example.com]
         list [llength $all] \
-             [dict get [lindex $all 0] body] \
-             [dict get [lindex $all 1] body] \
-             [dict get [lindex $all 2] body]
+             [dict get [lindex $all 0] content body] \
+             [dict get [lindex $all 1] content body] \
+             [dict get [lindex $all 2] content body]
     } -result {3 a b sent}
 
 test message-self-echo-confirms {1:1 self-echo confirms pending, emits Confirmed not New} \
@@ -903,8 +903,8 @@ test message-history-local-satisfies {local result satisfying limit returns with
             [msg_msg timestamp 300 server_id s3 body c]]
         set result [msg_history -chat alice@example.com -limit 2]
         list [llength $result] \
-             [dict get [lindex $result 0] body] \
-             [dict get [lindex $result 1] body]
+             [dict get [lindex $result 0] content body] \
+             [dict get [lindex $result 1] content body]
     } -result {2 b c}
 
 test message-history-local-before {local -before returns correct slice} \
@@ -916,8 +916,8 @@ test message-history-local-before {local -before returns correct slice} \
             [msg_msg timestamp 300 server_id s3 body c]]
         set result [msg_history -chat alice@example.com -before 300 -limit 2]
         list [llength $result] \
-             [dict get [lindex $result 0] body] \
-             [dict get [lindex $result 1] body]
+             [dict get [lindex $result 0] content body] \
+             [dict get [lindex $result 1] content body]
     } -result {2 a b}
 
 test message-history-local-no-hole-no-mam {local data with no hole returns without MAM} \
@@ -930,8 +930,8 @@ test message-history-local-no-hole-no-mam {local data with no hole returns witho
         set result [msg_history -chat alice@example.com -limit 50]
         set written2 [$::_client conn get_written]
         list [llength $result] \
-             [dict get [lindex $result 0] body] \
-             [dict get [lindex $result 1] body] \
+             [dict get [lindex $result 0] content body] \
+             [dict get [lindex $result 1] content body] \
              [expr {[llength $written1] == [llength $written2]}]
     } -result {2 a b 1}
 
@@ -954,7 +954,7 @@ test message-history-preserves-join {history preserves ?join suffix in chatJid} 
         msg_store [list \
             [msg_msg timestamp 100 chat_jid room@muc.example.com?join server_id s1 body hi]]
         set result [msg_history -chat room@muc.example.com?join -limit 1]
-        list [llength $result] [dict get [lindex $result 0] body]
+        list [llength $result] [dict get [lindex $result 0] content body]
     } -result {1 hi}
 
 test message-reply-author-muc {reply_author_jid keeps the room nick for MUC replies} \
@@ -1031,12 +1031,12 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
         set m1 [lindex $result 0]
         set m2 [lindex $result 1]
         list [llength $result] \
-             [dict get $m1 body] [dict get $m1 from_jid] \
+             [dict get $m1 content body] [dict get $m1 from_jid] \
              [dict get $m1 server_id] [dict get $m1 own_id] \
              [dict get $m1 chat_jid] \
              [expr {[dict get $m1 timestamp] > 0}] \
              [expr {[dict get $m1 raw_xml] ne ""}] \
-             [dict get $m2 body] [dict get $m2 server_id]
+             [dict get $m2 content body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 
 test message-history-mam-before-timestamp {-before with no local citizen sends a cursorless MAM page (no time fallback)} \
@@ -1158,7 +1158,7 @@ test message-history-demote-retry-recovers-older \
             WHERE chat_jid='alice@example.com' AND body='p'}]
 
         list $firstCursor $retryCursor $pSid [llength $::result] \
-            [dict get [lindex $::result 0] body]
+            [dict get [lindex $::result 0] content body]
     } -result {Pbad Qgood {} 1 {older one}}
 
 test message-history-transient-error-no-demote \
@@ -1200,7 +1200,7 @@ test message-history-mam-drops-empty-body {empty-body MAM stanzas (receipts/mark
             {id m2 from bob@example.com body "real" stamp 2024-01-01T09:01:00Z}
         } -complete true
         list [llength $result] \
-             [dict get [lindex $result 0] body] \
+             [dict get [lindex $result 0] content body] \
              [llength [msg_store_latest alice@example.com]]
     } -result {1 real 1}
 
@@ -1218,7 +1218,7 @@ test message-history-mam-fill-loop-stops-on-progress {a page with any displayabl
             {id r1 from bob@example.com body "one" stamp 2024-01-01T09:01:00Z}
             {id e2 from bob@example.com body "" stamp 2024-01-01T09:02:00Z}
         } -complete false
-        list [lmap m $result { dict get $m body }] \
+        list [lmap m $result { dict get $m content body }] \
             [expr {[mam_iq_count] == $pagesBefore}]
     } -result {one 1}
 
@@ -1251,7 +1251,7 @@ test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page
             {id r1 from bob@example.com body "x" stamp 2024-01-01T08:00:00Z}
             {id r2 from bob@example.com body "y" stamp 2024-01-01T08:30:00Z}
         } -complete true
-        lmap m $result { dict get $m body }
+        lmap m $result { dict get $m content body }
     } -result {x y}
 
 # =============================================================================
@@ -1412,7 +1412,7 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
 
         # Messages should still be in local store
         set local [msg_store_latest bob@example.com]
-        list [llength $local] [dict get [lindex $local 0] body]
+        list [llength $local] [dict get [lindex $local 0] content body]
     } -result {1 {stored msg}}
 
 test message-history-no-tag-unaffected-by-cancel {cancel with unknown tag is harmless} \
@@ -1443,9 +1443,9 @@ test message-goto-local {goto -source local returns getAround result with anchor
         set written2 [$::_client conn get_written]
         set msgs [dict get $result messages]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 2] body] \
-             [dict get [lindex $msgs end] body] \
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 2] content body] \
+             [dict get [lindex $msgs end] content body] \
              [dict get $result anchor] \
              [expr {[llength $written1] == [llength $written2]}]
     } -result {5 a c e 300 1}
@@ -1478,7 +1478,7 @@ test message-goto-remote {goto -source remote fetches MAM then returns getAround
 
         set msgs [dict get $result messages]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 0] content body] \
              [expr {[dict get $result anchor] ne ""}]
     } -result {1 {remote msg} 1}
 
@@ -1497,7 +1497,7 @@ test message-goto-remote-error-falls-back {goto -source remote falls back to loc
         }]
 
         set msgs [dict get $result messages]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 local-only}
 
 # =============================================================================
@@ -1525,7 +1525,7 @@ test message-catchup-routes-incoming {catchup stores incoming message under send
                 from alice@example.com/phone to user@test.example.com \
                 body "hi there" stamp 2024-01-01T10:00:00Z]]
         set msgs [msg_store_latest alice@example.com]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {hi there}}
 
 test message-catchup-routes-outgoing {catchup stores outgoing message under recipient's bare JID} \
@@ -1538,7 +1538,7 @@ test message-catchup-routes-outgoing {catchup stores outgoing message under reci
                 from user@test.example.com/res to bob@example.com \
                 body "hey bob" stamp 2024-01-01T10:00:00Z]]
         set msgs [msg_store_latest bob@example.com]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {hey bob}}
 
 test message-catchup-emits-done {catchup emits CatchupDone with correct count} \
@@ -1788,9 +1788,9 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
             WHERE chat_jid='alice@example.com' AND kind='message'
         }]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
+             [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 0] server_id] \
-             [dict get [lindex $msgs 1] body] \
+             [dict get [lindex $msgs 1] content body] \
              [dict get $result complete] \
              [dict get $result last] \
              $dbCount
@@ -1830,7 +1830,7 @@ test message-search-skips-empty-body {search skips results with empty body} \
         }]
 
         set msgs [dict get $result messages]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {has content}}
 
 test message-search-pagination-before {search with -before sends RSM before element} \
@@ -2146,7 +2146,7 @@ test message-gotoreply-local {gotoReply resolves a reply target locally and retu
             -reply_id SRV-TGT -reply_to alice@example.com -source local \
             -command [list apply {{r} {set ::_gr $r}}]
         set bodies {}
-        foreach m [dict get $::_gr messages] { lappend bodies [dict get $m body] }
+        foreach m [dict get $::_gr messages] { lappend bodies [dict get $m content body] }
         list [expr {[dict get $::_gr anchor] ne ""}] \
              [expr {"the original" in $bodies}]
     } -result {1 1}
@@ -2175,7 +2175,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
              [xsearch $stanza reply -ns urn:xmpp:reply:0 -get @to] \
              [expr {$wireBody eq "${quote}my answer"}] \
              [expr {$fbEnd == [string length $quote]}] \
-             [dict get $stored body] \
+             [dict get $stored content body] \
              [dict get $stored reply_id]
     } -result {ORIG1 alice@example.com 1 1 {my answer} ORIG1}
 
@@ -2485,7 +2485,7 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
             j body #body "hello world"
         }]
         set m [lindex [msg_store_latest alice@example.com] 0]
-        list [dict get $m body] [dict get $m edited] \
+        list [dict get $m content body] [dict get $m edited] \
              [llength [msg_store_latest alice@example.com]]
     } -result {{hello world} 1 1}
 
@@ -2496,7 +2496,7 @@ test message-edit-own-1to1 {editing our own message swaps its body and marks edi
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
         set m [lindex [msg_store_latest alice@example.com] 0]
-        list [dict get $m body] [dict get $m edited]
+        list [dict get $m content body] [dict get $m edited]
     } -result {hello 1}
 
 test message-edit-sends-replace {edit puts <replace> referencing the original id on the wire} \
