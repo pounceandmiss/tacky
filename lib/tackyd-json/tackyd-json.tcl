@@ -200,6 +200,7 @@ jsonify_type jsonify \
         message/<Confirmed>     {dict {timestamp int newtimestamp int server_status string}}
         message/<Reactions>     {dict {timestamp int reactions {map {dict {reactors list mine bool}}}}}
         message/<Edited>        {dict {message message}}
+        message/<Retracted>     {dict {timestamp int}}
         message/<CatchupDone>   {dict {count int}}
         message/<Tail>          {dict {timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}

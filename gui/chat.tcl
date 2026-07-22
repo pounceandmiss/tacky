@@ -118,6 +118,8 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnReactions]
         ::tacky listen -tag $win message <Edited> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnEdited]
+        ::tacky listen -tag $win message <Retracted> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnRetracted]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
@@ -434,6 +436,20 @@ snit::widgetadaptor chatview {
         set atEnd [$hull atEnd]
         $hull deleteById $ts
         $self ProcessBatch [list $msg]
+        if {$atEnd} { $hull see end }
+    }
+
+    # Retraction flips the shown entry to a tombstone. The event is lean
+    # (just the timestamp), so reuse the retained store dict and set the
+    # retracted flag; DrawMessage renders the tombstone from the header alone.
+    method OnRetracted {ev} {
+        set ts [dict get $ev -timestamp]
+        if {$ts ni [$hull messages ids]} return
+        set sd [$hull messages get $ts]
+        dict set sd retracted 1
+        set atEnd [$hull atEnd]
+        $hull deleteById $ts
+        $self ProcessBatch [list $sd]
         if {$atEnd} { $hull see end }
     }
 

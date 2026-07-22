@@ -354,10 +354,11 @@ Events:
     message <Confirmed>   {jid: string, timestamp: int, newtimestamp: int, server_status: string}
     message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
+    message <Retracted>   {jid: string, timestamp: int}
     message <CatchupDone> {count: int}
     message <Tail>        {jid: string, timestamp: int}
 
-The four patch events each carry one kind of change to an already-inserted
+The patch events each carry one kind of change to an already-inserted
 message, keyed by `timestamp`; if the target isn't displayed, drop it (none
 go through the insertion rule). `<Status>` updates send/receipt state in
 place (`server_status` `pending`/`uploading`/`failed`, `remote_status`
@@ -367,8 +368,13 @@ stamp held, the relocated server stamp when it moved) and clears
 `server_status` to `""` - patch in place when equal, rekey and re-sort when
 it moved. It's the only event that clears to `""`, and the only one that
 shifts a message's slot. `<Reactions>` replaces the aggregated reaction map.
-`<Edited>` re-sends the whole `message` row for a content change (an edit or
-a retraction tombstone); redraw it in place.
+`<Edited>` re-sends the whole `message` row for a content edit; redraw it in
+place. `<Retracted>` flips the displayed message to a tombstone - unlike
+TDLib `updateDeleteMessages`, it does not remove the message: the row is kept
+(the `retracted` envelope flag is set, `content` is dropped) so pagination
+anchors, reply resolution, and slot/attribution keep working, and the client
+redraws the placeholder in place from the header it already holds. That is why
+it carries only `timestamp`, not a row.
 
 ## omemo
 
@@ -621,15 +627,18 @@ a live message while the window doesn't reach the tail would push the newer
 cursor past a range you never fetched, and the next page request would skip
 right over it - a gap that never closes.
 
-**Patches.** Four events patch an already-inserted message, each self-
+**Patches.** Five events patch an already-inserted message, each self-
 describing - switch on the event, never sniff which field is present. All
-four key on `timestamp` and drop silently if the target isn't displayed;
+key on `timestamp` and drop silently if the target isn't displayed;
 none go through the insertion rule. `<Status>` updates the send/receipt
 state where the row sits. `<Reactions>` swaps the reaction map. `<Edited>`
-carries a full `message` row to redraw in place (edit or retraction).
-`<Confirmed>` acknowledges a pending send: patch its checkmark in place when
-`newtimestamp == timestamp`, or rekey to `newtimestamp` and re-sort when the
-server relocated it - the only patch that shifts a message's slot.
+carries a full `message` row to redraw in place for a content edit.
+`<Retracted>` flips the row to a tombstone in place - it carries only
+`timestamp`, so redraw the placeholder from the header you already hold
+(the message stays, it does not disappear). `<Confirmed>` acknowledges a
+pending send: patch its checkmark in place when `newtimestamp == timestamp`,
+or rekey to `newtimestamp` and re-sort when the server relocated it - the
+only patch that shifts a message's slot.
 
 **Outgoing.** Your own messages show up right away on `<New>`
 (optimistically) at their pending timestamp; once they're confirmed - a MUC

@@ -36,7 +36,8 @@
 #   <Status>    update a displayed entry's send/receipt state in place
 #   <Confirmed> a pending send was acknowledged; rekey if the stamp moved
 #   <Reactions> replace a displayed entry's aggregated reaction map
-#   <Edited>    re-send a full row to redraw it (edit / retraction)
+#   <Edited>    re-send a full row to redraw an edited message in place
+#   <Retracted> flip a displayed entry to a tombstone (jid + timestamp only)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -1084,7 +1085,7 @@ snit::type taco_message {
             j store -ns urn:xmpp:hints
         }]
         set targetTs [$messagestore applyRetract $chatJid $targetId]
-        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+        if {$targetTs ne ""} { $self EmitRetracted $chatJid $targetTs }
     }
 
     # moderate -chat $chatJid -timestamp $targetTs ?-reason $text? ?-onerror $cb?
@@ -1900,17 +1901,24 @@ snit::type taco_message {
         set targetTs [$messagestore applyRetract $chatJid \
             [dict get $verdict target_id]]
         if {$targetTs eq ""} return
-        $self EmitMessagePatch $chatJid $targetTs
+        $self EmitRetracted $chatJid $targetTs
     }
 
     # <Edited> carries a message's whole enriched row so the GUI redraws it
-    # in place (edited body, the "(edited)" marker, or a retraction tombstone).
-    # Reserved for genuine content changes; send-status and upload transitions
-    # go through <Status>.
+    # in place (edited body, the "(edited)" marker). Reserved for genuine
+    # content changes; send-status and upload transitions go through <Status>,
+    # retractions through <Retracted>.
     method EmitMessagePatch {chatJid targetTs} {
         set dbMsg [lindex [$messagestore get ids $chatJid [list $targetTs]] 0]
         if {$dbMsg eq ""} return
         $client emit message <Edited> -jid $chatJid -message $dbMsg
+    }
+
+    # <Retracted> flips the shown entry to a tombstone. The row is kept
+    # (retracted=1, no content), so only jid + timestamp cross the wire; the
+    # GUI already holds the header it needs to redraw the placeholder.
+    method EmitRetracted {chatJid targetTs} {
+        $client emit message <Retracted> -jid $chatJid -timestamp $targetTs
     }
 
     # {serverId ownId originId} off a <message>, derived once for the dedup
