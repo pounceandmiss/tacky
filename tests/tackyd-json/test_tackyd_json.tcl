@@ -299,6 +299,16 @@ test json-backend-emit-attachments {emit message with attachments and caption} -
                         name {"p.png"} size 20480 mime {"image/png"}]] \
                 caption {""}]]]]
 
+test json-backend-emit-retracted {retraction emits lean jid + int timestamp, no row} -setup {
+    _test_clear
+} -body {
+    _test_emit message <Retracted> -jid room@conf.example.com -timestamp 1700
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"event"} {"message"} {"<Retracted>"} \
+    [json::write object \
+        jid {"room@conf.example.com"} timestamp 1700]]
+
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
 } -body {
