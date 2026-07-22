@@ -78,7 +78,7 @@ namespace eval ::test::muc_edit_int {
     proc rowOfBody {acc body} {
         set found ""
         foreach m [msgs $acc] {
-            if {[dict get $m body] eq $body} { set found $m }
+            if {[::test::helpers::msgText $m] eq $body} { set found $m }
         }
         return $found
     }
@@ -163,7 +163,7 @@ namespace eval ::test::muc_edit_int {
             set nSecond 0
             set rawxml ""
             foreach m $rMsgs {
-                switch -- [dict get $m body] {
+                switch -- [::test::helpers::msgText $m] {
                     "первое" { incr nFirst }
                     "второе" { incr nSecond; set rawxml [dict get $m raw_xml] }
                 }

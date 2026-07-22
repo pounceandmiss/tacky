@@ -61,3 +61,15 @@ proc ::test::helpers::waitEvents {specs {timeout 10000}} {
     waitVar ::test::helpers::PendingEventsDone $timeout
     tacky unlisten waitEvents
 }
+
+# Displayed text of a derived message dict: the text body or a media caption.
+# "" for a retracted tombstone, which carries no content.
+proc ::test::helpers::msgText {msg} {
+    if {![dict exists $msg content]} { return "" }
+    set content [dict get $msg content]
+    switch -- [dict get $content type] {
+        media { return [dict get $content caption] }
+        text  { return [dict get $content body] }
+    }
+    return ""
+}
