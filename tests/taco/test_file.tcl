@@ -324,14 +324,12 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
     set res
 } -result [list 1 uploading [file join /tmp uptest_[pid].bin]]
 
-# Collect server_status off every message <Patch> fired during $script.
+# Collect server_status off every message <Status> fired during $script.
 proc up_patch_statuses {script} {
     set ::_up_patches {}
-    set tag [tacky listen message <Patch> {apply {{ev} {
-        foreach m [dict get $ev -messages] {
-            if {[dict exists $m server_status]} {
-                lappend ::_up_patches [dict get $m server_status]
-            }
+    set tag [tacky listen message <Status> {apply {{ev} {
+        if {[dict exists $ev -server_status]} {
+            lappend ::_up_patches [dict get $ev -server_status]
         }
     }}}]
     uplevel 1 $script
@@ -339,7 +337,7 @@ proc up_patch_statuses {script} {
     set ::_up_patches
 }
 
-test file-upload-success-patches-pending {a completed upload emits a <Patch> flipping the row to pending} {*}$file_env -body {
+test file-upload-success-patches-pending {a completed upload emits a <Status> flipping the row to pending} {*}$file_env -body {
     up_store_uploading bob@example.com 7300000
     up_patch_statuses {
         $::_client message OnUploaded bob@example.com 7300000 7300000 \
@@ -347,7 +345,7 @@ test file-upload-success-patches-pending {a completed upload emits a <Patch> fli
     }
 } -result pending
 
-test file-upload-failure-patches-failed {a failed upload emits a <Patch> flipping the row to failed} {*}$file_env -body {
+test file-upload-failure-patches-failed {a failed upload emits a <Status> flipping the row to failed} {*}$file_env -body {
     up_store_uploading bob@example.com 7400000
     up_patch_statuses {
         $::_client message OnUploaded bob@example.com 7400000 7400000 \
@@ -355,7 +353,7 @@ test file-upload-failure-patches-failed {a failed upload emits a <Patch> flippin
     }
 } -result failed
 
-test file-retryupload-patches-uploading {retryUpload emits a <Patch> flipping the failed row back to uploading} {*}$file_env -body {
+test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping the failed row back to uploading} {*}$file_env -body {
     # A readable source file lets the retry stall at slot discovery (the mock
     # server never replies) instead of failing straight back on an unreadable
     # path, so the only transition is failed -> uploading.

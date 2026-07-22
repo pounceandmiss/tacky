@@ -30,10 +30,13 @@
 #      or other bodyless payload is currently discarded.
 # === GUI events ===
 #
-#   <New>      insert a newly-persisted message; direction (outgoing vs
-#              incoming) and checkmark derive from the message dict
-#              (is_outgoing / server_status), not the event name
-#   <Patch>    patch a displayed entry (checkmark / rekey)
+#   <New>       insert a newly-persisted message; direction (outgoing vs
+#               incoming) and checkmark derive from the message dict
+#               (is_outgoing / server_status), not the event name
+#   <Status>    update a displayed entry's send/receipt state in place
+#   <Confirmed> a pending send was acknowledged; rekey if the stamp moved
+#   <Reactions> replace a displayed entry's aggregated reaction map
+#   <Edited>    re-send a full row to redraw it (edit / retraction)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -119,7 +122,7 @@ snit::type taco_message {
     }
 
     # Per-message walk: each catchup arrival fires <New> (or
-    # <Patch> for confirmations) individually so the GUI's AtTail
+    # <Confirmed> for confirmations) individually so the GUI's AtTail
     # gate applies uniformly. Per-chat bracket tracking lets us
     # replicate the batch-level overlap sweep that single-call
     # `store` would do: if any one of this chat's catchup messages
@@ -286,7 +289,7 @@ snit::type taco_message {
 
     # A bodyless XEP-0184 receipt / XEP-0333 chat marker from the peer
     # advances the referenced outgoing message's remote_status
-    # (delivered/read) and emits a <Patch>. Returns 1 if the stanza was a
+    # (delivered/read) and emits a <Status>. Returns 1 if the stanza was a
     # marker (consumed here), else 0 so OnMessage falls through to
     # ingestLive. A 'displayed' outranks a co-present 'received'.
     method HandleMarker {chatJid stanza} {
@@ -307,10 +310,9 @@ snit::type taco_message {
         if {$tier eq ""} { return 0 }
         set changed [$messagestore markRemoteStatus $chatJid $targetId $tier]
         if {$changed ne ""} {
-            $client emit message <Patch> -jid $chatJid \
-                -messages [list [dict create \
-                    timestamp [dict get $changed timestamp] \
-                    remote_status [dict get $changed remote_status]]]
+            $client emit message <Status> -jid $chatJid \
+                -timestamp [dict get $changed timestamp] \
+                -remote_status [dict get $changed remote_status]
         }
         return 1
     }
@@ -332,7 +334,7 @@ snit::type taco_message {
     }
 
     # Act on one live message's verdict (from Classify):
-    #   confirmed → echo of one of our own pending sends → <Patch>
+    #   confirmed → echo of one of our own pending sends → <Confirmed>
     #   new       → store, then surface. store may still confirm it by the
     #               content fallback (id-less re-delivery of a pending send)
     #               or drop it as a real overlap with an existing citizen.
@@ -365,25 +367,15 @@ snit::type taco_message {
         }
     }
 
-    # Echo of a pending outgoing message: messagestore has already
-    # flipped server_status pending → '' (server has it) and captured
-    # server_id. Emit <Patch> so the GUI updates the checkmark; if the
-    # row's timestamp moved (server stamp differs from our own_id), include
-    # newtimestamp so the GUI can rekey the displayed row.
+    # Echo of a pending outgoing message: messagestore has already flipped
+    # server_status pending → '' (server has it) and captured server_id.
+    # <Confirmed> always carries newtimestamp - equal to timestamp when the
+    # stamp held, or the relocated server ts when it moved, so the GUI rekeys.
     method HandleConfirmation {chatJid confirmed} {
         foreach c $confirmed {
-            set oldTs [dict get $c timestamp]
-            set newTs [dict get $c newtimestamp]
-            if {$oldTs != $newTs} {
-                set patchMessages [list [dict create \
-                    timestamp $oldTs newtimestamp $newTs \
-                    server_status ""]]
-            } else {
-                set patchMessages [list [dict create \
-                    timestamp $oldTs server_status ""]]
-            }
-            $client emit message <Patch> -jid $chatJid \
-                -messages $patchMessages
+            $client emit message <Confirmed> -jid $chatJid \
+                -timestamp [dict get $c timestamp] \
+                -newtimestamp [dict get $c newtimestamp] -server_status ""
         }
         $self EmitTail $chatJid
     }
@@ -516,7 +508,7 @@ snit::type taco_message {
     #         flips it to ''.
     #   1:1:  SM ack confirms the server received the stanza; `OnSmAck`
     #         calls `confirmByOwnIds` on the messagestore.
-    # Both paths emit <Patch> so the GUI can show the checkmark.
+    # Both paths emit <Status> so the GUI can show the checkmark.
     #
     # On reconnect, `RetryPending` resends any still-pending messages
     # with the same id, so the echo/ack cycle can complete.
@@ -654,7 +646,8 @@ snit::type taco_message {
     method OnUploaded {chatJid oid ts path encMode url} {
         if {$url eq ""} {
             $messagestore markUploadFailed $chatJid $oid
-            $self EmitMessagePatch $chatJid $ts
+            $client emit message <Status> -jid $chatJid \
+                -timestamp $ts -server_status failed
             return
         }
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -666,7 +659,8 @@ snit::type taco_message {
                 [jwrite [$self BuildMessageStanza readable $chatJid $url $oid \
                     $msgType $toJid omemo]] \
                 [OutgoingAttachment $url $path] omemo
-            $self EmitMessagePatch $chatJid $ts
+            $client emit message <Status> -jid $chatJid \
+                -timestamp $ts -server_status pending
             $self RetrySend [dict create chat_jid $chatJid body $url \
                 own_id $oid encryption omemo reply_id "" reply_to ""]
             return
@@ -677,7 +671,8 @@ snit::type taco_message {
         }]
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
             [OutgoingAttachment $url $path] ""
-        $self EmitMessagePatch $chatJid $ts
+        $client emit message <Status> -jid $chatJid \
+            -timestamp $ts -server_status pending
         $client write $stanza
     }
 
@@ -695,7 +690,8 @@ snit::type taco_message {
         set encMode [expr {[dict exists $row encryption] \
             ? [dict get $row encryption] : ""}]
         $messagestore markUploading $chatJid $oid
-        $self EmitMessagePatch $chatJid $ts
+        $client emit message <Status> -jid $chatJid \
+            -timestamp $ts -server_status uploading
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
@@ -712,10 +708,11 @@ snit::type taco_message {
         if {[llength $ownIds] == 0} return
         set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
-            $client emit message <Patch> -jid [dict get $c chat_jid] \
-                -messages [list [dict create \
-                    timestamp [dict get $c timestamp] \
-                    server_status ""]]
+            # SM-ack never relocates the row (confirmByOwnIds keeps its ts),
+            # so newtimestamp == timestamp.
+            $client emit message <Confirmed> -jid [dict get $c chat_jid] \
+                -timestamp [dict get $c timestamp] \
+                -newtimestamp [dict get $c timestamp] -server_status ""
         }
     }
 
@@ -877,7 +874,7 @@ snit::type taco_message {
     #
     # Does NOT touch the chat toggle: downgrading one message leaves the
     # chat's default encryption for future messages unchanged. Fire-and-
-    # forget; the outcome surfaces via <Patch> like any other send.
+    # forget; the outcome surfaces via <Status> like any other send.
     method resend {args} {
         array set opts {-plaintext 0}
         array set opts $args
@@ -911,9 +908,8 @@ snit::type taco_message {
             SET server_status='pending', fail_reason='', on_wire=0
             WHERE chat_jid=$chatJid AND timestamp=$ts
         }
-        $client emit message <Patch> -jid $chatJid \
-            -messages [list [dict create \
-                timestamp $ts server_status pending fail_reason ""]]
+        $client emit message <Status> -jid $chatJid \
+            -timestamp $ts -server_status pending -fail_reason ""
 
         $self RetrySend [dict create \
             chat_jid $chatJid body $body own_id $oid encryption $enc \
@@ -922,7 +918,7 @@ snit::type taco_message {
 
     # Flip a pending row to failed with a fail_reason category and notify
     # the GUI. `reason` is a category ('encrypt' = OMEMO couldn't produce
-    # ciphertext); persisted on the row and carried in the <Patch> so the
+    # ciphertext); persisted on the row and carried in the <Status> so the
     # GUI picks the right affordance (e.g. resend-as-plaintext).
     method MarkOutgoingFailed {chatJid oid reason} {
         $client db eval {
@@ -937,9 +933,8 @@ snit::type taco_message {
         }]
         if {$ts eq ""} return
         unset -nocomplain OmemoRetryBudget($oid)
-        $client emit message <Patch> -jid $chatJid \
-            -messages [list [dict create \
-                timestamp $ts server_status failed fail_reason $reason]]
+        $client emit message <Status> -jid $chatJid \
+            -timestamp $ts -server_status failed -fail_reason $reason
     }
 
     # local_search -chat $jid -query "text" -command $cb
@@ -1039,7 +1034,7 @@ snit::type taco_message {
     # edit -chat $chatJid -timestamp $targetTs -body $newText
     # XEP-0308 correction of our own message: send a fresh message carrying
     # <replace id=original> + the new body, then optimistically swap the
-    # stored body and <Patch>. The MUC echo / 1:1 carbon re-applies
+    # stored body and <Edited>. The MUC echo / 1:1 carbon re-applies
     # idempotently. Build first so an OMEMO failure aborts before we mutate.
     tackymethod edit {args} {
         array set opts $args
@@ -1613,7 +1608,7 @@ snit::type taco_message {
         {*}$callback [dict create messages $messages complete $complete last $last]
     }
 
-    # Walk a single-chat MAM batch through Classify, firing <Patch> for each
+    # Walk a single-chat MAM batch through Classify, firing patch events for each
     # envelope-confirmed send. Returns {parsed toStore}: `parsed` is every
     # verdict (so callers can reason about the true archive span when
     # placing/sweeping holes) and `toStore` the new message dicts to
@@ -1871,7 +1866,7 @@ snit::type taco_message {
     }
 
     # Apply a `reaction` verdict to the store and, when the target
-    # message is present locally, emit a <Patch> refreshing its aggregated
+    # message is present locally, emit a <Reactions> refreshing its aggregated
     # reactions. Shared by the live and every MAM dispatch path.
     method ApplyReactionVerdict {chatJid verdict} {
         set targetTs [$messagestore applyReaction $chatJid \
@@ -1884,12 +1879,12 @@ snit::type taco_message {
 
     method EmitReactionPatch {chatJid targetTs} {
         set agg [$messagestore reactionsForMessage $chatJid $targetTs]
-        $client emit message <Patch> -jid $chatJid \
-            -messages [list [dict create timestamp $targetTs reactions $agg]]
+        $client emit message <Reactions> -jid $chatJid \
+            -timestamp $targetTs -reactions $agg
     }
 
     # Apply an `edit`/`retract` verdict to the store and, when the target is
-    # stored, <Patch> its full row so the GUI redraws (edited body/marker or
+    # stored, <Edited> its full row so the GUI redraws (edited body/marker or
     # tombstone). Shared by the live and every MAM dispatch path.
     method ApplyEditVerdict {chatJid verdict} {
         set targetTs [$messagestore applyEdit $chatJid \
@@ -1906,13 +1901,14 @@ snit::type taco_message {
         $self EmitMessagePatch $chatJid $targetTs
     }
 
-    # <Patch> a message's whole row (used by edits/retractions). Unlike the
-    # minimal reaction patch, this carries the enriched dict so the GUI can
-    # redraw the body, the "(edited)" marker, or the tombstone.
+    # <Edited> carries a message's whole enriched row so the GUI redraws it
+    # in place (edited body, the "(edited)" marker, or a retraction tombstone).
+    # Reserved for genuine content changes; send-status and upload transitions
+    # go through <Status>.
     method EmitMessagePatch {chatJid targetTs} {
         set dbMsg [lindex [$messagestore get ids $chatJid [list $targetTs]] 0]
         if {$dbMsg eq ""} return
-        $client emit message <Patch> -jid $chatJid -messages [list $dbMsg]
+        $client emit message <Edited> -jid $chatJid -message $dbMsg
     }
 
     # {serverId ownId originId} off a <message>, derived once for the dedup

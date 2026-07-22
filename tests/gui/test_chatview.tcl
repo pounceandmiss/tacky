@@ -1499,9 +1499,9 @@ test chatview-send-confirm-timestamp-move-keeps-tail \
         wait
         set atEndAfterSend [expr {[lindex [.cv.text yview] 1] >= 1.0}]
         set sentId [.cv messages newest]
-        # Server confirms with a stamp 1s later: this fires a newtimestamp
-        # <Patch> that deletes and re-inserts (moves) the row. Without
-        # re-pinning, the top-anchored reinsert drifts the view off the tail.
+        # Server confirms with a stamp 1s later: this fires a <Confirmed>
+        # event that deletes and re-inserts the row at its new timestamp.
+        # Without re-pinning, the top-anchored reinsert drifts off the tail.
         cv_muc_echo $sentId echo-move [FormatTimestampISO [expr {$sentId + 1000000}]]
         wait
         set atEndAfterMove [expr {[lindex [.cv.text yview] 1] >= 1.0}]

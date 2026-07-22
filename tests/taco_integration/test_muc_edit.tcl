@@ -151,7 +151,7 @@ namespace eval ::test::muc_edit_int {
 
             # Juliet edits her own message; wait for Romeo's in-place patch.
             set jts [dict get $jRow timestamp]
-            awaitEvent message <Patch> -acc $ROMEO -jid $CHAT {
+            awaitEvent message <Edited> -acc $ROMEO -jid $CHAT {
                 [tacky client $JULIET] message edit \
                     -chat $CHAT -timestamp $jts -body "второе"
             }
