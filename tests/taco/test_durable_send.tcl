@@ -153,7 +153,7 @@ test ds-send-emits-sent {send emits message <New> event} \
             {apply {{ev} { set ::got $ev }}}
         c message send -chat room@muc.example.com?join \
             -body "hi"
-        list [dict get $got -jid] [dict get $got -message body] \
+        list [dict get $got -jid] [dict get $got -message content body] \
              [dict get $got -message server_status]
     } -result {room@muc.example.com?join hi pending}
 
@@ -403,7 +403,7 @@ test ds-incoming-emits-received {incoming 1:1 message emits <New>} \
         c.conn feed [j message -from alice@example.com/phone {
             j body #body "hey"
         }]
-        list [dict get $got -jid] [dict get $got -message body] \
+        list [dict get $got -jid] [dict get $got -message content body] \
              [dict get $got -message server_status]
     } -result {alice@example.com hey {}}
 

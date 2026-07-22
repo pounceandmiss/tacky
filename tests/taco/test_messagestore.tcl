@@ -57,9 +57,9 @@ test messagestore-basic-store-and-get {store a batch, get it back in chronologic
             [ms_msg timestamp 200 body second] \
             [ms_msg timestamp 300 body third]]
         set msgs [ms_msgs [store get latest alice@example.com]]
-        list [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+        list [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {first second third}
 
 test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 preserving insertion order} \
@@ -70,9 +70,9 @@ test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 prese
             [ms_msg timestamp 100 body b] \
             [ms_msg timestamp 100 body c]]
         set msgs [ms_msgs [store get latest alice@example.com]]
-        list [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+        list [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {a b c}
 
 test messagestore-batch-empty-noop {empty batch is a no-op} \
@@ -90,9 +90,9 @@ test messagestore-batch-out-of-order-timestamps {batch with non-chronological ti
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b]]
         set msgs [ms_msgs [store get latest alice@example.com]]
-        list [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+        list [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {c a b}
 
 test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
@@ -104,8 +104,8 @@ test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
             [ms_msg timestamp 100 body c]]
         set msgs [ms_msgs [store get after alice@example.com 100]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 b c}
 
 test messagestore-multi-chat-isolation {get only returns messages for requested chat} \
@@ -234,8 +234,8 @@ test messagestore-get-before {get before returns messages older than cursor} \
             [ms_msg timestamp 300 body c]]
         set msgs [ms_msgs [store get before alice@example.com 300]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 a b}
 
 test messagestore-get-after {get after returns messages newer than cursor, ascending} \
@@ -247,8 +247,8 @@ test messagestore-get-after {get after returns messages newer than cursor, ascen
             [ms_msg timestamp 300 body c]]
         set msgs [ms_msgs [store get after alice@example.com 100]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 b c}
 
 test messagestore-get-latest-multiple-batches {get latest spans multiple batches when no hole separates them} \
@@ -262,7 +262,7 @@ test messagestore-get-latest-multiple-batches {get latest spans multiple batches
             [ms_msg timestamp 600 body d]]
         set msgs [ms_msgs [store get latest alice@example.com]]
         set bodies {}
-        foreach m $msgs { lappend bodies [dict get $m body] }
+        foreach m $msgs { lappend bodies [dict get $m content body] }
         list [llength $msgs] $bodies
     } -result {4 {a b c d}}
 
@@ -299,8 +299,8 @@ test messagestore-get-latest-with-limit {get latest caps result count at -limit}
             [ms_msg timestamp 300 body c]]
         set msgs [ms_msgs [store get latest alice@example.com 2]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 b c}
 
 test messagestore-get-before-with-limit {get before with -limit returns correct slice} \
@@ -313,8 +313,8 @@ test messagestore-get-before-with-limit {get before with -limit returns correct 
             [ms_msg timestamp 400 body d]]
         set msgs [ms_msgs [store get before alice@example.com 400 2]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 b c}
 
 test messagestore-get-after-with-limit {get after with -limit returns correct slice} \
@@ -326,7 +326,7 @@ test messagestore-get-after-with-limit {get after with -limit returns correct sl
             [ms_msg timestamp 300 body c]]
         set msgs [ms_msgs [store get after alice@example.com 100 1]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body]
+             [dict get [lindex $msgs 0] content body]
     } -result {1 b}
 
 test messagestore-get-limit-exceeds-available {-limit larger than message count returns all} \
@@ -348,7 +348,7 @@ test messagestore-pending-stored {pending outgoing is stored and visible in get 
     -body {
         ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
         set msgs [ms_msgs [store get latest alice@example.com]]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 sent}
 
 test messagestore-pending-only {get latest returns pendings when only pendings exist} \
@@ -358,8 +358,8 @@ test messagestore-pending-only {get latest returns pendings when only pendings e
         ms_pending [ms_msg timestamp 200 body y own_id oid2 server_status pending]
         set msgs [ms_msgs [store get latest alice@example.com]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body]
     } -result {2 x y}
 
 test messagestore-pending-mixed-with-real {get latest returns pendings interleaved with real} \
@@ -371,9 +371,9 @@ test messagestore-pending-mixed-with-real {get latest returns pendings interleav
         ms_pending [ms_msg timestamp 200 body b own_id oid1 server_status pending]
         set msgs [ms_msgs [store get latest alice@example.com]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {3 a b c}
 
 test messagestore-pending-visible-in-get {pending and real rows both appear} \
@@ -385,7 +385,7 @@ test messagestore-pending-visible-in-get {pending and real rows both appear} \
             [ms_msg timestamp 200 own_id oid1 body pending server_status pending]]
         set msgs [ms_msgs [store get latest alice@example.com]]
         set bodies {}
-        foreach m $msgs { lappend bodies [dict get $m body] }
+        foreach m $msgs { lappend bodies [dict get $m content body] }
         set bodies
     } -result {real pending}
 
@@ -399,9 +399,9 @@ test messagestore-get-before-includes-pending {get before includes pendings olde
         ms_pending [ms_msg timestamp 200 body b own_id oid1 server_status pending]
         set msgs [ms_msgs [store get before alice@example.com 500]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {3 a b c}
 
 test messagestore-get-after-includes-pending {get after includes pendings newer than cursor} \
@@ -414,9 +414,9 @@ test messagestore-get-after-includes-pending {get after includes pendings newer 
         ms_pending [ms_msg timestamp 400 body d own_id oid1 server_status pending]
         set msgs [ms_msgs [store get after alice@example.com 100]]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {3 c d e}
 
 test messagestore-get-around-includes-pending {get around includes nearby pendings} \
@@ -431,7 +431,7 @@ test messagestore-get-around-includes-pending {get around includes nearby pendin
         set result [store get around alice@example.com 300 10]
         set msgs [dict get $result messages]
         set bodies {}
-        foreach m $msgs { lappend bodies [dict get $m body] }
+        foreach m $msgs { lappend bodies [dict get $m content body] }
         set bodies
     } -result {a b c d e}
 
@@ -511,7 +511,7 @@ test messagestore-pending-confirm-reorders {confirmed pending moves to its new s
         # Before confirmation: order is a, x, b, c
         set before [ms_msgs [store get latest alice@example.com]]
         set beforeBodies {}
-        foreach m $before { lappend beforeBodies [dict get $m body] }
+        foreach m $before { lappend beforeBodies [dict get $m content body] }
 
         # Server confirms X at timestamp 400 (between B and C)
         store store [list \
@@ -520,7 +520,7 @@ test messagestore-pending-confirm-reorders {confirmed pending moves to its new s
         # After confirmation: order should be a, b, x, c
         set after [ms_msgs [store get latest alice@example.com]]
         set afterBodies {}
-        foreach m $after { lappend afterBodies [dict get $m body] }
+        foreach m $after { lappend afterBodies [dict get $m content body] }
 
         list $beforeBodies $afterBodies
     } -result {{a x b c} {a b x c}}
@@ -532,7 +532,7 @@ test messagestore-pending-confirm-visible {confirmed pending (status='') still s
         ms_pending [ms_msg timestamp 200 body sent own_id oid1 \
             server_id srv1 server_status ""]
         set msgs [ms_msgs [store get latest alice@example.com]]
-        list [llength $msgs] [dict get [lindex $msgs 1] body]
+        list [llength $msgs] [dict get [lindex $msgs 1] content body]
     } -result {2 sent}
 
 # =============================================================================
@@ -683,7 +683,7 @@ test messagestore-get-before-truncates-at-hole {get before stops at hole and sig
             [ms_msg timestamp 600 server_id s6 body d]]
         set r [store get before alice@example.com 600]
         list [llength [ms_msgs $r]] \
-             [dict get [lindex [ms_msgs $r] 0] body] \
+             [dict get [lindex [ms_msgs $r] 0] content body] \
              [ms_bounded $r]
     } -result {1 c 1}
 
@@ -698,7 +698,7 @@ test messagestore-get-after-truncates-at-hole {get after stops at hole and signa
             [ms_msg timestamp 500 server_id s5 body c]]
         set r [store get after alice@example.com 100]
         list [llength [ms_msgs $r]] \
-             [dict get [lindex [ms_msgs $r] 0] body] \
+             [dict get [lindex [ms_msgs $r] 0] content body] \
              [ms_bounded $r]
     } -result {1 b 1}
 
@@ -714,7 +714,7 @@ test messagestore-get-latest-truncates-at-hole {get latest returns only the newe
             [ms_msg timestamp 600 server_id s6 body d]]
         set r [store get latest alice@example.com]
         set bodies {}
-        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
     } -result {{c d} 1}
 
@@ -729,7 +729,7 @@ test messagestore-get-before-ignores-newer-hole {hole on the newer side does not
         store hole add alice@example.com newer 300
         set r [store get before alice@example.com 300]
         set bodies {}
-        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
     } -result {{a b} 0}
 
@@ -744,7 +744,7 @@ test messagestore-get-after-ignores-older-hole {hole on the older side does not 
         store hole add alice@example.com older 100
         set r [store get after alice@example.com 100]
         set bodies {}
-        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
     } -result {{b c} 0}
 
@@ -760,7 +760,7 @@ test messagestore-get-latest-with-future-hole {get latest returns citizens when 
         store hole add alice@example.com newer 200
         set r [store get latest alice@example.com]
         set bodies {}
-        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
     } -result {{a b} 1}
 
@@ -779,7 +779,7 @@ test messagestore-get-latest-newer-cluster-only {get latest with mid-timeline ho
         store hole add alice@example.com newer 600
         set r [store get latest alice@example.com]
         set bodies {}
-        foreach m [ms_msgs $r] { lappend bodies [dict get $m body] }
+        foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
     } -result {{c d} 1}
 
@@ -826,9 +826,9 @@ test messagestore-get-around-nearest {get around finds nearest message and retur
         set msgs [dict get $result messages]
         set anchor [dict get $result anchor]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 2] body] \
-             [dict get [lindex $msgs 4] body] \
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 2] content body] \
+             [dict get [lindex $msgs 4] content body] \
              $anchor
     } -result {5 a c e 300}
 
@@ -843,9 +843,9 @@ test messagestore-get-around-nearest-inexact {get around snaps to nearest messag
         set anchor [dict get $result anchor]
         set msgs [dict get $result messages]
         list $anchor [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs 1] body] \
-             [dict get [lindex $msgs 2] body]
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs 1] content body] \
+             [dict get [lindex $msgs 2] content body]
     } -result {200 3 a b c}
 
 test messagestore-get-around-anchor-value {get around anchor = nearest message's timestamp} \
@@ -882,8 +882,8 @@ test messagestore-get-around-hole-bounds {get around truncates at holes on both 
         set result [store get around alice@example.com 600 10]
         set msgs [dict get $result messages]
         list [llength $msgs] \
-             [dict get [lindex $msgs 0] body] \
-             [dict get [lindex $msgs end] body] \
+             [dict get [lindex $msgs 0] content body] \
+             [dict get [lindex $msgs end] content body] \
              [dict get $result anchor] \
              [dict get $result bounded_before] \
              [dict get $result bounded_after]
@@ -906,7 +906,7 @@ test messagestore-get-around-hole-one-side-only {get around truncates asymmetric
         set result [store get around alice@example.com 600 10]
         set msgs [dict get $result messages]
         set bodies {}
-        foreach m $msgs { lappend bodies [dict get $m body] }
+        foreach m $msgs { lappend bodies [dict get $m content body] }
         list $bodies \
              [dict get $result anchor] \
              [dict get $result bounded_before] \
@@ -1014,8 +1014,8 @@ test messagestore-demote-blanks-server-id \
         set msgs [ms_msgs [store get before alice@example.com 300]]
         set m1 [lindex $msgs 0]
         set m2 [lindex $msgs 1]
-        list [dict get $m1 body] [dict get $m1 server_id] \
-             [dict get $m2 body] [dict get $m2 server_id]
+        list [dict get $m1 content body] [dict get $m1 server_id] \
+             [dict get $m2 content body] [dict get $m2 server_id]
     } -result {a {} b sid2}
 
 test messagestore-demote-empty-noop {demote with an empty server_id is a no-op} \
@@ -1174,7 +1174,7 @@ test messagestore-edit-swaps-body {applyEdit replaces body and sets edited} \
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
         store applyEdit alice@example.com sid1 corrected "<xml/>" 200
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
-        list [dict get $m body] [dict get $m edited]
+        list [dict get $m content body] [dict get $m edited]
     } -result {corrected 1}
 
 test messagestore-edit-defaults-not-edited {an unedited message reports edited 0} \
@@ -1190,7 +1190,7 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
         store applyEdit alice@example.com sid1 newer "<xml/>" 300
         store applyEdit alice@example.com sid1 older "<xml/>" 200
-        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] body
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {newer}
 
 test messagestore-edit-target-not-found {applyEdit on an unknown target returns empty} \
@@ -1214,8 +1214,8 @@ test messagestore-retract-is-sticky {a retracted message cannot be edited afterw
         store applyRetract alice@example.com sid1
         set skipped [store applyEdit alice@example.com sid1 sneaky "<xml/>" 500]
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
-        list $skipped [dict get $m body] [dict get $m retracted]
-    } -result {{} original 1}
+        list $skipped [dict exists $m content] [dict get $m retracted]
+    } -result {{} 0 1}
 
 test messagestore-reconcile-backfills-occupant-id \
     {confirming a pending own send backfills its occupant_id from the echo} \

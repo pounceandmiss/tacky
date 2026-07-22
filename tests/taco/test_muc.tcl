@@ -437,7 +437,7 @@ test muc-message-event {groupchat message emits message <New> only} \
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "hi all"
         }]
-        list [dict get $got -jid] [dict get $got -message body]
+        list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com?join {hi all}}
 
 test muc-pm-sends-chat {pm sends chat message with muc#user marker} \
@@ -460,7 +460,7 @@ test muc-private-message-event {private message emits message <New> only} \
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret"
         }]
-        list [dict get $got -jid] [dict get $got -message body]
+        list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com/someone secret}
 
 # -- Subject ------------------------------------------------------------------
@@ -866,7 +866,7 @@ test muc-groupchat-stored {groupchat messages stored under room@muc?join} \
             j body #body "stored msg"
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {stored msg}}
 
 test muc-groupchat-emits-received {groupchat message emits message <New> with ?join jid} \
@@ -878,7 +878,7 @@ test muc-groupchat-emits-received {groupchat message emits message <New> with ?j
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "event msg"
         }]
-        list [dict get $got -jid] [dict get $got -message body]
+        list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com?join {event msg}}
 
 test muc-groupchat-own-id-set-for-own-nick {own message via echo sets own_id} \
@@ -933,7 +933,7 @@ test muc-pm-stored {private messages stored under room@muc/nick} \
             j body #body "secret msg"
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com/someone] messages]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {secret msg}}
 
 test muc-pm-emits-received {private message emits message <New> with full occupant jid} \
@@ -945,7 +945,7 @@ test muc-pm-emits-received {private message emits message <New> with full occupa
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
             j body #body "secret event"
         }]
-        list [dict get $got -jid] [dict get $got -message body]
+        list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com/someone {secret event}}
 
 test muc-groupchat-not-in-message-module {groupchat messages don't reach message module} \
@@ -977,7 +977,7 @@ test muc-dm-passes-through {DM from non-MUC contact passes through to message mo
             j body #body "regular dm"
         }]
         set msgs [dict get [c message messagestore get latest alice@example.com] messages]
-        list [llength $msgs] [dict get [lindex $msgs 0] body]
+        list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {regular dm}}
 
 test muc-store-delayed-uses-stamp {stored MUC message uses delay timestamp} \
@@ -1150,7 +1150,7 @@ test muc-edit-by-occupant-id \
             j body #body "hello"
         }]
         set m [lindex [muc_msgs] 0]
-        list [dict get $m body] [dict get $m edited] [llength [muc_msgs]]
+        list [dict get $m content body] [dict get $m edited] [llength [muc_msgs]]
     } -result {hello 1 1}
 
 test muc-edit-occupant-spoof-rejected \
@@ -1170,7 +1170,7 @@ test muc-edit-occupant-spoof-rejected \
             j body #body "HACKED"
         }]
         set m [lindex [muc_msgs] 0]
-        list [dict get $m body] [dict get $m edited]
+        list [dict get $m content body] [dict get $m edited]
     } -result {helo 0}
 
 test muc-moderation-tombstones \
@@ -1262,7 +1262,7 @@ test muc-own-edit-roundtrip-no-duplicate \
         }]
         set msgs [muc_msgs]
         list $backfilled [llength $msgs] \
-            [dict get [lindex $msgs 0] body] [dict get [lindex $msgs 0] edited]
+            [dict get [lindex $msgs 0] content body] [dict get [lindex $msgs 0] edited]
     } -result {occ-me 1 б 1}
 
 test muc-edit-replace-id-is-origin-not-stanza-id \
@@ -1310,5 +1310,5 @@ test muc-own-edit-spoof-still-rejected \
         foreach msg [muc_msgs] {
             if {[dict get $msg own_id] eq $oid} { set mine $msg }
         }
-        list [dict get $mine body] [dict get $mine edited]
+        list [dict get $mine content body] [dict get $mine edited]
     } -result {mine 0}

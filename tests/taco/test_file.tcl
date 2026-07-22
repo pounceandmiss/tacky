@@ -240,7 +240,7 @@ test file-store-roundtrip {messagestore preserves the attachments column} {*}$fi
     $::_client message messagestore store [list $m]
     set got [lindex [dict get \
         [$::_client message messagestore get latest bob@example.com] messages] 0]
-    dict get $got attachments
+    dict get $got content attachments
 } -result {{url https://h/p.png type image name p.png size 10 mime image/png}}
 
 test file-store-caption-derived {messagestore derives an empty caption for a URL-only body} {*}$file_env -body {
@@ -251,7 +251,7 @@ test file-store-caption-derived {messagestore derives an empty caption for a URL
         own_id "" raw_xml "" attachments $att]
     $::_client message messagestore store [list $m]
     set got [lindex [$::_client message messagestore get ids bob@example.com [list 5100000]] 0]
-    dict get $got caption
+    dict get $got content caption
 } -result {}
 
 test file-store-caption-keeps-text {messagestore keeps a body with real text as the caption} {*}$file_env -body {
@@ -262,7 +262,7 @@ test file-store-caption-keeps-text {messagestore keeps a body with real text as 
         own_id "" raw_xml "" attachments $att]
     $::_client message messagestore store [list $m]
     set got [lindex [$::_client message messagestore get ids bob@example.com [list 5200000]] 0]
-    dict get $got caption
+    dict get $got content caption
 } -result {look here https://h/p.png}
 
 # --- upload lifecycle / optimistic send -----------------------------------
@@ -287,9 +287,9 @@ test file-markuploaded-promotes {markUploaded promotes uploading -> pending with
         [list [dict create url https://h/a.png type image name a.png \
             size 4 mime image/png]]
     set m [lindex [up_ms get ids bob@example.com [list 7000000]] 0]
-    list [dict get $m server_status] [dict get $m body] \
-        [dict get [lindex [dict get $m attachments] 0] url]
-} -result {pending https://h/a.png https://h/a.png}
+    list [dict get $m server_status] \
+        [dict get [lindex [dict get $m content attachments] 0] url]
+} -result {pending https://h/a.png}
 
 test file-markuploadfailed {markUploadFailed sets the row to failed} {*}$file_env -body {
     up_store_uploading bob@example.com 7100000
@@ -319,7 +319,7 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
         [$::_client message messagestore get latest bob@example.com] messages]
     set m [lindex $msgs 0]
     set res [list [llength $msgs] [dict get $m server_status] \
-        [dict get [lindex [dict get $m attachments] 0] url]]
+        [dict get [lindex [dict get $m content attachments] 0] url]]
     file delete $tmp
     set res
 } -result [list 1 uploading [file join /tmp uptest_[pid].bin]]

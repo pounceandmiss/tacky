@@ -267,32 +267,37 @@ test json-backend-emit-formatting {emit message with formatting entities} -setup
     _test_clear
 } -body {
     _test_emit message <New> \
-        -message [dict create timestamp 100 body {hello bold world} \
-                      formatting {bold 6 4}]
+        -message [dict create timestamp 100 \
+                      content [dict create type text body {hello bold world} \
+                          formatting {bold 6 4}]]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<New>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"hello bold world"} \
-            formatting [json::write array \
-                [json::write object type {"bold"} offset 6 length 4]]]]]
+        message [json::write object timestamp 100 \
+            content [json::write object type {"text"} body {"hello bold world"} \
+                formatting [json::write array \
+                    [json::write object type {"bold"} offset 6 length 4]]]]]]
 
 test json-backend-emit-attachments {emit message with attachments and caption} -setup {
     _test_clear
 } -body {
     _test_emit message <New> \
-        -message [dict create timestamp 100 body https://h/p.png caption "" \
-                      attachments [list [dict create url https://h/p.png \
-                          type image name p.png size 20480 mime image/png]]]
+        -message [dict create timestamp 100 \
+                      content [dict create type media \
+                          attachments [list [dict create url https://h/p.png \
+                              type image name p.png size 20480 mime image/png]] \
+                          caption ""]]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"<New>"} \
     [json::write object \
-        message [json::write object timestamp 100 body {"https://h/p.png"} \
-            caption {""} \
-            attachments [json::write array \
-                [json::write object url {"https://h/p.png"} type {"image"} \
-                    name {"p.png"} size 20480 mime {"image/png"}]]]]]
+        message [json::write object timestamp 100 \
+            content [json::write object type {"media"} \
+                attachments [json::write array \
+                    [json::write object url {"https://h/p.png"} type {"image"} \
+                        name {"p.png"} size 20480 mime {"image/png"}]] \
+                caption {""}]]]]
 
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
