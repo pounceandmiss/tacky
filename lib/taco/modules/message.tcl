@@ -226,6 +226,9 @@ snit::type taco_message {
             }
         }
 
+        dict for {jid _} $perChatMax {
+            $self EmitTail $jid
+        }
         $client emit message <CatchupDone> -count $totalCount
     }
 
@@ -382,12 +385,14 @@ snit::type taco_message {
             $client emit message <Patch> -jid $chatJid \
                 -messages $patchMessages
         }
+        $self EmitTail $chatJid
     }
 
     method HandleInsertion {chatJid inserted} {
         if {[llength $inserted] == 0} return
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <New> -jid $chatJid -message $dbMsg
+        $self EmitTail $chatJid
     }
 
     # Maximum BuildMessageStanza attempts per message before marking
@@ -582,6 +587,7 @@ snit::type taco_message {
 
         $client emit message <New> \
             -jid $opts(-chat) -message $dbMsg
+        $self EmitTail $opts(-chat)
 
         if {$stanza ne ""} {
             $client write $stanza
@@ -630,6 +636,7 @@ snit::type taco_message {
         set ts [lindex $inserted 0]
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <New> -jid $chatJid -message $dbMsg
+        $self EmitTail $chatJid
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
@@ -953,18 +960,39 @@ snit::type taco_message {
         }
     }
 
-    # maxTimestamp -chat $chatJid -command $cb — newest real message
-    # timestamp for the chat, used by the chat view's at-tail check.
+    # Newest real message timestamp for the chat: the value EmitTail pushes
+    # in the message <Tail> event (internal, not a public API method).
     # A fresh query, not the chats-module MaxTimestamps cache: that cache
     # counts hole rows and misses the timestamp UPDATE on MUC-echo
     # confirmation, so it can't answer this authoritatively.
-    tackymethod maxTimestamp {args} {
+    method maxTimestamp {args} {
         array set opts $args
         set ts [$client db onecolumn {
             SELECT MAX(timestamp) FROM chat_message
             WHERE chat_jid=$opts(-chat) AND kind='message'
         }]
         return [expr {$ts eq "" ? "" : $ts}]
+    }
+
+    # Push the chat's current newest-message timestamp so the GUI tracks the
+    # tail without polling. Emitted wherever MAX(timestamp) can change: new
+    # inserts and the MUC-echo confirmation rekey (which can move the tail
+    # backward, so a fresh authoritative value is required).
+    method EmitTail {chatJid} {
+        $client emit message <Tail> -jid $chatJid \
+            -timestamp [$self maxTimestamp -chat $chatJid]
+    }
+
+    # observe hook: re-emit the current tail so a fresh listener seeds.
+    tackymethod pull {args} {
+        array set opts $args
+        switch -- $opts(-event) {
+            <Tail>  { $self EmitTail $opts(-jid) }
+            default {
+                return -code error \
+                    "message pull: event $opts(-event) is not pullable"
+            }
+        }
     }
 
     # markDisplayed -chat $chatJid -timestamp $ts

@@ -312,7 +312,6 @@ Event:
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
-    message maxTimestamp {chat: string}          -> int    newest known timestamp ("" if none)
     message rawxml {chat: string, timestamp: int} -> string  raw stanza (debug)
     message markDisplayed {chat: string, timestamp: int}
 
@@ -340,6 +339,7 @@ Events:
     message <New>         {jid: string, message: message}
     message <Patch>       {jid: string, messages: [message]}
     message <CatchupDone> {count: int}
+    message <Tail>        {jid: string, timestamp: int}
 
 ## omemo
 
@@ -527,11 +527,14 @@ anchors a fill *and* the local read came up short of `limit`. A cursorless
 initial load shows only the contiguous local tail and won't auto-fetch
 older history - scrolling up (a `before` page) quietly pulls the next page
 from MAM. When the user scrolls toward an edge, fire a tagged `history` for
-that direction, and if one's already in flight there, drop the new one.
+that direction, unless one is already in flight there - a repeated scroll
+signal while that request is pending is a no-op, not a second request.
 When the window culls an end, cancel any in-flight request on that end,
 since its cursor just moved; culling the newer end also clears the at-tail
-flag. On a newer-page result, if the window's newest timestamp matches
-`message maxTimestamp`, you're back at the tail - set the flag.
+flag. Subscribe to `message <Tail>`, which pushes the chat's newest
+real-message timestamp whenever it changes; on a newer-page result, if the
+window's newest timestamp matches the last `<Tail>`, you're back at the tail
+- set the flag.
 
 **Initial load, goto, catchup.** When the chat opens, call
 `message history` with no cursor; the newest page comes back (local if it's
