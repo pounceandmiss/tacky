@@ -2227,6 +2227,45 @@ test message-maxts-after-confirm-move \
         expr {[$::_client message maxTimestamp -chat $room] == $echoTs}
     } -result 1
 
+# The GUI tracks the conversation tail from the pushed message <Tail> event
+# instead of polling maxTimestamp (which only resolves inline in the direct
+# transport). A live insert must push the current newest timestamp.
+test message-tail-emitted-on-live \
+    {a live message emits message <Tail> carrying the newest timestamp} \
+    {*}$msg_common \
+    -body {
+        set ::_tail ""
+        tacky listen message <Tail> -jid alice@example.com \
+            {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body "hi"
+        }]
+        expr {$::_tail ne ""
+            && $::_tail == [$::_client message maxTimestamp -chat alice@example.com]}
+    } -result 1
+
+# The confirmation rekey (echo stamp replaces the local send stamp) can move
+# the tail, so HandleConfirmation must re-push <Tail> with the corrected max.
+test message-tail-repushed-on-confirm-move \
+    {a self-echo that moves the pending row's timestamp re-emits message <Tail>} \
+    {*}$msg_common \
+    -body {
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        tacky message send -acc $acc -chat alice@example.com -body "echo me"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set ::_tail ""
+        tacky listen -tag tailmove message <Tail> -jid alice@example.com \
+            {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
+        $::_client conn feed [j message -type chat \
+            -from user@test.example.com/res -to alice@example.com -id $oid {
+            j body #body "echo me"
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-tail
+        }]
+        tacky unlisten tailmove
+        expr {$::_tail ne ""
+            && $::_tail == [$::_client message maxTimestamp -chat alice@example.com]}
+    } -result 1
+
 # XEP-0184/0333 marker sending.
 
 # Id of the first written marker <element> in namespace $ns, or "".

@@ -54,6 +54,18 @@ snit::widgetadaptor chatview {
 
     variable IsMuc
 
+    # Backend-pushed newest real-message timestamp for this chat (message
+    # <Tail>). The at-tail check compares the newest displayed id against it;
+    # tracking it by event instead of a per-scroll query keeps the check
+    # correct under the async (threaded/process) transports.
+    variable DbNewest ""
+
+    # MUC only: our current role in the room, and the bare room JID. MyRole
+    # is cached from muc <Presence> so CanModerate reads it synchronously
+    # while building its popup menu.
+    variable MyRole ""
+    variable RoomBare ""
+
     # Names dict: from_jid → display name for messages in this chat.
     # Seeded from `tacky author get` at construction; kept in sync by
     # the author <Changed> listener.
@@ -102,6 +114,8 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnPatch]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
+        ::tacky observe -tag $win message <Tail> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnTail]
         ::tacky listen -tag $win file <Update> \
             -acc $options(-acc) [mymethod OnTransfer]
         ::tacky listen -tag $win author <Changed> \
@@ -111,6 +125,12 @@ snit::widgetadaptor chatview {
         if {!$IsMuc} {
             ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
                 [mymethod OnShowJidSetting]
+        } else {
+            regsub {\?join$} $options(-jid) {} RoomBare
+            set RoomBare [jid norm [jid bare $RoomBare]]
+            ::tacky listen -tag $win muc <Presence> \
+                -acc $options(-acc) -jid $RoomBare [mymethod RefreshMyRole]
+            $self RefreshMyRole
         }
         bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
         bind $self <<ReplyJump>> [mymethod OnReplyJump %d]
@@ -313,13 +333,11 @@ snit::widgetadaptor chatview {
         set atEnd [$hull atEnd]
         $self ProcessBatch $messages
         if {$direction eq "new"} {
-            # If thirst caught up to DB-newest, rejoin the live tail
-            # so subsequent <New> events insert again. Comparing
-            # to maxTimestamp is robust to changes in -limit.
+            # If thirst caught up to the pushed tail, rejoin the live tail
+            # so subsequent <New> events insert again. Comparing to DbNewest
+            # is robust to changes in -limit.
             set newest [$hull messages newest]
-            set dbNewest [::tacky message maxTimestamp \
-                -acc $options(-acc) -chat $options(-jid)]
-            if {$newest ne "" && $newest eq $dbNewest} {
+            if {$newest ne "" && $newest eq $DbNewest} {
                 set AtTail 1
             }
         }
@@ -398,11 +416,16 @@ snit::widgetadaptor chatview {
 
     method UpdateViewAtTail {} {
         set newest [$hull messages newest]
-        set dbNewest [::tacky message maxTimestamp \
-            -acc $options(-acc) -chat $options(-jid)]
-        set hasNewest [expr {$newest ne "" && $newest eq $dbNewest}]
+        set hasNewest [expr {$newest ne "" && $newest eq $DbNewest}]
         set ViewAtTail [expr {$hasNewest && [$hull atEnd]}]
         $self UpdateScrollBtn
+    }
+
+    # Backend-pushed newest-message timestamp. Recomputing here keeps the
+    # tail state correct regardless of <Tail>/<New> arrival order.
+    method OnTail {ev} {
+        set DbNewest [dict get $ev -timestamp]
+        $self UpdateViewAtTail
     }
 
     method UpdateScrollBtn {} {
@@ -675,14 +698,21 @@ snit::widgetadaptor chatview {
         tk_popup $m $rootX $rootY
     }
 
-    # True iff we currently hold the moderator role in this room.
+    # True iff we currently hold the moderator role in this room. Reads the
+    # MyRole cache (a live `muc myRole` query only resolves inline in the
+    # direct transport) so the popup menu can gate synchronously.
     method CanModerate {} {
-        if {!$IsMuc} { return 0 }
-        regsub {\?join$} $options(-jid) {} roomBare
-        set roomBare [jid bare $roomBare]
-        return [expr {[::tacky muc myRole \
-            -acc $options(-acc) -jid $roomBare] eq "moderator"}]
+        return [expr {$IsMuc && $MyRole eq "moderator"}]
     }
+
+    # Refresh the cached role. Seeded at construction and re-run on each of
+    # our own presence updates (role changes arrive as presence).
+    method RefreshMyRole {args} {
+        ::tacky muc myRole -acc $options(-acc) -jid $RoomBare \
+            -tag $win -command [mymethod SetMyRole]
+    }
+
+    method SetMyRole {role} { set MyRole $role }
 
     method OnEditSelected {id} {
         set sd [$hull messages get $id]

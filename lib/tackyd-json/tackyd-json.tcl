@@ -182,7 +182,6 @@ jsonify_type jsonify \
         setting/list            list
         debugtap/on             int
         message/rawxml          string
-        message/maxTimestamp    int
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list
@@ -199,6 +198,7 @@ jsonify_type jsonify \
         message/<New>           {dict {message message}}
         message/<Patch>         {dict {messages {list message}}}
         message/<CatchupDone>   {dict {count int}}
+        message/<Tail>          {dict {timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
