@@ -141,7 +141,7 @@ jsonify_type jsonify \
         message/history         {list message}
         message/goto            goto_result
         message/gotoReply       goto_result
-        message/search          {dict {messages {list message} complete bool}}
+        message/search          {dict {messages {list message} complete bool last string}}
         muc/getList             {list {dict {}}}
         muc/discoverRooms       {list {dict {}}}
         muc/reservedNick        string

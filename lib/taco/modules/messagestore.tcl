@@ -553,16 +553,19 @@ snit::type taco_messagestore {
 
     # Full-text search by LIKE match on body. Returns list of timestamps
     # (newest first, capped at -limit). Holes have NULL body so
-    # they're naturally excluded.
+    # they're naturally excluded. The query's own LIKE metacharacters
+    # (% _ \) are escaped so they match literally.
     method search {jid query args} {
         array set opts {-limit 500}
         array set opts $args
         set limit $opts(-limit)
-        set pattern "%${query}%"
+        set escaped [string map [list \\ \\\\ % \\% _ \\_] $query]
+        set pattern "%${escaped}%"
         set timestamps {}
         $options(-db) eval {
             SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid AND kind='message' AND body LIKE $pattern
+            WHERE chat_jid=$jid AND kind='message'
+              AND body LIKE $pattern ESCAPE '\'
             ORDER BY timestamp DESC LIMIT $limit
         } row {
             lappend timestamps $row(timestamp)

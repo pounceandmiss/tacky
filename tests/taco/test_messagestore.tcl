@@ -925,6 +925,41 @@ test messagestore-search-skips-holes {search results never include hole rows} \
         store search alice@example.com needle
     } -result {100}
 
+test messagestore-search-no-match {a query matching nothing returns empty} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body hello]]
+        store search alice@example.com zzz
+    } -result {}
+
+test messagestore-search-limit-and-order {results are newest-first and capped at -limit} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body x1] \
+            [ms_msg timestamp 200 body x2] \
+            [ms_msg timestamp 300 body x3]]
+        store search alice@example.com x -limit 2
+    } -result {300 200}
+
+test messagestore-search-escapes-like-wildcards {% in the query matches literally, not as a wildcard} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body {50% off}] \
+            [ms_msg timestamp 200 body {500 items}]]
+        store search alice@example.com 50%
+    } -result {100}
+
+test messagestore-search-escapes-underscore {_ in the query matches literally, not as a wildcard} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body a_b] \
+            [ms_msg timestamp 200 body axb]]
+        store search alice@example.com a_b
+    } -result {100}
+
 # resolveReply (XEP-0461 target lookup)
 
 test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves with no author hint} \
