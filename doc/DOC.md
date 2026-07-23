@@ -311,6 +311,7 @@ Event:
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
     message search {chat: string, query: string, limit?: int, before?: string}            -> search_result
+    message local_search {chat: string, query: string, limit?: int}                        -> [int]
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
@@ -652,7 +653,11 @@ has this exact message, moving through `<Status>` events: `""`
 **Search.** `message search` is server-side MAM full-text search. Page
 through it with `before: last`. The results aren't chat-view content - show
 them somewhere separate, and jump to one with
-`message goto {date: ts, source: remote}`.
+`message goto {date: ts, source: remote}`. `message local_search` is the
+local counterpart: a substring match over the bodies already stored for one
+chat, returning matching timestamps newest-first (LIKE metacharacters in the
+query match literally). Jump to one with `message goto {date: ts, source:
+local}`.
 
 **Sender names.** A message row carries a `from_jid`, not a display name.
 `author get {chat: string} -> {from_jid: name, ...}` resolves the names for

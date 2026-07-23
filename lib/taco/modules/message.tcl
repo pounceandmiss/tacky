@@ -940,12 +940,16 @@ snit::type taco_message {
             -timestamp $ts -server_status failed -fail_reason $reason
     }
 
-    # local_search -chat $jid -query "text" -command $cb
+    # local_search -chat $jid -query "text" ?-limit n? -command $cb
     # Synchronous LIKE search on local SQLite store.
     # Invokes callback with list of timestamps (newest first).
     method local_search {args} {
         array set opts $args
-        set timestamps [$messagestore search $opts(-chat) $opts(-query)]
+        set searchArgs {}
+        if {[info exists opts(-limit)]} {
+            lappend searchArgs -limit $opts(-limit)
+        }
+        set timestamps [$messagestore search $opts(-chat) $opts(-query) {*}$searchArgs]
         {*}$opts(-command) $timestamps
     }
 
