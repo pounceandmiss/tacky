@@ -27,9 +27,13 @@ test ms-bold-in-text {bold span in surrounding text} -body {
     messagestyling::parse "hello *bold* world"
 } -result {display_body {hello bold world} entities {bold 6 4}}
 
-test ms-compound {compound bold+italic} -body {
+test ms-compound {overlapping bold+italic stay separate single-type spans} -body {
     messagestyling::parse "*_bold italic_*"
-} -result {display_body {bold italic} entities {bold.italic 0 11}}
+} -result {display_body {bold italic} entities {italic 0 11 bold 0 11}}
+
+test ms-nested {italic nested in bold is a separate contained span} -body {
+    messagestyling::parse "*bold _ital_ x*"
+} -result {display_body {bold ital x} entities {italic 5 4 bold 0 11}}
 
 test ms-preformatted {preformatted block} -body {
     messagestyling::parse "```\ncode here\n```"
