@@ -6,7 +6,7 @@ and get back replies and events.
 ## Contents
 
 - [Using the backend](#using-the-backend)
-  - [Transports](#transports)
+  - [Ways to run it](#ways-to-run-it)
   - [Requests, replies, events](#requests-replies-events)
 - [Reference](#reference)
   - [account](#account)
@@ -31,7 +31,7 @@ and get back replies and events.
 
 # Using the backend
 
-## Transports
+## Ways to run it
 
 Three ways to run the backend. All of them speak the same requests and
 events, so the rest of this doc applies whichever you pick.
@@ -326,8 +326,10 @@ Event:
     content = {type: "text",  body: string, formatting?: formatting}
             | {type: "media", attachments: [attachment], caption: string, formatting?: formatting}
 
-    formatting = [{type: string, offset: int, length: int}]
-    attachment = {url: string, type: string, name: string, size: int, mime: string}
+    formatting = [{type: span_type, offset: int, length: int}]
+    span_type  = "bold" | "italic" | "overstrike" | "monospace"
+               | "preformatted" | "quote"
+    attachment = {url: string, type: "image" | "file", name: string, size: int, mime: string}
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool, last: string}
@@ -338,8 +340,12 @@ exclusive cursors; `source` on `goto` is `local` or `remote`.
 `server_status` is `""` (the server has it), `pending`, `uploading`, or
 `failed`. `encryption` is `"omemo"` or `""`. `content` is the typed payload:
 `type: "text"` carries a `body`, `type: "media"` carries an `attachments` list
-plus a `caption` (grouped attachments are just more than one entry). `formatting`
-(XEP-0393 spans) indexes into whichever of `body`/`caption` the variant has.
+plus a `caption` (grouped attachments are just more than one entry). Each
+`attachment` has a `type` of `"image"` (render inline) or `"file"` (a download
+chip). `formatting` (XEP-0393 styling spans) indexes into whichever of
+`body`/`caption` the variant carries, with the styling characters already
+removed from that string. A span's `type` is `bold`, `italic`, `overstrike`,
+`monospace`, `preformatted`, or `quote`.
 A **retracted** message carries no `content` (the tombstone has no payload, and
 its former body/attachments are never shipped); the `retracted` flag is the
 signal. Deletion is a message-level state, not a content type (matching TDLib);
@@ -358,18 +364,18 @@ Events:
     message <CatchupDone> {count: int}
     message <Tail>        {jid: string, timestamp: int}
 
-The patch events each carry one kind of change to an already-inserted
-message, keyed by `timestamp`; if the target isn't displayed, drop it (none
-go through the insertion rule). `<Status>` updates send/receipt state in
-place (`server_status` `pending`/`uploading`/`failed`, `remote_status`
-delivery/read, `fail_reason`). `<Confirmed>` is a pending send the server
-acknowledged: it always carries `newtimestamp` (equal to `timestamp` when the
-stamp held, the relocated server stamp when it moved) and clears
-`server_status` to `""` - patch in place when equal, rekey and re-sort when
-it moved. It's the only event that clears to `""`, and the only one that
-shifts a message's slot. `<Reactions>` replaces the aggregated reaction map.
-`<Edited>` re-sends the whole `message` row for a content edit; redraw it in
-place. `<Retracted>` flips the displayed message to a tombstone - unlike
+These events each carry one kind of change to a message already on screen,
+found by `timestamp`. If the target isn't displayed, drop it. `<Status>`
+updates send/receipt state in place (`server_status`
+`pending`/`uploading`/`failed`, `remote_status` delivery/read,
+`fail_reason`). `<Confirmed>` is a pending send the server acknowledged: it
+always carries `newtimestamp` (equal to `timestamp` when the stamp held, the
+relocated server stamp when it moved) and clears `server_status` to `""` -
+update in place when equal, rekey and re-sort when it moved. It's the only
+event that clears to `""`, and the only one that shifts a message's slot.
+`<Reactions>` replaces the aggregated reaction map. `<Edited>` re-sends the
+whole `message` row for a content edit, redraw it in place. `<Retracted>`
+flips the displayed message to a tombstone - unlike
 TDLib `updateDeleteMessages`, it does not remove the message: the row is kept
 (the `retracted` envelope flag is set, `content` is dropped) so pagination
 anchors, reply resolution, and slot/attribution keep working, and the client
@@ -529,8 +535,8 @@ the signatures; these walk through the flows.
 
 ## Accounts and sign-in
 
-**Startup.** The backend connects every enabled account by itself at init
-- there's no "connect" call. Your only startup decision is what to show:
+**Startup.** The backend connects every enabled account by itself at
+init - there's no "connect" call. Your only startup decision is what to show:
 run `account list {enabled: 1}`, and if it's non-empty open the main UI,
 otherwise show setup. Do the same check in reverse when the last account
 window closes - no accounts left means back to setup, otherwise quit.
@@ -558,9 +564,9 @@ or just dropping the session, tears it down at any point.
 
 ## The chat window
 
-A chat view is a sliding window over the conversation, fetched on demand.
-The window is bounded - memory pressure forces it to cull - but the
-conversation isn't. You have to keep three things true:
+A chat view is a sliding window over the conversation, fetched on demand
+and culled under memory pressure. The conversation behind it is not bounded.
+Three things have to stay true:
 
 - **Order** - "A B C", never "A C B".
 - **Contiguity** - the window is an unbroken run of the conversation:
@@ -576,36 +582,30 @@ timestamp like everything else.
 **What the frontend holds.** Beyond the messages on screen, one flag:
 whether the window reaches the conversation tail. Accepting live events
 hinges on that flag, and an empty window counts as at-tail. You identify
-in-flight requests by a `tag` (Tcl) or by the reply token (JSON); the
-reference chat view keeps one cancel scope per direction - live,
-older-page, newer-page, and goto. That tag/token cancellation is the only
-thing keeping racing results from breaking contiguity. The pagination
-cursors are just the first and last timestamps in the window, passed as
-`before` and `after`.
+in-flight requests by a token. The reference chat view keeps one cancel
+scope per direction - live, older-page, newer-page, and goto. Cancelling by
+that token is what stops racing results from breaking contiguity. The
+pagination cursors are just the first and last timestamps in the window,
+passed as `before` and `after`.
 
-**Insertion rule.** For every message in any batch - initial, paginated,
-goto, or live - insert it at its timestamp-sorted spot. Same rule no
-matter where it came from. The patch events (below) go a different way.
-
-**Paging.** `message history` with no cursor gives you the newest page;
-`before` (exclusive) pages older, `after` (exclusive) pages newer; always
+**Paging.** `message history` with no cursor gives you the newest page.
+`before` (exclusive) pages older, `after` (exclusive) pages newer, always
 oldest-first, capped at `limit` (default 50). It's local-first: it returns
 local rows right away and only reaches for the server (MAM) when a cursor
 anchors a fill *and* the local read came up short of `limit`. A cursorless
 initial load shows only the contiguous local tail and won't auto-fetch
-older history - scrolling up (a `before` page) quietly pulls the next page
+older history - scrolling up (a `before` page) pulls the next page
 from MAM. When the user scrolls toward an edge, fire a tagged `history` for
-that direction, unless one is already in flight there - a repeated scroll
-signal while that request is pending is a no-op, not a second request.
-When the window culls an end, cancel any in-flight request on that end,
-since its cursor just moved; culling the newer end also clears the at-tail
-flag. Subscribe to `message <Tail>`, which pushes the chat's newest
-real-message timestamp whenever it changes; on a newer-page result, if the
-window's newest timestamp matches the last `<Tail>`, you're back at the tail
-- set the flag.
+that direction, unless one is already in flight there. When the window
+culls an end, cancel any in-flight request on that end, since its cursor
+just moved and the result would be stale. Culling the newer end also clears
+the at-tail flag. Subscribe to `message <Tail>`, which pushes the chat's
+newest real-message timestamp whenever it changes. On a newer-page result,
+if the window's newest timestamp matches the last `<Tail>`, you're back at
+the tail, so set the flag.
 
 **Initial load, goto, catchup.** When the chat opens, call
-`message history` with no cursor; the newest page comes back (local if it's
+`message history` with no cursor. The newest page comes back (local if it's
 stored, otherwise fetched from MAM). That empty-local fetch is the one time
 a cursorless load hits the server, and it has no timeout - so treat the
 per-request callback as best-effort and lean on live `<New>` events to fill
@@ -618,42 +618,38 @@ scroll-to-bottom, or paging forward until the at-tail check flips.
 `goto`'s `bounded_before` and `bounded_after` flag a side that was cut off
 at a hole: there's more history that way, and paging fills it in.
 `gotoReply` (XEP-0461) jumps to a reply's target and returns the same
-shape. MAM catchup comes in as live `<New>` events under the at-tail gate;
+shape. MAM catchup comes in as live `<New>` events under the at-tail gate.
 `<CatchupDone>` is only there to let the UI settle.
 
-**Live messages.** On `<New>`, run it through the insertion rule if the
-at-tail flag is set; otherwise drop it. The gate isn't optional: inserting
-a live message while the window doesn't reach the tail would push the newer
-cursor past a range you never fetched, and the next page request would skip
-right over it - a gap that never closes.
+**Live messages.** On `<New>`, insert it at its timestamp-sorted spot if
+the at-tail flag is set, otherwise drop it.
 
-**Patches.** Five events patch an already-inserted message, each self-
-describing - switch on the event, never sniff which field is present. All
-key on `timestamp` and drop silently if the target isn't displayed;
-none go through the insertion rule. `<Status>` updates the send/receipt
-state where the row sits. `<Reactions>` swaps the reaction map. `<Edited>`
-carries a full `message` row to redraw in place for a content edit.
-`<Retracted>` flips the row to a tombstone in place - it carries only
-`timestamp`, so redraw the placeholder from the header you already hold
-(the message stays, it does not disappear). `<Confirmed>` acknowledges a
-pending send: patch its checkmark in place when `newtimestamp == timestamp`,
+**Updates to a shown message.** Five events change a message already on
+screen rather than adding one. Switch on the event, never sniff which field
+is present. All find their target by `timestamp` and drop silently if it
+isn't displayed. `<Status>` updates the send/receipt state where the row
+sits. `<Reactions>` swaps the reaction map. `<Edited>` carries a full
+`message` row to redraw in place for a content edit. `<Retracted>` flips the
+row to a tombstone in place - it carries only `timestamp`, so redraw the
+placeholder from the header you already hold. `<Confirmed>` acknowledges a
+pending send: update its checkmark in place when `newtimestamp == timestamp`,
 or rekey to `newtimestamp` and re-sort when the server relocated it - the
-only patch that shifts a message's slot.
+only one that shifts a message's slot.
 
 **Outgoing.** Your own messages show up right away on `<New>`
-(optimistically) at their pending timestamp; once they're confirmed - a MUC
+(optimistically) at their pending timestamp. Once they're confirmed - a MUC
 echo, or your own message coming back via MAM - a `<Confirmed>` clears
 `server_status` and, if the server relocated the row, moves it to
 `newtimestamp`. `send` is fire-and-forget, so
 `<New>` is its acknowledgement, and it fires on every send - even one
 that's stored `failed` immediately, like an encryption that can't go
 through. The only send that gives you nothing is one that throws before
-`<New>` (a malformed request). `server_status` answers "does the server
-have this exact message?" and moves through `<Status>` events: `""`
-(it does), `pending`, `uploading`, `failed` (with the error in
+`<New>` (a malformed request). `server_status` tracks whether the server
+has this exact message, moving through `<Status>` events: `""`
+(it has it), `pending`, `uploading`, `failed` (with the error in
 `fail_reason`).
 
-**Search.** `message search` is server-side MAM full-text search; page
+**Search.** `message search` is server-side MAM full-text search. Page
 through it with `before: last`. The results aren't chat-view content - show
 them somewhere separate, and jump to one with
 `message goto {date: ts, source: remote}`.
@@ -666,6 +662,19 @@ opens, key rows off `from_jid`, and subscribe to
 `author <Changed> {chat: string, from: string, name: string}` to re-resolve
 a single sender in place (a roster edit, a nick change, a new occupant)
 without refetching the whole map.
+
+**Rendering a message.** Draw a row in this order. If `retracted` is set, the
+row is a tombstone - show the deleted-message placeholder from the header
+(sender and timestamp) and stop, there is no `content`. Otherwise switch on
+`content.type`. A `text` message draws `body`, applying each `formatting` span
+over its offset range. A `media` message draws every entry in `attachments` by
+its `type` - an `image` inline, a `file` as a download chip - then the
+`caption` beneath, styled from its own `formatting` the same way (see
+[Attachments](#attachments)). Around the content go the parts covered
+elsewhere in this section: the sender name, the reaction row from `reactions`,
+and for your own messages the send state in `server_status` and delivery or
+read state in `remote_status`. Switch on `content.type` rather than sniffing
+which fields are present.
 
 ## Attachments
 
