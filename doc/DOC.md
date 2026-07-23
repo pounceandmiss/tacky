@@ -346,7 +346,9 @@ plus a `caption` (grouped attachments are just more than one entry). Each
 chip). `formatting` (XEP-0393 styling spans) indexes into whichever of
 `body`/`caption` the variant carries, with the styling characters already
 removed from that string. A span's `type` is `bold`, `italic`, `overstrike`,
-`monospace`, `preformatted`, or `quote`.
+`monospace`, `preformatted`, or `quote`. Spans may overlap - two styles over
+the same run are two separate entries (each single-type), and the renderer
+combines overlapping spans when drawing (as with TDLib `textEntity`).
 A **retracted** message carries no `content` (the tombstone has no payload, and
 its former body/attachments are never shipped); the `retracted` flag is the
 signal. Deletion is a message-level state, not a content type (matching TDLib);

@@ -6,7 +6,8 @@
 #                                     and formatting key added
 #
 # Entities are {type offset length} triples with offsets into display_body.
-# Compound types are sorted alphabetically and joined with "." (e.g. bold.italic).
+# Each entity has a single type; overlapping styles are emitted as separate
+# overlapping entities, and the renderer combines them.
 
 namespace eval messagestyling {
     namespace export parse enrich
@@ -133,9 +134,9 @@ proc messagestyling::ParseSpansInText {text baseOffset} {
 	set dSpans [dict get $built spans]
 	lappend displayLines $dLine
 
-	set resolved [ResolveEntities $dSpans $lineOffset]
-	foreach {t o l} $resolved {
-	    lappend entities $t $o $l
+	foreach span $dSpans {
+	    lassign $span type dStart dEnd
+	    lappend entities $type [expr {$lineOffset + $dStart}] [expr {$dEnd - $dStart}]
 	}
 	set lineOffset [expr {$lineOffset + [string length $dLine] + 1}]
     }
@@ -324,71 +325,4 @@ proc messagestyling::BuildDisplay {line spans} {
     }
 
     return [dict create display $display spans $displaySpans]
-}
-
-# ResolveEntities: convert potentially overlapping spans into non-overlapping
-# entities with compound type names.
-# Input: list of {type displayStart displayEnd}, baseOffset for global positioning
-# Returns flat list: type offset length type offset length ...
-proc messagestyling::ResolveEntities {displaySpans baseOffset} {
-    if {[llength $displaySpans] == 0} {
-	return {}
-    }
-
-    # Collect all boundary points
-    set boundaries {}
-    foreach span $displaySpans {
-	lassign $span type dStart dEnd
-	lappend boundaries $dStart
-	lappend boundaries $dEnd
-    }
-    set boundaries [lsort -integer -unique $boundaries]
-
-    # For each interval between consecutive boundaries, find active types
-    set result {}
-    set numBounds [llength $boundaries]
-    for {set b 0} {$b < $numBounds - 1} {incr b} {
-	set iStart [lindex $boundaries $b]
-	set iEnd [lindex $boundaries [expr {$b + 1}]]
-
-	# Find all types active in this interval
-	set activeTypes {}
-	foreach span $displaySpans {
-	    lassign $span type dStart dEnd
-	    if {$dStart <= $iStart && $dEnd >= $iEnd} {
-		lappend activeTypes $type
-	    }
-	}
-
-	if {[llength $activeTypes] > 0} {
-	    set activeTypes [lsort -unique $activeTypes]
-	    set compoundType [join $activeTypes .]
-	    set offset [expr {$baseOffset + $iStart}]
-	    set length [expr {$iEnd - $iStart}]
-	    lappend result $compoundType $offset $length
-	}
-    }
-
-    # Merge adjacent entities with the same type
-    set merged {}
-    set prevType ""
-    set prevOffset 0
-    set prevLength 0
-    foreach {type offset length} $result {
-	if {$type eq $prevType && $offset == $prevOffset + $prevLength} {
-	    set prevLength [expr {$prevLength + $length}]
-	} else {
-	    if {$prevType ne ""} {
-		lappend merged $prevType $prevOffset $prevLength
-	    }
-	    set prevType $type
-	    set prevOffset $offset
-	    set prevLength $length
-	}
-    }
-    if {$prevType ne ""} {
-	lappend merged $prevType $prevOffset $prevLength
-    }
-
-    return $merged
 }

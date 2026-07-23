@@ -1482,7 +1482,19 @@ snit::widget chatarea {
             # skip rather than let the index lookup throw and abort the draw.
             if {[info exists message(formatting)]
                 && [llength [$text tag ranges $tag.body]] > 0} {
+                # Font-affecting styles must combine into one tag per run (Tk
+                # fonts don't merge across tags); block styles apply as-is.
+                set fontSpans {}
+                set applied {}
                 foreach {type offset length} $message(formatting) {
+                    if {$type in {bold italic monospace overstrike}} {
+                        lappend fontSpans $type $offset $length
+                    } else {
+                        lappend applied $type $offset $length
+                    }
+                }
+                foreach {type offset length} \
+                        [concat $applied [entitytags::combine $fontSpans]] {
                     $text tag add entity.$type \
                         "$tag.body.first + $offset chars" \
                         "$tag.body.first + $offset chars + $length chars"

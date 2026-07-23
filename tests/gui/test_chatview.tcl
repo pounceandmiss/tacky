@@ -194,6 +194,18 @@ test chatview-live-message {stanza fed through client appears in chatview} \
         list [llength $ids] [expr {[.cv messages newest] ne ""}]
     } -result {1 1}
 
+test chatview-formatting-overlap-combines {overlapping bold+italic render as one compound tag, not last-wins} \
+    {*}$cv_common \
+    -body {
+        cv_feed "*_bold italic_*" srv-fmt1
+        wait
+        # The GUI combines the two overlapping single-type spans into the
+        # compound entity.bold.italic tag; italic is never applied on its own.
+        set ranges [.cv.text tag ranges entity.bold.italic]
+        list [.cv.text get {*}$ranges] \
+             [llength [.cv.text tag ranges entity.italic]]
+    } -result {{bold italic} 0}
+
 test chatview-live-dedup {duplicate stanza-id does not create second message} \
     {*}$cv_common \
     -body {
