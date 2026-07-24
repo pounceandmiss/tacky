@@ -1248,9 +1248,9 @@ snit::widget chatarea {
         # Scale thresholds to viewport height so fetching starts
         # well before the user reaches the edge of loaded content.
         set vh [winfo height $text]
-	set loadTh      [expr {max($options(-load-threshold),         $vh * $options(-load-factor))}]
-	set cleanTh     [expr {max($options(-clean-threshold),        $vh * $options(-clean-factor))}]
-	set cleanTarget [expr {max($options(-clean-target-threshold), $vh * $options(-clean-target-factor))}]
+        set loadTh      [expr {max($options(-load-threshold),         $vh * $options(-load-factor))}]
+        set cleanTh     [expr {max($options(-clean-threshold),        $vh * $options(-clean-factor))}]
+        set cleanTarget [expr {max($options(-clean-target-threshold), $vh * $options(-clean-target-factor))}]
 
         set cleaned {}
 
@@ -1984,8 +1984,8 @@ snit::widgetadaptor chatscrollbtn {
             -image mate/22x22/actions/go-down -style Toolbutton
         $self configurelist $args
 
-	# Wheel events on the button are forwarded to the text widget
-	# so the user can keep scrolling if the cursor comes over it.
+        # Wheel events on the button are forwarded to the text widget
+        # so the user can keep scrolling if the cursor comes over it.
         bind $win <Button-4> \
             [list event generate $options(-parent) <Button-4>]
         bind $win <Button-5> \
