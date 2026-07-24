@@ -137,7 +137,6 @@ jsonify_type jsonify \
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
     } \
     -schemas {
-        message/local_search    {list int}
         message/history         {list message}
         message/goto            goto_result
         message/gotoReply       goto_result

@@ -81,7 +81,7 @@ test json-backend-callback-search {callback result with schema} -setup {
 test json-backend-callback-list {callback with list of ints} -setup {
     _test_clear
 } -body {
-    _test_on_result 7 message/local_search {10 20 30}
+    _test_on_result 7 omemo/devicelist {10 20 30}
     lindex [_test_sent] 0
 } -result [json::write array \
     {"result"} 7 \

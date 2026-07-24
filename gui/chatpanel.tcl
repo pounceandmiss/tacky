@@ -523,13 +523,13 @@ snit::widget chatpanel {
     }
 
     method DoFind {} {
-        ::tacky message local_search -acc $options(-acc) \
+        ::tacky message search -acc $options(-acc) -source local -limit 500 \
             -chat $options(-jid) -query $findQuery \
             -command [mymethod OnFindResults]
     }
 
-    method OnFindResults {timestamps} {
-        set findMatches $timestamps
+    method OnFindResults {result} {
+        set findMatches [lmap m [dict get $result messages] {dict get $m timestamp}]
         if {[llength $findMatches] > 0} {
             set findIndex 0
             $self GotoFindMatch

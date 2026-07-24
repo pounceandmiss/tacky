@@ -551,26 +551,31 @@ snit::type taco_messagestore {
         return [dict create messages $rows bounded $bounded]
     }
 
-    # Full-text search by LIKE match on body. Returns list of timestamps
+    # Full-text search by LIKE match on body. Returns message dicts
     # (newest first, capped at -limit). Holes have NULL body so
     # they're naturally excluded. The query's own LIKE metacharacters
-    # (% _ \) are escaped so they match literally.
+    # (% _ \) are escaped so they match literally. -before is an
+    # exclusive timestamp cursor for paging older.
     method search {jid query args} {
-        array set opts {-limit 500}
+        array set opts {-limit 500 -before ""}
         array set opts $args
         set limit $opts(-limit)
+        set before $opts(-before)
         set escaped [string map [list \\ \\\\ % \\% _ \\_] $query]
         set pattern "%${escaped}%"
-        set timestamps {}
-        $options(-db) eval {
-            SELECT timestamp FROM chat_message
-            WHERE chat_jid=$jid AND kind='message'
-              AND body LIKE $pattern ESCAPE '\'
-            ORDER BY timestamp DESC LIMIT $limit
-        } row {
-            lappend timestamps $row(timestamp)
+        set sql {SELECT timestamp, chat_jid, from_jid, from_resource, body,
+                        server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                        attachments
+                 FROM chat_message
+                 WHERE chat_jid=$jid AND kind='message'
+                   AND body LIKE $pattern ESCAPE '\'}
+        if {$before ne ""} { append sql { AND timestamp < $before} }
+        append sql { ORDER BY timestamp DESC LIMIT $limit}
+        set rows {}
+        $options(-db) eval $sql row {
+            lappend rows [$self RowToDict [array get row]]
         }
-        return $timestamps
+        return $rows
     }
 
     # Find the nearest message to timestamp and return context around
