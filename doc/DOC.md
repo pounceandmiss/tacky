@@ -310,8 +310,7 @@ Event:
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}  -> [message]
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
-    message search {chat: string, query: string, limit?: int, before?: string}            -> search_result
-    message local_search {chat: string, query: string, limit?: int}                        -> [int]
+    message search {chat: string, query: string, source?: string, limit?: int, before?: string} -> search_result
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
@@ -652,14 +651,16 @@ has this exact message, moving through `<Status>` events: `""`
 (it has it), `pending`, `uploading`, `failed` (with the error in
 `fail_reason`).
 
-**Search.** `message search` is server-side MAM full-text search. Page
-through it with `before: last`. The results aren't chat-view content - show
-them somewhere separate, and jump to one with
-`message goto {date: ts, source: remote}`. `message local_search` is the
-local counterpart: a substring match over the bodies already stored for one
-chat, returning matching timestamps newest-first (LIKE metacharacters in the
-query match literally). Jump to one with `message goto {date: ts, source:
-local}`.
+**Search.** `message search` takes a `source`, mirroring `goto`. `source:
+remote` (the default) is server-side MAM full-text: page through it with
+`before: last`, and jump to a hit with `message goto {date: ts, source:
+remote}`. `source: local` is a substring match over the bodies already stored
+for one chat (LIKE metacharacters in the query match literally); it returns
+the same `search_result`, needs no paging in practice, and you jump to a hit
+with `message goto {date: ts, source: local}`. Either way the results aren't
+chat-view content - show them somewhere separate. `field` and `before` on the
+remote path select the full-text form field and the RSM cursor; `before` on
+the local path is an exclusive timestamp cursor.
 
 **Sender names.** A message row carries a `from_jid`, not a display name.
 `author get {chat: string} -> {from_jid: name, ...}` resolves the names for

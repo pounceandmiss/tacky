@@ -2052,6 +2052,46 @@ test message-search-multiple-hits-share-middle-hole {two hits with no citizens b
              [expr {[lindex $sents 2] > $ts2}]
     } -result {3 1 1 1}
 
+# Search: source local (synchronous LIKE over the local store)
+
+test message-search-local-basic {source local returns matching message dicts newest-first with complete/last} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 body {find me}] \
+            [msg_msg timestamp 200 body {find me too}] \
+            [msg_msg timestamp 300 body other]]
+        set r [msg_search -chat alice@example.com -query {find me} -source local]
+        list [lmap m [dict get $r messages] {dict get $m timestamp}] \
+             [dict get [lindex [dict get $r messages] 0] content body] \
+             [dict get $r complete] \
+             [dict get $r last]
+    } -result {{200 100} {find me too} 1 100}
+
+test message-search-local-complete-flag {source local marks complete false and reports last when the limit is hit} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 body x1] \
+            [msg_msg timestamp 200 body x2] \
+            [msg_msg timestamp 300 body x3]]
+        set r [msg_search -chat alice@example.com -query x -source local -limit 2]
+        list [lmap m [dict get $r messages] {dict get $m timestamp}] \
+             [dict get $r complete] \
+             [dict get $r last]
+    } -result {{300 200} 0 200}
+
+test message-search-local-before {source local -before pages to older matches} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 body x1] \
+            [msg_msg timestamp 200 body x2] \
+            [msg_msg timestamp 300 body x3]]
+        set r [msg_search -chat alice@example.com -query x -source local -before 300]
+        lmap m [dict get $r messages] {dict get $m timestamp}
+    } -result {200 100}
+
 # XEP-0461 replies: ingest parsing + gotoReply
 
 test message-live-reply-fields {reply target id + author parsed into stored fields} \

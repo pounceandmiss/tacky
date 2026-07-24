@@ -940,19 +940,6 @@ snit::type taco_message {
             -timestamp $ts -server_status failed -fail_reason $reason
     }
 
-    # local_search -chat $jid -query "text" ?-limit n? -command $cb
-    # Synchronous LIKE search on local SQLite store.
-    # Invokes callback with list of timestamps (newest first).
-    method local_search {args} {
-        array set opts $args
-        set searchArgs {}
-        if {[info exists opts(-limit)]} {
-            lappend searchArgs -limit $opts(-limit)
-        }
-        set timestamps [$messagestore search $opts(-chat) $opts(-query) {*}$searchArgs]
-        {*}$opts(-command) $timestamps
-    }
-
     # rawxml -chat $chatJid -timestamp $ts -command $cb
     tackymethod rawxml {args} {
         array set opts $args
@@ -1534,18 +1521,20 @@ snit::type taco_message {
             -limit $limit -tag $tag -command $callback
     }
 
-    # search -chat $jid -query "text" ?-before $serverId? ?-limit 20?
-    #        ?-tag $tag? -command $cb
+    # search -chat $jid -query "text" ?-source local|remote? ?-before $cursor?
+    #        ?-limit 20? ?-field $var? ?-tag $tag? -command $cb
     #
-    # Full text search via MAM. Always server-side.
-    # Results are stored to the local cache and wrapped with holes
-    # on each side — a hit is an isolated island whose surroundings we
-    # know nothing about, so future pagination across it must fall
-    # through to MAM. `hole add` is a no-op when the target gap is
-    # already holeed, so repeated searches don't accumulate.
+    # Full text search. -source remote (default) queries MAM; hits are stored
+    # to the local cache and wrapped with holes on each side — a hit is an
+    # isolated island whose surroundings we know nothing about, so future
+    # pagination across it must fall through to MAM. `hole add` is a no-op
+    # when the target gap is already holeed, so repeated searches don't
+    # accumulate. -source local is a synchronous LIKE match over already-
+    # stored bodies (-field and -tag cancel don't apply); -before is an
+    # exclusive timestamp cursor.
     # Callback receives dict: messages, complete, last
     method search {args} {
-        array set opts {-limit 20 -tag "" -field ""}
+        array set opts {-limit 20 -tag "" -field "" -source remote}
         array set opts $args
 
         set chatJid $opts(-chat)
@@ -1554,6 +1543,18 @@ snit::type taco_message {
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
+        }
+
+        if {$opts(-source) eq "local"} {
+            set searchArgs [list -limit $opts(-limit)]
+            if {[info exists opts(-before)]} {
+                lappend searchArgs -before $opts(-before)
+            }
+            set rows [$messagestore search $chatJid $opts(-query) {*}$searchArgs]
+            set complete [expr {[llength $rows] < $opts(-limit)}]
+            set last [expr {[llength $rows] ? [dict get [lindex $rows end] timestamp] : ""}]
+            {*}$callback [dict create messages $rows complete $complete last $last]
+            return
         }
 
         set mamArgs [list -fulltext $opts(-query) -max $opts(-limit)]

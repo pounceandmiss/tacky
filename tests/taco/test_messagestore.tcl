@@ -45,6 +45,11 @@ proc ms_count {{kind message} {jid alice@example.com}} {
 proc ms_msgs {result} { dict get $result messages }
 proc ms_bounded {result} { dict get $result bounded }
 
+# Helper: search and return just the matching timestamps
+proc ms_search_ts {jid query args} {
+    lmap m [store search $jid $query {*}$args] {dict get $m timestamp}
+}
+
 # =============================================================================
 # Store: basic
 # =============================================================================
@@ -922,8 +927,16 @@ test messagestore-search-skips-holes {search results never include hole rows} \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id s1 body needle]]
         store hole add alice@example.com newer 100
-        store search alice@example.com needle
+        ms_search_ts alice@example.com needle
     } -result {100}
+
+test messagestore-search-returns-message-dicts {search returns full message dicts, not bare timestamps} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body needle]]
+        set m [lindex [store search alice@example.com needle] 0]
+        list [dict get $m timestamp] [dict get $m content body]
+    } -result {100 needle}
 
 test messagestore-search-no-match {a query matching nothing returns empty} \
     {*}$ms_common \
@@ -939,8 +952,18 @@ test messagestore-search-limit-and-order {results are newest-first and capped at
             [ms_msg timestamp 100 body x1] \
             [ms_msg timestamp 200 body x2] \
             [ms_msg timestamp 300 body x3]]
-        store search alice@example.com x -limit 2
+        ms_search_ts alice@example.com x -limit 2
     } -result {300 200}
+
+test messagestore-search-before-cursor {-before excludes rows at or newer than the cursor} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body x1] \
+            [ms_msg timestamp 200 body x2] \
+            [ms_msg timestamp 300 body x3]]
+        ms_search_ts alice@example.com x -before 300
+    } -result {200 100}
 
 test messagestore-search-escapes-like-wildcards {% in the query matches literally, not as a wildcard} \
     {*}$ms_common \
@@ -948,7 +971,7 @@ test messagestore-search-escapes-like-wildcards {% in the query matches literall
         ms_batch [list \
             [ms_msg timestamp 100 body {50% off}] \
             [ms_msg timestamp 200 body {500 items}]]
-        store search alice@example.com 50%
+        ms_search_ts alice@example.com 50%
     } -result {100}
 
 test messagestore-search-escapes-underscore {_ in the query matches literally, not as a wildcard} \
@@ -957,7 +980,7 @@ test messagestore-search-escapes-underscore {_ in the query matches literally, n
         ms_batch [list \
             [ms_msg timestamp 100 body a_b] \
             [ms_msg timestamp 200 body axb]]
-        store search alice@example.com a_b
+        ms_search_ts alice@example.com a_b
     } -result {100}
 
 # resolveReply (XEP-0461 target lookup)
