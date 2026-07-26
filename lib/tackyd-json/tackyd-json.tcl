@@ -229,8 +229,20 @@ proc strip_dashes {d} {
     return $out
 }
 
+proc wire_event {event} {
+    string trim $event <>
+}
+
+proc tcl_event {event} {
+    return <[string trim $event <>]>
+}
+
+# Keys pick up a dash; an event name picks up the <> the Tcl side switches on.
 proc add_dashes {d} {
     set out {}
-    dict for {k v} $d { lappend out -$k $v }
+    dict for {k v} $d {
+        if {$k eq "event"} { set v [tcl_event $v] }
+        lappend out -$k $v
+    }
     return $out
 }

@@ -120,7 +120,7 @@ static int fail(tacky *c, const char *stage) {
     return TCL_ERROR;
 }
 
-/* Emit ["event","backend","<Dead>",{"error":"..."}] when init failed. The
+/* Emit ["event","backend","Dead",{"error":"..."}] when init failed. The
  * message is JSON-escaped by hand; the interp may already be unusable. */
 static void emit_dead(tacky *c) {
     const char *msg = c->err ? c->err : "backend init failed";
@@ -130,7 +130,7 @@ static void emit_dead(tacky *c) {
     if (!c->emit) return;
     buf = (char *)malloc(n * 6 + 64);
     if (!buf) return;
-    w = (size_t)sprintf(buf, "[\"event\",\"backend\",\"<Dead>\",{\"error\":\"");
+    w = (size_t)sprintf(buf, "[\"event\",\"backend\",\"Dead\",{\"error\":\"");
     for (i = 0; i < n; i++) {
         unsigned char ch = (unsigned char)msg[i];
         if (ch == '"' || ch == '\\') {

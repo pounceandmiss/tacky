@@ -6,7 +6,7 @@
  *
  *   - tacky_send()  feeds a request  ["module","method",{args}]        (or +token)
  *   - the emit callback delivers replies ["result",token,data] /
- *     ["error",token,msg] and events ["event",module,"<Event>",{args}]
+ *     ["error",token,msg] and events ["event",module,"Event",{args}]
  *
  * Threading contract (TDLib-style):
  *   - The emit callback fires on the BACKEND thread, not the caller's. Copy the
@@ -40,7 +40,7 @@ typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
  * initializes asynchronously and processes queued requests, in order, once it
  * is up. Returns NULL only on immediate failure (allocation, thread spawn).
  * If initialization fails, the backend emits
- * ["event","backend","<Dead>",{"error":...}] and goes dead: no replies ever
+ * ["event","backend","Dead",{"error":...}] and goes dead: no replies ever
  * arrive, and the handle must still be passed to tacky_destroy(). */
 tacky *tacky_create(const char *const *taco_args,
                     tacky_emit_fn emit, void *ud);

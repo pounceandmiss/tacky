@@ -60,7 +60,7 @@ away. `taco_args` is a NULL-terminated array of taco_type constructor args
 (e.g. `"-transient", "0"`), or NULL. Each `tacky_send` carries one complete JSON
 request; each emit callback delivers one complete JSON reply or event.
 If the backend fails to start up it emits
-`["event","backend","<Dead>",{"error":"..."}]` and goes dead: no replies
+`["event","backend","Dead",{"error":"..."}]` and goes dead: no replies
 arrive, and you still have to destroy the handle. You can call `tacky_send`
 from any thread; the emit callback fires on the backend thread, so copy
 the bytes out before you return (they're invalid afterward), hand them to
@@ -82,9 +82,12 @@ together. The two transports line up directly:
     ...with a token for a reply         ...-command $cb ?-onerror $ecb?
     ["result", token, data]             $cb data
     ["error", token, message]           $ecb message
-    ["event","mod","<E>",{...}]         a fired listen/observe callback
+    ["event","mod","E",{...}]           a fired listen/observe callback
 
-Keys pick up a `-`; the argument and result values are the same either
+On the Tcl side keys pick up a `-` and event names pick up `<>` (Tk
+binding style); the JSON wire drops both and carries bare names, in both
+directions - an event name sent *in* as a `pull` argument is bare too
+(`{"event": "Tail"}`). The argument and result values are the same either
 way. Errors route three ways: with both `-command` and `-onerror`, a
 failure goes to `-onerror`; with just `-command`, it comes back as an
 `error <MethodError>` event (`-module -method -message -errorinfo`); with
@@ -140,8 +143,8 @@ does its work through the event stream and never answers the token.
 Events get pushed whenever something happens; they aren't tied to a
 request.
 
-    ["event", "module", "<EventName>", {payload}]
-    ["event", "message", "<New>",
+    ["event", "module", "EventName", {payload}]
+    ["event", "message", "New",
       {"acc": "me@host", "jid": "peer@host",
        "message": {"timestamp": 1700000000, "is_outgoing": false,
                    "content": {"type": "text", "body": "hi"}}}]
@@ -152,7 +155,22 @@ you want the current state instead of waiting for the next change, call a
 getter or the module's `pull` method - `pull` re-fires the relevant event
 with the value as it stands now.
 
+    ["module", "pull", {"event": "EventName", ...args}]
+    ["omemo", "pull", {"event": "TrustList", "acc": "me@host", "jid": "peer@host"}]
+
+In the json api, `pull` names its event bare. Only the events marked
+`pullable` in the reference below accept it; anything else errors. The
+remaining arguments are whatever the event is keyed on - `acc` for any
+per-account module, plus `jid` for the per-chat events, or `key` for
+`setting`.
+
 # Reference
+
+Event names are written `<LikeThis>` throughout, to set them apart from
+methods at a glance - `account list` is a method, `account <Added>` is an
+event. The brackets are notation, not part of the name: on the JSON wire
+every event name is bare, both in an `["event", ...]` message and as a
+`pull` argument. The Tcl binding does use the bracketed form literally.
 
 ## account
 

@@ -39,25 +39,13 @@ proc _test_on_error {id errmsg} {
         [json::write string $errmsg]]
 }
 
-proc strip_dashes {d} {
-    set out {}
-    dict for {k v} $d { lappend out [string trimleft $k -] $v }
-    return $out
-}
-
-proc add_dashes {d} {
-    set out {}
-    dict for {k v} $d { lappend out -$k $v }
-    return $out
-}
-
 proc _test_emit {module event args} {
     set args [strip_dashes $args]
     set json_args [jsonify convert $module/$event $args]
     _test_pipesend [json::write array \
         [json::write string event] \
         [json::write string $module] \
-        [json::write string $event] \
+        [json::write string [wire_event $event]] \
         $json_args]
 }
 
@@ -259,7 +247,7 @@ test json-backend-emit-event {emit event with schema, dashless keys} -setup {
         -message [dict create timestamp 100 body hello is_outgoing 0]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<New>"} \
+    {"event"} {"message"} {"New"} \
     [json::write object \
         message [json::write object timestamp 100 body {"hello"} is_outgoing false]]]
 
@@ -272,7 +260,7 @@ test json-backend-emit-formatting {emit message with formatting entities} -setup
                           formatting {bold 6 4}]]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<New>"} \
+    {"event"} {"message"} {"New"} \
     [json::write object \
         message [json::write object timestamp 100 \
             content [json::write object type {"text"} body {"hello bold world"} \
@@ -290,7 +278,7 @@ test json-backend-emit-attachments {emit message with attachments and caption} -
                           caption ""]]
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<New>"} \
+    {"event"} {"message"} {"New"} \
     [json::write object \
         message [json::write object timestamp 100 \
             content [json::write object type {"media"} \
@@ -305,7 +293,7 @@ test json-backend-emit-retracted {retraction emits lean jid + int timestamp, no 
     _test_emit message <Retracted> -jid room@conf.example.com -timestamp 1700
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"message"} {"<Retracted>"} \
+    {"event"} {"message"} {"Retracted"} \
     [json::write object \
         jid {"room@conf.example.com"} timestamp 1700]]
 
@@ -315,7 +303,7 @@ test json-backend-emit-no-schema {emit event without schema, dashless keys} -set
     _test_emit account <Added> -acc user@example.com
     lindex [_test_sent] 0
 } -result [json::write array \
-    {"event"} {"account"} {"<Added>"} \
+    {"event"} {"account"} {"Added"} \
     [json::write object acc {"user@example.com"}]]
 
 # -- dispatch (JSON parsing) tests ------------------------------------------
@@ -336,6 +324,17 @@ test json-backend-parse-with-args {dashless JSON args become dashed Tcl dict} -b
     set args [add_dashes [lindex $parts 2]]
     list [dict get $args -acc] [dict get $args -tag]
 } -result {a@b.c w1}
+
+# A bare `event` value has to regain its <> before it reaches a taco `pull`,
+# which switches on the bracketed name.
+test json-backend-parse-event-arg {bare event arg becomes a bracketed Tcl name} -body {
+    set parts [::json::json2dict {["message","pull",{"event":"Tail","jid":"peer@srv"}]}]
+    add_dashes [lindex $parts 2]
+} -result {-event <Tail> -jid peer@srv}
+
+test json-backend-parse-event-arg-idempotent {an already-bracketed event survives} -body {
+    add_dashes [dict create event <State>]
+} -result {-event <State>}
 
 # -- integration: dispatch through taco via process --------------------------
 

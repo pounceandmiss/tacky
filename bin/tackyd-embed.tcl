@@ -9,7 +9,7 @@
 #
 # Incoming (tackyd_dispatch):   ["module","method",{args}]        fire-and-forget
 #                               ["module","method",{args},token]   request/response
-# Outgoing (tacky_native_emit): ["event","module","<Event>",{args}] broadcast
+# Outgoing (tacky_native_emit): ["event","module","Event",{args}]   broadcast
 #                               ["result",token,data]                success reply
 #                               ["error",token,message]              error reply
 #
@@ -53,13 +53,14 @@ namespace eval ::tacky_ns {
             }
             return
         }
-        # Broadcast events -> ["event", module, "<Event>", {args}]
+        # Broadcast events -> ["event", module, "Event", {args}]
+        # $event stays bracketed as the schema key.
         set args [strip_dashes $args]
         set json_args [jsonify convert $module/$event $args]
         tacky_native_emit [json::write array \
             [json::write string event] \
             [json::write string $module] \
-            [json::write string $event] \
+            [json::write string [wire_event $event]] \
             $json_args]
     }
 }
