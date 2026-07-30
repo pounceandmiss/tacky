@@ -493,20 +493,31 @@ test omemo-unit-devicelist-error-caches-empty \
             resolved $::_resolved
     } -result {cached {} resolved 1}
 
-# Eager bundle fetch: on learning a devicelist we fetch a bundle for
-# every announced device we haven't keyed yet (own + peer), so the trust
-# UI shows them without a message exchange. Skips already-keyed devices
-# and our own current device. Uses a mock conn to capture the fetch IQs.
+# Eager warm: on learning a devicelist we fetch a bundle for every
+# announced device we have no session with (own + peer) and build the
+# session from it, so the trust UI shows fingerprints and encrypt() finds
+# every device ready. Skips devices we already have a session for and our
+# own current device. Uses a mock conn to capture the fetch IQs.
+#
+# A trust row is deliberately NOT a skip: it only means we have seen the
+# fingerprint. Device 2 below is keyed but sessionless - the state that
+# left announced devices permanently unaddressed - and must be fetched.
 test omemo-unit-eager-bundle-fetch-peer \
-    {EnsureBundlesForDevicelist fetches unkeyed peer devices, skips keyed} \
+    {EnsureBundlesForDevicelist fetches sessionless peer devices, skips sessioned} \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
-        # Pre-key romeo device 2 so it's skipped.
+        # Device 2: trust row but no session - still needs fetching.
         c db eval {
             INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
                 identity_pk, trust, active, last_activation)
             VALUES('juliet@capulet.lit','romeo@montague.lit',2,x'00','trusted',1,1)
+        }
+        # Device 3: has a session, so it is skipped. The blob is never
+        # deserialized - the skip happens on the row's existence.
+        c db eval {
+            INSERT INTO omemo_sessions(account_jid, peer_jid, peer_device, blob)
+            VALUES('juliet@capulet.lit','romeo@montague.lit',3,x'00')
         }
     }] -body {
         set before [llength [c conn get_written]]
@@ -519,7 +530,30 @@ test omemo-unit-eager-bundle-fetch-peer \
             }
         }
         lsort -integer $fetched
-    } -result {1 3}
+    } -result {1 2}
+
+test omemo-unit-eager-warm-skips-given-up-device \
+    {a device given up on this connection is not re-fetched} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        # First pass fetches both; time out device 1 so it is given up on.
+        c omemo EnsureBundlesForDevicelist $::test::omemo_unit::ROMEO {1 2}
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 1
+        set before [llength [c conn get_written]]
+        c omemo EnsureBundlesForDevicelist $::test::omemo_unit::ROMEO {1 2}
+        set fetched {}
+        foreach s [lrange [c conn get_written] $before end] {
+            set node [xsearch $s pubsub items -get @node]
+            if {[string match {*axolotl.bundles:*} $node]} {
+                lappend fetched [lindex [split $node :] end]
+            }
+        }
+        # Device 2's fetch is still in flight (deduped by BundleFetchWaiters),
+        # device 1 is given up on: neither is re-fetched.
+        list refetched $fetched gaveup [c omemo BundleGaveUp $::test::omemo_unit::ROMEO 1]
+    } -result {refetched {} gaveup 1}
 
 test omemo-unit-eager-bundle-fetch-skips-own-device \
     {EnsureBundlesForDevicelist skips our own current device} \
@@ -747,6 +781,187 @@ test omemo-unit-self-chat-excludes-own-current-device \
         } _ opts]
         list code $code ecode [dict get $opts -errorcode]
     } -result {code 1 ecode TACO_OMEMO_TERMINAL}
+
+# =====================================================================
+# Partial-recipient-set gate: encrypt must never key a payload for only
+# some of a peer's announced devices. A device left out of the header
+# receives a message it cannot open and renders "not encrypted for this
+# device", and nothing repairs it (the row goes on_wire, so the warm
+# retry ticks skip it). So a still-warming device holds the send.
+
+# Inject a devicelist for $jid as a PEP notification.
+proc ::test::omemo_unit::injectDevicelist {jid devices} {
+    c omemo OnDevicelist [j message -from $jid {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node eu.siacs.conversations.axolotl.devicelist {
+                j item {
+                    j list -ns eu.siacs.conversations.axolotl {
+                        foreach d $devices { j device -id $d }
+                    }
+                }
+            }
+        }
+    }]
+}
+
+# Give $jid/$dev a real session, minted from an independent store so
+# `initiate` genuinely succeeds. Returns the device id.
+proc ::test::omemo_unit::giveSession {jid dev} {
+    omemo::store create sessionpeer -device $dev
+    sessionpeer setup
+    set bundle [sessionpeer bundle]
+    sessionpeer destroy
+    c omemo BuildSessionFromBundle $jid $dev $bundle
+    return $dev
+}
+
+# rid list from an <encrypted> node, sorted.
+proc ::test::omemo_unit::keyRids {enc} {
+    set rids [list]
+    xsearch $enc header key -script kn {
+        lappend rids [xsearch $kn -get @rid]
+    }
+    return [lsort -integer $rids]
+}
+
+test omemo-unit-encrypt-holds-for-warming-peer-device \
+    {encrypt NOT_READYs rather than keying only the sessioned device} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::JULIET_BARE [list [c omemo device_id]]
+        # Device 111 is ready, 222 has never been keyed: announcing both
+        # kicks a bundle fetch for 222, which stays in flight.
+        ::test::omemo_unit::giveSession $::test::omemo_unit::ROMEO 111
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::ROMEO {111 222}
+    }] -body {
+        set code [catch {
+            c omemo encrypt $::test::omemo_unit::ROMEO "hello"
+        } _ opts]
+        list code $code ecode [dict get $opts -errorcode]
+    } -result {code 1 ecode TACO_OMEMO_NOT_READY}
+
+test omemo-unit-encrypt-proceeds-without-given-up-device \
+    {a device whose bundle we gave up on does not hold the send} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::JULIET_BARE [list [c omemo device_id]]
+        ::test::omemo_unit::giveSession $::test::omemo_unit::ROMEO 111
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::ROMEO {111 222}
+        # 222's bundle never arrives; the deadline gives up on it.
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 222
+    }] -body {
+        set enc [c omemo encrypt $::test::omemo_unit::ROMEO "hello"]
+        ::test::omemo_unit::keyRids $enc
+    } -result {111}
+
+test omemo-unit-encrypt-holds-for-warming-own-device \
+    {an unsessioned own device holds the send too} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        ::test::omemo_unit::giveSession $::test::omemo_unit::ROMEO 111
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::ROMEO {111}
+        # Our own second client is announced but unsessioned. The peer is
+        # fully ready, so only the own device can be holding the send.
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::JULIET_BARE \
+            [list [c omemo device_id] 999]
+    }] -body {
+        set code [catch {
+            c omemo encrypt $::test::omemo_unit::ROMEO "hello"
+        } _ opts]
+        list code $code ecode [dict get $opts -errorcode]
+    } -result {code 1 ecode TACO_OMEMO_NOT_READY}
+
+test omemo-unit-bundle-timeout-fails-waiters \
+    {OnBundleFetchTimeout gives up on the device and errors its waiters} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_bundleErr ""
+    } -extra-cleanup {
+        unset -nocomplain ::_bundleErr
+    }] -body {
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 222 \
+            [list apply {{jid dev bundle err} { set ::_bundleErr $err }}]
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 222
+        list gaveup [c omemo BundleGaveUp $::test::omemo_unit::ROMEO 222] \
+            err [expr {$::_bundleErr ne ""}]
+    } -result {gaveup 1 err 1}
+
+# The IQ reply can still land after we gave up on it: OnFetchedBundle
+# must not trip over its own vacated waiter entry.
+test omemo-unit-bundle-reply-after-timeout-no-error \
+    {a bundle reply arriving after the deadline is handled, not thrown} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 222 \
+            [list apply {args {}}]
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 222
+        set late [j iq -type error -from $::test::omemo_unit::ROMEO {
+            j error -type cancel {
+                j {item-not-found} -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        catch {c omemo OnFetchedBundle $::test::omemo_unit::ROMEO 222 $late} err
+        list code [catch {
+            c omemo OnFetchedBundle $::test::omemo_unit::ROMEO 222 $late
+        }] err $err
+    } -result {code 0 err {}}
+
+# One wake per peer, not one per device: encrypt now needs EVERY candidate
+# warm, so a per-device tick would drive a retry that is still NOT_READY
+# and burn a unit of taco_message's retry budget.
+test omemo-unit-session-ready-waits-for-all-fetches \
+    {SessionReady is suppressed until the peer has no fetch outstanding} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_ready 0
+        c bus subscribe ::dummy omemo:<SessionReady> \
+            [list apply {args { incr ::_ready }}]
+    } -extra-cleanup {
+        unset -nocomplain ::_ready
+    }] -body {
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 111 [list apply {args {}}]
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 222 [list apply {args {}}]
+        # A session becoming ready mid-warm must not wake the sender yet.
+        c omemo NotifySessionReady $::test::omemo_unit::ROMEO
+        set suppressed $::_ready
+        c omemo ResolvedBundleFetch $::test::omemo_unit::ROMEO 111 ""
+        set afterFirst $::_ready
+        # The last fetch failing still wakes: no session was built, so
+        # nothing else would fire and the parked row would strand.
+        c omemo ResolvedBundleFetch $::test::omemo_unit::ROMEO 222 "boom"
+        list suppressed $suppressed after_first $afterFirst after_last $::_ready
+    } -result {suppressed 0 after_first 0 after_last 1}
+
+# Building a session silently reserves a one-time prekey (the publisher
+# only drops it once a message using it arrives). Always taking index 0
+# would make ours the entry most likely already consumed elsewhere.
+test omemo-unit-prekey-selection-varies \
+    {pickPrekey does not always return the same prekey} \
+    -body {
+        set prekeys [lmap i [lrange [split [string repeat "x " 100]] 0 99] {
+            dict create id [incr ::_pkid] pk "key$::_pkid"
+        }]
+        unset -nocomplain ::_pkid
+        set seen [dict create]
+        for {set i 0} {$i < 50} {incr i} {
+            dict set seen [dict get \
+                [::taco::omemo::pickPrekey $prekeys] id] 1
+        }
+        expr {[dict size $seen] > 1}
+    } -result 1
 
 test omemo-unit-devicelist-transient-error-leaves-pending \
     {a transient PEP error does not cache empty or wake (message stays pending)} \
