@@ -81,6 +81,11 @@ namespace eval ::taco::omemo {
     # Min interval between heals to one peer-device. Survives
     # reconnect (see HealAt) to stop a re-key ping-pong.
     variable HEAL_WINDOW_MS 60000
+    # Give-up deadline for a bundle fetch. encrypt() blocks a send while
+    # any candidate device is still warming, and `iq request` never times
+    # out on its own, so a server that swallows the IQ would wedge the
+    # chat for the whole connection without this.
+    variable BUNDLE_FETCH_TIMEOUT_MS 10000
 
     # OMEMO 0.3 wire format (matches libsignal / oldmemo) carries
     # Curve25519 public keys as 33 bytes: a 0x05 DJB-type prefix
@@ -94,6 +99,18 @@ namespace eval ::taco::omemo {
             return [string range $bytes 1 end]
         }
         return $bytes
+    }
+
+    # Pick one of a bundle's one-time prekeys. Random, not first: building
+    # a session reserves a prekey silently (the publisher only drops it
+    # once a message using it arrives), so if every client took index 0
+    # that entry would be the one most likely already consumed elsewhere,
+    # and the handshake would fail. Matches Conversations.
+    proc pickPrekey {prekeys} {
+        set n [llength $prekeys]
+        if {$n == 0} { return "" }
+        binary scan [omemo::random 4] Iu r
+        return [lindex $prekeys [expr {$r % $n}]]
     }
 }
 
@@ -125,6 +142,20 @@ snit::type taco_omemo {
     # callbacks to fire when fetch resolves.
     variable BundleFetchWaiters
 
+    # Per-(peer_jid, peer_device) bundle fetch state: key=(jid|dev), val=
+    # pending|error. There is no success state - a built session is the
+    # record of success. encrypt() blocks a send while any candidate is
+    # `pending` and ignores `error` ones, so one unreachable device costs
+    # its own keys rather than the whole chat. Cleared on disconnect with
+    # the other caches, so a device that was down gets one fresh attempt
+    # per connection.
+    variable BundleFetchState
+
+    # `after` tokens for the BUNDLE_FETCH_TIMEOUT_MS deadlines, keyed the
+    # same way. Cancelled when the fetch resolves, on disconnect, and in
+    # the destructor (a live token would fire onto a dead object).
+    variable BundleFetchTimer
+
     # MAM postpone state, drained at mam:<QueryEnd> only when mamHadOmemo
     # is set (so a MAM page with no OMEMO traffic skips the flush).
     #   Postponed:           side effects from successful MAM decrypts
@@ -154,6 +185,8 @@ snit::type taco_omemo {
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
+        set BundleFetchState [dict create]
+        set BundleFetchTimer [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
@@ -183,10 +216,18 @@ snit::type taco_omemo {
     destructor {
         catch {$client bus unsubscribe $self}
         catch {$client pubsub unhandler $::taco::omemo::NS_DEVICELIST}
+        $self CancelBundleTimers
         dict for {key sess} $Sessions {
             catch {$sess destroy}
         }
         if {$store ne ""} { catch {$store destroy} }
+    }
+
+    method CancelBundleTimers {} {
+        dict for {key tok} $BundleFetchTimer {
+            catch {after cancel $tok}
+        }
+        set BundleFetchTimer [dict create]
     }
 
     method Migrate {} {
@@ -243,9 +284,14 @@ snit::type taco_omemo {
     method OnDisconnect {args} {
         # Drop in-memory caches so the next connection is unconditioned.
         # HealAt is kept on purpose - it must outlive reconnects.
+        # BundleFetchState goes too: give-ups are per-connection, and the
+        # in-flight ones are dead anyway (iq cancelAll drops their
+        # handlers without invoking them).
+        $self CancelBundleTimers
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
+        set BundleFetchState [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
@@ -340,8 +386,59 @@ snit::type taco_omemo {
     # DB, built from a bundle, or established by inbound decrypt).
     # taco_message retries pending sends that hit TACO_OMEMO_NOT_READY.
     # Internal bus only (per peer-device, not GUI-relevant).
+    #
+    # Suppressed while that peer still has bundle fetches outstanding:
+    # encrypt() now needs EVERY candidate warm, so a per-device tick would
+    # drive a retry that is still NOT_READY and burn a unit of
+    # taco_message's OmemoRetryBudget - a peer with more warming devices
+    # than the budget would get its message failed mid-warm-up. The last
+    # fetch to resolve fires the tick via ResolvedBundleFetch.
     method NotifySessionReady {peerJid} {
+        if {[$self HasPendingBundleFetch $peerJid]} return
         $client bus publish omemo:<SessionReady> -jid $peerJid
+    }
+
+    method HasPendingBundleFetch {jid} {
+        dict for {key state} $BundleFetchState {
+            if {$state ne "pending"} continue
+            # Split on the LAST separator: the device id is numeric, but a
+            # JID localpart may legally contain a bar.
+            set sep [string last | $key]
+            if {[string range $key 0 $sep-1] eq $jid} { return 1 }
+        }
+        return 0
+    }
+
+    # Called after a bundle fetch for $peerJid/$peerDev settles either way.
+    # Clears the pending mark (setting `error` when $err is non-empty) and,
+    # once that peer has nothing left in flight, wakes parked sends. The
+    # wake has to happen on the error path too: if the LAST warming device
+    # is the one that failed, no session was built, so nothing else would
+    # fire and the parked row would wait for the next connection.
+    method ResolvedBundleFetch {peerJid peerDev err} {
+        set key "$peerJid|$peerDev"
+        if {[dict exists $BundleFetchTimer $key]} {
+            catch {after cancel [dict get $BundleFetchTimer $key]}
+            dict unset BundleFetchTimer $key
+        }
+        if {$err ne ""} {
+            dict set BundleFetchState $key error
+        } elseif {[dict exists $BundleFetchState $key]
+                  && [dict get $BundleFetchState $key] eq "pending"} {
+            # Only clear our own pending mark. A waiter that ran just
+            # before us may have marked this device `error` (a bundle that
+            # parses but cannot produce a session), and that must stick.
+            dict unset BundleFetchState $key
+        }
+        if {[$self HasPendingBundleFetch $peerJid]} return
+        if {$peerJid eq $accountJid} {
+            # Account-level prerequisite: wake every parked row, not just
+            # this peer's (OnOmemoSelfReady scope), since our own devices
+            # gate sends to all chats.
+            $client bus publish omemo:<SelfReady>
+        } else {
+            $client bus publish omemo:<SessionReady> -jid $peerJid
+        }
     }
 
     # =====================================================================
@@ -592,20 +689,33 @@ snit::type taco_omemo {
         $self EnsureBundlesForDevicelist $peerJid $devices
     }
 
-    # Fetch bundles for announced devices we haven't keyed yet, so the
-    # trust UI shows each device's fingerprint before any message exchange
-    # (mirrors Dino). Skips our own current device and already-keyed rows.
+    # Warm announced devices: fetch each one's bundle and build the
+    # session from it, so the trust UI has fingerprints before any message
+    # exchange (mirrors Dino) AND encrypt() finds every device ready
+    # instead of holding the send for a round-trip per device.
+    #
+    # A session build is invisible to the peer - a pubsub read plus local
+    # crypto, nothing sent to the device - so doing it ahead of time costs
+    # only the fetch we were already making. Sessions persist, so after
+    # the first pass only genuinely new devices are fetched.
+    #
+    # Skips our own current device, devices we already have a session for,
+    # and ones given up on this connection. Deliberately does NOT skip
+    # devices IsDeviceBlocked would reject: with blind trust off that
+    # includes every device we have no trust row for yet, and those are
+    # precisely the ones whose fingerprint the trust UI needs.
     method EnsureBundlesForDevicelist {jid devices} {
         foreach dev $devices {
             if {$jid eq $accountJid && $dev == $deviceId} continue
+            if {[$self BundleGaveUp $jid $dev]} continue
             set have [$db onecolumn {
-                SELECT 1 FROM omemo_trust
+                SELECT 1 FROM omemo_sessions
                 WHERE account_jid=$accountJid
                   AND peer_jid=$jid AND peer_device=$dev
             }]
             if {$have ne ""} continue
-            jlog debug "eager bundle fetch $jid/$dev (unkeyed announced device)"
-            $self FetchBundle $jid $dev [list apply {args {}}]
+            jlog debug "eager session warm $jid/$dev (announced, no session)"
+            $self EnsureSession $jid $dev [list apply {args {}}]
         }
     }
 
@@ -726,6 +836,13 @@ snit::type taco_omemo {
     #   {*}$command $peerJid $peerDev $bundleDictOrEmpty $errorOrEmpty
     method FetchBundle {peerJid peerDev command} {
         set key "$peerJid|$peerDev"
+        # Already given up on this connection. Refetching would flip the
+        # device back to `pending`, so encrypt() would start waiting on it
+        # again and the give-up would never stick.
+        if {[$self BundleGaveUp $peerJid $peerDev]} {
+            {*}$command $peerJid $peerDev "" "bundle unavailable"
+            return
+        }
         if {[dict exists $Bundles $key]} {
             {*}$command $peerJid $peerDev [dict get $Bundles $key] ""
             return
@@ -735,6 +852,10 @@ snit::type taco_omemo {
             return
         }
         dict set BundleFetchWaiters $key [list $command]
+        dict set BundleFetchState $key pending
+        dict set BundleFetchTimer $key [after \
+            $::taco::omemo::BUNDLE_FETCH_TIMEOUT_MS \
+            [mymethod OnBundleFetchTimeout $peerJid $peerDev]]
         set node ${::taco::omemo::NS_BUNDLES}:${peerDev}
         set ns $::taco::omemo::NS_PUBSUB
         $client iq request -type get -to $peerJid \
@@ -744,31 +865,53 @@ snit::type taco_omemo {
             -command [mymethod OnFetchedBundle $peerJid $peerDev]
     }
 
-    method OnFetchedBundle {peerJid peerDev stanza} {
+    # The IQ layer has no timeout of its own, so an unanswered bundle
+    # fetch would leave the device `pending` forever and block every
+    # OMEMO send to that chat. Give up on it and let the send proceed
+    # without this device.
+    method OnBundleFetchTimeout {peerJid peerDev} {
         set key "$peerJid|$peerDev"
+        # Leave the timer entry for ResolvedBundleFetch to cancel. Its
+        # token is already spent when the deadline itself fired, and
+        # cancelling a spent token is a no-op - but dropping the entry here
+        # would leak a live `after` when this is invoked directly.
+        set waiters [$self TakeBundleWaiters $key]
+        jlog debug "bundle fetch $peerJid/$peerDev: TIMED OUT, giving up"
+        $self ResolvedBundleFetch $peerJid $peerDev "bundle fetch timed out"
+        foreach cb $waiters {
+            {*}$cb $peerJid $peerDev "" "bundle fetch timed out"
+        }
+    }
+
+    # Waiters for $key, removing them. Empty when the deadline already
+    # fired them: the IQ reply can still arrive afterwards, and a plain
+    # `dict get` on the vacated key would throw.
+    method TakeBundleWaiters {key} {
+        if {![dict exists $BundleFetchWaiters $key]} { return [list] }
         set waiters [dict get $BundleFetchWaiters $key]
         dict unset BundleFetchWaiters $key
+        return $waiters
+    }
+
+    method OnFetchedBundle {peerJid peerDev stanza} {
+        set key "$peerJid|$peerDev"
+        set waiters [$self TakeBundleWaiters $key]
 
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
             jlog debug "bundle fetch $peerJid/$peerDev: ERROR"
-            foreach cb $waiters {
-                {*}$cb $peerJid $peerDev "" "bundle fetch failed"
-            }
+            $self FailBundleFetch $peerJid $peerDev $waiters "bundle fetch failed"
             return
         }
         if {[catch {$self ParseBundle $stanza} bundle]} {
             jlog debug "bundle fetch $peerJid/$peerDev: parse failed: $bundle"
-            foreach cb $waiters {
-                {*}$cb $peerJid $peerDev "" "bundle parse failed: $bundle"
-            }
+            $self FailBundleFetch $peerJid $peerDev $waiters \
+                "bundle parse failed: $bundle"
             return
         }
         if {$bundle eq ""} {
             jlog debug "bundle fetch $peerJid/$peerDev: empty/unparseable"
-            foreach cb $waiters {
-                {*}$cb $peerJid $peerDev "" "bundle empty"
-            }
+            $self FailBundleFetch $peerJid $peerDev $waiters "bundle empty"
             return
         }
 
@@ -777,15 +920,23 @@ snit::type taco_omemo {
         set ik [dict get $bundle ik]
         if {![$self EnsureTrustRow $peerJid $peerDev $ik]} {
             jlog debug "bundle fetch $peerJid/$peerDev: trust compromised (IK changed)"
-            foreach cb $waiters {
-                {*}$cb $peerJid $peerDev "" "trust compromised"
-            }
+            $self FailBundleFetch $peerJid $peerDev $waiters "trust compromised"
             return
         }
         jlog debug "bundle fetch $peerJid/$peerDev: OK (trust row ensured)"
         dict set Bundles $key $bundle
+        # Waiters first: a waiter is usually AfterBundleForInitiate, and
+        # the session it builds should exist before the wake tick fires.
         foreach cb $waiters {
             {*}$cb $peerJid $peerDev $bundle ""
+        }
+        $self ResolvedBundleFetch $peerJid $peerDev ""
+    }
+
+    method FailBundleFetch {peerJid peerDev waiters err} {
+        $self ResolvedBundleFetch $peerJid $peerDev $err
+        foreach cb $waiters {
+            {*}$cb $peerJid $peerDev "" $err
         }
     }
 
@@ -868,6 +1019,11 @@ snit::type taco_omemo {
         }
         lassign [$self BuildSessionFromBundle $peerJid $peerDev $bundle] sess berr
         if {$sess eq ""} {
+            # The bundle arrived and parsed but cannot yield a session
+            # (no prekeys, or initiate rejected it). Refetching won't help
+            # this connection, so give up on the device rather than let
+            # encrypt() wait on it forever.
+            $self MarkBundleUnusable $peerJid $peerDev
             {*}$cb $peerJid $peerDev "" $berr
             return
         }
@@ -875,14 +1031,18 @@ snit::type taco_omemo {
         {*}$cb $peerJid $peerDev $sess ""
     }
 
+    method MarkBundleUnusable {peerJid peerDev} {
+        dict set BundleFetchState "$peerJid|$peerDev" error
+    }
+
     # Initiate + persist a fresh session from a bundle, replacing any
     # existing one (picomemo is single-state: a re-key, not build-on-top).
     # Returns {session ""} or {"" errmsg}; destroys the old handle.
     method BuildSessionFromBundle {peerJid peerDev bundle} {
-        if {[llength [dict get $bundle prekeys]] == 0} {
+        set pk [::taco::omemo::pickPrekey [dict get $bundle prekeys]]
+        if {$pk eq ""} {
             return [list "" "no prekeys in bundle"]
         }
-        set pk [lindex [dict get $bundle prekeys] 0]
         set sess [$self CreateSessionHandle $peerJid $peerDev]
         # picomemo verifies spks against ik before deriving any state and
         # returns OMEMO_ECORRUPT on mismatch, so forged SPK material is
@@ -1519,6 +1679,7 @@ snit::type taco_omemo {
         set sessions [list]
         set peerSessionCount 0
         set peerWarming 0
+        set ownWarming 0
         foreach cand $rawCandidates {
             lassign $cand pj pd
             if {[$self IsDeviceBlocked $pj $pd]} {
@@ -1527,15 +1688,22 @@ snit::type taco_omemo {
             }
             set sess [$self EnsureSessionSync $pj $pd]
             if {$sess eq ""} {
+                # A device we've given up on this connection is excluded
+                # like a blocked one - it must not hold up the send.
+                if {[$self BundleGaveUp $pj $pd]} {
+                    jlog debug "encrypt $chatJid: $pj/$pd GAVE UP (bundle unusable)"
+                    continue
+                }
                 jlog debug "encrypt $chatJid: $pj/$pd WARMING (no session yet)"
-                if {$pj eq $chatJid} { incr peerWarming }
+                if {$pj eq $chatJid} { incr peerWarming } else { incr ownWarming }
                 continue
             }
             lappend sessions [list $pj $pd $sess]
             if {$pj eq $chatJid} { incr peerSessionCount }
         }
         jlog debug "encrypt $chatJid: usableSessions=[llength $sessions]\
-            peerSessions=$peerSessionCount peerWarming=$peerWarming"
+            peerSessions=$peerSessionCount peerWarming=$peerWarming\
+            ownWarming=$ownWarming"
         # Fail-closed: no point ciphering a payload no peer device can
         # read, even if our own carbon devices could. The peer would
         # silently get an undecryptable stanza (MessageNotForUs).
@@ -1548,6 +1716,21 @@ snit::type taco_omemo {
             jlog debug "encrypt TERMINAL $chatJid: no usable peer recipients"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "no usable recipients for $chatJid"
+        }
+        # Never ship a partial recipient set: a device left out of the
+        # header receives a payload it cannot open and renders "not
+        # encrypted for this device", with nothing to repair it later (the
+        # row goes on_wire, so the warm retry ticks skip it). Wait for
+        # every still-warming candidate instead - own devices included,
+        # since our other clients read our sent messages the same way.
+        # Bounded by BUNDLE_FETCH_TIMEOUT_MS, after which the device is
+        # given up on above.
+        if {$peerWarming > 0 || $ownWarming > 0} {
+            jlog debug "encrypt NOT_READY $chatJid: holding for\
+                $peerWarming peer + $ownWarming own device(s) still warming"
+            return -code error -errorcode TACO_OMEMO_NOT_READY \
+                "bundle fetch in flight for\
+                 [expr {$peerWarming + $ownWarming}] device(s)"
         }
 
         # Generate AES-GCM payload key + ciphertext + iv. The payload
@@ -1600,11 +1783,20 @@ snit::type taco_omemo {
         }]
     }
 
+    # 1 if this device's bundle is unusable for the rest of the
+    # connection (fetch errored, timed out, or produced no session), so
+    # encrypt() can exclude it instead of waiting for it.
+    method BundleGaveUp {peerJid peerDev} {
+        set key "$peerJid|$peerDev"
+        return [expr {[dict exists $BundleFetchState $key]
+            && [dict get $BundleFetchState $key] eq "error"}]
+    }
+
     # Synchronous session-ensure: load from DB or initiate from cache
     # if we have a fresh bundle. encrypt() is a synchronous API and
-    # cannot await a network round-trip; if the bundle isn't cached,
-    # we fire-and-forget a fetch and skip this device for now. The
-    # next encrypt attempt after the fetch resolves will include it.
+    # cannot await a network round-trip; if the bundle isn't cached, we
+    # fire-and-forget a fetch and return "" for now. The caller holds the
+    # send (encrypt throws NOT_READY) until the fetch resolves.
     method EnsureSessionSync {peerJid peerDev} {
         set key "$peerJid|$peerDev"
         if {[dict exists $Sessions $key]} {
@@ -1624,11 +1816,12 @@ snit::type taco_omemo {
         }
         if {[dict exists $Bundles $key]} {
             set bundle [dict get $Bundles $key]
-            if {[llength [dict get $bundle prekeys]] == 0} {
+            set pk [::taco::omemo::pickPrekey [dict get $bundle prekeys]]
+            if {$pk eq ""} {
                 jlog debug "EnsureSessionSync $peerJid/$peerDev: cached bundle has no prekeys"
+                $self MarkBundleUnusable $peerJid $peerDev
                 return ""
             }
-            set pk [lindex [dict get $bundle prekeys] 0]
             set sess [$self CreateSessionHandle $peerJid $peerDev]
             # picomemo verifies spks against ik before deriving any state and
             # returns OMEMO_ECORRUPT on mismatch, so forged SPK material is
@@ -1644,6 +1837,7 @@ snit::type taco_omemo {
             } err]} {
                 jlog debug "EnsureSessionSync $peerJid/$peerDev: initiate failed: $err"
                 catch {$sess destroy}
+                $self MarkBundleUnusable $peerJid $peerDev
                 return ""
             }
             jlog debug "EnsureSessionSync $peerJid/$peerDev: initiated session from cached bundle"

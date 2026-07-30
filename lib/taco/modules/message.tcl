@@ -389,12 +389,15 @@ snit::type taco_message {
     }
 
     # Maximum BuildMessageStanza attempts per message before marking
-    # failed. Each <SessionReady> tick for the peer counts as one
-    # attempt; warming usually settles within 1-2 ticks for live
-    # peers, so 5 gives slack for slow bundle fetches without
-    # looping forever on an undeliverable peer.
+    # failed. Each <SessionReady> tick for the peer counts as one attempt.
+    # omemo fires that tick once the peer has no bundle fetch left
+    # outstanding (not once per device), and every fetch resolves within
+    # its own deadline, so warming ends on its own - this budget is a
+    # backstop against a pathological retry loop, not the thing that
+    # bounds warming. Sized well above the handful of ticks a normal cold
+    # start produces (devicelist resolved, self ready, bundles resolved).
     variable OmemoRetryBudget
-    typevariable OMEMO_RETRY_LIMIT 5
+    typevariable OMEMO_RETRY_LIMIT 10
 
     # Per-call cap on demote-and-retry steps; demotion makes progress durable
     # across calls, so the cap only bounds one history call's blast radius.

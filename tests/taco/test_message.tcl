@@ -625,6 +625,30 @@ test message-omemo-selfready-skips-on-wire \
         expr {[llength [$::_client conn get_written]] - $before}
     } -result {0}
 
+# encrypt() now holds a send until every announced device is warm, so a
+# peer with several devices coming online produces several NOT_READY
+# retries in a row. The budget must outlast normal warming: it exists to
+# stop a pathological loop, not to end warming (omemo's fetch deadline
+# does that). Six ticks used to exhaust it and fail a healthy message.
+test message-omemo-warming-ticks-keep-row-pending \
+    {repeated NOT_READY retries during warming do not fail the message} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid bob@example.com body secret \
+            from_jid $acc own_id o-warm server_status pending \
+            encryption omemo on_wire 0]]
+        # Store is uninitialised here, so every retry NOT_READYs.
+        for {set i 0} {$i < 6} {incr i} {
+            $::_client message OnOmemoSessionReady -jid bob@example.com
+        }
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason, on_wire FROM chat_message
+            WHERE own_id='o-warm'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            on_wire $row(on_wire)
+    } -result {status pending reason {} on_wire 0}
+
 # A re-delivered own message with no displayable body (OMEMO keytransport
 # or a dropped EKEYGONE/EUSER duplicate) must still confirm a pending send
 # from its envelope - otherwise the send stays pending and gets re-sent.
