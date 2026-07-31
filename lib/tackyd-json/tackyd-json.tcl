@@ -176,6 +176,7 @@ jsonify_type jsonify \
         register/form           form
         avatar/metadata         avatar_meta
         avatar/data             base64
+        avatar/inject           string
         nick/get                string
         vcard/nick              string
         setting/list            list
