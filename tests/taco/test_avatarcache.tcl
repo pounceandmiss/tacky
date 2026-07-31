@@ -150,6 +150,16 @@ test avatarcache-track-independent-sizes {same jid at two sizes builds two image
              [expr {$i32 ne $i64}]
     } -result {1 1 1}
 
+test avatarcache-injected-master {an injected avatar reaches a tracking frontend} \
+    {*}$ac_common \
+    -body {
+        set ::built {}
+        avatarcache track -acc user@test -jid c@d -size 32 -tag t1 \
+            -command {apply {{img} {set ::built $img}}}
+        tacky avatar inject -acc user@test -jid c@d -data PNGBYTES
+        string match "*:PNGBYTES:32" $::built
+    } -result 1
+
 test avatarcache-update-refetches-master {<Update> rebuilds from the new master} \
     {*}$ac_common \
     -body {

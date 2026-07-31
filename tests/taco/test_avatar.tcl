@@ -158,6 +158,55 @@ test avatar-vcard-presence-clears-vcard {an empty vCard photo does clear a vCard
         list [avatar_row room@muc.example.com/nick] $::avatar_updates
     } -result {{} {{room@muc.example.com/nick {}}}}
 
+# inject: offline cache seeding
+
+test avatar-inject-seeds-cache {inject caches bytes and metadata and emits <Update>} \
+    {*}$avatar_common \
+    -body {
+        avatar_watch
+        set hash [c avatar inject -jid alice@example.com -data "seededbytes" \
+                      -width 64 -height 64]
+        update idletasks
+        list [expr {$hash eq [::sha1::sha1 -hex "seededbytes"]}] \
+             [c avatar metadata -jid alice@example.com] \
+             [c avatar data -hash $hash] \
+             $::avatar_updates
+    } -result [list 1 \
+        [list hash [::sha1::sha1 -hex "seededbytes"] type image/png bytes 11 \
+              width 64 height 64] \
+        seededbytes \
+        [list [list alice@example.com [::sha1::sha1 -hex "seededbytes"]]]]
+
+test avatar-inject-outranks-vcard {an injected avatar is not clobbered by a vCard presence} \
+    {*}$avatar_common \
+    -body {
+        set hash [c avatar inject -jid room@muc.example.com/nick -data "seededbytes"]
+        avatar_watch
+        c avatar OnVCardPresence room@muc.example.com/nick \
+            [vcard_presence room@muc.example.com/nick otherhash]
+        update idletasks
+        list [lindex [avatar_row room@muc.example.com/nick] 0] $::avatar_updates
+    } -result [list [::sha1::sha1 -hex "seededbytes"] {}]
+
+test avatar-inject-empty-clears {empty -data clears the JID and signals removal} \
+    {*}$avatar_common \
+    -body {
+        c avatar inject -jid alice@example.com -data "seededbytes"
+        avatar_watch
+        set res [c avatar inject -jid alice@example.com -data ""]
+        update idletasks
+        list $res [avatar_row alice@example.com] $::avatar_updates
+    } -result {{} {} {{alice@example.com {}}}}
+
+test avatar-inject-empty-uncached-silent {clearing a JID with no avatar emits nothing} \
+    {*}$avatar_common \
+    -body {
+        avatar_watch
+        c avatar inject -jid alice@example.com -data ""
+        update idletasks
+        set ::avatar_updates
+    } -result {}
+
 test avatar-vcard-writes-when-no-pubsub {vCard still stores an avatar for a JID with no PEP row} \
     {*}$avatar_common \
     -body {

@@ -20,6 +20,9 @@ if 0 {
             Disable own avatar
         tacky avatar cancel -acc $acc -tag $tag
             Cancel a pending -command callback by tag
+        tacky avatar inject -acc $acc -jid $jid -data $bytes ?-type $mime? ?-width $w? ?-height $h?
+            Seed the local cache for any JID without touching the network.
+            Empty -data clears. Returns the hash.
 
     Events:
         tacky listen avatar <Update> -acc ...
@@ -233,6 +236,43 @@ snit::type taco_avatar {
 
     method cancel {args} {
         unset -nocomplain ActiveTags([dict get $args -tag])
+    }
+
+    # Seed the cache for any JID with no server round-trip: writes the rows a
+    # PEP arrival would. Empty -data clears. Bytes stored verbatim.
+    tackymethod inject {args} {
+        array set opts {-data "" -type image/png -width "" -height ""}
+        array set opts $args
+        set jid [jid norm [jid noquery [dict get $args -jid]]]
+        set rawData $opts(-data)
+
+        if {$rawData eq ""} {
+            set had [$client db onecolumn {
+                SELECT count(*) FROM avatar_metadata WHERE jid=$jid
+            }]
+            $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
+            if {$had} {
+                $client emit avatar <Update> -jid $jid -hash ""
+            }
+            return ""
+        }
+
+        set hash [::sha1::sha1 -hex $rawData]
+        set bytes [string length $rawData]
+        set type_ $opts(-type)
+        set width $opts(-width)
+        set height $opts(-height)
+        $client db eval {
+            INSERT OR REPLACE INTO avatar_data(hash, data)
+            VALUES ($hash, $rawData)
+        }
+        # pubsub so an injected avatar outranks vCard presence, like a real one.
+        $client db eval {
+            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+            VALUES ($jid, $hash, $type_, $bytes, $width, $height, 'pubsub')
+        }
+        $client emit avatar <Update> -jid $jid -hash $hash
+        return $hash
     }
 
     method OnMetadataNotification {stanza} {

@@ -443,6 +443,7 @@ Events:
     avatar disable {}   -> ""
     avatar cancel {tag: string}
     avatar refresh {jid: string}
+    avatar inject {jid: string, data: base64, type?: string, width?: int, height?: int}  -> string
 
     avatar_meta = {hash: string, type: string, bytes: int, width: int, height: int}
 
@@ -457,6 +458,11 @@ re-emits `<Update>` for an already-cached avatar, so listening is enough.
 
 Avatars come from XEP-0084 (PEP) or XEP-0153 (vCard, for group chats and
 occupants). PEP wins: a JID with a PEP avatar ignores its vCard hash.
+
+`inject` seeds the local cache for any JID with no server round-trip, for
+fixtures and tests: it writes what a PEP arrival would, emits `<Update>`,
+and returns the hash. Empty `data` clears the JID and returns `""`. Nothing
+is published, your own JID included.
 
 Events:
 
