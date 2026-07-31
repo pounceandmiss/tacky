@@ -711,6 +711,21 @@ snit::type taco_messagestore {
         }
     }
 
+    # Startup recovery: on_wire means "written to the stream, awaiting an
+    # SM ack". A fresh process has neither a stream nor an SM replay queue
+    # (that lives in memory), so no pending row can still be in flight and
+    # the flag is stale by definition. Clearing it puts stranded rows back
+    # in reach of the OMEMO warm retry ticks, which filter on_wire=0.
+    #
+    # Startup-scoped, NOT per-disconnect: within a run SM owns replay, and
+    # clearing on <Disconnect> would race resumption into a double-send.
+    method clearPendingWire {} {
+        $options(-db) eval {
+            UPDATE chat_message SET on_wire=0
+            WHERE kind='message' AND server_status='pending' AND on_wire=1
+        }
+    }
+
     # Flip pending → '' (server-confirmed) for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
     method confirmByOwnIds {ownIds} {
