@@ -84,6 +84,22 @@ namespace eval ::test::muc_edit_int {
     }
 
     proc setup {} {
+        variable ROMEO
+        variable JULIET
+        bringUp
+        joinRoom $ROMEO romeo 1
+        joinRoom $JULIET juliet
+    }
+
+    # Only Juliet joins, so Romeo can later join a room that already has
+    # history - the cold-join case.
+    proc setupJulietOnly {} {
+        variable JULIET
+        bringUp
+        joinRoom $JULIET juliet 1
+    }
+
+    proc bringUp {} {
         variable HOST
         variable ROMEO
         variable JULIET
@@ -105,9 +121,6 @@ namespace eval ::test::muc_edit_int {
             {message <CatchupDone> -acc romeo@example.local}
             {message <CatchupDone> -acc juliet@example.local}
         }
-
-        joinRoom $ROMEO romeo 1
-        joinRoom $JULIET juliet
     }
 
     proc cleanup {} {
@@ -119,6 +132,33 @@ namespace eval ::test::muc_edit_int {
         -setup { ::test::muc_edit_int::setup }
         -cleanup { ::test::muc_edit_int::cleanup }
     }
+
+    # maxstanzas 0 suppresses the room's own replay, so the archive query is
+    # the only thing that can supply the message.
+    test muc-int-join-syncs-room-archive \
+        {joining a room pulls its archive, with no help from the join replay} \
+        -constraints withServer \
+        -setup { ::test::muc_edit_int::setupJulietOnly } \
+        -cleanup { ::test::muc_edit_int::cleanup } \
+        -body {
+            variable ROMEO
+            variable JULIET
+            variable ROOM
+            variable CHAT
+
+            # Wait for the room's echo, so the message is archived before
+            # Romeo asks for the archive.
+            awaitEvent message <Confirmed> -acc $JULIET -jid $CHAT {
+                [tacky client $JULIET] message send -chat $CHAT -body "archived"
+            }
+
+            set before [llength [msgs $ROMEO]]
+            awaitEvent message <CatchupDone> -acc $ROMEO -jid $CHAT {
+                [tacky client $ROMEO] muc join -jid $ROOM -nick romeo \
+                    -history {maxstanzas 0}
+            }
+            list $before [expr {[rowOfBody $ROMEO "archived"] ne ""}]
+        } -result {0 1}
 
     test muc-int-edit-replace-id-is-origin-not-stanza-id \
         {a MUC correction goes out referencing the origin-id, not the room stanza-id} \

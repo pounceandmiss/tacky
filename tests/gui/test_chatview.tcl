@@ -449,6 +449,65 @@ foreach {direction seedCmd} {
         } -result {before=1 after=1}
 }
 
+# Store a message without the widget seeing it, standing in for what a
+# catchup writes (catchup emits no <New>).
+proc cv_store_behind {body sid stamp} {
+    $::_client message messagestore store [list [dict create \
+        timestamp [ParseTimestamp $stamp] chat_jid alice@example.com \
+        from_jid alice@example.com/phone body $body \
+        server_id $sid own_id "" raw_xml ""]]
+}
+
+test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what catchup stored} \
+    {*}$cv_common \
+    -body {
+        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        wait
+        set countBefore [llength [.cv messages ids]]
+        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
+        wait
+        set countAfter [llength [.cv messages ids]]
+        list before=$countBefore after=$countAfter
+    } -result {before=1 after=2}
+
+test chatview-catchup-ignores-other-chat {CatchupDone for a different chat is not our repaint} \
+    {*}$cv_common \
+    -body {
+        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        wait
+        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        tacky emit message <CatchupDone> -acc $::acc -jid bob@example.com -count 1
+        wait
+        llength [.cv messages ids]
+    } -result {1}
+
+test chatview-catchup-account-wide-no-repaint {the account-wide settle is not a repaint signal} \
+    {*}$cv_common \
+    -body {
+        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        wait
+        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        tacky emit message <CatchupDone> -acc $::acc -jid "" -count 1
+        wait
+        llength [.cv messages ids]
+    } -result {1}
+
+test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repainted under the user} \
+    {*}$cv_common \
+    -body {
+        cv_feed "one" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "two" srv2 -stamp 2024-01-01T11:00:00Z
+        wait
+        # goto a non-end target leaves the live tail (AtTail 0)
+        .cv goto [.cv messages newest] -source local
+        wait
+        cv_store_behind "arrived while away" srv3 2024-01-01T12:00:00Z
+        tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
+        wait
+        llength [.cv messages ids]
+    } -result {2}
+
 # -- scroll-to-bottom on incoming/outgoing ---------------------------------------
 
 # Parameterised scroll test: direction × scroll position.
