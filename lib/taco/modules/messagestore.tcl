@@ -106,10 +106,6 @@ snit::type taco_messagestore {
                 reply_to       TEXT,
                 -- debug-only readable record of the stanza
                 raw_xml        TEXT,
-                -- 1 once the stanza was written to the wire, 0 while
-                -- parked (OMEMO encrypt NOT_READY). OMEMO retries pick
-                -- on_wire=0 rows so they don't re-send in-flight ones.
-                on_wire        INTEGER NOT NULL DEFAULT 0,
                 -- 'message' (default) | 'hole'
                 kind           TEXT NOT NULL DEFAULT 'message',
                 -- '' = the server has this exact message (incoming, MAM,
@@ -364,8 +360,6 @@ snit::type taco_messagestore {
                     ? $m(encryption) : ""}]
                 set failReason [expr {[info exists m(fail_reason)] \
                     ? $m(fail_reason) : ""}]
-                set onWire [expr {[info exists m(on_wire)] \
-                    ? $m(on_wire) : 0}]
                 set originId [expr {[info exists m(origin_id)] \
                     ? $m(origin_id) : ""}]
                 set occId [expr {[info exists m(occupant_id)] \
@@ -380,11 +374,11 @@ snit::type taco_messagestore {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
-                        encryption, fail_reason, on_wire, attachments)
+                        encryption, fail_reason, attachments)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $failReason, $onWire, $attach)
+                        $failReason, $attach)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -708,21 +702,6 @@ snit::type taco_messagestore {
         $options(-db) eval {
             UPDATE chat_message SET server_status='failed'
             WHERE kind='message' AND server_status='uploading'
-        }
-    }
-
-    # Startup recovery: on_wire means "written to the stream, awaiting an
-    # SM ack". A fresh process has neither a stream nor an SM replay queue
-    # (that lives in memory), so no pending row can still be in flight and
-    # the flag is stale by definition. Clearing it puts stranded rows back
-    # in reach of the OMEMO warm retry ticks, which filter on_wire=0.
-    #
-    # Startup-scoped, NOT per-disconnect: within a run SM owns replay, and
-    # clearing on <Disconnect> would race resumption into a double-send.
-    method clearPendingWire {} {
-        $options(-db) eval {
-            UPDATE chat_message SET on_wire=0
-            WHERE kind='message' AND server_status='pending' AND on_wire=1
         }
     }
 

@@ -185,10 +185,12 @@ namespace eval ::test::omemo_int {
                     SELECT server_status FROM chat_message
                     WHERE chat_jid=$bot AND body='cold hello'
                 }]
-                set ::test::omemo_int::_coldRaw [$client db onecolumn {
-                    SELECT on_wire=0 FROM chat_message
+                set oid [$client db onecolumn {
+                    SELECT own_id FROM chat_message
                     WHERE chat_jid=$bot AND body='cold hello'
                 }]
+                set ::test::omemo_int::_coldRaw \
+                    [expr {![$client message IsWired $oid]}]
             }]
             set recv [string trimright [::test::helpers::msgText [dict get $ev -message]]]
             list pending $::test::omemo_int::_coldStatus \

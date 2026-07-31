@@ -388,10 +388,8 @@ snit::type taco_omemo {
     # Internal bus only (per peer-device, not GUI-relevant).
     #
     # Suppressed while that peer still has bundle fetches outstanding:
-    # encrypt() now needs EVERY candidate warm, so a per-device tick would
-    # drive a retry that is still NOT_READY and burn a unit of
-    # taco_message's OmemoRetryBudget - a peer with more warming devices
-    # than the budget would get its message failed mid-warm-up. The last
+    # encrypt() needs EVERY candidate warm, so a per-device tick would just
+    # drive a retry that is still NOT_READY, once per device. The last
     # fetch to resolve fires the tick via ResolvedBundleFetch.
     method NotifySessionReady {peerJid} {
         if {[$self HasPendingBundleFetch $peerJid]} return
@@ -1719,8 +1717,8 @@ snit::type taco_omemo {
         # Never ship a partial recipient set: a device left out of the
         # header receives a payload it cannot open and renders "not
         # encrypted for this device", with nothing to repair it later (the
-        # row goes on_wire, so the warm retry ticks skip it). Wait for
-        # every still-warming candidate instead - own devices included,
+        # row counts as in flight, so the warm retry ticks skip it). Wait
+        # for every still-warming candidate instead - own devices included,
         # since our other clients read our sent messages the same way.
         # Bounded by BUNDLE_FETCH_TIMEOUT_MS, after which the device is
         # given up on above.

@@ -786,7 +786,7 @@ test omemo-unit-self-chat-excludes-own-current-device \
 # Partial-recipient-set gate: encrypt must never key a payload for only
 # some of a peer's announced devices. A device left out of the header
 # receives a message it cannot open and renders "not encrypted for this
-# device", and nothing repairs it (the row goes on_wire, so the warm
+# device", and nothing repairs it (the row counts as in flight, so the warm
 # retry ticks skip it). So a still-warming device holds the send.
 
 # Inject a devicelist for $jid as a PEP notification.
