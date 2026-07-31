@@ -509,7 +509,7 @@ test message-self-echo-dedups-not-duplicate \
         # The row we stored on send (pending, on the wire).
         msg_store [list [msg_msg chat_jid bob@example.com body "hello" \
             from_jid $acc own_id uuid-7 server_status pending \
-            on_wire 1]]
+           ]]
         # The echo comes back from our own jid (carbon / MAM) with same @id
         # and a server stanza-id; ExtractEnvelopeIds derives own_id from @id,
         # which ParseMessage carries through.
@@ -541,7 +541,7 @@ test message-resend-plaintext-downgrades \
         # Synthetic stuck OMEMO message: stamped omemo, never wire-built.
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-pt server_status pending \
-            encryption omemo on_wire 0]]
+            encryption omemo]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat alice@example.com \
@@ -562,7 +562,7 @@ test message-resend-honors-stamp \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-st server_status pending \
-            encryption omemo on_wire 0]]
+            encryption omemo]]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat alice@example.com \
@@ -589,65 +589,83 @@ test message-retrysend-missing-stamp-no-downgrade \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-drop server_status pending \
-            encryption omemo on_wire 0]]
+            encryption omemo]]
         set before [llength [$::_client conn get_written]]
         # Dict deliberately omits `encryption` - the bridge-drop case.
         $::_client message RetrySend [dict create \
             chat_jid alice@example.com body "secret" own_id oid-drop]
         set db [$::_client message messagestore cget -db]
         $db eval {
-            SELECT server_status, encryption, on_wire FROM chat_message
+            SELECT server_status, encryption FROM chat_message
             WHERE own_id='oid-drop'} row {}
         list status $row(server_status) enc $row(encryption) \
-            on_wire $row(on_wire) \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
-    } -result {status pending enc omemo on_wire 0 wrote 0}
+    } -result {status pending enc omemo wrote 0}
 
-# OnOmemoSelfReady (fired when omemo's store + own devicelist are ready)
-# must retry only OMEMO sends that never reached the wire, never a row
-# already on the wire awaiting ack - re-sending those would duplicate.
+# OnOmemoSelfReady must retry only sends that aren't currently in flight -
+# never one SM is still holding, which would duplicate it.
 test message-omemo-selfready-skips-on-wire \
-    {OnOmemoSelfReady leaves on-wire rows alone (no double-send)} \
+    {OnOmemoSelfReady leaves in-flight rows alone (no double-send)} \
     {*}$msg_common \
     -body {
-        # Plaintext row already written (on_wire), awaiting ack.
+        # Plaintext row already written and awaiting ack.
         msg_store [list [msg_msg chat_jid alice@example.com body clear \
             from_jid $acc own_id o-clear server_status pending \
-            encryption "" on_wire 1]]
+            encryption ""]]
+        $::_client message MarkWired o-clear
         # OMEMO row that never reached the wire (encrypt NOT_READY).
         msg_store [list [msg_msg chat_jid bob@example.com body secret \
             from_jid $acc own_id o-omemo server_status pending \
-            encryption omemo on_wire 0]]
+            encryption omemo]]
         set before [llength [$::_client conn get_written]]
         $::_client message OnOmemoSelfReady
-        # On-wire plaintext row not re-sent; the omemo row retries but
+        # In-flight plaintext row not re-sent; the omemo row retries but
         # NOT_READYs (store uninit), so the wire count is unchanged.
         expr {[llength [$::_client conn get_written]] - $before}
     } -result {0}
 
-# encrypt() now holds a send until every announced device is warm, so a
-# peer with several devices coming online produces several NOT_READY
-# retries in a row. The budget must outlast normal warming: it exists to
-# stop a pathological loop, not to end warming (omemo's fetch deadline
-# does that). Six ticks used to exhaust it and fail a healthy message.
+# The omemo scopes feed the warm retry ticks, so they must exclude rows SM
+# is still holding - re-sending one would duplicate it. (The sibling test
+# above can't prove this: its in-flight row is plaintext, so the scope's
+# encryption filter excludes it regardless.)
+test message-pendingsends-omemo-scope-excludes-in-flight \
+    {parked-omemo skips an OMEMO row that is in flight} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body wired \
+            from_jid $acc own_id o-wired server_status pending \
+            encryption omemo timestamp 1000000]]
+        msg_store [list [msg_msg chat_jid alice@example.com body parked \
+            from_jid $acc own_id o-parked server_status pending \
+            encryption omemo timestamp 2000000]]
+        $::_client message MarkWired o-wired
+        lmap m [$::_client message PendingSends parked-omemo] {
+            dict get $m own_id
+        }
+    } -result {o-parked}
+
+# encrypt() holds a send until every announced device is warm, so a peer
+# with several devices coming online produces several NOT_READY retries in
+# a row. None of them may fail the message: warming ends on its own (omemo's
+# per-device fetch deadline), and a row that never gets out is failed by the
+# archive-floor rule on the next connect, not by an attempt counter here.
 test message-omemo-warming-ticks-keep-row-pending \
     {repeated NOT_READY retries during warming do not fail the message} \
     {*}$msg_common \
     -body {
         msg_store [list [msg_msg chat_jid bob@example.com body secret \
             from_jid $acc own_id o-warm server_status pending \
-            encryption omemo on_wire 0]]
+            encryption omemo]]
         # Store is uninitialised here, so every retry NOT_READYs.
-        for {set i 0} {$i < 6} {incr i} {
+        for {set i 0} {$i < 20} {incr i} {
             $::_client message OnOmemoSessionReady -jid bob@example.com
         }
         set db [$::_client message messagestore cget -db]
         $db eval {
-            SELECT server_status, fail_reason, on_wire FROM chat_message
+            SELECT server_status, fail_reason FROM chat_message
             WHERE own_id='o-warm'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
-            on_wire $row(on_wire)
-    } -result {status pending reason {} on_wire 0}
+        list status $row(server_status) reason $row(fail_reason)
+    } -result {status pending reason {}}
 
 # A re-delivered own message with no displayable body (OMEMO keytransport
 # or a dropped EKEYGONE/EUSER duplicate) must still confirm a pending send
@@ -659,7 +677,7 @@ test message-catchup-displayless-confirms-send \
         # Pending OMEMO send, already on the wire, awaiting confirmation.
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-conf server_status pending \
-            encryption omemo on_wire 1]]
+            encryption omemo]]
         # Our own message comes back via catchup but carries no body.
         set rn [mam_result id arch-1 from $acc to alice@example.com \
             origin_id oid-conf body ""]
@@ -675,8 +693,9 @@ test message-catchup-displayless-confirms-send \
 # Stranded sends: settle pending rows against the archive after catchup
 #
 # A send that reached the wire but never got an SM ack survives a restart as
-# `pending, on_wire=1`. The reconnect catchup confirms whatever the server
-# really archived; RetryPending then judges the rest by the span catchup
+# `pending`, with nothing in memory marking it in flight. The reconnect
+# catchup confirms whatever the server really archived; RetryPending then
+# judges the rest by the span catchup
 # covered. Inside that span the archive would have shown the message and
 # didn't, so the server never got it -> re-send. Older than the span the
 # archive can't say either way -> fail, and let the user decide.
@@ -693,7 +712,7 @@ test message-catchup-resends-row-inside-archive-span \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "stranded" \
             from_jid $acc own_id oid-inside server_status pending \
-            encryption "" on_wire 1 timestamp $::inside_2025]]
+            encryption "" timestamp $::inside_2025]]
         set before [llength [$::_client conn get_written]]
         # Archive floor is 2024; the row sits above it and was not echoed.
         $::_client message OnCatchup [dict create complete 0 messages [list \
@@ -713,7 +732,7 @@ test message-catchup-fails-row-predating-archive \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
             from_jid $acc own_id oid-old server_status pending \
-            encryption "" on_wire 1 timestamp 1000000]]
+            encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
         $::_client message OnCatchup [dict create complete 0 messages [list \
             [mam_result id arch-b from bob@example.com to $acc \
@@ -734,7 +753,7 @@ test message-catchup-complete-archive-never-fails \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
             from_jid $acc own_id oid-comp server_status pending \
-            encryption "" on_wire 1 timestamp 1000000]]
+            encryption "" timestamp 1000000]]
         $::_client message OnCatchup [dict create complete 1 messages [list \
             [mam_result id arch-c from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
@@ -753,7 +772,7 @@ test message-catchup-error-retries-without-failing \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
             from_jid $acc own_id oid-err server_status pending \
-            encryption "" on_wire 1 timestamp 1000000]]
+            encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
         $::_client message OnCatchup [dict create error timeout]
         set db [$::_client message messagestore cget -db]
@@ -774,7 +793,7 @@ test message-catchup-floor-spans-displayless-nodes \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "mid" \
             from_jid $acc own_id oid-mid server_status pending \
-            encryption "" on_wire 1 timestamp 1500000000000000]]
+            encryption "" timestamp 1500000000000000]]
         $::_client message OnCatchup [dict create complete 0 messages [list \
             [mam_result id arch-d from bob@example.com to $acc \
                 body "" stamp 2017-01-01T00:00:00Z] \
@@ -789,17 +808,19 @@ test message-catchup-floor-spans-displayless-nodes \
 
 # Catchup runs while the connection is live, so a message sent during the
 # round-trip is in flight and owned by SM's replay queue - not ours to
-# re-send or judge.
+# re-send or judge. Note it predates the archive floor, so without the
+# in-flight check it would be judged undelivered, not merely re-sent.
 test message-catchup-skips-send-made-during-catchup \
-    {a row created after the catchup query went out is left alone} \
+    {a row in flight on this stream is left alone} \
     {*}$msg_common \
     -body {
         msg_ready
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
-        # Stored after DoCatchup stamped its cutoff.
         msg_store [list [msg_msg chat_jid alice@example.com body "live" \
             from_jid $acc own_id oid-live server_status pending \
-            encryption "" on_wire 1 timestamp [expr {[clock microseconds] + 60000000}]]]
+            encryption "" timestamp 1000000]]
+        # Written to the current stream, awaiting its ack.
+        $::_client message MarkWired oid-live
         set before [llength [$::_client conn get_written]]
         msg_catchup_finish [list \
             [mam_result id arch-f queryid $qid from bob@example.com to $acc \
@@ -820,7 +841,7 @@ test message-catchup-confirmed-row-not-resent-or-failed \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "landed" \
             from_jid $acc own_id oid-conf2 server_status pending \
-            encryption "" on_wire 1 timestamp 1000000]]
+            encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
         $::_client message OnCatchup [dict create complete 0 messages [list \
             [mam_result id arch-g from $acc to alice@example.com \
@@ -843,7 +864,7 @@ test message-catchup-muc-row-defers-not-failed \
     -body {
         msg_store [list [msg_msg chat_jid room@conf.example.com?join \
             body "to room" from_jid $acc own_id oid-muc \
-            server_status pending encryption "" on_wire 1 timestamp 1000000]]
+            server_status pending encryption "" timestamp 1000000]]
         $::_client message OnCatchup [dict create complete 0 messages [list \
             [mam_result id arch-i from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
@@ -854,25 +875,34 @@ test message-catchup-muc-row-defers-not-failed \
         list status $row(server_status) reason $row(fail_reason)
     } -result {status pending reason {}}
 
-# on_wire is a within-run marker (SM owns replay); a fresh process has no
-# stream, so leaving it set only hides the row from the warm retry ticks.
-test message-clear-pending-wire-on-startup \
-    {clearPendingWire clears pending rows only, leaving settled ones alone} \
+# In-flight is per-connection state held in memory, so a row left pending
+# by a previous run can never look in flight - there is nothing to reset.
+test message-previous-run-row-not-in-flight \
+    {a pending row from a previous run is not treated as in flight} \
     {*}$msg_common \
     -body {
+        # Freshly constructed module, as at process start.
         msg_store [list [msg_msg chat_jid alice@example.com body "p" \
-            from_jid $acc own_id oid-w1 server_status pending \
-            on_wire 1 timestamp 1000000]]
-        msg_store [list [msg_msg chat_jid alice@example.com body "c" \
-            from_jid $acc own_id oid-w2 server_status "" \
-            on_wire 1 timestamp 2000000]]
-        $::_client message messagestore clearPendingWire
-        set db [$::_client message messagestore cget -db]
-        list pending [$db onecolumn {
-                SELECT on_wire FROM chat_message WHERE own_id='oid-w1'}] \
-            confirmed [$db onecolumn {
-                SELECT on_wire FROM chat_message WHERE own_id='oid-w2'}]
-    } -result {pending 0 confirmed 1}
+            from_jid $acc own_id oid-prev server_status pending \
+            timestamp 1000000]]
+        $::_client message IsWired oid-prev
+    } -result 0
+
+# ...and a row wired on an earlier stream stops being in flight when a
+# fresh <Ready> arrives, so it becomes retryable again. This is the
+# stranding regression: it used to stay marked and be skipped forever.
+test message-fresh-ready-releases-previous-stream \
+    {a row wired on an earlier stream is released by the next fresh Ready} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "s" \
+            from_jid $acc own_id oid-strand server_status pending \
+            timestamp 1000000]]
+        $::_client message MarkWired oid-strand
+        set duringStream [$::_client message IsWired oid-strand]
+        msg_ready
+        list during $duringStream after [$::_client message IsWired oid-strand]
+    } -result {during 1 after 0}
 
 # =============================================================================
 # Envelope-first dedup: messagestore reconcile
@@ -886,7 +916,7 @@ test message-reconcile-confirms-pending \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
             from_jid $acc own_id oid-r1 server_status pending \
-            encryption omemo on_wire 1 timestamp 1000000]]
+            encryption omemo timestamp 1000000]]
         set v [$::_client message messagestore reconcile \
             alice@example.com srv-r1 oid-r1 oid-r1 5000000]
         set rows [msg_store_latest alice@example.com]
@@ -932,7 +962,7 @@ test message-catchup-duplicate-own-no-redecrypt \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-dup server_id arch-9 \
-            server_status "" encryption omemo on_wire 1]]
+            server_status "" encryption omemo]]
         set rn [mam_result id arch-9 from $acc to alice@example.com \
             origin_id oid-dup body ""]
         $::_client message OnCatchup [dict create messages [list $rn] complete 1]

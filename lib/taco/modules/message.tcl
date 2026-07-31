@@ -2,7 +2,7 @@
 
 # Message dict keys: timestamp, chat_jid, from_jid, from_resource, body,
 #   server_id, own_id, origin_id, reply_id, reply_to, raw_xml (debug),
-#   server_status, encryption, fail_reason, attachments, on_wire.
+#   server_status, encryption, fail_reason, attachments.
 
 # chat_jid: MUC groupchat - room@muc?join; MUC PM - room@muc/nick;
 #   1:1 - bare JID.
@@ -71,13 +71,10 @@ snit::type taco_message {
             [mymethod OnOmemoSelfReady]
         $client bus subscribe $self <Ready>      [mymethod OnReady]
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
-        array set OmemoRetryBudget {}
+        set WiredNow [dict create]
         # An 'uploading' row from a previous run was never sent (PUT isn't
         # resumable); reconcile it to 'failed' so the user can retry.
         $messagestore failStaleUploads
-        # Likewise on_wire: a previous run's in-flight marker can't still
-        # be true, and while set it hides the row from the warm retries.
-        $messagestore clearPendingWire
     }
 
     destructor {
@@ -86,10 +83,11 @@ snit::type taco_message {
     }
 
     method OnReady {args} {
-        # Network just came back. Transient disconnects shouldn't
-        # exhaust the OMEMO retry budget — give each still-pending
-        # message a fresh shot on the new connection.
-        array unset OmemoRetryBudget
+        # A fresh stream: nothing we wrote to the old one is in flight any
+        # more. <Ready> fires only on a fresh session (not on resumption),
+        # which is exactly right - across a resume SM still holds those
+        # stanzas, so the set must survive.
+        set WiredNow [dict create]
         $self PlaceReconnectHoles
         # RetryPending runs from OnCatchup, not here. Catchup confirms
         # whatever the server actually archived, so the retry only has to
@@ -127,10 +125,6 @@ snit::type taco_message {
     }
 
     method DoCatchup {} {
-        # Rows created after this point are live sends on the current
-        # connection, owned by SM's replay queue. RetryPending must leave
-        # them alone or it would re-send underneath an in-flight stanza.
-        set CatchupCutoff [clock microseconds]
         $client mam query -before {} -max 50 \
             -command [mymethod OnCatchup]
     }
@@ -419,21 +413,16 @@ snit::type taco_message {
         $self EmitTail $chatJid
     }
 
-    # Timestamp taken when the reconnect catchup query goes out. Pending
-    # rows newer than this are live sends on the current connection, not
-    # strays from a previous run - see DoCatchup.
-    variable CatchupCutoff 0
+    # own_id -> 1 for sends written to the CURRENT stream, i.e. the ones
+    # SM is holding for ack or replay. Deliberately memory-only: this is
+    # per-connection truth, so a restart starts empty and a stale row can
+    # never look in flight. Cleared on a fresh <Ready>, pruned as rows
+    # settle.
+    variable WiredNow
 
-    # Maximum BuildMessageStanza attempts per message before marking
-    # failed. Each <SessionReady> tick for the peer counts as one attempt.
-    # omemo fires that tick once the peer has no bundle fetch left
-    # outstanding (not once per device), and every fetch resolves within
-    # its own deadline, so warming ends on its own - this budget is a
-    # backstop against a pathological retry loop, not the thing that
-    # bounds warming. Sized well above the handful of ticks a normal cold
-    # start produces (devicelist resolved, self ready, bundles resolved).
-    variable OmemoRetryBudget
-    typevariable OMEMO_RETRY_LIMIT 10
+    method MarkWired {oid} { dict set WiredNow $oid 1 }
+    method ClearWired {oid} { dict unset WiredNow $oid }
+    method IsWired {oid} { return [dict exists $WiredNow $oid] }
 
     # Per-call cap on demote-and-retry steps; demotion makes progress durable
     # across calls, so the cap only bounds one history call's blast radius.
@@ -584,9 +573,7 @@ snit::type taco_message {
                 $replyId $replyTo $fbEnd]
         } trap TACO_OMEMO_NOT_READY {emsg} {
             # Stays pending; warming kicks via encrypt side effect.
-            # Initial attempt counts toward the budget.
             jlog debug "send $opts(-chat): OMEMO not ready ($emsg), parking pending oid=$oid"
-            set OmemoRetryBudget($oid) [expr {$OMEMO_RETRY_LIMIT - 1}]
         } trap TACO_OMEMO_TERMINAL {emsg} {
             jlog debug "send $opts(-chat): OMEMO terminal ($emsg), marking failed oid=$oid"
             set status "failed"
@@ -610,8 +597,7 @@ snit::type taco_message {
                     $replyId $replyTo $fbEnd]]}] \
             server_status $status \
             encryption $encMode \
-            fail_reason $failReason \
-            on_wire [expr {$stanza ne ""}]]
+            fail_reason $failReason]
 
         set result [$messagestore store [list $msg]]
         set inserted [dict get $result inserted]
@@ -622,6 +608,7 @@ snit::type taco_message {
         $self EmitTail $opts(-chat)
 
         if {$stanza ne ""} {
+            $self MarkWired $oid
             $client write $stanza
         }
     }
@@ -748,6 +735,11 @@ snit::type taco_message {
             }
         }
         if {[llength $ownIds] == 0} return
+        # Acked means SM has let go of it: no longer in flight, whether or
+        # not it turns out to match a row we were tracking.
+        foreach oid $ownIds {
+            $self ClearWired $oid
+        }
         set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
             # SM-ack never relocates the row (confirmByOwnIds keeps its ts),
@@ -760,10 +752,11 @@ snit::type taco_message {
 
     # Pending sends as RetrySend-shaped dicts, by scope:
     #   all          every pending row (reconnect retry)
-    #   parked-omemo pending OMEMO still off the wire (on_wire=0)
+    #   parked-omemo pending OMEMO not currently in flight
     #   peer-omemo   parked-omemo narrowed to $peerJid
-    # on_wire=1 rows are in flight awaiting an SM ack; re-sending would
-    # duplicate, so the omemo scopes exclude them.
+    # The omemo scopes drop rows SM is still holding: re-sending one would
+    # duplicate it. That's a WiredNow lookup rather than a WHERE clause -
+    # in-flight is per-connection state, so it isn't in the table.
     method PendingSends {scope {peerJid ""}} {
         set sql {SELECT chat_jid, body, own_id, encryption, reply_id, reply_to,
                         timestamp
@@ -771,13 +764,14 @@ snit::type taco_message {
                  WHERE kind='message' AND server_status='pending'}
         switch $scope {
             all {}
-            parked-omemo { append sql { AND encryption='omemo' AND on_wire=0} }
+            parked-omemo { append sql { AND encryption='omemo'} }
             peer-omemo   { append sql \
-                { AND chat_jid=$peerJid AND encryption='omemo' AND on_wire=0} }
+                { AND chat_jid=$peerJid AND encryption='omemo'} }
         }
         append sql { ORDER BY timestamp}
         set pending {}
         $client db eval $sql row {
+            if {$scope ne "all" && [$self IsWired $row(own_id)]} continue
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption) \
@@ -810,11 +804,11 @@ snit::type taco_message {
                 lappend PendingRetry($roomJid) $msg
                 continue
             }
+            # Written to the current stream: SM owns it for ack or replay,
+            # so it isn't ours to re-send or judge.
+            if {[$self IsWired [dict get $msg own_id]]} continue
             set ts [expr {[dict exists $msg timestamp] \
                 ? [dict get $msg timestamp] : 0}]
-            # Sent after catchup went out: live on this connection and
-            # owned by SM's replay queue, not ours to touch.
-            if {$CatchupCutoff ne 0 && $ts > $CatchupCutoff} continue
             if {!$complete && $archiveFloor ne "" && $ts < $archiveFloor} {
                 jlog debug "RetryPending $chatJid oid=[dict get $msg own_id]:\
                     predates archive floor, marking delivery-failed"
@@ -899,17 +893,12 @@ snit::type taco_message {
                 $chatJid $body $oid $msgType $toJid $encMode \
                 $replyId $replyTo]
         } trap TACO_OMEMO_NOT_READY {} {
-            # Bundle/devicelist warming still in flight. If we have
-            # budget left, stay pending and wait for the next
-            # <SessionReady> tick.
-            if {![info exists OmemoRetryBudget($oid)]} {
-                set OmemoRetryBudget($oid) $OMEMO_RETRY_LIMIT
-            }
-            incr OmemoRetryBudget($oid) -1
-            jlog debug "RetrySend $chatJid oid=$oid: still NOT_READY, budget=$OmemoRetryBudget($oid)"
-            if {$OmemoRetryBudget($oid) <= 0} {
-                $self MarkOutgoingFailed $chatJid $oid encrypt
-            }
+            # Warming still in flight; the row stays pending and waits for
+            # the next tick. Warming is bounded by omemo's own per-device
+            # deadline, and a row that never gets out is failed by the
+            # archive-floor rule on the next connect - so there's no
+            # attempt counter here.
+            jlog debug "RetrySend $chatJid oid=$oid: still NOT_READY, staying pending"
             return
         } trap TACO_OMEMO_TERMINAL {} {
             jlog debug "RetrySend $chatJid oid=$oid: TERMINAL, marking failed"
@@ -917,18 +906,18 @@ snit::type taco_message {
             return
         }
 
-        unset -nocomplain OmemoRetryBudget($oid)
         jlog debug "RetrySend $chatJid oid=$oid: built stanza, writing to wire"
-        # on_wire stops a later <SessionReady> tick re-sending this row;
         # raw_xml is refreshed only as a debug record (readable form, not
         # the wire ciphertext).
         set xml [jwrite [$self BuildMessageStanza readable \
             $chatJid $body $oid $msgType $toJid $encMode \
             $replyId $replyTo]]
         $client db eval {
-            UPDATE chat_message SET on_wire=1, raw_xml=$xml
+            UPDATE chat_message SET raw_xml=$xml
             WHERE chat_jid=$chatJid AND own_id=$oid
         }
+        # Marks it in flight, so a later warm tick won't re-send it.
+        $self MarkWired $oid
         $client write $stanza
     }
 
@@ -966,15 +955,15 @@ snit::type taco_message {
             }
         }
 
-        # Fresh attempt: reset budget, flip back to pending, clear on_wire
-        # (RetrySend re-stamps it on write; a still-parked OMEMO retry must
-        # stay eligible for <SessionReady>) and clear the prior failure so
-        # the GUI shows it in flight; MarkOutgoingFailed re-stamps
+        # Fresh attempt: drop any in-flight marker (RetrySend re-adds it on
+        # write; a still-parked OMEMO retry must stay eligible for
+        # <SessionReady>), flip back to pending and clear the prior failure
+        # so the GUI shows it in flight; MarkOutgoingFailed re-stamps
         # fail_reason if it fails again.
-        unset -nocomplain OmemoRetryBudget($oid)
+        $self ClearWired $oid
         $client db eval {
             UPDATE chat_message
-            SET server_status='pending', fail_reason='', on_wire=0
+            SET server_status='pending', fail_reason=''
             WHERE chat_jid=$chatJid AND timestamp=$ts
         }
         $client emit message <Status> -jid $chatJid \
@@ -987,8 +976,9 @@ snit::type taco_message {
 
     # Flip a pending row to failed with a fail_reason category and notify
     # the GUI. `reason` is a category ('encrypt' = OMEMO couldn't produce
-    # ciphertext); persisted on the row and carried in the <Status> so the
-    # GUI picks the right affordance (e.g. resend-as-plaintext).
+    # ciphertext, 'delivery' = the archive says it never landed); persisted
+    # on the row and carried in the <Status> so the GUI picks the right
+    # affordance (e.g. resend-as-plaintext).
     method MarkOutgoingFailed {chatJid oid reason} {
         $client db eval {
             UPDATE chat_message
@@ -1001,7 +991,7 @@ snit::type taco_message {
             WHERE chat_jid=$chatJid AND own_id=$oid
         }]
         if {$ts eq ""} return
-        unset -nocomplain OmemoRetryBudget($oid)
+        $self ClearWired $oid
         $client emit message <Status> -jid $chatJid \
             -timestamp $ts -server_status failed -fail_reason $reason
     }
