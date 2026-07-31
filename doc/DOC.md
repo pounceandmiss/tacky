@@ -450,13 +450,17 @@ The full-size image is content-addressed by hash: `metadata` maps a JID to
 its current hash, and `data` gives you the bytes as they were published
 (often JPEG, not always PNG). The backend never resizes - scale on your
 end. It only fetches bytes for JIDs you've marked `visible`, and that's
-refcounted, so balance each `visible` with an `invisible`. `publish` sends
-`data` as-is; a ~128px PNG is a safe size. See `avatarcache_base` in
-`lib/libtacky/tacky.tcl` for a caching example.
+refcounted, so balance each `visible` with an `invisible`. `visible` also
+re-emits `<Update>` for an already-cached avatar, so listening is enough.
+`publish` sends `data` as-is; a ~128px PNG is a safe size. See
+`avatarcache_base` in `lib/libtacky/tacky.tcl` for a caching example.
+
+Avatars come from XEP-0084 (PEP) or XEP-0153 (vCard, for group chats and
+occupants). PEP wins: a JID with a PEP avatar ignores its vCard hash.
 
 Events:
 
-    avatar <Update>   {jid: string, hash: string}      changed, arrived, or removed (hash "")
+    avatar <Update>   {jid: string, hash: string}      changed, arrived, removed (hash ""), or first `visible`
     avatar <Progress> {acc: string, message: string}   during your own publish
 
 ## nick

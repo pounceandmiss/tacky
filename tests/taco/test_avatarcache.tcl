@@ -117,8 +117,8 @@ test avatarcache-notify-untracked-not-called {untracked tag not notified} \
 # Seed a cached avatar (metadata + data) for c@d on the account's client.
 proc ac_seed_avatar {hash data} {
     [tacky client user@test] db eval {
-        INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
-        VALUES ('c@d', $hash, 'image/png', 3, 0, 0)
+        INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+        VALUES ('c@d', $hash, 'image/png', 3, 0, 0, 'pubsub')
     }
     [tacky client user@test] db eval {
         INSERT OR REPLACE INTO avatar_data(hash, data) VALUES ($hash, $data)

@@ -190,8 +190,8 @@ snit::type taco_avatar {
                     VALUES ($hash, $rawData)
                 }
                 $client db eval {
-                    INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
-                    VALUES ($jid, $hash, $type_, $bytes, $width, $height)
+                    INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+                    VALUES ($jid, $hash, $type_, $bytes, $width, $height, 'pubsub')
                 }
                 $client emit avatar <Update> -jid $jid -hash $hash
             }
@@ -276,8 +276,8 @@ snit::type taco_avatar {
 
         # Upsert metadata
         $client db eval {
-            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
-            VALUES ($from, $hash, $type_, $bytes, $width, $height)
+            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+            VALUES ($from, $hash, $type_, $bytes, $width, $height, 'pubsub')
         }
 
         # Check if data already cached
@@ -299,15 +299,35 @@ snit::type taco_avatar {
         }
         dict set VisibleJids $jid [incr count]
         if {$count == 1} {
+            set fetching 0
             if {[dict exists $PendingVCardHash $jid]} {
                 dict unset PendingVCardHash $jid
                 $self FetchVCard $jid
+                set fetching 1
             }
             if {[dict exists $PendingPubSubHash $jid]} {
                 set hash [dict get $PendingPubSubHash $jid]
                 dict unset PendingPubSubHash $jid
                 $self FetchData $jid $hash
+                set fetching 1
             }
+            if {!$fetching} {
+                $self PrimeFromCache $jid
+            }
+        }
+    }
+
+    # Contacts get a PEP re-push every connect; a room's vCard avatar is only
+    # fetched on a cache miss at join, so without this a cached room avatar
+    # never reaches the frontend again.  The join skips unservable bytes.
+    method PrimeFromCache {jid} {
+        set hash [$client db onecolumn {
+            SELECT m.hash FROM avatar_metadata m
+            JOIN avatar_data d ON d.hash = m.hash
+            WHERE m.jid = $jid
+        }]
+        if {$hash ne ""} {
+            $client emit avatar <Update> -jid $jid -hash $hash
         }
     }
 
@@ -329,27 +349,24 @@ snit::type taco_avatar {
     # XEP-0153: detect vCard avatar hash in presence.
     # Compares to cached hash; triggers FetchVCard only if different.
     # jid: bare JID for rooms, occupant JID (room@muc/nick) for participants.
+    # XEP-0084 wins: a JID whose avatar came from PEP ignores the legacy hash.
     method OnVCardPresence {jid stanza} {
         set jid [jid norm $jid]
         set xNode [xsearch $stanza x -ns vcard-temp:x:update]
         if {$xNode eq ""} return
 
+        lassign [$self CachedRow $jid] existing source
+
         set hash [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
         if {$hash eq ""} {
-            set existing [$client db onecolumn {
-                SELECT hash FROM avatar_metadata WHERE jid=$jid
-            }]
-            if {$existing ne ""} {
+            if {$existing ne "" && $source ne "pubsub"} {
                 $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
                 $client emit avatar <Update> -jid $jid -hash ""
             }
             return
         }
 
-        set existing [$client db onecolumn {
-            SELECT hash FROM avatar_metadata WHERE jid=$jid
-        }]
-        if {$existing eq $hash} return
+        if {$existing eq $hash || $source eq "pubsub"} return
         if {[$self IsVisible $jid]} {
             $self FetchVCard $jid
         } else {
@@ -363,8 +380,19 @@ snit::type taco_avatar {
             -command [mymethod OnVCardResult $jid]
     }
 
+    method CachedRow {jid} {
+        $client db eval {
+            SELECT hash, source FROM avatar_metadata WHERE jid=$jid
+        } row {
+            return [list $row(hash) $row(source)]
+        }
+        return [list "" ""]
+    }
+
     method OnVCardResult {jid stanza} {
         if {[xsearch $stanza -get @type] eq "error"} return
+
+        if {[lindex [$self CachedRow $jid] 1] eq "pubsub"} return
 
         set base64Data [xsearch $stanza vCard PHOTO BINVAL -get body]
         if {$base64Data eq ""} return
@@ -382,8 +410,8 @@ snit::type taco_avatar {
             VALUES ($hash, $rawData)
         }
         $client db eval {
-            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height)
-            VALUES ($jid, $hash, $type_, $bytes, 0, 0)
+            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+            VALUES ($jid, $hash, $type_, $bytes, 0, 0, 'vcard')
         }
 
         $client emit avatar <Update> -jid $jid -hash $hash
@@ -449,7 +477,8 @@ snit::type taco_avatar {
                 type TEXT NOT NULL,
                 bytes INTEGER,
                 width INTEGER,
-                height INTEGER
+                height INTEGER,
+                source TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS avatar_data(
                 hash TEXT PRIMARY KEY,
