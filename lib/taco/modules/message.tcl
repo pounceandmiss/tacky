@@ -129,25 +129,64 @@ snit::type taco_message {
             -command [mymethod OnCatchup]
     }
 
-    # Per-message walk: each catchup arrival fires <New> (or
-    # <Confirmed> for confirmations) individually so the GUI's AtTail
-    # gate applies uniformly. Per-chat bracket tracking lets us
-    # replicate the batch-level overlap sweep that single-call
-    # `store` would do: if any one of this chat's catchup messages
-    # dedups against pre-existing cache, the entire bracket span
-    # is server-contiguous (RSM) and any holes in that span
-    # are proven false positives.
     method OnCatchup {mamResult} {
         if {[dict exists $mamResult error]} {
-            $client emit message <CatchupDone> -count 0
+            $client emit message <CatchupDone> -jid "" -count 0
             # No archive evidence, so nothing can be judged undelivered.
             # Retry everything, fail nothing.
             $self RetryPending "" 0
             return
         }
 
-        set myBareJid [jid bare [$client cget -jid]]
+        lassign [$self CatchupPage $mamResult ""] perChatCount archiveFloor
+
         set totalCount 0
+        dict for {jid n} $perChatCount {
+            $client emit message <CatchupDone> -jid $jid -count $n
+            incr totalCount $n
+        }
+        $client emit message <CatchupDone> -jid "" -count $totalCount
+        # Anything still pending after the archive has had its say either
+        # never reached the server or predates what the archive covered.
+        $self RetryPending $archiveFloor [dict get $mamResult complete]
+    }
+
+    # Fetch a joined room's own archive - the account archive holds no
+    # groupchat, so nothing else syncs a room.
+    method DoMucCatchup {roomChatJid} {
+        $client mam queryChat $roomChatJid -before {} -max 50 \
+            -command [mymethod OnMucCatchup $roomChatJid]
+    }
+
+    method OnMucCatchup {roomChatJid mamResult} {
+        if {[dict exists $mamResult error]} {
+            $client emit message <CatchupDone> -jid $roomChatJid -count 0
+            return
+        }
+        lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _
+        set n [expr {[dict exists $perChatCount $roomChatJid]
+            ? [dict get $perChatCount $roomChatJid] : 0}]
+        $client emit message <CatchupDone> -jid $roomChatJid -count $n
+    }
+
+    # Per-message walk over one catchup page. Stores without emitting <New>
+    # (backfill is not an arrival); the in-place patch verdicts still fire,
+    # since they correct rows that may already be on screen.
+    #
+    # $fixedChatJid keys every message to one chat, for a room page whose
+    # stanzas carry the room in `from` and can't be routed by envelope.
+    # Empty routes per message off the envelope.
+    #
+    # Per-chat bracket tracking replicates the batch-level overlap sweep
+    # that single-call `store` would do: if any one of this chat's catchup
+    # messages dedups against pre-existing cache, the entire bracket span
+    # is server-contiguous (RSM) and any holes in that span are proven
+    # false positives.
+    #
+    # Returns {perChatCount archiveFloor}.
+    method CatchupPage {mamResult fixedChatJid} {
+        set myBareJid [jid bare [$client cget -jid]]
+        set perChatCount [dict create]
         # Oldest timestamp this page returned: the floor of the range the
         # archive just spoke for. Taken over EVERY result node, including
         # the drop/reaction/edit verdicts that skip the citizen loop below
@@ -161,17 +200,22 @@ snit::type taco_message {
         set perChatOverlap [dict create]
 
         foreach resultNode [dict get $mamResult messages] {
-            set fwdNode [lindex [xsearch $resultNode forwarded \
-                                    -ns urn:xmpp:forward:0] 0]
-            set msgNode [$client ensureTo [lindex [xsearch $fwdNode message] 0]]
-
-            set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
-            set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
-
-            if {[string equal -nocase $fromBare $myBareJid]} {
-                set chatJid $toBare
+            if {$fixedChatJid ne ""} {
+                set chatJid $fixedChatJid
             } else {
-                set chatJid $fromBare
+                set fwdNode [lindex [xsearch $resultNode forwarded \
+                                        -ns urn:xmpp:forward:0] 0]
+                set msgNode [$client ensureTo \
+                    [lindex [xsearch $fwdNode message] 0]]
+
+                set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
+                set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
+
+                if {[string equal -nocase $fromBare $myBareJid]} {
+                    set chatJid $toBare
+                } else {
+                    set chatJid $fromBare
+                }
             }
 
             set r [$self ParseResultNode $resultNode $chatJid]
@@ -220,13 +264,8 @@ snit::type taco_message {
                 }
                 new {
                     set result [$messagestore store [list [dict get $r msg]]]
-                    set inserted [dict get $result inserted]
-                    if {[llength $inserted] > 0} {
-                        set dbMsg [lindex [$messagestore get ids \
-                            $chatJid $inserted] 0]
-                        $client emit message <New> -jid $chatJid \
-                            -message $dbMsg
-                        incr totalCount
+                    if {[llength [dict get $result inserted]] > 0} {
+                        dict incr perChatCount $chatJid
                     } else {
                         # store's own dedup caught an id-less content match.
                         dict set perChatOverlap $chatJid 1
@@ -243,9 +282,9 @@ snit::type taco_message {
         }
 
         # Place older-edge hole for any chat in this catchup if the
-        # global MAM query reports more older history. For chats with
-        # an existing covering hole (PlaceReconnectHoles), the
-        # dedup invariant makes the add a no-op.
+        # MAM query reports more older history. For chats with an
+        # existing covering hole (PlaceReconnectHoles), the dedup
+        # invariant makes the add a no-op.
         if {![dict get $mamResult complete]} {
             dict for {jid minTs} $perChatMin {
                 $messagestore hole add $jid older $minTs
@@ -255,10 +294,7 @@ snit::type taco_message {
         dict for {jid _} $perChatMax {
             $self EmitTail $jid
         }
-        $client emit message <CatchupDone> -count $totalCount
-        # Anything still pending after the archive has had its say either
-        # never reached the server or predates what the archive covered.
-        $self RetryPending $archiveFloor [dict get $mamResult complete]
+        return [list $perChatCount $archiveFloor]
     }
 
     method OnDisconnect {args} {
@@ -845,16 +881,20 @@ snit::type taco_message {
         }
     }
 
-    # Called via bus when a MUC room is joined - flush pending
-    # retries for that room.
+    # Called via bus when a MUC room is joined - flush pending retries for
+    # that room, then sync its archive. <Joined> fires on the first
+    # self-presence, so the archive page races the room's own replay;
+    # whichever lands second dedups.
     method OnMucJoined {args} {
         set roomJid [dict get $args -jid]
-        if {![info exists PendingRetry($roomJid)]} return
-        set msgs $PendingRetry($roomJid)
-        unset PendingRetry($roomJid)
-        foreach msg $msgs {
-            $self RetrySend $msg
+        if {[info exists PendingRetry($roomJid)]} {
+            set msgs $PendingRetry($roomJid)
+            unset PendingRetry($roomJid)
+            foreach msg $msgs {
+                $self RetrySend $msg
+            }
         }
+        $self DoMucCatchup ${roomJid}?join
     }
 
     # Retry a still-pending message. Uses BuildMessageStanza so OMEMO

@@ -381,7 +381,7 @@ Events:
     message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
     message <Retracted>   {jid: string, timestamp: int}
-    message <CatchupDone> {count: int}
+    message <CatchupDone> {jid: string, count: int}
     message <Tail>        {jid: string, timestamp: int}
 
 These events each carry one kind of change to a message already on screen,
@@ -634,22 +634,35 @@ newest real-message timestamp whenever it changes. On a newer-page result,
 if the window's newest timestamp matches the last `<Tail>`, you're back at
 the tail, so set the flag.
 
-**Initial load, goto, catchup.** When the chat opens, call
+**Initial load and goto.** When the chat opens, call
 `message history` with no cursor. The newest page comes back (local if it's
 stored, otherwise fetched from MAM). That empty-local fetch is the one time
 a cursorless load hits the server, and it has no timeout - so treat the
-per-request callback as best-effort and lean on live `<New>` events to fill
-an empty window once you're connected. "Scroll to bottom" cancels in-flight
-requests, clears the window, sets the flag false, and re-runs the initial
-load. A jump calls `message goto`: if the returned `anchor` is already in
+per-request callback as best-effort and lean on live `<New>` events and the
+catchup repaint below to fill an empty window once you're connected.
+"Scroll to bottom" cancels in-flight requests, clears the window, sets the
+flag false, and re-runs the initial load. A jump calls `message goto`: if the returned `anchor` is already in
 the window, just scroll to it, otherwise clear and apply `messages`. The
 flag stays false after a goto until the user gets back to the tail -
 scroll-to-bottom, or paging forward until the at-tail check flips.
 `goto`'s `bounded_before` and `bounded_after` flag a side that was cut off
 at a hole: there's more history that way, and paging fills it in.
 `gotoReply` (XEP-0461) jumps to a reply's target and returns the same
-shape. MAM catchup comes in as live `<New>` events under the at-tail gate.
-`<CatchupDone>` is only there to let the UI settle.
+shape.
+
+**Catchup.** On connect the backend syncs your account archive; on joining a
+room it syncs that room's archive, which is the only sync a room gets, since
+the account archive holds no groupchat. Catchup writes to the store without
+emitting `<New>` - nothing arrived, it was backfilled. Completion comes as
+`<CatchupDone>`: one per chat that gained messages, carrying that chat's
+`jid` and `count`, then one with an empty `jid` and the total once the
+account sync settles (a room sync is one chat, so it emits only its own).
+Refetch on the one matching your chat to repaint - an `after` page from your
+newest displayed timestamp - and treat the empty-`jid` one as a settle
+signal, not a repaint. In-place corrections still arrive as their own events
+during catchup, so a row already on screen stays current. Per-chat counts
+are what unread or notification UI should read; `<New>` is not, since it
+also fires for your own outgoing messages.
 
 **Live messages.** On `<New>`, insert it at its timestamp-sorted spot if
 the at-tail flag is set, otherwise drop it.

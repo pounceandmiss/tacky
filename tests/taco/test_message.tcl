@@ -37,15 +37,19 @@ proc msg_history {args} {
 
 # Helper: build a MAM <result> node wrapping a message
 proc mam_result {args} {
-    set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id ""}
+    set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id "" type ""}
     set opts [dict merge $defaults $args]
     set oid [dict get $opts origin_id]
     set qid [dict get $opts queryid]
     set rid [dict get $opts id]
     set toJid [dict get $opts to]
+    set msgType [dict get $opts type]
     set msgAttrs [list -from [dict get $opts from]]
     if {$toJid ne ""} {
         lappend msgAttrs -to $toJid
+    }
+    if {$msgType ne ""} {
+        lappend msgAttrs -type $msgType
     }
     if {$oid ne ""} {
         lappend msgAttrs -id $oid
@@ -83,14 +87,51 @@ proc mam_catchup_iq {} {
     return ""
 }
 
+# Helper: the MAM query IQ addressed to $toJid. Room archives are queried
+# with the room as `to`, so several queries can be outstanding at once and
+# picking by position isn't safe.
+proc mam_iq_to {toJid} {
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""
+            && [xsearch $stanza -get @to] eq $toJid} {
+            return $stanza
+        }
+    }
+    return ""
+}
+
+# Helper: simulate a room join - send it, then feed back the self-presence
+# that makes muc emit <Joined>.
+proc msg_muc_join {room nick} {
+    $::_client muc join -jid $room -nick $nick
+    $::_client conn feed [j presence -from $room/$nick {
+        j x -ns http://jabber.org/protocol/muc#user {
+            j item -role participant -affiliation member
+            j status -code 110
+        }
+    }]
+}
+
 # Helper: complete a catchup by feeding MAM results + fin IQ
 proc msg_catchup_finish {results {complete true}} {
-    set iqStanza [mam_catchup_iq]
+    msg_mam_finish [mam_catchup_iq] $results $complete
+}
+
+# Helper: feed MAM results + fin for one specific query IQ. A room query is
+# addressed to the room, so both its results and its fin must come back from
+# the room - mam drops mismatched results, and iq keys responses on from+id.
+proc msg_mam_finish {iqStanza results {complete true}} {
     set iqId [dict get $iqStanza attrs id]
     set qid [xsearch $iqStanza query -ns urn:xmpp:mam:2 -get @queryid]
+    set queriedTo [xsearch $iqStanza -get @to]
+    set archive [expr {$queriedTo ne "" ? $queriedTo : "user@test.example.com"}]
+    set finAttrs [list -type result -id $iqId]
+    if {$queriedTo ne ""} {
+        lappend finAttrs -from $queriedTo
+    }
 
     foreach rn $results {
-        $::_client mam onResultMessage [j message -from user@test.example.com {
+        $::_client mam onResultMessage [j message -from $archive {
             j /as-is $rn
         }]
     }
@@ -102,7 +143,7 @@ proc msg_catchup_finish {results {complete true}} {
         set last [xsearch [lindex $results end] -get @id]
     }
 
-    $::_client iq feed [j iq -type result -id $iqId {
+    $::_client iq feed [j iq {*}$finAttrs {
         j fin -ns urn:xmpp:mam:2 -complete $complete {
             j set -ns http://jabber.org/protocol/rsm {
                 if {$first ne ""} {
@@ -1886,7 +1927,7 @@ test message-catchup-dedup-no-ids {catchup deduplicates messages without server/
         }
     } -result {2}
 
-test message-catchup-per-message-received {each catchup message fires its own <New>} \
+test message-catchup-emits-no-new {catchup stores without announcing arrivals} \
     {*}$msg_common \
     -body {
         set ::_count 0
@@ -1903,8 +1944,181 @@ test message-catchup-per-message-received {each catchup message fires its own <N
             [mam_result id s3 queryid $qid \
                 from alice@example.com/phone to user@test.example.com \
                 body msg3 stamp 2024-01-01T12:00:00Z]]
-        set ::_count
-    } -result {3}
+        list $::_count \
+             [llength [msg_store_latest alice@example.com]] \
+             [llength [msg_store_latest bob@example.com]]
+    } -result {0 2 1}
+
+test message-catchup-done-per-chat {CatchupDone fires per chat that gained messages, then account-wide} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        tacky listen message <CatchupDone> {apply {{ev} {
+            lappend ::_events [dict get $ev -jid]:[dict get $ev -count]
+        }}}
+        # The first chat already holds s1, so that entry dedups and only
+        # its second message counts; the other chat is wholly new.
+        msg_store [list [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
+            chat_jid alice@example.com server_id s1 body msg1]]
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s1 queryid $qid \
+                from alice@example.com/phone to user@test.example.com \
+                body msg1 stamp 2024-01-01T10:00:00Z] \
+            [mam_result id s2 queryid $qid \
+                from alice@example.com/phone to user@test.example.com \
+                body msg2 stamp 2024-01-01T11:00:00Z] \
+            [mam_result id s3 queryid $qid \
+                from bob@example.com/phone to user@test.example.com \
+                body msg3 stamp 2024-01-01T12:00:00Z]]
+        set ::_events
+    } -result {alice@example.com:1 bob@example.com:1 :2}
+
+test message-catchup-done-skips-untouched-chat {a chat whose page entries all dedup emits no CatchupDone} \
+    {*}$msg_common \
+    -body {
+        set ::_jids {}
+        tacky listen message <CatchupDone> {apply {{ev} {
+            lappend ::_jids [dict get $ev -jid]
+        }}}
+        msg_store [list [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
+            chat_jid alice@example.com server_id s1 body msg1]]
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s1 queryid $qid \
+                from alice@example.com/phone to user@test.example.com \
+                body msg1 stamp 2024-01-01T10:00:00Z]]
+        set ::_jids
+    } -result {{}}
+
+test message-catchup-still-moves-chatlist {a stored catchup message still updates chat ordering} \
+    {*}$msg_common \
+    -body {
+        set ::_updated {}
+        tacky listen chats <Updated> {apply {{ev} {
+            lappend ::_updated [dict get $ev -jid]
+        }}}
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s1 queryid $qid \
+                from alice@example.com/phone to user@test.example.com \
+                body msg1 stamp 2024-01-01T10:00:00Z]]
+        # chats debounces its emits on `after idle`.
+        update idletasks
+        set ::_updated
+    } -result {alice@example.com}
+
+test message-catchup-still-patches {a reaction in a catchup page still patches in place} \
+    {*}$msg_common \
+    -body {
+        set ::_reactions 0
+        tacky listen message <Reactions> {apply {{ev} { incr ::_reactions }}}
+        msg_store [list [msg_msg timestamp [ParseTimestamp 2024-01-01T10:00:00Z] \
+            chat_jid alice@example.com server_id s1 body target]]
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [j result -ns urn:xmpp:mam:2 -id r1 -queryid $qid {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j delay -ns urn:xmpp:delay -stamp 2024-01-01T11:00:00Z
+                    j message -from alice@example.com/phone \
+                            -to user@test.example.com {
+                        j reactions -ns urn:xmpp:reactions:0 -id s1 {
+                            j reaction #body 👍
+                        }
+                    }
+                }
+            }]]
+        set ::_reactions
+    } -result {1}
+
+test message-muc-catchup-on-join {joining a room queries its own archive} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qnode [lindex [xsearch $iq query -ns urn:xmpp:mam:2] 0]
+        set hasWith [expr {[xsearch $qnode x field @var with] ne ""}]
+        list [expr {$iq ne ""}] [expr {!$hasWith}] \
+             [expr {[xsearch $iq query set before] ne ""}]
+    } -result {1 1 1}
+
+test message-muc-catchup-stores-under-join-jid {room catchup stores under the ?join chat JID} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r1 queryid $qid \
+                from room@muc.example.com/alice type groupchat \
+                body "room msg" stamp 2024-01-01T10:00:00Z]]
+        list [llength [msg_store_latest room@muc.example.com?join]] \
+             [llength [msg_store_latest room@muc.example.com]] \
+             [dict get [lindex [msg_store_latest room@muc.example.com?join] 0] \
+                content body]
+    } -result {1 0 {room msg}}
+
+test message-muc-catchup-done-carries-room {room catchup settles with the room's jid} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        tacky listen message <CatchupDone> {apply {{ev} {
+            lappend ::_events [dict get $ev -jid]:[dict get $ev -count]
+        }}}
+        msg_ready
+        msg_catchup_finish {}
+        set ::_events {}
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r1 queryid $qid \
+                from room@muc.example.com/alice type groupchat \
+                body "room msg" stamp 2024-01-01T10:00:00Z]]
+        set ::_events
+    } -result {room@muc.example.com?join:1}
+
+test message-muc-catchup-incomplete-places-hole {an incomplete room catchup leaves an older-edge hole} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r1 queryid $qid \
+                from room@muc.example.com/alice type groupchat \
+                body "room msg" stamp 2024-01-01T10:00:00Z]] false
+        llength [$::_client message messagestore hole list \
+            room@muc.example.com?join]
+    } -result {1}
+
+test message-muc-catchup-dedups-join-replay {a replayed message already stored is not duplicated} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        # The room replays a message before the catchup page lands.
+        $::_client conn feed [j message -type groupchat \
+            -from room@muc.example.com/alice {
+            j body #body "room msg"
+            j stanza-id -ns urn:xmpp:sid:0 -id r1 -by room@muc.example.com
+            j delay -ns urn:xmpp:delay -stamp 2024-01-01T10:00:00Z
+        }]
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r1 queryid $qid \
+                from room@muc.example.com/alice type groupchat \
+                body "room msg" stamp 2024-01-01T10:00:00Z]]
+        llength [msg_store_latest room@muc.example.com?join]
+    } -result {1}
 
 test message-catchup-overlap-clears-reconnect-hole {catchup overlap sweeps the reconnect hole} \
     {*}$msg_common \

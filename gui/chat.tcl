@@ -303,10 +303,23 @@ snit::widgetadaptor chatview {
             -command [mymethod OnGotoDone]
     }
 
-    # Catchup messages now flow through <New> under the AtTail
-    # gate; no reload needed. Kept as a stub for future UI-settling
-    # work (spinners, badges).
-    method OnCatchupDone {ev} {}
+    # Catchup stores without emitting <New>, so repaint by refetching the
+    # tail. Only the per-chat event means this chat gained messages; the
+    # account-wide one (empty jid) would refetch in every open view.
+    method OnCatchupDone {ev} {
+        if {![dict exists $ev -jid]} return
+        if {[dict get $ev -jid] ne $options(-jid)} return
+        if {!$AtTail} return
+        if {[::tacky listening $win/new]} return
+        set newest [$hull messages newest]
+        if {$newest eq ""} {
+            $self InitialLoad
+            return
+        }
+        ::tacky message history -acc $options(-acc) \
+            -chat $options(-jid) -after $newest -limit 50 \
+            -tag $win/new -command [mymethod OnLoadDone new]
+    }
 
     method OnThirsty {direction edgeId} {
         if {[::tacky listening $win/$direction]} return
