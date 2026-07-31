@@ -672,6 +672,209 @@ test message-catchup-displayless-confirms-send \
     } -result {nrows 1 status {} body secret}
 
 # =============================================================================
+# Stranded sends: settle pending rows against the archive after catchup
+#
+# A send that reached the wire but never got an SM ack survives a restart as
+# `pending, on_wire=1`. The reconnect catchup confirms whatever the server
+# really archived; RetryPending then judges the rest by the span catchup
+# covered. Inside that span the archive would have shown the message and
+# didn't, so the server never got it -> re-send. Older than the span the
+# archive can't say either way -> fail, and let the user decide.
+# =============================================================================
+
+# 2024-01-01T00:00:00Z, the floor the fixtures below establish.
+set ::floor_2024 1704067200000000
+# Between that floor and now.
+set ::inside_2025 1735689600000000
+
+test message-catchup-resends-row-inside-archive-span \
+    {a pending row newer than the archive floor is re-sent} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "stranded" \
+            from_jid $acc own_id oid-inside server_status pending \
+            encryption "" on_wire 1 timestamp $::inside_2025]]
+        set before [llength [$::_client conn get_written]]
+        # Archive floor is 2024; the row sits above it and was not echoed.
+        $::_client message OnCatchup [dict create complete 0 messages [list \
+            [mam_result id arch-a from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-inside'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status pending reason {} wrote 1}
+
+test message-catchup-fails-row-predating-archive \
+    {a pending row older than the archive floor is marked delivery-failed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
+            from_jid $acc own_id oid-old server_status pending \
+            encryption "" on_wire 1 timestamp 1000000]]
+        set before [llength [$::_client conn get_written]]
+        $::_client message OnCatchup [dict create complete 0 messages [list \
+            [mam_result id arch-b from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-old'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status failed reason delivery wrote 0}
+
+# complete=1 means the page IS the whole archive, so nothing falls outside
+# the evidence and age can never be the reason to give up.
+test message-catchup-complete-archive-never-fails \
+    {with a complete archive even an ancient row is re-sent, not failed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
+            from_jid $acc own_id oid-comp server_status pending \
+            encryption "" on_wire 1 timestamp 1000000]]
+        $::_client message OnCatchup [dict create complete 1 messages [list \
+            [mam_result id arch-c from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-comp'} row {}
+        list status $row(server_status) reason $row(fail_reason)
+    } -result {status pending reason {}}
+
+# A failed MAM query is no evidence at all - it must not be read as proof
+# that anything went undelivered.
+test message-catchup-error-retries-without-failing \
+    {a MAM error retries pending rows and fails none} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
+            from_jid $acc own_id oid-err server_status pending \
+            encryption "" on_wire 1 timestamp 1000000]]
+        set before [llength [$::_client conn get_written]]
+        $::_client message OnCatchup [dict create error timeout]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-err'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status pending reason {} wrote 1}
+
+# The floor must come from EVERY archived item, not just the citizens the
+# storing loop keeps. A displayless (drop-verdict) node that predates the
+# citizens still proves the page reached that far back, so a row between
+# the two is inside the evidence and must be re-sent rather than failed.
+test message-catchup-floor-spans-displayless-nodes \
+    {a displayless archive node still lowers the floor} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "mid" \
+            from_jid $acc own_id oid-mid server_status pending \
+            encryption "" on_wire 1 timestamp 1500000000000000]]
+        $::_client message OnCatchup [dict create complete 0 messages [list \
+            [mam_result id arch-d from bob@example.com to $acc \
+                body "" stamp 2017-01-01T00:00:00Z] \
+            [mam_result id arch-e from bob@example.com to $acc \
+                body "later" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-mid'} row {}
+        list status $row(server_status) reason $row(fail_reason)
+    } -result {status pending reason {}}
+
+# Catchup runs while the connection is live, so a message sent during the
+# round-trip is in flight and owned by SM's replay queue - not ours to
+# re-send or judge.
+test message-catchup-skips-send-made-during-catchup \
+    {a row created after the catchup query went out is left alone} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        # Stored after DoCatchup stamped its cutoff.
+        msg_store [list [msg_msg chat_jid alice@example.com body "live" \
+            from_jid $acc own_id oid-live server_status pending \
+            encryption "" on_wire 1 timestamp [expr {[clock microseconds] + 60000000}]]]
+        set before [llength [$::_client conn get_written]]
+        msg_catchup_finish [list \
+            [mam_result id arch-f queryid $qid from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]] false
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-live'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status pending reason {} wrote 0}
+
+# Confirmation has to win over both other outcomes: the row is settled
+# before RetryPending ever looks at it, even though it predates the floor.
+test message-catchup-confirmed-row-not-resent-or-failed \
+    {a row the archive confirms is neither re-sent nor failed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "landed" \
+            from_jid $acc own_id oid-conf2 server_status pending \
+            encryption "" on_wire 1 timestamp 1000000]]
+        set before [llength [$::_client conn get_written]]
+        $::_client message OnCatchup [dict create complete 0 messages [list \
+            [mam_result id arch-g from $acc to alice@example.com \
+                origin_id oid-conf2 body "landed" stamp 2024-06-01T00:00:00Z] \
+            [mam_result id arch-h from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-conf2'} row {}
+        list status $row(server_status) reason $row(fail_reason) \
+            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+    } -result {status {} reason {} wrote 0}
+
+# The account archive holds no room traffic, so the floor can say nothing
+# about a MUC send: it keeps waiting for the join instead.
+test message-catchup-muc-row-defers-not-failed \
+    {an old MUC row defers to the room join rather than being failed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid room@conf.example.com?join \
+            body "to room" from_jid $acc own_id oid-muc \
+            server_status pending encryption "" on_wire 1 timestamp 1000000]]
+        $::_client message OnCatchup [dict create complete 0 messages [list \
+            [mam_result id arch-i from bob@example.com to $acc \
+                body "other" stamp 2024-01-01T00:00:00Z]]]
+        set db [$::_client message messagestore cget -db]
+        $db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE own_id='oid-muc'} row {}
+        list status $row(server_status) reason $row(fail_reason)
+    } -result {status pending reason {}}
+
+# on_wire is a within-run marker (SM owns replay); a fresh process has no
+# stream, so leaving it set only hides the row from the warm retry ticks.
+test message-clear-pending-wire-on-startup \
+    {clearPendingWire clears pending rows only, leaving settled ones alone} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "p" \
+            from_jid $acc own_id oid-w1 server_status pending \
+            on_wire 1 timestamp 1000000]]
+        msg_store [list [msg_msg chat_jid alice@example.com body "c" \
+            from_jid $acc own_id oid-w2 server_status "" \
+            on_wire 1 timestamp 2000000]]
+        $::_client message messagestore clearPendingWire
+        set db [$::_client message messagestore cget -db]
+        list pending [$db onecolumn {
+                SELECT on_wire FROM chat_message WHERE own_id='oid-w1'}] \
+            confirmed [$db onecolumn {
+                SELECT on_wire FROM chat_message WHERE own_id='oid-w2'}]
+    } -result {pending 0 confirmed 1}
+
+# =============================================================================
 # Envelope-first dedup: messagestore reconcile
 # =============================================================================
 

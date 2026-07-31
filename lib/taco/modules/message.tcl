@@ -64,9 +64,9 @@ snit::type taco_message {
         # TERMINAL-fails on an empty list so the message stops hanging.
         $client bus subscribe $self omemo:<DevicelistResolved> \
             [mymethod OnOmemoSessionReady]
-        # omemo's account-level prerequisites (store, own devicelist)
-        # become ready after OnMessage's RetryPending has already run
-        # this connection, so retry pending OMEMO sends once they land.
+        # omemo's account-level prerequisites (store, own devicelist) may
+        # land either side of the catchup that drives RetryPending, so
+        # retry pending OMEMO sends once they do.
         $client bus subscribe $self omemo:<SelfReady> \
             [mymethod OnOmemoSelfReady]
         $client bus subscribe $self <Ready>      [mymethod OnReady]
@@ -75,6 +75,9 @@ snit::type taco_message {
         # An 'uploading' row from a previous run was never sent (PUT isn't
         # resumable); reconcile it to 'failed' so the user can retry.
         $messagestore failStaleUploads
+        # Likewise on_wire: a previous run's in-flight marker can't still
+        # be true, and while set it hides the row from the warm retries.
+        $messagestore clearPendingWire
     }
 
     destructor {
@@ -88,8 +91,14 @@ snit::type taco_message {
         # message a fresh shot on the new connection.
         array unset OmemoRetryBudget
         $self PlaceReconnectHoles
+        # RetryPending runs from OnCatchup, not here. Catchup confirms
+        # whatever the server actually archived, so the retry only has to
+        # deal with what genuinely never landed - and by then omemo's
+        # store and devicelists have had a full MAM round-trip to warm,
+        # where a retry at <Ready> is guaranteed to hit NOT_READY (the
+        # message module is constructed before omemo, so its <Ready>
+        # handler runs first).
         $self DoCatchup
-        $self RetryPending
     }
 
     # Bracket any history that arrived during the disconnect window:
@@ -118,6 +127,10 @@ snit::type taco_message {
     }
 
     method DoCatchup {} {
+        # Rows created after this point are live sends on the current
+        # connection, owned by SM's replay queue. RetryPending must leave
+        # them alone or it would re-send underneath an in-flight stanza.
+        set CatchupCutoff [clock microseconds]
         $client mam query -before {} -max 50 \
             -command [mymethod OnCatchup]
     }
@@ -133,11 +146,20 @@ snit::type taco_message {
     method OnCatchup {mamResult} {
         if {[dict exists $mamResult error]} {
             $client emit message <CatchupDone> -count 0
+            # No archive evidence, so nothing can be judged undelivered.
+            # Retry everything, fail nothing.
+            $self RetryPending "" 0
             return
         }
 
         set myBareJid [jid bare [$client cget -jid]]
         set totalCount 0
+        # Oldest timestamp this page returned: the floor of the range the
+        # archive just spoke for. Taken over EVERY result node, including
+        # the drop/reaction/edit verdicts that skip the citizen loop below
+        # - they still bound the page, and a citizen-only minimum would
+        # sit above the true floor and over-report non-delivery.
+        set archiveFloor ""
         # Per-chat: min/max input timestamps, oldest, and whether any
         # real overlap (dup against an existing citizen) was seen.
         set perChatMin     [dict create]
@@ -160,6 +182,12 @@ snit::type taco_message {
 
             set r [$self ParseResultNode $resultNode $chatJid]
             set verdict [dict get $r verdict]
+            if {[dict exists $r timestamp]} {
+                set rts [dict get $r timestamp]
+                if {$rts ne "" && ($archiveFloor eq "" || $rts < $archiveFloor)} {
+                    set archiveFloor $rts
+                }
+            }
             # A reaction/edit/retract updates a stored message's display; it
             # isn't a citizen and doesn't bound a hole (like drop).
             if {$verdict eq "reaction"} {
@@ -234,6 +262,9 @@ snit::type taco_message {
             $self EmitTail $jid
         }
         $client emit message <CatchupDone> -count $totalCount
+        # Anything still pending after the archive has had its say either
+        # never reached the server or predates what the archive covered.
+        $self RetryPending $archiveFloor [dict get $mamResult complete]
     }
 
     method OnDisconnect {args} {
@@ -387,6 +418,11 @@ snit::type taco_message {
         $client emit message <New> -jid $chatJid -message $dbMsg
         $self EmitTail $chatJid
     }
+
+    # Timestamp taken when the reconnect catchup query goes out. Pending
+    # rows newer than this are live sends on the current connection, not
+    # strays from a previous run - see DoCatchup.
+    variable CatchupCutoff 0
 
     # Maximum BuildMessageStanza attempts per message before marking
     # failed. Each <SessionReady> tick for the peer counts as one attempt.
@@ -729,7 +765,8 @@ snit::type taco_message {
     # on_wire=1 rows are in flight awaiting an SM ack; re-sending would
     # duplicate, so the omemo scopes exclude them.
     method PendingSends {scope {peerJid ""}} {
-        set sql {SELECT chat_jid, body, own_id, encryption, reply_id, reply_to
+        set sql {SELECT chat_jid, body, own_id, encryption, reply_id, reply_to,
+                        timestamp
                  FROM chat_message
                  WHERE kind='message' AND server_status='pending'}
         switch $scope {
@@ -744,21 +781,47 @@ snit::type taco_message {
             lappend pending [dict create \
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption) \
-                reply_id $row(reply_id) reply_to $row(reply_to)]
+                reply_id $row(reply_id) reply_to $row(reply_to) \
+                timestamp $row(timestamp)]
         }
         return $pending
     }
 
-    method RetryPending {} {
-        # Group by MUC vs 1:1 — MUC messages must wait for room join
+    # Decide what to do with each still-pending send, now that catchup has
+    # confirmed everything the server actually archived.
+    #
+    # $archiveFloor is the oldest timestamp that catchup returned ("" if it
+    # returned nothing or errored); $complete is its RSM complete flag. The
+    # page covers [archiveFloor, now] contiguously, so:
+    #   inside that range  - the archive would have shown the message and
+    #                        didn't, so the server never got it: re-send.
+    #   older than it      - outside the evidence. We can't tell whether it
+    #                        was delivered, so stop guessing and mark it
+    #                        failed for the user to judge.
+    #   complete archive   - nothing is outside the evidence; never fail.
+    #   no floor at all    - no evidence; retry as before, fail nothing.
+    method RetryPending {{archiveFloor ""} {complete 0}} {
         foreach msg [$self PendingSends all] {
             set chatJid [dict get $msg chat_jid]
+            # MUC messages must wait for room join. The account archive
+            # holds no room traffic, so the floor can't speak to them.
             if {[string match "*?join" $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
                 lappend PendingRetry($roomJid) $msg
-            } else {
-                $self RetrySend $msg
+                continue
             }
+            set ts [expr {[dict exists $msg timestamp] \
+                ? [dict get $msg timestamp] : 0}]
+            # Sent after catchup went out: live on this connection and
+            # owned by SM's replay queue, not ours to touch.
+            if {$CatchupCutoff ne 0 && $ts > $CatchupCutoff} continue
+            if {!$complete && $archiveFloor ne "" && $ts < $archiveFloor} {
+                jlog debug "RetryPending $chatJid oid=[dict get $msg own_id]:\
+                    predates archive floor, marking delivery-failed"
+                $self MarkOutgoingFailed $chatJid [dict get $msg own_id] delivery
+                continue
+            }
+            $self RetrySend $msg
         }
     }
 

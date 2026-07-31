@@ -669,6 +669,13 @@ has this exact message, moving through `<Status>` events: `""`
 (it has it), `pending`, `uploading`, `failed` (with the error in
 `fail_reason`).
 
+A send interrupted by a restart is settled from the archive on the next
+connection. The reconnect catchup confirms whatever the server really
+stored; a row still pending afterwards is re-sent if it falls inside the
+span catchup covered (the server demonstrably never got it), and marked
+`failed` with `fail_reason: "delivery"` if it predates that span, where
+the archive can no longer say either way.
+
 **Search.** `message search` takes a `source`, mirroring `goto`. `source:
 remote` (the default) is server-side MAM full-text: page through it with
 `before: last`, and jump to a hit with `message goto {date: ts, source:
@@ -752,9 +759,9 @@ default. It doesn't check whether the peer can actually do OMEMO; sending
 to one who can't fails outright instead of quietly downgrading.
 
 **Intent vs outcome** - a row carries `encryption` (the intent: `"omemo"`
-or `""`), and on a `failed` row, `fail_reason` (currently just
-`"encrypt"`). Check `fail_reason` to tell "couldn't encrypt" apart from a
-delivery failure. The send path never quietly falls back to cleartext; the
+or `""`), and on a `failed` row, `fail_reason`: `"encrypt"` or
+`"delivery"`. Check it to tell "couldn't encrypt" apart from a delivery
+failure. The send path never quietly falls back to cleartext; the
 only way down is an explicit `message resend {plaintext: 1}`, which
 rewrites the one row and leaves the chat toggle alone.
 
@@ -763,7 +770,9 @@ peer and call `setEnabled` when it's toggled. For the key panel, subscribe
 to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
 `device` when it's clicked. For a failed message, `fail_reason: "encrypt"`
 leads with "resend as plaintext" (`message resend {plaintext: 1}`), while
-"keys arrived, retry" is a plain `message resend`. `<FingerprintChanged>`
+"keys arrived, retry" is a plain `message resend`. `fail_reason:
+"delivery"` offers only the plain `message resend` - the encryption was
+never the problem. `<FingerprintChanged>`
 (a peer's identity key rotated, so trust auto-drops to compromised) is
 per-peer, and a single handler subscribed by `acc` covers every chat at
 once.

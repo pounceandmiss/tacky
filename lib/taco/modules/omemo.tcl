@@ -510,8 +510,7 @@ snit::type taco_omemo {
         # Key our own OTHER devices so they appear in the "my keys" UI.
         $self EnsureBundlesForDevicelist $accountJid $devices
         # Account-level prerequisites (store + own devicelist) are now in
-        # place. Wake any send that pended on them this connection, since
-        # message.tcl's reconnect RetryPending ran before omemo's OnReady.
+        # place. Wake any send that pended on them this connection.
         $client bus publish omemo:<SelfReady>
     }
 
