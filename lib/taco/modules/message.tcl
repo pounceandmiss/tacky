@@ -48,6 +48,10 @@ snit::type taco_message {
     variable PendingRetry
     variable ActiveTags
 
+    # Syncs that have emitted <CatchupStarted> and still owe a
+    # <CatchupDone>, keyed by room chat jid or "" for the account archive.
+    variable CatchupInFlight
+
     constructor {args} {
         $self configurelist $args
         set client $options(-client)
@@ -55,6 +59,7 @@ snit::type taco_message {
             -db [$client cget -db]
         array set PendingRetry {}
         array set ActiveTags {}
+        set CatchupInFlight [dict create]
         $client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
         $client bus subscribe $self omemo:<SessionReady> \
@@ -124,14 +129,29 @@ snit::type taco_message {
         }
     }
 
+    # False when a sync is already running for this key, so a rejoin can't
+    # double-query a room.
+    method CatchupStart {jid} {
+        if {[dict exists $CatchupInFlight $jid]} { return 0 }
+        dict set CatchupInFlight $jid 1
+        $client emit message <CatchupStarted> -jid $jid
+        return 1
+    }
+
+    method CatchupSettled {jid count} {
+        dict unset CatchupInFlight $jid
+        $client emit message <CatchupDone> -jid $jid -count $count
+    }
+
     method DoCatchup {} {
+        if {![$self CatchupStart ""]} return
         $client mam query -before {} -max 50 \
             -command [mymethod OnCatchup]
     }
 
     method OnCatchup {mamResult} {
         if {[dict exists $mamResult error]} {
-            $client emit message <CatchupDone> -jid "" -count 0
+            $self CatchupSettled "" 0
             # No archive evidence, so nothing can be judged undelivered.
             # Retry everything, fail nothing.
             $self RetryPending "" 0
@@ -145,7 +165,7 @@ snit::type taco_message {
             $client emit message <CatchupDone> -jid $jid -count $n
             incr totalCount $n
         }
-        $client emit message <CatchupDone> -jid "" -count $totalCount
+        $self CatchupSettled "" $totalCount
         # Anything still pending after the archive has had its say either
         # never reached the server or predates what the archive covered.
         $self RetryPending $archiveFloor [dict get $mamResult complete]
@@ -154,19 +174,20 @@ snit::type taco_message {
     # Fetch a joined room's own archive - the account archive holds no
     # groupchat, so nothing else syncs a room.
     method DoMucCatchup {roomChatJid} {
+        if {![$self CatchupStart $roomChatJid]} return
         $client mam queryChat $roomChatJid -before {} -max 50 \
             -command [mymethod OnMucCatchup $roomChatJid]
     }
 
     method OnMucCatchup {roomChatJid mamResult} {
         if {[dict exists $mamResult error]} {
-            $client emit message <CatchupDone> -jid $roomChatJid -count 0
+            $self CatchupSettled $roomChatJid 0
             return
         }
         lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _
         set n [expr {[dict exists $perChatCount $roomChatJid]
             ? [dict get $perChatCount $roomChatJid] : 0}]
-        $client emit message <CatchupDone> -jid $roomChatJid -count $n
+        $self CatchupSettled $roomChatJid $n
     }
 
     # Per-message walk over one catchup page. Stores without emitting <New>
@@ -299,6 +320,13 @@ snit::type taco_message {
 
     method OnDisconnect {args} {
         array unset PendingRetry
+        # mam drops pending callbacks on disconnect without calling them, so
+        # close any open interval here or a client waits on it forever.
+        set open $CatchupInFlight
+        set CatchupInFlight [dict create]
+        dict for {jid _} $open {
+            $client emit message <CatchupDone> -jid $jid -count 0
+        }
     }
 
     # Called on message stanzas that haven't been intercepted by other

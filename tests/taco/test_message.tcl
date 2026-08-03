@@ -1993,6 +1993,50 @@ test message-catchup-done-skips-untouched-chat {a chat whose page entries all de
         set ::_jids
     } -result {{}}
 
+test message-catchup-brackets-account-sync {the account sync opens with CatchupStarted and closes with CatchupDone} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        foreach ev {<CatchupStarted> <CatchupDone>} {
+            tacky listen message $ev [list apply {{name ev} {
+                lappend ::_events $name:[dict get $ev -jid]
+            }} $ev]
+        }
+        msg_ready
+        set opened $::_events
+        msg_catchup_finish {}
+        list $opened $::_events
+    } -result {<CatchupStarted>: {<CatchupStarted>: <CatchupDone>:}}
+
+test message-catchup-disconnect-closes-bracket {a disconnect settles a sync whose results never arrive} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        tacky listen message <CatchupDone> {apply {{ev} {
+            lappend ::_events [dict get $ev -jid]:[dict get $ev -count]
+        }}}
+        msg_ready
+        set before $::_events
+        # mam discards the pending callback here without invoking it, so
+        # nothing else will ever close this bracket.
+        $::_client conn fire_disconnect "network gone"
+        list $before $::_events
+    } -result {{} :0}
+
+test message-muc-catchup-start-carries-room {a room sync opens under the room's jid, not the account's} \
+    {*}$msg_common \
+    -body {
+        set ::_jids {}
+        tacky listen message <CatchupStarted> {apply {{ev} {
+            lappend ::_jids [dict get $ev -jid]
+        }}}
+        msg_ready
+        msg_catchup_finish {}
+        set ::_jids {}
+        msg_muc_join room@muc.example.com me
+        set ::_jids
+    } -result {room@muc.example.com?join}
+
 test message-catchup-still-moves-chatlist {a stored catchup message still updates chat ordering} \
     {*}$msg_common \
     -body {

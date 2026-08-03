@@ -450,12 +450,14 @@ foreach {direction seedCmd} {
 }
 
 # Store a message without the widget seeing it, standing in for what a
-# catchup writes (catchup emits no <New>).
+# catchup writes: no <New>, but the pushed tail still moves.
 proc cv_store_behind {body sid stamp} {
+    set ts [ParseTimestamp $stamp]
     $::_client message messagestore store [list [dict create \
-        timestamp [ParseTimestamp $stamp] chat_jid alice@example.com \
+        timestamp $ts chat_jid alice@example.com \
         from_jid alice@example.com/phone body $body \
         server_id $sid own_id "" raw_xml ""]]
+    tacky emit message <Tail> -acc $::acc -jid alice@example.com -timestamp $ts
 }
 
 test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what catchup stored} \
@@ -482,7 +484,7 @@ test chatview-catchup-ignores-other-chat {CatchupDone for a different chat is no
         llength [.cv messages ids]
     } -result {1}
 
-test chatview-catchup-account-wide-no-repaint {the account-wide settle is not a repaint signal} \
+test chatview-catchup-account-wide-reconciles {the account-wide settle repaints a 1:1, which gets no bracket of its own} \
     {*}$cv_common \
     -body {
         cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
@@ -491,7 +493,7 @@ test chatview-catchup-account-wide-no-repaint {the account-wide settle is not a 
         tacky emit message <CatchupDone> -acc $::acc -jid "" -count 1
         wait
         llength [.cv messages ids]
-    } -result {1}
+    } -result {2}
 
 test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repainted under the user} \
     {*}$cv_common \
@@ -507,6 +509,61 @@ test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repa
         wait
         llength [.cv messages ids]
     } -result {2}
+
+# 1:1 views take the account-wide bracket, so the jid defaults to empty.
+proc cv_catchup_start {{jid ""}} {
+    tacky emit message <CatchupStarted> -acc $::acc -jid $jid
+    wait
+}
+
+proc cv_catchup_done {{jid ""} {count 0}} {
+    tacky emit message <CatchupDone> -acc $::acc -jid $jid -count $count
+    wait
+}
+
+test chatview-catchup-defers-live-message {a message arriving mid-sync lands only once the sync settles} \
+    {*}$cv_common \
+    -body {
+        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        wait
+        cv_catchup_start
+        cv_feed "during catchup" srv2 -stamp 2024-01-01T11:00:00Z
+        wait
+        set during [llength [.cv messages ids]]
+        cv_catchup_done
+        list during=$during after=[llength [.cv messages ids]]
+    } -result {during=1 after=2}
+
+test chatview-catchup-declines-page-short-of-tail {a page that stops short of the tail is not appended} \
+    {*}$cv_common \
+    -body {
+        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        wait
+        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        # A tail beyond anything stored stands in for a hole between the
+        # window and the real tail: the fetched page can't reach it.
+        tacky emit message <Tail> -acc $::acc -jid alice@example.com \
+            -timestamp [ParseTimestamp 2024-01-01T20:00:00Z]
+        cv_catchup_done alice@example.com 1
+        llength [.cv messages ids]
+    } -result {1}
+
+test chatview-catchup-shows-indicator {the sync bracket places and unplaces the overlay} \
+    {*}$cv_common \
+    -body {
+        set idle [winfo manager .cv.loading]
+        cv_catchup_start
+        set busy [winfo manager .cv.loading]
+        cv_catchup_done
+        list $idle $busy [winfo manager .cv.loading]
+    } -result {{} place {}}
+
+test chatview-catchup-indicator-ignores-other-chat {another chat's sync shows nothing here} \
+    {*}$cv_common \
+    -body {
+        cv_catchup_start bob@example.com
+        winfo manager .cv.loading
+    } -result {}
 
 # -- scroll-to-bottom on incoming/outgoing ---------------------------------------
 

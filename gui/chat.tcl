@@ -54,6 +54,15 @@ snit::widgetadaptor chatview {
 
     variable IsMuc
 
+    # True between this chat's message <CatchupStarted> and its
+    # <CatchupDone>. The archive may hold history the window doesn't across
+    # that span, so AtTail is unverifiable and live inserts pause.
+    variable CatchupBusy 0
+
+    # True while a remote goto is in flight. Both flags feed UpdateLoading,
+    # which owns the overlay strip.
+    variable GotoBusy 0
+
     # Backend-pushed newest real-message timestamp for this chat (message
     # <Tail>). The at-tail check compares the newest displayed id against it;
     # tracking it by event instead of a per-scroll query keeps the check
@@ -120,6 +129,8 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnEdited]
         ::tacky listen -tag $win message <Retracted> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnRetracted]
+        ::tacky listen -tag $win message <CatchupStarted> \
+            -acc $options(-acc) [mymethod OnCatchupStarted]
         ::tacky listen -tag $win message <CatchupDone> \
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
@@ -231,7 +242,8 @@ snit::widgetadaptor chatview {
 
     # Cancel in-flight loads and leave the live tail before a non-tail jump.
     method ResetForGoto {} {
-        $hull loading hide
+        set GotoBusy 0
+        $self UpdateLoading
         foreach tag [list $win/goto $win/old $win/new] {
             ::tacky unlisten $tag
             ::tacky message cancel -acc $options(-acc) -tag $tag
@@ -255,7 +267,8 @@ snit::widgetadaptor chatview {
         }
 
         if {$source eq "remote"} {
-            $hull loading show
+            set GotoBusy 1
+            $self UpdateLoading
         }
         ::tacky message goto -acc $options(-acc) \
             -chat $options(-jid) -date $target -source $source \
@@ -264,7 +277,8 @@ snit::widgetadaptor chatview {
     }
 
     method OnGotoDone {result} {
-        $hull loading hide
+        set GotoBusy 0
+        $self UpdateLoading
         set messages [dict get $result messages]
         set anchor [dict get $result anchor]
 
@@ -288,7 +302,22 @@ snit::widgetadaptor chatview {
     method CancelGoto {} {
         ::tacky unlisten $win/goto
         ::tacky message cancel -acc $options(-acc) -tag $win/goto
-        $hull loading hide
+        set GotoBusy 0
+        $self UpdateLoading
+    }
+
+    # Both states share one strip; the user's own request outranks the
+    # background sync.
+    method UpdateLoading {} {
+        if {$GotoBusy} {
+            $hull loading configure -text "Loading…" -cancellable 1
+            $hull loading show
+        } elseif {$CatchupBusy} {
+            $hull loading configure -text "Syncing history…" -cancellable 0
+            $hull loading show
+        } else {
+            $hull loading hide
+        }
     }
 
     # Clicking a message's reply reference jumps to the replied-to message,
@@ -303,12 +332,32 @@ snit::widgetadaptor chatview {
             -command [mymethod OnGotoDone]
     }
 
-    # Catchup stores without emitting <New>, so repaint by refetching the
-    # tail. Only the per-chat event means this chat gained messages; the
-    # account-wide one (empty jid) would refetch in every open view.
+    # Ours when it names this chat, or when it's the account-wide one and
+    # we're a 1:1 - the account archive carries no groupchat, so a room
+    # only ever hears about its own sync.
+    method IsMyCatchup {ev} {
+        set jid [expr {[dict exists $ev -jid] ? [dict get $ev -jid] : ""}]
+        if {$jid eq $options(-jid)} { return 1 }
+        return [expr {$jid eq "" && !$IsMuc}]
+    }
+
+    method OnCatchupStarted {ev} {
+        if {![$self IsMyCatchup $ev]} return
+        set CatchupBusy 1
+        $self UpdateLoading
+    }
+
     method OnCatchupDone {ev} {
-        if {![dict exists $ev -jid]} return
-        if {[dict get $ev -jid] ne $options(-jid)} return
+        if {![$self IsMyCatchup $ev]} return
+        set CatchupBusy 0
+        $self UpdateLoading
+        $self MaybeCatchupRepaint
+    }
+
+    # Catchup stores without emitting <New>, and live messages that landed
+    # mid-sync were dropped, so reconcile against the pushed tail. Matching
+    # timestamps mean nothing moved here, at no round trip.
+    method MaybeCatchupRepaint {} {
         if {!$AtTail} return
         if {[::tacky listening $win/new]} return
         set newest [$hull messages newest]
@@ -316,9 +365,21 @@ snit::widgetadaptor chatview {
             $self InitialLoad
             return
         }
+        if {$newest eq $DbNewest} return
         ::tacky message history -acc $options(-acc) \
             -chat $options(-jid) -after $newest -limit 50 \
-            -tag $win/new -command [mymethod OnLoadDone new]
+            -tag $win/new -command [mymethod OnCatchupLoadDone]
+    }
+
+    # A page stopping short of the tail means a hole sits in between.
+    # Appending it would scroll the user into old history without going
+    # live; leave them the scroll-to-bottom button.
+    method OnCatchupLoadDone {messages} {
+        if {[llength $messages] > 0
+            && [dict get [lindex $messages end] timestamp] ne $DbNewest} {
+            return
+        }
+        $self OnLoadDone new $messages
     }
 
     method OnThirsty {direction edgeId} {
@@ -386,8 +447,12 @@ snit::widgetadaptor chatview {
     # DB, or (b) scrolling down naturally until thirst's `-after`
     # query catches up to DB-newest, at which point OnLoadDone flips
     # AtTail back to true and live inserts resume.
+    #
+    # A running catchup gates the same way: until it settles the archive
+    # may hold history we don't, so inserting would splice the message
+    # onto a stale tail. MaybeCatchupRepaint places it once it settles.
     method OnMessage {ev} {
-        if {!$AtTail} return
+        if {!$AtTail || $CatchupBusy} return
         set m [dict get $ev -message]
         set atEnd [$hull atEnd]
         $self ProcessBatch [list $m]
@@ -2022,19 +2087,37 @@ snit::widgetadaptor chatscrollbtn {
     }
 }
 
-# "Loading…" overlay with a Cancel button
+# Overlay strip with an optional Cancel button - cancellable for requests
+# the view owns (goto), not for a backend sync.
 snit::widget chatloading {
     hulltype ttk::frame
     component cancel
     option -parent -readonly yes
+    option -text -default "Loading…" -configuremethod SetText
+    option -cancellable -default 1 -configuremethod SetCancellable
     delegate option -cancel-command to cancel as -command
 
     constructor args {
         ttk::label $win.lbl -text "Loading…"
         install cancel using ttk::button $win.cancel \
             -text "Cancel" -style Toolbutton
+        pack $win.lbl -side left -padx 4
         $self configurelist $args
-        pack $win.lbl $win.cancel -side left -padx 4
+        if {$options(-cancellable)} { pack $win.cancel -side left -padx 4 }
+    }
+
+    method SetText {opt val} {
+        set options($opt) $val
+        $win.lbl configure -text $val
+    }
+
+    method SetCancellable {opt val} {
+        set options($opt) $val
+        if {$val} {
+            pack $win.cancel -side left -padx 4
+        } else {
+            pack forget $win.cancel
+        }
     }
 
     method show {} {

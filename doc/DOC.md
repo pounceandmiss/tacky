@@ -381,6 +381,7 @@ Events:
     message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
     message <Retracted>   {jid: string, timestamp: int}
+    message <CatchupStarted> {jid: string}
     message <CatchupDone> {jid: string, count: int}
     message <Tail>        {jid: string, timestamp: int}
 
@@ -653,19 +654,29 @@ shape.
 **Catchup.** On connect the backend syncs your account archive; on joining a
 room it syncs that room's archive, which is the only sync a room gets, since
 the account archive holds no groupchat. Catchup writes to the store without
-emitting `<New>` - nothing arrived, it was backfilled. Completion comes as
-`<CatchupDone>`: one per chat that gained messages, carrying that chat's
-`jid` and `count`, then one with an empty `jid` and the total once the
-account sync settles (a room sync is one chat, so it emits only its own).
-Refetch on the one matching your chat to repaint - an `after` page from your
-newest displayed timestamp - and treat the empty-`jid` one as a settle
-signal, not a repaint. In-place corrections still arrive as their own events
-during catchup, so a row already on screen stays current. Per-chat counts
-are what unread or notification UI should read; `<New>` is not, since it
-also fires for your own outgoing messages.
+emitting `<New>` - nothing arrived, it was backfilled. In-place corrections
+still arrive as their own events, so a row already on screen stays current.
+
+A sync is bracketed by `<CatchupStarted>` and `<CatchupDone>`, both carrying
+a `jid`: the room's for a room sync, empty for the account sync. A
+disconnect closes an open bracket with a zero `count`, so the pair always
+completes. `<CatchupDone>` also fires per chat that gained messages, with
+that chat's `count`, before the empty-`jid` one carrying the total. Those
+per-chat counts are what unread or notification UI should read; `<New>` is
+not, since it also fires for your own outgoing messages.
+
+Take the bracket that matches your chat - its own `jid`, or the empty one if
+it isn't a room - and reconcile when it closes: if your newest displayed
+timestamp differs from the last `<Tail>`, request an `after` page from it.
+Discard a page whose newest doesn't reach that `<Tail>`, since a hole sits
+between you and the tail and appending would only walk the user backwards;
+leave them the scroll-to-bottom path instead.
 
 **Live messages.** On `<New>`, insert it at its timestamp-sorted spot if
-the at-tail flag is set, otherwise drop it.
+the at-tail flag is set, otherwise drop it. Drop it inside an open catchup
+bracket too: the archive may hold history you don't have yet, so the at-tail
+flag is a claim you can't check, and the reconcile above places the message
+once the sync settles.
 
 **Updates to a shown message.** Five events change a message already on
 screen rather than adding one. Switch on the event, never sniff which field
