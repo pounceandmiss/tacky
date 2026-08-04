@@ -138,6 +138,13 @@ snit::type taco_register_session {
     variable mediaBytes {}
     variable submitting 0
 
+    # The legacy branch turns a field's var into an element name, so only
+    # the XEP-0077 set is allowed through; the server picks these strings.
+    typevariable LegacyFields {
+        username password nick name first last email address city state
+        zip phone url date misc text key
+    }
+
     constructor {args} {
         $self configurelist $args
     }
@@ -203,11 +210,15 @@ snit::type taco_register_session {
                 }
             }]
         } else {
-            # Legacy submission — emit plain field elements
+            # Legacy submission - emit plain field elements
             $conn writeStanza [j iq -type set -id reg-$id {
                 j query -ns jabber:iq:register {
                     foreach field [dict get $filled fields] {
                         set var [dict get $field var]
+                        if {$var ni $LegacyFields} {
+                            jlog warn "register: skipping field '$var'"
+                            continue
+                        }
                         set vals [dict get $field value]
                         if {[llength $vals] > 0} {
                             j $var .body [lindex $vals 0]
