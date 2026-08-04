@@ -82,6 +82,12 @@
 #     HandleSessionInitiate drains the buffer right after
 #     set-remote-description.
 #
+# Sender binding: every inbound stanza for a call must come from that
+# call's peer - bare match during the JMI window (any of the callee's
+# resources may answer), exact full JID once latched. The sid is no
+# secret: the propose goes to the bare JID, so all of the peer's
+# resources and every server on the path see it.
+#
 # Per-call state ([dict get $Calls $sid] dict):
 #   peer       : remote JID (bare until proceeded, then full)
 #   initiator  : 1 for caller, 0 for callee
@@ -99,6 +105,7 @@
 
 package require rtc
 package require rtcma
+package require omemo
 
 snit::type taco_calls {
     option -client -readonly yes
@@ -113,7 +120,6 @@ snit::type taco_calls {
     variable client
     variable Calls           ;# sid -> dict (see file header)
     variable PcToSid         ;# pc -> sid
-    variable SidCounter 0
 
     constructor args {
         $self configurelist $args
@@ -614,6 +620,7 @@ snit::type taco_calls {
         set call [dict get $Calls $sid]
         if {[dict get $call state] ne "proposed"
                 || ![dict get $call initiator]} return
+        if {![$self PeerMatches $sid $from]} return
         $client emit calls <Ringing> -sid $sid
     }
 
@@ -636,6 +643,7 @@ snit::type taco_calls {
         # server's STUN/TURN list (XEP-0215). StartOutgoingMedia runs in
         # the extdisco callback once the iceServers list is in hand.
         if {$state eq "proposed" && [dict get $call initiator]} {
+            if {![$self PeerMatches $sid $from]} return
             dict set Calls $sid peer $from
             dict set Calls $sid state proceeded
             $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
@@ -673,13 +681,14 @@ snit::type taco_calls {
         }
         # Caller side: callee declined our propose.
         if {$state eq "proposed" && [dict get $call initiator]} {
+            if {![$self PeerMatches $sid $from]} return
             $client emit calls <Ended> -sid $sid
             $self Cleanup $sid
         }
     }
 
     method HandleJmiRetract {stanza sid from} {
-        if {![dict exists $Calls $sid]} return
+        if {![$self PeerMatches $sid $from]} return
         set call [dict get $Calls $sid]
         # Caller cancelled before we proceeded.
         if {[dict get $call state] eq "ringing"} {
@@ -719,9 +728,9 @@ snit::type taco_calls {
 
         switch -- $action {
             session-initiate  { $self HandleSessionInitiate $stanza $jingle $sid $from }
-            session-accept    { $self HandleSessionAccept   $stanza $jingle $sid }
-            session-terminate { $self HandleSessionTerminate $stanza $jingle $sid }
-            transport-info    { $self HandleTransportInfo   $stanza $jingle $sid }
+            session-accept    { $self HandleSessionAccept   $stanza $jingle $sid $from }
+            session-terminate { $self HandleSessionTerminate $stanza $jingle $sid $from }
+            transport-info    { $self HandleTransportInfo   $stanza $jingle $sid $from }
             default           { $self AckIq $stanza }
         }
     }
@@ -730,7 +739,9 @@ snit::type taco_calls {
         # JMI is mandatory: a session-initiate must be preceded by our
         # own <proceed>. Otherwise the user never agreed to ring and
         # we reject the IQ — the call never existed locally.
-        if {![dict exists $Calls $sid]} {
+        # A sender that isn't our peer gets the same answer as an unknown
+        # sid, so a guessed sid can't be confirmed.
+        if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
             return
         }
@@ -786,19 +797,25 @@ snit::type taco_calls {
         }
     }
 
-    method HandleSessionAccept {stanza jingle sid} {
-        if {![dict exists $Calls $sid]} {
+    method HandleSessionAccept {stanza jingle sid from} {
+        if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
             return
         }
-        set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
         set pc [dict get $Calls $sid pc]
+        # An accept before we've stood up the pc (still fetching ICE
+        # servers, or never offered at all) has nothing to apply to.
+        if {$pc == -1} {
+            $self IqError $stanza out-of-order
+            return
+        }
+        set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
         ::rtc::pc::set-remote-description $pc $sdp answer
         $self AckIq $stanza
     }
 
-    method HandleTransportInfo {stanza jingle sid} {
-        if {![dict exists $Calls $sid]} {
+    method HandleTransportInfo {stanza jingle sid from} {
+        if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
             return
         }
@@ -827,9 +844,9 @@ snit::type taco_calls {
         $self AckIq $stanza
     }
 
-    method HandleSessionTerminate {stanza jingle sid} {
+    method HandleSessionTerminate {stanza jingle sid from} {
         $self AckIq $stanza
-        if {![dict exists $Calls $sid]} return
+        if {![$self PeerMatches $sid $from]} return
         $self TeardownMedia $sid
         $client emit calls <Ended> -sid $sid
         $self Cleanup $sid
@@ -902,6 +919,18 @@ snit::type taco_calls {
         $client iq request -type set -to $peer -payload $jingle
     }
 
+    # Bare match while peer is still a bare JID (the JMI window: we
+    # proposed to the account, any of its resources may answer), exact
+    # full JID once the session is latched to one resource.
+    method PeerMatches {sid from} {
+        if {![dict exists $Calls $sid] || ![jid valid $from]} { return 0 }
+        set peer [dict get $Calls $sid peer]
+        if {![jid matches-bare $from $peer]} { return 0 }
+        set res [jid resource $peer]
+        if {$res eq ""} { return 1 }
+        return [expr {[jid resource $from] eq $res}]
+    }
+
     method Cleanup {sid} {
         if {![dict exists $Calls $sid]} return
         set pc [dict get $Calls $sid pc]
@@ -910,6 +939,7 @@ snit::type taco_calls {
     }
 
     method NewSid {} {
-        return "tk-[clock microseconds]-[incr SidCounter]"
+        binary scan [omemo::random 16] H* hex
+        return "tk-$hex"
     }
 }
