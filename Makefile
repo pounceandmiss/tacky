@@ -27,7 +27,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 .PHONY: all \
 	tacky tackyd tackyd-json lib \
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
-        android \
+        android android-lib \
 	linux flatpak flatpak-bundle flatpak-install \
         test test-gui test-lib tools wish tclsh clean dist-dir
 
@@ -144,6 +144,26 @@ android: dist-dir
 	    android-jnilibs
 	mkdir -p dist/jniLibs
 	cp -r $(ANDROID_BUILD)/jniLibs/. dist/jniLibs/
+
+# Android libtacky.a: the `lib` static-library build cross-compiled to a bionic
+# arm64 archive, routed through the ndk docker profile like `android` (the two
+# share build/android, so the dep stamps compile once). Ships alongside the
+# native and MinGW ones as dist/libtacky-android.a.
+android-lib: dist-dir
+	mkdir -p $(ANDROID_BUILD)
+	zippy/in_docker.sh ndk \
+	make -f zippy/zippy.mk \
+	    TARGET_OS=android \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(tackyd-json_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    LIB_SHIM_SRC=/src/embed/tacky.c \
+	    LIB_NAME=tacky \
+	    BASEDIR=/src/$(ANDROID_BUILD) \
+	    android-lib
+	cp $(ANDROID_BUILD)/libtacky.a dist/libtacky-android.a
 
 # ==== Portable Linux build ====
 # Build the native binaries against an older glibc (Debian bookworm, 2.36) so
