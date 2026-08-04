@@ -1485,10 +1485,13 @@ snit::type taco_omemo {
     # gets a server_id, which messagestore needs to dedup against the
     # MAM replay of the same stanza. Dropping it caused ghost rows on
     # every chat reopen.
+    # The `decrypted` key is what ParseMessage stamps encryption from. It
+    # lives on the node dict rather than in the XML, so a peer can't put it
+    # there by sending an EME marker on cleartext, and jwrite ignores it.
     method SynthesisePlain {origStanza plaintext} {
         set attrs [dict get $origStanza attrs]
         set out [dict create tag message body {} tail {} children {} \
-            ns [dict get $origStanza ns] attrs $attrs]
+            ns [dict get $origStanza ns] attrs $attrs decrypted 1]
         set bodyChild [dict create tag body body $plaintext tail {} \
             children {} ns {} attrs {}]
         set emeChild [dict create tag encryption body {} tail {} \

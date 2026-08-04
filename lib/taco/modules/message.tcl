@@ -2096,11 +2096,10 @@ snit::type taco_message {
         set rawFrom [xsearch $msgNode -get @from]
         set fromJid [NormalizeAuthorJid $chatJid $rawFrom]
         set fromRes [SplitFromResource $chatJid $rawFrom]
-        # Encryption stamp from the EME marker (XEP-0380), which the decrypt
-        # path (SynthesisePlain) leaves on decrypted messages; plaintext has
-        # none. Drives the lock on peer messages.
-        set emeNs [xsearch $msgNode encryption -ns urn:xmpp:eme:0 -get @namespace]
-        set enc [expr {$emeNs eq "eu.siacs.conversations.axolotl" ? "omemo" : ""}]
+        # Drives the lock on peer messages, so it tracks what we actually
+        # decrypted. The EME marker (XEP-0380) is a cleartext hint anyone can
+        # attach to an unencrypted body, so it must not be read here.
+        set enc [expr {[dict exists $msgNode decrypted] ? "omemo" : ""}]
         set ownId [expr {[dict exists $args -own_id] \
             ? [dict get $args -own_id] : ""}]
         set originId [expr {[dict exists $args -origin_id] \
