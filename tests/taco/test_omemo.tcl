@@ -417,6 +417,48 @@ test omemo-unit-isdeviceblocked-no-row-btbv-off-blocks \
         c omemo IsDeviceBlocked $::test::omemo_unit::ROMEO 42
     } -result {1}
 
+# Once the user has verified a device of this peer, BTBV stops covering
+# them: a device announced afterwards is what an injected device looks
+# like, so it has to wait for a decision instead of being auto-included.
+
+test omemo-unit-isdeviceblocked-verified-peer-stops-blind-trust \
+    {a new device of a peer with a verified key is blocked under BTBV} \
+    {*}$jid_common -body {
+        set jid $::test::omemo_unit::ROMEO
+        set before [c omemo IsDeviceBlocked $jid 42]
+        c db eval {
+            INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+                identity_pk, trust, active, last_activation)
+            VALUES('juliet@capulet.lit', $jid, 1, 'ik', 'trusted', 1, 0)
+        }
+        list blind_trust_on [c omemo blindTrust] \
+            before_verify $before after_verify [c omemo IsDeviceBlocked $jid 42]
+    } -result {blind_trust_on 1 before_verify 0 after_verify 1}
+
+test omemo-unit-isdeviceblocked-verified-device-still-allowed \
+    {the verified device itself stays usable} \
+    {*}$jid_common -body {
+        set jid $::test::omemo_unit::ROMEO
+        c db eval {
+            INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+                identity_pk, trust, active, last_activation)
+            VALUES('juliet@capulet.lit', $jid, 1, 'ik', 'trusted', 1, 0)
+        }
+        c omemo IsDeviceBlocked $jid 1
+    } -result {0}
+
+test omemo-unit-isdeviceblocked-other-peer-unaffected \
+    {verifying one peer does not turn off BTBV for another} \
+    {*}$jid_common -body {
+        set jid $::test::omemo_unit::ROMEO
+        c db eval {
+            INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+                identity_pk, trust, active, last_activation)
+            VALUES('juliet@capulet.lit', $jid, 1, 'ik', 'trusted', 1, 0)
+        }
+        c omemo IsDeviceBlocked mercutio@montague.lit 7
+    } -result {0}
+
 # Events: every public mutation emits a typed event for the UI to bind to.
 
 # Helper: filter ::_emitted down to omemo events with a specific tag.

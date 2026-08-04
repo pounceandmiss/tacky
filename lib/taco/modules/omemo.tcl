@@ -1570,12 +1570,24 @@ snit::type taco_omemo {
     # Outgoing encrypt
     # =====================================================================
 
+    # Any device of this peer the user has verified by hand.
+    method HasVerifiedKeys {peerJid} {
+        return [$db onecolumn {
+            SELECT count(*) FROM omemo_trust
+            WHERE account_jid=$accountJid
+              AND peer_jid=$peerJid AND trust='trusted'
+        }]
+    }
+
     # Mirrors Conversations' "Blindly trust before verification"
     # account toggle. Default ON: undecided devices are treated as
     # trusted for the outbound recipient set (the BTBV / TOFU
     # experience). Default OFF: undecided devices are excluded from
     # outbound - the user must explicitly `tacky omemo trust ...
     # -state trusted` each new device first.
+    #
+    # BTBV also stops applying per-peer once any of their devices is
+    # verified, matching Conversations' hasVerifiedKeys check.
     #
     # Inbound (OnMessage / decryptForwarded) ignores this and always
     # decrypts from undecided devices, since dropping silently would
@@ -1587,12 +1599,13 @@ snit::type taco_omemo {
             WHERE account_jid=$accountJid
               AND peer_jid=$peerJid AND peer_device=$peerDev
         }]
+        set blind [expr {[$self blindTrust] && ![$self HasVerifiedKeys $peerJid]}]
         if {[llength $row] == 0} {
-            return [expr {[$self blindTrust] ? 0 : 1}]
+            return [expr {$blind ? 0 : 1}]
         }
         lassign $row trust active
         if {$trust in {compromised untrusted}} { return 1 }
-        if {$trust eq "undecided" && ![$self blindTrust]} { return 1 }
+        if {$trust eq "undecided" && !$blind} { return 1 }
         if {!$active} { return 1 }
         return 0
     }
