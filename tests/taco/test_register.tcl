@@ -178,6 +178,24 @@ proc drive_to_form {} {
     $::_mock_conn inject [make_reg_result]
 }
 
+# A form with no FORM_TYPE takes the legacy branch, where a field's var
+# becomes an element name. The var here is the server's to choose.
+proc make_reg_result_legacy {var} {
+    j iq -type result -id reg-1 {
+        j query -ns jabber:iq:register {
+            j x -ns jabber:x:data -type form {
+                j field -var username -type text-single {j required}
+                j field -var $var -type text-single {j required}
+            }
+        }
+    }
+}
+
+proc drive_to_legacy_form {var} {
+    $::_mock_conn inject [make_reg_features]
+    $::_mock_conn inject [make_reg_result_legacy $var]
+}
+
 set common {
     -setup {
         rename bareconn _real_bareconn
@@ -303,6 +321,33 @@ test reg-submit-sends-iq {submit sends IQ set with registration query} \
         set iq [lindex $written 0]
         list [xsearch $iq -get @type] [xsearch $iq query -get ns]
     } -result {set jabber:iq:register}
+
+test reg-submit-legacy-var-not-a-tag \
+    {a server-chosen field var cannot become an element in the submit} \
+    {*}$common \
+    -body {
+        set evil {q></query></iq><message to='victim@example.com' type='chat'><body>pwned</body></message><iq><x }
+        tacky register connect -host example.com
+        drive_to_legacy_form $evil
+        $::_mock_conn clear
+        tacky register submit -values [list username alice $evil x]
+        set raw [jwrite [lindex [$::_mock_conn get_written] 0]]
+        list [string match "*<message*" $raw] [string match "*pwned*" $raw] \
+            [string match "*<username>alice</username>*" $raw]
+    } -result {0 0 1}
+
+test reg-submit-legacy-known-vars-kept \
+    {legacy submit still emits the XEP-0077 fields} \
+    {*}$common \
+    -body {
+        tacky register connect -host example.com
+        drive_to_legacy_form email
+        $::_mock_conn clear
+        tacky register submit -values {username alice email a@b.c}
+        set raw [jwrite [lindex [$::_mock_conn get_written] 0]]
+        list [string match "*<username>alice</username>*" $raw] \
+            [string match "*<email>a@b.c</email>*" $raw]
+    } -result {1 1}
 
 test reg-submit-success {IQ result after submit fires <Success>} \
     {*}$common \

@@ -85,6 +85,18 @@ proc xesc {content} {
     } $content
 }
 
+# Tag and attribute names go out raw - there is no escape for them, so a
+# name that isn't well-formed has to be refused. Anything above ASCII is
+# left alone: none of it is significant to the parser.
+proc xname {name} {
+    if {$name eq ""
+        || [regexp {[[:space:][:cntrl:]<>&"'/=?!]} $name]
+        || [string match {[-.0-9]*} $name]} {
+        error "Invalid XML name: $name"
+    }
+    return $name
+}
+
 
 snit::type xmppreader {
     # command prefix for each read
@@ -384,7 +396,7 @@ proc ::jab::GetAttrsString {attrs {indent 0} {Prefixes {
             
             set k $prefix:[lindex $k 1] 
         }
-        lappend res "$k='[xesc $v]'" 
+        lappend res "[xname $k]='[xesc $v]'"
     }
     set out [join $res " "]
     if {$indent > -1 && [string length $out] > 20} {
@@ -441,9 +453,9 @@ proc ::jab::_write {stanza indentN prefixes prevNs} {
         set indent \n[string repeat " " $indentN]
         incr indentN
     }
-    set tag [dict get $stanza tag]
+    set tag [xname [dict get $stanza tag]]
     if {[dict exists $prefixes [dict get $stanza ns]]} {
-        set tag [dict get $prefixes [dict get $stanza ns]]:[dict get $stanza tag]
+        set tag [dict get $prefixes [dict get $stanza ns]]:$tag
     }
     
     append res "$indent<$tag"
