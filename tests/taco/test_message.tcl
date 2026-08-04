@@ -483,28 +483,38 @@ test message-row-exposes-encryption-and-failreason \
             [dict get $r1 encryption] [dict get $r1 fail_reason]
     } -result {{} {} omemo encrypt}
 
-# Incoming encryption stamp: ParseMessage reads the EME marker (XEP-0380)
-# the decrypt path leaves on decrypted messages, so peer OMEMO messages
-# carry encryption='omemo' (lock shows on their side too). Plaintext
-# incoming has no marker -> ''.
-test message-incoming-eme-stamps-encryption \
-    {ParseMessage derives encryption='omemo' from the EME marker} \
+# Incoming encryption stamp comes from the decrypt path's `decrypted` key,
+# not the EME marker. A peer can put an EME marker on a cleartext body, so
+# reading it would show the lock on an unencrypted message.
+test message-incoming-decrypted-stamps-encryption \
+    {ParseMessage stamps encryption='omemo' only for decrypted nodes} \
     {*}$msg_common \
     -body {
-        set omemoNode [j message -from alice@example.com/x -type chat {
+        set decryptedNode [j message -from alice@example.com/x -type chat {
             j body #body "secret"
+            j encryption -ns urn:xmpp:eme:0 \
+                -namespace eu.siacs.conversations.axolotl -name OMEMO
+        }]
+        dict set decryptedNode decrypted 1
+        # Same stanza off the wire: EME marker, but never decrypted.
+        set spoofedNode [j message -from alice@example.com/x -type chat {
+            j body #body "not really encrypted"
             j encryption -ns urn:xmpp:eme:0 \
                 -namespace eu.siacs.conversations.axolotl -name OMEMO
         }]
         set plainNode [j message -from alice@example.com/x -type chat {
             j body #body "hi there"
         }]
-        set m1 [$::_client message ParseMessage $omemoNode \
+        set m1 [$::_client message ParseMessage $decryptedNode \
             -chat_jid alice@example.com -timestamp 1000 -server_id ""]
-        set m2 [$::_client message ParseMessage $plainNode \
+        set m2 [$::_client message ParseMessage $spoofedNode \
             -chat_jid alice@example.com -timestamp 1001 -server_id ""]
-        list omemo [dict get $m1 encryption] plain [dict get $m2 encryption]
-    } -result {omemo omemo plain {}}
+        set m3 [$::_client message ParseMessage $plainNode \
+            -chat_jid alice@example.com -timestamp 1002 -server_id ""]
+        list decrypted [dict get $m1 encryption] \
+            spoofed [dict get $m2 encryption] \
+            plain [dict get $m3 encryption]
+    } -result {decrypted omemo spoofed {} plain {}}
 
 # raw_xml stores the readable form, never ciphertext: for OMEMO that's
 # the real body + EME marker (the wire stanza, with <encrypted>, is
