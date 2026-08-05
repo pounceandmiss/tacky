@@ -828,4 +828,10 @@ Callee: an incoming `propose` gives you `<Incoming>` and auto-replies
 
 Either side ends the call with `calls hangup`. Before media is up the
 caller retracts over JMI instead of terminating; after that it's a Jingle
-`session-terminate`. Both land as `<Ended>`.
+`session-terminate`. Both land as `<Ended>`. `calls reject` on a call you
+placed yourself retracts it the same way.
+
+Reconnecting without stream resumption ends every live call with `<Ended>`,
+because the peer cannot route anything back to a sid from the dead session.
+A resumed stream keeps its calls, and so does a plain disconnection: the
+media path is peer to peer and can outlive the outage.

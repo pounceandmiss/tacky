@@ -81,6 +81,34 @@ proc calls_session_iq {action sid from} {
     }
 }
 
+# Point a pc id at $sid so the rtc callbacks can be driven without a real
+# peer connection behind them.
+proc calls_fake_pc {sid pc} {
+    foreach v [c.calls info vars] {
+        if {[string match *::PcToSid $v]} {
+            set ${v}($pc) $sid
+            return
+        }
+    }
+    error "calls: no PcToSid variable"
+}
+
+proc calls_transport_info_flood {sid from count} {
+    j iq -type set -from $from -to user@test.example.com -id ti2 {
+        j jingle -ns urn:xmpp:jingle:1 -action transport-info -sid $sid {
+            j content -creator initiator -name audio {
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 {
+                    for {set i 1} {$i <= $count} {incr i} {
+                        j candidate -foundation $i -component 1 -protocol udp \
+                            -priority 2122260222 -ip 192.0.2.1 \
+                            -port [expr {50000 + $i}] -type host
+                    }
+                }
+            }
+        }
+    }
+}
+
 proc calls_transport_info {sid from} {
     j iq -type set -from $from -to user@test.example.com -id ti1 {
         j jingle -ns urn:xmpp:jingle:1 -action transport-info -sid $sid {
@@ -118,6 +146,17 @@ test calls-hangup-while-proposed-retracts {a call cancelled before proceed retra
         set sid [c.calls start -to peer@example.com]
         c.conn clear
         c.calls hangup -sid $sid
+        string map [list $sid SID] [list \
+            [calls_jmi_sent [calls_last_written]] \
+            [dict exists [calls_state] $sid] \
+            [lindex [calls_events] end]]
+    } -result [list {retract SID} 0 {<Ended> -sid SID}]
+
+test calls-reject-while-proposed-retracts {rejecting a call we placed retracts it} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        c.calls reject -sid $sid
         string map [list $sid SID] [list \
             [calls_jmi_sent [calls_last_written]] \
             [dict exists [calls_state] $sid] \
@@ -245,6 +284,45 @@ test calls-transport-info-skips-unusable-candidate \
             [dict get $call pending_remote_candidates] \
             [xsearch [calls_last_written] -get @type]
     } -result {{{audio {candidate:2 1 udp 2122260222 192.0.2.1 54321 typ host}}} result}
+
+test calls-transport-info-buffer-capped {a peer cannot buffer candidates without bound} \
+    {*}$calls_env -body {
+        calls_accepted tk-in10 $::PEER
+        c.conn feed [calls_transport_info_flood tk-in10 $::PEER 100]
+        set call [dict get [calls_state] tk-in10]
+        list \
+            [llength [dict get $call pending_remote_candidates]] \
+            [xsearch [calls_last_written] -get @type]
+    } -result {64 result}
+
+# -- Peer connection state --
+
+test calls-pc-disconnected-warns {a faltering media path warns without ending the call} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-in11 $::PEER]
+        c.calls accept -sid tk-in11
+        calls_fake_pc tk-in11 7
+        c.calls OnPcState 7 disconnected
+        list \
+            [lindex [calls_events] end] \
+            [dict get [dict get [calls_state] tk-in11] state]
+    } -result {{<Warning> -sid tk-in11 -reason {media path interrupted}} proceeded}
+
+# -- Stream reset --
+
+test calls-fresh-stream-ends-calls {a new session invalidates every sid we held} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-in12 $::PEER]
+        c.conn fire_ready 0
+        list [calls_state] [lindex [calls_events] end]
+    } -result {{} {<Ended> -sid tk-in12}}
+
+test calls-resumed-stream-keeps-calls {resumption keeps the session, so calls survive} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-in13 $::PEER]
+        c.conn fire_ready 1
+        dict get [dict get [calls_state] tk-in13] state
+    } -result ringing
 
 # -- Codec filtering --
 
