@@ -185,8 +185,11 @@ proc jinglesdp::to_sdp {jingleStanza args} {
         }
         lappend mediaAttrs rtcp "9 IN IP4 0.0.0.0"
 
+        # A candidate we can't express in SDP (non-udp, missing field) is
+        # dropped, not fatal: the peer's usable candidates still get through.
         xsearch $transport candidate -script cand {
-            lappend mediaAttrs candidate [jinglesdp::CandidateToSdp $cand]
+            if {[catch {jinglesdp::CandidateToSdp $cand} value]} continue
+            lappend mediaAttrs candidate $value
         }
 
         set mediaType [xsearch $description -get @media]

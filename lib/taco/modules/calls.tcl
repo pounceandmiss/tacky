@@ -829,7 +829,10 @@ snit::type taco_calls {
                 -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]
             if {$transport eq ""} continue
             xsearch $transport candidate -script cand {
-                set value [::jinglesdp::CandidateToSdp $cand]
+                if {[catch {::jinglesdp::CandidateToSdp $cand} value]} {
+                    jlog debug "transport-info: skipping unusable candidate"
+                    continue
+                }
                 set full "candidate:$value"
                 if {$pc == -1} {
                     dict update Calls $sid call {
