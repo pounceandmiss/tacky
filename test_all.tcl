@@ -17,22 +17,19 @@ set _server [expr {[info exists ::env(XMPP_SERVER)] ? $::env(XMPP_SERVER) : ""}]
 if {$_server ne "" && ![info exists ::env(SPOOF_SSL_CERT)]} {
     error "XMPP_SERVER is set but SPOOF_SSL_CERT is not. Both are required for server tests."
 }
+set _scripts {}
 if {$_server ne ""} {
     ::tcltest::testConstraint withServer 1
     ::tcltest::testConstraint notProsody   [expr {$_server ne "prosody"}]
     ::tcltest::testConstraint notMongoose  [expr {$_server ne "mongoose"}]
     ::tcltest::testConstraint notEjabberd  [expr {$_server ne "ejabberd"}]
-    foreach script [lsort [glob [file join $dir tests taco_integration test_*.tcl]]] {
-        source $script
-    }
+    lappend _scripts {*}[lsort [glob [file join $dir tests taco_integration test_*.tcl]]]
 }
+lappend _scripts {*}[lsort [glob [file join $dir tests taco test_*.tcl]]]
+lappend _scripts {*}[lsort [glob [file join $dir tests tackyd-json test_*.tcl]]]
 
-foreach script [lsort [glob [file join $dir tests taco test_*.tcl]]] {
-    source $script
-}
-
-foreach script [lsort [glob [file join $dir tests tackyd-json test_*.tcl]]] {
-    source $script
+foreach _script $_scripts {
+    source $_script
 }
 
 cleanupTests
