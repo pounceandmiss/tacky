@@ -273,6 +273,25 @@ test chatview-sendfile-image-thumbnail \
         set res
     } -result 1
 
+# A held-back autofetch is not a failure: caption only, no error row.
+test chatview-autofetch-blocked-renders-plain-caption \
+    {an image from a non-contact under the contacts policy draws no error row} \
+    {*}$cv_common \
+    -body {
+        tacky setting set -key attachment_autofetch -value contacts
+        $::_client conn feed [j message -type chat \
+            -from alice@example.com/phone {
+            j body #body "https://h.invalid/pic.png"
+            j x -ns jabber:x:oob { j url #body "https://h.invalid/pic.png" }
+            j stanza-id -ns urn:xmpp:sid:0 -id oob1 -by user@test.example.com
+        }]
+        wait
+        set id [.cv messages newest]
+        list cap=[winfo exists .cv.text.att_${id}_0.cap] \
+             img=[winfo exists .cv.text.att_${id}_0.img] \
+             errorRow=[winfo exists .cv.text.att_${id}_0.dl]
+    } -result {cap=1 img=0 errorRow=0}
+
 test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
     {*}$cv_common \
     -body {

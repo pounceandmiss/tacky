@@ -494,4 +494,138 @@ test file-transient-db-in-memory {transient accounts get an in-memory database} 
         $::_client cget -db-path
     } -result {:memory:}
 
+# --- Autofetch policy -----------------------------------------------------
+
+proc af_contact {jid {sub both}} {
+    $::_client roster StoreItem [j item -jid $jid -subscription $sub]
+}
+
+proc af_policy {v} { tacky setting set -key attachment_autofetch -value $v }
+
+# Terminal state and error of the last file <Update> (needs -capture-emit).
+proc af_last {} {
+    set out {}
+    foreach e $::_emitted {
+        if {[lindex $e 0] ne "file" || [lindex $e 1] ne "<Update>"} continue
+        set ev [lrange $e 2 end]
+        set out [list [dict get $ev -state] [dict get $ev -error]]
+    }
+    return $out
+}
+
+test file-autofetch-defaults {unset settings mean everyone, capped at 5 MB} \
+    {*}$file_env -body {
+        set unset [list [$::_client file AutofetchAllowed stranger@elsewhere.example] \
+            [$::_client file AutofetchMax]]
+        tacky setting set -key attachment_autofetch_max -value 0
+        list $unset stored=[$::_client file AutofetchMax]
+    } -result {{1 5242880} stored=0}
+
+test file-autofetch-contacts {contacts policy admits only a subscribed contact} \
+    {*}$file_env -body {
+        af_policy contacts
+        af_contact friend@test.example.com both
+        af_contact pending@test.example.com none
+        list friend=[$::_client file AutofetchAllowed friend@test.example.com/phone] \
+             pending=[$::_client file AutofetchAllowed pending@test.example.com] \
+             stranger=[$::_client file AutofetchAllowed stranger@elsewhere.example] \
+             nofrom=[$::_client file AutofetchAllowed ""]
+    } -result {friend=1 pending=0 stranger=0 nofrom=0}
+
+# MUC images ride on the "everyone" default rather than a special case.
+test file-autofetch-muc-not-a-contact {contacts policy does not autofetch a room} \
+    {*}$file_env -body {
+        af_policy contacts
+        set room room@conference.test.example.com
+        set underContacts [$::_client file AutofetchAllowed $room/nick]
+        af_policy everyone
+        list contacts=$underContacts \
+             everyone=[$::_client file AutofetchAllowed $room/nick]
+    } -result {contacts=0 everyone=1}
+
+test file-autofetch-never {never policy refuses even a contact} {*}$file_env -body {
+    af_policy never
+    af_contact friend@test.example.com both
+    $::_client file AutofetchAllowed friend@test.example.com
+} -result 0
+
+test file-autofetch-blocked-download {a gated autofetch fails without touching the network} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        af_policy contacts
+        set url https://h/tracker.png
+        $::_client file download -url $url -auto 1 \
+            -from stranger@elsewhere.example
+        set full [$::_client file AttachPath $url]
+        list [af_last] onDisk=[file exists $full] \
+             part=[file exists $full.part]
+    } -result {{failed autofetch-blocked} onDisk=0 part=0}
+
+# The gate sits below the on-disk lookups, so a tightened policy must not
+# blank an image that is already local.
+test file-autofetch-local-still-resolves {a local source resolves even under never} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        af_policy never
+        set src [file join $::_upcache already.png]
+        set px [string repeat [binary format cccc 1 2 3 255] 64]
+        set f [open $src wb]
+        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        close $f
+        set ::_local NONE
+        $::_client file download -url $src -auto 1 \
+            -from stranger@elsewhere.example \
+            -command [list apply {{p} {set ::_local $p}}]
+        list [af_last] local=[expr {$::_local eq $src}]
+    } -result {{done {}} local=1}
+
+test file-autofetch-manual-not-gated {a download without -auto ignores the policy} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        af_policy never
+        set src [file join $::_upcache manual.png]
+        set px [string repeat [binary format cccc 4 5 6 255] 64]
+        set f [open $src wb]
+        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        close $f
+        set ::_local NONE
+        $::_client file download -url $src \
+            -command [list apply {{p} {set ::_local $p}}]
+        list [af_last] local=[expr {$::_local eq $src}]
+    } -result {{done {}} local=1}
+
+# --- Autofetch size cap ---------------------------------------------------
+
+proc af_transfer {max} {
+    return [$::_client file NewTransfer download https://h/big.png "" $max]
+}
+
+test file-autofetch-max-honest-length {an over-cap Content-Length aborts at once} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set id [af_transfer 1000]
+        $::_client file ProgressCb $id "" 2000 0
+        af_last
+    } -result {failed autofetch-too-large}
+
+# A server that understates or omits Content-Length is caught by the bytes.
+test file-autofetch-max-lying-length {an over-cap byte count aborts mid-stream} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set id [af_transfer 1000]
+        $::_client file ProgressCb $id "" 0 400
+        set early [af_last]
+        $::_client file ProgressCb $id "" 0 1400
+        list early $early late [af_last]
+    } -result {early {active {}} late {failed autofetch-too-large}}
+
+test file-autofetch-max-under-cap {a transfer within the cap is left alone} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set id [af_transfer 1000]
+        $::_client file ProgressCb $id "" 900 900
+        af_last
+    } -result {active {}}
+
+test file-autofetch-max-unset-means-unlimited {maxbytes 0 never aborts} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set id [$::_client file NewTransfer download https://h/nolimit.png]
+        $::_client file ProgressCb $id "" 999999999 999999999
+        af_last
+    } -result {active {}}
+
 file delete -force -- $::_upcache

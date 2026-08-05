@@ -21,8 +21,13 @@ package require tclwuffs
 # `download` recognises that scheme, fetches the https:// form, and decrypts.
 # The key only ever travels inside the OMEMO-encrypted body.
 #
+# A download the client starts by itself (rendering an inline image) passes
+# -auto 1 -from SENDER and is subject to the autofetch policy and size cap;
+# one the user asked for is never gated.
+#
 # Public API:
-#   $client file download -url U  [-command {cb $localPath}]   ;# "" on failure
+#   $client file download -url U  [-command {cb $localPath}] \
+#       [-auto 0|1] [-from JID]                                ;# "" on failure
 #   $client file upload   -id ID -path P [-encrypt 0|1] \
 #       -command {cb $getUrl}                                  ;# "" on failure
 #   $client file cancel   -id ID | -url U
@@ -37,6 +42,8 @@ snit::type taco_file {
     typevariable TIMEOUT_MS 60000
     typevariable THUMB_MAX  320
     typevariable HttpRegistered 0
+    typevariable AUTOFETCH_DEFAULT everyone
+    typevariable AUTOFETCH_MAX_DEFAULT 5242880
 
     variable client
     variable ServiceJid  ""   ;# discovered upload component ("" = none/unknown)
@@ -81,13 +88,13 @@ snit::type taco_file {
 
     # --- Transfer registry ----------------------------------------------
 
-    method NewTransfer {direction url {id ""}} {
+    method NewTransfer {direction url {id ""} {maxbytes 0}} {
         if {$id eq ""} { set id [incr Counter] }
         set Transfers($id) [dict create \
             direction $direction state active loaded 0 total 0 \
             url $url localpath "" thumbpath "" error "" \
             cmds {} done 0 lastfrac -1 timer "" fh "" httptoken "" \
-            mediakey "" mediaiv "" tmpfile ""]
+            mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes]
         return $id
     }
 
@@ -103,6 +110,10 @@ snit::type taco_file {
     # Throttled to whole-percent steps so large transfers don't flood the bus.
     method ProgressCb {id token total current} {
         if {![info exists Transfers($id)]} return
+        if {[$self OverMaxBytes $id $total $current]} {
+            $self AbortOversize $id $token
+            return
+        }
         dict set Transfers($id) loaded $current
         dict set Transfers($id) total $total
         set frac [expr {$total > 0 ? double($current) / $total : 0.0}]
@@ -111,6 +122,20 @@ snit::type taco_file {
         }
         dict set Transfers($id) lastfrac $frac
         $self EmitUpdate $id
+    }
+
+    # total is Content-Length; current catches a server that understated it.
+    method OverMaxBytes {id total current} {
+        set max [dict get $Transfers($id) maxbytes]
+        if {$max <= 0} { return 0 }
+        return [expr {$total > $max || $current > $max}]
+    }
+
+    # The reset re-enters OnDownloaded, where Terminal's `done` guard no-ops.
+    method AbortOversize {id token} {
+        catch {::http::reset $token}
+        catch {close [dict get $Transfers($id) fh]}
+        $self Terminal $id failed autofetch-too-large
     }
 
     # Single terminal point for both directions: set state, emit, invoke the
@@ -160,8 +185,33 @@ snit::type taco_file {
 
     # --- Download (derives image thumbnails) ----------------------------
 
+    # The autofetch settings are global: taco-level store, not the client's.
+    method SettingOr {key default} {
+        if {[catch {[$client cget -taco] setting get -key $key} v]} { return $default }
+        if {$v eq ""} { return $default }
+        return $v
+    }
+
+    method AutofetchMax {} {
+        return [$self SettingOr attachment_autofetch_max $AUTOFETCH_MAX_DEFAULT]
+    }
+
+    # A room JID is never a roster entry, so under "contacts" a MUC image waits
+    # for a click. Callers exempt the user's own sends by omitting -auto.
+    method AutofetchAllowed {from} {
+        switch -- [$self SettingOr attachment_autofetch $AUTOFETCH_DEFAULT] {
+            never { return 0 }
+            contacts {
+                if {$from eq ""} { return 0 }
+                set sub [$client roster subscription -jid [jid bare $from]]
+                return [expr {$sub in {to from both}}]
+            }
+            default { return 1 }
+        }
+    }
+
     method download {args} {
-        array set opts {-url "" -command ""}
+        array set opts {-url "" -command "" -auto 0 -from ""}
         array set opts $args
         set url $opts(-url)
         set cmd $opts(-command)
@@ -188,10 +238,20 @@ snit::type taco_file {
             }
         }
 
+        # Gated below the on-disk lookups: tightening the policy must not blank
+        # an image already fetched.
+        if {$opts(-auto) && ![$self AutofetchAllowed $opts(-from)]} {
+            set id [$self NewTransfer download $url]
+            if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+            $self Terminal $id failed autofetch-blocked
+            return
+        }
+
         # Fresh remote download. An aesgcm:// URL fetches its https:// form;
         # the ciphertext lands in .part and is decrypted in OnDownloaded.
         set full [$self AttachPath $url]
-        set id [$self NewTransfer download $url]
+        set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
+        set id [$self NewTransfer download $url "" $max]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
         set DownloadByUrl($url) $id
         set fetchUrl $url
@@ -208,6 +268,9 @@ snit::type taco_file {
             return
         }
         dict set Transfers($id) fh $fh
+        # Terminal drops tmpfile, covering every failure path including an
+        # abort from inside ProgressCb.
+        dict set Transfers($id) tmpfile $full.part
         $self EmitUpdate $id
         if {[catch {
             set tok [http::geturl $fetchUrl -channel $fh -binary 1 \
@@ -217,7 +280,6 @@ snit::type taco_file {
             dict set Transfers($id) httptoken $tok
         } err]} {
             catch {close $fh}
-            catch {file delete -- $full.part}
             $self Terminal $id failed "download: $err"
         }
     }
@@ -231,14 +293,12 @@ snit::type taco_file {
         }
         catch {http::cleanup $token}
         if {!$ok} {
-            catch {file delete -- $full.part}
             $self Terminal $id failed "http error"
             return
         }
         if {[info exists Transfers($id)] \
                 && [dict get $Transfers($id) mediakey] ne ""} {
             if {[catch {$self DecryptPart $id $full} err]} {
-                catch {file delete -- $full.part}
                 $self Terminal $id failed "decrypt: $err"
                 return
             }

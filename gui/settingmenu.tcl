@@ -20,6 +20,25 @@ proc settingmenu::checkbutton {menu label args} {
         [list settingmenu::Apply $var $opt(-onchange)]
 }
 
+# settingmenu::radiogroup MENU -entries {LABEL VALUE ...} -var FQVAR -key KEY \
+#       ?-onchange CMD? ?-tag T? ?-tacky T?
+# Same contract as checkbutton, for settings with more than two values: the
+# stored string is the radiobutton value, and one observer covers the group.
+proc settingmenu::radiogroup {menu args} {
+    array set opt {-onchange "" -tag "" -tacky ::tacky}
+    array set opt $args
+    set var $opt(-var)
+    set key $opt(-key)
+    if {$opt(-tag) eq ""} { set opt(-tag) $var }
+    foreach {label value} $opt(-entries) {
+        $menu add radiobutton -label $label -variable $var -value $value \
+            -command [list settingmenu::Toggle $opt(-tacky) $key $var \
+                $opt(-onchange)]
+    }
+    $opt(-tacky) observe -tag $opt(-tag) setting <Changed> -key $key \
+        [list settingmenu::ApplyValue $var $opt(-onchange)]
+}
+
 proc settingmenu::Toggle {t key var onchange} {
     $t setting set -key $key -value [set $var]
     if {$onchange ne ""} { uplevel #0 $onchange }
@@ -29,5 +48,12 @@ proc settingmenu::Apply {var onchange ev} {
     set val [dict get $ev -value]
     if {$val eq ""} return
     set $var [expr {!!$val}]
+    if {$onchange ne ""} { uplevel #0 $onchange }
+}
+
+proc settingmenu::ApplyValue {var onchange ev} {
+    set val [dict get $ev -value]
+    if {$val eq ""} return
+    set $var $val
     if {$onchange ne ""} { uplevel #0 $onchange }
 }
