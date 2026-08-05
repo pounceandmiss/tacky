@@ -67,6 +67,8 @@
 # Both sides:
 #   <- <jingle action=session-terminate> -> destroy media + pc
 #                                        -> emit <Ended>
+#   <- fresh (non-resumed) stream        -> destroy media + pc
+#                                        -> emit <Ended>
 #
 # Some notes about order:
 #   - session-initiate / session-accept are shipped from
@@ -117,6 +119,10 @@ snit::type taco_calls {
     typevariable PAYLOAD_TYPE   111
     typevariable AUDIO_CHANNELS 2
 
+    # Ceiling on candidates buffered during the JMI window; a peer trickles
+    # a handful, so anything past this is not worth keeping.
+    typevariable MAX_PENDING_CANDIDATES 64
+
     variable client
     variable Calls           ;# sid -> dict (see file header)
     variable PcToSid         ;# pc -> sid
@@ -127,6 +133,7 @@ snit::type taco_calls {
         set Calls [dict create]
         array set PcToSid {}
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
+        $client bus subscribe $self <Ready> [mymethod OnFreshStream]
 
         $client caps addFeature urn:xmpp:jingle:1
         $client caps addFeature urn:xmpp:jingle:apps:rtp:1
@@ -196,6 +203,10 @@ snit::type taco_calls {
             $self Cleanup $opts(-sid)
             return
         }
+        if {$state eq "proposed"} {
+            $self RetractProposed $opts(-sid) [dict get $call peer]
+            return
+        }
         $self TeardownMedia $opts(-sid)
         $self SendTerminate $opts(-sid) [dict get $call peer] $opts(-reason)
         $client emit calls <Ended> -sid $opts(-sid)
@@ -210,11 +221,7 @@ snit::type taco_calls {
         set call [dict get $Calls $opts(-sid)]
         set state [dict get $call state]
         if {$state eq "proposed"} {
-            # Caller cancels before proceed: retract instead of terminate.
-            set peer [dict get $call peer]
-            $client write [$self BuildJmiMessage $peer retract $opts(-sid) 0]
-            $client emit calls <Ended> -sid $opts(-sid)
-            $self Cleanup $opts(-sid)
+            $self RetractProposed $opts(-sid) [dict get $call peer]
             return
         }
         $self TeardownMedia $opts(-sid)
@@ -533,6 +540,13 @@ snit::type taco_calls {
     method OnPcState {pc state} {
         if {![info exists PcToSid($pc)]} return
         set sid $PcToSid($pc)
+        # ICE lost consent. libdatachannel recovers or moves on to failed by
+        # itself, so warn and leave the call running.
+        if {$state eq "disconnected"} {
+            $client emit calls <Warning> -sid $sid \
+                -reason "media path interrupted"
+            return
+        }
         set mapped [$self MapPcState $state]
         if {$mapped eq ""} return
         dict set Calls $sid state $mapped
@@ -835,6 +849,14 @@ snit::type taco_calls {
                 }
                 set full "candidate:$value"
                 if {$pc == -1} {
+                    set buffered {}
+                    if {[dict exists $Calls $sid pending_remote_candidates]} {
+                        set buffered [dict get $Calls $sid pending_remote_candidates]
+                    }
+                    if {[llength $buffered] >= $MAX_PENDING_CANDIDATES} {
+                        jlog debug "transport-info: candidate buffer full"
+                        continue
+                    }
                     dict update Calls $sid call {
                         dict lappend call pending_remote_candidates \
                             [list $name $full]
@@ -909,6 +931,26 @@ snit::type taco_calls {
             j $condition -ns urn:ietf:params:xml:ns:xmpp-stanzas
         }]
         $client iq respond -type error -for $stanza -payload $payload
+    }
+
+    # Cancel a call that never got past our own <propose>. There is no
+    # session to terminate yet, so XEP-0353 wants a retract.
+    method RetractProposed {sid peer} {
+        $client write [$self BuildJmiMessage $peer retract $sid 0]
+        $client emit calls <Ended> -sid $sid
+        $self Cleanup $sid
+    }
+
+    # A fresh (non-resumed) stream invalidates every sid we hold: nothing can
+    # route back to a session that died with the old stream. Resumption never
+    # lands here, and a plain disconnect is deliberately left alone - the
+    # media path is peer to peer and can outlive the outage.
+    method OnFreshStream {args} {
+        foreach sid [dict keys $Calls] {
+            $self TeardownMedia $sid
+            $client emit calls <Ended> -sid $sid
+            $self Cleanup $sid
+        }
     }
 
     method SendTerminate {sid peer reason} {
