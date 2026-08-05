@@ -50,6 +50,9 @@ snit::type taco_account {
 
     method add {args} {
         set jid [dict get $args -acc]
+        if {![jid valid-account $jid]} {
+            error "Invalid JID: $jid"
+        }
         set exists [$self exists -acc $jid]
 
         if {!$exists} {
