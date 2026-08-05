@@ -1122,10 +1122,12 @@ snit::type taco_omemo {
     # caller-returned plain stanza for MAM). Live-only entry - passes
     # isMam=0 so side effects fire promptly.
     #
-    # DoDecrypt result shapes:
+    # DoDecrypt result shapes. $fp is the sender fingerprint, set once a
+    # key decrypt has succeeded:
     #   {}                       -> truly silent drop (malformed wire)
-    #   {plaintext $text}        -> decrypted payload; render as message
-    #   {decrypt_error $reason}  -> user-facing failure; surface as a
+    #   {plaintext $text $fp}    -> decrypted payload; render as message
+    #   {decrypt_error $reason ?$fp?}
+    #                            -> user-facing failure; surface as a
     #                               placeholder message with $reason as
     #                               the body so the user sees SOMETHING
     #                               rather than the previous silent loss
@@ -1139,7 +1141,7 @@ snit::type taco_omemo {
                 -stanza $stanza
             return
         }
-        lassign $result kind body
+        lassign $result kind body senderFp
         if {$kind in {keytransport duplicate}} {
             jlog debug "OMEMO $kind from $peerJid/$peerDev"
             return
@@ -1151,7 +1153,7 @@ snit::type taco_omemo {
         # plaintext OR decrypt_error - both flow as a message bubble.
         # We do NOT call back into the full client chain (that would
         # re-enter OMEMO); jump directly to message.
-        set plain [$self SynthesisePlain $stanza $body]
+        set plain [$self SynthesisePlain $stanza $body $senderFp]
         $client message OnMessage $plain
     }
 
@@ -1257,6 +1259,10 @@ snit::type taco_omemo {
                     "\[OMEMO\] Sender's identity key changed - possible MITM"]
             }
         }
+        # Identity of the session that decrypted this, for the stored row.
+        if {$remoteIk eq "" || [catch {omemo::fingerprint $remoteIk} senderFp]} {
+            set senderFp ""
+        }
 
         if {$isMam} { set mamHadOmemo 1 }
 
@@ -1281,13 +1287,13 @@ snit::type taco_omemo {
         set ct [base64::decode $payloadB64]
         if {[catch {omemo::decrypt_message $decKey $iv $ct} plain]} {
             return [list decrypt_error \
-                "\[OMEMO\] Could not decrypt message payload"]
+                "\[OMEMO\] Could not decrypt message payload" $senderFp]
         }
         # The plaintext on the wire is UTF-8 bytes; decode to a Tcl string.
         set plain [encoding convertfrom utf-8 $plain]
         # Strip Conversations-style privacy padding (trailing whitespace).
         set plain [string trimright $plain " \t"]
-        return [list plaintext $plain]
+        return [list plaintext $plain $senderFp]
     }
 
     # Ensure a trust row for (peerJid, peerDev) anchored to $ik.
@@ -1485,13 +1491,15 @@ snit::type taco_omemo {
     # gets a server_id, which messagestore needs to dedup against the
     # MAM replay of the same stanza. Dropping it caused ghost rows on
     # every chat reopen.
-    # The `decrypted` key is what ParseMessage stamps encryption from. It
-    # lives on the node dict rather than in the XML, so a peer can't put it
-    # there by sending an EME marker on cleartext, and jwrite ignores it.
-    method SynthesisePlain {origStanza plaintext} {
+    # The `decrypted` key is what ParseMessage stamps encryption from,
+    # `sender_fp` the identity it binds the row to. Both live on the node dict
+    # rather than in the XML, so a peer can't put them there by sending an EME
+    # marker on cleartext, and jwrite ignores them.
+    method SynthesisePlain {origStanza plaintext {senderFp ""}} {
         set attrs [dict get $origStanza attrs]
         set out [dict create tag message body {} tail {} children {} \
-            ns [dict get $origStanza ns] attrs $attrs decrypted 1]
+            ns [dict get $origStanza ns] attrs $attrs \
+            decrypted 1 sender_fp $senderFp]
         set bodyChild [dict create tag body body $plaintext tail {} \
             children {} ns {} attrs {}]
         set emeChild [dict create tag encryption body {} tail {} \
@@ -1559,14 +1567,14 @@ snit::type taco_omemo {
         if {$res eq ""} {
             return [$self SynthesisePlain $msgNode ""]
         }
-        lassign $res kind body
+        lassign $res kind body senderFp
         if {$kind in {keytransport duplicate}} {
             return [$self SynthesisePlain $msgNode ""]
         }
         # plaintext OR decrypt_error: surface as a real <message> with
         # $body either as the decrypted text or as a user-facing
         # placeholder explaining the failure.
-        return [$self SynthesisePlain $msgNode $body]
+        return [$self SynthesisePlain $msgNode $body $senderFp]
     }
 
     # =====================================================================

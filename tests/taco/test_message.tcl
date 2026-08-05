@@ -3077,6 +3077,58 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
              [llength [msg_store_latest alice@example.com]]
     } -result {{hello world} 1 1}
 
+# Feed an incoming message the decrypt path's way: `decrypted` and `sender_fp`
+# ride the node dict, not the XML.
+proc msg_feed_decrypted {id body fp {replaceId ""}} {
+    set node [j message -type chat -from alice@example.com/phone -id $id {
+        j origin-id -ns urn:xmpp:sid:0 -id $id
+        j body #body $body
+        if {$replaceId ne ""} {
+            j replace -ns urn:xmpp:message-correct:0 -id $replaceId
+        }
+    }]
+    dict set node decrypted 1
+    dict set node sender_fp $fp
+    $::_client conn feed $node
+}
+
+# A correction inherits the target row's padlock, so an unencrypted one must
+# not rewrite an encrypted message: authorship alone is server-asserted.
+test message-edit-cleartext-cannot-rewrite-omemo \
+    {a cleartext correction of an OMEMO message is not applied in place} \
+    {*}$msg_common -body {
+        msg_feed_decrypted m1 "secret" "aabb ccdd"
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
+            j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body #body "attacker text"
+        }]
+        set rows [msg_store_latest alice@example.com]
+        set m [lindex $rows 0]
+        list [dict get $m content body] [dict get $m encryption] \
+             [dict get $m edited] [llength $rows]
+    } -result {secret omemo 0 2}
+
+test message-edit-other-identity-cannot-rewrite-omemo \
+    {an encrypted correction from a different sender identity is not applied} \
+    {*}$msg_common -body {
+        msg_feed_decrypted m1 "secret" "aabb ccdd"
+        msg_feed_decrypted m2 "attacker text" "eeff 0011" m1
+        set rows [msg_store_latest alice@example.com]
+        set m [lindex $rows 0]
+        list [dict get $m content body] [dict get $m edited] [llength $rows]
+    } -result {secret 0 2}
+
+test message-edit-same-identity-rewrites-omemo \
+    {an encrypted correction from the same sender identity swaps the body} \
+    {*}$msg_common -body {
+        msg_feed_decrypted m1 "helo" "aabb ccdd"
+        msg_feed_decrypted m2 "hello world" "aabb ccdd" m1
+        set rows [msg_store_latest alice@example.com]
+        set m [lindex $rows 0]
+        list [dict get $m content body] [dict get $m encryption] \
+             [dict get $m edited] [llength $rows]
+    } -result {{hello world} omemo 1 1}
+
 test message-edit-own-1to1 {editing our own message swaps its body and marks edited} \
     {*}$msg_common -body {
         $::_client omemo setEnabled -jid alice@example.com -value 0

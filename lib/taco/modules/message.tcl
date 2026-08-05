@@ -1176,8 +1176,11 @@ snit::type taco_message {
         $client write $stanza
         set readable [jwrite [$self BuildMessageStanza readable $chatJid \
             $newBody $oid $msgType $toJid $encMode "" "" 0 $targetId]]
+        # No sender_fp on our own rows: we never decrypt our own sends, and
+        # is_own already authorizes correcting them from any of our devices.
         set targetTs [$messagestore applyEdit $chatJid $targetId \
-            $newBody $readable [clock microseconds]]
+            $newBody $readable [clock microseconds] \
+            [dict create encryption $encMode sender_fp ""]]
         if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
     }
 
@@ -1912,12 +1915,14 @@ snit::type taco_message {
     }
 
     # Authorization fields of a stored target message, matched by its wire id
-    # (the id-triple): {occupant_id from_jid isOwn}, where isOwn is whether the
-    # target is our own send (own_id set). Returns "" when none is stored.
+    # (the id-triple): {occupant_id from_jid isOwn encryption sender_fp}, where
+    # isOwn is whether the target is our own send (own_id set). Returns "" when
+    # none is stored.
     method TargetAuthFields {chatJid targetId} {
         set found 0
         $client db eval {
-            SELECT occupant_id, from_jid, own_id FROM chat_message
+            SELECT occupant_id, from_jid, own_id, encryption, sender_fp
+            FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND ( (server_id != '' AND server_id=$targetId)
                  OR (origin_id != '' AND origin_id=$targetId)
@@ -1926,7 +1931,7 @@ snit::type taco_message {
         } row { set found 1 }
         if {!$found} { return "" }
         return [list $row(occupant_id) $row(from_jid) \
-            [expr {$row(own_id) ne ""}]]
+            [expr {$row(own_id) ne ""}] $row(encryption) $row(sender_fp)]
     }
 
     # True iff a stanza from $chatJid may correct/retract a stored target:
@@ -1963,13 +1968,23 @@ snit::type taco_message {
         if {$body eq ""} { return "" }
         set auth [$self TargetAuthFields $chatJid $targetId]
         if {$auth eq ""} { return "" }
-        lassign $auth targetOcc targetFrom targetOwn
+        lassign $auth targetOcc targetFrom targetOwn targetEnc targetFp
         set sender [$self resolveSender $chatJid $msgNode]
         dict set sender from [xsearch $msgNode -get @from]
         if {![$self SameAuthor $chatJid $sender $targetOcc $targetFrom $targetOwn]} {
             return ""
         }
+        # Authorship is server-asserted, so the correction must also carry the
+        # target's protection: no cleartext rewrite of an encrypted row, and
+        # the same sender identity when the target names one. Otherwise the
+        # server could swap an e2ee body and leave the padlock on it.
+        set enc [expr {[dict exists $plainNode decrypted] ? "omemo" : ""}]
+        set senderFp [expr {[dict exists $plainNode sender_fp] \
+            ? [dict get $plainNode sender_fp] : ""}]
+        if {$targetEnc eq "omemo" && $enc ne "omemo"} { return "" }
+        if {$targetFp ne "" && $senderFp ne $targetFp} { return "" }
         return [dict create target_id $targetId new_body $body \
+            encryption $enc sender_fp $senderFp \
             raw_xml [jwrite $plainNode]]
     }
 
@@ -2021,7 +2036,9 @@ snit::type taco_message {
     method ApplyEditVerdict {chatJid verdict} {
         set targetTs [$messagestore applyEdit $chatJid \
             [dict get $verdict target_id] [dict get $verdict new_body] \
-            [dict get $verdict raw_xml] [dict get $verdict timestamp]]
+            [dict get $verdict raw_xml] [dict get $verdict timestamp] \
+            [dict create encryption [dict get $verdict encryption] \
+                sender_fp [dict get $verdict sender_fp]]]
         if {$targetTs eq ""} return
         $self EmitMessagePatch $chatJid $targetTs
     }
@@ -2120,6 +2137,8 @@ snit::type taco_message {
         # decrypted. The EME marker (XEP-0380) is a cleartext hint anyone can
         # attach to an unencrypted body, so it must not be read here.
         set enc [expr {[dict exists $msgNode decrypted] ? "omemo" : ""}]
+        set senderFp [expr {[dict exists $msgNode sender_fp] \
+            ? [dict get $msgNode sender_fp] : ""}]
         set ownId [expr {[dict exists $args -own_id] \
             ? [dict get $args -own_id] : ""}]
         set originId [expr {[dict exists $args -origin_id] \
@@ -2140,7 +2159,8 @@ snit::type taco_message {
             raw_xml    [jwrite $msgNode] \
             attachments [ExtractAttachments $msgNode $body] \
             server_status "" \
-            encryption $enc
+            encryption $enc \
+            sender_fp  $senderFp
     }
 }
 

@@ -1230,10 +1230,22 @@ test messagestore-edit-swaps-body {applyEdit replaces body and sets edited} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com sid1 corrected "<xml/>" 200
+        store applyEdit alice@example.com sid1 corrected "<xml/>" 200 \
+            {encryption {} sender_fp {}}
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list [dict get $m content body] [dict get $m edited]
     } -result {corrected 1}
+
+test messagestore-edit-stamps-encryption \
+    {applyEdit rewrites the row's lock to the correction's} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store applyEdit alice@example.com sid1 corrected "<xml/>" 200 \
+            {encryption omemo sender_fp aabb}
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] \
+            encryption
+    } -result {omemo}
 
 test messagestore-edit-defaults-not-edited {an unedited message reports edited 0} \
     {*}$ms_common \
@@ -1246,15 +1258,18 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com sid1 newer "<xml/>" 300
-        store applyEdit alice@example.com sid1 older "<xml/>" 200
+        store applyEdit alice@example.com sid1 newer "<xml/>" 300 \
+            {encryption {} sender_fp {}}
+        store applyEdit alice@example.com sid1 older "<xml/>" 200 \
+            {encryption {} sender_fp {}}
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {newer}
 
 test messagestore-edit-target-not-found {applyEdit on an unknown target returns empty} \
     {*}$ms_common \
     -body {
-        store applyEdit alice@example.com nope corrected "<xml/>" 200
+        store applyEdit alice@example.com nope corrected "<xml/>" 200 \
+            {encryption {} sender_fp {}}
     } -result {}
 
 test messagestore-retract-tombstones {applyRetract sets retracted} \
@@ -1270,7 +1285,8 @@ test messagestore-retract-is-sticky {a retracted message cannot be edited afterw
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
         store applyRetract alice@example.com sid1
-        set skipped [store applyEdit alice@example.com sid1 sneaky "<xml/>" 500]
+        set skipped [store applyEdit alice@example.com sid1 sneaky "<xml/>" 500 \
+            {encryption {} sender_fp {}}]
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list $skipped [dict exists $m content] [dict get $m retracted]
     } -result {{} 0 1}
