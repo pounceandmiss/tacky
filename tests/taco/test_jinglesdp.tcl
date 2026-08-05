@@ -295,11 +295,11 @@ test jinglesdp-from_sdp-fmtp-and-fb "fmtp + rtcp-fb attach to right payload-type
 
 test jinglesdp-from_sdp-senders "SDP direction -> content senders attr" -body {
     jinglesdp_test::reset
-    set make [list apply {{dir} {
-        return "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:0 PCMU/8000\r\na=ice-ufrag:a\r\na=ice-pwd:b\r\na=fingerprint:sha-256 AA\r\na=setup:actpass\r\na=mid:audio\r\na=$dir\r\n"
+    set make [list apply {{direction} {
+        return "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:0 PCMU/8000\r\na=ice-ufrag:a\r\na=ice-pwd:b\r\na=fingerprint:sha-256 AA\r\na=setup:actpass\r\na=mid:audio\r\na=$direction\r\n"
     }}]
     set results {}
-    foreach {dir init expected} {
+    foreach {direction init expected} {
         sendrecv 1 ""
         inactive 1 none
         sendonly 1 initiator
@@ -307,7 +307,7 @@ test jinglesdp-from_sdp-senders "SDP direction -> content senders attr" -body {
         recvonly 1 responder
         recvonly 0 initiator
     } {
-        set sdp [{*}$make $dir]
+        set sdp [{*}$make $direction]
         set jingle [jinglesdp::from_sdp $sdp -initiator $init]
         set content [xsearch $jingle content -get node]
         lappend results [xsearch $content -get @senders]
