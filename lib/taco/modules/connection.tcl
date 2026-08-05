@@ -620,7 +620,7 @@ snit::type conn {
 
     # Process stanzas during resource binding: on <features>, send bind
     # request (and let SM inspect features). On bind result, store the
-    # bound JID and hand off to SM negotiation.
+    # bound JID once its bare part checks out and hand off to SM negotiation.
     method HandleBindStanza {stanza} {
         set tag [dict get $stanza tag]
 
@@ -644,6 +644,11 @@ snit::type conn {
                 set type [dict get $stanza attrs type]
                 if {$type eq "result"} {
                     set boundJid [xsearch $stanza bind jid -get body]
+                    set want $options(-username)@$options(-host)
+                    if {$boundJid eq "" || ![jid matches-bare $boundJid $want]} {
+                        $self OnAuthError "Server bound an unexpected JID"
+                        return
+                    }
                     set options(-bound-jid) $boundJid
 
                     # Fire onbound before SM so the stanza is sent during the SM roundtrip

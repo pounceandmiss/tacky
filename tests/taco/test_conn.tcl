@@ -285,6 +285,36 @@ test conn-bind-conflict-fires-onresourceconflict {bind <conflict/> fires -onreso
         list $::_tconflict [llength $_tauth_err] [c.base state]
     } -result {1 0 disconnected}
 
+test conn-bind-rejects-foreign-jid {bind result for another account tears down the session} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result "victim@other.example.com/r"]
+        list [lindex $_tauth_err 0] [c cget -bound-jid] [c.base state]
+    } -result {{Server bound an unexpected JID} {} disconnected}
+
+test conn-bind-accepts-case-difference {server may canonicalize case in the bare JID} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_bind "User@Test.Example.COM/r"
+        list [llength $_tauth_err] [c cget -bound-jid]
+    } -result {0 User@Test.Example.COM/r}
+
+test conn-bind-rejects-empty-jid {bind result with no JID tears down the session} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result ""]
+        list [lindex $_tauth_err 0] [c cget -bound-jid] [c.base state]
+    } -result {{Server bound an unexpected JID} {} disconnected}
+
 # -- SM negotiation --------------------------------------------------------
 
 test conn-sm-enabled-fires-ready {SM enabled fires -onready with resumed=0} \
