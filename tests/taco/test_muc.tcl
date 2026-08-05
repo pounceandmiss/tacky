@@ -925,6 +925,48 @@ test muc-groupchat-other-id-no-false-confirm {other user's @id matching pending 
         }
     } -result {pending}
 
+test muc-groupchat-occupant-id-not-own-without-self-id \
+    {a stanza with an occupant-id is not own while our own occupant-id is unknown} \
+    {*}$muc_common \
+    -body {
+        # join sent, self-presence not back yet: myOccupantId still ""
+        c muc join -jid room@muc.example.com -nick me
+        c.conn feed [j message -type groupchat -id spoof-id \
+            -from room@muc.example.com/me {
+            j body #body "not mine"
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id imposter
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg own_id
+    } -result {}
+
+test muc-groupchat-own-by-occupant-id-not-nick \
+    {a matching occupant-id marks a message own even under a different nick} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id my-msg-id \
+            -from room@muc.example.com/renamed {
+            j body #body "my echo"
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg own_id
+    } -result {my-msg-id}
+
+test muc-stanza-id-not-from-room-ignored \
+    {a <stanza-id> stamped by anyone but the room is not the room's server_id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
+            j body #body "forged sid"
+            j stanza-id -ns urn:xmpp:sid:0 -id forged -by user@test.example.com
+        }]
+        set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
+        dict get $msg server_id
+    } -result {}
+
 test muc-pm-stored {private messages stored under room@muc/nick} \
     {*}$muc_common \
     -body {
@@ -999,7 +1041,7 @@ test muc-store-extracts-stanza-id {stored MUC message extracts stanza-id} \
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body #body "with sid"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv99
+            j stanza-id -ns urn:xmpp:sid:0 -id srv99 -by room@muc.example.com
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg server_id

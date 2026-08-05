@@ -306,7 +306,7 @@ test message-live-fields {stored live message has correct fields} \
     -body {
         $::_client conn feed [j message -type chat -id orig7 -from alice@example.com/phone {
             j body #body hi
-            j stanza-id -ns urn:xmpp:sid:0 -id srv42
+            j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg chat_jid] \
@@ -358,7 +358,7 @@ test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body #body hi
-            j stanza-id -ns urn:xmpp:sid:0 -id srv42
+            j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
             j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
         }]
         set db [$::_client message messagestore cget -db]
@@ -374,6 +374,29 @@ test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not
              [expr {$sid ne $ts}] \
              [string match {*<message*} $xml]
     } -result {1 1 1}
+
+test message-live-foreign-stanza-id-ignored \
+    {a <stanza-id> stamped by anyone but our archive is not the server_id} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body hi
+            j stanza-id -ns urn:xmpp:sid:0 -id forged -by alice@example.com
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] server_id
+    } -result {}
+
+test message-live-stanza-id-picks-archive-owner \
+    {the archive owner's <stanza-id> wins over one injected ahead of it} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body #body hi
+            j stanza-id -ns urn:xmpp:sid:0 -id forged -by alice@example.com
+            j stanza-id -ns urn:xmpp:sid:0 -id genuine -by user@test.example.com
+        }]
+        dict get [lindex [msg_store_latest alice@example.com] 0] server_id
+    } -result {genuine}
 
 test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive ID, not timestamp} \
     {*}$msg_common \
@@ -567,7 +590,7 @@ test message-self-echo-dedups-not-duplicate \
         set echo [j message -from $acc/phone -to bob@example.com -type chat \
                 -id uuid-7 {
             j body #body "hello"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv-99
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-99 -by user@test.example.com
         }]
         lassign [$::_client message ExtractEnvelopeIds $echo bob@example.com] \
             sid ownId originId
@@ -1180,7 +1203,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Confirmed
             -to alice@example.com \
             -id $oid {
             j body #body "echo me"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo1
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo1 -by user@test.example.com
         }]
 
         tacky unlisten selfecho
@@ -1900,7 +1923,7 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
         # Live message arrives with server_id
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body #body "live msg"
-            j stanza-id -ns urn:xmpp:sid:0 -id s1
+            j stanza-id -ns urn:xmpp:sid:0 -id s1 -by user@test.example.com
         }]
         # Catchup returns same message
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
@@ -2624,7 +2647,7 @@ test message-live-reply-fields {reply target id + author parsed into stored fiel
     -body {
         $::_client conn feed [j message -type chat -id origA -from alice@example.com/phone {
             j body #body "my reply"
-            j stanza-id -ns urn:xmpp:sid:0 -id srvA
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TARGET99
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
@@ -2636,7 +2659,7 @@ test message-reply-fallback-codepoints {fallback offsets count Unicode codepoint
     -body {
         $::_client conn feed [j message -type chat -id rf3 -from alice@example.com/phone {
             j body #body "> café\nreply"
-            j stanza-id -ns urn:xmpp:sid:0 -id srvRF3
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRF3 -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
                 j body -start 0 -end 7
@@ -2650,7 +2673,7 @@ test message-reply-fallback-for-mismatch {a fallback for a different feature is 
     -body {
         $::_client conn feed [j message -type chat -id rf2 -from alice@example.com/phone {
             j body #body "> hi\nactual reply"
-            j stanza-id -ns urn:xmpp:sid:0 -id srvRF2
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRF2 -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:other:0 {
                 j body -start 0 -end 5
@@ -2664,7 +2687,7 @@ test message-live-origin-id-captured {origin-id element is captured and resolvab
     -body {
         $::_client conn feed [j message -type chat -id atA -from alice@example.com/phone {
             j body #body hi
-            j stanza-id -ns urn:xmpp:sid:0 -id srvX
+            j stanza-id -ns urn:xmpp:sid:0 -id srvX -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG-A
         }]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
@@ -2677,7 +2700,7 @@ test message-live-origin-id-fallback {origin_id falls back to @id when no origin
     -body {
         $::_client conn feed [j message -type chat -id ATID -from alice@example.com/phone {
             j body #body hi
-            j stanza-id -ns urn:xmpp:sid:0 -id srvB
+            j stanza-id -ns urn:xmpp:sid:0 -id srvB -by user@test.example.com
         }]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         expr {[$::_client message messagestore resolveReply \
@@ -2699,11 +2722,11 @@ test message-gotoreply-local {gotoReply resolves a reply target locally and retu
     -body {
         $::_client conn feed [j message -type chat -id t1 -from alice@example.com/phone {
             j body #body "the original"
-            j stanza-id -ns urn:xmpp:sid:0 -id SRV-TGT
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV-TGT -by user@test.example.com
         }]
         $::_client conn feed [j message -type chat -id r1 -from alice@example.com/phone {
             j body #body "the reply"
-            j stanza-id -ns urn:xmpp:sid:0 -id SRV-RPL
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV-RPL -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id SRV-TGT
         }]
         set ::_gr {}
@@ -2724,7 +2747,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
         set orig "line one\nline two is long enough to clearly exceed the eighty-character display preview cap"
         $::_client conn feed [j message -type chat -id tOrig -from alice@example.com/phone {
             j body #body $orig
-            j stanza-id -ns urn:xmpp:sid:0 -id SRV1
+            j stanza-id -ns urn:xmpp:sid:0 -id SRV1 -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG1
         }]
         set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
@@ -2824,7 +2847,7 @@ test message-tail-repushed-on-confirm-move \
         $::_client conn feed [j message -type chat \
             -from user@test.example.com/res -to alice@example.com -id $oid {
             j body #body "echo me"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-tail
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-tail -by user@test.example.com
         }]
         tacky unlisten tailmove
         expr {$::_tail ne ""
@@ -3124,7 +3147,7 @@ proc msg_feed_room {{id srv1}} {
     $::_client message ingestLive room@conf.example.com?join \
         [j message -type groupchat -from room@conf.example.com/bob {
             j body #body "spam"
-            j stanza-id -ns urn:xmpp:sid:0 -id $id
+            j stanza-id -ns urn:xmpp:sid:0 -id $id -by room@conf.example.com
         }]
     dict get [lindex [msg_store_latest room@conf.example.com?join] 0] timestamp
 }

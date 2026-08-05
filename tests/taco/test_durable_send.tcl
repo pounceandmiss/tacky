@@ -240,7 +240,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
             j body #body "echo me"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv99
+            j stanza-id -ns urn:xmpp:sid:0 -id srv99 -by room@muc.example.com
         }]
         set sid [c db onecolumn {
             SELECT server_id FROM chat_message
