@@ -728,7 +728,7 @@ snit::widgetadaptor chatview {
     }
 
     method AttachOpenFolder {url} {
-        if {[file exists $url]} { attachment_os_open [file dirname $url]; return }
+        if {[file exists $url]} { showinfm::show $url; return }
         ::tacky file download -acc $options(-acc) -url $url \
             -command [mymethod OnAttachFolderReady]
     }
@@ -740,7 +740,7 @@ snit::widgetadaptor chatview {
                 -message "Could not download the attachment."
             return
         }
-        attachment_os_open [file dirname $path]
+        showinfm::show $path
     }
 
     method AttachUncache {url} {
@@ -1033,7 +1033,7 @@ snit::widget chatarea {
     # Attachment actions, invoked from the rendered attachment widgets:
     #   open       {*}$cmd $url            download (cached) and open with the OS
     #   save       {*}$cmd $url $filename  download (cached) and copy to a path
-    #   openfolder {*}$cmd $url            open the cached file's folder
+    #   openfolder {*}$cmd $url            show the cached file in its folder
     #   uncache    {*}$cmd $url            delete the cached copy from disk
     #   load       {*}$cmd $url $id $idx   (re)fetch an image thumbnail
     #   retry      {*}$cmd $id             retry a failed upload
@@ -2034,7 +2034,7 @@ snit::widget attachment {
         if {[winfo exists $m]} { return $m }
         menu $m -tearoff 0
         $m add command -label "Open"              -command [mymethod Open]
-        $m add command -label "Open folder"       -command [mymethod OpenFolder]
+        $m add command -label "Show in folder"    -command [mymethod OpenFolder]
         $m add command -label "Delete from cache" -command [mymethod Uncache]
         return $m
     }
