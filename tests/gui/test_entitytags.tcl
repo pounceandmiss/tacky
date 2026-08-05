@@ -1,4 +1,4 @@
-# Unit tests for entitytags::combine — overlapping font spans -> compound tags.
+# Unit tests for entitytags::combine - overlapping font spans -> compound tags.
 # Pure function, no widgets: gui/entitytags.tcl is already sourced by test_gui.tcl.
 package require tcltest
 namespace import ::tcltest::*

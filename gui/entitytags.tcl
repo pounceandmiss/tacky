@@ -16,26 +16,30 @@ proc entitytags::combine {spans} {
     if {[llength $spans] == 0} { return {} }
 
     # Every span edge is an interval boundary.
-    set bounds {}
+    set edges {}
     foreach {type offset length} $spans {
-        lappend bounds $offset [expr {$offset + $length}]
+        dict lappend edges $offset [list $type 1]
+        dict lappend edges [expr {$offset + $length}] [list $type -1]
     }
-    set bounds [lsort -integer -unique $bounds]
+    set bounds [lsort -integer [dict keys $edges]]
 
-    # For each interval, name it after the styles covering it.
+    # Sweep left to right, naming each interval after the styles active across
+    # it; re-scanning every span per interval is quadratic.
     set runs {}
+    set active {}
     set n [llength $bounds]
-    for {set b 0} {$b < $n - 1} {incr b} {
+    for {set b 0} {$b < $n} {incr b} {
         set iStart [lindex $bounds $b]
-        set iEnd [lindex $bounds [expr {$b + 1}]]
-        set active {}
-        foreach {type offset length} $spans {
-            if {$offset <= $iStart && $offset + $length >= $iEnd} {
-                lappend active $type
+        foreach edge [dict get $edges $iStart] {
+            lassign $edge type delta
+            dict incr active $type $delta
+            if {[dict get $active $type] <= 0} {
+                dict unset active $type
             }
         }
-        if {[llength $active] > 0} {
-            lappend runs [join [lsort -unique $active] .] \
+        if {$b + 1 < $n && [dict size $active] > 0} {
+            set iEnd [lindex $bounds [expr {$b + 1}]]
+            lappend runs [join [lsort [dict keys $active]] .] \
                 $iStart [expr {$iEnd - $iStart}]
         }
     }

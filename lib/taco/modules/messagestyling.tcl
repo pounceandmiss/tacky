@@ -23,7 +23,10 @@ proc messagestyling::parse {body} {
     set numLines [llength $lines]
     set displayParts {}
     set allEntities {}
+    # Start offset of the next part; joining displayParts to get it is quadratic
     set displayOffset 0
+    # A fence scan that hits the end rules out a close for every later line too
+    set noMoreFences 0
     set i 0
 
     while {$i < $numLines} {
@@ -33,32 +36,28 @@ proc messagestyling::parse {body} {
         if {[string match "```*" $line]} {
             # Look for closing fence
             set closeIdx -1
-            for {set j [expr {$i + 1}]} {$j < $numLines} {incr j} {
-                if {[string match "```*" [lindex $lines $j]]} {
-                    set closeIdx $j
-                    break
+            if {!$noMoreFences} {
+                for {set j [expr {$i + 1}]} {$j < $numLines} {incr j} {
+                    if {[string match "```*" [lindex $lines $j]]} {
+                        set closeIdx $j
+                        break
+                    }
+                }
+                if {$closeIdx == -1} {
+                    set noMoreFences 1
                 }
             }
             if {$closeIdx != -1} {
-                # Collect inner lines
-                set inner {}
-                for {set k [expr {$i + 1}]} {$k < $closeIdx} {incr k} {
-                    lappend inner [lindex $lines $k]
-                }
-                set content [join $inner \n]
-                if {[llength $displayParts] > 0} {
-                    append displayOffset 0 ;# no-op, just for clarity
-                    set displayOffset [string length [join $displayParts \n]]
-                    incr displayOffset 1 ;# for the \n separator
-                }
+                set content [join [lrange $lines [expr {$i + 1}] [expr {$closeIdx - 1}]] \n]
                 lappend displayParts $content
-                set partStart [expr {[string length [join $displayParts \n]] - [string length $content]}]
-                lappend allEntities preformatted $partStart [string length $content]
+                lappend allEntities preformatted $displayOffset [string length $content]
+                incr displayOffset [expr {[string length $content] + 1}]
                 set i [expr {$closeIdx + 1}]
                 continue
             }
             # Unclosed fence: treat opening line as literal plain text
             lappend displayParts $line
+            incr displayOffset [expr {[string length $line] + 1}]
             incr i
             continue
         }
@@ -71,34 +70,26 @@ proc messagestyling::parse {body} {
                 incr i
             }
             set quoteText [join $quoteLines \n]
-            # Recalculate display offset
-            if {[llength $displayParts] > 0} {
-                set displayOffset [expr {[string length [join $displayParts \n]] + 1}]
-            } else {
-                set displayOffset 0
-            }
             # Parse spans within quoted text
             set parsed [ParseSpansInText $quoteText $displayOffset]
-            lappend displayParts [dict get $parsed display]
-            set qLen [string length [dict get $parsed display]]
-            lappend allEntities quote $displayOffset $qLen
+            set qDisplay [dict get $parsed display]
+            lappend displayParts $qDisplay
+            lappend allEntities quote $displayOffset [string length $qDisplay]
             foreach {t o l} [dict get $parsed entities] {
                 lappend allEntities $t $o $l
             }
+            incr displayOffset [expr {[string length $qDisplay] + 1}]
             continue
         }
 
         # --- Plain line: parse spans ---
-        if {[llength $displayParts] > 0} {
-            set displayOffset [expr {[string length [join $displayParts \n]] + 1}]
-        } else {
-            set displayOffset 0
-        }
         set parsed [ParseSpansInText $line $displayOffset]
-        lappend displayParts [dict get $parsed display]
+        set dLine [dict get $parsed display]
+        lappend displayParts $dLine
         foreach {t o l} [dict get $parsed entities] {
             lappend allEntities $t $o $l
         }
+        incr displayOffset [expr {[string length $dLine] + 1}]
         incr i
     }
 
@@ -150,6 +141,8 @@ proc messagestyling::ParseSpansInText {text baseOffset} {
 proc messagestyling::FindSpans {line} {
     set len [string length $line]
     set stack {}
+    # Unmatched openers per type, so a delimiter with none skips the stack scan
+    set openCounts {}
     set completed {}
     set i 0
     set inMono 0
@@ -179,6 +172,9 @@ proc messagestyling::FindSpans {line} {
                         if {$i > $openIdx + 1} {
                             lappend completed [list monospace $openIdx $i]
                             # Remove matched entry and everything after it
+                            foreach e [lrange $stack $found end] {
+                                dict incr openCounts [lindex $e 0] -1
+                            }
                             set stack [lrange $stack 0 [expr {$found - 1}]]
                             set inMono 0
                         }
@@ -190,24 +186,29 @@ proc messagestyling::FindSpans {line} {
 
             # Try to close: find topmost unmatched open of same type
             set closed 0
-            for {set s [expr {[llength $stack] - 1}]} {$s >= 0} {incr s -1} {
-                set entry [lindex $stack $s]
-                if {[lindex $entry 0] eq $type} {
-                    set openIdx [lindex $entry 1]
-                    # Closing rules: NOT preceded by whitespace, must have content
-                    set prevChar [string index $line [expr {$i - 1}]]
-                    if {[string is space $prevChar]} {
+            if {[dict exists $openCounts $type] && [dict get $openCounts $type] > 0} {
+                for {set s [expr {[llength $stack] - 1}]} {$s >= 0} {incr s -1} {
+                    set entry [lindex $stack $s]
+                    if {[lindex $entry 0] eq $type} {
+                        set openIdx [lindex $entry 1]
+                        # Closing rules: NOT preceded by whitespace, must have content
+                        set prevChar [string index $line [expr {$i - 1}]]
+                        if {[string is space $prevChar]} {
+                            break
+                        }
+                        if {$i <= $openIdx + 1} {
+                            # Empty span - not valid
+                            break
+                        }
+                        lappend completed [list $type $openIdx $i]
+                        # Remove matched entry and all entries after it (stranded)
+                        foreach e [lrange $stack $s end] {
+                            dict incr openCounts [lindex $e 0] -1
+                        }
+                        set stack [lrange $stack 0 [expr {$s - 1}]]
+                        set closed 1
                         break
                     }
-                    if {$i <= $openIdx + 1} {
-                        # Empty span — not valid
-                        break
-                    }
-                    lappend completed [list $type $openIdx $i]
-                    # Remove matched entry and all entries after it (stranded)
-                    set stack [lrange $stack 0 [expr {$s - 1}]]
-                    set closed 1
-                    break
                 }
             }
 
@@ -222,18 +223,13 @@ proc messagestyling::FindSpans {line} {
                     set prevChar [string index $line [expr {$i - 1}]]
                     if {[string is space $prevChar]} {
                         set canOpen 1
-                    } else {
-                        # Check if previous char is an opening delimiter that
-                        # is on the stack (adjacent opener)
-                        set prevCh [string index $line [expr {$i - 1}]]
-                        if {($prevCh eq "*" || $prevCh eq "_" || $prevCh eq "~" || $prevCh eq "`")} {
-                            # Check if there's a stack entry for position i-1
-                            foreach entry $stack {
-                                if {[lindex $entry 1] == $i - 1} {
-                                    set canOpen 1
-                                    break
-                                }
-                            }
+                    } elseif {$prevChar eq "*" || $prevChar eq "_"
+                              || $prevChar eq "~" || $prevChar eq "`"} {
+                        # Stack positions only increase, so an opener at i-1
+                        # can only be the top entry.
+                        set top [lindex $stack end]
+                        if {[llength $top] && [lindex $top 1] == $i - 1} {
+                            set canOpen 1
                         }
                     }
                 }
@@ -245,6 +241,7 @@ proc messagestyling::FindSpans {line} {
                         set nextChar [string index $line $nextIdx]
                         if {![string is space $nextChar]} {
                             lappend stack [list $type $i]
+                            dict incr openCounts $type
                             if {$type eq "monospace"} {
                                 set inMono 1
                             }
@@ -274,27 +271,45 @@ proc messagestyling::DelimType {ch} {
 # produce display string (delimiters stripped) and display-offset spans.
 # Returns dict {display $str spans {list of {type displayStart displayEnd}}}
 proc messagestyling::BuildDisplay {line spans} {
+    set len [string length $line]
+
     # Collect all delimiter positions to skip
-    set skipSet {}
+    set skip [lrepeat $len 0]
     foreach span $spans {
         lassign $span type openIdx closeIdx
-        dict set skipSet $openIdx 1
-        dict set skipSet $closeIdx 1
+        lset skip $openIdx 1
+        lset skip $closeIdx 1
     }
 
-    # Build display string and input→display offset map
+    # Build display string and input -> display offset map (-1 for delimiters)
     set display ""
-    set mapInputToDisplay {}
+    set map [lrepeat $len -1]
     set dIdx 0
-    set len [string length $line]
     for {set i 0} {$i < $len} {incr i} {
-        if {[dict exists $skipSet $i]} {
-            dict set mapInputToDisplay $i -1
-        } else {
+        if {![lindex $skip $i]} {
             append display [string index $line $i]
-            dict set mapInputToDisplay $i $dIdx
+            lset map $i $dIdx
             incr dIdx
         }
+    }
+
+    # Nearest kept position at or after / at or before each index, so a span
+    # converts to display coordinates without scanning its delimiter run
+    set nextKept [lrepeat [expr {$len + 1}] -1]
+    for {set i [expr {$len - 1}]} {$i >= 0} {incr i -1} {
+        if {[lindex $map $i] >= 0} {
+            lset nextKept $i $i
+        } else {
+            lset nextKept $i [lindex $nextKept [expr {$i + 1}]]
+        }
+    }
+    set prevKept [lrepeat $len -1]
+    set last -1
+    for {set i 0} {$i < $len} {incr i} {
+        if {[lindex $map $i] >= 0} {
+            set last $i
+        }
+        lset prevKept $i $last
     }
 
     # Convert spans to display coordinates
@@ -303,21 +318,15 @@ proc messagestyling::BuildDisplay {line spans} {
     set displaySpans {}
     foreach span $spans {
         lassign $span type openIdx closeIdx
-        # Display start = first non-skipped position after opener
         set dStart -1
-        for {set p [expr {$openIdx + 1}]} {$p < $closeIdx} {incr p} {
-            if {[dict get $mapInputToDisplay $p] >= 0} {
-                set dStart [dict get $mapInputToDisplay $p]
-                break
-            }
+        set p [lindex $nextKept [expr {$openIdx + 1}]]
+        if {$p >= 0 && $p < $closeIdx} {
+            set dStart [lindex $map $p]
         }
-        # Display end = position after last non-skipped char before closer
         set dEnd -1
-        for {set p [expr {$closeIdx - 1}]} {$p > $openIdx} {incr p -1} {
-            if {[dict get $mapInputToDisplay $p] >= 0} {
-                set dEnd [expr {[dict get $mapInputToDisplay $p] + 1}]
-                break
-            }
+        set p [lindex $prevKept [expr {$closeIdx - 1}]]
+        if {$p >= 0 && $p > $openIdx} {
+            set dEnd [expr {[lindex $map $p] + 1}]
         }
         if {$dStart >= 0 && $dEnd > $dStart} {
             lappend displaySpans [list $type $dStart $dEnd]
