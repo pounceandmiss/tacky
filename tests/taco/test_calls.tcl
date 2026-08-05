@@ -2,6 +2,7 @@
 package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers
+package require tacky::callshelpers
 
 set calls_env [tacky_env -mock conn -capture-emit 1 -taco-client {
     -host test.example.com -port 5222
@@ -11,29 +12,6 @@ set calls_env [tacky_env -mock conn -capture-emit 1 -taco-client {
 set PEER peer@example.com/phone
 
 # -- Helpers --
-
-# Live per-call state by sid. The snit instance number differs per test,
-# so match the variable instead of naming the instance.
-proc calls_state {} {
-    foreach v [c.calls info vars] {
-        if {[string match *::Calls $v]} { return [set $v] }
-    }
-    error "calls: no Calls variable"
-}
-
-# Events this module emitted, minus the -acc stamped on every one.
-proc calls_events {} {
-    set out {}
-    foreach e $::_emitted {
-        if {[lindex $e 0] ne "calls"} continue
-        lappend out [list [lindex $e 1] {*}[dict remove [lrange $e 2 end] -acc]]
-    }
-    return $out
-}
-
-proc calls_last_written {} {
-    return [lindex [c.conn get_written] end]
-}
 
 # The JMI action carried by a written message, with its sid.
 proc calls_jmi_sent {stanza} {
@@ -50,16 +28,6 @@ proc calls_error_condition {stanza} {
         -ns urn:ietf:params:xml:ns:xmpp-stanzas -get node]
     if {$node eq ""} { return "" }
     return [dict get $node tag]
-}
-
-proc calls_jmi_in {action sid from} {
-    j message -from $from -to user@test.example.com -type chat {
-        j $action -ns urn:xmpp:jingle-message:0 -id $sid {
-            if {$action eq "propose"} {
-                j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio
-            }
-        }
-    }
 }
 
 # Accept an inbound propose, leaving the call proceeded with no pc yet.
