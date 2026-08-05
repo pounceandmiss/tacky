@@ -112,3 +112,29 @@ tacky_test account-reroll-changes {rerollResource yields a new persisted resourc
         set c [tacky_await tacky account resource -acc user@example.com]
         expr {$a ne $b && $b eq $c}
     } -result 1
+
+# -- add validation --------------------------------------------------------
+
+tacky_test account-add-rejects-bad-domain {a comma for a dot is rejected, not silently added} \
+    -body {
+        catch {tacky account add -acc wusspuss@draugr,de}
+        tacky_await tacky account list
+    } -result {}
+
+tacky_test account-add-rejects-non-bare {a JID carrying a resource is rejected} \
+    -body {
+        catch {tacky account add -acc user@example.com/phone}
+        tacky_await tacky account list
+    } -result {}
+
+tacky_test account-add-rejects-no-localpart {a bare domain is not an account JID} \
+    -body {
+        catch {tacky account add -acc example.com}
+        tacky_await tacky account list
+    } -result {}
+
+tacky_test account-add-single-label-domain {a single-label domain is accepted} \
+    -body {
+        tacky account add -acc a@test
+        tacky_await tacky account list
+    } -result {a@test}

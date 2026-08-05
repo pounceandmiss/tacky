@@ -91,6 +91,21 @@ proc jid {cmd args} {
             return 1
         }
 
+        valid-account {lassign $args jid
+            # For a JID a user typed, not one off the wire: `valid` only asks
+            # whether we can parse and compare a JID, which is all the receive
+            # path needs. An account JID must also be bare, have a localpart,
+            # and have a domain of hostname labels - that last one catches
+            # typos like a comma for a dot.
+            if {![jid valid $jid]} {
+                return 0
+            }
+            jid explode $jid e
+            expr {$e(username) ne "" && $e(resource) eq "" && $e(query) eq ""
+                && ![regexp {[[:space:]"&'<>:]} $e(username)]
+                && [regexp {^[[:alnum:]-]+(\.[[:alnum:]-]+)*$} $e(domain)]}
+        }
+
         default {lassign $args jid
             if {$cmd ni {username domain resource query}} {
                 error "Unknown jid subcommand: $cmd"
