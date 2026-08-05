@@ -2060,7 +2060,7 @@ snit::type taco_message {
         if {[dict exists $args -server_id]} {
             set serverId [dict get $args -server_id]
         } else {
-            set serverId [xsearch $msgNode stanza-id -ns urn:xmpp:sid:0 -get @id]
+            set serverId [$self ArchiveStanzaId $msgNode $chatJid]
         }
         set originId [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id]
         if {$originId eq ""} {
@@ -2077,6 +2077,26 @@ snit::type taco_message {
             }
         }
         return [list $serverId $ownId $originId]
+    }
+
+    # The <stanza-id> of the archive this chat is paged against: the room for
+    # groupchat, our own account otherwise (MUC PMs are queried -with). A
+    # server only strips stanza-ids claiming to be itself (XEP-0359 3), so a
+    # foreign `by` is peer-supplied: honouring one lets a peer replay a past
+    # archive id and have the genuine message dropped as a duplicate.
+    method ArchiveStanzaId {msgNode chatJid} {
+        if {[regexp {(.*)\?join$} $chatJid -> roomJid]} {
+            set owner $roomJid
+        } else {
+            set owner [$client cget -jid]
+        }
+        foreach node [xsearch $msgNode stanza-id -ns urn:xmpp:sid:0] {
+            set by [xsearch $node -get @by]
+            if {$by ne "" && [jid matches-bare $by $owner]} {
+                return [xsearch $node -get @id]
+            }
+        }
+        return ""
     }
 
     # Build a message dict from a (decrypted) <message> node. Caller

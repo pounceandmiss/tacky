@@ -15,7 +15,7 @@ proc cv_feed {body sid args} {
     $::_client conn feed [j message -type chat \
         -from alice@example.com/phone {
         j body #body $body
-        j stanza-id -ns urn:xmpp:sid:0 -id $sid
+        j stanza-id -ns urn:xmpp:sid:0 -id $sid -by user@test.example.com
         if {[dict exists $args -stamp]} {
             j delay -ns urn:xmpp:delay -stamp [dict get $args -stamp]
         }
@@ -156,7 +156,7 @@ proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
     $::_client message ingestLive alice@example.com [j message -type chat \
         -from alice@example.com/phone -id $sentTs {
         j body #body "echo"
-        j stanza-id -ns urn:xmpp:sid:0 -id $echoSid
+        j stanza-id -ns urn:xmpp:sid:0 -id $echoSid -by user@test.example.com
         j delay -ns urn:xmpp:delay -stamp $echoStamp
     }] 1
 }
@@ -865,7 +865,7 @@ test chatview-reply-jump {clicking a reply jumps to and highlights the target} \
         set tsTarget [.cv messages newest]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body #body "the reply"
-            j stanza-id -ns urn:xmpp:sid:0 -id srv-rpl
+            j stanza-id -ns urn:xmpp:sid:0 -id srv-rpl -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id srv-tgt
         }]
         wait

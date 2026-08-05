@@ -808,8 +808,11 @@ snit::type taco_muc {
         if {![info exists Rooms($roomJid)]} { return }
         set myOcc [dict get $Rooms($roomJid) myOccupantId]
         set occ [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
-        if {$occ ne "" && $myOcc ne ""} {
-            set isOwn [expr {$occ eq $myOcc}]
+        # Fail closed: with an occupant-id on the stanza but none captured for
+        # ourselves, nick equality would let another occupant take our nick and
+        # forge a first-person message.
+        if {$occ ne ""} {
+            set isOwn [expr {$myOcc ne "" && $occ eq $myOcc}]
         } else {
             set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
         }
