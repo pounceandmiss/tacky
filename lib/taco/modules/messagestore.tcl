@@ -124,6 +124,10 @@ snit::type taco_messagestore {
                 -- downgrade a pending encrypted send; only an explicit
                 -- user resend rewrites it.
                 encryption     TEXT NOT NULL DEFAULT '',
+                -- fingerprint of the OMEMO session that decrypted this
+                -- message; '' for cleartext and for our own sends. A
+                -- correction must come from the same identity to rewrite it.
+                sender_fp      TEXT NOT NULL DEFAULT '',
                 -- why a send failed (set with server_status='failed',
                 -- '' otherwise). Distinct from `encryption`, which is
                 -- intent not outcome. Categories: 'encrypt' (OMEMO
@@ -358,6 +362,8 @@ snit::type taco_messagestore {
                     ? $m(from_resource) : ""}]
                 set enc [expr {[info exists m(encryption)] \
                     ? $m(encryption) : ""}]
+                set senderFp [expr {[info exists m(sender_fp)] \
+                    ? $m(sender_fp) : ""}]
                 set failReason [expr {[info exists m(fail_reason)] \
                     ? $m(fail_reason) : ""}]
                 set originId [expr {[info exists m(origin_id)] \
@@ -374,11 +380,11 @@ snit::type taco_messagestore {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
-                        encryption, fail_reason, attachments)
+                        encryption, sender_fp, fail_reason, attachments)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $failReason, $attach)
+                        $senderFp, $failReason, $attach)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -820,7 +826,11 @@ snit::type taco_messagestore {
     # Replace a stored message's body with a correction. Last-writer-wins on
     # edited_ts; a retracted message is immutable. Returns the target's local
     # timestamp (so the caller can <Edited>), or "" when not stored or skipped.
-    method applyEdit {chatJid targetId newBody rawXml ts} {
+    # `stamp` is the correction's own {encryption sender_fp}, so the row
+    # tracks the body now displayed. No default: it would be a downgrade.
+    method applyEdit {chatJid targetId newBody rawXml ts stamp} {
+        set enc [dict get $stamp encryption]
+        set senderFp [dict get $stamp sender_fp]
         set targetTs [$self resolveTargetTs $chatJid $targetId]
         if {$targetTs eq ""} { return "" }
         set prev [$options(-db) onecolumn {
@@ -835,7 +845,8 @@ snit::type taco_messagestore {
         if {$ts <= $prev} { return "" }
         $options(-db) eval {
             UPDATE chat_message
-            SET body=$newBody, raw_xml=$rawXml, edited_ts=$ts
+            SET body=$newBody, raw_xml=$rawXml, edited_ts=$ts,
+                encryption=$enc, sender_fp=$senderFp
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
         }
         return $targetTs
