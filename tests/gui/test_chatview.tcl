@@ -257,22 +257,7 @@ test chatview-sendfile-optimistic {sendFile shows the message immediately in an 
 
 test chatview-sendfile-image-thumbnail \
     {an outgoing image is thumbnailed by the backend and rendered inline} \
-    -setup {
-        set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)]
-            ? $::env(XDG_CACHE_HOME) : ""}]
-        set ::env(XDG_CACHE_HOME) [file join /tmp tacky_cvcache_[pid]]
-        cv_setup
-        cv_create
-    } \
-    -cleanup {
-        cv_cleanup
-        file delete -force -- $::env(XDG_CACHE_HOME)
-        if {$::_old_xdg eq ""} {
-            unset -nocomplain ::env(XDG_CACHE_HOME)
-        } else {
-            set ::env(XDG_CACHE_HOME) $::_old_xdg
-        }
-    } \
+    {*}$cv_common \
     -body {
         set tmp /tmp/cv_img_[pid].png
         set w 120; set h 80
@@ -627,21 +612,8 @@ test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrol
 # and the scroll-to-bottom button spuriously appears (and sticks).
 test chatview-scrollbtn-hidden-after-async-thumbnail \
     {scroll button stays hidden when an inline thumbnail loads at the tail} \
-    -setup {
-        set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)]
-            ? $::env(XDG_CACHE_HOME) : ""}]
-        set ::env(XDG_CACHE_HOME) [file join /tmp tacky_cvscroll_[pid]]
-        cv_overflow_setup
-    } \
-    -cleanup {
-        cv_cleanup
-        file delete -force -- $::env(XDG_CACHE_HOME)
-        if {$::_old_xdg eq ""} {
-            unset -nocomplain ::env(XDG_CACHE_HOME)
-        } else {
-            set ::env(XDG_CACHE_HOME) $::_old_xdg
-        }
-    } \
+    -setup { cv_overflow_setup } \
+    -cleanup { cv_cleanup } \
     -body {
         set hiddenBefore [expr {[place info .cv.scrollbtn] eq ""}]
         set tmp /tmp/cv_scrollimg_[pid].png

@@ -82,27 +82,45 @@ snit::type taco_type {
 
     option -transient -default 1 -readonly yes
     option -config-dir -readonly yes -default ""
+    option -data-dir -readonly yes -default ""
     option -cache-dir -readonly yes -default ""
+
+    variable TransientRoot ""
 
     constructor args {
         $self configurelist $args
-        if {!$options(-transient)} {
-            if {$options(-config-dir) eq ""} {
-                set options(-config-dir) [appdirs config]
+        # -transient only decides whether a database touches disk;
+        # attachments still need a real directory to land in.
+        if {$options(-transient)} {
+            if {$options(-data-dir) eq "" || $options(-cache-dir) eq ""} {
+                catch {set TransientRoot [file tempdir tacky-transient]}
             }
-            if {$options(-cache-dir) eq ""} {
-                set options(-cache-dir) [appdirs cache]
+            if {$options(-data-dir) eq "" && $TransientRoot ne ""} {
+                set options(-data-dir) [file join $TransientRoot data]
+            }
+            if {$options(-cache-dir) eq "" && $TransientRoot ne ""} {
+                set options(-cache-dir) [file join $TransientRoot cache]
+            }
+        } else {
+            foreach {opt which} {-config-dir config -data-dir data -cache-dir cache} {
+                if {$options($opt) eq ""} {
+                    set options($opt) [appdirs $which]
+                }
+            }
+        }
+        foreach opt {-config-dir -data-dir -cache-dir} {
+            if {$options($opt) ne ""} {
+                appdirs_mkprivate $options($opt)
             }
         }
         set db $self.db
         if {$options(-config-dir) ne ""} {
-            file mkdir $options(-config-dir)
             sqlite3 $self.db [file join $options(-config-dir) accounts.db]
         } else {
             sqlite3 $self.db :memory:
         }
         install account using taco_account ${selfns}::account \
-            -db $db -taco $self -cache-dir $options(-cache-dir)
+            -db $db -taco $self -data-dir $options(-data-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
@@ -128,6 +146,10 @@ snit::type taco_type {
             }
         }
         catch {$db close}
+        # Last, so nothing is still writing under it.
+        if {$TransientRoot ne ""} {
+            catch {file delete -force -- $TransientRoot}
+        }
     }
 
     method emit {module event args} {
@@ -154,10 +176,10 @@ snit::type taco_type {
             lassign [$db eval {SELECT username, password, domain FROM account WHERE jid=$jid}] \
                 username password domain
             set resource [$account resource -acc $jid]
-            set extra {}
-            if {$options(-cache-dir) ne ""} {
-                file mkdir $options(-cache-dir)
-                lappend extra -db-path [file join $options(-cache-dir) $jid.db]
+            set extra [list -data-dir $options(-data-dir) \
+                            -cache-dir $options(-cache-dir)]
+            if {!$options(-transient)} {
+                lappend extra -db-path [file join $options(-data-dir) $jid.db]
             }
             taco_client $client \
                 -username $username \

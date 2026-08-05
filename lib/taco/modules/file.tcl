@@ -2,8 +2,8 @@ package require http
 package require sha1
 package require tclwuffs
 
-# File transfers (XEP-0363 upload + cache-backed download). Every transfer has
-# an id and reports progress/completion through one event, both directions:
+# File transfers (XEP-0363 upload + download). Every transfer has an id and
+# reports progress/completion through one event, both directions:
 #
 #   file <Update> -id ID -direction up|down -state active|done|failed \
 #       -loaded L -total T -url U -localpath P -thumbpath TP -error MSG
@@ -12,6 +12,9 @@ package require tclwuffs
 # exists. Download is keyed and coalesced by URL; a local path passed as -url is
 # used in place (outgoing, pre-upload); for images a PNG thumbnail is derived
 # (wuffs) and surfaced as -thumbpath.
+#
+# Downloaded originals live under the data dir; thumbnails and upload staging
+# under the cache dir, since a purge can regenerate both.
 #
 # XEP-0454 (OMEMO media): `upload -encrypt 1` AES-256-GCMs the file, PUTs the
 # ciphertext, and returns an aesgcm:// URL carrying the key/iv in its fragment;
@@ -155,7 +158,7 @@ snit::type taco_file {
         $self Terminal $id failed cancelled
     }
 
-    # --- Download (cache-backed; derives image thumbnails) --------------
+    # --- Download (derives image thumbnails) ----------------------------
 
     method download {args} {
         array set opts {-url "" -command ""}
@@ -172,8 +175,9 @@ snit::type taco_file {
         }
 
         # A local source file (outgoing attachment, pre-upload) is used in
-        # place; a cache hit is served from disk. Both resolve immediately.
-        foreach src [list $url [$self CachePath $url]] {
+        # place; an already-downloaded one is served from disk. Both resolve
+        # immediately.
+        foreach src [list $url [$self AttachPath $url]] {
             if {[file isfile $src]} {
                 set id [$self NewTransfer download $url]
                 if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
@@ -186,7 +190,7 @@ snit::type taco_file {
 
         # Fresh remote download. An aesgcm:// URL fetches its https:// form;
         # the ciphertext lands in .part and is decrypted in OnDownloaded.
-        set full [$self CachePath $url]
+        set full [$self AttachPath $url]
         set id [$self NewTransfer download $url]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
         set DownloadByUrl($url) $id
@@ -262,10 +266,18 @@ snit::type taco_file {
         file delete -- $full.part
     }
 
-    method CachePath {url} {
+    # Guarded: [file join "" x] is relative, so an unset root would write
+    # into the process cwd.
+    method Root {opt} {
+        set d [$client cget $opt]
+        if {$d eq ""} { error "taco_client $opt is not set" }
+        return $d
+    }
+
+    method AttachPath {url} {
         set ext [file extension [attachment_basename $url]]
         set hash [sha1::sha1 [encoding convertto utf-8 $url]]
-        return [file join [appdirs cache] attachments $hash$ext]
+        return [file join [$self Root -data-dir] attachments $hash$ext]
     }
 
     # --- Upload (XEP-0363) ----------------------------------------------
@@ -316,7 +328,7 @@ snit::type taco_file {
         set fh [open $path rb]
         try { set plain [read $fh] } finally { close $fh }
         set enc [::omemo::media_encrypt $plain]
-        set tmp [file join [appdirs cache] attachments upload \
+        set tmp [file join [$self Root -cache-dir] attachments upload \
             "[clock microseconds].enc"]
         file mkdir [file dirname $tmp]
         set out [open $tmp wb]
@@ -502,20 +514,20 @@ snit::type taco_file {
 
     method ThumbPath {url max} {
         set hash [sha1::sha1 [encoding convertto utf-8 $url]]
-        return [file join [appdirs cache] attachments thumb ${hash}_${max}.png]
+        return [file join [$self Root -cache-dir] attachments thumb ${hash}_${max}.png]
     }
 
-    # Drop the cached download and every thumbnail size for a URL. Only ever
-    # touches files under the cache dir (paths are derived from a hash), so a
-    # local source file passed as -url is never at risk.
+    # Drop the downloaded original and every thumbnail size for a URL. Only
+    # ever touches hash-derived paths under our own roots, so a local source
+    # file passed as -url is never at risk.
     method uncache {args} {
         array set opts {-url ""}
         array set opts $args
         set url $opts(-url)
-        catch {file delete -- [$self CachePath $url]}
+        catch {file delete -- [$self AttachPath $url]}
         set hash [sha1::sha1 [encoding convertto utf-8 $url]]
         foreach t [glob -nocomplain \
-                [file join [appdirs cache] attachments thumb ${hash}_*.png]] {
+                [file join [$self Root -cache-dir] attachments thumb ${hash}_*.png]] {
             catch {file delete -- $t}
         }
     }

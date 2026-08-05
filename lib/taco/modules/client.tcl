@@ -28,6 +28,10 @@ snit::type taco_client {
     option -db -default "" -readonly yes
     option -db-path -default ":memory:" -readonly yes
 
+    # Storage roots for modules that write files (see appdirs)
+    option -data-dir -default "" -readonly yes
+    option -cache-dir -default "" -readonly yes
+
     delegate method connect to conn
 
     constructor args {

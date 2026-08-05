@@ -17,7 +17,7 @@
 snit::type taco_account {
     option -db -default ""
     option -taco -default ""
-    option -cache-dir -default ""
+    option -data-dir -default ""
 
     variable valid_columns {username domain password resource enabled}
 
@@ -161,9 +161,10 @@ snit::type taco_account {
 
         $options(-db) eval {DELETE FROM account WHERE jid = $jid}
 
-        # Remove per-account cache database file
-        if {$options(-cache-dir) ne ""} {
-            file delete [file join $options(-cache-dir) $jid.db]
+        # Attachments are hash-keyed and shared across accounts, so they stay.
+        if {$options(-data-dir) ne ""} {
+            set base [file join $options(-data-dir) $jid.db]
+            file delete -- $base $base-wal $base-shm
         }
     }
 
