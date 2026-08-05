@@ -141,7 +141,7 @@ snit::type xmppreader {
     }
     
     method OnReadable {} {
-        if {[catch {set chunk [read $options(-channel)]} 2048]} {
+        if {[catch {set chunk [read $options(-channel)]} err]} {
             jlog debug "Read error: $::errorInfo"
             {*}$options(-error-command) "Read error: $::errorInfo"
             $self pause
@@ -153,7 +153,15 @@ snit::type xmppreader {
             {*}$options(-error-command) -
             return
         }
-        $self feed $chunk
+        # RFC 6120 4.9.3.13 bad-format: the stream is unusable, and the
+        # half-built stanza left in NodeList would swallow every later
+        # one as a child. Let the transport tear the session down.
+        if {[catch {$self feed $chunk} err]} {
+            set NodeList {}
+            $self pause
+            {*}$options(-error-command) "XML parse error: $err"
+            return
+        }
         # Yield to the event loop between reads so Tk can process
         # paint/scroll events. Without this, back-to-back readable
         # events (e.g. 1000+ MUC presences) starve the UI.
@@ -198,9 +206,22 @@ snit::type xmppreader {
         if {[llength $NodeList] == 0} {
             dict set node body {}
             dict set node tail {}
-            {*}$options(-header-command) $node
+            # Push before dispatching: a header handler that throws must
+            # not leave the stream root off the stack.
+            lappend NodeList $node
+            $self Dispatch $options(-header-command) $node
+            return
         }
         lappend NodeList $node
+    }
+
+    # Unwinding into expat abandons the rest of the parse buffer and
+    # makes Tcl drop the channel's readable handler, leaving the reader
+    # permanently deaf. Report via bgerror instead and keep parsing.
+    method Dispatch {cmd node} {
+        if {[catch {{*}$cmd $node} res opts]} {
+            after idle [list return -options $opts $res]
+        }
     }
     
     method OnElemEnd tag {
@@ -218,9 +239,9 @@ snit::type xmppreader {
             dict lappend parent children $node
             lappend NodeList $parent
         } elseif {[llength $NodeList] == 1} {
-            {*}$options(-command) $node
+            $self Dispatch $options(-command) $node
         }  elseif {[llength $NodeList] == 0} {
-            {*}$options(-footer-command) {}
+            $self Dispatch $options(-footer-command) {}
         }
     }
     
