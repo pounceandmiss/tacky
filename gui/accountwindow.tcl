@@ -25,6 +25,9 @@ snit::widget accountwindow {
     variable inlineJid ""
     variable inlineGroupchat 0
     variable chatModeVar "inline"
+    # Must match taco_file's fallbacks; it is what enforces them.
+    variable autofetchVar "everyone"
+    variable autofetchMaxVar 5242880
     variable statusLabel ""
     variable statusAfter ""
 
@@ -95,6 +98,26 @@ snit::widget accountwindow {
         $mb.view add radiobutton -label "Open chats in window" \
             -variable [myvar chatModeVar] -value "window" \
             -command [mymethod OnChatModeChanged]
+        $mb.view add separator
+        $mb.view add cascade -label "Load images" -menu $mb.view.autofetch
+        menu $mb.view.autofetch -tearoff 0
+        settingmenu::radiogroup $mb.view.autofetch \
+            -entries {
+                "From everyone"      everyone
+                "From contacts only" contacts
+                "Never"              never
+            } \
+            -var [myvar autofetchVar] -key attachment_autofetch -tag $win
+        $mb.view add cascade -label "Max image size" -menu $mb.view.autofetchmax
+        menu $mb.view.autofetchmax -tearoff 0
+        settingmenu::radiogroup $mb.view.autofetchmax \
+            -entries {
+                "1 MB"      1048576
+                "5 MB"      5242880
+                "25 MB"     26214400
+                "Unlimited" 0
+            } \
+            -var [myvar autofetchMaxVar] -key attachment_autofetch_max -tag $win
         $mb add cascade -label "View" -menu $mb.view
 
         $hull configure -menu $mb

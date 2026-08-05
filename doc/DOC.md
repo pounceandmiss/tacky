@@ -517,7 +517,8 @@ Event:
 
 ## file
 
-    file download {acc: string, url: string}   -> string   local path ("" on failure)
+    file download {acc: string, url: string,
+                   auto?: bool, from?: string}  -> string  local path ("" on failure)
     file cancel {acc: string, id: int}
     file cancel {acc: string, url: string}
     file uncache {acc: string, url: string}
@@ -528,6 +529,12 @@ collapse into one. It handles the `aesgcm://` scheme (XEP-0454) for you.
 `cancel` aborts a transfer in either direction - it ends `failed` with the
 error `"cancelled"`. `uncache` deletes the downloaded file and its thumbnail.
 See [Attachments](#attachments).
+
+Set `auto` for a fetch you start yourself, such as rendering an inline image,
+and pass the message's sender as `from`. Those two subject it to the autofetch
+policy and size cap; without them a download always proceeds. A blocked fetch
+never opens a socket and ends `failed` with the error `autofetch-blocked`
+(sender) or `autofetch-too-large` (size).
 
 Event:
 
@@ -803,6 +810,17 @@ image, makes a PNG thumbnail (max 320px) under the cache dir. Progress and the
 final state come on `file <Update>`: the last event carries `localpath`
 (plus `thumbpath` for an image) on `done`, or an `error` on `failed` - no
 upload service, file too big, network died, or cancelled.
+
+**Autofetch.** Two settings bound what gets pulled without the user asking.
+`attachment_autofetch` is `everyone` (the default), `contacts` (a roster
+subscription of `to`, `from` or `both`), or `never`; a room JID is not a
+roster entry, so under `contacts` group chats don't autofetch.
+`attachment_autofetch_max` is a byte cap, default `5242880`, `0` for
+unlimited, checked against `Content-Length` and again against the bytes
+actually arriving. Both apply only to `download` calls made with `auto`, so a
+held-back image still loads on click. Leave `auto` off when redrawing the
+user's own sends: upload swaps the local path for the public URL, making a
+reload from history a real fetch.
 
 ## OMEMO
 

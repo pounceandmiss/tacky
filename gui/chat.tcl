@@ -610,31 +610,37 @@ snit::widgetadaptor chatview {
     # Kick off the inline-thumbnail fetch for each image attachment. The file
     # module downloads (remote) or reads in place (local), derives the
     # thumbnail, and reports via `file <Update>` (-> OnTransfer).
+    # -auto subjects the fetch to the autofetch policy and size cap. Our own
+    # sends are exempt: from history they refetch the public URL that replaced
+    # the local path on upload.
     method FetchAttachments {emsg} {
         if {![dict exists $emsg attachments]} return
         set id [dict get $emsg id]
         set idx 0
+        set auto [expr {![dict get $emsg is_outgoing]}]
         foreach att [dict get $emsg attachments] {
             if {[dict get $att type] eq "image"} {
-                $self StartDownload [dict get $att url] $id $idx
+                $self StartDownload [dict get $att url] $id $idx \
+                    -auto $auto -from [dict get $emsg from_jid]
             }
             incr idx
         }
     }
 
-    # Click-to-reload after "Delete from cache": same path as the initial fetch.
+    # Click-to-reload after "Delete from cache" or a held-back autofetch: same
+    # path as the initial fetch, minus the gating.
     method AttachLoad {url id idx} {
         $self StartDownload $url $id $idx
     }
 
-    method StartDownload {url id idx} {
+    method StartDownload {url id idx args} {
         set key "$id,$idx"
         set cur [expr {[dict exists $DownloadPending $url]
             ? [dict get $DownloadPending $url] : {}}]
         if {$key ni $cur} {
             dict set DownloadPending $url [lappend cur $key]
         }
-        ::tacky file download -acc $options(-acc) -url $url
+        ::tacky file download -acc $options(-acc) -url $url {*}$args
     }
 
     # Single transfer listener: upload events key on -id (== message id);
@@ -645,21 +651,26 @@ snit::widgetadaptor chatview {
         set loaded [dict get $ev -loaded]
         set total  [dict get $ev -total]
         set thumb  [dict get $ev -thumbpath]
+        set err    [dict get $ev -error]
         if {$dir eq "upload"} {
-            $self ApplyTransfer [dict get $ev -id] 0 $dir $state $loaded $total $thumb
+            $self ApplyTransfer [dict get $ev -id] 0 $dir $state $loaded $total \
+                $thumb $err
             return
         }
         set url [dict get $ev -url]
         if {![dict exists $DownloadPending $url]} return
         foreach key [dict get $DownloadPending $url] {
             lassign [split $key ,] mid idx
-            $self ApplyTransfer $mid $idx $dir $state $loaded $total $thumb
+            $self ApplyTransfer $mid $idx $dir $state $loaded $total $thumb $err
         }
         if {$state ne "active"} { dict unset DownloadPending $url }
     }
 
-    method ApplyTransfer {id idx dir state loaded total thumb} {
+    method ApplyTransfer {id idx dir state loaded total thumb {err ""}} {
         if {$id ni [$hull messages ids]} return
+        # An image the policy held back isn't an error: with no state row the
+        # attachment keeps its plain click-to-load caption.
+        if {$state eq "failed" && [string match autofetch-* $err]} return
         # A thumbnail or progress row arriving after the message was drawn
         # grows it below the last line, pushing the viewport off the bottom.
         # Re-pin if we were riding the tail so the scroll-to-bottom button
