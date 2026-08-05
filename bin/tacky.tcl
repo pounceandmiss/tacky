@@ -6,7 +6,7 @@ if {"-h" in $argv || "--help" in $argv || "-help" in $argv} {
 Options:
   --backend MODE      Backend mode: direct (default), thread, process
   --tackyd PATH       Path to the tackyd backend binary (process mode only)
-  --transient yes     Work purely in RAM - don't read/write settings/cache
+  --transient yes     Keep every database in RAM; don't touch stored data
   --console 1|0       Print background errors to stderr instead of a dialog
   --debug-level LVL   jlog verbosity (default: warning)
   --debug-file PATH   Write all logs to PATH instead of stderr

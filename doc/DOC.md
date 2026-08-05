@@ -8,6 +8,7 @@ and get back replies and events.
 - [Using the backend](#using-the-backend)
   - [Ways to run it](#ways-to-run-it)
   - [Requests, replies, events](#requests-replies-events)
+  - [Storage layout](#storage-layout)
 - [Reference](#reference)
   - [account](#account)
   - [register](#register)
@@ -57,8 +58,10 @@ compiles the MinGW `dist/libtacky-win.a`). The ABI is `embed/tacky.h`:
 
 `tacky_create` starts the backend on its own thread and returns right
 away. `taco_args` is a NULL-terminated array of taco_type constructor args
-(e.g. `"-transient", "0"`), or NULL. Each `tacky_send` carries one complete JSON
-request; each emit callback delivers one complete JSON reply or event.
+(e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
+`-cache-dir` to override the defaults in [Storage layout](#storage-layout).
+Each `tacky_send` carries one complete JSON request; each emit callback
+delivers one complete JSON reply or event.
 If the backend fails to start up it emits
 `["event","backend","Dead",{"error":"..."}]` and goes dead: no replies
 arrive, and you still have to destroy the handle. You can call `tacky_send`
@@ -112,6 +115,30 @@ callback; `tacky $module cancel -acc $acc -tag $tag` is an optimization
 that tells the backend to drop the work itself. E.g. a widget torn down
 mid-request *must* `unlisten` its tag, and *should* also call the module's
 `cancel`.
+
+## Storage layout
+
+Three roots, set with `-config-dir`, `-data-dir` and `-cache-dir`; each falls
+back to a platform default. All three are created mode 0700 on platforms with
+file modes. The XDG variables below fall back to `~/.config`, `~/.local/share`
+and `~/.cache`.
+
+|         | Linux | macOS | Windows |
+| ------- | ----- | ----- | ------- |
+| config  | `$XDG_CONFIG_HOME/tacky` | `~/Library/Application Support/tacky` | `%APPDATA%\tacky` |
+| data    | `$XDG_DATA_HOME/tacky` | `~/Library/Application Support/tacky` | `%LOCALAPPDATA%\tacky\data` |
+| cache   | `$XDG_CACHE_HOME/tacky` | `~/Library/Caches/tacky` | `%LOCALAPPDATA%\tacky\cache` |
+
+config holds `accounts.db`. data holds one `<jid>.db` per account - OMEMO
+identity key, ratchet state, trust decisions and message history - plus
+downloaded attachments. cache holds only what can be regenerated: thumbnails
+and upload staging.
+
+Data does not roam on Windows because the OMEMO identity key is per-device;
+two installs sharing one device id corrupt each other's ratchets.
+
+`-transient yes` keeps every database in RAM and puts attachments in a
+temporary directory that is removed on shutdown.
 
 ## Requests, replies, events
 
@@ -190,7 +217,8 @@ every event name is bare, both in an `["event", ...]` message and as a
 `add` creates or updates. On create, `username` and `domain` default to
 the pieces of the JID. `enable` saves the flag and connects; `disable`
 disconnects and saves. `remove` disconnects, then deletes the account row
-and its per-account cache database. `changePassword` changes the password
+and its per-account database. Downloaded attachments are shared across
+accounts and are left alone. `changePassword` changes the password
 on the server (XEP-0077) and, if that works, updates the stored one - the
 reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
@@ -489,17 +517,17 @@ Event:
 
 ## file
 
-    file download {acc: string, url: string}   -> string   cached path ("" on failure)
+    file download {acc: string, url: string}   -> string   local path ("" on failure)
     file cancel {acc: string, id: int}
     file cancel {acc: string, url: string}
     file uncache {acc: string, url: string}
 
-`download` pulls a file into the cache. A cache hit or an already-local
-path comes back immediately, and two downloads of the same URL collapse
-into one. It handles the `aesgcm://` scheme (XEP-0454) for you. `cancel`
-aborts a transfer in either direction - it ends `failed` with the error
-`"cancelled"`. `uncache` deletes the cached copy and its thumbnail. See
-[Attachments](#attachments).
+`download` pulls a file into the data dir. An already-downloaded file or an
+already-local path comes back immediately, and two downloads of the same URL
+collapse into one. It handles the `aesgcm://` scheme (XEP-0454) for you.
+`cancel` aborts a transfer in either direction - it ends `failed` with the
+error `"cancelled"`. `uncache` deletes the downloaded file and its thumbnail.
+See [Attachments](#attachments).
 
 Event:
 
@@ -770,8 +798,8 @@ OMEMO chat the file is AES-256-GCM
 encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 `file download` grabs the `https://` version and decrypts it for you.
 
-**Downloading.** `file download` pulls the file into the cache and, for an
-image, makes a PNG thumbnail (max 320px) alongside it. Progress and the
+**Downloading.** `file download` pulls the file into the data dir and, for an
+image, makes a PNG thumbnail (max 320px) under the cache dir. Progress and the
 final state come on `file <Update>`: the last event carries `localpath`
 (plus `thumbpath` for an image) on `done`, or an `error` on `failed` - no
 upload service, file too big, network died, or cancelled.

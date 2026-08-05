@@ -66,11 +66,11 @@ test file-fitwithin {fit_within shrinks within max, preserves aspect, no upscale
 } -result {{50 25} {25 50} {40 30} {50 50}}
 
 # sha1 needs a byte string, so URLs with non-ASCII characters (like a Cyrillic
-# filename) must be UTF-8 encoded before hashing for the cache path.
-test file-unicode-url-hashable {non-ASCII URL can be used for cache/thumb paths} \
+# filename) must be UTF-8 encoded before hashing for the storage path.
+test file-unicode-url-hashable {non-ASCII URL can be used for attach/thumb paths} \
     {*}[tacky_env -mock conn -account user@test.example.com] -body {
         set url "https://h/изображение.png"
-        set full  [$::_client file CachePath $url]
+        set full  [$::_client file AttachPath $url]
         set thumb [$::_client file ThumbPath $url 320]
         set uncacheRc [catch {$::_client file uncache -url $url}]
         list full=[string match *attachments/*.png $full] \
@@ -377,9 +377,9 @@ proc up_readb {path} {
     try { return [read $f] } finally { close $f }
 }
 
-set ::_old_xdg [expr {[info exists ::env(XDG_CACHE_HOME)] ? $::env(XDG_CACHE_HOME) : ""}]
+# Scratch dir for source files; the backend uses its own transient roots.
 set ::_upcache [file join /tmp tacky_upcache_[pid]]
-set ::env(XDG_CACHE_HOME) $::_upcache
+file mkdir $::_upcache
 
 test file-encrypt-to-temp {EncryptToTemp writes ciphertext that media_decrypt recovers} \
     {*}[tacky_env -mock conn -account $acc] -body {
@@ -450,9 +450,9 @@ test file-download-non-image-no-thumb {a non-image (undecodable) file downloads 
         list local=[expr {$::_local eq $src}] thumb=$tp
     } -result {local=1 thumb=}
 
-test file-uncache {uncache deletes the cached download and every thumbnail size} {*}$file_env -body {
+test file-uncache {uncache deletes the downloaded original and every thumbnail size} {*}$file_env -body {
     set url https://h/uncache.png
-    set full  [$::_client file CachePath $url]
+    set full  [$::_client file AttachPath $url]
     set thumb [$::_client file ThumbPath $url 320]
     file mkdir [file dirname $full]
     file mkdir [file dirname $thumb]
@@ -479,9 +479,19 @@ test file-uncache-keeps-local-source {uncache leaves a local source file untouch
         thumbGone=[expr {![file exists $thumb]}]
 } -result {srcKept=1 thumbWas=1 thumbGone=1}
 
-if {$::_old_xdg eq ""} {
-    unset -nocomplain ::env(XDG_CACHE_HOME)
-} else {
-    set ::env(XDG_CACHE_HOME) $::_old_xdg
-}
+test file-paths-split {originals go to the data dir, thumbnails to the cache dir} {*}$file_env -body {
+    set url https://h/split.png
+    set data  [$::_client cget -data-dir]
+    set cache [$::_client cget -cache-dir]
+    list data=[string match $data/* [$::_client file AttachPath $url]] \
+         thumb=[string match $cache/* [$::_client file ThumbPath $url 320]] \
+         distinct=[expr {$data ne $cache}]
+} -result {data=1 thumb=1 distinct=1}
+
+# A transient tacky must never put ratchet state or history on disk.
+test file-transient-db-in-memory {transient accounts get an in-memory database} \
+    {*}[tacky_env -mock conn -account user@test.example.com] -body {
+        $::_client cget -db-path
+    } -result {:memory:}
+
 file delete -force -- $::_upcache
