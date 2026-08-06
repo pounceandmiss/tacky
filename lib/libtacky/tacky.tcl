@@ -263,10 +263,12 @@ oo::class create tacky_threaded_type {
         # raw stderr if no sink is set.
         thread::send $TacoTid {
             proc bgerror {message} {
+                # Snapshot before the catches overwrite ::errorInfo.
+                set info $::errorInfo
                 if {![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
-                    catch {jlog error $::errorInfo -obj bgerror}
+                    catch {jlog error $info -obj bgerror}
                 } else {
-                    puts stderr $::errorInfo
+                    puts stderr $info
                 }
             }
         }
