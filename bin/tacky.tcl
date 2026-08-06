@@ -44,14 +44,20 @@ package require tkwuffs
 package require tkdnd
 
 proc bgerror {message} {
+    # Snapshot first: every catch below overwrites ::errorInfo (snit's cget
+    # swallows an internal cache miss), which would report the wrong trace.
+    set info $::errorInfo
     if {[info commands jlog] ne "" && ![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
-        catch {jlog error $::errorInfo -obj bgerror}
+        catch {jlog error $info -obj bgerror}
     }
     if {$::consoleErrors} {
-        puts stderr $::errorInfo
-    } else {
-        ::tk::dialog::error::bgerror $message
+        puts stderr $info
+        return
     }
+    set ::errorInfo $info
+    # tailcall: the dialog answers "Skip Messages" with -code break, which dies
+    # as "invoked break outside of a loop" if it unwinds through this proc.
+    tailcall ::tk::dialog::error::bgerror $message
 }
 
 set dir [file normalize [file join [file dirname [info script]] ..]]

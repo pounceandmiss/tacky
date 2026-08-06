@@ -96,8 +96,9 @@ lenpipe create _pipe stdin \
     }}}
 
 proc bgerror {message} {
-    if {[catch {jlog error $::errorInfo -obj bgerror}]} {
-        puts stderr $::errorInfo
+    set info $::errorInfo
+    if {[catch {jlog error $info -obj bgerror}]} {
+        puts stderr $info
     }
 }
 
