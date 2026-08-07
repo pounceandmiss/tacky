@@ -908,7 +908,7 @@ snit::type taco_messagestore {
     #   confirmed - matched a pending send: flip to '' (server has it),
     #               capture server_id, relocate to the server ts (as `store`
     #               does); returns old/new ts for the <Confirmed>.
-    #   duplicate - matched a non-pending row.
+    #   duplicate - matched a non-pending row; returns its `stored_ts`.
     #   new       - no id match.
     method reconcile {jid serverId ownId originId timestamp {occupantId ""}} {
         if {$serverId eq "" && $ownId eq ""} {
@@ -929,7 +929,8 @@ snit::type taco_messagestore {
             return [dict create verdict new]
         }
         if {[dict get $row server_status] ne "pending"} {
-            return [dict create verdict duplicate]
+            return [dict create verdict duplicate \
+                stored_ts [dict get $row timestamp]]
         }
         set dupTs [dict get $row timestamp]
         if {$timestamp == $dupTs} {

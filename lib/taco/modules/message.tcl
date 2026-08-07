@@ -1668,12 +1668,14 @@ snit::type taco_message {
     # search -chat $jid -query "text" ?-source local|remote? ?-before $cursor?
     #        ?-limit 20? ?-field $var? ?-tag $tag? -command $cb
     #
-    # Full text search. -source remote (default) queries MAM; hits are stored
-    # to the local cache and wrapped with holes on each side — a hit is an
-    # isolated island whose surroundings we know nothing about, so future
+    # Full text search. -source remote (default) queries MAM; new hits are
+    # stored to the local cache and wrapped with holes on each side - a hit is
+    # an isolated island whose surroundings we know nothing about, so future
     # pagination across it must fall through to MAM. `hole add` is a no-op
     # when the target gap is already holeed, so repeated searches don't
-    # accumulate. -source local is a synchronous LIKE match over already-
+    # accumulate. A hit already cached is returned from the store as it
+    # stands: its position is known, so it neither stores nor holes.
+    # -source local is a synchronous LIKE match over already-
     # stored bodies (-field and -tag cancel don't apply); -before is an
     # exclusive timestamp cursor.
     # Callback receives dict: messages, complete, last
@@ -1740,7 +1742,15 @@ snit::type taco_message {
                 continue
             }
             if {$verdict eq "confirmed"} {
-                $self HandleConfirmation $chatJid [list [dict get $r reconciled]]
+                set rec [dict get $r reconciled]
+                $self HandleConfirmation $chatJid [list $rec]
+                lappend messages {*}[$messagestore get ids $chatJid \
+                    [list [dict get $rec newtimestamp]]]
+                continue
+            }
+            if {$verdict eq "duplicate"} {
+                lappend messages {*}[$messagestore get ids $chatJid \
+                    [list [dict get $r stored_ts]]]
                 continue
             }
             if {$verdict ne "new"} continue
@@ -1812,7 +1822,7 @@ snit::type taco_message {
     # Returns one verdict; `timestamp` (server stamp) rides every verdict
     # so the MAM loops can reason over the true archive span:
     #   {verdict confirmed timestamp T reconciled V}  pending send echoed
-    #   {verdict duplicate timestamp T}               already a citizen
+    #   {verdict duplicate timestamp T stored_ts S}   already a citizen at S
     #   {verdict drop      timestamp T}               new but displayless
     #   {verdict new       timestamp T msg M}         new, store M
     #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
@@ -1847,7 +1857,8 @@ snit::type taco_message {
                     timestamp $ts reconciled $v]
             }
             duplicate {
-                return [dict create verdict duplicate timestamp $ts]
+                return [dict create verdict duplicate timestamp $ts \
+                    stored_ts [dict get $v stored_ts]]
             }
         }
 
