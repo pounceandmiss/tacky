@@ -498,12 +498,10 @@ snit::type taco_omemo {
     }
 
     method AfterOwnDevicelistFetch {jid devices} {
-        if {$deviceId in $devices} {
-            dict set DeviceLists $accountJid $devices
-        } else {
-            lappend devices $deviceId
-            dict set DeviceLists $accountJid $devices
-            $self DoPublishDevicelist $devices
+        # The server's view; our own id joins it only on the publish ack.
+        dict set DeviceLists $accountJid $devices
+        if {$deviceId ni $devices} {
+            $self DoPublishDevicelist [linsert $devices end $deviceId]
         }
         # Key our own OTHER devices so they appear in the "my keys" UI.
         $self EnsureBundlesForDevicelist $accountJid $devices
@@ -531,18 +529,24 @@ snit::type taco_omemo {
                         j value .body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
-                    j field -var pubsub#persist_items {
-                        j value .body true
-                    }
-                    j field -var pubsub#max_items {
-                        j value .body 1
-                    }
                     j field -var pubsub#access_model {
                         j value .body open
                     }
                 }
             }
-        }]
+        }] -command [mymethod OnDevicelistPublished $devices]
+    }
+
+    # Caching only on the ack leaves a failed (or unanswered) announce
+    # looking un-announced, so the next +notify or reconnect republishes.
+    method OnDevicelistPublished {devices stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            jlog warn "devicelist publish REJECTED\
+                ([xsearch $stanza error -get @type]:\
+                 [xsearch $stanza error * -gather tag])"
+            return
+        }
+        dict set DeviceLists $accountJid $devices
     }
 
     method FetchDevicelist {peerJid command} {
@@ -618,9 +622,7 @@ snit::type taco_omemo {
         if {$peerJid eq $accountJid} {
             dict set DeviceLists $accountJid $devices
             if {$deviceId ne "" && $deviceId ni $devices} {
-                lappend devices $deviceId
-                dict set DeviceLists $accountJid $devices
-                $self DoPublishDevicelist $devices
+                $self DoPublishDevicelist [linsert $devices end $deviceId]
             }
             # Key our own other devices (own devicelist via +notify).
             $self EnsureBundlesForDevicelist $accountJid $devices
@@ -815,18 +817,20 @@ snit::type taco_omemo {
                         j value .body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
-                    j field -var pubsub#persist_items {
-                        j value .body true
-                    }
-                    j field -var pubsub#max_items {
-                        j value .body 1
-                    }
                     j field -var pubsub#access_model {
                         j value .body open
                     }
                 }
             }
-        }]
+        }] -command [mymethod OnBundlePublished]
+    }
+
+    # No state to unwind: the next OnReady or prekey-use republishes.
+    method OnBundlePublished {stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} return
+        jlog warn "bundle publish REJECTED\
+            ([xsearch $stanza error -get @type]:\
+             [xsearch $stanza error * -gather tag])"
     }
 
     # Bundle fetch with in-flight dedup. command gets called as
