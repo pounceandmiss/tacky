@@ -230,3 +230,83 @@ test iq-respond-no-from "respond without from omits to" {*}$common -body {
     set sent [lindex $iq_test_sent 0]
     xsearch $sent -get @to
 } -result {}
+
+# --- response timeouts ---
+
+# The clock only runs while the session is up, so these arm it explicitly.
+proc iqTestLiveRequest {args} {
+    .iq live 1
+    .iq request {*}$args
+}
+
+proc iqTestWait {var ms} {
+    set after_id [after $ms [list set ::$var timeout]]
+    vwait ::$var
+    after cancel $after_id
+}
+
+test iq-timeout-answers-handler "an unanswered request gets a timeout error stanza" {*}$common -body {
+    set ::iq_to {}
+    iqTestLiveRequest -to peer@example.org -timeout 30 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {set ::iq_to $stanza}}}
+    iqTestWait iq_to 2000
+    list [xsearch $::iq_to -get @type] \
+        [xsearch $::iq_to error * -get tag] \
+        [xsearch $::iq_to error text -get body] \
+        [xsearch $::iq_to -get @from]
+} -result {error remote-server-timeout {No response from the server} peer@example.org}
+
+test iq-timeout-cancelled-by-response "a response stops the timer" {*}$common -body {
+    set ::iq_calls {}
+    iqTestLiveRequest -to peer@example.org -timeout 30 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {lappend ::iq_calls [xsearch $stanza -get @type]}}}
+    set id [xsearch [lindex $::iq_test_sent end] -get @id]
+    .iq feed [j iq -type result -id $id -from peer@example.org]
+    # Well past the timeout: the handler must not fire a second time.
+    set ::iq_idle 0
+    iqTestWait iq_idle 200
+    set ::iq_calls
+} -result {result}
+
+test iq-timeout-off-while-disconnected "no clock runs before the session is up" {*}$common -body {
+    set ::iq_to {}
+    .iq request -to peer@example.org -timeout 30 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {set ::iq_to $stanza}}}
+    set ::iq_idle 0
+    iqTestWait iq_idle 200
+    set ::iq_to
+} -result {}
+
+test iq-timeout-armed-on-connect "connecting starts the clock on a buffered request" {*}$common -body {
+    set ::iq_to {}
+    .iq request -to peer@example.org -timeout 30 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {set ::iq_to $stanza}}}
+    .iq live 1
+    iqTestWait iq_to 2000
+    xsearch $::iq_to error * -get tag
+} -result {remote-server-timeout}
+
+test iq-timeout-disabled "a zero timeout waits forever" {*}$common -body {
+    set ::iq_to {}
+    iqTestLiveRequest -to peer@example.org -timeout 0 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {set ::iq_to $stanza}}}
+    set ::iq_idle 0
+    iqTestWait iq_idle 200
+    set ::iq_to
+} -result {}
+
+test iq-timeout-disconnect-stops-clock "disconnecting stops a running clock" {*}$common -body {
+    set ::iq_to {}
+    iqTestLiveRequest -to peer@example.org -timeout 50 \
+        -payload [j query -ns urn:test] \
+        -command {apply {{stanza} {set ::iq_to $stanza}}}
+    .iq live 0
+    set ::iq_idle 0
+    iqTestWait iq_idle 300
+    set ::iq_to
+} -result {}

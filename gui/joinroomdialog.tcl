@@ -133,17 +133,19 @@ snit::widget joinroomdialog {
         }
         ::tacky muc discoverRooms \
             -acc $options(-acc) -jid $service \
-            -tag $self -command [mymethod OnDiscoverResult]
+            -tag $self -command [mymethod OnDiscoverResult] \
+            -onerror [mymethod OnDiscoverError]
+    }
+
+    method OnDiscoverError {message} {
+        if {![winfo exists $win]} return
+        tk_messageBox -icon error -title "Discovery Failed" \
+            -parent $toplevelW \
+            -message "Could not discover rooms on $service: $message"
     }
 
     method OnDiscoverResult {rooms} {
         if {![winfo exists $win]} return
-        if {[lindex $rooms 0] eq "error"} {
-            tk_messageBox -icon error -title "Discovery Failed" \
-                -parent $toplevelW \
-                -message "Could not discover rooms on $service"
-            return
-        }
         foreach room $rooms {
             set jid [dict get $room jid]
             set name [dict get $room name]

@@ -160,9 +160,14 @@ encoding comes back as an error reply.
     ["account", "list", {}, 1]
 
 A request with a token gets at most one reply: a result if it worked, an
-error if it didn't, or nothing at all if it never finishes (you cancelled
-it, or the server went quiet). Not every method replies - `message send`
-does its work through the event stream and never answers the token.
+error if it didn't, or nothing at all if you cancelled it. Not every
+method replies - `message send` does its work through the event stream and
+never answers the token.
+
+A request that needs the server waits for one minute of connected time
+before giving up with an error. The clock stops while the account is
+offline, so a request left pending across a disconnect still completes on
+reconnect.
 
     ["result", token, data]
     ["error", token, message]

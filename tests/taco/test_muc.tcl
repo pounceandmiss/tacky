@@ -767,6 +767,23 @@ test muc-discover-rooms-occupants-from-form {discoverRooms reads occupancy from 
         list [dict get $room jid] [dict get $room occupants]
     } -result {room@muc.example.com 42}
 
+test muc-discover-rooms-error {a rejected discovery reports through -onerror} \
+    {*}$muc_common \
+    -body {
+        set ::muc_err ""
+        c muc discoverRooms -jid muc.example.com \
+            -command [list apply {{rooms} {set ::muc_err unexpected}}] \
+            -onerror [list apply {{msg} {set ::muc_err $msg}}]
+        set req [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type error -id [xsearch $req -get @id] \
+            -from muc.example.com {
+            j error -type cancel {
+                j forbidden -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set ::muc_err
+    } -result {You do not have permission to do that}
+
 # -- Role/affiliation change via presence ------------------------------------
 
 test muc-role-change-updates-state {role change via presence updates haveVoice} \

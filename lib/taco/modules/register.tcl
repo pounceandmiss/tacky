@@ -336,8 +336,11 @@ snit::type taco_register_session {
             set cid [xsearch $dataNode -get @cid]
             if {[dict exists $mediaFields $cid]} {
                 set var [dict get $mediaFields $cid]
-                set base64data [string trim [dict get $dataNode body]]
-                dict set mediaBytes $var $base64data
+                # Decoded here: callers get image bytes, and the JSON wire
+                # re-encodes them once.
+                set b64 [string map {\n "" \r "" " " "" \t ""} \
+                    [dict get $dataNode body]]
+                dict set mediaBytes $var [::base64::decode $b64]
                 lappend readyVars $var
             }
         }

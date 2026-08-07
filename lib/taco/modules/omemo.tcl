@@ -284,9 +284,9 @@ snit::type taco_omemo {
     method OnDisconnect {args} {
         # Drop in-memory caches so the next connection is unconditioned.
         # HealAt is kept on purpose - it must outlive reconnects.
-        # BundleFetchState goes too: give-ups are per-connection, and the
-        # in-flight ones are dead anyway (iq cancelAll drops their
-        # handlers without invoking them).
+        # BundleFetchState goes too: give-ups are per-connection. An in-flight
+        # fetch still resolves by reply or timeout, which TakeBundleWaiters
+        # absorbs.
         $self CancelBundleTimers
         set DeviceLists [dict create]
         set Bundles [dict create]
@@ -862,10 +862,8 @@ snit::type taco_omemo {
             -command [mymethod OnFetchedBundle $peerJid $peerDev]
     }
 
-    # The IQ layer has no timeout of its own, so an unanswered bundle
-    # fetch would leave the device `pending` forever and block every
-    # OMEMO send to that chat. Give up on it and let the send proceed
-    # without this device.
+    # Well inside the IQ layer's own timeout: a device left `pending` blocks
+    # every OMEMO send to that chat, so give up early and send without it.
     method OnBundleFetchTimeout {peerJid peerDev} {
         set key "$peerJid|$peerDev"
         # Leave the timer entry for ResolvedBundleFetch to cancel. Its

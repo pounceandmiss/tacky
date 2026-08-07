@@ -54,9 +54,8 @@ snit::type taco_extdisco {
             -command [mymethod OnResult $id]
     }
 
-    # iq response. The iq layer also routes timeouts at the stream level
-    # (via cancelAll on reconnect), so this can fire late after our own
-    # timer already resolved — the Pending guard absorbs that.
+    # iq response, or the iq layer's own timeout. Either can arrive after our
+    # shorter timer resolved the request; the Pending guard absorbs that.
     method OnResult {id stanza} {
         if {![info exists Pending($id)]} return
         catch {after cancel [dict get $Pending($id) timer]}
