@@ -2585,12 +2585,37 @@ test message-search-dedup-hit-adds-no-holes {a search hit that dedups against a 
             }
         }]
 
-        # Dedup path returns empty inserted -> no holes and no
-        # message in callback output.
-        list [llength [dict get $result messages]] \
+        # Dedup path adds no holes and reports the cached row (at its
+        # stored timestamp) as the hit.
+        set msgs [dict get $result messages]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] timestamp] \
              [llength [$::_client message messagestore hole list \
                           alice@example.com]]
-    } -result {0 0}
+    } -result {1 1000000 0}
+
+test message-search-hit-confirming-own-send-is-reported {a hit matching a pending send confirms it and reports the row} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 1000000 body "needle in haystack" \
+            from_jid $acc own_id uuid-s1 server_status pending]]
+
+        msg_prime_search
+        set result {}
+        tacky message search -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+        msg_mam_respond {
+            {id sid1 from user@test.example.com/phone to alice@example.com
+             origin_id uuid-s1 body "needle in haystack"
+             stamp 2024-01-01T10:00:00Z}
+        }
+
+        set msgs [dict get $result messages]
+        list [llength $msgs] \
+             [dict get [lindex $msgs 0] server_status] \
+             [dict get [lindex $msgs 0] server_id]
+    } -result {1 {} sid1}
 
 test message-search-repeat-does-not-pile-holes {repeating the same search does not pile up holes} \
     {*}$msg_common \
