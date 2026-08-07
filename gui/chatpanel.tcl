@@ -273,7 +273,7 @@ snit::widget chatpanel {
             -command [mymethod JumpToDate]
         $mb.chat add command -label "Find in Chat..." \
             -command [mymethod OpenFind] -accelerator "Ctrl+F"
-        $mb.chat add command -label "Server Search..." \
+        $mb.chat add command -label "Search Messages..." \
             -command [mymethod OpenSearch]
         if {$isMuc} {
             $self RebuildMucMenu
@@ -303,7 +303,7 @@ snit::widget chatpanel {
             -command [mymethod JumpToDate]
         $mb.chat add command -label "Find in Chat..." \
             -command [mymethod OpenFind] -accelerator "Ctrl+F"
-        $mb.chat add command -label "Server Search..." \
+        $mb.chat add command -label "Search Messages..." \
             -command [mymethod OpenSearch]
         $mb.chat add separator
 
@@ -344,7 +344,7 @@ snit::widget chatpanel {
         set affil [dict get $occ affiliation]
 
         # Insert permission-gated items before the trailing separator
-        # Static menu: Jump to Date, Find in Chat, Server Search, sep, Participants, sep, Invite, Change Nick = indices 0-7
+        # Static menu: Jump to Date, Find in Chat, Search Messages, sep, Participants, sep, Invite, Change Nick = indices 0-7
         set insertIdx 8
         if {$role eq "visitor"} {
             $mb.chat insert $insertIdx separator

@@ -1665,66 +1665,112 @@ snit::type taco_message {
             -limit $limit -tag $tag -command $callback
     }
 
-    # search -chat $jid -query "text" ?-source local|remote? ?-before $cursor?
+    # search -chat $jid -query "text" ?-source local|remote|both? ?-before $cursor?
     #        ?-limit 20? ?-field $var? ?-tag $tag? -command $cb
     #
-    # Full text search. -source remote (default) queries MAM; new hits are
-    # stored to the local cache and wrapped with holes on each side - a hit is
-    # an isolated island whose surroundings we know nothing about, so future
-    # pagination across it must fall through to MAM. `hole add` is a no-op
-    # when the target gap is already holeed, so repeated searches don't
-    # accumulate. A hit already cached is returned from the store as it
-    # stands: its position is known, so it neither stores nor holes.
-    # -source local is a synchronous LIKE match over already-
-    # stored bodies (-field and -tag cancel don't apply); -before is an
-    # exclusive timestamp cursor.
+    # Full text search. -source local (the default) is a LIKE match over
+    # already-stored bodies, with -before as an exclusive timestamp cursor. It
+    # is the only source that sees OMEMO bodies, which reach the store
+    # decrypted but sit on the server as ciphertext.
+    # -source remote queries MAM; new hits are stored to the local cache and
+    # wrapped with holes on each side - a hit is an isolated island whose
+    # surroundings we know nothing about, so future pagination across it must
+    # fall through to MAM. `hole add` is a no-op when the target gap is already
+    # holeed, so repeated searches don't accumulate. A hit already cached is
+    # returned from the store as it stands: its position is known, so it
+    # neither stores nor holes. An archive advertising no fulltext field
+    # answers `unsupported` rather than running the query without the term.
+    # -source both runs the remote leg for its cache-filling effect and then
+    # answers from the store, so one matching rule covers the whole result. It
+    # falls back to the store alone when the archive can't run the search, and
+    # pages locally: a -before cursor means the caller is walking a result set
+    # already fetched, so it skips the remote leg.
     # Callback receives dict: messages, complete, last
     method search {args} {
-        array set opts {-limit 20 -tag "" -field "" -source remote}
+        array set opts {-limit 20 -tag "" -field "" -source local}
         array set opts $args
 
         set chatJid $opts(-chat)
         set callback $opts(-command)
         set tag $opts(-tag)
+        set query $opts(-query)
+        set limit $opts(-limit)
+        set before [expr {[info exists opts(-before)] ? $opts(-before) : ""}]
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
         }
 
-        if {$opts(-source) eq "local"} {
-            set searchArgs [list -limit $opts(-limit)]
-            if {[info exists opts(-before)]} {
-                lappend searchArgs -before $opts(-before)
+        switch -exact -- $opts(-source) {
+            local {
+                $self LocalSearch $chatJid $query $limit $before $callback
             }
-            set rows [$messagestore search $chatJid $opts(-query) {*}$searchArgs]
-            set complete [expr {[llength $rows] < $opts(-limit)}]
-            set last [expr {[llength $rows] ? [dict get [lindex $rows end] timestamp] : ""}]
-            {*}$callback [dict create messages $rows complete $complete last $last]
-            return
+            both {
+                if {$before ne ""} {
+                    $self LocalSearch $chatJid $query $limit $before $callback
+                    return
+                }
+                $self MamSearch $chatJid $query $limit "" $opts(-field) \
+                    [mymethod OnSearchBoth $chatJid $query $limit $tag $callback]
+            }
+            remote {
+                $self MamSearch $chatJid $query $limit $before $opts(-field) \
+                    [mymethod OnSearch $chatJid $callback $tag]
+            }
+            default {
+                error "search: unknown -source \"$opts(-source)\""
+            }
         }
+    }
 
-        set mamArgs [list -fulltext $opts(-query) -max $opts(-limit)]
-        if {$opts(-field) ne ""} {
-            lappend mamArgs -field-var $opts(-field)
-        }
-        if {[info exists opts(-before)]} {
-            lappend mamArgs -before $opts(-before)
-        } else {
-            lappend mamArgs -before {}
-        }
+    method LocalSearch {chatJid query limit before callback} {
+        set rows [$messagestore search $chatJid $query -limit $limit -before $before]
+        set complete [expr {[llength $rows] < $limit}]
+        set last [expr {[llength $rows] ? [dict get [lindex $rows end] timestamp] : ""}]
+        {*}$callback [dict create messages $rows complete $complete last $last]
+    }
 
-        lappend mamArgs -command [mymethod OnSearch $chatJid $callback $tag]
+    method MamSearch {chatJid query limit before field callback} {
+        # An empty -before is RSM's "newest page" marker, not an absent cursor.
+        set mamArgs [list -fulltext $query -max $limit -before $before]
+        if {$field ne ""} {
+            lappend mamArgs -field-var $field
+        }
+        lappend mamArgs -command $callback
         $client mam queryChat $chatJid {*}$mamArgs
+    }
+
+    # The remote page is ingested for what it adds to the store, never
+    # reported: the answer is read back locally so one rule matched it all.
+    method OnSearchBoth {chatJid query limit tag callback mamResult} {
+        if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+        if {![dict exists $mamResult error]} {
+            $self SearchIngest $chatJid $mamResult
+        }
+        $self LocalSearch $chatJid $query $limit "" $callback
     }
 
     method OnSearch {chatJid callback tag mamResult} {
         if {[dict exists $mamResult error]} {
-            {*}$callback [dict create messages {} complete 0 last "" error 1]
+            set err [dict create messages {} complete 0 last "" error 1]
+            if {[dict exists $mamResult error_condition]
+                && [dict get $mamResult error_condition] eq "fulltext-unsupported"} {
+                dict set err unsupported 1
+            }
+            {*}$callback $err
             return
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
 
+        set messages [$self SearchIngest $chatJid $mamResult]
+
+        {*}$callback [dict create messages $messages \
+            complete [dict get $mamResult complete] \
+            last [dict get $mamResult last]]
+    }
+
+    method SearchIngest {chatJid mamResult} {
         set messages {}
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
@@ -1763,11 +1809,7 @@ snit::type taco_message {
                 lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]
             }
         }
-
-        set complete [dict get $mamResult complete]
-        set last [dict get $mamResult last]
-
-        {*}$callback [dict create messages $messages complete $complete last $last]
+        return $messages
     }
 
     # Walk a single-chat MAM batch through Classify, firing patch events for each

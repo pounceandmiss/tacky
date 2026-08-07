@@ -938,6 +938,16 @@ test messagestore-search-returns-message-dicts {search returns full message dict
         list [dict get $m timestamp] [dict get $m content body]
     } -result {100 needle}
 
+test messagestore-search-skips-retracted {a retracted row keeps its body as a tombstone but stops matching} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id sid1 body needle] \
+            [ms_msg timestamp 200 server_id sid2 body needle]]
+        store applyRetract alice@example.com sid1
+        ms_search_ts alice@example.com needle
+    } -result {200}
+
 test messagestore-search-no-match {a query matching nothing returns empty} \
     {*}$ms_common \
     -body {

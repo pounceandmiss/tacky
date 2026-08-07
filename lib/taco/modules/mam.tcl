@@ -132,6 +132,35 @@ snit::type taco_mam {
         return ""
     }
 
+    # fulltextSupported -chat $jid -command cb
+    # Whether this chat's archive advertises a fulltext field, discovering
+    # and caching it first when unknown. Routes like queryChat: a room asks
+    # its own archive, a DM the user's. Callback receives a boolean.
+    method fulltextSupported {args} {
+        set defaults [dict create -chat "" -command ""]
+        set opts [dict merge $defaults $args]
+        set callback [dict get $opts -command]
+        if {![regexp {(.*)\?join$} [dict get $opts -chat] -> target]} {
+            set target ""
+        }
+
+        if {[info exists FieldCache($target)]} {
+            {*}$callback [expr {$FieldCache($target) ne ""}]
+            return
+        }
+
+        set ffArgs [list -command [mymethod OnSupportedFields $target $callback]]
+        if {$target ne ""} {
+            lappend ffArgs -to $target
+        }
+        $self formfields {*}$ffArgs
+    }
+
+    method OnSupportedFields {target callback fields} {
+        $self CacheFields $target $fields
+        {*}$callback [expr {$FieldCache($target) ne ""}]
+    }
+
     # queryChat $chatJid ?extra-args...?
     # Convenience: routes to MUC or DM based on ?join suffix
     method queryChat {chatJid args} {
@@ -173,6 +202,20 @@ snit::type taco_mam {
             set ftVar $FieldCache($cacheKey)
         } else {
             set ftVar [lindex $KnownFulltextFields 0]
+        }
+
+        # A search the archive can't run must not degrade into an unfiltered
+        # one: dropping the term here would return the tail of the archive as
+        # if every message matched.
+        if {$ftVal ne "" && $ftVar eq ""} {
+            set callback $Callbacks($queryId)
+            unset -nocomplain Results($queryId)
+            unset -nocomplain Callbacks($queryId)
+            unset -nocomplain Archives($queryId)
+            {*}$callback [dict create messages {} complete 0 first "" last "" \
+                error 1 error_condition fulltext-unsupported]
+            $client emit mam <QueryEnd> -id $queryId
+            return
         }
 
         set payload [j query -queryid $queryId -ns urn:xmpp:mam:2 {
