@@ -101,6 +101,7 @@ snit::type taco_client {
 
     method OnReady {resumed} {
         set options(-jid) [$conn cget -bound-jid]
+        $iq live 1
         if {!$resumed} {
             # XEP-0280: ask the server to carbon-copy messages sent and
             # received by our other resources. Stream resumption preserves
@@ -112,6 +113,7 @@ snit::type taco_client {
     }
 
     method OnDisconnect {msg} {
+        $iq live 0
         $bus publish <Disconnect>
     }
 

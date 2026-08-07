@@ -29,8 +29,27 @@ snit::type iq {
     # decide which senders may answer server-directed requests
     option -own-jid-command -default ""
 
+    # Milliseconds to wait for a response before answering the handler
+    # ourselves. 0 waits forever.
+    option -default-timeout -default 60000
+
+    # Pending timers, and {timeout to id} per outstanding request, both
+    # keyed like ResponseHandlers
+    variable Timers
+    variable Pending
+
+    # Timers only run while the session is up: offline requests are buffered
+    # until connect, and sent ones are replayed by stream management.
+    variable Live 0
+
     constructor args {
         $self configurelist $args
+    }
+
+    destructor {
+        foreach key [array names Timers] {
+            after cancel $Timers($key)
+        }
     }
 
     # Invoke when we receive an incoming stanza
@@ -84,7 +103,7 @@ snit::type iq {
                 foreach key $keys {
                     if {[info exists ResponseHandlers($key)]} {
                         set handler $ResponseHandlers($key)
-                        unset ResponseHandlers($key)
+                        $self Forget $key
                         break
                     }
                 }
@@ -107,13 +126,65 @@ snit::type iq {
         unset -nocomplain RequestHandlers($type_,$ns)
     }
 
-    # Cancel all pending response handlers (used on fresh reconnect)
-    method cancelAll {} {
-        array unset ResponseHandlers
+    # Start or stop the clock on every outstanding request.
+    method live {flag} {
+        if {$flag == $Live} return
+        set Live $flag
+        if {$Live} {
+            foreach key [array names Pending] {
+                $self ArmTimer $key
+            }
+        } else {
+            foreach key [array names Timers] {
+                after cancel $Timers($key)
+            }
+            array unset Timers
+        }
+    }
+
+    method ArmTimer {key} {
+        $self CancelTimer $key
+        lassign $Pending($key) timeout
+        if {!$Live || $timeout <= 0} return
+        set Timers($key) [after $timeout [mymethod OnTimeout $key]]
+    }
+
+    method CancelTimer {key} {
+        if {[info exists Timers($key)]} {
+            after cancel $Timers($key)
+            unset Timers($key)
+        }
+    }
+
+    method Forget {key} {
+        $self CancelTimer $key
+        unset -nocomplain Pending($key)
+        unset -nocomplain ResponseHandlers($key)
+    }
+
+    # Answer with the error stanza a refusing server would have sent, so
+    # existing error branches handle it unchanged.
+    method OnTimeout {key} {
+        if {![info exists ResponseHandlers($key)]} return
+        set handler $ResponseHandlers($key)
+        lassign $Pending($key) _timeout to id
+        $self Forget $key
+        set optionalFrom {}
+        if {$to ne ""} {
+            set optionalFrom [list -from $to]
+        }
+        {*}$handler [j iq {*}$optionalFrom -type error -id $id {
+            j error -type wait {
+                j remote-server-timeout -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas \
+                    #body "No response from the server"
+            }
+        }]
     }
 
     # Use: iq request get|set -payload $payload -command $command -to $jid
     # Sends request of $type (=get|set) to $jid with $payload. If $command is specified, it will be called when we get a response
+    # -timeout overrides -default-timeout for this request; 0 waits forever.
     method request {args} {
         array set opts {-type get -command control::no-op -to ""}
         array set opts $args
@@ -129,7 +200,13 @@ snit::type iq {
         } else {
             set optionalTo [list -to $opts(-to)]
         }
-        set ResponseHandlers($opts(-to),$opts(-id)) $opts(-command)
+        set key $opts(-to),$opts(-id)
+        set ResponseHandlers($key) $opts(-command)
+        if {![info exists opts(-timeout)]} {
+            set opts(-timeout) $options(-default-timeout)
+        }
+        set Pending($key) [list $opts(-timeout) $opts(-to) $opts(-id)]
+        $self ArmTimer $key
         set _iq [j iq \
                                 {*}$optionalTo \
                                 -type $opts(-type) \

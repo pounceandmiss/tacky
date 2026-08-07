@@ -299,14 +299,14 @@ test reg-media-ready-event {drive_to_form fires <MediaReady> for ocr field} \
         set found
     } -result ocr
 
-test reg-media-returns-data {media returns non-empty base64 data} \
+test reg-media-returns-bytes {media returns decoded image bytes, not base64} \
     {*}$common \
     -body {
         tacky register connect -host example.com
         drive_to_form
         set data [tacky register media -var ocr]
-        expr {$data ne ""}
-    } -result 1
+        string range $data 1 3
+    } -result {PNG}
 
 # -- Submit ----------------------------------------------------------------
 

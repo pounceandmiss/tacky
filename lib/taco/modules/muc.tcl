@@ -11,15 +11,15 @@
 # tacky muc kick -acc $jid -jid $room -nick $nick ?-reason $text? ?-command $cb?
 # tacky muc role -acc $jid -jid $room -nick $nick -role $role ?-reason $text? ?-command $cb?
 # tacky muc affiliation -acc $jid -jid $room -target $bareJid -affiliation $a ?-reason $t? ?-nick $n? ?-command $cb?
-# tacky muc getList -acc $jid -jid $room -what $what ?-command $cb?
-# tacky muc configGet -acc $jid -jid $room ?-command $cb?      ;# cb gets a form dict
+# tacky muc getList -acc $jid -jid $room -what $what ?-command $cb? ?-onerror $ecb?
+# tacky muc configGet -acc $jid -jid $room ?-command $cb? ?-onerror $ecb?   ;# cb gets a form dict
 # tacky muc configSet -acc $jid -jid $room -form $formDict ?-command $cb?
 # tacky muc configCancel -acc $jid -jid $room ?-command $cb?
 # tacky muc createInstant -acc $jid -jid $room ?-command $cb?
 # tacky muc destroyRoom -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
-# tacky muc registerGet -acc $jid -jid $room ?-command $cb?    ;# cb gets a form dict
+# tacky muc registerGet -acc $jid -jid $room ?-command $cb? ?-onerror $ecb? ;# cb gets a form dict
 # tacky muc registerSet -acc $jid -jid $room -form $formDict ?-command $cb?
-# tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb?
+# tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb? ?-onerror $ecb?
 # tacky muc reservedNick -acc $jid -jid $room ?-command $cb?
 #
 # tacky muc getSubject -acc $jid -jid $room
@@ -293,13 +293,13 @@ snit::type taco_muc {
     # =====================================================================
 
     method getList {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         lassign [$self ListQuerySpec $opts(-what)] attr val
 
         $client iq request -type get -to $opts(-jid) \
-            -command [mymethod OnListResult $opts(-command)] \
+            -command [mymethod OnListResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item -$attr $val
             }]
@@ -310,11 +310,11 @@ snit::type taco_muc {
     # =====================================================================
 
     method configGet {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         $client iq request -type get -to $opts(-jid) \
-            -command [mymethod OnConfigGetResult $opts(-command)] \
+            -command [mymethod OnConfigGetResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#owner]
     }
 
@@ -383,11 +383,11 @@ snit::type taco_muc {
     # =====================================================================
 
     method registerGet {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         $client iq request -type get -to $opts(-jid) \
-            -command [mymethod OnConfigGetResult $opts(-command)] \
+            -command [mymethod OnConfigGetResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns jabber:iq:register]
     }
 
@@ -407,11 +407,11 @@ snit::type taco_muc {
     # =====================================================================
 
     method discoverRooms {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         $client iq request -type get -to $opts(-jid) \
-            -command [mymethod OnDiscoverRoomsResult $opts(-command)] \
+            -command [mymethod OnDiscoverRoomsResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/disco#items]
     }
 
@@ -893,14 +893,15 @@ snit::type taco_muc {
         }
     }
 
-    method OnListResult {command stanza} {
-        if {$command eq ""} return
-
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ eq "error"} {
-            {*}$command [list error 1 stanza $stanza]
+    method OnListResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} {
+                {*}$onerror [$self ActionErrorText \
+                    [dict get [stanza_error $stanza] condition]]
+            }
             return
         }
+        if {$command eq ""} return
 
         set items {}
         xsearch $stanza query item -script itemNode {
@@ -917,14 +918,15 @@ snit::type taco_muc {
         {*}$command $items
     }
 
-    method OnConfigGetResult {command stanza} {
-        if {$command eq ""} return
-
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ eq "error"} {
-            {*}$command [list error 1 stanza $stanza]
+    method OnConfigGetResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} {
+                {*}$onerror [$self ActionErrorText \
+                    [dict get [stanza_error $stanza] condition]]
+            }
             return
         }
+        if {$command eq ""} return
 
         set formNode [xsearch $stanza query x -ns jabber:x:data]
         if {[llength $formNode] > 0} {
@@ -934,14 +936,15 @@ snit::type taco_muc {
         }
     }
 
-    method OnDiscoverRoomsResult {command stanza} {
-        if {$command eq ""} return
-
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ eq "error"} {
-            {*}$command [list error 1 stanza $stanza]
+    method OnDiscoverRoomsResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} {
+                {*}$onerror [$self ActionErrorText \
+                    [dict get [stanza_error $stanza] condition]]
+            }
             return
         }
+        if {$command eq ""} return
 
         set rooms {}
         xsearch $stanza query item -script itemNode {
