@@ -29,7 +29,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
         android android-lib \
 	linux flatpak flatpak-bundle flatpak-install \
-        test test-gui test-lib tools wish tclsh clean dist-dir
+        test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
 
@@ -233,6 +233,11 @@ test: $(LINUX_BUILD)/tclsh
 
 test-gui: $(LINUX_BUILD)/wish
 	$(LINUX_BUILD)/wish test_gui.tcl
+
+# xvfb-run's default screen is 640x480, shorter than the geometry some tests
+# request; the DPI is pinned because point-sized fonts shift every metric.
+test-gui-headless: $(LINUX_BUILD)/wish
+	xvfb-run -a -s "-screen 0 1280x1024x24 -dpi 96" $(LINUX_BUILD)/wish test_gui.tcl
 
 # C-ABI smoke test: compile the standalone driver against dist/libtacky.a and run
 # the create -> request -> destroy cycle. Exercises the static-archive link
