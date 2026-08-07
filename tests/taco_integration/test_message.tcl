@@ -56,6 +56,22 @@ namespace eval ::test::message_int {
         return [set $var]
     }
 
+    # Helper: call tacky message search with -command and wait for result
+    proc searchWait {args} {
+        variable TIMEOUT
+        set var [namespace current]::_search_[incr [namespace current]::_awaitCounter]
+        set ${var}_done 0
+
+        tacky message search {*}$args \
+            -command [list apply {{dv rv result} {
+                set $rv $result
+                set $dv 1
+            }} ${var}_done $var]
+
+        ::test::helpers::waitVar ${var}_done $TIMEOUT
+        return [set $var]
+    }
+
     proc setup {} {
         variable HOST
         variable ROMEO
@@ -145,6 +161,58 @@ namespace eval ::test::message_int {
             }
             expr {$count >= 3}
         } -result {1}
+
+    # -- Search against a real archive ---
+    #
+    # Prosody advertises no fulltext field, so a remote search must say so
+    # rather than dropping the term and returning the tail of the archive.
+
+    test message-int-search-local-finds-stored-body \
+        {source local matches a body already in the store} \
+        {*}$common \
+        -body {
+            sendAndReceive "a distinctive needle"
+            historyWait -acc $ROMEO -chat $JULIET -limit 50
+
+            set r [searchWait -acc $ROMEO -chat $JULIET -query "distinctive needle"]
+            set found 0
+            foreach msg [dict get $r messages] {
+                if {[::test::helpers::msgText $msg] eq "a distinctive needle"} {
+                    set found 1
+                }
+            }
+            set found
+        } -result {1}
+
+    test message-int-search-remote-reports-unsupported \
+        {an archive advertising no fulltext field answers unsupported, not the whole archive} \
+        {*}$common -constraints {withServer notEjabberd} \
+        -body {
+            sendAndReceive "another needle"
+            historyWait -acc $ROMEO -chat $JULIET -limit 50
+
+            set r [searchWait -acc $ROMEO -chat $JULIET \
+                       -query "no-such-text-anywhere" -source remote]
+            list [dict exists $r unsupported] [llength [dict get $r messages]]
+        } -result {1 0}
+
+    test message-int-search-both-falls-back-to-store \
+        {both still answers from the store when the archive cannot search} \
+        {*}$common \
+        -body {
+            sendAndReceive "fallback needle"
+            historyWait -acc $ROMEO -chat $JULIET -limit 50
+
+            set r [searchWait -acc $ROMEO -chat $JULIET \
+                       -query "fallback needle" -source both]
+            set found 0
+            foreach msg [dict get $r messages] {
+                if {[::test::helpers::msgText $msg] eq "fallback needle"} {
+                    set found 1
+                }
+            }
+            list $found [dict exists $r error]
+        } -result {1 0}
 
     # -- server_id is a valid archive ID ---
 

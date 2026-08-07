@@ -211,6 +211,7 @@ jsonify_type jsonify \
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list
+        mam/fulltextSupported   bool
         omemo/trustList         {list omemo_trust}
         omemo/devicelist        {list int}
         omemo/own_fingerprint   string

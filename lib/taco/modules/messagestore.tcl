@@ -553,7 +553,9 @@ snit::type taco_messagestore {
 
     # Full-text search by LIKE match on body. Returns message dicts
     # (newest first, capped at -limit). Holes have NULL body so
-    # they're naturally excluded. The query's own LIKE metacharacters
+    # they're naturally excluded. Retracted rows keep their body as a
+    # tombstone but read back with no content, so they're excluded too.
+    # The query's own LIKE metacharacters
     # (% _ \) are escaped so they match literally. -before is an
     # exclusive timestamp cursor for paging older.
     method search {jid query args} {
@@ -567,7 +569,7 @@ snit::type taco_messagestore {
                         server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                         attachments
                  FROM chat_message
-                 WHERE chat_jid=$jid AND kind='message'
+                 WHERE chat_jid=$jid AND kind='message' AND retracted=0
                    AND body LIKE $pattern ESCAPE '\'}
         if {$before ne ""} { append sql { AND timestamp < $before} }
         append sql { ORDER BY timestamp DESC LIMIT $limit}

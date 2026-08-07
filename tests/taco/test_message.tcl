@@ -227,6 +227,36 @@ proc msg_prime_search {{chatJid alice@example.com}} {
     }]
 }
 
+# Helper: prime the field cache with an archive that advertises no fulltext
+# field - the common case, since few servers implement one.
+proc msg_prime_search_unsupported {} {
+    $::_client mam discoverFields
+    set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+    $::_client iq feed [j iq -type result -id $iqId {
+        j query -ns urn:xmpp:mam:2 {
+            j x -ns jabber:x:data -type form {
+                j field -var FORM_TYPE -type hidden {
+                    j value #body urn:xmpp:mam:2
+                }
+                j field -var with
+                j field -var start
+                j field -var end
+            }
+        }
+    }]
+}
+
+# Helper: how many MAM query IQs have been written
+proc mam_query_count {} {
+    set n 0
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2 -get @queryid] ne ""} {
+            incr n
+        }
+    }
+    return $n
+}
+
 # Helper: call goto and collect result via -command
 proc msg_goto {args} {
     set ::_msg_goto_result {}
@@ -1875,7 +1905,7 @@ test message-goto-remote-sweeps-hole-inside-page {jumping to a search hit sweeps
     {*}$msg_common \
     -body {
         msg_prime_search
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 -command [list apply {{r} {}}]
         msg_mam_respond {
             {id sid1 body "needle in haystack" stamp 2024-06-15T12:00:00Z}
@@ -2355,7 +2385,7 @@ test message-search-sends-mam-fulltext {search sends MAM query with fulltext fie
     {*}$msg_common \
     -body {
         msg_prime_search
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "hello world" -limit 10 \
             -command [list apply {{r} {}}]
         set iqStanza [lindex [$::_client conn get_written] end]
@@ -2371,7 +2401,7 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
     -body {
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2418,7 +2448,7 @@ test message-search-skips-empty-body {search skips results with empty body} \
     -body {
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2454,7 +2484,7 @@ test message-search-pagination-before {search with -before sends RSM before elem
     {*}$msg_common \
     -body {
         msg_prime_search
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" -before "page-cursor-id" -limit 10 \
             -command [list apply {{r} {}}]
         set iqStanza [lindex [$::_client conn get_written] end]
@@ -2468,7 +2498,7 @@ test message-search-cancel-suppresses-callback {cancel tag prevents search callb
     -body {
         msg_prime_search
         set ::result UNTOUCHED
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" -tag searchtag \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2499,7 +2529,7 @@ test message-search-error-returns-error-dict {search error returns error dict} \
     -body {
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2525,7 +2555,7 @@ test message-search-wraps-inserted-hit-with-holes {a new search hit gets older a
     -body {
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2564,7 +2594,7 @@ test message-search-dedup-hit-adds-no-holes {a search hit that dedups against a 
 
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2602,7 +2632,7 @@ test message-search-hit-confirming-own-send-is-reported {a hit matching a pendin
 
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
         msg_mam_respond {
@@ -2625,7 +2655,7 @@ test message-search-repeat-does-not-pile-holes {repeating the same search does n
         # Run the same search twice; second run dedups (same server_id),
         # so hole count must not change.
         for {set i 0} {$i < 2} {incr i} {
-            tacky message search -acc $acc -chat alice@example.com \
+            tacky message search -source remote -acc $acc -chat alice@example.com \
                 -query "needle" -limit 10 \
                 -command [list apply {{r} {}}]
             set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
@@ -2652,7 +2682,7 @@ test message-search-multiple-hits-share-middle-hole {two hits with no citizens b
     -body {
         msg_prime_search
         set result {}
-        tacky message search -acc $acc -chat alice@example.com \
+        tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
 
@@ -2733,6 +2763,117 @@ test message-search-local-before {source local -before pages to older matches} \
         set r [msg_search -chat alice@example.com -query x -source local -before 300]
         lmap m [dict get $r messages] {dict get $m timestamp}
     } -result {200 100}
+
+# Search: an archive that cannot run the search
+#
+# Dropping the term and querying anyway would return the tail of the archive
+# as if every message matched, and store+hole each row on the way out.
+
+test message-search-remote-unsupported-sends-no-query {an archive advertising no fulltext field is never queried with the term dropped} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search_unsupported
+        set ::result {}
+        tacky message search -source remote -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+        list [mam_query_count] \
+             [dict get $::result error] \
+             [dict get $::result unsupported] \
+             [llength [dict get $::result messages]]
+    } -result {0 1 1 0}
+
+test message-search-remote-unsupported-leaves-cache-alone {a search the archive cannot run stores nothing and holes nothing} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search_unsupported
+        tacky message search -source remote -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 -command [list apply {{r} {}}]
+        list [llength [$::_client message messagestore hole list alice@example.com]] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {0 0}
+
+# Search: source both (remote fills the store, the store answers)
+
+test message-search-both-answers-from-store {both ingests the remote page, then answers from the store} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search
+        msg_store [list [msg_msg timestamp 100 body {a local needle}]]
+        set ::result {}
+        tacky message search -source both -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+
+        set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+        set qid [mam_queryid]
+        $::_client mam onResultMessage [j message -from user@test.example.com {
+            j /as-is [mam_result id sid1 queryid $qid \
+                from alice@example.com/phone body "a remote needle" \
+                stamp 2024-01-01T10:00:00Z]
+        }]
+        $::_client iq feed [j iq -type result -id $iqId {
+            j fin -ns urn:xmpp:mam:2 -complete true {
+                j set -ns http://jabber.org/protocol/rsm {
+                    j first #body sid1
+                    j last #body sid1
+                }
+            }
+        }]
+
+        # Both the pre-existing local row and the freshly stored remote hit,
+        # newest first, and `last` is a timestamp rather than an RSM id.
+        list [lmap m [dict get $::result messages] {dict get $m content body}] \
+             [dict get $::result last]
+    } -result {{{a remote needle} {a local needle}} 100}
+
+test message-search-both-degrades-to-local-when-unsupported {both answers from the store when the archive cannot search} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search_unsupported
+        msg_store [list [msg_msg timestamp 100 body {a local needle}]]
+        set ::result {}
+        tacky message search -source both -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+        list [mam_query_count] \
+             [lmap m [dict get $::result messages] {dict get $m content body}] \
+             [dict exists $::result error]
+    } -result {0 {{a local needle}} 0}
+
+test message-search-both-before-pages-locally {a -before cursor walks the fetched result set without re-querying the archive} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search
+        msg_store [list \
+            [msg_msg timestamp 100 body {needle one}] \
+            [msg_msg timestamp 200 body {needle two}]]
+        set ::result {}
+        tacky message search -source both -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 -before 200 \
+            -command [list apply {{r} { set ::result $r }}]
+        list [mam_query_count] \
+             [lmap m [dict get $::result messages] {dict get $m timestamp}]
+    } -result {0 100}
+
+test message-search-both-cancel-suppresses-callback {cancelling during the remote leg drops the callback} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search
+        msg_store [list [msg_msg timestamp 100 body {a local needle}]]
+        set ::result UNTOUCHED
+        tacky message search -source both -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 -tag searchtag \
+            -command [list apply {{r} { set ::result $r }}]
+
+        set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+        tacky message cancel -acc $acc -tag searchtag
+        $::_client iq feed [j iq -type result -id $iqId {
+            j fin -ns urn:xmpp:mam:2 -complete true {}
+        }]
+
+        set ::result
+    } -result UNTOUCHED
 
 # XEP-0461 replies: ingest parsing + gotoReply
 

@@ -364,7 +364,7 @@ Event:
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}  -> [message]
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
-    message search {chat: string, query: string, source?: string, limit?: int, before?: string} -> search_result
+    message search {chat: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
@@ -758,15 +758,29 @@ span catchup covered (the server demonstrably never got it), and marked
 the archive can no longer say either way.
 
 **Search.** `message search` takes a `source`, mirroring `goto`. `source:
-remote` (the default) is server-side MAM full-text: page through it with
-`before: last`, and jump to a hit with `message goto {date: ts, source:
-remote}`. `source: local` is a substring match over the bodies already stored
-for one chat (LIKE metacharacters in the query match literally); it returns
-the same `search_result`, needs no paging in practice, and you jump to a hit
-with `message goto {date: ts, source: local}`. Either way the results aren't
-chat-view content - show them somewhere separate. `field` and `before` on the
-remote path select the full-text form field and the RSM cursor; `before` on
-the local path is an exclusive timestamp cursor.
+local` (the default) is a substring match over the bodies already stored for
+one chat (LIKE metacharacters in the query match literally), with `before` as
+an exclusive timestamp cursor. It covers only what the cache holds, but it is
+the only source that matches OMEMO messages, whose bodies reach the store
+decrypted and sit on the server as ciphertext. Retracted messages never match.
+
+`source: remote` is server-side MAM full-text (XEP-0431): page through it with
+`before: last`, which on this path is an RSM cursor rather than a timestamp.
+Few servers implement the field, so check first with `mam fulltextSupported
+{chat: string} -> bool`; a search against an archive that advertises none comes
+back `{error: true, unsupported: true}` rather than silently matching
+everything. `field` selects the full-text form field explicitly.
+
+`source: both` runs the remote leg for its cache-filling effect - hits are
+stored on the way through - and then answers from the store, so one matching
+rule covers the whole result. It falls back to the store alone when the archive
+can't run the search, and pages locally: passing `before` means walking a result
+set already fetched, so it skips the remote leg and fetches one server page per
+search.
+
+Jump to a hit with `message goto {date: ts, source: remote}`, which fills the
+context around a hit stored as an isolated island. Whichever source found it,
+the results aren't chat-view content - show them somewhere separate.
 
 **Sender names.** A message row carries a `from_jid`, not a display name.
 `author get {chat: string} -> {from_jid: name, ...}` resolves the names for

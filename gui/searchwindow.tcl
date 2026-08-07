@@ -1,4 +1,8 @@
-# searchwindow — toplevel window for full text search via MAM.
+# searchwindow - toplevel window for full text search over one chat.
+#
+# Searches the local store; ticking "Also search server" adds a MAM pass whose
+# hits land in that same store, so the result list is local either way. The
+# box is enabled only for archives advertising a fulltext field.
 #
 # Displays search results in a chatarea. Clicking a result navigates
 # the main chatview to that message via -goto-command.
@@ -14,7 +18,7 @@ snit::widget searchwindow {
     option -goto-command -default ""
 
     variable query ""
-    variable field "default"
+    variable alsoRemote 0
     variable lastCursor ""
     variable isComplete 0
     variable searchTag
@@ -30,13 +34,16 @@ snit::widget searchwindow {
         # Top frame: entry + buttons
         set top [ttk::frame $win.top]
         ttk::entry $top.entry -textvariable [myvar query]
-        ttk::combobox $top.field -textvariable [myvar field] -width 16 \
-            -values [list default withtext {{urn:xmpp:fulltext:0}fulltext}]
+        ttk::checkbutton $top.remote -text "Also search server" \
+            -variable [myvar alsoRemote] -command [mymethod OnRemoteToggle]
         ttk::button $top.search -text "Search" -command [mymethod DoSearch]
         pack $top.entry -side left -expand yes -fill x -padx {4 2} -pady 4
-        pack $top.field -side left -padx {2 2} -pady 4
+        pack $top.remote -side left -padx {2 2} -pady 4
         pack $top.search -side left -padx {2 4} -pady 4
         pack $top -fill x
+
+        # Stays off until the archive says it can run the search.
+        $top.remote configure -state disabled
 
         bind $top.entry <Return> [mymethod DoSearch]
 
@@ -66,6 +73,8 @@ snit::widget searchwindow {
             -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
         ::tacky author get -acc $options(-acc) -chat $options(-jid) \
             -command [mymethod OnAuthorSeed]
+        ::tacky mam fulltextSupported -acc $options(-acc) \
+            -chat $options(-jid) -command [mymethod OnRemoteCapability]
 
         focus $top.entry
     }
@@ -73,6 +82,21 @@ snit::widget searchwindow {
     destructor {
         catch {::tacky message cancel -acc $options(-acc) -tag $searchTag}
         catch {::tacky unlisten $searchTag/author}
+    }
+
+    method OnRemoteCapability {supported} {
+        if {![winfo exists $win]} return
+        if {$supported} {
+            $win.top.remote configure -state normal
+            return
+        }
+        # The status label is transient, so the box states its own reason.
+        $win.top.remote configure -text "Server can't search"
+    }
+
+    method OnRemoteToggle {} {
+        if {$query eq ""} return
+        $self DoSearch
     }
 
     method OnAuthorSeed {names} {
@@ -98,26 +122,20 @@ snit::widget searchwindow {
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
         pack forget $win.bot.more
-        set searchArgs [list -acc $options(-acc) \
-                            -chat $options(-jid) -query $query \
-                            -tag $searchTag -command [mymethod OnResults]]
-        if {$field ne "default" && $field ne ""} {
-            lappend searchArgs -field $field
-        }
-        ::tacky message search {*}$searchArgs
+        ::tacky message search -acc $options(-acc) \
+            -chat $options(-jid) -query $query \
+            -source [expr {$alsoRemote ? "both" : "local"}] \
+            -tag $searchTag -command [mymethod OnResults]
     }
 
+    # Paging stays local so lastCursor stays a timestamp, never an RSM id.
     method LoadMore {} {
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
-        set searchArgs [list -acc $options(-acc) \
-                            -chat $options(-jid) -query $query \
-                            -before $lastCursor -tag $searchTag \
-                            -command [mymethod OnResults]]
-        if {$field ne "default" && $field ne ""} {
-            lappend searchArgs -field $field
-        }
-        ::tacky message search {*}$searchArgs
+        ::tacky message search -acc $options(-acc) \
+            -chat $options(-jid) -query $query -source local \
+            -before $lastCursor -tag $searchTag \
+            -command [mymethod OnResults]
     }
 
     method OnResults {result} {
