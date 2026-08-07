@@ -1297,6 +1297,63 @@ test omemo-unit-selfready-published \
         set ::_selfReady
     } -result {1}
 
+# Announce results: our own id joins the cached own list only on the ack.
+
+proc ::test::omemo_unit::publishError {} {
+    return [j iq -type error {
+        j error -type cancel {
+            j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            j {precondition-not-met} \
+                -ns http://jabber.org/protocol/pubsub#errors
+        }
+    }]
+}
+
+test omemo-unit-devicelist-publish-error-not-cached \
+    {a rejected announce leaves our device off the cached own list} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
+        c omemo OnDevicelistPublished [list 77 $dev] \
+            [::test::omemo_unit::publishError]
+        c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE
+    } -result {77}
+
+test omemo-unit-devicelist-publish-ack-caches \
+    {an acked announce commits our device to the cached own list} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
+        c omemo OnDevicelistPublished [list 77 $dev] [j iq -type result]
+        expr {[c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE]
+              eq [list 77 $dev]}
+    } -result {1}
+
+# publish-options are preconditions: each field is another way for the
+# server to reject the announce outright.
+test omemo-unit-publish-options-access-model-only \
+    {the announce preconditions on access_model and nothing else} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {}
+        set vars [list]
+        foreach s [lrange [c conn get_written] $before end] {
+            foreach f [xsearch $s pubsub publish-options x field] {
+                lappend vars [xsearch $f -get @var]
+            }
+        }
+        set vars
+    } -result {FORM_TYPE pubsub#access_model}
+
 # Aggregate query: trustList returns one dict per known device.
 
 test omemo-unit-trustlist \
