@@ -824,7 +824,7 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
         # Jump to a date in the past (remote fetch)
         $::_client conn clear
         .cv goto [ParseTimestamp 2024-06-15T12:00:00Z] -source remote
-        wait 500
+        wait
 
         set countPending [llength [.cv messages ids]]
 

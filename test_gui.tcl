@@ -1,5 +1,6 @@
 #!/usr/bin/env wish9.0
-# GUI tests — requires a display (Tk event loop).
+# GUI tests - requires a display (Tk event loop); `make test-gui-headless` runs
+# them under Xvfb.
 # Usage: wish9.0 test_gui.tcl
 proc bgerror {message} {
     puts stderr $::errorInfo
@@ -30,16 +31,17 @@ foreach script [lsort [glob [file join $dir gui *.tcl]]] {
     source $script
 }
 
-# Helper: let the event loop run for $ms milliseconds.
-proc wait {{ms 300}} {
-    set ::_wait_done 0
-    after $ms {set ::_wait_done 1}
-    vwait ::_wait_done
+# Not a sleep: the backend runs in-process, so what tests observe lands
+# synchronously or on an idle/after-0 callback, and update drains both.
+proc wait {} {
+    update
 }
 
 foreach script [lsort [glob [file join $dir tests gui *.tcl]]] {
     source $script
 }
 
+# Read the tally before cleanupTests, which zeroes it.
+set failed $::tcltest::numTests(Failed)
 cleanupTests
-exit
+exit [expr {$failed > 0}]
