@@ -1,6 +1,3 @@
-# -command callback signature: $cmd $status $result
-#   $status is "ok" or "error"
-#
 # taco account list ?-command $cmd?
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
@@ -189,7 +186,7 @@ snit::type taco_account {
     }
 
     # Server-side password change (XEP-0077), delegates to client.
-    # tacky account changePassword -acc $jid -password $new -command $cb
+    # tacky account changePassword -acc $jid -password $new ?-command $cb? ?-onerror $ecb?
     method changePassword {args} {
         set jid [dict get $args -acc]
         set client [$options(-taco) client $jid]

@@ -128,9 +128,8 @@ snit::type taco_client {
     }
 
     # XEP-0077 password change.
-    # -command callback: {*}$cmd ok "" | {*}$cmd error $msg
     method changePassword {args} {
-        array set opts {-command ""}
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         set payload [j query -ns jabber:iq:register {
@@ -139,18 +138,13 @@ snit::type taco_client {
         }]
         $iq request -type set -to [$conn cget -host] \
             -payload $payload \
-            -command [mymethod OnPasswordChanged $opts(-password) $opts(-command)]
+            -command [mymethod OnPasswordChanged $opts(-password) \
+                          $opts(-command) $opts(-onerror)]
     }
 
-    method OnPasswordChanged {newPassword command stanza} {
-        if {$command eq ""} return
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ eq "result"} {
-            $conn configure -password $newPassword
-            set acc [jid bare $options(-jid)]
-            $options(-taco) account set -acc $acc -password $newPassword
-            {*}$command ok ""
-        } else {
+    # The new password is stored whether or not the caller wanted a reply.
+    method OnPasswordChanged {newPassword command onerror stanza} {
+        if {[xsearch $stanza -get @type] ne "result"} {
             set errText [xsearch $stanza error text -get body]
             if {$errText eq ""} {
                 set errChild [xsearch $stanza error 0 -get node]
@@ -160,7 +154,16 @@ snit::type taco_client {
                     set errText "Password change failed"
                 }
             }
-            {*}$command error $errText
+            if {$onerror ne ""} {
+                {*}$onerror $errText
+            }
+            return
+        }
+        $conn configure -password $newPassword
+        set acc [jid bare $options(-jid)]
+        $options(-taco) account set -acc $acc -password $newPassword
+        if {$command ne ""} {
+            {*}$command ""
         }
     }
 

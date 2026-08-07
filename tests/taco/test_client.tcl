@@ -222,3 +222,61 @@ test client-carbons-ignores-plain {a regular message with no carbon wrapper retu
         }]
         c UnwrapCarbon $m
     } -result {}
+
+# -- changePassword ---------------------------------------------------------
+
+set pw_common [tacky_env -mock conn -account user@test.example.com]
+
+proc pw_reply {args} {
+    $::_client.conn feed [j iq -from test.example.com \
+        -id [xsearch [lindex [$::_client.conn get_written] end] -get @id] {*}$args]
+}
+
+test client-password-stored-without-callback {a confirmed change is stored with no -command} \
+    {*}$pw_common \
+    -body {
+        $::_client changePassword -password newpass
+        pw_reply -type result
+        list [$::_client cget -password] \
+            [tacky account get -acc user@test.example.com -field password]
+    } -result {newpass newpass}
+
+test client-password-answers-command {a confirmed change answers -command with an empty result} \
+    {*}$pw_common \
+    -body {
+        set ::pw_reply pending
+        $::_client changePassword -password newpass \
+            -command {apply {{msg} {set ::pw_reply [list replied $msg]}}}
+        pw_reply -type result
+        set ::pw_reply
+    } -result {replied {}}
+
+test client-password-rejected {a rejected change reports through -onerror and changes nothing} \
+    {*}$pw_common \
+    -body {
+        set ::pw_err ""
+        set before [$::_client cget -password]
+        $::_client changePassword -password newpass \
+            -onerror {apply {{msg} {set ::pw_err $msg}}}
+        pw_reply -type error {
+            j error -type modify {
+                j not-acceptable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas #body "Too weak"
+            }
+        }
+        list $::pw_err [expr {[$::_client cget -password] eq $before}]
+    } -result {{Too weak} 1}
+
+test client-password-rejected-no-text {a rejected change with no text falls back to the condition} \
+    {*}$pw_common \
+    -body {
+        set ::pw_err ""
+        $::_client changePassword -password newpass \
+            -onerror {apply {{msg} {set ::pw_err $msg}}}
+        pw_reply -type error {
+            j error -type modify {
+                j not-allowed -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }
+        set ::pw_err
+    } -result {not-allowed}
