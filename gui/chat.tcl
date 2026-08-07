@@ -1497,14 +1497,6 @@ snit::widget chatarea {
         # text tag that will be applied to the whole message
         set tag item.$message(id)
 
-        # Hole marker: thick horizontal line indicating an archive gap
-        if {[info exists message(hole_above)] && $message(hole_above)} {
-            set hf [frame $text._hole_$message(id) -height 3 -background #aaaaaa]
-            $text window create msgins -window $hf -stretch 1 -padx 10 -pady 8
-            $text tag add $tag "msgins - 1 chars"
-            $text ins msgins \n $tag
-        }
-
         # A retracted (XEP-0424/0425) message renders as a tombstone: header
         # for context, then a placeholder in place of the (now gone) content.
         if {[info exists message(retracted)] && $message(retracted)} {
