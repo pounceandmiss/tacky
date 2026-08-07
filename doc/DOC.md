@@ -468,11 +468,11 @@ Events:
     avatar data {hash: string}      -> base64        ("" if not cached)
     avatar visible {jid: string}
     avatar invisible {jid: string}
-    avatar publish {data: base64, type?: string, width?: int, height?: int}  -> ""
+    avatar publish {data: bytes, type?: string, width?: int, height?: int}  -> ""
     avatar disable {}   -> ""
     avatar cancel {tag: string}
     avatar refresh {jid: string}
-    avatar inject {jid: string, data: base64, type?: string, width?: int, height?: int}  -> string
+    avatar inject {jid: string, data: bytes, type?: string, width?: int, height?: int}  -> string
 
     avatar_meta = {hash: string, type: string, bytes: int, width: int, height: int}
 
@@ -482,8 +482,12 @@ its current hash, and `data` gives you the bytes as they were published
 end. It only fetches bytes for JIDs you've marked `visible`, and that's
 refcounted, so balance each `visible` with an `invisible`. `visible` also
 re-emits `<Update>` for an already-cached avatar, so listening is enough.
-`publish` sends `data` as-is; a ~128px PNG is a safe size. See
-`avatarcache_base` in `lib/libtacky/tacky.tcl` for a caching example.
+`publish` sends `data` as-is; a ~128px PNG is a safe size. `publish` and
+`disable` update your own cached entry and emit `<Update>` for your JID as
+soon as the server confirms, without waiting for the PEP echo. Over JSON a
+`data` argument is raw bytes, one code point per byte (U+0000 to U+00FF);
+only image bytes coming back out are base64. See `avatarcache_base` in
+`lib/libtacky/tacky.tcl` for a caching example.
 
 Avatars come from XEP-0084 (PEP) or XEP-0153 (vCard, for group chats and
 occupants). PEP wins: a JID with a PEP avatar ignores its vCard hash.

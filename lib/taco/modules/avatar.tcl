@@ -13,11 +13,11 @@ if 0 {
             Returns metadata dict: hash type bytes width height
         tacky avatar data -acc $acc -hash $hash
             Returns raw master image bytes
-        tacky avatar publish -acc $acc -data $bytes ?-type $mime? ?-width $w? ?-height $h? ?-tag $tag? ?-command $cb?
+        tacky avatar publish -acc $acc -data $bytes ?-type $mime? ?-width $w? ?-height $h? ?-tag $tag? ?-command $cb? ?-onerror $ecb?
             Publish own avatar. Bytes are stored and sent as-is; the
             frontend prepares them (crop/scale/encode) before calling.
-        tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb?
-            Disable own avatar
+        tacky avatar disable -acc $acc ?-tag $tag? ?-command $cb? ?-onerror $ecb?
+            Disable own avatar and drop the local copy
         tacky avatar cancel -acc $acc -tag $tag
             Cancel a pending -command callback by tag
         tacky avatar inject -acc $acc -jid $jid -data $bytes ?-type $mime? ?-width $w? ?-height $h?
@@ -101,14 +101,23 @@ snit::type taco_avatar {
     # Publish own avatar. -data is stored and sent verbatim - the frontend
     # crops/scales/encodes before calling. -type/-width/-height describe those
     # bytes and are advertised in the XEP-0084 <info>.
-    # Optional -command callback: {*}$command [list ok ""] / {*}$command [list error $msg]
     method publish {args} {
-        array set opts {-type image/png -width "" -height "" -command "" -tag ""}
+        array set opts {-type image/png -width "" -height "" \
+                        -command "" -onerror "" -tag ""}
         array set opts $args
-        set acc [dict get $args -acc]
         if {$opts(-tag) ne ""} {
             set ActiveTags($opts(-tag)) 1
         }
+        # Without this a throw would escape the JSON dispatcher and leave the
+        # caller's token unanswered.
+        if {[catch {$self StartPublish [array get opts]} err]} {
+            $self Answer $opts(-tag) $opts(-onerror) $err
+        }
+    }
+
+    method StartPublish {optList} {
+        array set opts $optList
+        set acc $opts(-acc)
         set rawData $opts(-data)
 
         # Compute SHA-1 from raw bytes
@@ -135,7 +144,7 @@ snit::type taco_avatar {
             }
         }]
 
-        # Always chain: data IQ → wait for result → metadata IQ.
+        # Always chain: data IQ -> wait for result -> metadata IQ.
         # Publishing metadata before the server confirms data storage
         # causes races on ejabberd/MongooseIM where subscribers try to
         # fetch data that isn't committed yet.
@@ -145,17 +154,16 @@ snit::type taco_avatar {
             width $opts(-width) height $opts(-height)]
         $client emit avatar <Progress> -acc $acc -message "Uploading avatar data..."
         $client iq request -type set -payload $dataPayload \
-            -command [mymethod OnDataPublished $infoAttrs $hash $publishCtx $opts(-tag) $opts(-command)]
+            -command [mymethod OnDataPublished $infoAttrs $hash $publishCtx \
+                          $opts(-tag) $opts(-command) $opts(-onerror)]
     }
 
-    method OnDataPublished {infoAttrs hash publishCtx tag command stanza} {
+    method OnDataPublished {infoAttrs hash publishCtx tag command onerror stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
-            if {$command ne "" && ($tag eq "" || [info exists ActiveTags($tag)])} {
-                set errText [xsearch $stanza error text -get body]
-                if {$errText eq ""} { set errText "Avatar data publish failed" }
-                {*}$command [list error $errText]
-            }
+            set errText [xsearch $stanza error text -get body]
+            if {$errText eq ""} { set errText "Avatar data publish failed" }
+            $self Answer $tag $onerror $errText
             return
         }
         set acc [dict get $publishCtx acc]
@@ -169,62 +177,56 @@ snit::type taco_avatar {
                         }
                     }
                 }
-            }] -command [mymethod OnPublishComplete $publishCtx $tag $command]
+            }] -command [mymethod OnPublishComplete $publishCtx $tag $command $onerror]
     }
 
-    method OnPublishComplete {publishCtx tag command stanza} {
-        set stype [xsearch $stanza -get @type]
-        if {$tag ne "" && ![info exists ActiveTags($tag)]} {
-            set command ""
+    method OnPublishComplete {publishCtx tag command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            set errText [xsearch $stanza error text -get body]
+            if {$errText eq ""} { set errText "Avatar publish failed" }
+            $self Answer $tag $onerror $errText
+            return
         }
-        if {$stype ne "error"} {
-            if {$publishCtx ne ""} {
-                # Cache locally and emit update so UI reflects the change
-                # immediately, without waiting for the server PEP echo.
-                set jid [dict get $publishCtx acc]
-                set hash [dict get $publishCtx hash]
-                set rawData [dict get $publishCtx rawData]
-                set type_ [dict get $publishCtx type]
-                set bytes [dict get $publishCtx bytes]
-                set width [dict get $publishCtx width]
-                set height [dict get $publishCtx height]
-                $client db eval {
-                    INSERT OR REPLACE INTO avatar_data(hash, data)
-                    VALUES ($hash, $rawData)
-                }
-                $client db eval {
-                    INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
-                    VALUES ($jid, $hash, $type_, $bytes, $width, $height, 'pubsub')
-                }
-                $client emit avatar <Update> -jid $jid -hash $hash
-            }
-            if {$command ne ""} {
-                {*}$command [list ok ""]
-            }
-        } else {
-            if {$command ne ""} {
-                set errText [xsearch $stanza error text -get body]
-                if {$errText eq ""} { set errText "Avatar publish failed" }
-                {*}$command [list error $errText]
-            }
+        # Cache locally and emit update so UI reflects the change
+        # immediately, without waiting for the server PEP echo.
+        set jid [dict get $publishCtx acc]
+        set hash [dict get $publishCtx hash]
+        set rawData [dict get $publishCtx rawData]
+        set type_ [dict get $publishCtx type]
+        set bytes [dict get $publishCtx bytes]
+        set width [dict get $publishCtx width]
+        set height [dict get $publishCtx height]
+        $client db eval {
+            INSERT OR REPLACE INTO avatar_data(hash, data)
+            VALUES ($hash, $rawData)
         }
+        $client db eval {
+            INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+            VALUES ($jid, $hash, $type_, $bytes, $width, $height, 'pubsub')
+        }
+        $client emit avatar <Update> -jid $jid -hash $hash
+        $self Answer $tag $command ""
     }
 
-    # Disable own avatar
-    # Optional -command callback: {*}$command [list ok ""] / {*}$command [list error $msg]
+    # Disable own avatar: publish an empty <metadata/>.
     method disable {args} {
-        array set opts {-command "" -tag ""}
+        array set opts {-command "" -onerror "" -tag ""}
         array set opts $args
         if {$opts(-tag) ne ""} {
             set ActiveTags($opts(-tag)) 1
         }
-
-        set cmdOpts [list]
-        if {$opts(-command) ne ""} {
-            lappend cmdOpts -command [mymethod OnPublishComplete {} $opts(-tag) $opts(-command)]
+        if {[catch {$self StartDisable [array get opts]} err]} {
+            $self Answer $opts(-tag) $opts(-onerror) $err
         }
+    }
 
-        $client iq request -type set {*}$cmdOpts -payload \
+    # The completion handler runs whether or not the caller wants a reply: it
+    # is what drops the local copy.
+    method StartDisable {optList} {
+        array set opts $optList
+        $client iq request -type set -command \
+            [mymethod OnDisableComplete $opts(-tag) $opts(-command) \
+                 $opts(-onerror)] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node urn:xmpp:avatar:metadata {
                     j item {
@@ -232,6 +234,26 @@ snit::type taco_avatar {
                     }
                 }
             }]
+    }
+
+    method OnDisableComplete {tag command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            set errText [xsearch $stanza error text -get body]
+            if {$errText eq ""} { set errText "Avatar disable failed" }
+            $self Answer $tag $onerror $errText
+            return
+        }
+        set jid [jid norm [jid bare [$client cget -jid]]]
+        $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
+        $client emit avatar <Update> -jid $jid -hash ""
+        $self Answer $tag $command ""
+    }
+
+    # Run a -command/-onerror prefix unless the call was cancelled by tag.
+    method Answer {tag callback message} {
+        if {$callback eq ""} return
+        if {$tag ne "" && ![info exists ActiveTags($tag)]} return
+        {*}$callback $message
     }
 
     method cancel {args} {

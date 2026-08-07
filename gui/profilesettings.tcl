@@ -204,13 +204,23 @@ snit::widget profilesettings {
         $options(-tacky) avatar publish \
             -acc $options(-acc) -data $png -type image/png \
             -width $PublishEdge -height $PublishEdge \
-            -tag $win -command [mymethod OnResult "Avatar"]
+            -tag $win -command [mymethod OnAvatarSaved] \
+            -onerror [mymethod OnAvatarError]
     }
 
     method RemoveAvatar {} {
         $options(-tacky) avatar disable \
             -acc $options(-acc) \
-            -tag $win -command [mymethod OnResult "Avatar"]
+            -tag $win -command [mymethod OnAvatarSaved] \
+            -onerror [mymethod OnAvatarError]
+    }
+
+    method OnAvatarSaved {args} {
+        $self OnResult Avatar [list ok ""]
+    }
+
+    method OnAvatarError {message} {
+        $self OnResult Avatar [list error $message]
     }
 
     method SavePassword {} {

@@ -207,6 +207,85 @@ test avatar-inject-empty-uncached-silent {clearing a JID with no avatar emits no
         set ::avatar_updates
     } -result {}
 
+# publish/disable: local cache and the -command/-onerror contract
+
+proc avatar_iq_error {id text} {
+    j iq -type error -id $id {
+        j error -type cancel {
+            j forbidden -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas #body $text
+        }
+    }
+}
+
+test avatar-publish-caches-before-echo {a confirmed publish caches locally and answers -command} \
+    {*}$avatar_common \
+    -body {
+        avatar_watch
+        set ::avatar_reply pending
+        c.conn clear
+        c avatar publish -acc user@test.example.com -data "pngbytes" \
+            -width 128 -height 128 \
+            -command {apply {{msg} {set ::avatar_reply [list replied $msg]}}}
+        c.conn feed [j iq -type result \
+            -id [xsearch [lindex [c.conn get_written] end] -get @id]]
+        c.conn feed [j iq -type result \
+            -id [xsearch [lindex [c.conn get_written] end] -get @id]]
+        update idletasks
+        list $::avatar_reply [avatar_row user@test.example.com] $::avatar_updates
+    } -result [list {replied {}} \
+        [list [::sha1::sha1 -hex pngbytes] 128 pubsub] \
+        [list [list user@test.example.com [::sha1::sha1 -hex pngbytes]]]]
+
+test avatar-publish-rejected {a rejected publish reports through -onerror} \
+    {*}$avatar_common \
+    -body {
+        set ::avatar_err ""
+        c.conn clear
+        c avatar publish -acc user@test.example.com -data "pngbytes" \
+            -onerror {apply {{msg} {set ::avatar_err $msg}}}
+        c.conn feed [avatar_iq_error \
+            [xsearch [lindex [c.conn get_written] end] -get @id] "No room"]
+        list $::avatar_err [avatar_row user@test.example.com]
+    } -result {{No room} {}}
+
+test avatar-publish-early-failure-answers {a publish failing before the wire still answers} \
+    {*}$avatar_common \
+    -body {
+        set ::avatar_err ""
+        c avatar publish -acc user@test.example.com \
+            -onerror {apply {{msg} {set ::avatar_err $msg}}}
+        expr {$::avatar_err ne ""}
+    } -result 1
+
+test avatar-disable-clears-own-cache {a confirmed disable drops the local copy and signals removal} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed user@test.example.com abc123
+        avatar_watch
+        c.conn clear
+        c avatar disable
+        c.conn feed [j iq -type result \
+            -id [xsearch [lindex [c.conn get_written] end] -get @id]]
+        update idletasks
+        list [avatar_row user@test.example.com] $::avatar_updates
+    } -result {{} {{user@test.example.com {}}}}
+
+test avatar-disable-rejected {a rejected disable keeps the cache and reports through -onerror} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed user@test.example.com abc123
+        avatar_watch
+        set ::avatar_err ""
+        c.conn clear
+        c avatar disable -onerror {apply {{msg} {set ::avatar_err $msg}}}
+        c.conn feed [avatar_iq_error \
+            [xsearch [lindex [c.conn get_written] end] -get @id] "No room"]
+        update idletasks
+        list $::avatar_err [lindex [avatar_row user@test.example.com] 0] \
+            $::avatar_updates
+    } -result {{No room} abc123 {}}
+
 test avatar-vcard-writes-when-no-pubsub {vCard still stores an avatar for a JID with no PEP row} \
     {*}$avatar_common \
     -body {
