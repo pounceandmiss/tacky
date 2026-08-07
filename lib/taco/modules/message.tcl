@@ -1556,6 +1556,15 @@ snit::type taco_message {
         }
     }
 
+    # Cursorless sibling of SweepFetchedRange: an anchorless page still spans
+    # a server-contiguous range, so holes inside it were false positives.
+    method SweepFetchedSpan {chatJid messages} {
+        if {[llength $messages] == 0} return
+        set tsList [lmap m $messages {dict get $m timestamp}]
+        $messagestore hole removeBetween $chatJid \
+            [tcl::mathfunc::min {*}$tsList] [tcl::mathfunc::max {*}$tsList]
+    }
+
     # Remove the bounding hole proven false by complete=true: the server
     # confirms nothing exists past the cursor in this direction. Applies even
     # for an empty terminal page.
@@ -1612,9 +1621,17 @@ snit::type taco_message {
             return
         }
 
-        lassign [$self IngestMamBatch $chatJid $mamResult] _ toStore
+        lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
         if {[llength $toStore] > 0} {
             $messagestore store $toStore
+        }
+        # The page is an island: contiguous within itself, unfetched on both
+        # edges - `-start $date` covers nothing older, a short page leaves
+        # archive above.
+        $self SweepFetchedSpan $chatJid $parsed
+        $self PlaceFarEdgeHole $chatJid $parsed older
+        if {![dict get $mamResult complete]} {
+            $self PlaceFarEdgeHole $chatJid $parsed newer
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return

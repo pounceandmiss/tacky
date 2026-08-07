@@ -1831,6 +1831,75 @@ test message-goto-remote-error-falls-back {goto -source remote falls back to loc
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 local-only}
 
+# goto -source remote fetches an island: nothing older than -start was
+# queried, and a short page leaves archive above it. Both edges get a hole.
+
+test message-goto-remote-wraps-page-with-holes {a short goto page gets holes on both edges} \
+    {*}$msg_common \
+    -body {
+        tacky message goto -acc $acc -chat alice@example.com \
+            -date [ParseTimestamp 2024-06-15T12:00:00Z] \
+            -source remote -limit 50 \
+            -command [list apply {{r} {}}]
+        msg_mam_respond {
+            {id sid1 body first stamp 2024-06-15T12:00:00Z}
+            {id sid2 body second stamp 2024-06-15T12:05:00Z}
+        } -complete false
+
+        set holes [$::_client message messagestore hole list alice@example.com]
+        set minTs [ParseTimestamp 2024-06-15T12:00:00Z]
+        set maxTs [ParseTimestamp 2024-06-15T12:05:00Z]
+        list [llength $holes] \
+             [expr {[lindex $holes 0] < $minTs}] \
+             [expr {[lindex $holes 1] > $maxTs}]
+    } -result {2 1 1}
+
+test message-goto-remote-complete-leaves-newer-edge-open {a goto page reaching the archive end gets no newer hole} \
+    {*}$msg_common \
+    -body {
+        tacky message goto -acc $acc -chat alice@example.com \
+            -date [ParseTimestamp 2024-06-15T12:00:00Z] \
+            -source remote -limit 50 \
+            -command [list apply {{r} {}}]
+        msg_mam_respond {
+            {id sid1 body first stamp 2024-06-15T12:00:00Z}
+            {id sid2 body second stamp 2024-06-15T12:05:00Z}
+        } -complete true
+
+        set holes [$::_client message messagestore hole list alice@example.com]
+        list [llength $holes] \
+             [expr {[lindex $holes 0] < [ParseTimestamp 2024-06-15T12:00:00Z]}]
+    } -result {1 1}
+
+test message-goto-remote-sweeps-hole-inside-page {jumping to a search hit sweeps the wrap hole the search left inside the fetched run} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search
+        tacky message search -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 -command [list apply {{r} {}}]
+        msg_mam_respond {
+            {id sid1 body "needle in haystack" stamp 2024-06-15T12:00:00Z}
+        } -complete true
+
+        # The jump refetches the hit plus its neighbour, proving that span
+        # contiguous and the wrap hole between them false.
+        set result {}
+        tacky message goto -acc $acc -chat alice@example.com \
+            -date [ParseTimestamp 2024-06-15T12:00:00Z] \
+            -source remote -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+        msg_mam_respond {
+            {id sid1 body "needle in haystack" stamp 2024-06-15T12:00:00Z}
+            {id sid2 body after stamp 2024-06-15T12:05:00Z}
+        } -complete false
+
+        set holes [$::_client message messagestore hole list alice@example.com]
+        list [llength [dict get $result messages]] \
+             [llength $holes] \
+             [expr {[lindex $holes 0] < [ParseTimestamp 2024-06-15T12:00:00Z]}] \
+             [expr {[lindex $holes 1] > [ParseTimestamp 2024-06-15T12:05:00Z]}]
+    } -result {2 2 1 1}
+
 # =============================================================================
 # Catchup
 # =============================================================================
