@@ -20,19 +20,25 @@ json::write indented false
 #   {tuples S}     -> flat list grouped by fields of S into JSON array of objects
 #   <name>         -> named type lookup (always a dict schema)
 #
+# Arguments pass through untouched unless -argschemas declares them, where
+# base64 is the only type.
+#
 # Usage:
 #   jsonify to_json $value $type
 #   jsonify convert $schema_key $value
+#   jsonify decode_args $schema_key $args
 
 snit::type jsonify_type {
     variable types {}
     variable schemas {}
+    variable argschemas {}
 
     constructor {args} {
-        array set opts {-types {} -schemas {}}
+        array set opts {-types {} -schemas {} -argschemas {}}
         array set opts $args
         set types $opts(-types)
         set schemas $opts(-schemas)
+        set argschemas $opts(-argschemas)
     }
 
     method to_json {value hint} {
@@ -118,6 +124,26 @@ snit::type jsonify_type {
             set hint $default
         }
         return [$self to_json $value $hint]
+    }
+
+    # Keyed like the result schemas but a separate table, since a method can
+    # declare both. Keys are dashless, so this runs before add_dashes.
+    method decode_args {schema_key d} {
+        if {![dict exists $argschemas $schema_key]} {
+            return $d
+        }
+        dict for {arg hint} [dict get $argschemas $schema_key] {
+            if {$hint ne "base64" || ![dict exists $d $arg]} {
+                continue
+            }
+            if {[catch {
+                binary decode base64 -strict [dict get $d $arg]
+            } decoded]} {
+                error "argument $arg is not valid base64: $decoded"
+            }
+            dict set d $arg $decoded
+        }
+        return $d
     }
 }
 
@@ -220,6 +246,10 @@ jsonify_type jsonify \
 
         audio/<Volume>          {dict {volume double}}
         debugtap/<Stanza>       {dict {tap int}}
+    } \
+    -argschemas {
+        avatar/publish          {data base64}
+        avatar/inject           {data base64}
     }
 
 # -- helpers shared with entry-point dispatch ---------------------------

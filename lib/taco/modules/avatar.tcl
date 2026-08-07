@@ -108,8 +108,7 @@ snit::type taco_avatar {
         if {$opts(-tag) ne ""} {
             set ActiveTags($opts(-tag)) 1
         }
-        # Without this a throw would escape the JSON dispatcher and leave the
-        # caller's token unanswered.
+        # A failure before the wire still owes the caller an answer.
         if {[catch {$self StartPublish [array get opts]} err]} {
             $self Answer $opts(-tag) $opts(-onerror) $err
         }
@@ -220,8 +219,7 @@ snit::type taco_avatar {
         }
     }
 
-    # The completion handler runs whether or not the caller wants a reply: it
-    # is what drops the local copy.
+    # The completion handler is unconditional: it drops the local copy.
     method StartDisable {optList} {
         array set opts $optList
         $client iq request -type set -command \

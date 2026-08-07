@@ -206,6 +206,18 @@ test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
     jsonify convert message/gotoReply [dict create messages {} anchor ""]
 } -result [json::write object messages [json::write array] anchor null]
 
+test json-type-base64 {binary results encode as a base64 string} -body {
+    jsonify to_json "a\x00b" base64
+} -result {"YQBi"}
+
+# Decoding is -strict, which would reject line breaks from a wrapping encoder.
+test json-type-base64-roundtrip {emitted base64 decodes strictly back to the bytes} -body {
+    set raw ""
+    for {set i 0} {$i < 256} {incr i} { append raw [binary format c $i] }
+    set emitted [jsonify to_json $raw base64]
+    expr {[binary decode base64 -strict [string trim $emitted \"]] eq $raw}
+} -result 1
+
 # -- unregistered-key default ------------------------------------------------
 #
 # The result path passes `string`, so an undeclared method returning a scalar
@@ -335,6 +347,48 @@ test json-backend-parse-event-arg {bare event arg becomes a bracketed Tcl name} 
 test json-backend-parse-event-arg-idempotent {an already-bracketed event survives} -body {
     add_dashes [dict create event <State>]
 } -result {-event <State>}
+
+# -- base64 arguments --------------------------------------------------------
+
+test json-backend-parse-base64-arg {a declared binary arg is decoded, its siblings are not} -body {
+    set parts [::json::json2dict {["avatar","publish",{"data":"SGVsbG8=","type":"image/png"}]}]
+    jsonify decode_args avatar/publish [lindex $parts 2]
+} -result {data Hello type image/png}
+
+test json-backend-parse-base64-dashes {decoding runs before add_dashes} -body {
+    add_dashes [jsonify decode_args avatar/publish {data SGVsbG8=}]
+} -result {-data Hello}
+
+test json-backend-parse-base64-bytes {every byte value survives the JSON wire} -body {
+    set raw ""
+    for {set i 0} {$i < 256} {incr i} { append raw [binary format c $i] }
+    set req "\[\"avatar\",\"inject\",{\"data\":\"[binary encode base64 $raw]\"}\]"
+    set args [jsonify decode_args avatar/inject [lindex [::json::json2dict $req] 2]]
+    expr {[dict get $args data] eq $raw}
+} -result 1
+
+test json-backend-parse-base64-empty {empty data stays empty, so inject still clears} -body {
+    jsonify decode_args avatar/inject {jid a@b.c data {}}
+} -result {jid a@b.c data {}}
+
+test json-backend-parse-base64-absent {a declared arg the caller left out is not fabricated} -body {
+    jsonify decode_args avatar/publish {type image/png}
+} -result {type image/png}
+
+# Without -strict these bytes decode to garbage instead of failing.
+test json-backend-parse-base64-invalid {raw bytes where base64 was declared fail loudly} -body {
+    list [catch {jsonify decode_args avatar/publish [dict create data "\x89PNG\r\n"]} err] \
+        [string match {argument data is not valid base64:*} $err]
+} -result {1 1}
+
+test json-backend-parse-no-arg-schema {a method with no declared args is untouched} -body {
+    jsonify decode_args message/search {acc user@srv chat room@muc}
+} -result {acc user@srv chat room@muc}
+
+test json-backend-parse-inject-both-schemas {one key declares an arg and a result} -body {
+    list [dict get [jsonify decode_args avatar/inject {data SGVsbG8=}] data] \
+        [jsonify convert avatar/inject abc123 string]
+} -result {Hello {"abc123"}}
 
 # -- integration: dispatch through taco via process --------------------------
 

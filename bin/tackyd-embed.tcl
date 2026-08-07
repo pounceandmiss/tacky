@@ -71,18 +71,25 @@ proc tackyd_dispatch {msg} {
     set parts [::json::json2dict $msg]
     set module [lindex $parts 0]
     set method [lindex $parts 1]
-    set args [lindex $parts 2]
-    set args [add_dashes $args]
     # Optional token (4th element) -> wire up -command/-onerror internally.
     set token [lindex $parts 3]
-    if {$token ne ""} {
-        dict set ::_token_schemas $token $module/$method
-        dict set args -command \
-            [list tacky emit callback <Result> -token $token -result]
-        dict set args -onerror \
-            [list tacky emit callback <Error> -token $token -result]
+    # Nothing times out a request, so an escaping throw would hang the caller.
+    if {[catch {
+        set args [add_dashes \
+            [jsonify decode_args $module/$method [lindex $parts 2]]]
+        if {$token ne ""} {
+            dict set ::_token_schemas $token $module/$method
+            dict set args -command \
+                [list tacky emit callback <Result> -token $token -result]
+            dict set args -onerror \
+                [list tacky emit callback <Error> -token $token -result]
+        }
+        taco $module $method {*}$args
+    } err]} {
+        if {$token ne ""} {
+            tacky emit callback <Error> -token $token -result $err
+        }
     }
-    taco $module $method {*}$args
 }
 
 # Create the taco backend. Pass taco_type constructor args (e.g. -transient 0).

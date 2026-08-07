@@ -91,10 +91,11 @@ On the Tcl side keys pick up a `-` and event names pick up `<>` (Tk
 binding style); the JSON wire drops both and carries bare names, in both
 directions - an event name sent *in* as a `pull` argument is bare too
 (`{"event": "Tail"}`). The argument and result values are the same either
-way. Errors route three ways: with both `-command` and `-onerror`, a
-failure goes to `-onerror`; with just `-command`, it comes back as an
-`error <MethodError>` event (`-module -method -message -errorinfo`); with
-neither, it's re-thrown right there.
+way, except binary ones: JSON carries them base64 in both directions, the
+Tcl transports raw bytes. Errors route three ways: with both `-command`
+and `-onerror`, a failure goes to `-onerror`; with just `-command`, it
+comes back as an `error <MethodError>` event (`-module -method -message
+-errorinfo`); with neither, it's re-thrown right there.
 
 The Tcl binding adds frontend-side subscription sugar on top of the raw
 firehose, which could be used as inspiration for any frontend, including
@@ -151,7 +152,9 @@ arguments, and an optional token.
 The token (any integer) asks for a reply tagged with that same token.
 Leave it off and the request is fire-and-forget: no reply, and any error
 is dropped. Argument values go through untouched - the backend is untyped,
-so `5` and `"5"` mean the same thing on the way in.
+so `5` and `"5"` mean the same thing on the way in. The exception is an
+argument typed `base64`: it is decoded to bytes before dispatch, and a bad
+encoding comes back as an error reply.
 
     ["account", "add", {"acc": "user@example.com", "password": "secret"}]
     ["account", "list", {}, 1]
@@ -468,11 +471,11 @@ Events:
     avatar data {hash: string}      -> base64        ("" if not cached)
     avatar visible {jid: string}
     avatar invisible {jid: string}
-    avatar publish {data: bytes, type?: string, width?: int, height?: int}  -> ""
+    avatar publish {data: base64, type?: string, width?: int, height?: int}  -> ""
     avatar disable {}   -> ""
     avatar cancel {tag: string}
     avatar refresh {jid: string}
-    avatar inject {jid: string, data: bytes, type?: string, width?: int, height?: int}  -> string
+    avatar inject {jid: string, data: base64, type?: string, width?: int, height?: int}  -> string
 
     avatar_meta = {hash: string, type: string, bytes: int, width: int, height: int}
 
@@ -484,10 +487,10 @@ refcounted, so balance each `visible` with an `invisible`. `visible` also
 re-emits `<Update>` for an already-cached avatar, so listening is enough.
 `publish` sends `data` as-is; a ~128px PNG is a safe size. `publish` and
 `disable` update your own cached entry and emit `<Update>` for your JID as
-soon as the server confirms, without waiting for the PEP echo. Over JSON a
-`data` argument is raw bytes, one code point per byte (U+0000 to U+00FF);
-only image bytes coming back out are base64. See `avatarcache_base` in
-`lib/libtacky/tacky.tcl` for a caching example.
+soon as the server confirms, without waiting for the PEP echo. Over JSON
+`data` is base64 in both directions, and input that isn't valid base64
+comes back as an error; the Tcl transports take and return raw bytes. See
+`avatarcache_base` in `lib/libtacky/tacky.tcl` for a caching example.
 
 Avatars come from XEP-0084 (PEP) or XEP-0153 (vCard, for group chats and
 occupants). PEP wins: a JID with a PEP avatar ignores its vCard hash.
