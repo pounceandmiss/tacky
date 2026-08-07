@@ -61,7 +61,7 @@ lenpipe create _pipe stdin \
                     [list tacky emit callback <Error> -token $token -result]
             }
         }
-        taco $module $method {*}$args
+        taco_call ::taco $module $method {*}$args
     }}} \
     -oneof {apply {{} {
         taco destroy

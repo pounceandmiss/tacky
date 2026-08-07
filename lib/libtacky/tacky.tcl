@@ -224,12 +224,13 @@ oo::class create tacky_base {
 # but the entire round-trip is synchronous (same stack, same thread).
 oo::class create tacky_type {
     superclass tacky_base
+    variable Taco
 
     constructor {args} {
         next
         package require taco
         lassign [tacky_split_debug $args] debug rest
-        taco_type taco {*}$rest
+        set Taco [taco_type taco {*}$rest]
         jlog configureDebug {*}$debug
     }
 
@@ -238,7 +239,7 @@ oo::class create tacky_type {
     }
 
     method _send {module method args} {
-        taco $module $method {*}$args
+        taco_call $Taco $module $method {*}$args
     }
 }
 
@@ -305,7 +306,8 @@ oo::class create tacky_threaded_type {
     }
 
     method _send {module method args} {
-        thread::send -async $TacoTid [list taco $module $method {*}$args]
+        thread::send -async $TacoTid \
+            [list taco_call ::taco $module $method {*}$args]
     }
 }
 

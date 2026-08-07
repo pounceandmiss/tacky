@@ -138,3 +138,27 @@ tacky_test account-add-single-label-domain {a single-label domain is accepted} \
         tacky account add -acc a@test
         tacky_await tacky account list
     } -result {a@test}
+
+# -- a plain method's synchronous error reaches the caller ------------------
+#
+# `add` is not a tackymethod, so before taco_call its error escaped the
+# transport: it threw at the call site in direct mode and vanished into a
+# background handler in the others, leaving the caller waiting forever.
+# The guard keeps a regression to a failure rather than a hung suite.
+
+tacky_test account-add-error-to-onerror {a plain method's error answers -onerror} \
+    -body {
+        set guard [after 5000 {set ::_await_err_done 1}]
+        set msg [tacky_await_error tacky account add -acc "user@example,com"]
+        after cancel $guard
+        set msg
+    } -match glob -result {Invalid JID:*}
+
+tacky_test account-add-error-methoderror {with -command alone the error becomes <MethodError>} \
+    -body {
+        set guard [after 5000 {set ::_await_me_done 1}]
+        set ev [tacky_await_methoderror tacky account add -acc "user@example,com"]
+        after cancel $guard
+        list [dict get $ev -module] [dict get $ev -method] \
+            [string match {Invalid JID:*} [dict get $ev -message]]
+    } -result {account add 1}

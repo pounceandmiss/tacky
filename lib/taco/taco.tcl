@@ -64,6 +64,36 @@ snit::macro tackymethod {name arglist body} {
     }]
 }
 
+# Entry point for a transport delivering one request. Routes a synchronous
+# error the way tackymethod routes its own, instead of letting it escape into
+# a background handler: nothing times out a request, so an escaped error
+# leaves the caller with no reply at all.
+proc taco_call {taco module method args} {
+    set code [catch {$taco $module $method {*}$args} result opts]
+    # Not `return -options` on success: -level 0 evaluates in place instead of
+    # unwinding, so the error branches below would run too.
+    if {$code == 0} {
+        return $result
+    }
+    if {$code != 1} {
+        return -options $opts $result
+    }
+    if {[dict exists $args -onerror]} {
+        return [{*}[dict get $args -onerror] $result]
+    }
+    if {[dict exists $args -command]} {
+        set extra {}
+        if {[dict exists $args -acc]} {
+            lappend extra -acc [dict get $args -acc]
+        }
+        tacky emit error <MethodError> \
+            -module $module -method $method -message $result \
+            -errorinfo [dict get $opts -errorinfo] {*}$extra
+        return
+    }
+    return -options $opts $result
+}
+
 set _taco_dir [file join [file dirname [info script]] modules]
 foreach script [lsort [glob [file join $_taco_dir *.tcl]]] {
     source $script
