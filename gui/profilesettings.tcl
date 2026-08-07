@@ -228,7 +228,16 @@ snit::widget profilesettings {
         if {$pass eq ""} return
         $options(-tacky) account changePassword \
             -acc $options(-acc) -password $pass \
-            -tag $win -command [mymethod OnResult "Password"]
+            -tag $win -command [mymethod OnPasswordSaved] \
+            -onerror [mymethod OnPasswordError]
+    }
+
+    method OnPasswordSaved {args} {
+        $self OnResult Password [list ok ""]
+    }
+
+    method OnPasswordError {message} {
+        $self OnResult Password [list error $message]
     }
 
     # --- Feedback ---
