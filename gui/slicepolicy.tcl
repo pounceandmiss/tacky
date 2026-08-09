@@ -1,7 +1,7 @@
 package require control
 package require snit
 
-# windowpolicy - decides when the displayed slice of a conversation should grow
+# slicepolicy - decides when the displayed slice of a conversation should grow
 # or shrink. No Tk: it asks its host for measurements and tells it what to drop,
 # so the rule can be reasoned about (and tested) on its own.
 #
@@ -20,7 +20,7 @@ package require snit
 #   clean target  where dropping stops. Sits between the other two, so a clean
 #                 pass leaves the buffer well clear of the load threshold and
 #                 the two don't chase each other.
-snit::type windowpolicy {
+snit::type slicepolicy {
     option -clean-factor    -default 10
     option -clean-threshold -default 5000
 

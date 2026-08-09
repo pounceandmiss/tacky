@@ -1550,7 +1550,7 @@ test chatarea-replace-ignores-an-undrawn-key {replacing a row that isn't display
              [string match "*ghost*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {100 0}
 
-# The decisions themselves are windowpolicy's, and tested there. These two
+# The decisions themselves are slicepolicy's, and tested there. These two
 # check the wiring: a real scroll event reaches the policy, and what the policy
 # asks for lands on the right rows.
 
