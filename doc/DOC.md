@@ -15,8 +15,10 @@ and get back replies and events.
   - [conn](#conn)
   - [setting](#setting)
   - [chatlist](#chatlist)
+  - [bookmarks](#bookmarks)
   - [presence](#presence)
   - [message](#message)
+  - [mam](#mam)
   - [omemo](#omemo)
   - [avatar](#avatar)
   - [nick](#nick)
@@ -343,6 +345,36 @@ you only need to subscribe to `chatlist`. The raw `bookmarks <Changed>`
 and `bookmarks <RoomState>` signals are still there, but a frontend
 normally sticks with the funneled ones.
 
+## bookmarks
+
+    bookmarks item {jid: string, name?: string, autojoin?: bool,
+                    nick?: string, password?: string}
+    bookmarks leave {jid: string}
+    bookmarks remove {jid: string}
+    bookmarks forceJoin {jid: string}
+    bookmarks nick {jid: string, nick: string}
+    bookmarks autojoin {jid: string}         -> bool     that room's flag
+    bookmarks defaultNick {nick?: string}    -> string   read, or set with `nick`
+    bookmarks request {}                                 refetch from the server
+
+XEP-0402 room membership, and the write side of the room half of
+`chatlist`. Read rooms through `chatlist` - this is how you change them.
+`jid` is the bare room JID; a chat JID's `?join` suffix is stripped for you.
+
+`item` upserts and is how a room is joined: omitted fields keep their stored
+values, a new bookmark with no `nick` takes `defaultNick`, and setting
+`autojoin: true` joins the room as a side effect. `leave` is the inverse pair -
+clear autojoin and part - while `remove` parts, deletes the bookmark, and
+retracts it from the server. `forceJoin` re-sends the join with the stored nick
+and password without touching autojoin, for a room dropped underneath you (an
+IRC gateway going down). `nick` renames you in one room and stores it;
+`defaultNick` is the account-wide fallback for new bookmarks, itself falling
+back to the JID's localpart. `autojoin` reads one room's flag, for a menu that
+has to show its state before it opens.
+
+Changes emit `bookmarks <Changed>`, but a frontend watches `chatlist <Item>` /
+`<Remove>` instead - the funneled events carry the room state too.
+
 ## presence
 
     presence get {jid: string}         -> presence      best resource
@@ -447,6 +479,27 @@ TDLib `updateDeleteMessages`, it does not remove the message: the row is kept
 anchors, reply resolution, and slot/attribution keep working, and the client
 redraws the placeholder in place from the header it already holds. That is why
 it carries only `timestamp`, not a row.
+
+## mam
+
+    mam fulltextSupported {chat: string}  -> bool    archive can run a text search
+    mam metadata {to?: string}            -> {start_id: string, start_timestamp: int,
+                                              end_id: string, end_timestamp: int}
+    mam formfields {to?: string}          -> [string]   query fields the archive offers
+
+What the archive itself can do, for gating a UI on it. History and search go
+through `message`, which drives MAM for you; nothing here fetches messages.
+
+`fulltextSupported` takes a **chat** JID and routes the way archive queries do -
+a room asks its own archive, a 1:1 asks yours - and answers whether a server-side
+search is worth offering (see [The chat window](#the-chat-window)). The other
+two take a **`to`**
+JID naming the archive directly, defaulting to your own account's when omitted;
+pass a room JID for that room's. `metadata` reports the oldest and newest entries,
+with every value `""` for an empty archive and an `error: true` key on an IQ
+error. `formfields` lists the filter fields the archive advertises, returning an
+empty list on error - the presence of a fulltext field there is what
+`fulltextSupported` is checking.
 
 ## omemo
 
