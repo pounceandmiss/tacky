@@ -96,23 +96,13 @@ snit::widget chatarea {
     # <<MessageRightClick>> - a message was right-clicked. %x, %y
     #   (widget-relative) and %X, %Y (screen coords) are set.
 
-    # Every message currently drawn, top to bottom (oldest to newest), one
-    # record each:
-    #   slot           widget-local integer, and the only thing that reaches a
-    #                  Tk tag or mark. Keeps tag names free of the dots and
-    #                  spaces a caller's key may contain.
-    #   key            the caller's identity. Opaque here: compared, never
-    #                  parsed, never required to be unique.
-    #   sort           what the list is ordered by, ascending; ties break on
-    #                  `key`.
+    # Every message currently drawn, top to bottom (oldest to newest). rowlist
+    # owns slot, key and sort; the fields chatarea attaches to each row are:
     #   server_status  \ merged in place by patchFields, so a single-axis
     #   remote_status  / patch keeps the other axis.
     #   avatar_jid     which avatar this row draws.
     #   payload        handed back verbatim by `messages get`.
-    variable Rows
-
-    # Next slot to hand out. Never reused within a widget.
-    variable NextSlot
+    component rows
 
     # Whether a DoCleanup is already scheduled via after idle
     variable CleanupScheduled
@@ -146,8 +136,7 @@ snit::widget chatarea {
         grid rowconfigure $win $win.text -weight 1
         grid columnconfigure $win $win.text -weight 1
         
-        set Rows {}
-        set NextSlot 0
+        install rows using rowlist ${selfns}::rows
         set CleanupScheduled 0
         set AvatarImages [dict create]
         set HighlightedSlot ""
@@ -173,29 +162,6 @@ snit::widget chatarea {
         after cancel [mymethod DoCleanup]
     }
 
-    # Position of the row with this key, or -1. Rows is small (the cull
-    # thresholds bound the window), so a linear scan is enough.
-    method RowIndex {key} {
-        set idx 0
-        foreach row $Rows {
-            if {[dict get $row key] eq $key} { return $idx }
-            incr idx
-        }
-        return -1
-    }
-
-    method RowSlot {key} {
-        set idx [$self RowIndex $key]
-        if {$idx < 0} { return "" }
-        return [dict get [lindex $Rows $idx] slot]
-    }
-
-    # Does this row sort after that one? By `sort` ascending, ties on key.
-    proc RowAfter {aSort aKey bSort bKey} {
-        if {$aSort != $bSort} { return [expr {$aSort > $bSort}] }
-        return [expr {[string compare $aKey $bKey] > 0}]
-    }
-
     # Insert each message at its sorted position. Callers supply `key`
     # (identity) and `sort` (position); an already-displayed key gets its
     # fields patched in place instead. Staleness is handled outside this
@@ -207,33 +173,25 @@ snit::widget chatarea {
                 set key [dict get $msg key]
                 set sort [dict get $msg sort]
 
-                if {[$self RowIndex $key] >= 0} {
+                if {[$rows index $key] >= 0} {
                     $self patchFields $key $msg
                     continue
                 }
 
-                # First displayed row sorting after this one; insert before
-                # it, or append when there is none.
-                set idx 0
-                foreach existing $Rows {
-                    if {[RowAfter [dict get $existing sort] \
-                             [dict get $existing key] $sort $key]} break
-                    incr idx
-                }
-                if {$idx == [llength $Rows]} {
+                # Draw in front of the first row sorting after this one, or at
+                # the end when there is none.
+                set successor [$rows successor $key $sort]
+                if {$successor eq ""} {
                     $text mark set msgins end
                 } else {
-                    set successor [dict get [lindex $Rows $idx] slot]
                     $text mark set msgins item.$successor.first
                 }
 
-                set slot [incr NextSlot]
-                set row [dict create slot $slot key $key sort $sort \
+                set slot [$rows insert $key $sort [dict create \
                     server_status [dict getdef $msg server_status ""] \
                     remote_status [dict getdef $msg remote_status none] \
                     avatar_jid [dict getdef $msg avatar_jid ""] \
-                    payload [dict getdef $msg payload ""]]
-                set Rows [linsert $Rows $idx $row]
+                    payload [dict getdef $msg payload ""]]]
 
                 # On a failed draw, roll back the partial content (tagged
                 # item.$slot) and leave a placeholder so the batch continues.
@@ -252,18 +210,17 @@ snit::widget chatarea {
     method patchFields {key patchDict} {
         if {![dict exists $patchDict server_status]
                 && ![dict exists $patchDict remote_status]} return
-        set idx [$self RowIndex $key]
-        if {$idx < 0} return
+        if {[$rows index $key] < 0} return
         # Merge onto the row so a single-axis patch keeps the other axis.
-        set row [lindex $Rows $idx]
+        set patch [dict create]
         foreach k {server_status remote_status} {
             if {[dict exists $patchDict $k]} {
-                dict set row $k [dict get $patchDict $k]
+                dict set patch $k [dict get $patchDict $k]
             }
         }
-        set Rows [lreplace $Rows $idx $idx $row]
-        $self receipt update $key [dict get $row server_status] \
-            [dict get $row remote_status]
+        $rows merge $key $patch
+        $self receipt update $key [$rows field $key server_status] \
+            [$rows field $key remote_status]
     }
 
     method OnYview {} {
@@ -281,12 +238,8 @@ snit::widget chatarea {
     method KeyAt {x y} {
         foreach tag [$text tag names @$x,$y] {
             if {[string match "item.*" $tag] && ![string match "item.*.*" $tag]} {
-                set slot [string range $tag 5 end]
-                foreach row $Rows {
-                    if {[dict get $row slot] eq $slot} {
-                        return [dict get $row key]
-                    }
-                }
+                set key [$rows keyof [string range $tag 5 end]]
+                if {$key ne ""} { return $key }
             }
         }
         return ""
@@ -320,14 +273,14 @@ snit::widget chatarea {
     }
 
     method {see message} {key} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} return
         $self highlight message $key
         $text yview item.$slot.first
     }
 
     method {highlight message} {key} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} return
         $self highlight clear
         $text tag configure item.$slot -background yellow
@@ -428,7 +381,7 @@ snit::widget chatarea {
 
         if {$PixelsAbove > $cleanTh} {
             lappend cleaned old
-            while {$PixelsAbove > $cleanTarget && [llength $Rows] > 0} {
+            while {$PixelsAbove > $cleanTarget && [$rows size] > 0} {
                 $self deleteByPos 0
                 $self GetPixelsAbove
             }
@@ -436,7 +389,7 @@ snit::widget chatarea {
 
         if {$PixelsBelow > $cleanTh} {
             lappend cleaned new
-            while {$PixelsBelow > $cleanTarget && [llength $Rows] > 0} {
+            while {$PixelsBelow > $cleanTarget && [$rows size] > 0} {
                 $self deleteByPos end
                 $self GetPixelsBelow
             }
@@ -451,9 +404,9 @@ snit::widget chatarea {
         # there is nothing to be thirsty about. Initial load comes
         # through a different path (chatview::InitialLoad), so the
         # controller's dedupe guard would not catch this.
-        if {[llength $Rows] == 0} return
+        if {[$rows size] == 0} return
 
-        # Don't fire thirst for a direction we just cleaned —
+        # Don't fire thirst for a direction we just cleaned -
         # that would cause a load→clean→load loop.
         if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
             {*}$options(-thirst-command) old [$self messages oldest]
@@ -463,30 +416,23 @@ snit::widget chatarea {
         }
     }
 
-    method {messages oldest} {} {
-        if {[llength $Rows] == 0} { return "" }
-        dict get [lindex $Rows 0] key
+    method {messages oldest} {} { $self EdgeKey 0 }
+    method {messages newest} {} { $self EdgeKey end }
+
+    method EdgeKey {idx} {
+        set row [$rows at $idx]
+        if {$row eq ""} { return "" }
+        dict get $row key
     }
 
-    method {messages newest} {} {
-        if {[llength $Rows] == 0} { return "" }
-        dict get [lindex $Rows end] key
-    }
-
-    method {messages keys} {} {
-        lmap row $Rows {dict get $row key}
-    }
+    method {messages keys} {} { $rows keys }
 
     # Whatever the caller attached as `payload` when the row was applied.
-    method {messages get} {key} {
-        set idx [$self RowIndex $key]
-        if {$idx < 0} { return "" }
-        dict get [lindex $Rows $idx] payload
-    }
+    method {messages get} {key} { $rows field $key payload }
 
     # The text tag covering one row, or "" when it isn't drawn.
     method {messages tag} {key} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} { return "" }
         return item.$slot
     }
@@ -494,7 +440,7 @@ snit::widget chatarea {
     # Text indices spanning one row's body, as {first last}, or "" when the
     # row isn't drawn.
     method {messages body-range} {key} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} { return "" }
         if {[catch {$text index item.$slot.body.first} first]} { return "" }
         return [list $first [$text index item.$slot.body.last]]
@@ -503,14 +449,13 @@ snit::widget chatarea {
     method clear {} {
         $text del 0.0 end
         set released {}
-        foreach row $Rows {
+        foreach row [$rows clear] {
             set ajid [dict get $row avatar_jid]
             if {$ajid ne "" && $ajid ni $released} {
                 lappend released $ajid
                 {*}$options(-avatar-release-command) $ajid
             }
         }
-        set Rows {}
         set HighlightedSlot ""
     }
     
@@ -559,7 +504,7 @@ snit::widget chatarea {
     }
 
     method {receipt update} {key serverStatus remoteStatus} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} return
         set ranges [$text tag ranges item.$slot.receipt]
         if {[llength $ranges] == 0} return
@@ -571,15 +516,12 @@ snit::widget chatarea {
 
     # Swap the chip row in place; body stays put, viewport doesn't jump.
     method {reactions update} {key reactions} {
-        set idx [$self RowIndex $key]
-        if {$idx < 0} return
-        set row [lindex $Rows $idx]
-        set slot [dict get $row slot]
-        set payload [dict get $row payload]
+        set slot [$rows slot $key]
+        if {$slot eq ""} return
+        set payload [$rows field $key payload]
         if {$payload ne ""} {
             dict set payload reactions $reactions
-            dict set row payload $payload
-            set Rows [lreplace $Rows $idx $idx $row]
+            $rows merge $key [dict create payload $payload]
         }
         compensate $text {
             set ranges [$text tag ranges item.$slot.reactions]
@@ -822,14 +764,14 @@ snit::widget chatarea {
 
     # Widget path of one attachment frame, or "" when it isn't drawn.
     method {attachment path} {key idx} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} { return "" }
         return $text.att_${slot}_${idx}
     }
 
     # Forward a backend-produced thumbnail (already downscaled) to the widget.
     method {attachment image} {key idx path} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} return
         set f $text.att_${slot}_${idx}
         if {![winfo exists $f]} return
@@ -839,23 +781,22 @@ snit::widget chatarea {
     # Forward a transfer-progress update to the widget: a progress bar while
     # active, an error + Retry row on failure, removed on done.
     method {attachment state} {key idx direction state loaded total} {
-        set slot [$self RowSlot $key]
+        set slot [$rows slot $key]
         if {$slot eq ""} return
         set f $text.att_${slot}_${idx}
         if {![winfo exists $f]} return
         $f setState $direction $state $loaded $total
     }
 
-    method deleteById {key} {
-        set idx [$self RowIndex $key]
-        if {$idx < 0} return
-        $self deleteByPos $idx
-    }
+    method deleteById {key} { $self Undraw [$rows remove $key] }
 
-    method deleteByPos {idx} {
-        set row [lindex $Rows $idx]
+    method deleteByPos {idx} { $self Undraw [$rows removeat $idx] }
+
+    # Erase the text a removed row drew, and let its avatar go if it was the
+    # last one using it.
+    method Undraw {row} {
+        if {$row eq ""} return
         set slot [dict get $row slot]
-        set Rows [lreplace $Rows $idx $idx]
         $text del item.$slot.first item.$slot.last
         $text tag delete item.$slot
         $self CheckAvatarRelease [dict get $row avatar_jid]
