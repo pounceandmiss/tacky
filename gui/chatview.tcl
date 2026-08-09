@@ -54,11 +54,8 @@ snit::widgetadaptor chatview {
     # correct under the async (threaded/process) transports.
     variable DbNewest ""
 
-    # MUC only: our current role in the room, and the bare room JID. MyRole
-    # is cached from muc <Presence> so CanModerate reads it synchronously
-    # while building its popup menu.
-    variable MyRole ""
-    variable RoomBare ""
+    # What the user can do to one message.
+    component actions -public actions
 
     # What to call each author in this chat.
     component authors
@@ -121,16 +118,14 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnTail]
-        if {$IsMuc} {
-            regsub {\?join$} $options(-jid) {} RoomBare
-            set RoomBare [jid norm [jid bare $RoomBare]]
-            ::tacky listen -tag $win muc <Presence> \
-                -acc $options(-acc) -jid $RoomBare [mymethod RefreshMyRole]
-            $self RefreshMyRole
-        }
-        bind $self <<MessageRightClick>> [mymethod OnMessageRightClick %d %X %Y]
+        install actions using messageactions ${selfns}::actions \
+            -acc $options(-acc) -chat $options(-jid) -tag $win/actions \
+            -groupchat $IsMuc -widget $win \
+            -message-command [list $hull messages get] \
+            -label-command [list $authors label]
+        bind $self <<MessageRightClick>> [list $actions rightclick %d %X %Y]
+        bind $self <<ReactToggle>> [list $actions toggle %d]
         bind $self <<ReplyJump>> [mymethod OnReplyJump %d]
-        bind $self <<ReactToggle>> [mymethod OnReactToggle %d]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
@@ -607,154 +602,6 @@ snit::widgetadaptor chatview {
         catch {avatarcache untrack -tag $win/$jid}
         set idx [lsearch -exact $TrackedAvatars $jid]
         set TrackedAvatars [lreplace $TrackedAvatars $idx $idx]
-    }
-
-    method OnMessageRightClick {id rootX rootY} {
-        set m $win.__ctxmenu
-        if {![winfo exists $m]} {
-            menu $m -tearoff 0
-        }
-        $m delete 0 end
-        set sd [$hull messages get $id]
-        set isOutgoing [expr {[dict exists $sd is_outgoing]
-            && [dict get $sd is_outgoing]}]
-        set retracted [expr {[dict exists $sd retracted]
-            && [dict get $sd retracted]}]
-
-        $m add command -label "Reply" \
-            -command [mymethod OnReplySelected $id]
-        $m add command -label "Add Reaction" \
-            -command [mymethod OnReactSelected $id $rootX $rootY]
-        # Edit our own, non-retracted message (XEP-0308).
-        if {$isOutgoing && !$retracted} {
-            $m add command -label "Edit" \
-                -command [mymethod OnEditSelected $id]
-        }
-        # Deletion: MUC is moderation (moderators only, XEP-0425); 1:1 is a
-        # self-retraction of our own message (XEP-0424).
-        if {!$retracted} {
-            if {$IsMuc} {
-                if {[$self CanModerate]} {
-                    $m add command -label "Delete for everyone" \
-                        -command [mymethod OnModerateSelected $id]
-                }
-            } elseif {$isOutgoing} {
-                $m add command -label "Delete" \
-                    -command [mymethod OnRetractSelected $id]
-            }
-        }
-        $m add command -label "View XML" \
-            -command [mymethod OnViewXml $id]
-        $m add command -label "Find in Chat" \
-            -command [list event generate $win <<FindInChat>>]
-        tk_popup $m $rootX $rootY
-    }
-
-    # True iff we currently hold the moderator role in this room. Reads the
-    # MyRole cache (a live `muc myRole` query only resolves inline in the
-    # direct transport) so the popup menu can gate synchronously.
-    method CanModerate {} {
-        return [expr {$IsMuc && $MyRole eq "moderator"}]
-    }
-
-    # Refresh the cached role. Seeded at construction and re-run on each of
-    # our own presence updates (role changes arrive as presence).
-    method RefreshMyRole {args} {
-        ::tacky muc myRole -acc $options(-acc) -jid $RoomBare \
-            -tag $win -command [mymethod SetMyRole]
-    }
-
-    method SetMyRole {role} { set MyRole $role }
-
-    method OnEditSelected {id} {
-        set sd [$hull messages get $id]
-        event generate $win <<EditMessage>> \
-            -data [list $id [message_text $sd]]
-    }
-
-    method OnRetractSelected {id} {
-        event generate $win <<RetractMessage>> -data $id
-    }
-
-    method OnModerateSelected {id} {
-        event generate $win <<ModerateMessage>> -data $id
-    }
-
-    # Open an emoji picker at the click point; the chosen glyph toggles our
-    # reaction on the message. Override-redirect + global grab so a click
-    # anywhere else dismisses it (mirrors messageentry's emoji popup).
-    method OnReactSelected {id rootX rootY} {
-        # Unique name per open: a pending idle-destroy of a prior popup must
-        # never land on a freshly reopened one at the same path.
-        set pop $win.__reactpop[clock microseconds]
-        toplevel $pop -borderwidth 1 -relief solid
-        wm withdraw $pop
-        wm overrideredirect $pop 1
-        if {[tk windowingsystem] eq "x11"} {
-            catch {wm attributes $pop -type popup_menu}
-        }
-        emojipicker $pop.p -command [mymethod OnReactPicked $id $pop]
-        pack $pop.p -expand yes -fill both
-        bind $pop <Escape> [list destroy $pop]
-        bind $pop <ButtonPress> [mymethod OnReactGrabClick $pop %X %Y]
-        wm transient $pop [winfo toplevel $win]
-        wm geometry $pop +$rootX+$rootY
-        wm deiconify $pop
-        raise $pop
-        if {[catch {ttk::globalGrab $pop}]} { catch {grab $pop} }
-        $pop.p focusSearch
-    }
-
-    method OnReactPicked {id pop glyph} {
-        # Hide immediately for instant feedback, but defer destroy: emojipicker's
-        # Click still generates <<EmojiSelected>> on $pop.p after this -command
-        # returns, so the window must outlive this callback.
-        catch {ttk::releaseGrab $pop}
-        catch {wm withdraw $pop}
-        ::tacky message react -acc $options(-acc) -chat $options(-jid) \
-            -timestamp $id -emoji $glyph
-        after idle [list destroy $pop]
-    }
-
-    method OnReactGrabClick {pop X Y} {
-        if {![winfo exists $pop]} return
-        set x0 [winfo rootx $pop]
-        set y0 [winfo rooty $pop]
-        if {$X < $x0 || $X >= $x0 + [winfo width $pop]
-         || $Y < $y0 || $Y >= $y0 + [winfo height $pop]} {
-            catch {ttk::releaseGrab $pop}
-            destroy $pop
-        }
-    }
-
-    # Chip click: toggle our reaction (add if absent, retract if present).
-    # The backend recomputes and sends the full set either way.
-    method OnReactToggle {data} {
-        lassign $data id emoji
-        ::tacky message react -acc $options(-acc) -chat $options(-jid) \
-            -timestamp $id -emoji $emoji
-    }
-
-    method OnReplySelected {id} {
-        set sd [$hull messages get $id]
-        set author [dict get [$self EnrichMessage $sd] display_name]
-        set snippet [lindex [split [message_text $sd] \n] 0]
-        if {[string length $snippet] > 80} {
-            set snippet "[string range $snippet 0 79]…"
-        }
-        event generate $win <<ReplyTo>> -data [list $id $author $snippet]
-    }
-
-    method OnViewXml {id} {
-        ::tacky message rawxml -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $id \
-            -command {apply {{xml} {
-                xmlstanza showxml $xml
-            }}}
-    }
-
-    method OnReceipt {receiptDict} {
-        $hull receipt update [dict get $receiptDict id] [dict get $receiptDict server_status]
     }
 
     method InstallMenus {} {
