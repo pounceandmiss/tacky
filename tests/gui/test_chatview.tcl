@@ -912,10 +912,9 @@ test chatview-stale-old-discarded {cleanup invalidation discards stale old-direc
         set mamIq2 [cv_find_mam_iq alice@example.com]
         if {$mamIq2 eq ""} { error "no thirst MAM IQ" }
 
-        # Simulate DoCleanup cleaning the old direction while the
-        # response is in flight.  This clears LoadToken, unlistens
-        # the callback, and cancels the backend query — so the stale
-        # response should never reach OnLoadDone.
+        # Simulate a cull of the old direction while the response is in
+        # flight. This unlistens the callback and cancels the backend query,
+        # so the stale response should never reach OnLoadDone.
         .cv OnCulled {old}
 
         # Complete the now-stale MAM response

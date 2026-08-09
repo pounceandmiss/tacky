@@ -147,12 +147,11 @@ snit::widget chatview {
     }
 
     method OnFirstConfigure {} {
-        # Calling InitialLoad directly glitched out on some chats
-        # (actually only one -#tcl%irc.libera.chat@irc.chinwag.im).
-        # PixelsAbove would get a weird value of ~58000, I figure
-        # because the widget didn't have real geometry yet, and
-        # cleanup would kick in erasing everything. No idea why it
-        # only happened with one chat.
+        # Calling InitialLoad directly glitched out on some chats (actually
+        # only one IRC-gatewayed room). The above-viewport measurement came
+        # back at ~58000, I figure because the widget didn't have real
+        # geometry yet, and the cull pass would kick in erasing everything.
+        # No idea why it only happened with one chat.
         bind $win.ca.text <Configure> {}
         $self InitialLoad
     }
