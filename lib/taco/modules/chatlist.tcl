@@ -10,9 +10,12 @@
 # Every jid is a chat JID, opened verbatim: bare = 1:1, room@muc?join = group
 # chat, room@muc/nick = MUC PM. The ?join suffix is the tell for group vs 1:1.
 #
+# Each entry also carries `unread`: how many of the other side's messages
+# sit past our own read watermark (see message markOwnRead).
+#
 # The module is the sole funnel: it consumes roster/bookmarks/chats/room-state
-# signals and normalizes them into three protocol-agnostic events over the
-# flat collection:
+# and read-watermark signals and normalizes them into three protocol-agnostic
+# events over the flat collection:
 #   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
 #   chatlist <Remove> -jid $jid                delete
 #   chatlist <Changed>                         reset (refetch via `get`)
@@ -33,6 +36,7 @@ snit::type taco_chatlist {
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnBookmarkChanged]
         $client bus subscribe $self bookmarks:<RoomState> [mymethod OnRoomState]
         $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
+        $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
     }
 
     destructor {
@@ -43,25 +47,27 @@ snit::type taco_chatlist {
 
     tackymethod get {args} {
         set activity [$self ActivityMap]
+        set unread [$client message messagestore unreadCounts]
 
         set entries {}
         set seen {}
 
         foreach item [$client roster get] {
             set bare [dict get $item jid]
-            lappend entries \
-                [$self MakeEntry $bare roster $item [$self MapTs $activity $bare]]
+            lappend entries [$self MakeEntry $bare roster $item \
+                [$self Lookup $activity $bare] [$self Lookup $unread $bare]]
             dict set seen $bare 1
         }
         foreach item [$client bookmarks get] {
             set chatJid [dict get $item jid]?join
-            lappend entries \
-                [$self MakeEntry $chatJid bookmarks $item [$self MapTs $activity $chatJid]]
+            lappend entries [$self MakeEntry $chatJid bookmarks $item \
+                [$self Lookup $activity $chatJid] [$self Lookup $unread $chatJid]]
             dict set seen $chatJid 1
         }
         dict for {chatJid ts} $activity {
             if {[dict exists $seen $chatJid]} continue
-            lappend entries [$self MakeEntry $chatJid free {} $ts]
+            lappend entries [$self MakeEntry $chatJid free {} $ts \
+                [$self Lookup $unread $chatJid]]
         }
         return $entries
     }
@@ -73,30 +79,34 @@ snit::type taco_chatlist {
     method EntryFor {chatJid} {
         set bare [regsub {\?join$} $chatJid {}]
         set isRoom [expr {$bare ne $chatJid}]
+        set unread [$client message messagestore unreadCount $chatJid]
         if {$isRoom} {
             set bm [$self BookmarkEntry $bare]
             if {$bm ne ""} {
-                return [$self MakeEntry $chatJid bookmarks $bm [$self Activity $chatJid]]
+                return [$self MakeEntry $chatJid bookmarks $bm \
+                    [$self Activity $chatJid] $unread]
             }
         } else {
             set r [$self RosterEntry $bare]
             if {$r ne ""} {
-                return [$self MakeEntry $chatJid roster $r [$self Activity $chatJid]]
+                return [$self MakeEntry $chatJid roster $r \
+                    [$self Activity $chatJid] $unread]
             }
         }
         set ts [$self Activity $chatJid]
         if {$ts > 0} {
-            return [$self MakeEntry $chatJid free {} $ts]
+            return [$self MakeEntry $chatJid free {} $ts $unread]
         }
         return ""
     }
 
-    method MakeEntry {chatJid source base ts} {
+    method MakeEntry {chatJid source base ts unread} {
         set entry $base
         dict set entry jid $chatJid
         dict set entry source $source
         dict set entry groupchat [expr {[string match {*\?join} $chatJid] ? 1 : 0}]
         dict set entry last_activity $ts
+        dict set entry unread $unread
         if {![dict exists $entry name]} { dict set entry name "" }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
         return $entry
@@ -138,8 +148,9 @@ snit::type taco_chatlist {
         return $ts
     }
 
-    method MapTs {activity key} {
-        if {[dict exists $activity $key]} { return [dict get $activity $key] }
+    # A per-chat map's value for one chat, 0 when it has no entry.
+    method Lookup {map key} {
+        if {[dict exists $map $key]} { return [dict get $map $key] }
         return 0
     }
 
@@ -173,6 +184,13 @@ snit::type taco_chatlist {
     }
 
     method OnChatUpdated {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        if {$opts(-jid) eq ""} return
+        $self EmitEntry $opts(-jid)
+    }
+
+    method OnOwnRead {args} {
         array set opts {-jid ""}
         array set opts $args
         if {$opts(-jid) eq ""} return

@@ -72,10 +72,10 @@ snit::widget chatview {
     # The file transfers behind this chat's attachments.
     component transfers
 
-    # Read markers: newest incoming id shown, and the last one we sent a
-    # `displayed` for. See MaybeSendDisplayed.
+    # Read state: newest incoming id shown, and the last one we reported
+    # read. See MaybeMarkRead.
     variable NewestIncoming ""
-    variable LastDisplayedSent ""
+    variable LastMarkedRead ""
 
     constructor args {
         $self configurelist $args
@@ -139,11 +139,9 @@ snit::widget chatview {
         bind $win.ca.text <Configure> [mymethod OnFirstConfigure]
         # Refocusing marks the tail read (live arrivals go via OnMessage).
         # The toplevel outlives us, so guard on $win still existing.
-        if {!$IsMuc} {
-            bind [winfo toplevel $win] <FocusIn> +[list apply {{w} {
-                if {[winfo exists $w]} { $w MaybeSendDisplayed }
-            }} $win]
-        }
+        bind [winfo toplevel $win] <FocusIn> +[list apply {{w} {
+            if {[winfo exists $w]} { $w MaybeMarkRead }
+        }} $win]
     }
 
     method OnFirstConfigure {} {
@@ -171,7 +169,7 @@ snit::widget chatview {
         set AtTail 1
         $self UpdateViewAtTail
         $area see end
-        $self MaybeSendDisplayed
+        $self MaybeMarkRead
     }
 
     destructor {
@@ -369,7 +367,7 @@ snit::widget chatview {
         if {$direction eq "new" && $atEnd} {
             $area see end
         }
-        $self MaybeSendDisplayed
+        $self MaybeMarkRead
     }
 
     # Live-message flow.
@@ -400,7 +398,7 @@ snit::widget chatview {
             $self ProcessBatch [list $m]
             $self UpdateViewAtTail
         }
-        $self MaybeSendDisplayed
+        $self MaybeMarkRead
     }
 
     # Send/receipt/upload status change: merge onto the checkmark row. Carries
@@ -518,14 +516,19 @@ snit::widget chatview {
         return [expr {$f ne "" && [winfo toplevel $f] eq [winfo toplevel $win]}]
     }
 
-    # Mark the newest incoming message read once it's on screen.
-    method MaybeSendDisplayed {} {
-        if {$IsMuc || !$AtTail || $NewestIncoming eq ""} return
-        if {$LastDisplayedSent ne "" && $NewestIncoming <= $LastDisplayedSent} return
+    # The newest incoming message is on screen and focused: move our read
+    # watermark, and tell the peer too in a 1:1 chat.
+    method MaybeMarkRead {} {
+        if {!$AtTail || $NewestIncoming eq ""} return
+        if {$LastMarkedRead ne "" && $NewestIncoming <= $LastMarkedRead} return
         if {![$self WindowFocused]} return
-        ::tacky message markDisplayed -acc $options(-acc) \
+        ::tacky message markOwnRead -acc $options(-acc) \
             -chat $options(-jid) -timestamp $NewestIncoming
-        set LastDisplayedSent $NewestIncoming
+        if {!$IsMuc} {
+            ::tacky message markDisplayed -acc $options(-acc) \
+                -chat $options(-jid) -timestamp $NewestIncoming
+        }
+        set LastMarkedRead $NewestIncoming
     }
 
     method ProcessBatch {messages} {

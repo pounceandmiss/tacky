@@ -563,8 +563,11 @@ snit::widget chatlistview {
 
     method DisplayText {item} {
         set name [dict get $item name]
-        if {$name ne ""} { return $name }
-        return [dict get $item jid]
+        if {$name eq ""} { set name [dict get $item jid] }
+        if {[dict exists $item unread] && [dict get $item unread] > 0} {
+            append name " ([dict get $item unread])"
+        }
+        return $name
     }
 
     method IsRow {item} {

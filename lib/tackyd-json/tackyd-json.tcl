@@ -153,7 +153,7 @@ jsonify_type jsonify \
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        chat_entry  {groupchat bool autojoin bool last_activity int approved bool groups list}
+        chat_entry  {groupchat bool autojoin bool last_activity int unread int approved bool groups list}
         avatar_meta {bytes int width int height int}
         presence    {priority int}
         omemo_trust {device int active bool}
@@ -208,6 +208,7 @@ jsonify_type jsonify \
         setting/list            list
         debugtap/on             int
         message/rawxml          string
+        message/ownRead         {dict {timestamp int unread int}}
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
         mam/formfields          list
@@ -228,6 +229,7 @@ jsonify_type jsonify \
         message/<Reactions>     {dict {timestamp int reactions {map {dict {reactors list mine bool}}}}}
         message/<Edited>        {dict {message message}}
         message/<Retracted>     {dict {timestamp int}}
+        message/<OwnRead>       {dict {timestamp int}}
         message/<CatchupDone>   {dict {count int}}
         message/<Tail>          {dict {timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}
