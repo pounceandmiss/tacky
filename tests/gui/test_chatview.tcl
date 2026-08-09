@@ -201,7 +201,7 @@ test chatview-author-falls-back-to-the-jid {an author the name cache doesn't kno
         wait
         # A 1:1 from_jid is bare after normalisation, so there is no resource
         # to use as a nick and the JID itself is the label.
-        .cv.text get {*}[.cv.text tag ranges author.alice@example.com]
+        [.cv textwidget] get {*}[[.cv textwidget] tag ranges author.alice@example.com]
     } -result alice@example.com
 
 test chatview-formatting-overlap-combines {overlapping bold+italic render as one compound tag, not last-wins} \
@@ -211,9 +211,9 @@ test chatview-formatting-overlap-combines {overlapping bold+italic render as one
         wait
         # The GUI combines the two overlapping single-type spans into the
         # compound entity.bold.italic tag; italic is never applied on its own.
-        set ranges [.cv.text tag ranges entity.bold.italic]
-        list [.cv.text get {*}$ranges] \
-             [llength [.cv.text tag ranges entity.italic]]
+        set ranges [[.cv textwidget] tag ranges entity.bold.italic]
+        list [[.cv textwidget] get {*}$ranges] \
+             [llength [[.cv textwidget] tag ranges entity.italic]]
     } -result {{bold italic} 0}
 
 test chatview-live-dedup {duplicate stanza-id does not create second message} \
@@ -315,15 +315,15 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         set sentId [.cv messages newest]
         # Check no checkmark yet (pending)
         set tag [.cv messages tag $sentId].receipt
-        set ranges [.cv.text tag ranges $tag]
-        set before [.cv.text get {*}$ranges]
+        set ranges [[.cv textwidget] tag ranges $tag]
+        set before [[.cv textwidget] get {*}$ranges]
         # Trigger SM ack
         set sentStanza [lindex [$::_client conn get_written] end]
         $::_client message OnSmAck \
             -stanzas [list $sentStanza]
         wait
-        set ranges [.cv.text tag ranges $tag]
-        set after [.cv.text get {*}$ranges]
+        set ranges [[.cv textwidget] tag ranges $tag]
+        set after [[.cv textwidget] get {*}$ranges]
         list before=$before after=$after
     } -result "{before= } {after= \u2713}"
 
@@ -362,8 +362,8 @@ test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
         cv_muc_echo $sentId echo-sid1
         wait
         set tag [.cv messages tag $sentId].receipt
-        set ranges [.cv.text tag ranges $tag]
-        set receipt [.cv.text get {*}$ranges]
+        set ranges [[.cv textwidget] tag ranges $tag]
+        set receipt [[.cv textwidget] get {*}$ranges]
         list [llength [.cv messages keys]] receipt=$receipt
     } -result "1 {receipt= \u2713}"
 
@@ -382,8 +382,8 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
         set newId [lindex $ids 0]
         # Old id should be gone, new id should be present
         set tag [.cv messages tag $newId].receipt
-        set ranges [.cv.text tag ranges $tag]
-        set receipt [.cv.text get {*}$ranges]
+        set ranges [[.cv textwidget] tag ranges $tag]
+        set receipt [[.cv textwidget] get {*}$ranges]
         list [llength $ids] [expr {$sentId ni $ids}] \
             [expr {$newId == $echoTs}] receipt=$receipt
     } -result "1 1 1 {receipt= \u2713}"
@@ -562,22 +562,22 @@ test chatview-catchup-declines-page-short-of-tail {a page that stops short of th
         llength [.cv messages keys]
     } -result {1}
 
-test chatview-catchup-shows-indicator {the sync bracket places and unplaces the overlay} \
+test chatview-catchup-shows-indicator {the sync bracket shows and hides the overlay} \
     {*}$cv_common \
     -body {
-        set idle [winfo manager .cv.loading]
+        set idle [.cv loading visible]
         cv_catchup_start
-        set busy [winfo manager .cv.loading]
+        set busy [.cv loading visible]
         cv_catchup_done
-        list $idle $busy [winfo manager .cv.loading]
-    } -result {{} place {}}
+        list $idle $busy [.cv loading visible]
+    } -result {0 1 0}
 
 test chatview-catchup-indicator-ignores-other-chat {another chat's sync shows nothing here} \
     {*}$cv_common \
     -body {
         cv_catchup_start bob@example.com
-        winfo manager .cv.loading
-    } -result {}
+        .cv loading visible
+    } -result {0}
 
 # -- scroll-to-bottom on incoming/outgoing ---------------------------------------
 
@@ -596,10 +596,10 @@ foreach {direction scrollPos result} {
         -cleanup { cv_cleanup } \
         -body {
             if {$scrollPos eq "scrolled-up"} {
-                .cv.text yview moveto 0
+                [.cv textwidget] yview moveto 0
                 wait
             }
-            set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+            set atEndBefore [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
             if {$direction eq "outgoing"} {
                 tacky message send -acc $::acc \
                     -chat alice@example.com -body "one more"
@@ -607,7 +607,7 @@ foreach {direction scrollPos result} {
                 cv_feed "new msg" srv-new
             }
             wait
-            set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+            set atEndAfter [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
             list before=$atEndBefore after=$atEndAfter
         } -result $result
 }
@@ -618,21 +618,21 @@ test chatview-scrollbtn-hidden-at-end {scroll button hidden when at bottom} \
     -setup { cv_overflow_setup } \
     -cleanup { cv_cleanup } \
     -body {
-        expr {[place info .cv.scrollbtn] eq ""}
+        expr {![.cv scrollbtn visible]}
     } -result {1}
 
 test chatview-scrollbtn-shown-when-scrolled-up {scroll button appears when scrolled up and hides on return} \
     -setup { cv_overflow_setup } \
     -cleanup { cv_cleanup } \
     -body {
-        .cv.text yview moveto 0
-        event generate .cv.text <<Yview>>
+        [.cv textwidget] yview moveto 0
+        event generate [.cv textwidget] <<Yview>>
         wait
-        set shownAfterScroll [expr {[place info .cv.scrollbtn] ne ""}]
-        .cv.text see end
-        event generate .cv.text <<Yview>>
+        set shownAfterScroll [expr {[.cv scrollbtn visible]}]
+        [.cv textwidget] see end
+        event generate [.cv textwidget] <<Yview>>
         wait
-        set hiddenAfterReturn [expr {[place info .cv.scrollbtn] eq ""}]
+        set hiddenAfterReturn [expr {![.cv scrollbtn visible]}]
         list shown=$shownAfterScroll hidden=$hiddenAfterReturn
     } -result {shown=1 hidden=1}
 
@@ -644,7 +644,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
     -setup { cv_overflow_setup } \
     -cleanup { cv_cleanup } \
     -body {
-        set hiddenBefore [expr {[place info .cv.scrollbtn] eq ""}]
+        set hiddenBefore [expr {![.cv scrollbtn visible]}]
         set tmp /tmp/cv_scrollimg_[pid].png
         set w 120; set h 80
         set px [string repeat [binary format cccc 200 80 40 255] [expr {$w * $h}]]
@@ -655,7 +655,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
         wait
         set id [.cv messages newest]
         set hasImg [winfo exists [.cv attachment path $id 0].img]
-        set hiddenAfter [expr {[place info .cv.scrollbtn] eq ""}]
+        set hiddenAfter [expr {![.cv scrollbtn visible]}]
         file delete $tmp
         list hiddenBefore=$hiddenBefore img=$hasImg hiddenAfter=$hiddenAfter
     } -result {hiddenBefore=1 img=1 hiddenAfter=1}
@@ -873,7 +873,7 @@ test chatview-reply-jump {clicking a reply jumps to and highlights the target} \
         # Simulate a click on the reply reference.
         .cv OnReplyJump [list srv-tgt alice@example.com]
         wait
-        .cv.text tag cget [.cv messages tag $tsTarget] -background
+        [.cv textwidget] tag cget [.cv messages tag $tsTarget] -background
     } -result {yellow}
 
 test chatview-reply-select {selecting Reply emits ReplyTo carrying the target id and body snippet} \
@@ -953,7 +953,7 @@ test chatview-fresh-load-after-invalidation {new thirst re-requests and loads af
 
         # Kick a new cleanup cycle — in real use the user is scrolling,
         # but here the widget is idle so we nudge it.
-        event generate .cv.text <<Yview>>
+        event generate [.cv textwidget] <<Yview>>
         wait
 
         # Thirst should re-fire with a fresh cursor → new MAM query
@@ -1148,7 +1148,7 @@ test chatarea-distinct-keys-same-sort {rows sharing a sort position stay separat
         set a [dict replace [ca_msg 100 "from alice"] key alice@example.com|100]
         set b [dict replace [ca_msg 100 "from bob"]   key bob@example.com|100]
         .ca apply [list $a $b]
-        set content [.ca.text get 1.0 end-1c]
+        set content [[.ca textwidget] get 1.0 end-1c]
         list [llength [.ca messages keys]] \
              [string match "*from alice*from bob*" $content]
     } -result {2 1}
@@ -1164,10 +1164,10 @@ test chatarea-key-with-dots-and-at {a key carrying dots and an @ draws and resol
         update idletasks
         set clicked ""
         bind .ca <<MessageClick>> {set clicked %d}
-        lassign [.ca.text bbox $first] bx by
-        event generate .ca.text <Button-1> -x [expr {$bx + 2}] -y [expr {$by + 2}]
+        lassign [[.ca textwidget] bbox $first] bx by
+        event generate [.ca textwidget] <Button-1> -x [expr {$bx + 2}] -y [expr {$by + 2}]
         wait
-        list [expr {$tag ne ""}] [.ca.text get $first $last] $clicked
+        list [expr {$tag ne ""}] [[.ca textwidget] get $first $last] $clicked
     } -result [list 1 hi room@conf.example.com?join|1700]
 
 test chatarea-patch-receipt {Patch with server_status updates receipt checkmark} \
@@ -1176,14 +1176,14 @@ test chatarea-patch-receipt {Patch with server_status updates receipt checkmark}
         .ca apply [list [ca_outgoing 100 "hello"]]
         # Receipt tag should exist but show no checkmark (pending)
         set tag [.ca messages tag 100].receipt
-        set ranges [.ca.text tag ranges $tag]
+        set ranges [[.ca textwidget] tag ranges $tag]
         set before [expr {[llength $ranges] > 0
-            ? [.ca.text get {*}$ranges] : "MISSING"}]
+            ? [[.ca textwidget] get {*}$ranges] : "MISSING"}]
         # Patch: server confirms receipt
         .ca apply [list [ca_patch 100]]
-        set ranges [.ca.text tag ranges $tag]
+        set ranges [[.ca textwidget] tag ranges $tag]
         set after [expr {[llength $ranges] > 0
-            ? [.ca.text get {*}$ranges] : "MISSING"}]
+            ? [[.ca textwidget] get {*}$ranges] : "MISSING"}]
         list before=$before after=$after
     } -result "{before= } {after= \u2713}"
 
@@ -1191,9 +1191,9 @@ test chatarea-reply-preview-rendered {a reply renders a clickable preview with a
     {*}$ca_common \
     -body {
         .ca apply [list [ca_reply 100 "the reply" rid1 room@x/bob bob "the original text"]]
-        set content [.ca.text get 1.0 end-1c]
+        set content [[.ca textwidget] get 1.0 end-1c]
         list [string match "*bob*the original text*the reply*" $content] \
-             [expr {"[.ca messages tag 100].replyref" in [.ca.text tag names]}]
+             [expr {"[.ca messages tag 100].replyref" in [[.ca textwidget] tag names]}]
     } -result {1 1}
 
 test chatarea-reactions-rendered {a message's reactions render emoji+count chips, styled and clickable} \
@@ -1205,10 +1205,10 @@ test chatarea-reactions-rendered {a message's reactions render emoji+count chips
                 ❤️ {reactors {bob} mine 0}
             }
         }]]
-        set content [.ca.text get 1.0 end-1c]
+        set content [[.ca textwidget] get 1.0 end-1c]
         list [string match "*👍 2*❤️ 1*" $content] \
-             [expr {"[.ca messages tag 100].reactions" in [.ca.text tag names]}] \
-             [expr {[.ca.text tag bind [.ca messages tag 100].react.1 <Button-1>] ne ""}]
+             [expr {"[.ca messages tag 100].reactions" in [[.ca textwidget] tag names]}] \
+             [expr {[[.ca textwidget] tag bind [.ca messages tag 100].react.1 <Button-1>] ne ""}]
     } -result {1 1 1}
 
 test chatarea-reactions-update-in-place {reactions update swaps only the chip row, leaving the body intact} \
@@ -1218,16 +1218,16 @@ test chatarea-reactions-update-in-place {reactions update swaps only the chip ro
         # Add a chip row where there was none.
         .ca reactions update 100 {👍 {reactors {bob} mine 0}}
         set added [list \
-            [string match "*hi there*👍 1*" [.ca.text get 1.0 end-1c]] \
-            [expr {[llength [.ca.text tag ranges [.ca messages tag 100].reactions]] > 0}]]
+            [string match "*hi there*👍 1*" [[.ca textwidget] get 1.0 end-1c]] \
+            [expr {[llength [[.ca textwidget] tag ranges [.ca messages tag 100].reactions]] > 0}]]
         # Change the set.
         .ca reactions update 100 {👍 {reactors {bob carol} mine 1}}
-        set changed [string match "*👍 2*" [.ca.text get 1.0 end-1c]]
+        set changed [string match "*👍 2*" [[.ca textwidget] get 1.0 end-1c]]
         # Retract everything: chip row gone, body still present, message kept.
         .ca reactions update 100 {}
         set cleared [list \
-            [llength [.ca.text tag ranges [.ca messages tag 100].reactions]] \
-            [string match "*hi there*" [.ca.text get 1.0 end-1c]] \
+            [llength [[.ca textwidget] tag ranges [.ca messages tag 100].reactions]] \
+            [string match "*hi there*" [[.ca textwidget] get 1.0 end-1c]] \
             [expr {100 in [.ca messages keys]}]]
         concat $added $changed $cleared
     } -result {1 1 1 0 1 1}
@@ -1286,12 +1286,12 @@ test chatarea-image-load-above-keeps-viewport \
         # Park message 150 at the top of the viewport, with the image (200)
         # on-screen below it. A thumbnail popping in on 200 must not shift
         # the content the user is already reading above it.
-        .ca.text see [.ca messages tag 150].first
-        .ca.text sync; update
-        set before [lindex [.ca.text bbox [.ca messages tag 150].first] 1]
+        [.ca textwidget] see [.ca messages tag 150].first
+        [.ca textwidget] sync; update
+        set before [lindex [[.ca textwidget] bbox [.ca messages tag 150].first] 1]
         .ca attachment image 200 0 $::ca_png
-        .ca.text sync; update
-        set after [lindex [.ca.text bbox [.ca messages tag 150].first] 1]
+        [.ca textwidget] sync; update
+        set after [lindex [[.ca textwidget] bbox [.ca messages tag 150].first] 1]
         list visBefore=[expr {$before ne ""}] visAfter=[expr {$after ne ""}] \
              stable=[expr {$before ne "" && $after ne "" \
                  && abs($after - $before) < 30}]
@@ -1379,8 +1379,8 @@ test chatarea-attachment-empty-caption-no-body {an empty caption renders no body
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
             ""]]
-        set r [.ca.text tag ranges [.ca messages tag 100].body]
-        expr {[llength $r] == 0 || [.ca.text get {*}$r] eq ""}
+        set r [[.ca textwidget] tag ranges [.ca messages tag 100].body]
+        expr {[llength $r] == 0 || [[.ca textwidget] get {*}$r] eq ""}
     } -result 1
 
 test chatarea-attachment-caption-rendered {a non-empty caption is shown as the body text} \
@@ -1389,8 +1389,8 @@ test chatarea-attachment-caption-rendered {a non-empty caption is shown as the b
         .ca apply [list [ca_msg_att 100 "see this https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
             "see this https://h/p.png"]]
-        set r [.ca.text tag ranges [.ca messages tag 100].body]
-        .ca.text get {*}$r
+        set r [[.ca textwidget] tag ranges [.ca messages tag 100].body]
+        [.ca textwidget] get {*}$r
     } -result {see this https://h/p.png}
 
 test chatarea-attachment-image-missing-frame {attachment image on an unknown id is a no-op} \
@@ -1442,10 +1442,10 @@ test chatarea-highlight-message {highlight applies yellow and clears previous} \
             [ca_msg 100 "msg A"] \
             [ca_msg 200 "msg B"]]
         .ca highlight message 100
-        set bg1 [.ca.text tag cget [.ca messages tag 100] -background]
+        set bg1 [[.ca textwidget] tag cget [.ca messages tag 100] -background]
         .ca highlight message 200
-        set bg1after [.ca.text tag cget [.ca messages tag 100] -background]
-        set bg2 [.ca.text tag cget [.ca messages tag 200] -background]
+        set bg1after [[.ca textwidget] tag cget [.ca messages tag 100] -background]
+        set bg2 [[.ca textwidget] tag cget [.ca messages tag 200] -background]
         list first=$bg1 first_after=$bg1after second=$bg2
     } -result {first=yellow first_after= second=yellow}
 
@@ -1454,9 +1454,9 @@ test chatarea-highlight-clear {highlight clear removes background} \
     -body {
         .ca apply [list [ca_msg 100 "msg A"]]
         .ca highlight message 100
-        set before [.ca.text tag cget [.ca messages tag 100] -background]
+        set before [[.ca textwidget] tag cget [.ca messages tag 100] -background]
         .ca highlight clear
-        set after [.ca.text tag cget [.ca messages tag 100] -background]
+        set after [[.ca textwidget] tag cget [.ca messages tag 100] -background]
         list before=$before after=$after
     } -result {before=yellow after=}
 
@@ -1464,15 +1464,15 @@ test chatarea-system-insert {system message is inserted with system tag} \
     {*}$ca_common \
     -body {
         .ca system insert "Connection lost"
-        set content [.ca.text get 1.0 end-1c]
-        set tags [.ca.text tag names 1.0]
+        set content [[.ca textwidget] get 1.0 end-1c]
+        set tags [[.ca textwidget] tag names 1.0]
         list [string match *Connection\ lost* $content] \
             [expr {"system" in $tags}]
     } -result {1 1}
 
 # -- chatarea pagination signals ------------------------------------------------
 
-# Wrap .ca.text so 'count -ypixels' returns values from the global ::mock_above
+# Wrap [.ca textwidget] so 'count -ypixels' returns values from the global ::mock_above
 # / ::mock_below. Each is read fresh on every call, so the drop loop sees
 # decreasing pixels as messages are deleted (callers can adjust between calls
 # or use a proc-style global that tracks llength).
@@ -1525,8 +1525,8 @@ test chatarea-replace-redraws-in-place {a replaced row keeps its position and sh
             [ca_msg 300 "c"]]
         .ca replace 200 [ca_msg 200 "b revised"]
         list [.ca messages keys] \
-             [string match "*a*b revised*c*" [.ca.text get 1.0 end-1c]] \
-             [string match "*b\n*" [.ca.text get 1.0 end-1c]]
+             [string match "*a*b revised*c*" [[.ca textwidget] get 1.0 end-1c]] \
+             [string match "*b\n*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {{100 200 300} 1 0}
 
 test chatarea-replace-can-rekey {a replacement carrying a new key and sort moves the row} \
@@ -1539,7 +1539,7 @@ test chatarea-replace-can-rekey {a replacement carrying a new key and sort moves
         # What a server-relocated send looks like: same row, new identity.
         .ca replace 200 [ca_msg 400 "b"]
         list [.ca messages keys] \
-             [string match "*a*c*b*" [.ca.text get 1.0 end-1c]]
+             [string match "*a*c*b*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {{100 300 400} 1}
 
 test chatarea-replace-ignores-an-undrawn-key {replacing a row that isn't displayed draws nothing} \
@@ -1548,7 +1548,7 @@ test chatarea-replace-ignores-an-undrawn-key {replacing a row that isn't display
         .ca apply [list [ca_msg 100 "a"]]
         .ca replace 999 [ca_msg 999 "ghost"]
         list [.ca messages keys] \
-             [string match "*ghost*" [.ca.text get 1.0 end-1c]]
+             [string match "*ghost*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {100 0}
 
 # The decisions themselves are windowpolicy's, and tested there. These two
@@ -1564,7 +1564,7 @@ test chatarea-thirsts-through-the-scroll-path {a thin buffer asks for more at bo
             [ca_msg 100 "a"] \
             [ca_msg 200 "b"] \
             [ca_msg 300 "c"]]
-        event generate .ca.text <<Yview>>
+        event generate [.ca textwidget] <<Yview>>
         update
         set ::ca_thirsty
     } -result {{old 100} {new 300}}
@@ -1579,9 +1579,9 @@ test chatarea-culls-through-the-scroll-path {a full buffer drops rows and erases
             [ca_msg 100 "a"] \
             [ca_msg 200 "b"] \
             [ca_msg 300 "c"]]
-        event generate .ca.text <<Yview>>
+        event generate [.ca textwidget] <<Yview>>
         update
-        list [.ca messages keys] $::ca_culled [.ca.text get 1.0 end-1c]
+        list [.ca messages keys] $::ca_culled [[.ca textwidget] get 1.0 end-1c]
     } -result {{} old {}}
 
 # -- edits (XEP-0308) / retractions (XEP-0424/0425) -----------------------------
@@ -1590,9 +1590,9 @@ test chatarea-edited-marker {an edited message renders the (edited) marker} \
     {*}$ca_common \
     -body {
         .ca apply [list [dict merge [ca_outgoing 100 "hello"] {edited 1}]]
-        set r [.ca.text tag ranges edited]
+        set r [[.ca textwidget] tag ranges edited]
         list [expr {[llength $r] > 0}] \
-             [string match "*(edited)*" [.ca.text get 1.0 end-1c]]
+             [string match "*(edited)*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {1 1}
 
 test chatarea-retracted-tombstone {a retracted message renders a tombstone and keeps its slot} \
@@ -1602,10 +1602,10 @@ test chatarea-retracted-tombstone {a retracted message renders a tombstone and k
             [ca_msg 100 "msg A"] \
             [dict merge [ca_msg 200 "secret"] {retracted 1}] \
             [ca_msg 300 "msg C"]]
-        set tomb [.ca.text tag ranges tombstone]
+        set tomb [[.ca textwidget] tag ranges tombstone]
         list [expr {[llength $tomb] > 0}] \
-             [string match "*deleted*" [.ca.text get 1.0 end-1c]] \
-             [expr {![string match "*secret*" [.ca.text get 1.0 end-1c]]}] \
+             [string match "*deleted*" [[.ca textwidget] get 1.0 end-1c]] \
+             [expr {![string match "*secret*" [[.ca textwidget] get 1.0 end-1c]]}] \
              [.ca messages keys]
     } -result {1 1 1 {100 200 300}}
 
@@ -1622,7 +1622,7 @@ test chatview-edit-redraws-body {a received correction redraws the message body 
             j body #body "hello world"
         }]
         wait
-        set txt [.cv.text get 1.0 end-1c]
+        set txt [[.cv textwidget] get 1.0 end-1c]
         list [string match "*hello world*" $txt] \
              [string match "*(edited)*" $txt]
     } -result {1 1}
@@ -1639,7 +1639,7 @@ test chatview-retract-tombstones {a received self-retraction redraws the message
             j retract -ns urn:xmpp:message-retract:1 -id m1
         }]
         wait
-        set txt [.cv.text get 1.0 end-1c]
+        set txt [[.cv textwidget] get 1.0 end-1c]
         list [string match "*deleted*" $txt] \
              [expr {![string match "*secret*" $txt]}]
     } -result {1 1}
@@ -1648,9 +1648,9 @@ test chatview-edit-at-tail-keeps-tail-pinned \
     {editing the newest message while at the bottom keeps it in view} \
     -setup { cv_overflow_setup } -cleanup cv_cleanup \
     -body {
-        .cv.text see end
+        [.cv textwidget] see end
         wait
-        set atEndBefore [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        set atEndBefore [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
         # Grow the last message ("fill 14" -> seed14) by several lines. Without
         # re-pinning the tail, the new content drifts below the fold and the
         # view is no longer at the bottom.
@@ -1659,7 +1659,7 @@ test chatview-edit-at-tail-keeps-tail-pinned \
             j body #body "edited\nmuch\ntaller\nnow"
         }]
         wait
-        set atEndAfter [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        set atEndAfter [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
         list $atEndBefore $atEndAfter
     } -result {1 1}
 
@@ -1672,13 +1672,13 @@ test chatview-send-confirm-timestamp-move-keeps-tail \
         tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
         tacky message send -acc $::acc -chat alice@example.com -body "hello"
         wait
-        set atEndAfterSend [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        set atEndAfterSend [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
         set sentId [.cv messages newest]
         # Server confirms with a stamp 1s later: this fires a <Confirmed>
         # event that deletes and re-inserts the row at its new timestamp.
         # Without re-pinning, the top-anchored reinsert drifts off the tail.
         cv_muc_echo $sentId echo-move [FormatTimestampISO [expr {$sentId + 1000000}]]
         wait
-        set atEndAfterMove [expr {[lindex [.cv.text yview] 1] >= 1.0}]
+        set atEndAfterMove [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
         list $atEndAfterSend $atEndAfterMove
     } -result {1 1}

@@ -349,6 +349,11 @@ snit::widget chatarea {
     method {messages oldest} {} { $self EdgeKey old }
     method {messages newest} {} { $self EdgeKey new }
 
+    # The text widget itself, for the things only it can do: searching its
+    # content, tagging a range, accepting a file drop. Everything addressed by
+    # message key goes through the methods above instead.
+    method textwidget {} { return $text }
+
     method {messages keys} {} { $rows keys }
     method {messages has} {key} { expr {[$rows index $key] >= 0} }
 

@@ -4,15 +4,24 @@ package require emojipicker
 # chatview - the controller. Turns chatarea's thirst/cull signals into
 # history requests against the Client API, and feeds the results back to
 # chatarea as message dicts. See chatarea.tcl for the loading algorithm.
-snit::widgetadaptor chatview {
+snit::widget chatview {
+    hulltype ttk::frame
+
+    # The area this drives. Held rather than adapted: an adaptor would
+    # re-export every chatarea method through chatview.
+    component area
+
     # Which avatar belongs to each author on screen.
     component avatars
 
-    delegate method messages to hull
-    delegate method attachment to hull
-    delegate method {see *} to hull using {%c see %m}
-    delegate method {highlight *} to hull using {%c highlight %m}
-    delegate method system to hull
+    delegate method messages to area
+    delegate method attachment to area
+    delegate method textwidget to area
+    delegate method {see *} to area using {%c see %m}
+    delegate method {highlight *} to area using {%c highlight %m}
+    delegate method system to area
+    delegate method scrollbtn to area
+    delegate method loading to area
 
     option -acc -readonly yes
     option -jid
@@ -69,14 +78,13 @@ snit::widgetadaptor chatview {
     variable LastDisplayedSent ""
 
     constructor args {
-        installhull using chatarea \
+        $self configurelist $args
+        install area using chatarea $win.ca \
             -thirst-command [mymethod OnThirsty] \
             -cull-command [mymethod OnCulled] \
             -scrollbtn-command [mymethod ScrollToBottom] \
             -loading-cancel-command [mymethod CancelGoto]
-        # $self only becomes a command once the hull exists, and everything
-        # below needs -acc and -jid, so the account-bound parts come after.
-        $self configurelist $args
+        pack $win.ca -expand yes -fill both
         set ViewAtTail 1
         # Empty display is vacuously at the tail; any live message
         # arriving before InitialLoad completes is the new tail.
@@ -87,14 +95,14 @@ snit::widgetadaptor chatview {
         install authors using authornames ${selfns}::authors \
             -acc $options(-acc) -chat $options(-jid) -tag $win/authors \
             -show-jid-setting [expr {!$IsMuc}] \
-            -changed-command [list $hull author update]
+            -changed-command [list $area author update]
         install avatars using avatarbinder ${selfns}::avatars \
             -acc $options(-acc) -tag $win \
-            -repaint-command [list $hull avatar set]
+            -repaint-command [list $area avatar set]
         install transfers using attachmentxfer ${selfns}::transfers \
             -acc $options(-acc) -chat $options(-jid) -tag $win/files \
             -parent $win -update-command [mymethod OnAttachmentUpdate]
-        $hull configure \
+        $area configure \
             -avatar-image-command [list $avatars image] \
             -avatar-release-command [list $avatars release] \
             -attachment-open-command [list $transfers open] \
@@ -124,16 +132,16 @@ snit::widgetadaptor chatview {
         install actions using messageactions ${selfns}::actions \
             -acc $options(-acc) -chat $options(-jid) -tag $win/actions \
             -groupchat $IsMuc -widget $win \
-            -message-command [list $hull messages get] \
+            -message-command [list $area messages get] \
             -label-command [list $authors label]
-        bind $self <<MessageRightClick>> [list $actions rightclick %d %X %Y]
-        bind $self <<ReactToggle>> [list $actions toggle %d]
-        bind $self <<ReplyJump>> [mymethod OnReplyJump %d]
+        bind $area <<MessageRightClick>> [list $actions rightclick %d %X %Y]
+        bind $area <<ReactToggle>> [list $actions toggle %d]
+        bind $area <<ReplyJump>> [mymethod OnReplyJump %d]
         if {$options(-menubar) ne ""} {
             $self InstallMenus
         }
-        bind $win.text <<Yview>> +[mymethod OnScroll]
-        bind $win.text <Configure> [mymethod OnFirstConfigure]
+        bind $win.ca.text <<Yview>> +[mymethod OnScroll]
+        bind $win.ca.text <Configure> [mymethod OnFirstConfigure]
         # Refocusing marks the tail read (live arrivals go via OnMessage).
         # The toplevel outlives us, so guard on $win still existing.
         if {!$IsMuc} {
@@ -150,7 +158,7 @@ snit::widgetadaptor chatview {
         # because the widget didn't have real geometry yet, and
         # cleanup would kick in erasing everything. No idea why it
         # only happened with one chat.
-        bind $win.text <Configure> {}
+        bind $win.ca.text <Configure> {}
         $self InitialLoad
     }
 
@@ -168,7 +176,7 @@ snit::widgetadaptor chatview {
         # is vacuously at tail).
         set AtTail 1
         $self UpdateViewAtTail
-        $hull see end
+        $area see end
         $self MaybeSendDisplayed
     }
 
@@ -201,7 +209,7 @@ snit::widgetadaptor chatview {
         if {$target eq "end"} {
             # Reset to "bottom of conversation" — same as initial open.
             # InitialLoad will flip AtTail back to true on completion.
-            $hull clear
+            $area clear
             $self InitialLoad
             return
         }
@@ -225,17 +233,17 @@ snit::widgetadaptor chatview {
         if {[llength $messages] == 0} return
 
         # If anchor is already visible, just scroll+highlight
-        if {[$hull messages has $anchor]} {
-            $hull see message $anchor
+        if {[$area messages has $anchor]} {
+            $area see message $anchor
             return
         }
 
         # Clear and reload around the anchor
-        $hull clear
+        $area clear
         $self ProcessBatch $messages
         $self UpdateViewAtTail
-        if {$anchor ne "" && [$hull messages has $anchor]} {
-            $hull see message $anchor
+        if {$anchor ne "" && [$area messages has $anchor]} {
+            $area see message $anchor
         }
     }
 
@@ -250,13 +258,13 @@ snit::widgetadaptor chatview {
     # background sync.
     method UpdateLoading {} {
         if {$GotoBusy} {
-            $hull loading configure -text "Loading…" -cancellable 1
-            $hull loading show
+            $area loading configure -text "Loading…" -cancellable 1
+            $area loading show
         } elseif {$CatchupBusy} {
-            $hull loading configure -text "Syncing history…" -cancellable 0
-            $hull loading show
+            $area loading configure -text "Syncing history…" -cancellable 0
+            $area loading show
         } else {
-            $hull loading hide
+            $area loading hide
         }
     }
 
@@ -300,7 +308,7 @@ snit::widgetadaptor chatview {
     method MaybeCatchupRepaint {} {
         if {!$AtTail} return
         if {[::tacky listening $win/new]} return
-        set newest [$hull messages newest]
+        set newest [$area messages newest]
         if {$newest eq ""} {
             $self InitialLoad
             return
@@ -352,20 +360,20 @@ snit::widgetadaptor chatview {
     }
 
     method OnLoadDone {direction messages} {
-        set atEnd [$hull atEnd]
+        set atEnd [$area atEnd]
         $self ProcessBatch $messages
         if {$direction eq "new"} {
             # If thirst caught up to the pushed tail, rejoin the live tail
             # so subsequent <New> events insert again. Comparing to DbNewest
             # is robust to changes in -limit.
-            set newest [$hull messages newest]
+            set newest [$area messages newest]
             if {$newest ne "" && $newest eq $DbNewest} {
                 set AtTail 1
             }
         }
         $self UpdateViewAtTail
         if {$direction eq "new" && $atEnd} {
-            $hull see end
+            $area see end
         }
         $self MaybeSendDisplayed
     }
@@ -405,12 +413,12 @@ snit::widgetadaptor chatview {
     # any of server_status / remote_status / fail_reason.
     method OnStatus {ev} {
         set ts [dict get $ev -timestamp]
-        if {![$hull messages has $ts]} return
+        if {![$area messages has $ts]} return
         set patch [dict create]
         foreach k {server_status remote_status fail_reason} {
             if {[dict exists $ev -$k]} { dict set patch $k [dict get $ev -$k] }
         }
-        $hull patchFields $ts $patch
+        $area patchFields $ts $patch
     }
 
     # A pending send was acknowledged by the server. When the stamp held
@@ -419,14 +427,14 @@ snit::widgetadaptor chatview {
     # redraw it at its new position.
     method OnConfirmed {ev} {
         set ts [dict get $ev -timestamp]
-        if {![$hull messages has $ts]} return
+        if {![$area messages has $ts]} return
         set newTs [dict get $ev -newtimestamp]
         if {$newTs == $ts} {
-            $hull patchFields $ts \
+            $area patchFields $ts \
                 [dict create server_status [dict get $ev -server_status]]
             return
         }
-        set storeDict [$hull messages get $ts]
+        set storeDict [$area messages get $ts]
         dict set storeDict timestamp $newTs
         dict set storeDict server_status [dict get $ev -server_status]
         $self KeepingTail { $self Redraw $ts $storeDict }
@@ -434,15 +442,15 @@ snit::widgetadaptor chatview {
 
     method OnReactions {ev} {
         set ts [dict get $ev -timestamp]
-        if {![$hull messages has $ts]} return
-        $hull reactions update $ts [dict get $ev -reactions]
+        if {![$area messages has $ts]} return
+        $area reactions update $ts [dict get $ev -reactions]
     }
 
     # Full-row redraw: the backend re-sends the whole store dict.
     method OnEdited {ev} {
         set msg [dict get $ev -message]
         set ts [dict get $msg timestamp]
-        if {![$hull messages has $ts]} return
+        if {![$area messages has $ts]} return
         $self KeepingTail { $self Redraw $ts $msg }
     }
 
@@ -451,8 +459,8 @@ snit::widgetadaptor chatview {
     # retracted flag; DrawMessage renders the tombstone from the header alone.
     method OnRetracted {ev} {
         set ts [dict get $ev -timestamp]
-        if {![$hull messages has $ts]} return
-        set sd [$hull messages get $ts]
+        if {![$area messages has $ts]} return
+        set sd [$area messages get $ts]
         dict set sd retracted 1
         $self KeepingTail { $self Redraw $ts $sd }
     }
@@ -462,9 +470,9 @@ snit::widgetadaptor chatview {
     # grows, and the scroll-to-bottom button appears (and sticks) after an
     # edit, a confirm, or a thumbnail landing.
     method KeepingTail {script} {
-        set atEnd [$hull atEnd]
+        set atEnd [$area atEnd]
         uplevel 1 $script
-        if {$atEnd} { $hull see end }
+        if {$atEnd} { $area see end }
     }
 
     method OnScroll {} {
@@ -472,9 +480,9 @@ snit::widgetadaptor chatview {
     }
 
     method UpdateViewAtTail {} {
-        set newest [$hull messages newest]
+        set newest [$area messages newest]
         set hasNewest [expr {$newest ne "" && $newest eq $DbNewest}]
-        set ViewAtTail [expr {$hasNewest && [$hull atEnd]}]
+        set ViewAtTail [expr {$hasNewest && [$area atEnd]}]
         $self UpdateScrollBtn
     }
 
@@ -487,9 +495,9 @@ snit::widgetadaptor chatview {
 
     method UpdateScrollBtn {} {
         if {$ViewAtTail} {
-            $hull scrollbtn hide
+            $area scrollbtn hide
         } else {
-            $hull scrollbtn show
+            $area scrollbtn show
         }
     }
 
@@ -520,7 +528,7 @@ snit::widgetadaptor chatview {
 
     method ProcessBatch {messages} {
         set enriched [lmap msg $messages {$self PrepareMessage $msg}]
-        $hull apply $enriched
+        $area apply $enriched
         foreach emsg $enriched {
             $transfers fetch $emsg
         }
@@ -531,7 +539,7 @@ snit::widgetadaptor chatview {
     # server moved it.
     method Redraw {key msg} {
         set emsg [$self PrepareMessage $msg]
-        $hull replace $key $emsg
+        $area replace $key $emsg
         $transfers fetch $emsg
     }
 
@@ -559,18 +567,18 @@ snit::widgetadaptor chatview {
     # below the last line, so re-pin the tail if we were riding it - otherwise
     # the scroll-to-bottom button appears (and sticks).
     method OnAttachmentUpdate {key idx direction state loaded total thumb} {
-        if {![$hull messages has $key]} return
-        set atEnd [$hull atEnd]
+        if {![$area messages has $key]} return
+        set atEnd [$area atEnd]
         if {$state eq "done" && $thumb ne ""} {
-            $hull attachment image $key $idx $thumb
+            $area attachment image $key $idx $thumb
         }
-        $hull attachment state $key $idx $direction $state $loaded $total
+        $area attachment state $key $idx $direction $state $loaded $total
         if {$atEnd} {
             # Packing the thumbnail into the embedded frame defers the frame's
             # geometry recalc to idle, so flush it before `see end` measures
             # the (now taller) last line; otherwise we land short and drift off.
             update idletasks
-            $hull see end
+            $area see end
             $self UpdateViewAtTail
         }
     }
