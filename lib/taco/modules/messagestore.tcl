@@ -556,8 +556,14 @@ snit::type taco_messagestore {
     # they're naturally excluded. Retracted rows keep their body as a
     # tombstone but read back with no content, so they're excluded too.
     # The query's own LIKE metacharacters
-    # (% _ \) are escaped so they match literally. -before is an
-    # exclusive timestamp cursor for paging older.
+    # (% _ \) are escaped so they match literally.
+    #
+    # An empty jid searches every chat in the account. Equal timestamps in
+    # different chats are common - MAM ingest derives them from second-
+    # granularity delay stamps and BumpTs only keeps them unique within one
+    # chat - so the unscoped order breaks ties on chat_jid and its -before is
+    # the {timestamp chat_jid} pair rather than a bare timestamp. A scoped
+    # search keeps the scalar cursor.
     method search {jid query args} {
         array set opts {-limit 500 -before ""}
         array set opts $args
@@ -569,10 +575,21 @@ snit::type taco_messagestore {
                         server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                         attachments
                  FROM chat_message
-                 WHERE chat_jid=$jid AND kind='message' AND retracted=0
+                 WHERE kind='message' AND retracted=0
                    AND body LIKE $pattern ESCAPE '\'}
-        if {$before ne ""} { append sql { AND timestamp < $before} }
-        append sql { ORDER BY timestamp DESC LIMIT $limit}
+        if {$jid ne ""} {
+            append sql { AND chat_jid=$jid}
+            if {$before ne ""} { append sql { AND timestamp < $before} }
+            append sql { ORDER BY timestamp DESC}
+        } else {
+            if {$before ne ""} {
+                lassign $before beforeTs beforeChat
+                append sql { AND (timestamp < $beforeTs
+                             OR (timestamp = $beforeTs AND chat_jid < $beforeChat))}
+            }
+            append sql { ORDER BY timestamp DESC, chat_jid DESC}
+        }
+        append sql { LIMIT $limit}
         set rows {}
         $options(-db) eval $sql row {
             lappend rows [$self RowToDict [array get row]]

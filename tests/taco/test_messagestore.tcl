@@ -50,6 +50,14 @@ proc ms_search_ts {jid query args} {
     lmap m [store search $jid $query {*}$args] {dict get $m timestamp}
 }
 
+# Helper: search and return {timestamp chat_jid} pairs, for the unscoped
+# search where a timestamp alone doesn't identify a hit
+proc ms_search_pairs {query args} {
+    lmap m [store search "" $query {*}$args] {
+        list [dict get $m timestamp] [dict get $m chat_jid]
+    }
+}
+
 # =============================================================================
 # Store: basic
 # =============================================================================
@@ -974,6 +982,42 @@ test messagestore-search-before-cursor {-before excludes rows at or newer than t
             [ms_msg timestamp 300 body x3]]
         ms_search_ts alice@example.com x -before 300
     } -result {200 100}
+
+test messagestore-search-unscoped-spans-chats {an empty jid searches every chat, newest first} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg chat_jid alice@example.com timestamp 100 body needle]]
+        ms_batch [list [ms_msg chat_jid bob@example.com   timestamp 300 body needle]]
+        ms_batch [list [ms_msg chat_jid carol@example.com timestamp 200 body needle]]
+        ms_search_pairs needle
+    } -result {{300 bob@example.com} {200 carol@example.com} {100 alice@example.com}}
+
+test messagestore-search-unscoped-keeps-equal-timestamps {the same stamp in two chats is two hits, ordered by chat} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg chat_jid alice@example.com timestamp 500 body needle]]
+        ms_batch [list [ms_msg chat_jid carol@example.com timestamp 500 body needle]]
+        ms_search_pairs needle
+    } -result {{500 carol@example.com} {500 alice@example.com}}
+
+test messagestore-search-unscoped-cursor-splits-a-tie {paging stops mid-tie and resumes without dropping the other hit} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg chat_jid alice@example.com timestamp 500 body needle]]
+        ms_batch [list [ms_msg chat_jid carol@example.com timestamp 500 body needle]]
+        ms_batch [list [ms_msg chat_jid bob@example.com   timestamp 100 body needle]]
+        set first [ms_search_pairs needle -limit 1]
+        set rest [ms_search_pairs needle -before [lindex $first 0]]
+        list $first $rest
+    } -result {{{500 carol@example.com}} {{500 alice@example.com} {100 bob@example.com}}}
+
+test messagestore-search-scoped-ignores-other-chats {naming a chat still confines the search to it} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg chat_jid alice@example.com timestamp 100 body needle]]
+        ms_batch [list [ms_msg chat_jid bob@example.com   timestamp 200 body needle]]
+        ms_search_ts alice@example.com needle
+    } -result {100}
 
 test messagestore-search-escapes-like-wildcards {% in the query matches literally, not as a wildcard} \
     {*}$ms_common \

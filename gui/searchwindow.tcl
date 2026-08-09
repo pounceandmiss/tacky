@@ -1,20 +1,26 @@
-# searchwindow - toplevel window for full text search over one chat.
+# searchwindow - toplevel window for full text search.
 #
 # Searches the local store; ticking "Also search server" adds a MAM pass whose
 # hits land in that same store, so the result list is local either way. The
 # box is enabled only for archives advertising a fulltext field.
 #
+# With no -jid it searches every chat in the account instead. That is local
+# only - MAM queries one archive - so the server box never appears, rows label
+# their chat, and -goto-command receives a {chat timestamp} pair rather than a
+# bare timestamp.
+#
 # Displays search results in a chatarea. Clicking a result navigates
-# the main chatview to that message via -goto-command.
+# to that message via -goto-command.
 #
 # Usage:
 #   searchwindow $w -acc $acc -jid $jid -goto-command {apply {{ts} {...}}}
+#   searchwindow $w -acc $acc -goto-command {apply {{pair} {...}}}
 
 snit::widget searchwindow {
     hulltype toplevel
 
     option -acc -readonly yes
-    option -jid -readonly yes
+    option -jid -default "" -readonly yes
     option -goto-command -default ""
 
     variable query ""
@@ -23,12 +29,21 @@ snit::widget searchwindow {
     variable isComplete 0
     variable searchTag
     variable ca
-    component authors
+    variable wholeAccount 0
+    # Account-wide only: chat JID -> authornames, built as chats turn up in
+    # results. A name cache is per chat, so one window needs several.
+    variable authorsByChat
 
     constructor args {
         $self configurelist $args
         set searchTag $win/search
-        wm title $win "Search — [jid bare $options(-jid)]"
+        set wholeAccount [expr {$options(-jid) eq ""}]
+        set authorsByChat [dict create]
+        if {$wholeAccount} {
+            wm title $win "Search - $options(-acc)"
+        } else {
+            wm title $win "Search - [jid bare $options(-jid)]"
+        }
 
         # Top frame: entry + buttons
         set top [ttk::frame $win.top]
@@ -37,12 +52,13 @@ snit::widget searchwindow {
             -variable [myvar alsoRemote] -command [mymethod OnRemoteToggle]
         ttk::button $top.search -text "Search" -command [mymethod DoSearch]
         pack $top.entry -side left -expand yes -fill x -padx {4 2} -pady 4
-        pack $top.remote -side left -padx {2 2} -pady 4
+        if {!$wholeAccount} {
+            pack $top.remote -side left -padx {2 2} -pady 4
+            # Stays off until the archive says it can run the search.
+            $top.remote configure -state disabled
+        }
         pack $top.search -side left -padx {2 4} -pady 4
         pack $top -fill x
-
-        # Stays off until the archive says it can run the search.
-        $top.remote configure -state disabled
 
         bind $top.entry <Return> [mymethod DoSearch]
 
@@ -63,18 +79,55 @@ snit::widget searchwindow {
 
         bind $ca <<MessageClick>> [mymethod OnClick %d]
 
-        install authors using authornames ${selfns}::authors \
-            -acc $options(-acc) -chat $options(-jid) \
-            -tag $searchTag/author \
-            -changed-command [list $ca author update]
-        ::tacky mam fulltextSupported -acc $options(-acc) \
-            -chat $options(-jid) -command [mymethod OnRemoteCapability]
+        if {!$wholeAccount} {
+            $self Authors $options(-jid)
+            ::tacky mam fulltextSupported -acc $options(-acc) \
+                -chat $options(-jid) -command [mymethod OnRemoteCapability]
+        }
 
         focus $top.entry
     }
 
     destructor {
         catch {::tacky message cancel -acc $options(-acc) -tag $searchTag}
+        dict for {chat obj} $authorsByChat { catch {$obj destroy} }
+    }
+
+    # The name cache for one chat, built on first sight of it in a result.
+    method Authors {chat} {
+        if {[dict exists $authorsByChat $chat]} {
+            return [dict get $authorsByChat $chat]
+        }
+        set n [dict size $authorsByChat]
+        set obj [authornames ${selfns}::authors$n \
+            -acc $options(-acc) -chat $chat \
+            -tag $searchTag/author/$n \
+            -changed-command [mymethod OnAuthorChanged $chat]]
+        dict set authorsByChat $chat $obj
+        return $obj
+    }
+
+    method OnAuthorChanged {chat jid name} {
+        $ca author update [$self Author $chat $jid] [$self Label $chat $jid]
+    }
+
+    # Who chatarea considers the author of a row. It repaints by this value,
+    # so account-wide it has to be per chat: our own bare JID authors messages
+    # in every 1:1, and each of those rows wants its own chat's label.
+    method Author {chat jid} {
+        if {!$wholeAccount} { return $jid }
+        return [list $chat $jid]
+    }
+
+    # What to call a result's author. Account-wide, the label is where the row
+    # says which chat it came from. Only an incoming 1:1 goes unprefixed, where
+    # the author is the chat; the comparison is against the chat JID rather
+    # than the room, since a room occupant's bare JID is the room itself.
+    method Label {chat jid} {
+        set name [[$self Authors $chat] label $jid]
+        if {!$wholeAccount} { return $name }
+        if {$chat eq [jid bare $jid]} { return $name }
+        return "[regsub {\?join$} $chat {}] - $name"
     }
 
     method OnRemoteCapability {supported} {
@@ -102,19 +155,24 @@ snit::widget searchwindow {
         $win.bot.more configure -state disabled
         pack forget $win.bot.more
         ::tacky message search -acc $options(-acc) \
-            -chat $options(-jid) -query $query \
+            {*}[$self ChatArgs] -query $query \
             -source [expr {$alsoRemote ? "both" : "local"}] \
             -tag $searchTag -command [mymethod OnResults]
     }
 
-    # Paging stays local so lastCursor stays a timestamp, never an RSM id.
+    # Paging stays local so lastCursor stays a store cursor, never an RSM id.
     method LoadMore {} {
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
         ::tacky message search -acc $options(-acc) \
-            -chat $options(-jid) -query $query -source local \
+            {*}[$self ChatArgs] -query $query -source local \
             -before $lastCursor -tag $searchTag \
             -command [mymethod OnResults]
+    }
+
+    method ChatArgs {} {
+        if {$wholeAccount} { return {} }
+        return [list -chat $options(-jid)]
     }
 
     method OnResults {result} {
@@ -144,11 +202,26 @@ snit::widget searchwindow {
         }
 
         set enriched [lmap msg $messages {
-            enrich_store_message $msg [list $authors label]
+            $self Enrich $msg
         }]
         foreach key [$ca apply $enriched] {
             $ca highlight matches $key $query
         }
+    }
+
+    # A timestamp only identifies a message within its own chat, so an
+    # account-wide row is keyed by the pair. `sort` stays the timestamp, and
+    # rowlist's tiebreak on the key orders equal stamps by chat, as the store
+    # already did. avatar_jid keeps the real JID either way - avatars are per
+    # person, not per chat.
+    method Enrich {msg} {
+        set chat [dict get $msg chat_jid]
+        set d [enrich_store_message $msg [mymethod Label $chat]]
+        if {$wholeAccount} {
+            dict set d key [list $chat [dict get $msg timestamp]]
+            dict set d from_jid [$self Author $chat [dict get $msg from_jid]]
+        }
+        return $d
     }
 
     method OnClick {key} {

@@ -577,10 +577,12 @@ snit::widget chatpanel {
             return
         }
         searchwindow $win.search -acc $options(-acc) -jid $options(-jid) \
-            -goto-command [mymethod OnSearchGoto]
+            -goto-command [mymethod GotoMessage]
     }
 
-    method OnSearchGoto {timestamp} {
+    # Remote-sourced: a hit may be an isolated island in the local cache, so
+    # the surrounding page has to come from the archive.
+    method GotoMessage {timestamp} {
         $cv goto $timestamp -source remote
     }
 }
