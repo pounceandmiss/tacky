@@ -359,7 +359,7 @@ Event:
 
 ## message
 
-    message send {chat: string, body: string}
+    message send {chat: string, body: string, reply_to_ts?: int}
     message sendFile {chat: string, path: string}
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}  -> [message]
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
@@ -371,11 +371,15 @@ Event:
     message rawxml {chat: string, timestamp: int} -> string  raw stanza (debug)
     message markDisplayed {chat: string, timestamp: int}
 
-    message = {timestamp: int, newtimestamp: int, is_outgoing: bool,
-               server_status: string, encryption: string, fail_reason: string,
+    message = {timestamp: int, chat_jid: string, from_jid: string,
+               is_outgoing: bool,
+               server_status: string, remote_status: string,
+               encryption: string, fail_reason: string,
                edited: bool, edited_ts: int, retracted: bool,
-               content: content,
-               reactions: {*: {reactors: [string], mine: bool}}}
+               content?: content,
+               reply_id?: string, reply_to?: string,
+               reply_author_jid?: string, reply_body?: string,
+               reactions?: {*: {reactors: [string], mine: bool}}}
 
     content = {type: "text",  body: string, formatting?: formatting}
             | {type: "media", attachments: [attachment], caption: string, formatting?: formatting}
@@ -697,6 +701,26 @@ scroll-to-bottom, or paging forward until the at-tail check flips.
 at a hole: there's more history that way, and paging fills it in.
 `gotoReply` (XEP-0461) jumps to a reply's target and returns the same
 shape.
+
+**Replies.** Send one with `message send {reply_to_ts}`, naming the target by
+its `timestamp`. The backend resolves that row to the id a peer resolves
+against - stanza-id in a room, origin-id in a 1:1, since peers never see our
+server id - and prefixes the wire body with a `> ` quote of the target marked
+as a XEP-0428 fallback span. Pass the reply text alone: the quote is added on
+the way out and stripped on the way in, so a stored `body` never contains it.
+A `reply_to_ts` naming a row that isn't stored sends as an ordinary message
+rather than failing.
+
+A message that is a reply carries four fields. `reply_id` is the wire id it
+answers and `reply_to` the JID it was addressed to, both as they appeared on
+the wire. `reply_author_jid` is that author normalized the way `from_jid` is -
+an occupant JID in a room, a bare JID in a 1:1 - so it resolves through
+`author get` like any other author. `reply_body` is a shortened preview of the
+target, for rendering the quote inline; it is absent when the target isn't in
+the store. Jump to it with `gotoReply {reply_id, reply_to}`, which resolves the
+id locally and then behaves like `goto`. An uncached target comes back with no
+`messages` and an empty `anchor` - there is no fetch-by-stanza-id, so a target
+beyond a hole is not reachable this way.
 
 **Catchup.** On connect the backend syncs your account archive; on joining a
 room it syncs that room's archive, which is the only sync a room gets, since
