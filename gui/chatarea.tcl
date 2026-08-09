@@ -48,19 +48,16 @@ snit::widget chatarea {
     # can stop following that JID.
     option -avatar-release-command -default control::no-op
 
-    # Attachment actions, invoked from the rendered attachment widgets:
-    #   open       {*}$cmd $url            download (cached) and open with the OS
-    #   save       {*}$cmd $url $filename  download (cached) and copy to a path
-    #   openfolder {*}$cmd $url            show the cached file in its folder
-    #   uncache    {*}$cmd $url            delete the cached copy from disk
-    #   load       {*}$cmd $url $key $idx  (re)fetch an image thumbnail
-    #   retry      {*}$cmd $key            retry a failed upload
-    option -attachment-open-command -default control::no-op
-    option -attachment-save-command -default control::no-op
-    option -attachment-openfolder-command -default control::no-op
-    option -attachment-uncache-command -default control::no-op
-    option -attachment-load-command -default control::no-op
-    option -attachment-retry-command -default control::no-op
+    # Where the rendered attachment widgets send what the user asked for. The
+    # action leads, so a single object with these methods can be the whole
+    # callback:
+    #   {*}$cmd open       $url            download (cached) and open with the OS
+    #   {*}$cmd save       $url $filename  download (cached) and copy to a path
+    #   {*}$cmd openfolder $url            show the cached file in its folder
+    #   {*}$cmd uncache    $url            delete the cached copy from disk
+    #   {*}$cmd load       $url $key $idx  (re)fetch an image thumbnail
+    #   {*}$cmd retry      $key            retry a failed upload
+    option -attachment-command -default control::no-op
 
     # Virtual events. Both carry the caller's key in -data, never the slot,
     # and neither fires when the click lands on empty space.
@@ -680,7 +677,7 @@ snit::widget chatarea {
         set f $text.att_${slot}_${idx}
         catch {destroy $f}
         attachment $f \
-            -chatarea $self \
+            -command [mymethod AttachmentAction] \
             -url [dict get $att url] -kind [dict get $att type] \
             -name [dict get $att name] -id $key -idx $idx \
             -scroll-target $text
@@ -691,6 +688,12 @@ snit::widget chatarea {
             uploading { $self attachment state $key $idx upload active 0 0 }
             failed    { $self attachment state $key $idx upload failed 0 0 }
         }
+    }
+
+    # Forwarded rather than handed over directly so that reconfiguring the
+    # option reaches attachments that are already drawn.
+    method AttachmentAction {args} {
+        {*}$options(-attachment-command) {*}$args
     }
 
     # Widget path of one attachment frame, or "" when it isn't drawn.

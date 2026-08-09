@@ -4,13 +4,12 @@ package require snit
 # (image) or an Open/Save chip (file), with the thumbnail and a transfer
 # progress/Retry row added later via `setImage` / `setState`. The widget knows
 # its own url/id/idx and routes every user action (open, save, click-to-load,
-# retry, the right-click menu) straight to its host chatarea's
-# -attachment-*-command callbacks; chatarea just creates it and forwards
-# setImage/setState by message id+idx.
+# retry, the right-click menu) straight to -command; chatarea just creates it
+# and forwards setImage/setState by message key+idx.
 snit::widget attachment {
     hulltype ttk::frame
 
-    option -chatarea -default ""      ;# host chatarea; source of action callbacks
+    option -command -default ""       ;# {*}$cmd <action> ...; see chatarea
     option -url  -default ""
     option -kind -default file        ;# image | file
     option -name -default ""
@@ -38,9 +37,8 @@ snit::widget attachment {
         $self BindMenu $win
     }
 
-    # Invoke one of the host chatarea's -attachment-<name>-command callbacks.
     method Cb {name args} {
-        {*}[$options(-chatarea) cget -attachment-$name-command] {*}$args
+        {*}$options(-command) $name {*}$args
     }
 
     # Image caption/thumbnail click: open the image when its thumbnail is shown,
