@@ -1195,6 +1195,94 @@ test message-marker-not-stored-as-message \
         llength [msg_store_latest alice@example.com]
     } -result 1
 
+# Our own read watermark: our reads, not the peer's (that is remote_status).
+proc msg_own_read {jid} {
+    dict get [$::_client message messagestore ownRead $jid] read_ts
+}
+
+# A `displayed` marker we sent from another device, as the server carbons it.
+proc msg_own_marker_carbon {chat targetId} {
+    $::_client conn feed [j message -type chat -from $::acc {
+        j sent -ns urn:xmpp:carbons:2 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j message -type chat -from $::acc/other -to $chat {
+                    j displayed -ns urn:xmpp:chat-markers:0 -id $targetId
+                }
+            }
+        }
+    }]
+}
+
+test message-own-marker-advances-watermark \
+    {a displayed marker from another of our devices marks the chat read here} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id m1 \
+            -from alice@example.com/phone { j body #body hi }]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        msg_own_marker_carbon alice@example.com m1
+        expr {[msg_own_read alice@example.com] == $ts}
+    } -result 1
+
+test message-own-marker-emits-ownread \
+    {the watermark move is announced once, and not again for a replay} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id m1 \
+            -from alice@example.com/phone { j body #body hi }]
+        set ::evs {}
+        tacky listen message <OwnRead> \
+            {apply {{ev} { lappend ::evs [dict get $ev -jid] }}}
+        msg_own_marker_carbon alice@example.com m1
+        msg_own_marker_carbon alice@example.com m1
+        set ::evs
+    } -result {alice@example.com}
+
+test message-own-marker-unknown-id-noop \
+    {a marker naming a message we don't have leaves the watermark alone} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id m1 \
+            -from alice@example.com/phone { j body #body hi }]
+        msg_own_marker_carbon alice@example.com nosuch
+        msg_own_read alice@example.com
+    } -result 0
+
+test message-peer-marker-leaves-watermark \
+    {the peer reading our message is not us reading theirs} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
+        set before [msg_own_read alice@example.com]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j displayed -ns urn:xmpp:chat-markers:0 -id $oid
+        }]
+        list [dict get [lindex [msg_store_latest alice@example.com] 0] remote_status] \
+            [expr {[msg_own_read alice@example.com] == $before}]
+    } -result {read 1}
+
+test message-own-carbon-marks-read \
+    {a message we sent from another device catches this one up} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id m1 \
+            -from alice@example.com/phone { j body #body hi }]
+        $::_client conn feed [j message -type chat -from $::acc {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id m2 -from $::acc/other \
+                        -to alice@example.com { j body #body "from my phone" }
+                }
+            }
+        }]
+        $::_client message messagestore unreadCount alice@example.com
+    } -result 0
+
+test message-send-marks-read \
+    {writing in a chat clears what was unread above} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id m1 \
+            -from alice@example.com/phone { j body #body hi }]
+        tacky message send -acc $acc -chat alice@example.com -body "reply"
+        $::_client message messagestore unreadCount alice@example.com
+    } -result 0
+
 test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
     {*}$msg_common \
     -body {

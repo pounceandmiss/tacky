@@ -308,7 +308,8 @@ rooms, and any chat that has message history, all merged. No querying or
 sorting.
 
     chat_entry = {jid: string, name: string, source: string,
-                  groupchat: bool, autojoin: bool, last_activity: int}
+                  groupchat: bool, autojoin: bool, last_activity: int,
+                  unread: int}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -316,7 +317,9 @@ message. `groupchat` is `true` when the jid has `?join`. `source` is
 `roster` (a roster contact, bare JID), `bookmarks` (a bookmarked room), or
 `free` (came from chat history, with no roster or bookmark entry). `name`
 can be `""` (always is for `free`). `last_activity` is the last message
-time in microseconds, or `0`.
+time in microseconds, or `0`. `unread` counts the other side's messages past
+your read watermark (see [Read state](#read-state)); your own messages and
+retracted tombstones never count.
 
 Per source, an entry carries extra fields:
 
@@ -335,8 +338,8 @@ Events:
     chatlist <Remove>  {jid: string}
     chatlist <Changed> {}
 
-`<Item>` upserts (an add, rename, new message, source change, or
-room_state change). `<Remove>` deletes - except a removed roster contact
+`<Item>` upserts (an add, rename, new message, read-watermark move, source
+change, or room_state change). `<Remove>` deletes - except a removed roster contact
 that still has history, which comes back as an `<Item>` with
 `source: "free"`. `<Changed>` means a whole source was swapped out (first
 fetch, reconnect); refetch with `get`. The module funnels the roster,
@@ -407,6 +410,8 @@ Event:
     message cancel {tag: string}
     message rawxml {chat: string, timestamp: int} -> string  raw stanza (debug)
     message markDisplayed {chat: string, timestamp: int}
+    message markOwnRead {chat: string, timestamp: int}
+    message ownRead {chat: string} -> {timestamp: int, unread: int}
 
     message = {timestamp: int, chat_jid: string, from_jid: string,
                is_outgoing: bool,
@@ -466,6 +471,7 @@ Events:
     message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
     message <Retracted>   {jid: string, timestamp: int}
+    message <OwnRead>     {jid: string, timestamp: int}
     message <CatchupStarted> {jid: string}
     message <CatchupDone> {jid: string, count: int}
     message <Tail>        {jid: string, timestamp: int}
@@ -491,6 +497,24 @@ TDLib `updateDeleteMessages`, it does not remove the message: the row is kept
 anchors, reply resolution, and slot/attribution keep working, and the client
 redraws the placeholder in place from the header it already holds. That is why
 it carries only `timestamp`, not a row.
+
+### Read state
+
+Two independent directions. `remote_status` on a message is the peer's read
+state of something you sent. The read watermark is the reverse: how far you have
+read a chat. It is one timestamp per chat, not a per-message flag, so backfilled
+history landing behind it does not become unread.
+
+`markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored, so it
+is safe to call on every focus and scroll. It is local state and applies to
+group chats; `markDisplayed` is the separate wire half (a XEP-0333 `<displayed>`,
+1:1 only). Call both when the user reads a 1:1 chat. The watermark also advances
+on its own when you send a message from any of your devices, and when another
+device's `<displayed>` marker reaches this one.
+
+`<OwnRead>` fires on every move, from any of those sources. `ownRead` gives one
+chat's watermark and unread count; each `chatlist` entry carries its own
+`unread`, so a chat list needs no extra call.
 
 ## mam
 

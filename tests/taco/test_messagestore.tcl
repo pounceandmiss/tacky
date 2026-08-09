@@ -1201,6 +1201,88 @@ test messagestore-mark-remote-status-wrong-chat-noop {a marker scoped to another
         list $r [ms_remote alice@example.com]
     } -result {{} none}
 
+# --- Own read watermark ------------------------------------------------------
+
+test messagestore-ownread-unset {a chat we have never read reads as zero} \
+    {*}$ms_common \
+    -body {
+        dict get [store ownRead alice@example.com] read_ts
+    } -result {0}
+
+test messagestore-ownread-monotonic {an older stamp never rewinds the watermark} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
+        set moved [store markOwnRead alice@example.com 200]
+        set back [store markOwnRead alice@example.com 100]
+        list $moved $back [dict get [store ownRead alice@example.com] read_ts]
+    } -result {1 0 200}
+
+test messagestore-ownread-records-reference-id \
+    {the watermark keeps the read row's server id for a later publish} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 origin_id oid1]]
+        store markOwnRead alice@example.com 100
+        dict get [store ownRead alice@example.com] read_id
+    } -result {sid1}
+
+test messagestore-unread-theirs-only {our own messages are never unread} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a] \
+                       [ms_msg timestamp 200 own_id o1 body b] \
+                       [ms_msg timestamp 300 body c]]
+        store unreadCount alice@example.com
+    } -result {2}
+
+test messagestore-unread-past-watermark {only messages newer than the watermark count} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b] \
+                       [ms_msg timestamp 300 body c]]
+        store markOwnRead alice@example.com 200
+        store unreadCount alice@example.com
+    } -result {1}
+
+test messagestore-unread-excludes-retracted {a tombstone doesn't hold a chat unread} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1]]
+        store applyRetract alice@example.com sid1
+        store unreadCount alice@example.com
+    } -result {0}
+
+test messagestore-unread-excludes-holes {a hole marker is not an unread message} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100]]
+        store markOwnRead alice@example.com 100
+        store hole add alice@example.com newer 100
+        store unreadCount alice@example.com
+    } -result {0}
+
+test messagestore-unread-backfill-stays-read \
+    {history paged in behind the watermark does not become unread} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 500 body a]]
+        store markOwnRead alice@example.com 500
+        ms_batch [list [ms_msg timestamp 100 body b] [ms_msg timestamp 200 body c]]
+        store unreadCount alice@example.com
+    } -result {0}
+
+test messagestore-unreadcounts-bulk {unreadCounts covers every chat in one pass} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
+        ms_batch [list [ms_msg timestamp 100 chat_jid bob@example.com body c]]
+        store markOwnRead alice@example.com 100
+        set counts [store unreadCounts]
+        list [dict get $counts alice@example.com] \
+             [dict get $counts bob@example.com]
+    } -result {1 1}
+
 # --- Reactions (XEP-0444) ----------------------------------------------------
 
 test messagestore-reaction-aggregate {reactions aggregate per emoji with reactor lists} \

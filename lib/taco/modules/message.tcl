@@ -38,6 +38,7 @@
 #   <Reactions> replace a displayed entry's aggregated reaction map
 #   <Edited>    re-send a full row to redraw an edited message in place
 #   <Retracted> flip a displayed entry to a tombstone (jid + timestamp only)
+#   <OwnRead>   our own read watermark moved (this device or another one)
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -340,7 +341,11 @@ snit::type taco_message {
         } else {
             set chatJid $fromBare
         }
-        if {!$isOwn && [$self HandleMarker $chatJid $stanza]} return
+        if {$isOwn} {
+            if {[$self HandleOwnMarker $chatJid $stanza]} return
+        } elseif {[$self HandleMarker $chatJid $stanza]} {
+            return
+        }
         $self ingestLive $chatJid $stanza $isOwn
         if {!$isOwn} {
             $self AutoReceipt $chatJid $stanza
@@ -404,6 +409,20 @@ snit::type taco_message {
                 -timestamp [dict get $changed timestamp] \
                 -remote_status [dict get $changed remote_status]
         }
+        return 1
+    }
+
+    # A `displayed` marker from our own bare jid is another of our devices
+    # reporting how far it has read, so it moves our watermark rather than
+    # the peer's remote_status. Returns 1 if the stanza was such a marker
+    # (consumed here), else 0 so OnMessage falls through to ingestLive.
+    # An unresolvable target id is a message we don't have: no-op.
+    method HandleOwnMarker {chatJid stanza} {
+        set targetId [xsearch $stanza displayed \
+            -ns urn:xmpp:chat-markers:0 -get @id]
+        if {$targetId eq ""} { return 0 }
+        set ts [$messagestore resolveTargetTs $chatJid $targetId]
+        if {$ts ne ""} { $self AdvanceOwnRead $chatJid $ts }
         return 1
     }
 
@@ -473,8 +492,20 @@ snit::type taco_message {
     method HandleInsertion {chatJid inserted} {
         if {[llength $inserted] == 0} return
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
+        # A carbon or MUC echo of our own send from another device: we were
+        # reading there. Catchup pages don't come through here, so paging
+        # history can't move the watermark.
+        if {[dict get $dbMsg is_outgoing]} {
+            $self AdvanceOwnRead $chatJid [dict get $dbMsg timestamp]
+        }
         $client emit message <New> -jid $chatJid -message $dbMsg
         $self EmitTail $chatJid
+    }
+
+    # Move the watermark, emitting only on a real move.
+    method AdvanceOwnRead {chatJid ts} {
+        if {![$messagestore markOwnRead $chatJid $ts]} return
+        $client emit message <OwnRead> -jid $chatJid -timestamp $ts
     }
 
     # own_id -> 1 for sends written to the CURRENT stream, i.e. the ones
@@ -670,6 +701,8 @@ snit::type taco_message {
         $client emit message <New> \
             -jid $opts(-chat) -message $dbMsg
         $self EmitTail $opts(-chat)
+        # Writing here means we have read what was above.
+        $self AdvanceOwnRead $opts(-chat) [dict get $dbMsg timestamp]
 
         if {$stanza ne ""} {
             $self MarkWired $oid
@@ -720,6 +753,7 @@ snit::type taco_message {
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <New> -jid $chatJid -message $dbMsg
         $self EmitTail $chatJid
+        $self AdvanceOwnRead $chatJid $ts
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 
@@ -1126,6 +1160,24 @@ snit::type taco_message {
         }]
         if {$originId eq ""} return
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId
+    }
+
+    # markOwnRead -chat $chatJid -timestamp $ts
+    # Record that we have read this chat up to $ts. Local state only (the
+    # wire marker is markDisplayed's job), and applies to MUC as well.
+    # Forward-only, so it is safe to call on every focus and scroll.
+    tackymethod markOwnRead {args} {
+        array set opts $args
+        $self AdvanceOwnRead $opts(-chat) $opts(-timestamp)
+    }
+
+    # ownRead -chat $chatJid
+    # Our read watermark for one chat and what is still unread past it.
+    tackymethod ownRead {args} {
+        array set opts $args
+        return [dict create \
+            timestamp [dict get [$messagestore ownRead $opts(-chat)] read_ts] \
+            unread [$messagestore unreadCount $opts(-chat)]]
     }
 
     # react -chat $chatJid -timestamp $targetTs -emoji $emoji

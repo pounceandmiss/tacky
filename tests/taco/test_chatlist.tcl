@@ -98,6 +98,34 @@ test chatlist-last-activity {entries carry last_activity; unmessaged contacts ar
             [dict get $act quiet@example.com]
     } -result {1 0}
 
+test chatlist-unread-counts {entries carry unread; a read chat and a quiet contact are 0} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert loud@example.com timestamp 100 body a
+        chatlist_chat_insert loud@example.com timestamp 200 body b
+        chatlist_chat_insert seen@example.com timestamp 300 body c
+        roster_insert quiet@example.com name Quiet
+        c message messagestore markOwnRead seen@example.com 300
+        set unread [by_jid [c chatlist get] unread]
+        list [dict get $unread loud@example.com] \
+            [dict get $unread seen@example.com] \
+            [dict get $unread quiet@example.com]
+    } -result {2 0 0}
+
+test chatlist-ownread-reemits-item {a watermark move re-emits the entry with a fresh count} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body a
+        set counts {}
+        tacky listen chatlist <Item> \
+            {apply {{ev} {
+                lappend ::counts [dict get [dict get $ev -item] unread]
+            }}}
+        c message messagestore markOwnRead alice@example.com 100
+        c bus publish message:<OwnRead> -jid alice@example.com -timestamp 100
+        set ::counts
+    } -result {0}
+
 test chatlist-name-resolution {roster/bookmark names pass through; free chats have empty name} \
     {*}$chatlist_common \
     -body {

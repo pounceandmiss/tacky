@@ -169,6 +169,17 @@ snit::type taco_messagestore {
                 ts           INTEGER NOT NULL,
                 PRIMARY KEY(chat_jid, target_id, sender_id)
             );
+
+            -- How far we have read each chat ourselves. The peer's read
+            -- state of our messages is chat_message.remote_status.
+            CREATE TABLE IF NOT EXISTS chat_own_read(
+                chat_jid  TEXT PRIMARY KEY,
+                -- chat-local timestamp of the newest message we have read.
+                read_ts   INTEGER NOT NULL DEFAULT 0,
+                -- that row's server_id, else origin_id. Not a lookup key;
+                -- carried for a future XEP-0490 publish.
+                read_id   TEXT NOT NULL DEFAULT ''
+            );
         }
     }
 
@@ -791,6 +802,78 @@ snit::type taco_messagestore {
             }
         }
         return $changed
+    }
+
+    # --- Own read watermark ----------------------------------------
+
+    # {read_ts read_id}; a chat we have never read reads as {0 ""}.
+    method ownRead {chatJid} {
+        set res [dict create read_ts 0 read_id ""]
+        $options(-db) eval {
+            SELECT read_ts, read_id FROM chat_own_read WHERE chat_jid=$chatJid
+        } row {
+            dict set res read_ts $row(read_ts)
+            dict set res read_id $row(read_id)
+        }
+        return $res
+    }
+
+    # Advance the watermark to $ts, forward-only: an older-or-equal stamp
+    # (a replayed or out-of-order marker) is a no-op. read_id comes from
+    # the row at $ts. Returns 1 if it moved.
+    method markOwnRead {chatJid ts} {
+        if {![string is entier -strict $ts] || $ts <= 0} { return 0 }
+        set moved 0
+        $options(-db) transaction {
+            set prev [$options(-db) onecolumn {
+                SELECT read_ts FROM chat_own_read WHERE chat_jid=$chatJid
+            }]
+            if {$prev eq "" || $ts > $prev} {
+                set refId [$options(-db) onecolumn {
+                    SELECT CASE WHEN COALESCE(server_id,'') != ''
+                                THEN server_id ELSE COALESCE(origin_id,'') END
+                    FROM chat_message
+                    WHERE chat_jid=$chatJid AND timestamp=$ts
+                }]
+                $options(-db) eval {
+                    INSERT OR REPLACE INTO
+                        chat_own_read(chat_jid, read_ts, read_id)
+                    VALUES($chatJid, $ts, $refId)
+                }
+                set moved 1
+            }
+        }
+        return $moved
+    }
+
+    # Unread = theirs (own_id empty), kind='message', not a tombstone, and
+    # newer than the watermark.
+    method unreadCount {chatJid} {
+        return [$options(-db) onecolumn {
+            SELECT COUNT(*) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+              AND COALESCE(own_id,'')='' AND retracted=0
+              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
+                                        WHERE chat_jid=$chatJid), 0)
+        }]
+    }
+
+    # chat_jid -> unread count, in one pass. Chats with nothing unread are
+    # absent.
+    method unreadCounts {} {
+        set counts {}
+        $options(-db) eval {
+            SELECT m.chat_jid AS jid, COUNT(*) AS n
+            FROM chat_message m
+            LEFT JOIN chat_own_read r ON r.chat_jid=m.chat_jid
+            WHERE m.kind='message' AND COALESCE(m.own_id,'')=''
+              AND m.retracted=0
+              AND m.timestamp > COALESCE(r.read_ts, 0)
+            GROUP BY m.chat_jid
+        } row {
+            dict set counts $row(jid) $row(n)
+        }
+        return $counts
     }
 
     # --- Reactions (XEP-0444) --------------------------------------
