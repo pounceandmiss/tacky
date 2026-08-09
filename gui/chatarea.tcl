@@ -137,49 +137,72 @@ snit::widget chatarea {
         dict get $row key
     }
 
-    # Insert each message at its sorted position. Callers supply `key`
-    # (identity) and `sort` (position); an already-displayed key gets its
-    # fields patched in place instead. Staleness is handled outside this
-    # method (see OnCulled for history requests, AtTail for live events).
+    # Insert each message at its sorted position, returning the keys that drew
+    # a new row. Callers supply `key` (identity) and `sort` (position); an
+    # already-displayed key gets its fields patched in place instead.
+    # Staleness is handled outside this method (see OnCulled for history
+    # requests, AtTail for live events).
     method apply {messageDictList} {
         set inserted {}
         compensate $text {
             foreach msg $messageDictList {
-                set key [dict get $msg key]
-                set sort [dict get $msg sort]
-
-                if {[$rows index $key] >= 0} {
-                    $self patchFields $key $msg
-                    continue
+                if {[$self ApplyOne $msg]} {
+                    lappend inserted [dict get $msg key]
                 }
-
-                # Draw in front of the first row sorting after this one, or at
-                # the end when there is none.
-                set successor [$rows successor $key $sort]
-                if {$successor eq ""} {
-                    $text mark set msgins end
-                } else {
-                    $text mark set msgins item.$successor.first
-                }
-
-                set slot [$rows insert $key $sort [dict create \
-                    server_status [dict getdef $msg server_status ""] \
-                    remote_status [dict getdef $msg remote_status none] \
-                    avatar_jid [dict getdef $msg avatar_jid ""] \
-                    payload [dict getdef $msg payload ""]]]
-
-                # On a failed draw, roll back the partial content (tagged
-                # item.$slot) and leave a placeholder so the batch continues.
-                if {[catch {$self DrawMessage msgins $slot $msg} err]} {
-                    catch {$text del item.$slot.first item.$slot.last}
-                    catch {jlog error "DrawMessage failed for $key: $err" -obj chatarea}
-                    $self DrawErrorPlaceholder msgins $slot
-                }
-                lappend inserted $key
             }
         }
-
         return $inserted
+    }
+
+    # Redraw the row for $key from a fresh message dict. It keeps its place
+    # unless the new `sort` moves it, and the dict may carry a different `key`:
+    # a message the server relocated keeps its row, not its identity.
+    method replace {key msg} {
+        if {[$rows index $key] < 0} return
+        set ajid [$rows field $key avatar_jid]
+        compensate $text {
+            $self Erase [$rows remove $key]
+            $self ApplyOne $msg
+        }
+        # Deferred until the row is back: releasing between the erase and the
+        # redraw would drop the avatar image the redraw is about to draw.
+        $self CheckAvatarRelease $ajid
+    }
+
+    # Draw one message. A key already on screen has its fields patched in
+    # place; anything else is inserted. Returns 1 when a new row was drawn.
+    method ApplyOne {msg} {
+        set key [dict get $msg key]
+        set sort [dict get $msg sort]
+
+        if {[$rows index $key] >= 0} {
+            $self patchFields $key $msg
+            return 0
+        }
+
+        # Draw in front of the first row sorting after this one, or at the end
+        # when there is none.
+        set successor [$rows successor $key $sort]
+        if {$successor eq ""} {
+            $text mark set msgins end
+        } else {
+            $text mark set msgins item.$successor.first
+        }
+
+        set slot [$rows insert $key $sort [dict create \
+            server_status [dict getdef $msg server_status ""] \
+            remote_status [dict getdef $msg remote_status none] \
+            avatar_jid [dict getdef $msg avatar_jid ""] \
+            payload [dict getdef $msg payload ""]]]
+
+        # On a failed draw, roll back the partial content (tagged item.$slot)
+        # and leave a placeholder so the batch continues.
+        if {[catch {$self DrawMessage msgins $slot $msg} err]} {
+            catch {$text del item.$slot.first item.$slot.last}
+            catch {jlog error "DrawMessage failed for $key: $err" -obj chatarea}
+            $self DrawErrorPlaceholder msgins $slot
+        }
+        return 1
     }
 
     method patchFields {key patchDict} {
@@ -326,6 +349,7 @@ snit::widget chatarea {
     method {messages newest} {} { $self EdgeKey new }
 
     method {messages keys} {} { $rows keys }
+    method {messages has} {key} { expr {[$rows index $key] >= 0} }
 
     # Whatever the caller attached as `payload` when the row was applied.
     method {messages get} {key} { $rows field $key payload }
@@ -688,18 +712,22 @@ snit::widget chatarea {
         $f setState $direction $state $loaded $total
     }
 
-    method deleteById {key} { $self Undraw [$rows remove $key] }
+    method deleteById {key} { $self Delete [$rows remove $key] }
 
-    method deleteByPos {idx} { $self Undraw [$rows removeat $idx] }
+    method deleteByPos {idx} { $self Delete [$rows removeat $idx] }
 
-    # Erase the text a removed row drew, and let its avatar go if it was the
-    # last one using it.
-    method Undraw {row} {
+    method Delete {row} {
         if {$row eq ""} return
+        $self Erase $row
+        $self CheckAvatarRelease [dict get $row avatar_jid]
+    }
+
+    # Erase what a row drew. The row must already be out of the list, so that
+    # nothing resolves its slot to text that is no longer there.
+    method Erase {row} {
         set slot [dict get $row slot]
         $text del item.$slot.first item.$slot.last
         $text tag delete item.$slot
-        $self CheckAvatarRelease [dict get $row avatar_jid]
     }
 
     method CheckAvatarRelease {ajid} {
