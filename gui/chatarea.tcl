@@ -13,63 +13,30 @@ package require snit
 #   chatview  the controller (chatview.tcl). Turns those signals into history
 #             requests against the Client API and feeds the results back here.
 #
-# Pixel model: chatarea tracks PixelsAbove (content above the visible viewport)
-# and PixelsBelow (content below it). These are measured on every scroll event
-# and widget-view-sync, coalesced via [after idle], and drive the load/cull
-# decisions made by DoCleanup. Three thresholds govern that behavior - load,
-# clean, and clean target - see the option block below.
+# chatarea measures the content above and below the viewport on every scroll
+# event and widget-view-sync; windowpolicy turns those numbers into the load
+# and cull decisions, and chatarea carries them out.
 snit::widget chatarea {
     hulltype ttk::frame
     component text
     component scrollbar
     component scrollbtn -public scrollbtn
     component loading   -public loading
+    component policy
 
     delegate option -scrollbtn-command      to scrollbtn as -command
     delegate option -loading-cancel-command to loading   as -cancel-command
 
-    # For debugging: Global vars that will be set to the latest
-    # calculated numbers of pixels above and below the viewport
-    option -pixelsabovevariable
-    option -pixelsbelowvariable
+    # The load/clean/clean-target thresholds; see windowpolicy.
+    delegate option -clean-factor           to policy
+    delegate option -clean-threshold        to policy
+    delegate option -load-factor            to policy
+    delegate option -load-threshold         to policy
+    delegate option -clean-target-factor    to policy
+    delegate option -clean-target-threshold to policy
+    delegate option -thirst-command         to policy
 
-    # The three thresholds. Each is computed as
-    # max(<name>-threshold, vh * <name>-factor) — the factor scales
-    # with viewport height (primary tuning knob); the threshold is a
-    # pixel floor that only matters on very small windows where
-    # vh*factor would be too small.
-
-    # When the buffer in any direction exceeds the clean threshold,
-    # messages at that edge are deleted until the buffer drops to the
-    # clean target.
-    option -clean-factor    -default 10
-    option -clean-threshold -default 5000
-
-    # When the buffer in any direction drops below the load threshold,
-    # chatarea fires -thirst-command for that direction.
-    option -load-factor    -default 2
-    option -load-threshold -default 500
-
-    # Where cleaning stops — sits between load and clean for hysteresis,
-    # so a clean pass leaves the buffer well clear of the load threshold.
-    option -clean-target-factor    -default 5
-    option -clean-target-threshold -default 2500
-
-    # Fires when the buffer in $direction ("old"/"new") fell below the
-    # load threshold. Called as: {*}$cmd $direction $edgeKey — $edgeKey
-    # is the key of the oldest (for "old") or newest (for "new") displayed
-    # message, i.e. the cursor the controller should fetch from. Fires
-    # once per thirsty direction per DoCleanup pass. Not fired if the
-    # display is empty (no edge to fetch from), nor for a direction that
-    # was just culled in the same pass (avoids load→clean→load).
-    option -thirst-command -default control::no-op
-
-    # Fires after chatarea culled messages from one or both edges.
-    # Called as: {*}$cmd $directions — $directions is a list containing
-    # "old" and/or "new". The controller should invalidate any in-flight
-    # loads for those directions; their cursors no longer connect to
-    # displayed content. Fires once per DoCleanup pass that culled.
-    option -cull-command -default control::no-op
+    delegate option -cull-command           to policy
 
     # Fires when the last message displaying a given avatar JID was just
     # removed. Called as: {*}$cmd $avatarJid. Lets the controller release
@@ -104,22 +71,12 @@ snit::widget chatarea {
     #   payload        handed back verbatim by `messages get`.
     component rows
 
-    # Whether a DoCleanup is already scheduled via after idle
-    variable CleanupScheduled
-
     # dict: jid → Tk image name (current avatar for that JID)
     variable AvatarImages
 
-    # Viewport = what's currently visible on screen
-    
-    # How many pixels are above the viewport
-    variable PixelsAbove
-    # How many pixels are below the viewport
-    variable PixelsBelow
-
     # Slot of the currently highlighted message (search result), or ""
     variable HighlightedSlot
-    
+
     constructor args {
         install text using chattext $win.text \
             -yscrollcommand [list $win.scrollbar set]
@@ -129,24 +86,21 @@ snit::widget chatarea {
             -parent $win.text
         install loading using chatloading $win.loading \
             -parent $win.text
+        install rows using rowlist ${selfns}::rows
+        install policy using windowpolicy ${selfns}::policy \
+            -measure-command [mymethod Measure] \
+            -rowcount-command [list $rows size] \
+            -drop-command [mymethod DropEdge] \
+            -edgekey-command [mymethod EdgeKey]
 
         $self configurelist $args
-        
+
         grid $win.text $win.scrollbar -sticky nsew
         grid rowconfigure $win $win.text -weight 1
         grid columnconfigure $win $win.text -weight 1
-        
-        install rows using rowlist ${selfns}::rows
-        set CleanupScheduled 0
+
         set AvatarImages [dict create]
         set HighlightedSlot ""
-
-        if {$options(-pixelsbelowvariable) ne ""} {
-            upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
-        }
-        if {$options(-pixelsabovevariable) ne ""} {
-            upvar #0 $options(-pixelsabovevariable) [myvar PixelsAbove]
-        }       
 
         # Configure text tags and fonts
         $self SetFont
@@ -159,7 +113,28 @@ snit::widget chatarea {
     }
 
     destructor {
-        after cancel [mymethod DoCleanup]
+        $policy cancel
+    }
+
+    # What windowpolicy asks us for: pixels of content outside the viewport,
+    # the viewport's own height, which row sits at an edge, and its removal.
+    method Measure {what} {
+        if {![winfo exists $win]} { return 0 }
+        switch -- $what {
+            above  { return [$text count -ypixels 0.0 @0,0] }
+            below  { return [$text count -ypixels @0,[winfo height $text] end-1line] }
+            height { return [winfo height $text] }
+        }
+    }
+
+    method DropEdge {direction} {
+        $self deleteByPos [expr {$direction eq "old" ? 0 : "end"}]
+    }
+
+    method EdgeKey {direction} {
+        set row [$rows at [expr {$direction eq "old" ? 0 : "end"}]]
+        if {$row eq ""} { return "" }
+        dict get $row key
     }
 
     # Insert each message at its sorted position. Callers supply `key`
@@ -224,14 +199,14 @@ snit::widget chatarea {
     }
 
     method OnYview {} {
-        $self Cleanup
+        $policy schedule
     }
 
     method OnWidgetViewSync synced {
         if {!$synced} {
             return
         }
-        $self Cleanup
+        $policy schedule
     }
 
     # The key of the row under these widget-relative coords, or "".
@@ -347,83 +322,8 @@ snit::widget chatarea {
         $text tag configure tombstone -foreground gray50 -font "$font italic"
     }
 
-    method GetPixelsAbove {} {
-        set PixelsAbove [$text count -ypixels 0.0 @0,0]
-    }
-    
-    method GetPixelsBelow {} {
-        set PixelsBelow [$text count -ypixels @0,[winfo height $text] end-1line]
-    }
-
-    method Cleanup {} {
-        if {$CleanupScheduled} {
-            return
-        }
-        set CleanupScheduled 1
-        after idle [mymethod DoCleanup]
-    }
-
-    method DoCleanup {} {
-        if {![winfo exists $win]} return
-        set CleanupScheduled 0
-
-        $self GetPixelsBelow
-        $self GetPixelsAbove
-
-        # Scale thresholds to viewport height so fetching starts
-        # well before the user reaches the edge of loaded content.
-        set vh [winfo height $text]
-        set loadTh      [expr {max($options(-load-threshold),         $vh * $options(-load-factor))}]
-        set cleanTh     [expr {max($options(-clean-threshold),        $vh * $options(-clean-factor))}]
-        set cleanTarget [expr {max($options(-clean-target-threshold), $vh * $options(-clean-target-factor))}]
-
-        set cleaned {}
-
-        if {$PixelsAbove > $cleanTh} {
-            lappend cleaned old
-            while {$PixelsAbove > $cleanTarget && [$rows size] > 0} {
-                $self deleteByPos 0
-                $self GetPixelsAbove
-            }
-        }
-
-        if {$PixelsBelow > $cleanTh} {
-            lappend cleaned new
-            while {$PixelsBelow > $cleanTarget && [$rows size] > 0} {
-                $self deleteByPos end
-                $self GetPixelsBelow
-            }
-        }
-
-        # Invalidate in-flight loads whose cursors may now be stale.
-        if {[llength $cleaned] > 0} {
-            {*}$options(-cull-command) $cleaned
-        }
-
-        # Need an edge id to fetch from; if the display ended up empty
-        # there is nothing to be thirsty about. Initial load comes
-        # through a different path (chatview::InitialLoad), so the
-        # controller's dedupe guard would not catch this.
-        if {[$rows size] == 0} return
-
-        # Don't fire thirst for a direction we just cleaned -
-        # that would cause a load→clean→load loop.
-        if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
-            {*}$options(-thirst-command) old [$self messages oldest]
-        }
-        if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
-            {*}$options(-thirst-command) new [$self messages newest]
-        }
-    }
-
-    method {messages oldest} {} { $self EdgeKey 0 }
-    method {messages newest} {} { $self EdgeKey end }
-
-    method EdgeKey {idx} {
-        set row [$rows at $idx]
-        if {$row eq ""} { return "" }
-        dict get $row key
-    }
+    method {messages oldest} {} { $self EdgeKey old }
+    method {messages newest} {} { $self EdgeKey new }
 
     method {messages keys} {} { $rows keys }
 
