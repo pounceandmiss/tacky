@@ -365,6 +365,11 @@ Event:
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
+    message edit {chat: string, timestamp: int, body: string}
+    message retract {chat: string, timestamp: int}
+    message moderate {chat: string, timestamp: int, reason?: string}
+    message react {chat: string, timestamp: int, emoji: string}
+    message reactClear {chat: string, timestamp: int}
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
@@ -760,6 +765,23 @@ placeholder from the header you already hold. `<Confirmed>` acknowledges a
 pending send: update its checkmark in place when `newtimestamp == timestamp`,
 or rekey to `newtimestamp` and re-sort when the server relocated it - the
 only one that shifts a message's slot.
+
+**Causing those updates.** Five calls, all naming their target by `timestamp`
+and all silently doing nothing when it isn't stored. `edit` (XEP-0308) sends a
+correction of one of your own messages and swaps the stored body immediately,
+so `<Edited>` arrives without waiting for the echo. `react` (XEP-0444)
+*toggles* one emoji in your own reaction set - it is not "add"; call it again
+with the same emoji to take it back. The set is sent whole because the
+protocol has no delta, and `reactClear` drops all of yours at once.
+
+Deleting splits by chat kind, so pick by chat rather than offering both.
+`retract` (XEP-0424) withdraws one of *your own* 1:1 messages and tombstones it
+locally at once; called on a room it does nothing. `moderate` (XEP-0425) asks
+a room to retract *anyone's* message and is the room path. It deliberately does
+not tombstone locally: the room's own broadcast drives the change through the
+receive path, so a rejected request leaves the message intact and no
+`<Retracted>` ever arrives. The service enforces moderator role, so a rejection
+is normal - pass `onerror` to hear about it, since success is silent.
 
 **Outgoing.** Your own messages show up right away on `<New>`
 (optimistically) at their pending timestamp. Once they're confirmed - a MUC
