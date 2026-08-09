@@ -62,8 +62,7 @@ snit::widget searchwindow {
         $bot.more configure -state disabled
         grid remove $bot.more
 
-        # Click binding on the text widget
-        bind $win.ca.text <Button-1> [mymethod OnClick %x %y]
+        bind $ca <<MessageClick>> [mymethod OnClick %d]
 
         # Highlight tag
         $win.ca.text tag configure search_match -background yellow \
@@ -164,25 +163,15 @@ snit::widget searchwindow {
             return
         }
 
-        # Enrich and stitch prev pointers sequentially
-        set existing [$ca messages ids]
-        set lastId [lindex $existing end]
-        set enriched {}
-        foreach msg $messages {
-            set emsg [$self EnrichMessage $msg $lastId]
-            lappend enriched $emsg
-            set lastId [dict get $emsg id]
-        }
-
+        set enriched [lmap msg $messages {enrich_store_message $msg $Names}]
         set inserted [$ca apply $enriched]
 
         # Highlight search terms in newly inserted messages
         set text $win.ca.text
-        foreach id $inserted {
-            set first item.$id.body.first
-            set last item.$id.body.last
-            if {[catch {$text index $first}]} continue
-            set pos $first
+        foreach key $inserted {
+            set range [$ca messages body-range $key]
+            if {$range eq ""} continue
+            lassign $range pos last
             while 1 {
                 set pos [$text search -nocase -count n -- $query $pos $last]
                 if {$pos eq ""} break
@@ -192,22 +181,9 @@ snit::widget searchwindow {
         }
     }
 
-    method EnrichMessage {storeDict prevId} {
-        set d [enrich_store_message $storeDict $Names]
-        dict set d prev $prevId
-        return $d
-    }
-
-    method OnClick {x y} {
-        set tags [$win.ca.text tag names @$x,$y]
-        foreach tag $tags {
-            if {[string match "item.*" $tag] && ![string match "item.*.*" $tag]} {
-                set messageId [string range $tag 5 end]
-                if {$options(-goto-command) ne ""} {
-                    {*}$options(-goto-command) $messageId
-                }
-                return
-            }
+    method OnClick {key} {
+        if {$options(-goto-command) ne ""} {
+            {*}$options(-goto-command) $key
         }
     }
 }

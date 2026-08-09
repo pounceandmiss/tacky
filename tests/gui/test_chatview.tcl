@@ -190,7 +190,7 @@ test chatview-live-message {stanza fed through client appears in chatview} \
     -body {
         cv_feed "hello world" srv1
         wait
-        set ids [.cv messages ids]
+        set ids [.cv messages keys]
         list [llength $ids] [expr {[.cv messages newest] ne ""}]
     } -result {1 1}
 
@@ -213,7 +213,7 @@ test chatview-live-dedup {duplicate stanza-id does not create second message} \
         wait
         cv_feed "hello" srv1
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {1}
 
 test chatview-no-body-ignored {message without body does not appear} \
@@ -224,7 +224,7 @@ test chatview-no-body-ignored {message without body does not appear} \
             j active -ns http://jabber.org/protocol/chatstates
         }]
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {0}
 
 # -- sent + confirmed -----------------------------------------------------------
@@ -235,7 +235,7 @@ test chatview-sent-appears {sent message appears in chatview} \
         tacky message send -acc $::acc -chat alice@example.com \
             -body "outgoing msg"
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {1}
 
 test chatview-sendfile-optimistic {sendFile shows the message immediately in an uploading state} \
@@ -249,8 +249,8 @@ test chatview-sendfile-optimistic {sendFile shows the message immediately in an 
             -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
-        set res [list n=[llength [.cv messages ids]] \
-            bar=[winfo exists .cv.text.att_${id}_0.up.bar]]
+        set res [list n=[llength [.cv messages keys]] \
+            bar=[winfo exists [.cv attachment path $id 0].up.bar]]
         file delete $tmp
         set res
     } -result {n=1 bar=1}
@@ -268,7 +268,7 @@ test chatview-sendfile-image-thumbnail \
         tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
-        set res [winfo exists .cv.text.att_${id}_0.img]
+        set res [winfo exists [.cv attachment path $id 0].img]
         file delete $tmp
         set res
     } -result 1
@@ -287,9 +287,9 @@ test chatview-autofetch-blocked-renders-plain-caption \
         }]
         wait
         set id [.cv messages newest]
-        list cap=[winfo exists .cv.text.att_${id}_0.cap] \
-             img=[winfo exists .cv.text.att_${id}_0.img] \
-             errorRow=[winfo exists .cv.text.att_${id}_0.dl]
+        list cap=[winfo exists [.cv attachment path $id 0].cap] \
+             img=[winfo exists [.cv attachment path $id 0].img] \
+             errorRow=[winfo exists [.cv attachment path $id 0].dl]
     } -result {cap=1 img=0 errorRow=0}
 
 test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
@@ -304,7 +304,7 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         wait
         set sentId [.cv messages newest]
         # Check no checkmark yet (pending)
-        set tag item.$sentId.receipt
+        set tag [.cv messages tag $sentId].receipt
         set ranges [.cv.text tag ranges $tag]
         set before [.cv.text get {*}$ranges]
         # Trigger SM ack
@@ -326,7 +326,7 @@ test chatview-multiple-outgoing-order {multiple outgoing messages appear in send
         wait
         tacky message send -acc $::acc -chat alice@example.com -body "three"
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {3}
 
 test chatview-outgoing-interleaved {outgoing interleaved with incoming in correct order} \
@@ -339,7 +339,7 @@ test chatview-outgoing-interleaved {outgoing interleaved with incoming in correc
         wait
         tacky message send -acc $::acc -chat alice@example.com -body "out2"
         wait
-        set ids [.cv messages ids]
+        set ids [.cv messages keys]
         list [llength $ids] [expr {[lindex $ids 0] == $ts1}]
     } -result {3 1}
 
@@ -351,10 +351,10 @@ test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
         set sentId [.cv messages newest]
         cv_muc_echo $sentId echo-sid1
         wait
-        set tag item.$sentId.receipt
+        set tag [.cv messages tag $sentId].receipt
         set ranges [.cv.text tag ranges $tag]
         set receipt [.cv.text get {*}$ranges]
-        list [llength [.cv messages ids]] receipt=$receipt
+        list [llength [.cv messages keys]] receipt=$receipt
     } -result "1 {receipt= \u2713}"
 
 test chatview-muc-echo-different-ts {echo with different timestamp moves message} \
@@ -368,10 +368,10 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
         set echoStamp [FormatTimestampISO $echoTs]
         cv_muc_echo $sentId echo-sid2 $echoStamp
         wait
-        set ids [.cv messages ids]
+        set ids [.cv messages keys]
         set newId [lindex $ids 0]
         # Old id should be gone, new id should be present
-        set tag item.$newId.receipt
+        set tag [.cv messages tag $newId].receipt
         set ranges [.cv.text tag ranges $tag]
         set receipt [.cv.text get {*}$ranges]
         list [llength $ids] [expr {$sentId ni $ids}] \
@@ -390,12 +390,12 @@ test chatview-muc-echo-reorders {echo reorders message among interleaved message
         cv_feed "B" srv-b
         wait
         set tsB [.cv messages newest]
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
         # Echo X at timestamp after B
         set echoTs [expr {$tsB + 1000000}]
         cv_muc_echo $tsX echo-reorder [FormatTimestampISO $echoTs]
         wait
-        set ids [.cv messages ids]
+        set ids [.cv messages keys]
         # Expected: A, B, X' — X moved after B
         list count=$countBefore \
             [llength $ids] \
@@ -421,12 +421,12 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
         wait
         set tsC [.cv messages newest]
         # Verify initial order: A, X, B, C
-        set before [.cv messages ids]
+        set before [.cv messages keys]
         # Echo X at timestamp between B and C
         set echoTs [expr {$tsB + ($tsC - $tsB) / 2}]
         cv_muc_echo $tsX echo-4msg [FormatTimestampISO $echoTs]
         wait
-        set after [.cv messages ids]
+        set after [.cv messages keys]
         # Expected: A, B, X', C — X moved between B and C
         list [llength $before] [llength $after] \
             [expr {[lindex $after 0] == $tsA}] \
@@ -445,10 +445,10 @@ foreach {direction seedCmd} {
         -body {
             eval $seedCmd
             wait
-            set countBefore [llength [.cv messages ids]]
+            set countBefore [llength [.cv messages keys]]
             tacky emit message <CatchupDone> -count 5
             wait
-            set countAfter [llength [.cv messages ids]]
+            set countAfter [llength [.cv messages keys]]
             list before=$countBefore after=$countAfter
         } -result {before=1 after=1}
 }
@@ -469,11 +469,11 @@ test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what
     -body {
         cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
         wait
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
         cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
         tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
         wait
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
         list before=$countBefore after=$countAfter
     } -result {before=1 after=2}
 
@@ -485,7 +485,7 @@ test chatview-catchup-ignores-other-chat {CatchupDone for a different chat is no
         cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
         tacky emit message <CatchupDone> -acc $::acc -jid bob@example.com -count 1
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {1}
 
 test chatview-catchup-account-wide-reconciles {the account-wide settle repaints a 1:1, which gets no bracket of its own} \
@@ -496,7 +496,7 @@ test chatview-catchup-account-wide-reconciles {the account-wide settle repaints 
         cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
         tacky emit message <CatchupDone> -acc $::acc -jid "" -count 1
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {2}
 
 test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repainted under the user} \
@@ -511,7 +511,7 @@ test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repa
         cv_store_behind "arrived while away" srv3 2024-01-01T12:00:00Z
         tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {2}
 
 # 1:1 views take the account-wide bracket, so the jid defaults to empty.
@@ -533,9 +533,9 @@ test chatview-catchup-defers-live-message {a message arriving mid-sync lands onl
         cv_catchup_start
         cv_feed "during catchup" srv2 -stamp 2024-01-01T11:00:00Z
         wait
-        set during [llength [.cv messages ids]]
+        set during [llength [.cv messages keys]]
         cv_catchup_done
-        list during=$during after=[llength [.cv messages ids]]
+        list during=$during after=[llength [.cv messages keys]]
     } -result {during=1 after=2}
 
 test chatview-catchup-declines-page-short-of-tail {a page that stops short of the tail is not appended} \
@@ -549,7 +549,7 @@ test chatview-catchup-declines-page-short-of-tail {a page that stops short of th
         tacky emit message <Tail> -acc $::acc -jid alice@example.com \
             -timestamp [ParseTimestamp 2024-01-01T20:00:00Z]
         cv_catchup_done alice@example.com 1
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {1}
 
 test chatview-catchup-shows-indicator {the sync bracket places and unplaces the overlay} \
@@ -644,7 +644,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
         tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
-        set hasImg [winfo exists .cv.text.att_${id}_0.img]
+        set hasImg [winfo exists [.cv attachment path $id 0].img]
         set hiddenAfter [expr {[place info .cv.scrollbtn] eq ""}]
         file delete $tmp
         list hiddenBefore=$hiddenBefore img=$hasImg hiddenAfter=$hiddenAfter
@@ -661,10 +661,10 @@ test chatview-live-after-history {live message appears when history is already d
     } \
     -cleanup { cv_cleanup } \
     -body {
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
         cv_feed "live msg" srv-live
         wait
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
         list before=$countBefore after=$countAfter
     } -result {before=2 after=3}
 
@@ -678,10 +678,10 @@ test chatview-live-after-mam-history {live message appears when MAM history is d
             sid2 "mam 2" 2024-01-01T11:00:00Z
         }
         wait
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
         cv_feed "live msg" srv-live
         wait
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
         list before=$countBefore after=$countAfter
     } -result {before=2 after=3}
 
@@ -697,7 +697,7 @@ test chatview-initial-load-mam {empty DB triggers MAM and results appear in widg
             sid3 "mam msg 3" 2024-01-01T12:00:00Z
         }
         wait
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {3}
 
 test chatview-scroll-up-loads-more {initial MAM load then thirst fetches older via MAM} \
@@ -715,7 +715,7 @@ test chatview-scroll-up-loads-more {initial MAM load then thirst fetches older v
         $::_client conn clear
         wait
 
-        set countAfterInitial [llength [.cv messages ids]]
+        set countAfterInitial [llength [.cv messages keys]]
 
         # 2. Thirst should have fired for "old" and sent a -before MAM query
         set mamIq2 [cv_find_mam_iq alice@example.com]
@@ -728,7 +728,7 @@ test chatview-scroll-up-loads-more {initial MAM load then thirst fetches older v
         }
         wait
 
-        set countAfterScroll [llength [.cv messages ids]]
+        set countAfterScroll [llength [.cv messages keys]]
         list initial=$countAfterInitial scrolled=$countAfterScroll
     } -result {initial=3 scrolled=5}
 
@@ -747,7 +747,7 @@ test chatview-scroll-up-multi-page {thirst fires again after each MAM backfill p
         $::_client conn clear
         wait
 
-        set countAfterInitial [llength [.cv messages ids]]
+        set countAfterInitial [llength [.cv messages keys]]
 
         # 2. Thirst should have fired → first backfill MAM query
         set mamIq2 [cv_find_mam_iq alice@example.com]
@@ -759,7 +759,7 @@ test chatview-scroll-up-multi-page {thirst fires again after each MAM backfill p
         $::_client conn clear
         wait
 
-        set countAfterFirst [llength [.cv messages ids]]
+        set countAfterFirst [llength [.cv messages keys]]
 
         # 3. Second backfill — "new" direction is short-circuited by
         #    DB check (cursor at latest), so only "old" MAM fires.
@@ -772,7 +772,7 @@ test chatview-scroll-up-multi-page {thirst fires again after each MAM backfill p
         $::_client conn clear
         wait
 
-        set countAfterSecond [llength [.cv messages ids]]
+        set countAfterSecond [llength [.cv messages keys]]
 
         # 4. Third backfill — the "new" direction's complete=true
         #    must not have blocked this.
@@ -784,7 +784,7 @@ test chatview-scroll-up-multi-page {thirst fires again after each MAM backfill p
         }
         wait
 
-        set countAfterThird [llength [.cv messages ids]]
+        set countAfterThird [llength [.cv messages keys]]
         list initial=$countAfterInitial first=$countAfterFirst \
             second=$countAfterSecond third=$countAfterThird
     } -result {initial=3 first=5 second=7 third=9}
@@ -805,7 +805,7 @@ test chatview-thirst-loads-older {thirst loads older messages from local DB} \
     } \
     -cleanup { cv_cleanup } \
     -body {
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {5}
 
 # -- goto (jump to date) --------------------------------------------------------
@@ -819,14 +819,14 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
     } \
     -cleanup { cv_cleanup } \
     -body {
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
 
         # Jump to a date in the past (remote fetch)
         $::_client conn clear
         .cv goto [ParseTimestamp 2024-06-15T12:00:00Z] -source remote
         wait
 
-        set countPending [llength [.cv messages ids]]
+        set countPending [llength [.cv messages keys]]
 
         # Complete the MAM query — OnGoto stores results, getAround
         # returns them, OnGotoDone clears and reloads
@@ -838,11 +838,11 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
             s3 "msg 3" 2024-06-15T13:00:00Z
         }
 
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
 
         # First result should be visible (anchor is nearest to target date)
         set firstId [ParseTimestamp 2024-06-15T12:00:01Z]
-        set hasFirst [expr {$firstId in [.cv messages ids]}]
+        set hasFirst [expr {$firstId in [.cv messages keys]}]
         list before=$countBefore pending=$countPending \
             after=$countAfter hasFirst=$hasFirst
     } -result {before=2 pending=2 after=5 hasFirst=1}
@@ -863,7 +863,7 @@ test chatview-reply-jump {clicking a reply jumps to and highlights the target} \
         # Simulate a click on the reply reference.
         .cv OnReplyJump [list srv-tgt alice@example.com]
         wait
-        .cv.text tag cget item.$tsTarget -background
+        .cv.text tag cget [.cv messages tag $tsTarget] -background
     } -result {yellow}
 
 test chatview-reply-select {selecting Reply emits ReplyTo carrying the target id and body snippet} \
@@ -896,7 +896,7 @@ test chatview-stale-old-discarded {cleanup invalidation discards stale old-direc
         $::_client conn clear
         wait
 
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
 
         # Old-direction MAM query is now in flight
         set mamIq2 [cv_find_mam_iq alice@example.com]
@@ -915,7 +915,7 @@ test chatview-stale-old-discarded {cleanup invalidation discards stale old-direc
         }
         wait
 
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
         list before=$countBefore after=$countAfter
     } -result {before=3 after=3}
 
@@ -957,7 +957,7 @@ test chatview-fresh-load-after-invalidation {new thirst re-requests and loads af
         }
         wait
 
-        llength [.cv messages ids]
+        llength [.cv messages keys]
     } -result {5}
 
 test chatview-goto-cancels-inflight {goto end discards in-flight thirst response} \
@@ -985,7 +985,7 @@ test chatview-goto-cancels-inflight {goto end discards in-flight thirst response
         cv_complete_mam
         wait
 
-        set countAfterGoto [llength [.cv messages ids]]
+        set countAfterGoto [llength [.cv messages keys]]
 
         # Complete stale old-direction MAM
         cv_complete_mam_with $mamIq2 {
@@ -994,7 +994,7 @@ test chatview-goto-cancels-inflight {goto end discards in-flight thirst response
         }
         wait
 
-        set countAfterStale [llength [.cv messages ids]]
+        set countAfterStale [llength [.cv messages keys]]
         list goto=$countAfterGoto stale=$countAfterStale
     } -result {goto=3 stale=3}
 
@@ -1003,13 +1003,13 @@ test chatview-live-dropped-when-tail-culled {live message ignored after new-dire
     -body {
         cv_feed "anchor" srv-anchor
         wait
-        set countBefore [llength [.cv messages ids]]
+        set countBefore [llength [.cv messages keys]]
         # Simulate chatarea culling the tail. AtTail flips false, so
         # subsequent live <New> events should be dropped.
         .cv OnCulled {new}
         cv_feed "while-paused" srv-paused
         wait
-        set countAfter [llength [.cv messages ids]]
+        set countAfter [llength [.cv messages keys]]
         list before=$countBefore after=$countAfter
     } -result {before=1 after=1}
 
@@ -1017,23 +1017,23 @@ test chatview-live-dropped-when-tail-culled {live message ignored after new-dire
 
 # Helper: build a message dict suitable for chatarea apply
 proc ca_msg {id body} {
-    dict create id $id body $body \
+    dict create key $id sort $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 0 server_status ""
 }
 
 proc ca_outgoing {id body {status pending}} {
-    dict create id $id body $body \
+    dict create key $id sort $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 1 server_status $status
 }
 
 proc ca_patch {id} {
-    dict create id $id server_status ""
+    dict create key $id sort $id server_status ""
 }
 
 proc ca_reply {id body replyId replyTo author replyBody} {
-    dict create id $id body $body \
+    dict create key $id sort $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 0 server_status "" \
         reply_id $replyId reply_to $replyTo reply_author $author \
@@ -1041,7 +1041,7 @@ proc ca_reply {id body replyId replyTo author replyBody} {
 }
 
 proc ca_msg_att {id body attachments args} {
-    set d [dict create id $id body $body \
+    set d [dict create key $id sort $id body $body \
         display_name test avatar_jid "" \
         timestamp $id is_outgoing 0 server_status "" \
         attachments $attachments]
@@ -1052,7 +1052,7 @@ proc ca_msg_att {id body attachments args} {
 }
 
 proc ca_upload {id status attachments} {
-    dict create id $id body "" \
+    dict create key $id sort $id body "" \
         display_name You avatar_jid "" \
         timestamp $id is_outgoing 1 server_status $status \
         attachments $attachments
@@ -1070,7 +1070,7 @@ test chatarea-apply-forward {forward batch lands in timestamp order} \
             [ca_msg 100 "msg A"] \
             [ca_msg 200 "msg B"] \
             [ca_msg 300 "msg C"]]
-        .ca messages ids
+        .ca messages keys
     } -result {100 200 300}
 
 test chatarea-apply-backward {newest-first batch lands in timestamp order} \
@@ -1081,7 +1081,7 @@ test chatarea-apply-backward {newest-first batch lands in timestamp order} \
             [ca_msg 400 "msg D"] \
             [ca_msg 300 "msg C"] \
             [ca_msg 200 "msg B"]]
-        .ca messages ids
+        .ca messages keys
     } -result {200 300 400 500}
 
 test chatarea-apply-tombstone {empty-body messages still take a slot in the timeline} \
@@ -1093,7 +1093,7 @@ test chatarea-apply-tombstone {empty-body messages still take a slot in the time
             [ca_msg 300 "msg C"] \
             [ca_msg 400 ""] \
             [ca_msg 500 "msg E"]]
-        .ca messages ids
+        .ca messages keys
     } -result {100 200 300 400 500}
 
 test chatarea-apply-patch-on-displayed {patch entry alongside a new insert applies and inserts} \
@@ -1103,7 +1103,7 @@ test chatarea-apply-patch-on-displayed {patch entry alongside a new insert appli
         .ca apply [list \
             [ca_patch 500] \
             [ca_msg 400 "msg D"]]
-        .ca messages ids
+        .ca messages keys
     } -result {400 500}
 
 test chatarea-apply-out-of-order {batch with non-monotonic timestamps lands sorted} \
@@ -1113,7 +1113,7 @@ test chatarea-apply-out-of-order {batch with non-monotonic timestamps lands sort
             [ca_msg 100 "A"] \
             [ca_msg 300 "C"] \
             [ca_msg 200 "B"]]
-        .ca messages ids
+        .ca messages keys
     } -result {100 200 300}
 
 test chatarea-apply-dedup {already displayed message is patched not duplicated} \
@@ -1126,20 +1126,51 @@ test chatarea-apply-dedup {already displayed message is patched not duplicated} 
         .ca apply [list \
             [ca_msg 100 "msg A"] \
             [ca_msg 200 "msg B"]]
-        .ca messages ids
+        .ca messages keys
     } -result {100 200}
+
+# Identity and position are separate inputs: rows sharing a `sort` are distinct
+# rows, and a key may be any string.
+
+test chatarea-distinct-keys-same-sort {rows sharing a sort position stay separate rows} \
+    {*}$ca_common \
+    -body {
+        set a [dict replace [ca_msg 100 "from alice"] key alice@example.com|100]
+        set b [dict replace [ca_msg 100 "from bob"]   key bob@example.com|100]
+        .ca apply [list $a $b]
+        set content [.ca.text get 1.0 end-1c]
+        list [llength [.ca messages keys]] \
+             [string match "*from alice*from bob*" $content]
+    } -result {2 1}
+
+test chatarea-key-with-dots-and-at {a key carrying dots and an @ draws and resolves back} \
+    {*}$ca_common \
+    -body {
+        set key room@conf.example.com?join|1700
+        .ca apply [list [dict replace [ca_msg 100 "hi"] key $key]]
+        set tag [.ca messages tag $key]
+        lassign [.ca messages body-range $key] first last
+        pack .ca -expand yes -fill both
+        update idletasks
+        set clicked ""
+        bind .ca <<MessageClick>> {set clicked %d}
+        lassign [.ca.text bbox $first] bx by
+        event generate .ca.text <Button-1> -x [expr {$bx + 2}] -y [expr {$by + 2}]
+        wait
+        list [expr {$tag ne ""}] [.ca.text get $first $last] $clicked
+    } -result [list 1 hi room@conf.example.com?join|1700]
 
 test chatarea-patch-receipt {Patch with server_status updates receipt checkmark} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_outgoing 100 "hello"]]
         # Receipt tag should exist but show no checkmark (pending)
-        set tag item.100.receipt
+        set tag [.ca messages tag 100].receipt
         set ranges [.ca.text tag ranges $tag]
         set before [expr {[llength $ranges] > 0
             ? [.ca.text get {*}$ranges] : "MISSING"}]
         # Patch: server confirms receipt
-        .ca apply [list [dict create id 100 server_status ""]]
+        .ca apply [list [ca_patch 100]]
         set ranges [.ca.text tag ranges $tag]
         set after [expr {[llength $ranges] > 0
             ? [.ca.text get {*}$ranges] : "MISSING"}]
@@ -1152,7 +1183,7 @@ test chatarea-reply-preview-rendered {a reply renders a clickable preview with a
         .ca apply [list [ca_reply 100 "the reply" rid1 room@x/bob bob "the original text"]]
         set content [.ca.text get 1.0 end-1c]
         list [string match "*bob*the original text*the reply*" $content] \
-             [expr {"item.100.replyref" in [.ca.text tag names]}]
+             [expr {"[.ca messages tag 100].replyref" in [.ca.text tag names]}]
     } -result {1 1}
 
 test chatarea-reactions-rendered {a message's reactions render emoji+count chips, styled and clickable} \
@@ -1166,8 +1197,8 @@ test chatarea-reactions-rendered {a message's reactions render emoji+count chips
         }]]
         set content [.ca.text get 1.0 end-1c]
         list [string match "*👍 2*❤️ 1*" $content] \
-             [expr {"item.100.reactions" in [.ca.text tag names]}] \
-             [expr {[.ca.text tag bind react.100.1 <Button-1>] ne ""}]
+             [expr {"[.ca messages tag 100].reactions" in [.ca.text tag names]}] \
+             [expr {[.ca.text tag bind [.ca messages tag 100].react.1 <Button-1>] ne ""}]
     } -result {1 1 1}
 
 test chatarea-reactions-update-in-place {reactions update swaps only the chip row, leaving the body intact} \
@@ -1178,16 +1209,16 @@ test chatarea-reactions-update-in-place {reactions update swaps only the chip ro
         .ca reactions update 100 {👍 {reactors {bob} mine 0}}
         set added [list \
             [string match "*hi there*👍 1*" [.ca.text get 1.0 end-1c]] \
-            [expr {[llength [.ca.text tag ranges item.100.reactions]] > 0}]]
+            [expr {[llength [.ca.text tag ranges [.ca messages tag 100].reactions]] > 0}]]
         # Change the set.
         .ca reactions update 100 {👍 {reactors {bob carol} mine 1}}
         set changed [string match "*👍 2*" [.ca.text get 1.0 end-1c]]
         # Retract everything: chip row gone, body still present, message kept.
         .ca reactions update 100 {}
         set cleared [list \
-            [llength [.ca.text tag ranges item.100.reactions]] \
+            [llength [.ca.text tag ranges [.ca messages tag 100].reactions]] \
             [string match "*hi there*" [.ca.text get 1.0 end-1c]] \
-            [expr {100 in [.ca messages ids]}]]
+            [expr {100 in [.ca messages keys]}]]
         concat $added $changed $cleared
     } -result {1 1 1 0 1 1}
 
@@ -1198,7 +1229,7 @@ test chatarea-attachment-image-caption {image attachment renders a clickable cap
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
-        set f .ca.text.att_100_0
+        set f [.ca attachment path 100 0]
         list [winfo exists $f] [winfo exists $f.cap]
     } -result {1 1}
 
@@ -1207,7 +1238,7 @@ test chatarea-attachment-file-chip {file attachment renders name + Open/Save but
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
             [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
-        set f .ca.text.att_100_0.chip
+        set f [.ca attachment path 100 0].chip
         list [winfo exists $f.name] [winfo exists $f.open] [winfo exists $f.save]
     } -result {1 1 1}
 
@@ -1245,12 +1276,12 @@ test chatarea-image-load-above-keeps-viewport \
         # Park message 150 at the top of the viewport, with the image (200)
         # on-screen below it. A thumbnail popping in on 200 must not shift
         # the content the user is already reading above it.
-        .ca.text see item.150.first
+        .ca.text see [.ca messages tag 150].first
         .ca.text sync; update
-        set before [lindex [.ca.text bbox item.150.first] 1]
+        set before [lindex [.ca.text bbox [.ca messages tag 150].first] 1]
         .ca attachment image 200 0 $::ca_png
         .ca.text sync; update
-        set after [lindex [.ca.text bbox item.150.first] 1]
+        set after [lindex [.ca.text bbox [.ca messages tag 150].first] 1]
         list visBefore=[expr {$before ne ""}] visAfter=[expr {$after ne ""}] \
              stable=[expr {$before ne "" && $after ne "" \
                  && abs($after - $before) < 30}]
@@ -1261,7 +1292,7 @@ test chatarea-attachment-scroll-relay {attachment widgets relay wheel events to 
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
             [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
-        set f .ca.text.att_100_0
+        set f [.ca attachment path 100 0]
         list [expr {[bind $f <Button-4>] ne ""}] \
              [expr {[bind $f.chip.name <MouseWheel>] ne ""}] \
              [expr {[bind $f.chip.open <Button-5>] ne ""}]
@@ -1272,7 +1303,7 @@ test chatarea-attachment-uploading-bar {an uploading attachment shows a progress
     -body {
         .ca apply [list [ca_upload 100 uploading \
             [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
-        winfo exists .ca.text.att_100_0.up.bar
+        winfo exists [.ca attachment path 100 0].up.bar
     } -result 1
 
 test chatarea-attachment-progress {attachment state active sets the bar value} \
@@ -1281,7 +1312,7 @@ test chatarea-attachment-progress {attachment state active sets the bar value} \
         .ca apply [list [ca_upload 100 uploading \
             [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
         .ca attachment state 100 0 upload active 50 100
-        expr {abs([.ca.text.att_100_0.up.bar cget -value] - 50) < 0.01}
+        expr {abs([[.ca attachment path 100 0].up.bar cget -value] - 50) < 0.01}
     } -result 1
 
 test chatarea-attachment-uploaded-removes-bar {upload done removes the progress bar} \
@@ -1290,7 +1321,7 @@ test chatarea-attachment-uploaded-removes-bar {upload done removes the progress 
         .ca apply [list [ca_upload 100 uploading \
             [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
         .ca attachment state 100 0 upload done 0 0
-        winfo exists .ca.text.att_100_0.up
+        winfo exists [.ca attachment path 100 0].up
     } -result 0
 
 test chatarea-attachment-failed-retry {a failed upload shows a Retry button} \
@@ -1298,7 +1329,7 @@ test chatarea-attachment-failed-retry {a failed upload shows a Retry button} \
     -body {
         .ca apply [list [ca_upload 100 failed \
             [list [dict create url /tmp/d.pdf type file name d.pdf size "" mime ""]]]]
-        winfo exists .ca.text.att_100_0.up.retry
+        winfo exists [.ca attachment path 100 0].up.retry
     } -result 1
 
 test chatarea-attachment-done-then-failed-transition {uploaded then failed swaps bar for Retry} \
@@ -1306,10 +1337,10 @@ test chatarea-attachment-done-then-failed-transition {uploaded then failed swaps
     -body {
         .ca apply [list [ca_upload 100 uploading \
             [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
-        set hadBar [winfo exists .ca.text.att_100_0.up.bar]
+        set hadBar [winfo exists [.ca attachment path 100 0].up.bar]
         .ca attachment state 100 0 upload failed 0 0
-        list bar=$hadBar retry=[winfo exists .ca.text.att_100_0.up.retry] \
-            barGone=[expr {![winfo exists .ca.text.att_100_0.up.bar]}]
+        list bar=$hadBar retry=[winfo exists [.ca attachment path 100 0].up.retry] \
+            barGone=[expr {![winfo exists [.ca attachment path 100 0].up.bar]}]
     } -result {bar=1 retry=1 barGone=1}
 
 test chatarea-attachment-download-bar {a download active state shows a progress bar} \
@@ -1318,8 +1349,8 @@ test chatarea-attachment-download-bar {a download active state shows a progress 
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
         .ca attachment state 100 0 download active 30 100
-        list bar=[winfo exists .ca.text.att_100_0.dl.bar] \
-            val=[expr {abs([.ca.text.att_100_0.dl.bar cget -value] - 30) < 0.01}]
+        list bar=[winfo exists [.ca attachment path 100 0].dl.bar] \
+            val=[expr {abs([[.ca attachment path 100 0].dl.bar cget -value] - 30) < 0.01}]
     } -result {bar=1 val=1}
 
 test chatarea-attachment-download-done-removes-bar {download done removes the bar} \
@@ -1329,7 +1360,7 @@ test chatarea-attachment-download-done-removes-bar {download done removes the ba
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
         .ca attachment state 100 0 download active 30 100
         .ca attachment state 100 0 download done 0 0
-        winfo exists .ca.text.att_100_0.dl
+        winfo exists [.ca attachment path 100 0].dl
     } -result 0
 
 test chatarea-attachment-empty-caption-no-body {an empty caption renders no body text} \
@@ -1338,7 +1369,7 @@ test chatarea-attachment-empty-caption-no-body {an empty caption renders no body
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
             ""]]
-        set r [.ca.text tag ranges item.100.body]
+        set r [.ca.text tag ranges [.ca messages tag 100].body]
         expr {[llength $r] == 0 || [.ca.text get {*}$r] eq ""}
     } -result 1
 
@@ -1348,7 +1379,7 @@ test chatarea-attachment-caption-rendered {a non-empty caption is shown as the b
         .ca apply [list [ca_msg_att 100 "see this https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
             "see this https://h/p.png"]]
-        set r [.ca.text tag ranges item.100.body]
+        set r [.ca.text tag ranges [.ca messages tag 100].body]
         .ca.text get {*}$r
     } -result {see this https://h/p.png}
 
@@ -1356,7 +1387,7 @@ test chatarea-attachment-image-missing-frame {attachment image on an unknown id 
     {*}$ca_common \
     -body {
         .ca attachment image 999 0 /nonexistent/path.png
-        winfo exists .ca.text.att_999_0
+        winfo exists [.ca attachment path 999 0]
     } -result 0
 
 test chatarea-attachment-image-bad-path {attachment image with an undecodable file leaves no image} \
@@ -1365,7 +1396,7 @@ test chatarea-attachment-image-bad-path {attachment image with an undecodable fi
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
         .ca attachment image 100 0 /nonexistent/path.png
-        winfo exists .ca.text.att_100_0.img
+        winfo exists [.ca attachment path 100 0].img
     } -result 0
 
 test chatarea-attachment-image-frees-photo {destroying the thumbnail label frees its Tk photo} \
@@ -1386,7 +1417,7 @@ test chatarea-attachment-image-frees-photo {destroying the thumbnail label frees
         set before [llength [image names]]
         .ca attachment image 100 0 $::cap_png
         set during [llength [image names]]
-        destroy .ca.text.att_100_0.img
+        destroy [.ca attachment path 100 0].img
         update
         set after [llength [image names]]
         list grew=[expr {$during > $before}] cleaned=[expr {$after == $before}]
@@ -1401,10 +1432,10 @@ test chatarea-highlight-message {highlight applies yellow and clears previous} \
             [ca_msg 100 "msg A"] \
             [ca_msg 200 "msg B"]]
         .ca highlight message 100
-        set bg1 [.ca.text tag cget item.100 -background]
+        set bg1 [.ca.text tag cget [.ca messages tag 100] -background]
         .ca highlight message 200
-        set bg1after [.ca.text tag cget item.100 -background]
-        set bg2 [.ca.text tag cget item.200 -background]
+        set bg1after [.ca.text tag cget [.ca messages tag 100] -background]
+        set bg2 [.ca.text tag cget [.ca messages tag 200] -background]
         list first=$bg1 first_after=$bg1after second=$bg2
     } -result {first=yellow first_after= second=yellow}
 
@@ -1413,9 +1444,9 @@ test chatarea-highlight-clear {highlight clear removes background} \
     -body {
         .ca apply [list [ca_msg 100 "msg A"]]
         .ca highlight message 100
-        set before [.ca.text tag cget item.100 -background]
+        set before [.ca.text tag cget [.ca messages tag 100] -background]
         .ca highlight clear
-        set after [.ca.text tag cget item.100 -background]
+        set after [.ca.text tag cget [.ca messages tag 100] -background]
         list before=$before after=$after
     } -result {before=yellow after=}
 
@@ -1494,8 +1525,8 @@ test chatarea-cull-fires-with-directions {-cull-command fires with the list of c
     {*}$ca_signals_common \
     -body {
         # Pixel mock above above clean threshold; messages get culled until
-        # MessageIds drains (mock returns constant high value, so the
-        # loop's `[llength $MessageIds] > 0` guard is what stops it).
+        # the row list drains (mock returns constant high value, so the
+        # loop's `[llength $Rows] > 0` guard is what stops it).
         set ::mock_above 9999
         set ::mock_below 0
         .ca apply [list \
@@ -1509,7 +1540,7 @@ test chatarea-cull-fires-with-directions {-cull-command fires with the list of c
 test chatarea-no-thirst-for-just-culled-direction {a direction culled this pass does not also fire thirst} \
     {*}$ca_signals_common \
     -body {
-        # Cull old; mock_above stays high so loop drains MessageIds; once
+        # Cull old; mock_above stays high so the loop drains all rows; once
         # empty, the empty-display guard prevents any thirst fire — including
         # the suppressed "old" we just culled. Verifies no {old ...} entry
         # leaks into ::ca_thirsty even when above-pixels look thirsty.
@@ -1550,7 +1581,7 @@ test chatarea-retracted-tombstone {a retracted message renders a tombstone and k
         list [expr {[llength $tomb] > 0}] \
              [string match "*deleted*" [.ca.text get 1.0 end-1c]] \
              [expr {![string match "*secret*" [.ca.text get 1.0 end-1c]]}] \
-             [.ca messages ids]
+             [.ca messages keys]
     } -result {1 1 1 {100 200 300}}
 
 test chatview-edit-redraws-body {a received correction redraws the message body in place} \
