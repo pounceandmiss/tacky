@@ -25,6 +25,7 @@ snit::widgetadaptor chatview {
     variable TrackedAvatars
 
     delegate method messages to hull
+    delegate method attachment to hull
     delegate method {see *} to hull using {%c see %m}
     delegate method {highlight *} to hull using {%c highlight %m}
     delegate method system to hull
@@ -285,7 +286,7 @@ snit::widgetadaptor chatview {
         if {[llength $messages] == 0} return
 
         # If anchor is already visible, just scroll+highlight
-        if {$anchor in [$hull messages ids]} {
+        if {$anchor in [$hull messages keys]} {
             $hull see message $anchor
             return
         }
@@ -294,7 +295,7 @@ snit::widgetadaptor chatview {
         $hull clear
         $self ProcessBatch $messages
         $self UpdateViewAtTail
-        if {$anchor ne "" && $anchor in [$hull messages ids]} {
+        if {$anchor ne "" && $anchor in [$hull messages keys]} {
             $hull see message $anchor
         }
     }
@@ -465,7 +466,7 @@ snit::widgetadaptor chatview {
     # any of server_status / remote_status / fail_reason.
     method OnStatus {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages ids]} return
+        if {$ts ni [$hull messages keys]} return
         set patch [dict create]
         foreach k {server_status remote_status fail_reason} {
             if {[dict exists $ev -$k]} { dict set patch $k [dict get $ev -$k] }
@@ -481,7 +482,7 @@ snit::widgetadaptor chatview {
     # compensate).
     method OnConfirmed {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages ids]} return
+        if {$ts ni [$hull messages keys]} return
         set newTs [dict get $ev -newtimestamp]
         if {$newTs == $ts} {
             $hull patchFields $ts \
@@ -499,7 +500,7 @@ snit::widgetadaptor chatview {
 
     method OnReactions {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages ids]} return
+        if {$ts ni [$hull messages keys]} return
         $hull reactions update $ts [dict get $ev -reactions]
     }
 
@@ -510,7 +511,7 @@ snit::widgetadaptor chatview {
     method OnEdited {ev} {
         set msg [dict get $ev -message]
         set ts [dict get $msg timestamp]
-        if {$ts ni [$hull messages ids]} return
+        if {$ts ni [$hull messages keys]} return
         set atEnd [$hull atEnd]
         $hull deleteById $ts
         $self ProcessBatch [list $msg]
@@ -522,7 +523,7 @@ snit::widgetadaptor chatview {
     # retracted flag; DrawMessage renders the tombstone from the header alone.
     method OnRetracted {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages ids]} return
+        if {$ts ni [$hull messages keys]} return
         set sd [$hull messages get $ts]
         dict set sd retracted 1
         set atEnd [$hull atEnd]
@@ -598,7 +599,9 @@ snit::widgetadaptor chatview {
             if {$ajid ne ""} {
                 $self TrackAvatar $ajid
             }
-            $hull messages store [dict get $emsg id] $msg
+            # Stash the raw store dict; the retract/confirm redraws read it
+            # back through `messages get`.
+            dict set emsg payload $msg
             lappend enriched $emsg
         }
         $hull apply $enriched
@@ -615,7 +618,7 @@ snit::widgetadaptor chatview {
     # the local path on upload.
     method FetchAttachments {emsg} {
         if {![dict exists $emsg attachments]} return
-        set id [dict get $emsg id]
+        set id [dict get $emsg key]
         set idx 0
         set auto [expr {![dict get $emsg is_outgoing]}]
         foreach att [dict get $emsg attachments] {
@@ -667,7 +670,7 @@ snit::widgetadaptor chatview {
     }
 
     method ApplyTransfer {id idx dir state loaded total thumb {err ""}} {
-        if {$id ni [$hull messages ids]} return
+        if {$id ni [$hull messages keys]} return
         # An image the policy held back isn't an error: with no state row the
         # attachment keeps its plain click-to-load caption.
         if {$state eq "failed" && [string match autofetch-* $err]} return
@@ -963,9 +966,9 @@ snit::widgetadaptor chatview {
 
 
 if 0 {
-    # Insert messages at their timestamp-sorted position.
-    # Each message must have id (== timestamp) and body (or id+patch
-    # for a patch entry targeting an already-displayed message).
+    # Insert messages at their sorted position.
+    # Each message must have key, sort and body (or key+patch for a patch
+    # entry targeting an already-displayed message).
     $chatview apply $messageDictList
     $chatview message edit $id $messageDict
     $chatview message delete id $id
@@ -1021,8 +1024,8 @@ snit::widget chatarea {
     option -clean-target-threshold -default 2500
 
     # Fires when the buffer in $direction ("old"/"new") fell below the
-    # load threshold. Called as: {*}$cmd $direction $edgeId — $edgeId
-    # is the id of the oldest (for "old") or newest (for "new") displayed
+    # load threshold. Called as: {*}$cmd $direction $edgeKey — $edgeKey
+    # is the key of the oldest (for "old") or newest (for "new") displayed
     # message, i.e. the cursor the controller should fetch from. Fires
     # once per thirsty direction per DoCleanup pass. Not fired if the
     # display is empty (no edge to fetch from), nor for a direction that
@@ -1046,8 +1049,8 @@ snit::widget chatarea {
     #   save       {*}$cmd $url $filename  download (cached) and copy to a path
     #   openfolder {*}$cmd $url            show the cached file in its folder
     #   uncache    {*}$cmd $url            delete the cached copy from disk
-    #   load       {*}$cmd $url $id $idx   (re)fetch an image thumbnail
-    #   retry      {*}$cmd $id             retry a failed upload
+    #   load       {*}$cmd $url $key $idx  (re)fetch an image thumbnail
+    #   retry      {*}$cmd $key            retry a failed upload
     option -attachment-open-command -default control::no-op
     option -attachment-save-command -default control::no-op
     option -attachment-openfolder-command -default control::no-op
@@ -1055,27 +1058,35 @@ snit::widget chatarea {
     option -attachment-load-command -default control::no-op
     option -attachment-retry-command -default control::no-op
 
-    # Virtual events
-    # <<MessageRightClick>> — fired on the chatarea frame when a message
-    #   is right-clicked. -data is the message ID. Standard event fields
-    #   %x, %y (widget-relative) and %X, %Y (screen coords) are set.
-    #   Not fired if the click lands on empty space.
+    # Virtual events. Both carry the caller's key in -data, never the slot,
+    # and neither fires when the click lands on empty space.
+    # <<MessageClick>> - a message was left-clicked. %x, %y are set.
+    # <<MessageRightClick>> - a message was right-clicked. %x, %y
+    #   (widget-relative) and %X, %Y (screen coords) are set.
 
-    # list of ids of all messages currently drawn on text
-    # top to bottom, oldest to newest. Sorted by id (== timestamp).
-    variable MessageIds
+    # Every message currently drawn, top to bottom (oldest to newest), one
+    # record each:
+    #   slot           widget-local integer, and the only thing that reaches a
+    #                  Tk tag or mark. Keeps tag names free of the dots and
+    #                  spaces a caller's key may contain.
+    #   key            the caller's identity. Opaque here: compared, never
+    #                  parsed, never required to be unique.
+    #   sort           what the list is ordered by, ascending; ties break on
+    #                  `key`.
+    #   server_status  \ merged in place by patchFields, so a single-axis
+    #   remote_status  / patch keeps the other axis.
+    #   avatar_jid     which avatar this row draws.
+    #   payload        handed back verbatim by `messages get`.
+    variable Rows
+
+    # Next slot to hand out. Never reused within a widget.
+    variable NextSlot
 
     # Whether a DoCleanup is already scheduled via after idle
     variable CleanupScheduled
 
     # dict: jid → Tk image name (current avatar for that JID)
     variable AvatarImages
-
-    # dict: message_id → avatar_jid (tracks which avatar each message uses)
-    variable MessageAvatars
-
-    # dict of dicts: message_id → store dict (from backend)
-    variable Messages
 
     # Viewport = what's currently visible on screen
     
@@ -1084,8 +1095,8 @@ snit::widget chatarea {
     # How many pixels are below the viewport
     variable PixelsBelow
 
-    # ID of the currently highlighted message (search result), or ""
-    variable HighlightedId
+    # Slot of the currently highlighted message (search result), or ""
+    variable HighlightedSlot
     
     constructor args {
         install text using chattext $win.text \
@@ -1103,12 +1114,11 @@ snit::widget chatarea {
         grid rowconfigure $win $win.text -weight 1
         grid columnconfigure $win $win.text -weight 1
         
-        set MessageIds {}
+        set Rows {}
+        set NextSlot 0
         set CleanupScheduled 0
         set AvatarImages [dict create]
-        set MessageAvatars [dict create]
-        set Messages [dict create]
-        set HighlightedId ""
+        set HighlightedSlot ""
 
         if {$options(-pixelsbelowvariable) ne ""} {
             upvar #0 $options(-pixelsbelowvariable) [myvar PixelsBelow]
@@ -1122,6 +1132,7 @@ snit::widget chatarea {
         # Track scrolling to load more messages
         bind $win.text <<WidgetViewSync>> [mymethod OnWidgetViewSync %d]
         bind $win.text <<Yview>> [mymethod OnYview]
+        bind $win.text <Button-1> [mymethod OnClick %x %y]
         bind $win.text <Button-3> [mymethod OnRightClick %x %y %X %Y]
 
     }
@@ -1130,74 +1141,97 @@ snit::widget chatarea {
         after cancel [mymethod DoCleanup]
     }
 
-    # Insert each message at its timestamp-sorted position. ID equals
-    # the message's timestamp (unique, bumped on collision by backend),
-    # so MessageIds stays sorted by id and a linear scan finds the
-    # insertion point. Already-displayed entries get their fields
-    # patched in place; staleness is handled outside this method (see
-    # OnCulled for history requests, AtTail for live events).
+    # Position of the row with this key, or -1. Rows is small (the cull
+    # thresholds bound the window), so a linear scan is enough.
+    method RowIndex {key} {
+        set idx 0
+        foreach row $Rows {
+            if {[dict get $row key] eq $key} { return $idx }
+            incr idx
+        }
+        return -1
+    }
+
+    method RowSlot {key} {
+        set idx [$self RowIndex $key]
+        if {$idx < 0} { return "" }
+        return [dict get [lindex $Rows $idx] slot]
+    }
+
+    # Does this row sort after that one? By `sort` ascending, ties on key.
+    proc RowAfter {aSort aKey bSort bKey} {
+        if {$aSort != $bSort} { return [expr {$aSort > $bSort}] }
+        return [expr {[string compare $aKey $bKey] > 0}]
+    }
+
+    # Insert each message at its sorted position. Callers supply `key`
+    # (identity) and `sort` (position); an already-displayed key gets its
+    # fields patched in place instead. Staleness is handled outside this
+    # method (see OnCulled for history requests, AtTail for live events).
     method apply {messageDictList} {
         set inserted {}
         compensate $text {
             foreach msg $messageDictList {
-                set id [dict get $msg id]
+                set key [dict get $msg key]
+                set sort [dict get $msg sort]
 
-                if {$id in $MessageIds} {
-                    $self patchFields $id $msg
+                if {[$self RowIndex $key] >= 0} {
+                    $self patchFields $key $msg
                     continue
                 }
 
-                # Find first displayed id greater than $id; insert before
-                # it. If none, append. (Linear scan - windows are small.)
+                # First displayed row sorting after this one; insert before
+                # it, or append when there is none.
                 set idx 0
-                foreach existing $MessageIds {
-                    if {$existing > $id} break
+                foreach existing $Rows {
+                    if {[RowAfter [dict get $existing sort] \
+                             [dict get $existing key] $sort $key]} break
                     incr idx
                 }
-                if {$idx == [llength $MessageIds]} {
+                if {$idx == [llength $Rows]} {
                     $text mark set msgins end
                 } else {
-                    set successor [lindex $MessageIds $idx]
+                    set successor [dict get [lindex $Rows $idx] slot]
                     $text mark set msgins item.$successor.first
                 }
+
+                set slot [incr NextSlot]
+                set row [dict create slot $slot key $key sort $sort \
+                    server_status [dict getdef $msg server_status ""] \
+                    remote_status [dict getdef $msg remote_status none] \
+                    avatar_jid [dict getdef $msg avatar_jid ""] \
+                    payload [dict getdef $msg payload ""]]
+                set Rows [linsert $Rows $idx $row]
+
                 # On a failed draw, roll back the partial content (tagged
-                # item.$id) and leave a placeholder so the batch continues.
-                if {[catch {$self DrawMessage msgins $msg} err]} {
-                    catch {$text del item.$id.first item.$id.last}
-                    catch {jlog error "DrawMessage failed for $id: $err" -obj chatarea}
-                    $self DrawErrorPlaceholder msgins $id
+                # item.$slot) and leave a placeholder so the batch continues.
+                if {[catch {$self DrawMessage msgins $slot $msg} err]} {
+                    catch {$text del item.$slot.first item.$slot.last}
+                    catch {jlog error "DrawMessage failed for $key: $err" -obj chatarea}
+                    $self DrawErrorPlaceholder msgins $slot
                 }
-                set MessageIds [linsert $MessageIds $idx $id]
-                lappend inserted $id
+                lappend inserted $key
             }
         }
 
         return $inserted
     }
 
-    method patchFields {id patchDict} {
+    method patchFields {key patchDict} {
         if {![dict exists $patchDict server_status]
                 && ![dict exists $patchDict remote_status]} return
-        # Merge onto the stored dict so a single-axis patch keeps the other
-        # axis; a bare `apply` patch has none, so assume server-confirmed.
-        if {[dict exists $Messages $id]} {
-            set stored [dict get $Messages $id]
-        } else {
-            set stored [dict create server_status "" remote_status none]
-        }
+        set idx [$self RowIndex $key]
+        if {$idx < 0} return
+        # Merge onto the row so a single-axis patch keeps the other axis.
+        set row [lindex $Rows $idx]
         foreach k {server_status remote_status} {
             if {[dict exists $patchDict $k]} {
-                dict set stored $k [dict get $patchDict $k]
+                dict set row $k [dict get $patchDict $k]
             }
         }
-        if {[dict exists $Messages $id]} {
-            dict set Messages $id $stored
-        }
-        set serverStatus [expr {[dict exists $stored server_status]
-            ? [dict get $stored server_status] : ""}]
-        set remoteStatus [expr {[dict exists $stored remote_status]
-            ? [dict get $stored remote_status] : "none"}]
-        $self receipt update $id $serverStatus $remoteStatus
+        set Rows [lreplace $Rows $idx $idx $row]
+        $self receipt update $key [dict get $row server_status] \
+            [dict get $row remote_status]
     }
 
     method OnYview {} {
@@ -1211,17 +1245,32 @@ snit::widget chatarea {
         $self Cleanup
     }
 
-    method OnRightClick {x y X Y} {
-        # Map widget-relative coords to text index, then find the item tag
-        set tags [$text tag names @$x,$y]
-        foreach tag $tags {
+    # The key of the row under these widget-relative coords, or "".
+    method KeyAt {x y} {
+        foreach tag [$text tag names @$x,$y] {
             if {[string match "item.*" $tag] && ![string match "item.*.*" $tag]} {
-                set messageId [string range $tag 5 end]
-                event generate $win <<MessageRightClick>> \
-                    -data $messageId -x $x -y $y -rootx $X -rooty $Y
-                return
+                set slot [string range $tag 5 end]
+                foreach row $Rows {
+                    if {[dict get $row slot] eq $slot} {
+                        return [dict get $row key]
+                    }
+                }
             }
         }
+        return ""
+    }
+
+    method OnClick {x y} {
+        set key [$self KeyAt $x $y]
+        if {$key eq ""} return
+        event generate $win <<MessageClick>> -data $key -x $x -y $y
+    }
+
+    method OnRightClick {x y X Y} {
+        set key [$self KeyAt $x $y]
+        if {$key eq ""} return
+        event generate $win <<MessageRightClick>> \
+            -data $key -x $x -y $y -rootx $X -rooty $Y
     }
 
     method {see end} {} {
@@ -1238,23 +1287,25 @@ snit::widget chatarea {
         return [expr {$below < 10}]
     }
 
-    method {see message} {id} {
-        $self highlight message $id
-        $text yview item.$id.first
+    method {see message} {key} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} return
+        $self highlight message $key
+        $text yview item.$slot.first
     }
 
-    method {highlight message} {id} {
-        if {$HighlightedId ne ""} {
-            $text tag configure item.$HighlightedId -background {}
-        }
-        $text tag configure item.$id -background yellow
-        set HighlightedId $id
+    method {highlight message} {key} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} return
+        $self highlight clear
+        $text tag configure item.$slot -background yellow
+        set HighlightedSlot $slot
     }
 
     method {highlight clear} {} {
-        if {$HighlightedId ne ""} {
-            $text tag configure item.$HighlightedId -background {}
-            set HighlightedId ""
+        if {$HighlightedSlot ne ""} {
+            $text tag configure item.$HighlightedSlot -background {}
+            set HighlightedSlot ""
         }
     }
 
@@ -1345,7 +1396,7 @@ snit::widget chatarea {
 
         if {$PixelsAbove > $cleanTh} {
             lappend cleaned old
-            while {$PixelsAbove > $cleanTarget && [llength $MessageIds] > 0} {
+            while {$PixelsAbove > $cleanTarget && [llength $Rows] > 0} {
                 $self deleteByPos 0
                 $self GetPixelsAbove
             }
@@ -1353,7 +1404,7 @@ snit::widget chatarea {
 
         if {$PixelsBelow > $cleanTh} {
             lappend cleaned new
-            while {$PixelsBelow > $cleanTarget && [llength $MessageIds] > 0} {
+            while {$PixelsBelow > $cleanTarget && [llength $Rows] > 0} {
                 $self deleteByPos end
                 $self GetPixelsBelow
             }
@@ -1368,51 +1419,67 @@ snit::widget chatarea {
         # there is nothing to be thirsty about. Initial load comes
         # through a different path (chatview::InitialLoad), so the
         # controller's dedupe guard would not catch this.
-        if {[llength $MessageIds] == 0} return
+        if {[llength $Rows] == 0} return
 
         # Don't fire thirst for a direction we just cleaned —
         # that would cause a load→clean→load loop.
         if {$PixelsAbove < $loadTh && "old" ni $cleaned} {
-            {*}$options(-thirst-command) old [lindex $MessageIds 0]
+            {*}$options(-thirst-command) old [$self messages oldest]
         }
         if {$PixelsBelow < $loadTh && "new" ni $cleaned} {
-            {*}$options(-thirst-command) new [lindex $MessageIds end]
+            {*}$options(-thirst-command) new [$self messages newest]
         }
     }
-    
+
     method {messages oldest} {} {
-        lindex $MessageIds 0
+        if {[llength $Rows] == 0} { return "" }
+        dict get [lindex $Rows 0] key
     }
 
     method {messages newest} {} {
-        lindex $MessageIds end
+        if {[llength $Rows] == 0} { return "" }
+        dict get [lindex $Rows end] key
     }
 
-    method {messages ids} {} {
-        set MessageIds
+    method {messages keys} {} {
+        lmap row $Rows {dict get $row key}
     }
 
-    method {messages store} {id storeDict} {
-        dict set Messages $id $storeDict
+    # Whatever the caller attached as `payload` when the row was applied.
+    method {messages get} {key} {
+        set idx [$self RowIndex $key]
+        if {$idx < 0} { return "" }
+        dict get [lindex $Rows $idx] payload
     }
 
-    method {messages get} {id} {
-        dict get $Messages $id
+    # The text tag covering one row, or "" when it isn't drawn.
+    method {messages tag} {key} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} { return "" }
+        return item.$slot
+    }
+
+    # Text indices spanning one row's body, as {first last}, or "" when the
+    # row isn't drawn.
+    method {messages body-range} {key} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} { return "" }
+        if {[catch {$text index item.$slot.body.first} first]} { return "" }
+        return [list $first [$text index item.$slot.body.last]]
     }
 
     method clear {} {
         $text del 0.0 end
-        set MessageIds {}
-        set HighlightedId ""
-        set Messages [dict create]
         set released {}
-        dict for {mid ajid} $MessageAvatars {
-            if {$ajid ni $released} {
+        foreach row $Rows {
+            set ajid [dict get $row avatar_jid]
+            if {$ajid ne "" && $ajid ni $released} {
                 lappend released $ajid
                 {*}$options(-avatar-release-command) $ajid
             }
         }
-        set MessageAvatars [dict create]
+        set Rows {}
+        set HighlightedSlot ""
     }
     
     method {avatar set} {jid image} {
@@ -1445,8 +1512,8 @@ snit::widget chatarea {
     }
 
     # Read gets an accent colour via receipt.read.
-    method ReceiptTags {id serverStatus remoteStatus} {
-        set tags [list item.$id item.$id.receipt receipt]
+    method ReceiptTags {slot serverStatus remoteStatus} {
+        set tags [list item.$slot item.$slot.receipt receipt]
         if {$serverStatus eq "" && $remoteStatus eq "read"} {
             lappend tags receipt.read
         }
@@ -1454,48 +1521,55 @@ snit::widget chatarea {
     }
 
     # Insert the receipt glyph at msgins.
-    method DrawReceiptGlyph {id serverStatus remoteStatus} {
+    method DrawReceiptGlyph {slot serverStatus remoteStatus} {
         set rt [$self ReceiptText $serverStatus $remoteStatus]
-        $text ins msgins " $rt" [$self ReceiptTags $id $serverStatus $remoteStatus]
+        $text ins msgins " $rt" [$self ReceiptTags $slot $serverStatus $remoteStatus]
     }
 
-    method {receipt update} {id serverStatus remoteStatus} {
-        set tag item.$id.receipt
-        set ranges [$text tag ranges $tag]
+    method {receipt update} {key serverStatus remoteStatus} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} return
+        set ranges [$text tag ranges item.$slot.receipt]
         if {[llength $ranges] == 0} return
         lassign $ranges start end
         set rt [$self ReceiptText $serverStatus $remoteStatus]
         $text replace $start $end " $rt" \
-            [$self ReceiptTags $id $serverStatus $remoteStatus]
+            [$self ReceiptTags $slot $serverStatus $remoteStatus]
     }
 
     # Swap the chip row in place; body stays put, viewport doesn't jump.
-    method {reactions update} {id reactions} {
-        if {$id ni $MessageIds} return
-        if {[dict exists $Messages $id]} {
-            dict set Messages $id reactions $reactions
+    method {reactions update} {key reactions} {
+        set idx [$self RowIndex $key]
+        if {$idx < 0} return
+        set row [lindex $Rows $idx]
+        set slot [dict get $row slot]
+        set payload [dict get $row payload]
+        if {$payload ne ""} {
+            dict set payload reactions $reactions
+            dict set row payload $payload
+            set Rows [lreplace $Rows $idx $idx $row]
         }
         compensate $text {
-            set ranges [$text tag ranges item.$id.reactions]
+            set ranges [$text tag ranges item.$slot.reactions]
             if {[llength $ranges] > 0} {
                 lassign $ranges start end
                 $text del $start $end
             }
             if {[dict size $reactions] > 0} {
-                $text mark set msgins item.$id.last
-                $self DrawReactions $id $reactions
+                $text mark set msgins item.$slot.last
+                $self DrawReactions $slot $key $reactions
             }
         }
     }
 
     # Draws message, doesn't store info about it, doesn't adjust the
     # text accordingly. Internal use only!
-    method DrawMessage {textIndex messageDict} {
+    method DrawMessage {textIndex slot messageDict} {
         array set message $messageDict
         $text mark set msgins $textIndex
 
         # text tag that will be applied to the whole message
-        set tag item.$message(id)
+        set tag item.$slot
 
         # A retracted (XEP-0424/0425) message renders as a tombstone: header
         # for context, then a placeholder in place of the (now gone) content.
@@ -1509,9 +1583,6 @@ snit::widget chatarea {
             set avatarJid ""
             if {[info exists message(avatar_jid)]} {
                 set avatarJid $message(avatar_jid)
-            }
-            if {$avatarJid ne ""} {
-                dict set MessageAvatars $message(id) $avatarJid
             }
             if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
                 set avatarImg [dict get $AvatarImages $avatarJid]
@@ -1553,7 +1624,7 @@ snit::widget chatarea {
             }
             # Plain message: receipt trails the body. Attachment: below.
             if {$message(is_outgoing) && !$hasAttachments} {
-                $self DrawReceiptGlyph $message(id) \
+                $self DrawReceiptGlyph $slot \
                     $message(server_status) $remoteStatus
             }
             $text ins msgins \n $tag
@@ -1585,50 +1656,51 @@ snit::widget chatarea {
             if {$hasAttachments} {
                 set aidx 0
                 foreach att $message(attachments) {
-                    $self DrawAttachment $tag $message(id) $aidx $att \
+                    $self DrawAttachment $tag $slot $message(key) $aidx $att \
                         $message(server_status)
                     incr aidx
                 }
                 if {$message(is_outgoing)} {
                     # Receipt right of the last attachment, before its newline.
-                    set lastWin $text.att_$message(id)_[expr {$aidx - 1}]
+                    set lastWin $text.att_${slot}_[expr {$aidx - 1}]
                     $text mark set msgins "$lastWin + 1 chars"
-                    $self DrawReceiptGlyph $message(id) \
+                    $self DrawReceiptGlyph $slot \
                         $message(server_status) $remoteStatus
                 }
             }
 
             if {[info exists message(reactions)]
                 && [dict size $message(reactions)] > 0} {
-                $text mark set msgins item.$message(id).last
-                $self DrawReactions $message(id) $message(reactions)
+                $text mark set msgins item.$slot.last
+                $self DrawReactions $slot $message(key) $message(reactions)
             }
         }
     }
 
     # Chip row below a message; each chip is emoji + count, click toggles.
-    method DrawReactions {id reactions} {
-        set tag item.$id
-        set rtag item.$id.reactions
+    # Tags ride on the slot; the toggle event carries the caller's key.
+    method DrawReactions {slot key reactions} {
+        set tag item.$slot
+        set rtag item.$slot.reactions
         set i 0
         dict for {emoji info} $reactions {
             set count [llength [dict get $info reactors]]
-            set bindTag react.$id.[incr i]
+            set bindTag $tag.react.[incr i]
             $text ins msgins " $emoji $count " \
                 [list $tag $rtag reaction $bindTag]
             $text tag bind $bindTag <Button-1> \
                 [list event generate $win <<ReactToggle>> \
-                    -data [list $id $emoji]]
+                    -data [list $key $emoji]]
             $text ins msgins "  " [list $tag $rtag reaction]
         }
         $text ins msgins \n [list $tag $rtag reaction]
     }
 
     # Placeholder for a message that failed to draw. Field-free so it can't
-    # fail itself; carries item.$id so id lookup and successor inserts work.
-    method DrawErrorPlaceholder {textIndex id} {
+    # fail itself; carries item.$slot so lookup and successor inserts work.
+    method DrawErrorPlaceholder {textIndex slot} {
         $text mark set msgins $textIndex
-        set tag item.$id
+        set tag item.$slot
         if {![catch {
             $text image create msgins \
                 -image mate/16x16/status/dialog-warning.png -padx 3
@@ -1641,7 +1713,7 @@ snit::widget chatarea {
 
     # Tombstone for a retracted message: avatar/author/timestamp header (so it
     # keeps its slot and attribution) followed by a greyed placeholder. Whole
-    # row carries item.$id so id lookup and successor inserts still work.
+    # row carries item.$slot so lookup and successor inserts still work.
     method DrawTombstone {messageDict tag} {
         array set message $messageDict
         set avatarJid [expr {[info exists message(avatar_jid)]
@@ -1693,70 +1765,73 @@ snit::widget chatarea {
     # Render one attachment as an embedded `attachment` widget under the body.
     # The widget owns its drawing and routes user actions to chatarea's
     # -attachment-*-command callbacks itself; chatarea only forwards
-    # `attachment image`/`attachment state` to it by id+idx. `status` is the
+    # `attachment image`/`attachment state` to it by key+idx. `status` is the
     # message's server_status, which seeds the upload-state row (progress bar
     # while 'uploading', Retry when 'failed').
-    method DrawAttachment {tag id idx att status} {
-        set f $text.att_${id}_${idx}
+    # The frame is named off the slot: a Tk widget path can't hold the dots a
+    # key may contain. The widget's own -id stays the key, since that is what
+    # rides back out through the callbacks.
+    method DrawAttachment {tag slot key idx att status} {
+        set f $text.att_${slot}_${idx}
         catch {destroy $f}
         attachment $f \
             -chatarea $self \
             -url [dict get $att url] -kind [dict get $att type] \
-            -name [dict get $att name] -id $id -idx $idx \
+            -name [dict get $att name] -id $key -idx $idx \
             -scroll-target $text
         $text window create msgins -window $f -padx 40 -pady 2
         $text tag add $tag "msgins - 1 chars"
         $text ins msgins \n $tag
         switch -- $status {
-            uploading { $self attachment state $id $idx upload active 0 0 }
-            failed    { $self attachment state $id $idx upload failed 0 0 }
+            uploading { $self attachment state $key $idx upload active 0 0 }
+            failed    { $self attachment state $key $idx upload failed 0 0 }
         }
     }
 
+    # Widget path of one attachment frame, or "" when it isn't drawn.
+    method {attachment path} {key idx} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} { return "" }
+        return $text.att_${slot}_${idx}
+    }
+
     # Forward a backend-produced thumbnail (already downscaled) to the widget.
-    method {attachment image} {id idx path} {
-        set f $text.att_${id}_${idx}
+    method {attachment image} {key idx path} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} return
+        set f $text.att_${slot}_${idx}
         if {![winfo exists $f]} return
         $f setImage $path
     }
 
     # Forward a transfer-progress update to the widget: a progress bar while
     # active, an error + Retry row on failure, removed on done.
-    method {attachment state} {id idx direction state loaded total} {
-        set f $text.att_${id}_${idx}
+    method {attachment state} {key idx direction state loaded total} {
+        set slot [$self RowSlot $key]
+        if {$slot eq ""} return
+        set f $text.att_${slot}_${idx}
         if {![winfo exists $f]} return
         $f setState $direction $state $loaded $total
     }
 
-    method deleteById {id} {
-        list_remove_once_inplace MessageIds $id
-        set tag item.$id
-        # Delete contents under that tag
-        $text del $tag.first $tag.last
-        # Delete tag itself
-        $text tag delete item.$id
-        if {[dict exists $Messages $id]} {
-            dict unset Messages $id
-        }
-        $self CheckAvatarRelease $id
+    method deleteById {key} {
+        set idx [$self RowIndex $key]
+        if {$idx < 0} return
+        $self deleteByPos $idx
     }
 
     method deleteByPos {idx} {
-        set id [lindex $MessageIds $idx]
-        set MessageIds [lreplace $MessageIds $idx $idx]
-        $text del item.$id.first item.$id.last
-        $text tag delete item.$id
-        if {[dict exists $Messages $id]} {
-            dict unset Messages $id
-        }
-        $self CheckAvatarRelease $id
+        set row [lindex $Rows $idx]
+        set slot [dict get $row slot]
+        set Rows [lreplace $Rows $idx $idx]
+        $text del item.$slot.first item.$slot.last
+        $text tag delete item.$slot
+        $self CheckAvatarRelease [dict get $row avatar_jid]
     }
 
-    method CheckAvatarRelease {id} {
-        if {![dict exists $MessageAvatars $id]} return
-        set ajid [dict get $MessageAvatars $id]
-        dict unset MessageAvatars $id
-        # Check if any other messages still reference this avatar
+    method CheckAvatarRelease {ajid} {
+        if {$ajid eq ""} return
+        # Release only once no drawn message still references this avatar.
         if {[llength [$text tag ranges from.$ajid]] == 0} {
             {*}$options(-avatar-release-command) $ajid
         }
@@ -1796,8 +1871,12 @@ proc enrich_store_message {storeDict names} {
     # re-derive it. Older dicts without the flag fall back to "incoming".
     set isOutgoing [expr {[dict exists $storeDict is_outgoing]
         && [dict get $storeDict is_outgoing]}]
+    # `key` identifies the row, `sort` places it. Both are the timestamp,
+    # which is unique within one chat; a caller drawing several chats into
+    # one area overrides `key` with something that separates them.
     set d [dict create \
-        id           [dict get $storeDict timestamp] \
+        key          [dict get $storeDict timestamp] \
+        sort         [dict get $storeDict timestamp] \
         from_jid     $fromJid \
         display_name $displayName \
         avatar_jid   $fromJid \
