@@ -25,9 +25,14 @@ snit::type attachmentxfer {
     # several messages quoting the same URL, so each update fans out.
     variable Pending
 
+    # url -> 1 for a download the user cancelled, so its failure isn't
+    # reported as one.
+    variable Cancelled
+
     constructor args {
         $self configurelist $args
         set Pending [dict create]
+        set Cancelled [dict create]
         ::tacky listen -tag $options(-tag) file <Update> \
             -acc $options(-acc) [mymethod OnTransfer]
     }
@@ -66,7 +71,19 @@ snit::type attachmentxfer {
         if {$slot ni $waiting} {
             dict set Pending $url [lappend waiting $slot]
         }
+        dict unset Cancelled $url
         ::tacky file download -acc $options(-acc) -url $url {*}$args
+    }
+
+    # Uploads are cancelled by message id, downloads by url - which stops the
+    # fetch for every message waiting on that URL.
+    method cancel {direction url key} {
+        if {$direction eq "upload"} {
+            ::tacky file cancel -acc $options(-acc) -id $key
+            return
+        }
+        dict set Cancelled $url 1
+        ::tacky file cancel -acc $options(-acc) -url $url
     }
 
     # Upload events key on -id (the message id); download events key on -url,
@@ -88,11 +105,18 @@ snit::type attachmentxfer {
 
     method Report {key idx ev} {
         set state [dict get $ev -state]
+        set direction [dict get $ev -direction]
         # An image the policy held back isn't an error: with no state row the
         # attachment keeps its plain click-to-load caption.
         if {$state eq "failed"
             && [string match autofetch-* [dict get $ev -error]]} return
-        {*}$options(-update-command) $key $idx [dict get $ev -direction] \
+        # A cancelled download drops its row too; a cancelled upload stays
+        # failed, which is what its message row now says.
+        if {$state eq "failed" && $direction eq "download"
+            && [dict get $ev -error] eq "cancelled"} {
+            set state cancelled
+        }
+        {*}$options(-update-command) $key $idx $direction \
             $state [dict get $ev -loaded] [dict get $ev -total] \
             [dict get $ev -thumbpath]
     }
@@ -121,13 +145,21 @@ snit::type attachmentxfer {
 
     method WithLocalCopy {url action} {
         if {[file exists $url]} { {*}$action $url; return }
+        dict unset Cancelled $url
         ::tacky file download -acc $options(-acc) -url $url \
-            -command [mymethod OnLocalCopy $action]
+            -command [mymethod OnLocalCopy $action $url]
     }
 
-    method OnLocalCopy {action path} {
+    # An open/save can ride along on a thumbnail fetch already in flight; a
+    # cancel that stops it is not an error to report.
+    method OnLocalCopy {action url path} {
+        set cancelled [dict exists $Cancelled $url]
+        dict unset Cancelled $url
         if {$path eq ""} {
-            $self Complain "Download Failed" "Could not download the attachment."
+            if {!$cancelled} {
+                $self Complain "Download Failed" \
+                    "Could not download the attachment."
+            }
             return
         }
         {*}$action $path

@@ -628,4 +628,128 @@ test file-autofetch-max-unset-means-unlimited {maxbytes 0 never aborts} \
         af_last
     } -result {active {}}
 
+# --- cancel ---------------------------------------------------------------
+#
+# ::http::reset runs the request's -command callback before it returns, so only
+# a request really on the wire pins down the reason a caller sees. These serve
+# one over a loopback socket.
+
+# `mode` is silent (accept and never answer, so the transfer stays active) or
+# slow (headers claiming $clen bytes, then a trickle that never ends).
+proc cx_start {mode {clen 0}} {
+    set ::_cx_conns {}
+    set ::_cx_afters {}
+    set srv [socket -server [list cx_accept $mode $clen] -myaddr 127.0.0.1 0]
+    return [list $srv [lindex [fconfigure $srv -sockname] 2]]
+}
+
+proc cx_accept {mode clen ch addr port} {
+    lappend ::_cx_conns $ch
+    fconfigure $ch -translation binary -blocking 0
+    if {$mode eq "silent"} return
+    lappend ::_cx_afters [after 10 [list cx_head $ch $clen]]
+}
+
+proc cx_head {ch clen} {
+    catch {
+        puts -nonewline $ch "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"
+        puts -nonewline $ch "Content-Length: $clen\r\n\r\n"
+        flush $ch
+    }
+    cx_body $ch
+}
+
+proc cx_body {ch} {
+    if {[catch {puts -nonewline $ch [string repeat x 65536]; flush $ch}]} return
+    lappend ::_cx_afters [after 20 [list cx_body $ch]]
+}
+
+proc cx_stop {srv} {
+    foreach a $::_cx_afters { catch {after cancel $a} }
+    foreach c $::_cx_conns { catch {close $c} }
+    catch {close $srv}
+}
+
+# Run the event loop until the transfer reaches a terminal state.
+proc cx_settle {} {
+    for {set i 0} {$i < 300} {incr i} {
+        if {[lindex [af_last] 0] in {done failed}} break
+        after 10 {set ::_cx_tick 1}
+        vwait ::_cx_tick
+    }
+    return [af_last]
+}
+
+test file-cancel-in-flight-download {cancelling a live download reports cancelled, not the transport error} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        lassign [cx_start silent] srv port
+        set url http://127.0.0.1:$port/slow.png
+        set ::_cx_cb NONE
+        $::_client file download -url $url \
+            -command [list apply {{p} {set ::_cx_cb $p}}]
+        set started [af_last]
+        $::_client file cancel -url $url
+        set full [$::_client file AttachPath $url]
+        set res [list started=[lindex $started 0] [af_last] \
+            cb=[expr {$::_cx_cb eq ""}] part=[file exists $full.part]]
+        cx_stop $srv
+        set res
+    } -result {started=active {failed cancelled} cb=1 part=0}
+
+test file-cancel-in-flight-upload {cancelling an upload stalled at discovery reports cancelled} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set src [file join $::_upcache cancelme.bin]
+        set f [open $src wb]
+        puts -nonewline $f [string repeat z 4096]
+        close $f
+        set ::_cx_cb NONE
+        $::_client file upload -id 9100000 -path $src \
+            -command [list apply {{u} {set ::_cx_cb $u}}]
+        $::_client file cancel -id 9100000
+        list [af_last] cb=[expr {$::_cx_cb eq ""}]
+    } -result {{failed cancelled} cb=1}
+
+# One transfer serves every caller that asked for the url, so cancelling has to
+# resolve them all.
+test file-cancel-coalesced-download {cancelling a shared download resolves every caller} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        lassign [cx_start silent] srv port
+        set url http://127.0.0.1:$port/shared.png
+        set ::_cx_first NONE
+        set ::_cx_second NONE
+        $::_client file download -url $url \
+            -command [list apply {{p} {set ::_cx_first $p}}]
+        $::_client file download -url $url \
+            -command [list apply {{p} {set ::_cx_second $p}}]
+        $::_client file cancel -url $url
+        set res [list [af_last] first=[expr {$::_cx_first eq ""}] \
+            second=[expr {$::_cx_second eq ""}]]
+        cx_stop $srv
+        set res
+    } -result {{failed cancelled} first=1 second=1}
+
+test file-cancel-unknown-transfer {cancelling something that isn't running does nothing} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        $::_client file cancel -id 4242
+        $::_client file cancel -url https://h/never-started.png
+        af_last
+    } -result {}
+
+# The size cap aborts the same way cancel does, so its reason has to survive
+# the http callback too.
+test file-autofetch-max-live-request {an over-cap fetch on the wire reports autofetch-too-large} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        af_policy everyone
+        tacky setting set -key attachment_autofetch_max -value 4096
+        lassign [cx_start slow 100000000] srv port
+        set url http://127.0.0.1:$port/big.png
+        $::_client file download -url $url -auto 1 \
+            -from friend@test.example.com
+        set res [cx_settle]
+        set full [$::_client file AttachPath $url]
+        lappend res part=[file exists $full.part] onDisk=[file exists $full]
+        cx_stop $srv
+        set res
+    } -result {failed autofetch-too-large part=0 onDisk=0}
+
 file delete -force -- $::_upcache

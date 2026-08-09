@@ -75,13 +75,14 @@ snit::widget attachment {
         $self BindMenu $win.img
     }
 
-    # Transfer state row: a progress bar while active, an error + Retry on
-    # failure, removed on done. upload/download use separate rows ($win.up /
-    # $win.dl) so an uploading image keeps both its bar and its thumbnail.
+    # Transfer state row: a progress bar with Cancel while active, an error +
+    # Retry on failure, removed on done or cancelled. upload/download use
+    # separate rows ($win.up / $win.dl) so an uploading image keeps both its
+    # bar and its thumbnail.
     method setState {direction state loaded total} {
         set w $win.[expr {$direction eq "upload" ? "up" : "dl"}]
         switch -- $state {
-            done   { catch {destroy $w} }
+            done - cancelled { catch {destroy $w} }
             failed { $self ShowFailed $w $direction }
             active { $self ShowActive $w $direction $loaded $total }
         }
@@ -93,7 +94,9 @@ snit::widget attachment {
             ttk::frame $w
             ttk::progressbar $w.bar -length 200
             ttk::label $w.lbl -foreground #888888
-            pack $w.bar $w.lbl -side left -padx {0 6}
+            ttk::button $w.cancel -text "Cancel" -style Toolbutton \
+                -command [mymethod Cancel $direction]
+            pack $w.bar $w.lbl $w.cancel -side left -padx {0 6}
             pack $w -side top -anchor w -pady {2 0}
             $self RelayScroll $w
         }
@@ -118,6 +121,10 @@ snit::widget attachment {
         pack $w.lbl $w.retry -side left -padx {0 6}
         pack $w -side top -anchor w -pady {2 0}
         $self RelayScroll $w
+    }
+
+    method Cancel {direction} {
+        $self Cb cancel $direction $options(-url) $options(-id)
     }
 
     # Upload retry re-runs the upload; download retry re-fetches the thumbnail
