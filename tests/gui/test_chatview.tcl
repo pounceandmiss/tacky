@@ -106,25 +106,12 @@ proc cv_complete_mam {} {
 }
 
 # Create tacky + mock client + avatarcache. Pair with cv_cleanup.
-proc cv_setup {} {
-    rename conn _real_conn
-    rename mock_conn conn
-    tacky_type create tacky
-    tk_avatarcache create avatarcache
-    tacky account add -acc user@test.example.com
-    set ::_client [tacky client user@test.example.com]
-    $::_client.conn configure -bound-jid user@test.example.com/res1
-    $::_client.conn fire_ready 0
-    $::_client.conn clear
-}
+proc cv_setup {} { mock_backend_up }
 
 proc cv_cleanup {} {
     destroy .cv
     catch { destroy .menubar }
-    avatarcache destroy
-    rename conn mock_conn
-    rename _real_conn conn
-    tacky destroy
+    mock_backend_down
 }
 
 # Create chatview. Options:
@@ -1514,6 +1501,33 @@ set ca_signals_common {
         unset -nocomplain ::ca_thirsty ::ca_culled ::mock_above ::mock_below
     }
 }
+
+test chatarea-highlight-matches-tags-every-occurrence {each hit inside a body gets the match tag} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 "the cat sat on the cat mat"]]
+        .ca highlight matches 100 cat
+        set r [[.ca textwidget] tag ranges search_match]
+        list [expr {[llength $r] / 2}] [[.ca textwidget] get [lindex $r 0] [lindex $r 1]]
+    } -result {2 cat}
+
+test chatarea-highlight-matches-ignores-case {a hit is found regardless of case, and keeps the text as written} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 "Cat"]]
+        .ca highlight matches 100 cat
+        set r [[.ca textwidget] tag ranges search_match]
+        [.ca textwidget] get {*}$r
+    } -result {Cat}
+
+test chatarea-highlight-matches-stays-in-the-body {a term matching the author or timestamp is not tagged} \
+    {*}$ca_common \
+    -body {
+        # ca_msg draws the author as "test"; the body says something else.
+        .ca apply [list [ca_msg 100 "hello"]]
+        .ca highlight matches 100 test
+        [.ca textwidget] tag ranges search_match
+    } -result {}
 
 test chatarea-replace-redraws-in-place {a replaced row keeps its position and shows the new content} \
     {*}$ca_common \

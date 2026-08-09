@@ -283,6 +283,23 @@ snit::widget chatarea {
         set HighlightedSlot $slot
     }
 
+    # Mark every occurrence of $pattern within one row's body. Independent of
+    # `highlight message`: that picks out a whole row, this picks out text
+    # inside one. Cleared with the row, so a caller that re-runs a search
+    # clears first.
+    method {highlight matches} {key pattern} {
+        set slot [$rows slot $key]
+        if {$slot eq "" || $pattern eq ""} return
+        if {[catch {$text index item.$slot.body.first} pos]} return
+        set last item.$slot.body.last
+        while 1 {
+            set pos [$text search -nocase -count n -- $pattern $pos $last]
+            if {$pos eq ""} break
+            $text tag add search_match $pos "$pos + $n chars"
+            set pos "$pos + $n chars"
+        }
+    }
+
     method {highlight clear} {} {
         if {$HighlightedSlot ne ""} {
             $text tag configure item.$HighlightedSlot -background {}
@@ -333,6 +350,8 @@ snit::widget chatarea {
         # XEP-0444 reaction chips
         $text tag configure reaction -lmargin1 40 -lmargin2 40 \
             -font "Helvetica 11" -spacing1 2 -spacing3 4
+        # Search hits inside a body; see `highlight matches`.
+        $text tag configure search_match -background yellow -font "$font bold"
         $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
         $text tag configure system -foreground gray50 -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20

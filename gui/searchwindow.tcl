@@ -63,10 +63,6 @@ snit::widget searchwindow {
 
         bind $ca <<MessageClick>> [mymethod OnClick %d]
 
-        # Highlight tag
-        [$ca textwidget] tag configure search_match -background yellow \
-            -font "Helvetica 13 bold"
-
         install authors using authornames ${selfns}::authors \
             -acc $options(-acc) -chat $options(-jid) \
             -tag $searchTag/author \
@@ -150,20 +146,8 @@ snit::widget searchwindow {
         set enriched [lmap msg $messages {
             enrich_store_message $msg [list $authors label]
         }]
-        set inserted [$ca apply $enriched]
-
-        # Highlight search terms in newly inserted messages
-        set text [$ca textwidget]
-        foreach key $inserted {
-            set range [$ca messages body-range $key]
-            if {$range eq ""} continue
-            lassign $range pos last
-            while 1 {
-                set pos [$text search -nocase -count n -- $query $pos $last]
-                if {$pos eq ""} break
-                $text tag add search_match $pos "$pos + ${n} chars"
-                set pos "$pos + ${n} chars"
-            }
+        foreach key [$ca apply $enriched] {
+            $ca highlight matches $key $query
         }
     }
 
