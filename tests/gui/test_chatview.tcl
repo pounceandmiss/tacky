@@ -885,7 +885,7 @@ test chatview-reply-select {selecting Reply emits ReplyTo carrying the target id
         set id [.cv messages newest]
         set ::_replyto {}
         bind .cv <<ReplyTo>> {set ::_replyto %d}
-        .cv OnReplySelected $id
+        .cv actions reply $id
         wait
         list [expr {[lindex $::_replyto 0] eq $id}] [lindex $::_replyto 2]
     } -result {1 {original text here}}
