@@ -1506,6 +1506,41 @@ set ca_signals_common {
     }
 }
 
+test chatarea-replace-redraws-in-place {a replaced row keeps its position and shows the new content} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list \
+            [ca_msg 100 "a"] \
+            [ca_msg 200 "b"] \
+            [ca_msg 300 "c"]]
+        .ca replace 200 [ca_msg 200 "b revised"]
+        list [.ca messages keys] \
+             [string match "*a*b revised*c*" [.ca.text get 1.0 end-1c]] \
+             [string match "*b\n*" [.ca.text get 1.0 end-1c]]
+    } -result {{100 200 300} 1 0}
+
+test chatarea-replace-can-rekey {a replacement carrying a new key and sort moves the row} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list \
+            [ca_msg 100 "a"] \
+            [ca_msg 200 "b"] \
+            [ca_msg 300 "c"]]
+        # What a server-relocated send looks like: same row, new identity.
+        .ca replace 200 [ca_msg 400 "b"]
+        list [.ca messages keys] \
+             [string match "*a*c*b*" [.ca.text get 1.0 end-1c]]
+    } -result {{100 300 400} 1}
+
+test chatarea-replace-ignores-an-undrawn-key {replacing a row that isn't displayed draws nothing} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 "a"]]
+        .ca replace 999 [ca_msg 999 "ghost"]
+        list [.ca messages keys] \
+             [string match "*ghost*" [.ca.text get 1.0 end-1c]]
+    } -result {100 0}
+
 # The decisions themselves are windowpolicy's, and tested there. These two
 # check the wiring: a real scroll event reaches the policy, and what the policy
 # asks for lands on the right rows.

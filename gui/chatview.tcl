@@ -270,7 +270,7 @@ snit::widgetadaptor chatview {
         if {[llength $messages] == 0} return
 
         # If anchor is already visible, just scroll+highlight
-        if {$anchor in [$hull messages keys]} {
+        if {[$hull messages has $anchor]} {
             $hull see message $anchor
             return
         }
@@ -279,7 +279,7 @@ snit::widgetadaptor chatview {
         $hull clear
         $self ProcessBatch $messages
         $self UpdateViewAtTail
-        if {$anchor ne "" && $anchor in [$hull messages keys]} {
+        if {$anchor ne "" && [$hull messages has $anchor]} {
             $hull see message $anchor
         }
     }
@@ -439,10 +439,10 @@ snit::widgetadaptor chatview {
     method OnMessage {ev} {
         if {!$AtTail || $CatchupBusy} return
         set m [dict get $ev -message]
-        set atEnd [$hull atEnd]
-        $self ProcessBatch [list $m]
-        $self UpdateViewAtTail
-        if {$atEnd} { $hull see end }
+        $self KeepingTail {
+            $self ProcessBatch [list $m]
+            $self UpdateViewAtTail
+        }
         $self MaybeSendDisplayed
     }
 
@@ -450,7 +450,7 @@ snit::widgetadaptor chatview {
     # any of server_status / remote_status / fail_reason.
     method OnStatus {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages keys]} return
+        if {![$hull messages has $ts]} return
         set patch [dict create]
         foreach k {server_status remote_status fail_reason} {
             if {[dict exists $ev -$k]} { dict set patch $k [dict get $ev -$k] }
@@ -461,45 +461,34 @@ snit::widgetadaptor chatview {
     # A pending send was acknowledged by the server. When the stamp held
     # (newtimestamp == timestamp) just update the checkmark in place; when the
     # server relocated the row, rekey the stored dict to the new timestamp and
-    # re-insert. Re-pin the tail if we were at it, so a just-sent message
-    # doesn't drift the view up (the reinsert is otherwise top-anchored by
-    # compensate).
+    # redraw it at its new position.
     method OnConfirmed {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages keys]} return
+        if {![$hull messages has $ts]} return
         set newTs [dict get $ev -newtimestamp]
         if {$newTs == $ts} {
             $hull patchFields $ts \
                 [dict create server_status [dict get $ev -server_status]]
             return
         }
-        set atEnd [$hull atEnd]
         set storeDict [$hull messages get $ts]
-        $hull deleteById $ts
         dict set storeDict timestamp $newTs
         dict set storeDict server_status [dict get $ev -server_status]
-        $self ProcessBatch [list $storeDict]
-        if {$atEnd} { $hull see end }
+        $self KeepingTail { $self Redraw $ts $storeDict }
     }
 
     method OnReactions {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages keys]} return
+        if {![$hull messages has $ts]} return
         $hull reactions update $ts [dict get $ev -reactions]
     }
 
-    # Full-row redraw (edit/retract): the backend re-sends the whole enriched
-    # dict. Re-pin the tail if we were at it, so editing the newest message
-    # keeps it visible instead of drifting below the fold as the body grows
-    # (matches the live-insert path).
+    # Full-row redraw: the backend re-sends the whole store dict.
     method OnEdited {ev} {
         set msg [dict get $ev -message]
         set ts [dict get $msg timestamp]
-        if {$ts ni [$hull messages keys]} return
-        set atEnd [$hull atEnd]
-        $hull deleteById $ts
-        $self ProcessBatch [list $msg]
-        if {$atEnd} { $hull see end }
+        if {![$hull messages has $ts]} return
+        $self KeepingTail { $self Redraw $ts $msg }
     }
 
     # Retraction flips the shown entry to a tombstone. The event is lean
@@ -507,12 +496,19 @@ snit::widgetadaptor chatview {
     # retracted flag; DrawMessage renders the tombstone from the header alone.
     method OnRetracted {ev} {
         set ts [dict get $ev -timestamp]
-        if {$ts ni [$hull messages keys]} return
+        if {![$hull messages has $ts]} return
         set sd [$hull messages get $ts]
         dict set sd retracted 1
+        $self KeepingTail { $self Redraw $ts $sd }
+    }
+
+    # Run a redraw that may change the newest row's height, staying pinned to
+    # the tail if we were riding it. Without this the view drifts as the row
+    # grows, and the scroll-to-bottom button appears (and sticks) after an
+    # edit, a confirm, or a thumbnail landing.
+    method KeepingTail {script} {
         set atEnd [$hull atEnd]
-        $hull deleteById $ts
-        $self ProcessBatch [list $sd]
+        uplevel 1 $script
         if {$atEnd} { $hull see end }
     }
 
@@ -569,29 +565,40 @@ snit::widgetadaptor chatview {
     }
 
     method ProcessBatch {messages} {
-        set enriched {}
-        foreach msg $messages {
-            if {(![dict exists $msg is_outgoing] || ![dict get $msg is_outgoing])
-                    && (![dict exists $msg kind] || [dict get $msg kind] eq "message")} {
-                set id [dict get $msg timestamp]
-                if {$NewestIncoming eq "" || $id > $NewestIncoming} {
-                    set NewestIncoming $id
-                }
-            }
-            set emsg [$self EnrichMessage $msg]
-            set ajid [dict get $emsg avatar_jid]
-            if {$ajid ne ""} {
-                $self TrackAvatar $ajid
-            }
-            # Stash the raw store dict; the retract/confirm redraws read it
-            # back through `messages get`.
-            dict set emsg payload $msg
-            lappend enriched $emsg
-        }
+        set enriched [lmap msg $messages {$self PrepareMessage $msg}]
         $hull apply $enriched
         foreach emsg $enriched {
             $self FetchAttachments $emsg
         }
+    }
+
+    # Redraw a message already on screen from a fresh store dict. $key is the
+    # row it currently occupies, which is not the new dict's key when the
+    # server moved it.
+    method Redraw {key msg} {
+        set emsg [$self PrepareMessage $msg]
+        $hull replace $key $emsg
+        $self FetchAttachments $emsg
+    }
+
+    # Turn a store dict into what chatarea draws: note it if it is the newest
+    # incoming message, make sure its avatar is tracked, and stash the raw dict
+    # as the row's payload for the redraws that start from it.
+    method PrepareMessage {msg} {
+        if {(![dict exists $msg is_outgoing] || ![dict get $msg is_outgoing])
+                && (![dict exists $msg kind] || [dict get $msg kind] eq "message")} {
+            set id [dict get $msg timestamp]
+            if {$NewestIncoming eq "" || $id > $NewestIncoming} {
+                set NewestIncoming $id
+            }
+        }
+        set emsg [$self EnrichMessage $msg]
+        set ajid [dict get $emsg avatar_jid]
+        if {$ajid ne ""} {
+            $self TrackAvatar $ajid
+        }
+        dict set emsg payload $msg
+        return $emsg
     }
 
     # Kick off the inline-thumbnail fetch for each image attachment. The file
@@ -654,7 +661,7 @@ snit::widgetadaptor chatview {
     }
 
     method ApplyTransfer {id idx dir state loaded total thumb {err ""}} {
-        if {$id ni [$hull messages keys]} return
+        if {![$hull messages has $id]} return
         # An image the policy held back isn't an error: with no state row the
         # attachment keeps its plain click-to-load caption.
         if {$state eq "failed" && [string match autofetch-* $err]} return
