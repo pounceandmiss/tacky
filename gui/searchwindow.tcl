@@ -33,6 +33,7 @@ snit::widget searchwindow {
     # Account-wide only: chat JID -> authornames, built as chats turn up in
     # results. A name cache is per chat, so one window needs several.
     variable authorsByChat
+    variable authorSeq 0
 
     constructor args {
         $self configurelist $args
@@ -93,12 +94,15 @@ snit::widget searchwindow {
         dict for {chat obj} $authorsByChat { catch {$obj destroy} }
     }
 
-    # The name cache for one chat, built on first sight of it in a result.
+    # The name cache for one chat, built on first sight of it in a result. Its
+    # seed announces every name it has, and does so from inside the
+    # constructor, so nothing reached from -changed-command may come back
+    # through here - the object is not registered yet.
     method Authors {chat} {
         if {[dict exists $authorsByChat $chat]} {
             return [dict get $authorsByChat $chat]
         }
-        set n [dict size $authorsByChat]
+        set n [incr authorSeq]
         set obj [authornames ${selfns}::authors$n \
             -acc $options(-acc) -chat $chat \
             -tag $searchTag/author/$n \
@@ -107,8 +111,10 @@ snit::widget searchwindow {
         return $obj
     }
 
+    # authornames hands over the resolved name, so this decorates it rather
+    # than asking the cache again.
     method OnAuthorChanged {chat jid name} {
-        $ca author update [$self Author $chat $jid] [$self Label $chat $jid]
+        $ca author update [$self Author $chat $jid] [$self Decorate $chat $jid $name]
     }
 
     # Who chatarea considers the author of a row. It repaints by this value,
@@ -119,12 +125,15 @@ snit::widget searchwindow {
         return [list $chat $jid]
     }
 
-    # What to call a result's author. Account-wide, the label is where the row
-    # says which chat it came from. Only an incoming 1:1 goes unprefixed, where
-    # the author is the chat; the comparison is against the chat JID rather
-    # than the room, since a room occupant's bare JID is the room itself.
     method Label {chat jid} {
-        set name [[$self Authors $chat] label $jid]
+        $self Decorate $chat $jid [[$self Authors $chat] label $jid]
+    }
+
+    # Account-wide, the label is where a row says which chat it came from.
+    # Only an incoming 1:1 goes unprefixed, where the author is the chat; the
+    # comparison is against the chat JID rather than the room, since a room
+    # occupant's bare JID is the room itself.
+    method Decorate {chat jid name} {
         if {!$wholeAccount} { return $name }
         if {$chat eq [jid bare $jid]} { return $name }
         return "[regsub {\?join$} $chat {}] - $name"
