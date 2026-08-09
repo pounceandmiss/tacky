@@ -94,6 +94,15 @@ test windowpolicy-empty-display-is-not-thirsty {with nothing displayed there is 
         set ::wp_thirsty
     } -cleanup wp_cleanup -result {}
 
+test windowpolicy-empty-display-reports-no-cull {a pass that dropped nothing does not claim it culled} \
+    -body {
+        # An over-threshold buffer with nothing left to drop: the host must not
+        # be told to invalidate loads it will need.
+        wp_host 9999 9999 100 {}
+        wp run
+        set ::wp_culled
+    } -cleanup wp_cleanup -result {}
+
 test windowpolicy-factor-scales-with-viewport {the factor beats the pixel floor once the viewport is tall enough} \
     -body {
         # Default load factor 2, floor 500. At vh=100 the floor wins, so 600

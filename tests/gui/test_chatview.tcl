@@ -194,6 +194,16 @@ test chatview-live-message {stanza fed through client appears in chatview} \
         list [llength $ids] [expr {[.cv messages newest] ne ""}]
     } -result {1 1}
 
+test chatview-author-falls-back-to-the-jid {an author the name cache doesn't know is labelled by JID} \
+    {*}$cv_common \
+    -body {
+        cv_feed "hello" srv-author1
+        wait
+        # A 1:1 from_jid is bare after normalisation, so there is no resource
+        # to use as a nick and the JID itself is the label.
+        .cv.text get {*}[.cv.text tag ranges author.alice@example.com]
+    } -result alice@example.com
+
 test chatview-formatting-overlap-combines {overlapping bold+italic render as one compound tag, not last-wins} \
     {*}$cv_common \
     -body {
