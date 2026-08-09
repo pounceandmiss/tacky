@@ -60,14 +60,8 @@ snit::widgetadaptor chatview {
     variable MyRole ""
     variable RoomBare ""
 
-    # Names dict: from_jid → display name for messages in this chat.
-    # Seeded from `tacky author get` at construction; kept in sync by
-    # the author <Changed> listener.
-    variable Names
-
-    # 1:1 only: when true, render bare JIDs instead of resolved names.
-    # Mirrors the global `show_jid_in_1to1` setting.
-    variable ShowJid 0
+    # What to call each author in this chat.
+    component authors
 
     # Image downloads in flight: url -> list of "msgId,attIdx" awaiting their
     # thumbnail. A `file <Update>` for that url routes progress/result to each.
@@ -99,9 +93,12 @@ snit::widgetadaptor chatview {
         # goto-non-end flip false.
         set AtTail 1
         set IsMuc $options(-groupchat)
-        set Names [dict create]
         set TrackedAvatars [list]
         set DownloadPending [dict create]
+        install authors using authornames ${selfns}::authors \
+            -acc $options(-acc) -chat $options(-jid) -tag $win/authors \
+            -show-jid-setting [expr {!$IsMuc}] \
+            -changed-command [list $hull author update]
         ::tacky listen -tag $win message <New> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Status> \
@@ -122,14 +119,7 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) -jid $options(-jid) [mymethod OnTail]
         ::tacky listen -tag $win file <Update> \
             -acc $options(-acc) [mymethod OnTransfer]
-        ::tacky listen -tag $win author <Changed> \
-            -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
-        ::tacky author get -acc $options(-acc) -chat $options(-jid) \
-            -command [mymethod OnAuthorSeed]
-        if {!$IsMuc} {
-            ::tacky observe -tag $win setting <Changed> -key show_jid_in_1to1 \
-                [mymethod OnShowJidSetting]
-        } else {
+        if {$IsMuc} {
             regsub {\?join$} $options(-jid) {} RoomBare
             set RoomBare [jid norm [jid bare $RoomBare]]
             ::tacky listen -tag $win muc <Presence> \
@@ -150,40 +140,6 @@ snit::widgetadaptor chatview {
             bind [winfo toplevel $win] <FocusIn> +[list apply {{w} {
                 if {[winfo exists $w]} { $w MaybeSendDisplayed }
             }} $win]
-        }
-    }
-
-    # Initial snapshot of author names for this chat. Applies cached
-    # names to any messages already rendered (history may have arrived
-    # first if the seed callback is async).
-    method OnAuthorSeed {names} {
-        set Names $names
-        dict for {fromJid name} $names {
-            set label [expr {$ShowJid ? $fromJid : $name}]
-            $hull author update $fromJid $label
-        }
-    }
-
-    method OnAuthorChanged {ev} {
-        set fromJid [dict get $ev -from]
-        set name [dict get $ev -name]
-        dict set Names $fromJid $name
-        if {!$ShowJid} {
-            $hull author update $fromJid $name
-        }
-    }
-
-    # Live-toggle JID-vs-name rendering: repaints every existing author
-    # label using $Names as the source of truth.
-    method OnShowJidSetting {ev} {
-        set val [dict get $ev -value]
-        if {$val eq ""} { set val 0 }
-        set val [expr {!!$val}]
-        if {$val == $ShowJid} return
-        set ShowJid $val
-        dict for {fromJid name} $Names {
-            set label [expr {$ShowJid ? $fromJid : $name}]
-            $hull author update $fromJid $label
         }
     }
 
@@ -543,8 +499,7 @@ snit::widgetadaptor chatview {
     }
 
     method EnrichMessage {storeDict} {
-        set names [expr {$ShowJid && !$IsMuc ? [dict create] : $Names}]
-        enrich_store_message $storeDict $names
+        enrich_store_message $storeDict [list $authors label]
     }
 
     # This chat is viewable and its toplevel holds the OS focus.

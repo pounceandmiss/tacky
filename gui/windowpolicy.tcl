@@ -81,14 +81,15 @@ snit::type windowpolicy {
         set cleanTh     [$self Threshold clean $vh]
         set cleanTarget [$self Threshold clean-target $vh]
 
+        # Only a direction that actually gave something up counts as culled:
+        # with nothing displayed the buffer stays over the threshold forever,
+        # and reporting that would have the host cancel loads for no reason.
         set cleaned {}
-        if {$Above > $cleanTh} {
+        if {$Above > $cleanTh && [$self Drain old Above $cleanTarget]} {
             lappend cleaned old
-            $self Drain old Above $cleanTarget
         }
-        if {$Below > $cleanTh} {
+        if {$Below > $cleanTh && [$self Drain new Below $cleanTarget]} {
             lappend cleaned new
-            $self Drain new Below $cleanTarget
         }
 
         # Invalidate in-flight loads whose cursors may now be stale.
@@ -107,14 +108,18 @@ snit::type windowpolicy {
 
     # Drop rows at one edge until its buffer is back to the target, remeasuring
     # after each. Stops on an empty display even if the target is unreachable,
-    # which is what a host reporting a constant measurement would do.
+    # which is what a host reporting a constant measurement would do. Returns
+    # whether anything was dropped.
     method Drain {direction pixelsVar target} {
         upvar 0 [myvar $pixelsVar] pixels
         set what [expr {$direction eq "old" ? "above" : "below"}]
+        set dropped 0
         while {$pixels > $target && [$self Rowcount] > 0} {
             {*}$options(-drop-command) $direction
             set pixels [$self Measure $what]
+            incr dropped
         }
+        return $dropped
     }
 
     method Thirst {direction} {

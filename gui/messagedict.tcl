@@ -14,18 +14,11 @@ proc message_text {storeDict} {
 
 # Shared enrichment: converts a store dict (from_jid, server_status,
 # timestamp, body, etc.) into the display dict that chatarea expects.
-# `names` maps from_jid → display name (from tacky author get); not in
-# the dict means a late-arriving author the cache hasn't been told about
-# yet, in which case we fall back to the resource of from_jid (the MUC
-# nick) or the from_jid itself (1:1 bare JID after Phase 1 normalisation).
-proc enrich_store_message {storeDict names} {
+# `resolve` is a command prefix called as {*}$resolve $jid, returning what to
+# call that author - see authornames.
+proc enrich_store_message {storeDict resolve} {
     set fromJid [dict get $storeDict from_jid]
-    if {[dict exists $names $fromJid]} {
-        set displayName [dict get $names $fromJid]
-    } else {
-        set displayName [jid resource $fromJid]
-        if {$displayName eq ""} { set displayName $fromJid }
-    }
+    set displayName [{*}$resolve $fromJid]
     set serverStatus [dict get $storeDict server_status]
     set remoteStatus [expr {[dict exists $storeDict remote_status]
         ? [dict get $storeDict remote_status] : "none"}]
@@ -74,15 +67,10 @@ proc enrich_store_message {storeDict names} {
         dict set d reply_id [dict get $storeDict reply_id]
         dict set d reply_to $rto
         # reply_author_jid is normalized by the backend (nick for MUC, bare for
-        # 1:1), matching how names is keyed; resolve its display name here.
+        # 1:1), so it resolves the same way an author does.
         set raj [expr {[dict exists $storeDict reply_author_jid]
             ? [dict get $storeDict reply_author_jid] : $rto}]
-        if {[dict exists $names $raj]} {
-            set ra [dict get $names $raj]
-        } else {
-            set ra $raj
-        }
-        if {$ra eq ""} { set ra $rto }
+        set ra [expr {$raj eq "" ? $rto : [{*}$resolve $raj]}]
         dict set d reply_author $ra
         if {[dict exists $storeDict reply_body]} {
             dict set d reply_body [dict get $storeDict reply_body]

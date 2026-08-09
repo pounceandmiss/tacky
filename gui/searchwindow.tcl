@@ -23,12 +23,11 @@ snit::widget searchwindow {
     variable isComplete 0
     variable searchTag
     variable ca
-    variable Names
+    component authors
 
     constructor args {
         $self configurelist $args
         set searchTag $win/search
-        set Names [dict create]
         wm title $win "Search — [jid bare $options(-jid)]"
 
         # Top frame: entry + buttons
@@ -68,10 +67,10 @@ snit::widget searchwindow {
         $win.ca.text tag configure search_match -background yellow \
             -font "Helvetica 13 bold"
 
-        ::tacky listen -tag $searchTag/author author <Changed> \
-            -acc $options(-acc) -chat $options(-jid) [mymethod OnAuthorChanged]
-        ::tacky author get -acc $options(-acc) -chat $options(-jid) \
-            -command [mymethod OnAuthorSeed]
+        install authors using authornames ${selfns}::authors \
+            -acc $options(-acc) -chat $options(-jid) \
+            -tag $searchTag/author \
+            -changed-command [list $ca author update]
         ::tacky mam fulltextSupported -acc $options(-acc) \
             -chat $options(-jid) -command [mymethod OnRemoteCapability]
 
@@ -80,7 +79,6 @@ snit::widget searchwindow {
 
     destructor {
         catch {::tacky message cancel -acc $options(-acc) -tag $searchTag}
-        catch {::tacky unlisten $searchTag/author}
     }
 
     method OnRemoteCapability {supported} {
@@ -96,20 +94,6 @@ snit::widget searchwindow {
     method OnRemoteToggle {} {
         if {$query eq ""} return
         $self DoSearch
-    }
-
-    method OnAuthorSeed {names} {
-        set Names $names
-        dict for {fromJid name} $names {
-            $ca author update $fromJid $name
-        }
-    }
-
-    method OnAuthorChanged {ev} {
-        set fromJid [dict get $ev -from]
-        set name [dict get $ev -name]
-        dict set Names $fromJid $name
-        $ca author update $fromJid $name
     }
 
     method DoSearch {} {
@@ -163,7 +147,9 @@ snit::widget searchwindow {
             return
         }
 
-        set enriched [lmap msg $messages {enrich_store_message $msg $Names}]
+        set enriched [lmap msg $messages {
+            enrich_store_message $msg [list $authors label]
+        }]
         set inserted [$ca apply $enriched]
 
         # Highlight search terms in newly inserted messages
