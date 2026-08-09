@@ -1665,8 +1665,13 @@ snit::type taco_message {
             -limit $limit -tag $tag -command $callback
     }
 
-    # search -chat $jid -query "text" ?-source local|remote|both? ?-before $cursor?
+    # search ?-chat $jid? -query "text" ?-source local|remote|both? ?-before $cursor?
     #        ?-limit 20? ?-field $var? ?-tag $tag? -command $cb
+    #
+    # Omitting -chat searches every chat in the account. That is local-only -
+    # MAM queries one archive - so it rejects a remote source rather than
+    # quietly downgrading, and its cursor is the {timestamp chat_jid} pair the
+    # store pages by.
     #
     # Full text search. -source local (the default) is a LIKE match over
     # already-stored bodies, with -before as an exclusive timestamp cursor. It
@@ -1687,10 +1692,13 @@ snit::type taco_message {
     # already fetched, so it skips the remote leg.
     # Callback receives dict: messages, complete, last
     method search {args} {
-        array set opts {-limit 20 -tag "" -field "" -source local}
+        array set opts {-limit 20 -tag "" -field "" -source local -chat ""}
         array set opts $args
 
         set chatJid $opts(-chat)
+        if {$chatJid eq "" && $opts(-source) ne "local"} {
+            error "search: -source \"$opts(-source)\" needs a -chat"
+        }
         set callback $opts(-command)
         set tag $opts(-tag)
         set query $opts(-query)
@@ -1726,7 +1734,14 @@ snit::type taco_message {
     method LocalSearch {chatJid query limit before callback} {
         set rows [$messagestore search $chatJid $query -limit $limit -before $before]
         set complete [expr {[llength $rows] < $limit}]
-        set last [expr {[llength $rows] ? [dict get [lindex $rows end] timestamp] : ""}]
+        set last ""
+        if {[llength $rows]} {
+            set tail [lindex $rows end]
+            set last [dict get $tail timestamp]
+            if {$chatJid eq ""} {
+                lappend last [dict get $tail chat_jid]
+            }
+        }
         {*}$callback [dict create messages $rows complete $complete last $last]
     }
 

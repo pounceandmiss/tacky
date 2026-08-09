@@ -364,7 +364,7 @@ Event:
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}  -> [message]
     message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
-    message search {chat: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
+    message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
     message resend {chat: string, timestamp: int, plaintext?: bool}
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
@@ -777,6 +777,12 @@ rule covers the whole result. It falls back to the store alone when the archive
 can't run the search, and pages locally: passing `before` means walking a result
 set already fetched, so it skips the remote leg and fetches one server page per
 search.
+
+Omitting `chat` searches every chat in the account. MAM queries one archive, so
+that is local-only: a remote `source` without a `chat` is an error rather than a
+silent downgrade. Its `last` cursor is a `{timestamp, chat_jid}` pair, since
+equal timestamps in different chats are ordinary - the backend only keeps them
+unique within one chat. Each result carries the `chat_jid` it came from.
 
 Jump to a hit with `message goto {date: ts, source: remote}`, which fills the
 context around a hit stored as an isolated island. Whichever source found it,

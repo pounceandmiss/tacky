@@ -3502,3 +3502,43 @@ test message-moderate-success-is-silent {a successful moderation request does no
             -from room@conf.example.com]
         set got
     } -result {none}
+
+# Search
+
+# Helper: call search and collect the result via -command
+proc msg_search {args} {
+    set ::_msg_search_result {}
+    tacky message search -acc $::acc {*}$args \
+        -command [list apply {{result} { set ::_msg_search_result $result }}]
+    set ::_msg_search_result
+}
+
+test message-search-unscoped-covers-every-chat {omitting -chat searches the whole account} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com timestamp 100 body needle]]
+        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        lmap m [dict get [msg_search -query needle] messages] {
+            dict get $m chat_jid
+        }
+    } -result {bob@example.com alice@example.com}
+
+test message-search-unscoped-cursor-carries-the-chat {the unscoped cursor is the {timestamp chat} pair} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        dict get [msg_search -query needle] last
+    } -result {200 bob@example.com}
+
+test message-search-scoped-cursor-stays-a-timestamp {naming a chat keeps the plain timestamp cursor} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        dict get [msg_search -chat bob@example.com -query needle] last
+    } -result {200}
+
+test message-search-unscoped-refuses-a-remote-source {MAM queries one archive, so an unscoped remote search is an error} \
+    {*}$msg_common -body {
+        set got none
+        tacky message search -acc $acc -query needle -source both \
+            -command [list apply {{r} {}}] \
+            -onerror [list apply {{msg} { set ::got $msg }}]
+        set got
+    } -result {search: -source "both" needs a -chat}

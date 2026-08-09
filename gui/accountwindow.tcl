@@ -55,7 +55,7 @@ snit::widget accountwindow {
         bind $win <Control-W> [mymethod Close]
         bind $win <Control-Shift-X> [mymethod OpenXmlConsole]
         bind $win <Control-f> [mymethod InlineOpenFind]
-        bind $win <Control-F> [mymethod InlineOpenFind]
+        bind $win <Control-F> [mymethod OpenAccountSearch]
 
         ::tacky listen -tag $win account <Disabled> [mymethod OnAccountGone]
         ::tacky listen -tag $win account <Removed>  [mymethod OnAccountGone]
@@ -78,6 +78,8 @@ snit::widget accountwindow {
             -command [mymethod OpenXmlConsole] -accelerator "Ctrl+Shift+X"
         $mb.file add command -label "MAM Info..." \
             -command [mymethod OpenMamInfo]
+        $mb.file add command -label "Search Messages..." \
+            -command [mymethod OpenAccountSearch] -accelerator "Ctrl+Shift+F"
         $mb.file add separator
         $mb.file add command -label "Quit" \
             -command [mymethod Quit] -accelerator "Ctrl+Q"
@@ -173,6 +175,8 @@ snit::widget accountwindow {
     method SwitchAccount {jid} {
         if {$jid eq $shownAccount} return
         $self CloseInlineChat
+        # Bound to the account it was opened for, so it doesn't survive a swap.
+        catch {destroy $win.search}
         catch {destroy $panel}
         set currentAccount $jid
         $self BuildPanel
@@ -209,43 +213,51 @@ snit::widget accountwindow {
 
     # --- Chat routing ---
 
+    # -goto jumps the opened chat to a timestamp, for arriving from a search
+    # hit rather than the chat list.
     method OpenChat {args} {
-        array set opts {-groupchat 0}
+        array set opts {-groupchat 0 -goto ""}
         array set opts $args
         if {$chatModeVar eq "inline"} {
             $self OpenChatInline -acc $opts(-acc) -jid $opts(-jid) \
-                -groupchat $opts(-groupchat)
+                -groupchat $opts(-groupchat) -goto $opts(-goto)
         } else {
             $self Openchatwindow -acc $opts(-acc) -jid $opts(-jid) \
-                -groupchat $opts(-groupchat)
+                -groupchat $opts(-groupchat) -goto $opts(-goto)
         }
     }
 
     method OpenChatInline {args} {
-        array set opts {-groupchat 0}
+        array set opts {-groupchat 0 -goto ""}
         array set opts $args
-        if {$inlineJid eq $opts(-jid)} return
+        if {$inlineJid ne $opts(-jid)} {
+            foreach child [winfo children $cpFrame] {
+                destroy $child
+            }
+            set inlineJid $opts(-jid)
+            set inlineGroupchat $opts(-groupchat)
+            chatpanel $cpFrame.cp -acc $opts(-acc) -jid $opts(-jid) \
+                -groupchat $opts(-groupchat) -menubar $win.menubar
+            pack $cpFrame.cp -expand yes -fill both
 
-        foreach child [winfo children $cpFrame] {
-            destroy $child
+            if {$cpFrame ni [$paned panes]} {
+                $paned add $cpFrame -weight 1
+            }
         }
-        set inlineJid $opts(-jid)
-        set inlineGroupchat $opts(-groupchat)
-        chatpanel $cpFrame.cp -acc $opts(-acc) -jid $opts(-jid) \
-            -groupchat $opts(-groupchat) -menubar $win.menubar
-        pack $cpFrame.cp -expand yes -fill both
-
-        if {$cpFrame ni [$paned panes]} {
-            $paned add $cpFrame -weight 1
+        if {$opts(-goto) ne ""} {
+            $cpFrame.cp GotoMessage $opts(-goto)
         }
     }
 
     method Openchatwindow {args} {
-        array set opts {-groupchat 0}
+        array set opts {-groupchat 0 -goto ""}
         array set opts $args
         set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
-        chatwindow open .chatwin_$safe -acc $opts(-acc) -jid $opts(-jid) \
-            -groupchat $opts(-groupchat)
+        set w [chatwindow open .chatwin_$safe -acc $opts(-acc) \
+            -jid $opts(-jid) -groupchat $opts(-groupchat)]
+        if {$opts(-goto) ne ""} {
+            $w.cp GotoMessage $opts(-goto)
+        }
     }
 
     method CloseInlineChat {} {
@@ -282,6 +294,26 @@ snit::widget accountwindow {
     method OpenNewChat {} {
         if {$currentAccount eq ""} return
         newchatdialog show $currentAccount $win [mymethod OpenChat]
+    }
+
+    method OpenAccountSearch {} {
+        if {$currentAccount eq ""} return
+        if {[winfo exists $win.search]} {
+            wm deiconify $win.search
+            raise $win.search
+            return
+        }
+        searchwindow $win.search -acc $currentAccount \
+            -goto-command [mymethod OnSearchGoto]
+    }
+
+    # An account-wide hit names its own chat, verbatim - the ?join suffix is
+    # what makes it a groupchat, as it is everywhere else.
+    method OnSearchGoto {hit} {
+        lassign $hit chat timestamp
+        $self OpenChat -acc $currentAccount -jid $chat \
+            -groupchat [expr {[string match {*\?join} $chat] ? 1 : 0}] \
+            -goto $timestamp
     }
 
     method OpenXmlConsole {} {

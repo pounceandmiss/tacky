@@ -111,3 +111,109 @@ test sw-ticking-the-box-queries-the-archive {ticking it adds the server pass to 
     wait
     sw_search_queries
 } -cleanup { sw_cleanup } -result {1}
+
+# -- account-wide search --------------------------------------------------------
+
+# A searchwindow with no -jid searches the whole account.
+proc sw_create_global {} {
+    set ::sw_goto none
+    searchwindow .sw -acc user@test.example.com \
+        -goto-command {apply {{hit} { set ::sw_goto $hit }}}
+    wait
+}
+
+proc sw_store {chat ts body {from ""}} {
+    if {$from eq ""} { set from $chat }
+    $::_client message messagestore store [list [dict create \
+        timestamp $ts chat_jid $chat from_jid $from body $body \
+        server_id "" own_id "" raw_xml ""]]
+}
+
+proc sw_store_own {chat ts body} {
+    $::_client message messagestore store [list [dict create \
+        timestamp $ts chat_jid $chat from_jid user@test.example.com \
+        body $body server_id "" own_id own$ts raw_xml ""]]
+}
+
+proc sw_run {query} {
+    .sw.top.entry insert 0 $query
+    .sw.top.search invoke
+    wait
+}
+
+proc sw_text {} {
+    [.sw.ca textwidget] get 1.0 end
+}
+
+test sw-global-spans-every-chat {results come from every chat, in one time order} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    sw_store alice@example.com 100 "a needle here"
+    sw_store bob@example.com 300 "another needle"
+    sw_run needle
+    .sw.ca messages keys
+} -cleanup { sw_cleanup } -result {{alice@example.com 100} {bob@example.com 300}}
+
+test sw-global-hides-the-server-box {no archive spans an account, so the server pass is not offered} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    winfo manager .sw.top.remote
+} -cleanup { sw_cleanup } -result {}
+
+test sw-global-click-names-the-chat {a hit identifies itself by chat and timestamp} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    sw_store bob@example.com 300 "the needle"
+    sw_run needle
+    event generate .sw.ca <<MessageClick>> -data [lindex [.sw.ca messages keys] 0]
+    set ::sw_goto
+} -cleanup { sw_cleanup } -result {bob@example.com 300}
+
+test sw-global-labels-a-room-row-with-its-room {a room hit says which room it came from} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    sw_store room@conf.example.com?join 300 "the needle" \
+        room@conf.example.com/alice
+    sw_run needle
+    string match "*room@conf.example.com - alice*" [sw_text]
+} -cleanup { sw_cleanup } -result {1}
+
+test sw-global-leaves-a-1to1-row-unprefixed {a 1:1 author already names the chat, so it gets no prefix} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    sw_store bob@example.com 300 "the needle"
+    sw_run needle
+    string match "*bob@example.com -*" [sw_text]
+} -cleanup { sw_cleanup } -result {0}
+
+test sw-per-chat-key-stays-a-timestamp {a chat-scoped window keys rows by timestamp alone} -setup {
+    sw_setup
+} -body {
+    sw_create
+    sw_store alice@example.com 300 "the needle"
+    sw_run needle
+    .sw.ca messages keys
+} -cleanup { sw_cleanup } -result {300}
+
+# We author messages in every 1:1, so our own bare JID is the one author that
+# appears in more than one chat. chatarea repaints an author by JID across every
+# row, so a relabel in one chat must not reach rows in the others.
+test sw-global-relabel-stays-in-its-own-chat {a name change in one chat leaves the other chat's rows alone} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    sw_store_own alice@example.com 100 "my needle"
+    sw_store_own bob@example.com 300 "my needle"
+    sw_run needle
+    $::_client emit author <Changed> -chat alice@example.com \
+        -from user@test.example.com -name Renamed
+    wait
+    set text [sw_text]
+    list [string match "*alice@example.com - Renamed*" $text] \
+         [string match "*bob@example.com - *" $text]
+} -cleanup { sw_cleanup } -result {1 1}
