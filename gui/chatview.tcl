@@ -5,8 +5,8 @@ package require emojipicker
 # history requests against the Client API, and feeds the results back to
 # chatarea as message dicts. See chatarea.tcl for the loading algorithm.
 snit::widgetadaptor chatview {
-    # set of jids tracked via avatarcache
-    variable TrackedAvatars
+    # Which avatar belongs to each author on screen.
+    component avatars
 
     delegate method messages to hull
     delegate method attachment to hull
@@ -72,7 +72,6 @@ snit::widgetadaptor chatview {
         installhull using chatarea \
             -thirst-command [mymethod OnThirsty] \
             -cull-command [mymethod OnCulled] \
-            -avatar-release-command [mymethod OnAvatarRelease] \
             -scrollbtn-command [mymethod ScrollToBottom] \
             -loading-cancel-command [mymethod CancelGoto]
         # $self only becomes a command once the hull exists, and everything
@@ -85,15 +84,19 @@ snit::widgetadaptor chatview {
         # goto-non-end flip false.
         set AtTail 1
         set IsMuc $options(-groupchat)
-        set TrackedAvatars [list]
         install authors using authornames ${selfns}::authors \
             -acc $options(-acc) -chat $options(-jid) -tag $win/authors \
             -show-jid-setting [expr {!$IsMuc}] \
             -changed-command [list $hull author update]
+        install avatars using avatarbinder ${selfns}::avatars \
+            -acc $options(-acc) -tag $win \
+            -repaint-command [list $hull avatar set]
         install transfers using attachmentxfer ${selfns}::transfers \
             -acc $options(-acc) -chat $options(-jid) -tag $win/files \
             -parent $win -update-command [mymethod OnAttachmentUpdate]
         $hull configure \
+            -avatar-image-command [list $avatars image] \
+            -avatar-release-command [list $avatars release] \
             -attachment-open-command [list $transfers open] \
             -attachment-save-command [list $transfers save] \
             -attachment-openfolder-command [list $transfers openfolder] \
@@ -175,7 +178,6 @@ snit::widgetadaptor chatview {
             catch {::tacky message cancel -acc $options(-acc) -tag $tag}
         }
         catch {$self RemoveMenus}
-        catch {$self UntrackAllAvatars}
     }
 
     # Cancel in-flight loads and leave the live tail before a non-tail jump.
@@ -547,7 +549,7 @@ snit::widgetadaptor chatview {
         set emsg [$self EnrichMessage $msg]
         set ajid [dict get $emsg avatar_jid]
         if {$ajid ne ""} {
-            $self TrackAvatar $ajid
+            $avatars track $ajid
         }
         dict set emsg payload $msg
         return $emsg
@@ -571,37 +573,6 @@ snit::widgetadaptor chatview {
             $hull see end
             $self UpdateViewAtTail
         }
-    }
-
-    # Avatar lifecycle: TrackAvatar is called when a message is drawn.
-    # It tracks via avatarcache which handles visibility, fetching, and
-    # image lifecycle.  When all messages for a jid are culled by the
-    # scroll cleanup, OnAvatarRelease fires and untracks from the cache.
-    method TrackAvatar {jid} {
-        if {$jid in $TrackedAvatars} return
-        lappend TrackedAvatars $jid
-        set img [avatarcache track \
-            -acc $options(-acc) -jid $jid -tag $win/$jid \
-            -command [mymethod OnAvatar $jid]]
-        $hull avatar set $jid $img
-    }
-
-    method OnAvatar {jid img} {
-        $hull avatar set $jid $img
-    }
-
-    method UntrackAllAvatars {} {
-        foreach jid $TrackedAvatars {
-            catch {avatarcache untrack -tag $win/$jid}
-        }
-        set TrackedAvatars [list]
-    }
-
-    method OnAvatarRelease {jid} {
-        if {$jid ni $TrackedAvatars} return
-        catch {avatarcache untrack -tag $win/$jid}
-        set idx [lsearch -exact $TrackedAvatars $jid]
-        set TrackedAvatars [lreplace $TrackedAvatars $idx $idx]
     }
 
     method InstallMenus {} {
