@@ -38,9 +38,14 @@ snit::widget chatarea {
 
     delegate option -cull-command           to policy
 
+    # The avatar image to draw for a JID, as {*}$cmd $jid. Returning "" (which
+    # the default does) draws the placeholder, so an area with no avatars wired
+    # up still renders.
+    option -avatar-image-command -default control::no-op
+
     # Fires when the last message displaying a given avatar JID was just
-    # removed. Called as: {*}$cmd $avatarJid. Lets the controller release
-    # its avatar tracking for that JID.
+    # removed. Called as: {*}$cmd $avatarJid, so whatever supplies the images
+    # can stop following that JID.
     option -avatar-release-command -default control::no-op
 
     # Attachment actions, invoked from the rendered attachment widgets:
@@ -71,9 +76,6 @@ snit::widget chatarea {
     #   payload        handed back verbatim by `messages get`.
     component rows
 
-    # dict: jid → Tk image name (current avatar for that JID)
-    variable AvatarImages
-
     # Slot of the currently highlighted message (search result), or ""
     variable HighlightedSlot
 
@@ -99,7 +101,6 @@ snit::widget chatarea {
         grid rowconfigure $win $win.text -weight 1
         grid columnconfigure $win $win.text -weight 1
 
-        set AvatarImages [dict create]
         set HighlightedSlot ""
 
         # Configure text tags and fonts
@@ -383,12 +384,21 @@ snit::widget chatarea {
         set HighlightedSlot ""
     }
     
+    # Repaint every avatar already drawn for this JID.
     method {avatar set} {jid image} {
-        dict set AvatarImages $jid $image
-        # Update all already-rendered avatars for this JID
         foreach {start end} [$text tag ranges from.$jid] {
             $text image configure $start -image $image
         }
+    }
+
+    # What to draw for an author, falling back to the placeholder for one with
+    # no avatar of its own (or none fetched yet).
+    method AvatarImage {jid} {
+        if {$jid ne ""} {
+            set image [{*}$options(-avatar-image-command) $jid]
+            if {$image ne ""} { return $image }
+        }
+        return mate/32x32/status/avatar-default.png
     }
 
     # Repaint the author label for every visible message authored by
@@ -482,12 +492,8 @@ snit::widget chatarea {
             if {[info exists message(avatar_jid)]} {
                 set avatarJid $message(avatar_jid)
             }
-            if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
-                set avatarImg [dict get $AvatarImages $avatarJid]
-            } else {
-                set avatarImg mate/32x32/status/avatar-default.png
-            }
-            set imageId [$text image create msgins -image $avatarImg]
+            set imageId [$text image create msgins \
+                -image [$self AvatarImage $avatarJid]]
             $text tag add $tag $imageId
             $text tag add $tag.avatar $imageId
             if {$avatarJid ne ""} {
@@ -616,12 +622,8 @@ snit::widget chatarea {
         array set message $messageDict
         set avatarJid [expr {[info exists message(avatar_jid)]
             ? $message(avatar_jid) : ""}]
-        if {$avatarJid ne "" && [dict exists $AvatarImages $avatarJid]} {
-            set avatarImg [dict get $AvatarImages $avatarJid]
-        } else {
-            set avatarImg mate/32x32/status/avatar-default.png
-        }
-        set imageId [$text image create msgins -image $avatarImg]
+        set imageId [$text image create msgins \
+            -image [$self AvatarImage $avatarJid]]
         $text tag add $tag $imageId
         $text tag add $tag.avatar $imageId
         set authorTags [list $tag $tag.author author]
