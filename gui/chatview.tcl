@@ -63,9 +63,8 @@ snit::widgetadaptor chatview {
     # What to call each author in this chat.
     component authors
 
-    # Image downloads in flight: url -> list of "msgId,attIdx" awaiting their
-    # thumbnail. A `file <Update>` for that url routes progress/result to each.
-    variable DownloadPending
+    # The file transfers behind this chat's attachments.
+    component transfers
 
     # Read markers: newest incoming id shown, and the last one we sent a
     # `displayed` for. See MaybeSendDisplayed.
@@ -77,14 +76,10 @@ snit::widgetadaptor chatview {
             -thirst-command [mymethod OnThirsty] \
             -cull-command [mymethod OnCulled] \
             -avatar-release-command [mymethod OnAvatarRelease] \
-            -attachment-open-command [mymethod AttachOpen] \
-            -attachment-save-command [mymethod AttachSave] \
-            -attachment-openfolder-command [mymethod AttachOpenFolder] \
-            -attachment-uncache-command [mymethod AttachUncache] \
-            -attachment-load-command [mymethod AttachLoad] \
-            -attachment-retry-command [mymethod AttachRetry] \
             -scrollbtn-command [mymethod ScrollToBottom] \
             -loading-cancel-command [mymethod CancelGoto]
+        # $self only becomes a command once the hull exists, and everything
+        # below needs -acc and -jid, so the account-bound parts come after.
         $self configurelist $args
         set ViewAtTail 1
         # Empty display is vacuously at the tail; any live message
@@ -94,11 +89,20 @@ snit::widgetadaptor chatview {
         set AtTail 1
         set IsMuc $options(-groupchat)
         set TrackedAvatars [list]
-        set DownloadPending [dict create]
         install authors using authornames ${selfns}::authors \
             -acc $options(-acc) -chat $options(-jid) -tag $win/authors \
             -show-jid-setting [expr {!$IsMuc}] \
             -changed-command [list $hull author update]
+        install transfers using attachmentxfer ${selfns}::transfers \
+            -acc $options(-acc) -chat $options(-jid) -tag $win/files \
+            -parent $win -update-command [mymethod OnAttachmentUpdate]
+        $hull configure \
+            -attachment-open-command [list $transfers open] \
+            -attachment-save-command [list $transfers save] \
+            -attachment-openfolder-command [list $transfers openfolder] \
+            -attachment-uncache-command [list $transfers uncache] \
+            -attachment-load-command [list $transfers load] \
+            -attachment-retry-command [list $transfers retry]
         ::tacky listen -tag $win message <New> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Status> \
@@ -117,8 +121,6 @@ snit::widgetadaptor chatview {
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnTail]
-        ::tacky listen -tag $win file <Update> \
-            -acc $options(-acc) [mymethod OnTransfer]
         if {$IsMuc} {
             regsub {\?join$} $options(-jid) {} RoomBare
             set RoomBare [jid norm [jid bare $RoomBare]]
@@ -523,7 +525,7 @@ snit::widgetadaptor chatview {
         set enriched [lmap msg $messages {$self PrepareMessage $msg}]
         $hull apply $enriched
         foreach emsg $enriched {
-            $self FetchAttachments $emsg
+            $transfers fetch $emsg
         }
     }
 
@@ -533,7 +535,7 @@ snit::widgetadaptor chatview {
     method Redraw {key msg} {
         set emsg [$self PrepareMessage $msg]
         $hull replace $key $emsg
-        $self FetchAttachments $emsg
+        $transfers fetch $emsg
     }
 
     # Turn a store dict into what chatarea draws: note it if it is the newest
@@ -556,79 +558,16 @@ snit::widgetadaptor chatview {
         return $emsg
     }
 
-    # Kick off the inline-thumbnail fetch for each image attachment. The file
-    # module downloads (remote) or reads in place (local), derives the
-    # thumbnail, and reports via `file <Update>` (-> OnTransfer).
-    # -auto subjects the fetch to the autofetch policy and size cap. Our own
-    # sends are exempt: from history they refetch the public URL that replaced
-    # the local path on upload.
-    method FetchAttachments {emsg} {
-        if {![dict exists $emsg attachments]} return
-        set id [dict get $emsg key]
-        set idx 0
-        set auto [expr {![dict get $emsg is_outgoing]}]
-        foreach att [dict get $emsg attachments] {
-            if {[dict get $att type] eq "image"} {
-                $self StartDownload [dict get $att url] $id $idx \
-                    -auto $auto -from [dict get $emsg from_jid]
-            }
-            incr idx
-        }
-    }
-
-    # Click-to-reload after "Delete from cache" or a held-back autofetch: same
-    # path as the initial fetch, minus the gating.
-    method AttachLoad {url id idx} {
-        $self StartDownload $url $id $idx
-    }
-
-    method StartDownload {url id idx args} {
-        set key "$id,$idx"
-        set cur [expr {[dict exists $DownloadPending $url]
-            ? [dict get $DownloadPending $url] : {}}]
-        if {$key ni $cur} {
-            dict set DownloadPending $url [lappend cur $key]
-        }
-        ::tacky file download -acc $options(-acc) -url $url {*}$args
-    }
-
-    # Single transfer listener: upload events key on -id (== message id);
-    # download events key on -url via DownloadPending.
-    method OnTransfer {ev} {
-        set dir   [dict get $ev -direction]
-        set state [dict get $ev -state]
-        set loaded [dict get $ev -loaded]
-        set total  [dict get $ev -total]
-        set thumb  [dict get $ev -thumbpath]
-        set err    [dict get $ev -error]
-        if {$dir eq "upload"} {
-            $self ApplyTransfer [dict get $ev -id] 0 $dir $state $loaded $total \
-                $thumb $err
-            return
-        }
-        set url [dict get $ev -url]
-        if {![dict exists $DownloadPending $url]} return
-        foreach key [dict get $DownloadPending $url] {
-            lassign [split $key ,] mid idx
-            $self ApplyTransfer $mid $idx $dir $state $loaded $total $thumb $err
-        }
-        if {$state ne "active"} { dict unset DownloadPending $url }
-    }
-
-    method ApplyTransfer {id idx dir state loaded total thumb {err ""}} {
-        if {![$hull messages has $id]} return
-        # An image the policy held back isn't an error: with no state row the
-        # attachment keeps its plain click-to-load caption.
-        if {$state eq "failed" && [string match autofetch-* $err]} return
-        # A thumbnail or progress row arriving after the message was drawn
-        # grows it below the last line, pushing the viewport off the bottom.
-        # Re-pin if we were riding the tail so the scroll-to-bottom button
-        # doesn't spuriously appear (and stick).
+    # A thumbnail or progress row arriving after the message was drawn grows it
+    # below the last line, so re-pin the tail if we were riding it - otherwise
+    # the scroll-to-bottom button appears (and sticks).
+    method OnAttachmentUpdate {key idx direction state loaded total thumb} {
+        if {![$hull messages has $key]} return
         set atEnd [$hull atEnd]
         if {$state eq "done" && $thumb ne ""} {
-            $hull attachment image $id $idx $thumb
+            $hull attachment image $key $idx $thumb
         }
-        $hull attachment state $id $idx $dir $state $loaded $total
+        $hull attachment state $key $idx $direction $state $loaded $total
         if {$atEnd} {
             # Packing the thumbnail into the embedded frame defers the frame's
             # geometry recalc to idle, so flush it before `see end` measures
@@ -637,74 +576,6 @@ snit::widgetadaptor chatview {
             $hull see end
             $self UpdateViewAtTail
         }
-    }
-
-    method AttachRetry {id} {
-        $hull attachment state $id 0 upload active 0 0
-        ::tacky message retryUpload -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $id
-    }
-
-    method AttachOpen {url} {
-        if {[file exists $url]} { attachment_os_open $url; return }
-        ::tacky file download -acc $options(-acc) -url $url \
-            -command [mymethod OnAttachOpenReady]
-    }
-
-    method OnAttachOpenReady {path} {
-        if {$path eq ""} {
-            tk_messageBox -icon error -title "Download Failed" \
-                -parent [winfo toplevel $win] \
-                -message "Could not download the attachment."
-            return
-        }
-        attachment_os_open $path
-    }
-
-    method AttachSave {url name} {
-        set dest [tk_getSaveFile -initialfile $name -parent [winfo toplevel $win]]
-        if {$dest eq ""} return
-        if {[file exists $url]} {
-            if {[catch {file copy -force -- $url $dest} err]} {
-                tk_messageBox -icon error -title "Save Failed" \
-                    -parent [winfo toplevel $win] -message $err
-            }
-            return
-        }
-        ::tacky file download -acc $options(-acc) -url $url \
-            -command [mymethod OnAttachSaveReady $dest]
-    }
-
-    method OnAttachSaveReady {dest path} {
-        if {$path eq ""} {
-            tk_messageBox -icon error -title "Download Failed" \
-                -parent [winfo toplevel $win] \
-                -message "Could not download the attachment."
-            return
-        }
-        if {[catch {file copy -force -- $path $dest} err]} {
-            tk_messageBox -icon error -title "Save Failed" -message $err
-        }
-    }
-
-    method AttachOpenFolder {url} {
-        if {[file exists $url]} { showinfm::show $url; return }
-        ::tacky file download -acc $options(-acc) -url $url \
-            -command [mymethod OnAttachFolderReady]
-    }
-
-    method OnAttachFolderReady {path} {
-        if {$path eq ""} {
-            tk_messageBox -icon error -title "Download Failed" \
-                -parent [winfo toplevel $win] \
-                -message "Could not download the attachment."
-            return
-        }
-        showinfm::show $path
-    }
-
-    method AttachUncache {url} {
-        ::tacky file uncache -acc $options(-acc) -url $url
     }
 
     # Avatar lifecycle: TrackAvatar is called when a message is drawn.
