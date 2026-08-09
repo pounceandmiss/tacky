@@ -217,3 +217,37 @@ test sw-global-relabel-stays-in-its-own-chat {a name change in one chat leaves t
     list [string match "*alice@example.com - Renamed*" $text] \
          [string match "*bob@example.com - *" $text]
 } -cleanup { sw_cleanup } -result {1 1}
+
+# authornames seeds from inside its own constructor, so its first announce
+# reaches the host before the host has finished building it. An error there is
+# routed to an event rather than raised, so assert on the event.
+proc sw_watch_errors {} {
+    set ::sw_errors {}
+    ::tacky listen -tag sw_errwatch error <MethodError> {apply {{ev} {
+        lappend ::sw_errors [dict get $ev -message]
+    }}}
+}
+
+proc sw_seen_errors {} {
+    ::tacky unlisten sw_errwatch
+    return $::sw_errors
+}
+
+test sw-seeding-a-name-cache-is-not-reentrant {building a chat's names mid-announce doesn't rebuild it} -setup {
+    sw_setup
+} -body {
+    sw_watch_errors
+    sw_create_global
+    sw_store room@conf.example.com?join 300 "the needle" \
+        room@conf.example.com/alice
+    sw_run needle
+    sw_seen_errors
+} -cleanup { sw_cleanup } -result {}
+
+test sw-per-chat-seeding-is-not-reentrant {the same holds for a chat-scoped window, which seeds at construction} -setup {
+    sw_setup
+} -body {
+    sw_watch_errors
+    sw_create
+    sw_seen_errors
+} -cleanup { sw_cleanup } -result {}
