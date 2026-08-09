@@ -105,12 +105,7 @@ snit::widget chatview {
         $area configure \
             -avatar-image-command [list $avatars image] \
             -avatar-release-command [list $avatars release] \
-            -attachment-open-command [list $transfers open] \
-            -attachment-save-command [list $transfers save] \
-            -attachment-openfolder-command [list $transfers openfolder] \
-            -attachment-uncache-command [list $transfers uncache] \
-            -attachment-load-command [list $transfers load] \
-            -attachment-retry-command [list $transfers retry]
+            -attachment-command $transfers
         ::tacky listen -tag $win message <New> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnMessage]
         ::tacky listen -tag $win message <Status> \
