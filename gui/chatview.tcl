@@ -404,13 +404,21 @@ snit::widget chatview {
     }
 
     # Send/receipt/upload status change: merge onto the checkmark row. Carries
-    # any of server_status / remote_status / fail_reason.
+    # any of server_status / remote_status / fail_reason / encryption.
     method OnStatus {ev} {
         set ts [dict get $ev -timestamp]
         if {![$area messages has $ts]} return
         set patch [dict create]
-        foreach k {server_status remote_status fail_reason} {
+        foreach k {server_status remote_status fail_reason encryption} {
             if {[dict exists $ev -$k]} { dict set patch $k [dict get $ev -$k] }
+        }
+        # The padlock is drawn into the row header, so a stamp change (a
+        # resend downgraded to plaintext) needs the row redrawn from the
+        # patched store dict, not a field patch.
+        if {[dict exists $patch encryption]} {
+            set sd [dict merge [$area messages get $ts] $patch]
+            $self KeepingTail { $self Redraw $ts $sd }
+            return
         }
         $area patchFields $ts $patch
     }

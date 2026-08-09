@@ -1015,12 +1015,17 @@ snit::type taco_message {
         if {[llength $row] == 0} return
         lassign $row oid body enc replyId replyTo
 
+        # The downgrade rides the <Status> too: the row's padlock is drawn
+        # from the stamp, so a silent rewrite leaves it displayed as
+        # encrypted while the body goes out in clear.
+        set stamp {}
         if {$opts(-plaintext)} {
             set enc ""
             $client db eval {
                 UPDATE chat_message SET encryption=''
                 WHERE chat_jid=$chatJid AND timestamp=$ts
             }
+            set stamp [list -encryption ""]
         }
 
         # Fresh attempt: drop any in-flight marker (RetrySend re-adds it on
@@ -1035,7 +1040,7 @@ snit::type taco_message {
             WHERE chat_jid=$chatJid AND timestamp=$ts
         }
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status pending -fail_reason ""
+            -timestamp $ts -server_status pending -fail_reason "" {*}$stamp
 
         $self RetrySend [dict create \
             chat_jid $chatJid body $body own_id $oid encryption $enc \

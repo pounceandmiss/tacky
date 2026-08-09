@@ -1695,3 +1695,32 @@ test chatview-send-confirm-timestamp-move-keeps-tail \
         set atEndAfterMove [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]
         list $atEndAfterSend $atEndAfterMove
     } -result {1 1}
+
+# Count embedded padlock images across the whole view.
+proc cv_lock_count {} {
+    set n 0
+    foreach img [[.cv textwidget] image names] {
+        if {[[.cv textwidget] image cget $img -image]
+                eq "mate/16x16/status/stock_lock.png"} { incr n }
+    }
+    return $n
+}
+
+test chatview-plaintext-resend-drops-the-padlock \
+    {a <Status> carrying a cleared encryption stamp redraws the row unlocked} \
+    -setup { cv_setup } -cleanup cv_cleanup \
+    -body {
+        set ts [ParseTimestamp 2024-01-01T10:00:00Z]
+        $::_client message messagestore store [list [dict create \
+            timestamp $ts chat_jid alice@example.com \
+            from_jid $::acc body "secret" \
+            server_id "" own_id oid-lock raw_xml "" \
+            server_status failed fail_reason encrypt encryption omemo]]
+        cv_create -pack
+        wait
+        set before [cv_lock_count]
+        tacky emit message <Status> -acc $::acc -jid alice@example.com \
+            -timestamp $ts -server_status pending -fail_reason "" -encryption ""
+        wait
+        list before=$before after=[cv_lock_count]
+    } -result {before=1 after=0}
