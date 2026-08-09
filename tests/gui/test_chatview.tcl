@@ -1463,9 +1463,9 @@ test chatarea-system-insert {system message is inserted with system tag} \
 # -- chatarea pagination signals ------------------------------------------------
 
 # Wrap .ca.text so 'count -ypixels' returns values from the global ::mock_above
-# / ::mock_below. Each is read fresh on every call, so DoCleanup's while-loop
-# sees decreasing pixels as messages are deleted (callers can adjust between
-# calls or use a proc-style global that tracks llength).
+# / ::mock_below. Each is read fresh on every call, so the drop loop sees
+# decreasing pixels as messages are deleted (callers can adjust between calls
+# or use a proc-style global that tracks llength).
 proc ca_install_pixel_mock {} {
     rename .ca.text _real_ca_text
     proc ::.ca.text args {
@@ -1506,58 +1506,38 @@ set ca_signals_common {
     }
 }
 
-test chatarea-thirsty-fires-per-direction {-thirst-command fires once per thirsty direction with edge id} \
+# The decisions themselves are windowpolicy's, and tested there. These two
+# check the wiring: a real scroll event reaches the policy, and what the policy
+# asks for lands on the right rows.
+
+test chatarea-thirsts-through-the-scroll-path {a thin buffer asks for more at both edges, keyed by the edge rows} \
     {*}$ca_signals_common \
     -body {
-        # Both directions below load threshold (default 500): each fires once
-        # with its own edge id.
         set ::mock_above 100
         set ::mock_below 100
         .ca apply [list \
             [ca_msg 100 "a"] \
             [ca_msg 200 "b"] \
             [ca_msg 300 "c"]]
-        .ca DoCleanup
+        event generate .ca.text <<Yview>>
+        update
         set ::ca_thirsty
     } -result {{old 100} {new 300}}
 
-test chatarea-cull-fires-with-directions {-cull-command fires with the list of culled directions} \
+test chatarea-culls-through-the-scroll-path {a full buffer drops rows and erases what they drew} \
     {*}$ca_signals_common \
     -body {
-        # Pixel mock above above clean threshold; messages get culled until
-        # the row list drains (mock returns constant high value, so the
-        # loop's `[llength $Rows] > 0` guard is what stops it).
+        # mock_above never falls, so the drop loop runs until nothing is left.
         set ::mock_above 9999
         set ::mock_below 0
         .ca apply [list \
             [ca_msg 100 "a"] \
             [ca_msg 200 "b"] \
             [ca_msg 300 "c"]]
-        .ca DoCleanup
-        set ::ca_culled
-    } -result {old}
-
-test chatarea-no-thirst-for-just-culled-direction {a direction culled this pass does not also fire thirst} \
-    {*}$ca_signals_common \
-    -body {
-        # Cull old; mock_above stays high so the loop drains all rows; once
-        # empty, the empty-display guard prevents any thirst fire — including
-        # the suppressed "old" we just culled. Verifies no {old ...} entry
-        # leaks into ::ca_thirsty even when above-pixels look thirsty.
-        set ::mock_above 9999
-        set ::mock_below 0
-        .ca apply [list \
-            [ca_msg 100 "a"] \
-            [ca_msg 200 "b"] \
-            [ca_msg 300 "c"]]
-        .ca DoCleanup
-        # No "old" entry in thirsty calls; cull happened.
-        set hasOld 0
-        foreach call $::ca_thirsty {
-            if {[lindex $call 0] eq "old"} { set hasOld 1 }
-        }
-        list culled=$::ca_culled hasOldThirst=$hasOld
-    } -result {culled=old hasOldThirst=0}
+        event generate .ca.text <<Yview>>
+        update
+        list [.ca messages keys] $::ca_culled [.ca.text get 1.0 end-1c]
+    } -result {{} old {}}
 
 # -- edits (XEP-0308) / retractions (XEP-0424/0425) -----------------------------
 
