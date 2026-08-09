@@ -14,7 +14,7 @@ package require snit
 #             requests against the Client API and feeds the results back here.
 #
 # chatarea measures the content above and below the viewport on every scroll
-# event and widget-view-sync; windowpolicy turns those numbers into the load
+# event and widget-view-sync; slicepolicy turns those numbers into the load
 # and cull decisions, and chatarea carries them out.
 snit::widget chatarea {
     hulltype ttk::frame
@@ -27,7 +27,7 @@ snit::widget chatarea {
     delegate option -scrollbtn-command      to scrollbtn as -command
     delegate option -loading-cancel-command to loading   as -cancel-command
 
-    # The load/clean/clean-target thresholds; see windowpolicy.
+    # The load/clean/clean-target thresholds; see slicepolicy.
     delegate option -clean-factor           to policy
     delegate option -clean-threshold        to policy
     delegate option -load-factor            to policy
@@ -86,7 +86,7 @@ snit::widget chatarea {
         install loading using chatloading $win.loading \
             -parent $win.text
         install rows using rowlist ${selfns}::rows
-        install policy using windowpolicy ${selfns}::policy \
+        install policy using slicepolicy ${selfns}::policy \
             -measure-command [mymethod Measure] \
             -rowcount-command [list $rows size] \
             -drop-command [mymethod DropEdge] \
@@ -114,7 +114,7 @@ snit::widget chatarea {
         $policy cancel
     }
 
-    # What windowpolicy asks us for: pixels of content outside the viewport,
+    # What slicepolicy asks us for: pixels of content outside the viewport,
     # the viewport's own height, which row sits at an edge, and its removal.
     method Measure {what} {
         if {![winfo exists $win]} { return 0 }
