@@ -433,7 +433,15 @@ Event:
 by a microsecond if two would collide. `before`/`after` on `history` are
 exclusive cursors; `source` on `goto` is `local` or `remote`.
 `server_status` is `""` (the server has it), `pending`, `uploading`, or
-`failed`. `encryption` is `"omemo"` or `""`. `content` is the typed payload:
+`failed`, and tracks the hop to your own server. `remote_status` is the hop
+after that - what the far end has done with it - and is `none` (nothing back
+yet), `delivered` (XEP-0184 or XEP-0333 `<received>`), or `read` (XEP-0333
+`<displayed>`). It only ever moves forward along that order, so a duplicate or
+out-of-order marker never walks it back, and it stays `none` on incoming
+messages, where there is nothing to report. The two are independent axes: read
+`server_status` first, since a message that hasn't reached your server yet has
+nothing to say about the far end. `encryption` is `"omemo"` or `""`.
+`content` is the typed payload:
 `type: "text"` carries a `body`, `type: "media"` carries an `attachments` list
 plus a `caption` (grouped attachments are just more than one entry). Each
 `attachment` has a `type` of `"image"` (render inline) or `"file"` (a download
@@ -465,8 +473,9 @@ Events:
 These events each carry one kind of change to a message already on screen,
 found by `timestamp`. If the target isn't displayed, drop it. `<Status>`
 updates send/receipt state in place (`server_status`
-`pending`/`uploading`/`failed`, `remote_status` delivery/read,
-`fail_reason`). `<Confirmed>` is a pending send the server acknowledged: it
+`pending`/`uploading`/`failed`, `remote_status` `none`/`delivered`/`read`,
+`fail_reason`), and carries only the fields that changed. `<Confirmed>` is a
+pending send the server acknowledged: it
 always carries `newtimestamp` (equal to `timestamp` when the stamp held, the
 relocated server stamp when it moved) and clears `server_status` to `""` -
 update in place when equal, rekey and re-sort when it moved. It's the only
