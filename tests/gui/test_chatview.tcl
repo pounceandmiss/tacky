@@ -289,6 +289,70 @@ test chatview-autofetch-blocked-renders-plain-caption \
              errorRow=[winfo exists [.cv attachment path $id 0].dl]
     } -result {cap=1 img=0 errorRow=0}
 
+# A loopback server that accepts and never answers, so a download it serves
+# stays in flight.
+proc cv_deaf_server {} {
+    set ::_cv_conns {}
+    set srv [socket -server {apply {{ch a p} {lappend ::_cv_conns $ch}}} \
+        -myaddr 127.0.0.1 0]
+    return [list $srv [lindex [fconfigure $srv -sockname] 2]]
+}
+
+proc cv_deaf_stop {srv} {
+    foreach c $::_cv_conns { catch {close $c} }
+    catch {close $srv}
+}
+
+# Cancelling a download is not a failure: the row goes, leaving the caption
+# that reloads on click.
+test chatview-cancel-download-drops-the-progress-row \
+    {cancelling an inline image download leaves a plain caption} \
+    {*}$cv_common \
+    -body {
+        lassign [cv_deaf_server] srv port
+        set url http://127.0.0.1:$port/pic.png
+        $::_client conn feed [j message -type chat \
+            -from alice@example.com/phone {
+            j body #body $url
+            j x -ns jabber:x:oob { j url #body $url }
+            j stanza-id -ns urn:xmpp:sid:0 -id oobc1 -by user@test.example.com
+        }]
+        wait
+        set f [.cv attachment path [.cv messages newest] 0]
+        set inFlight [list bar=[winfo exists $f.dl.bar] \
+            cancel=[winfo exists $f.dl.cancel]]
+        $f.dl.cancel invoke
+        wait
+        set res [list $inFlight row=[winfo exists $f.dl] cap=[winfo exists $f.cap]]
+        cv_deaf_stop $srv
+        set res
+    } -result {{bar=1 cancel=1} row=0 cap=1}
+
+# An upload is a message already written, so cancelling keeps the row and
+# offers Retry.
+test chatview-cancel-upload-offers-retry \
+    {cancelling an upload leaves the failed row with its Retry button} \
+    {*}$cv_common \
+    -body {
+        set tmp /tmp/cv_cancel_[pid].png
+        set px [string repeat [binary format cccc 10 20 30 255] 64]
+        set fh [open $tmp wb]
+        puts -nonewline $fh [::tclwuffs::encode_png 8 8 $px]
+        close $fh
+        # Upload stalls at service discovery (mock server never replies), so it
+        # is still in flight when the test clicks.
+        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
+        wait
+        set f [.cv attachment path [.cv messages newest] 0]
+        set inFlight [winfo exists $f.up.cancel]
+        $f.up.cancel invoke
+        wait
+        set res [list cancel=$inFlight bar=[winfo exists $f.up.bar] \
+            retry=[winfo exists $f.up.retry]]
+        file delete $tmp
+        set res
+    } -result {cancel=1 bar=0 retry=1}
+
 test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
     {*}$cv_common \
     -body {

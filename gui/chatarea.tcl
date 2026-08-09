@@ -57,6 +57,7 @@ snit::widget chatarea {
     #   {*}$cmd uncache    $url            delete the cached copy from disk
     #   {*}$cmd load       $url $key $idx  (re)fetch an image thumbnail
     #   {*}$cmd retry      $key            retry a failed upload
+    #   {*}$cmd cancel     $direction $url $key   abort a transfer in flight
     option -attachment-command -default control::no-op
 
     # Virtual events. Both carry the caller's key in -data, never the slot,
@@ -732,7 +733,7 @@ snit::widget chatarea {
     }
 
     # Forward a transfer-progress update to the widget: a progress bar while
-    # active, an error + Retry row on failure, removed on done.
+    # active, an error + Retry row on failure, removed on done or cancelled.
     method {attachment state} {key idx direction state loaded total} {
         set slot [$rows slot $key]
         if {$slot eq ""} return

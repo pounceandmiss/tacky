@@ -94,7 +94,8 @@ snit::type taco_file {
             direction $direction state active loaded 0 total 0 \
             url $url localpath "" thumbpath "" error "" \
             cmds {} done 0 lastfrac -1 timer "" fh "" httptoken "" \
-            mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes]
+            mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes \
+            abortreason ""]
         return $id
     }
 
@@ -111,7 +112,7 @@ snit::type taco_file {
     method ProgressCb {id token total current} {
         if {![info exists Transfers($id)]} return
         if {[$self OverMaxBytes $id $total $current]} {
-            $self AbortOversize $id $token
+            $self Abort $id autofetch-too-large
             return
         }
         dict set Transfers($id) loaded $current
@@ -131,11 +132,15 @@ snit::type taco_file {
         return [expr {$total > $max || $current > $max}]
     }
 
-    # The reset re-enters OnDownloaded, where Terminal's `done` guard no-ops.
-    method AbortOversize {id token} {
-        catch {::http::reset $token}
-        catch {close [dict get $Transfers($id) fh]}
-        $self Terminal $id failed autofetch-too-large
+    # ::http::reset runs the request's -command callback before it returns, so
+    # OnDownloaded/OnPutDone reach Terminal first with their generic error; the
+    # recorded reason is what Terminal reports instead.
+    method Abort {id reason} {
+        set t $Transfers($id)
+        dict set Transfers($id) abortreason $reason
+        catch {::http::reset [dict get $t httptoken]}
+        catch {close [dict get $t fh]}
+        $self Terminal $id failed $reason
     }
 
     # Single terminal point for both directions: set state, emit, invoke the
@@ -144,6 +149,11 @@ snit::type taco_file {
     method Terminal {id state {error ""}} {
         if {![info exists Transfers($id)]} return
         if {[dict get $Transfers($id) done]} return
+        set reason [dict get $Transfers($id) abortreason]
+        if {$reason ne ""} {
+            set state failed
+            set error $reason
+        }
         dict set Transfers($id) done 1
         dict set Transfers($id) state $state
         dict set Transfers($id) error $error
@@ -178,9 +188,7 @@ snit::type taco_file {
             set id $DownloadByUrl($opts(-url))
         }
         if {$id eq "" || ![info exists Transfers($id)]} return
-        catch {::http::reset [dict get $Transfers($id) httptoken]}
-        catch {close [dict get $Transfers($id) fh]}
-        $self Terminal $id failed cancelled
+        $self Abort $id cancelled
     }
 
     # --- Download (derives image thumbnails) ----------------------------

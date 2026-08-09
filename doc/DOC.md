@@ -637,7 +637,9 @@ Event:
 already-local path comes back immediately, and two downloads of the same URL
 collapse into one. It handles the `aesgcm://` scheme (XEP-0454) for you.
 `cancel` aborts a transfer in either direction - it ends `failed` with the
-error `"cancelled"`. `uncache` deletes the downloaded file and its thumbnail.
+error `"cancelled"`. Cancel an upload by `id`, a download by `url` - which
+stops the coalesced fetch for every caller waiting on it. `uncache` deletes the
+downloaded file and its thumbnail.
 See [Attachments](#attachments).
 
 Set `auto` for a fetch you start yourself, such as rendering an inline image,
