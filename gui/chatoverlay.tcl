@@ -38,6 +38,8 @@ snit::widgetadaptor chatscrollbtn {
         set Visible 0
         place forget $win
     }
+
+    method visible {} { return $Visible }
 }
 
 # Overlay strip with an optional Cancel button - cancellable for requests
@@ -49,6 +51,8 @@ snit::widget chatloading {
     option -text -default "Loading…" -configuremethod SetText
     option -cancellable -default 1 -configuremethod SetCancellable
     delegate option -cancel-command to cancel as -command
+
+    variable Visible 0
 
     constructor args {
         ttk::label $win.lbl -text "Loading…"
@@ -74,10 +78,14 @@ snit::widget chatloading {
     }
 
     method show {} {
+        set Visible 1
         place $win -in $options(-parent) -relx 0.5 -y 8 -anchor n
     }
 
     method hide {} {
+        set Visible 0
         place forget $win
     }
+
+    method visible {} { return $Visible }
 }

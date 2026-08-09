@@ -64,7 +64,7 @@ snit::widget searchwindow {
         bind $ca <<MessageClick>> [mymethod OnClick %d]
 
         # Highlight tag
-        $win.ca.text tag configure search_match -background yellow \
+        [$ca textwidget] tag configure search_match -background yellow \
             -font "Helvetica 13 bold"
 
         install authors using authornames ${selfns}::authors \
@@ -153,7 +153,7 @@ snit::widget searchwindow {
         set inserted [$ca apply $enriched]
 
         # Highlight search terms in newly inserted messages
-        set text $win.ca.text
+        set text [$ca textwidget]
         foreach key $inserted {
             set range [$ca messages body-range $key]
             if {$range eq ""} continue

@@ -61,7 +61,7 @@ snit::widget chatpanel {
             $self BuildOmemoToggle
         }
 
-        $self EnableFileDrop $cv.text
+        $self EnableFileDrop [$cv textwidget]
         $self EnableFileDrop $entry.text
 
         bind $cv <<FindInChat>> [mymethod OpenFind]
