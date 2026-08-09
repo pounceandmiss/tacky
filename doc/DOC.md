@@ -461,7 +461,7 @@ future kinds like `call` or `system` events extend the `content` union. See
 Events:
 
     message <New>         {jid: string, message: message}
-    message <Status>      {jid: string, timestamp: int, server_status?: string, remote_status?: string, fail_reason?: string}
+    message <Status>      {jid: string, timestamp: int, server_status?: string, remote_status?: string, fail_reason?: string, encryption?: string}
     message <Confirmed>   {jid: string, timestamp: int, newtimestamp: int, server_status: string}
     message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
@@ -474,7 +474,10 @@ These events each carry one kind of change to a message already on screen,
 found by `timestamp`. If the target isn't displayed, drop it. `<Status>`
 updates send/receipt state in place (`server_status`
 `pending`/`uploading`/`failed`, `remote_status` `none`/`delivered`/`read`,
-`fail_reason`), and carries only the fields that changed. `<Confirmed>` is a
+`fail_reason`), and carries only the fields that changed. It also carries
+`encryption` when a resend rewrote the row's stamp, which is a downgrade to
+cleartext: redraw the row so its lock indicator matches what goes on the
+wire. `<Confirmed>` is a
 pending send the server acknowledged: it
 always carries `newtimestamp` (equal to `timestamp` when the stamp held, the
 relocated server stamp when it moved) and clears `server_status` to `""` -
@@ -983,7 +986,9 @@ or `""`), and on a `failed` row, `fail_reason`: `"encrypt"` or
 `"delivery"`. Check it to tell "couldn't encrypt" apart from a delivery
 failure. The send path never quietly falls back to cleartext; the
 only way down is an explicit `message resend {plaintext: 1}`, which
-rewrites the one row and leaves the chat toggle alone.
+rewrites the one row and leaves the chat toggle alone. That rewrite rides
+the row's `<Status>` as an `encryption` field, so a displayed message never
+keeps a lock it no longer has.
 
 **UI.** For the encryption switch, subscribe to `omemo <Enabled>` for the
 peer and call `setEnabled` when it's toggled. For the key panel, subscribe

@@ -223,7 +223,7 @@ jsonify_type jsonify \
         chatlist/get            {list chat_entry}
 
         message/<New>           {dict {message message}}
-        message/<Status>        {dict {timestamp int server_status string remote_status string fail_reason string}}
+        message/<Status>        {dict {timestamp int server_status string remote_status string fail_reason string encryption string}}
         message/<Confirmed>     {dict {timestamp int newtimestamp int server_status string}}
         message/<Reactions>     {dict {timestamp int reactions {map {dict {reactors list mine bool}}}}}
         message/<Edited>        {dict {message message}}

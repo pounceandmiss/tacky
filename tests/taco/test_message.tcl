@@ -660,6 +660,25 @@ test message-resend-plaintext-downgrades \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {enc {} has_body 1 has_enc 0 wrote 1}
 
+test message-resend-plaintext-status-carries-stamp \
+    {the downgrade rides the <Status>, so the row loses its padlock} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
+            from_jid $acc own_id oid-ps server_status pending \
+            encryption omemo]]
+        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set ::_st {}
+        set tag [tacky listen message <Status> {apply {{ev} {
+            lappend ::_st [expr {[dict exists $ev -encryption]
+                ? [list enc [dict get $ev -encryption]] : "no-enc"}]
+        }}}]
+        tacky message resend -acc $acc -chat alice@example.com \
+            -timestamp $ts -plaintext 1
+        tacky unlisten $tag
+        set ::_st
+    } -result {{enc {}}}
+
 test message-resend-honors-stamp \
     {plain resend re-attempts OMEMO (no silent downgrade)} \
     {*}$msg_common \
