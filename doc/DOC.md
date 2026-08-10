@@ -676,17 +676,16 @@ Event:
 `download` pulls a file into the data dir. An already-downloaded file or an
 already-local path comes back immediately, and two downloads of the same URL
 collapse into one. It handles the `aesgcm://` scheme (XEP-0454) for you.
-`cancel` aborts a transfer in either direction - it ends `failed` with the
-error `"cancelled"`. Cancel an upload by `id`, a download by `url` - which
-stops the coalesced fetch for every caller waiting on it. `uncache` deletes the
-downloaded file and its thumbnail.
+`cancel` aborts a transfer in either direction - it ends `idle`. Cancel an
+upload by `id`, a download by `url` - which stops the coalesced fetch for every
+caller waiting on it. `uncache` deletes the downloaded file and its thumbnail.
 See [Attachments](#attachments).
 
 Set `auto` for a fetch you start yourself, such as rendering an inline image,
 and pass the message's sender as `from`. Those two subject it to the autofetch
-policy and size cap; without them a download always proceeds. A blocked fetch
-never opens a socket and ends `failed` with the error `autofetch-blocked`
-(sender) or `autofetch-too-large` (size).
+policy and size cap; without them a download always proceeds. A fetch the
+sender policy declines never opens a socket; one over the size cap is dropped
+as the bytes arrive. Either ends `idle`.
 
 Event:
 
@@ -694,9 +693,11 @@ Event:
                    loaded: int, total: int, url: string,
                    localpath: string, thumbpath: string, error: string}
 
-`direction` is `upload` or `download`; `state` is `active`, `done`, or
-`failed`. For an upload, `id` is the message timestamp; for a download,
-match on `url`.
+`direction` is `upload` or `download`; `state` is `active`, `done`, `failed`
+or `idle`. `idle` is the neutral end - nothing transferring, nothing on disk,
+a fetch will start it - and covers a declined autofetch, a size-capped abort
+and a cancel. `error` is only ever set on `failed`. For an upload, `id` is the
+message timestamp; for a download, match on `url`.
 
 ## calls
 
@@ -1018,7 +1019,8 @@ encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 image, makes a PNG thumbnail (max 320px) under the cache dir. Progress and the
 final state come on `file <Update>`: the last event carries `localpath`
 (plus `thumbpath` for an image) on `done`, or an `error` on `failed` - no
-upload service, file too big, network died, or cancelled.
+upload service, server refused, network died. A transfer the user cancelled
+or the autofetch settings held back ends `idle` instead.
 
 **Autofetch.** Two settings bound what gets pulled without the user asking.
 `attachment_autofetch` is `everyone` (the default), `contacts` (a roster
@@ -1027,9 +1029,10 @@ roster entry, so under `contacts` group chats don't autofetch.
 `attachment_autofetch_max` is a byte cap, default `5242880`, `0` for
 unlimited, checked against `Content-Length` and again against the bytes
 actually arriving. Both apply only to `download` calls made with `auto`, so a
-held-back image still loads on click. Leave `auto` off when redrawing the
-user's own sends: upload swaps the local path for the public URL, making a
-reload from history a real fetch.
+held-back image still loads on click - it ends `idle`, not `failed`, since
+nothing went wrong. Leave `auto` off when redrawing the user's own sends:
+upload swaps the local path for the public URL, making a reload from history a
+real fetch.
 
 ## OMEMO
 
