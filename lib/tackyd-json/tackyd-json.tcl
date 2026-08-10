@@ -240,7 +240,7 @@ jsonify_type jsonify \
         muc/<ConfigChanged>     {dict {codes {list int}}}
         muc/<VoiceRequest>      {dict {form form}}
         chatlist/<Item>         {dict {item chat_entry}}
-        notify/<Alert>          {dict {timestamp int unread int mention bool}}
+        notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
