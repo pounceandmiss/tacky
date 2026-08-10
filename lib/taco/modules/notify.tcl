@@ -12,7 +12,7 @@
 # mute. Rooms default to muted, which leaves a public room pinging on your
 # nick alone.
 #
-#   notify <Alert>    -jid J -timestamp T -unread N -mention B
+#   notify <Notify>   -jid J -timestamp T -nick N -unread C -mention B
 #   notify <Settings> -jid J -muted B -mentions B
 
 snit::type taco_notify {
@@ -86,35 +86,46 @@ snit::type taco_notify {
         if {$ts <= [$self Watermark $opts(-jid)]} return
         set mention [$self Store mentionAt $opts(-jid) $ts]
         if {![$self ShouldNotify $opts(-jid) $mention]} return
-        $self Schedule $opts(-jid) $ts $mention
+        $self Schedule $opts(-jid) $ts $mention \
+            [dict get $opts(-message) from_jid]
     }
 
-    method Schedule {chatJid ts mention} {
+    method Schedule {chatJid ts mention fromJid} {
         set key [list $chatJid $ts]
         if {[dict exists $Pending $key]} return
         set delay [$self Delay]
         if {$delay <= 0} {
-            $self Fire $chatJid $ts $mention
+            $self Fire $chatJid $ts $mention $fromJid
             return
         }
         dict set Pending $key \
-            [after $delay [mymethod Fire $chatJid $ts $mention]]
+            [after $delay [mymethod Fire $chatJid $ts $mention $fromJid]]
     }
 
-    method Fire {chatJid ts mention} {
+    method Fire {chatJid ts mention fromJid} {
         dict unset Pending [list $chatJid $ts]
         if {$ts <= [$self Watermark $chatJid]} return
-        $self Alert $chatJid $ts $mention
+        $self Notify $chatJid $ts $mention $fromJid
     }
 
     # Forward-only per chat, so a catch-up sweep and a live arrival can't
     # announce the same message twice.
-    method Alert {chatJid ts mention} {
+    method Notify {chatJid ts mention fromJid} {
         if {[dict exists $LastAlerted $chatJid]
             && $ts <= [dict get $LastAlerted $chatJid]} return
         dict set LastAlerted $chatJid $ts
-        $client emit notify <Alert> -jid $chatJid -timestamp $ts \
+        $client emit notify <Notify> -jid $chatJid -timestamp $ts \
+            -nick [$self SenderName $chatJid $fromJid] \
             -unread [$self Store unreadCount $chatJid] -mention $mention
+    }
+
+    # Who to put on the notification: the room nick, or the contact's name
+    # in a 1:1. The author module already owns that rule.
+    method SenderName {chatJid fromJid} {
+        if {$fromJid eq ""} { return "" }
+        set names [$client author get -chat $chatJid]
+        if {[dict exists $names $fromJid]} { return [dict get $names $fromJid] }
+        return $fromJid
     }
 
     # Reading cancels anything still waiting out its delay. Dismissing an
@@ -142,9 +153,9 @@ snit::type taco_notify {
         set rows [$self Store unreadTail \
             $opts(-jid) [$self Floor] $CatchupBurstMax]
         foreach row [lreverse $rows] {
-            lassign $row ts mention
+            lassign $row ts mention fromJid
             if {![$self ShouldNotify $opts(-jid) $mention]} continue
-            $self Alert $opts(-jid) $ts $mention
+            $self Notify $opts(-jid) $ts $mention $fromJid
         }
     }
 

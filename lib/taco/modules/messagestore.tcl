@@ -863,12 +863,12 @@ snit::type taco_messagestore {
     }
 
     # The newest unread messages past $floorTs, newest first, as
-    # {timestamp mention} pairs. The catch-up sweep caps how many it takes;
-    # `unreadCount` still reports the true total.
+    # {timestamp mention from_jid} triples. The catch-up sweep caps how many
+    # it takes; `unreadCount` still reports the true total.
     method unreadTail {chatJid floorTs limit} {
         set rows {}
         $options(-db) eval {
-            SELECT timestamp, mentions_me FROM chat_message
+            SELECT timestamp, mentions_me, from_jid FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
               AND timestamp > $floorTs
@@ -876,7 +876,7 @@ snit::type taco_messagestore {
                                         WHERE chat_jid=$chatJid), 0)
             ORDER BY timestamp DESC LIMIT $limit
         } row {
-            lappend rows [list $row(timestamp) $row(mentions_me)]
+            lappend rows [list $row(timestamp) $row(mentions_me) $row(from_jid)]
         }
         return $rows
     }

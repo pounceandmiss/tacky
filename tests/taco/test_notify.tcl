@@ -10,9 +10,9 @@ set acc user@test.example.com
 set notify_common [tacky_env -mock conn -account $acc -extra-setup {
     [$::_client cget -taco] setting set -key notify_delay_ms -value 0
     set ::alerts {}
-    tacky listen notify <Alert> {apply {{ev} {
+    tacky listen notify <Notify> {apply {{ev} {
         lappend ::alerts [list [dict get $ev -jid] [dict get $ev -mention] \
-            [dict get $ev -unread]]
+            [dict get $ev -unread] [dict get $ev -nick]]
     }}}
 }]
 
@@ -121,6 +121,25 @@ test notify-room-mention-alerts {a room message naming our nick alerts} \
         notify_room_message room@conf.example.com bob "me: are you there?"
         list [notify_jids] [lindex [lindex $::alerts 0] 1]
     } -result {room@conf.example.com?join 1}
+
+test notify-carries-room-nick {a room notification names the occupant who spoke} \
+    {*}$notify_common -body {
+        notify_join room@conf.example.com me
+        tacky notify set -acc $acc -chat room@conf.example.com?join -muted 0
+        notify_room_message room@conf.example.com bob "good morning all"
+        lindex [lindex $::alerts 0] 3
+    } -result {bob}
+
+test notify-carries-contact-name {a 1:1 notification names the contact} \
+    {*}$notify_common -body {
+        $::_client db eval {
+            INSERT OR REPLACE INTO roster_item(jid, name, subscription, ask,
+                                               approved)
+            VALUES ('alice@example.com', 'Alice R', 'both', '', 0)
+        }
+        notify_incoming "hello"
+        lindex [lindex $::alerts 0] 3
+    } -result {Alice R}
 
 test notify-room-mentions-off-silent {mentions=0 silences even a nick match} \
     {*}$notify_common -body {
