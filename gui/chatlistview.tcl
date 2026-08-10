@@ -82,6 +82,7 @@ snit::widget chatlistview {
 
         $self ConfigurePresenceTags
         $self ConfigureMucTags
+        $self ConfigureMentionTag
 
         # --- Context menus ---
 
@@ -221,8 +222,12 @@ snit::widget chatlistview {
         foreach entry [$self VisibleEntries] {
             set jid [dict get $entry jid]
             set tags {}
+            if {[dict exists $entry unread_mentions]
+                && [dict get $entry unread_mentions] > 0} {
+                lappend tags mention
+            }
             if {[dict exists $entry room_state]} {
-                set tags muc_[dict get $entry room_state]
+                lappend tags muc_[dict get $entry room_state]
             }
             $treeview insert {} end -id $jid \
                 -text [$self DisplayText $entry] \
@@ -330,6 +335,16 @@ snit::widget chatlistview {
         foreach {state opts} $mucStateStyle {
             $treeview tag configure muc_$state {*}$opts
         }
+    }
+
+    # A chat holding an unread mention. Listed before the muc_<state> tag so
+    # its font wins over the room-state styling.
+    method ConfigureMentionTag {} {
+        if {[lsearch -exact [font names] ChatlistMention] < 0} {
+            font create ChatlistMention {*}[font actual TkDefaultFont]
+            font configure ChatlistMention -weight bold
+        }
+        $treeview tag configure mention -font ChatlistMention
     }
 
     # -- interaction -----------------------------------------------------

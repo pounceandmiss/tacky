@@ -2318,6 +2318,73 @@ test message-catchup-still-patches {a reaction in a catchup page still patches i
         set ::_reactions
     } -result {1}
 
+# Mention detection (feeds the notification policy; rooms only).
+proc msg_mention_at {jid ts} {
+    return [$::_client message messagestore mentionAt $jid $ts]
+}
+
+proc msg_room_says {nick body} {
+    $::_client conn feed [j message -type groupchat \
+        -from room@muc.example.com/$nick { j body #body $body }]
+    set res [$::_client message messagestore get latest room@muc.example.com?join]
+    set ts [dict get [lindex [dict get $res messages] end] timestamp]
+    return [msg_mention_at room@muc.example.com?join $ts]
+}
+
+test message-mention-nick-match {a room message naming our nick is flagged} \
+    {*}$msg_common \
+    -body {
+        msg_muc_join room@muc.example.com bob
+        list [msg_room_says alice "bob: ping"] [msg_room_says alice "hi BOB"]
+    } -result {1 1}
+
+test message-mention-word-boundary {a longer word containing the nick is not a mention} \
+    {*}$msg_common \
+    -body {
+        msg_muc_join room@muc.example.com bob
+        msg_room_says alice "bobby was here"
+    } -result {0}
+
+test message-mention-nick-is-literal {regex characters in a nick match literally} \
+    {*}$msg_common \
+    -body {
+        msg_muc_join room@muc.example.com a.b
+        list [msg_room_says alice "axb"] [msg_room_says alice "a.b hello"]
+    } -result {0 1}
+
+test message-mention-own-message-never {our own room message never mentions us} \
+    {*}$msg_common \
+    -body {
+        msg_muc_join room@muc.example.com bob
+        msg_room_says bob "bob: talking to myself"
+    } -result {0}
+
+test message-mention-direct-chat-never {a 1:1 message is never a mention} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id d1 \
+            -from alice@example.com/phone { j body #body "user hello" }]
+        set res [$::_client message messagestore get latest alice@example.com]
+        set ts [dict get [lindex [dict get $res messages] end] timestamp]
+        msg_mention_at alice@example.com $ts
+    } -result {0}
+
+test message-mention-set-on-mam-path {the flag is stamped on the MAM path too} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com bob
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r9 queryid $qid \
+                from room@muc.example.com/alice type groupchat \
+                body "bob: from the archive" stamp 2024-01-01T10:00:00Z]]
+        set res [$::_client message messagestore get latest room@muc.example.com?join]
+        set ts [dict get [lindex [dict get $res messages] end] timestamp]
+        msg_mention_at room@muc.example.com?join $ts
+    } -result {1}
+
 test message-muc-catchup-on-join {joining a room queries its own archive} \
     {*}$msg_common \
     -body {
