@@ -733,7 +733,7 @@ snit::widget chatarea {
     }
 
     # Forward a transfer-progress update to the widget: a progress bar while
-    # active, an error + Retry row on failure, removed on done or cancelled.
+    # active, an error + Retry row on failure, removed on done or idle.
     method {attachment state} {key idx direction state loaded total} {
         set slot [$rows slot $key]
         if {$slot eq ""} return

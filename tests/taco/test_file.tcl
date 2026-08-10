@@ -549,7 +549,7 @@ test file-autofetch-never {never policy refuses even a contact} {*}$file_env -bo
     $::_client file AutofetchAllowed friend@test.example.com
 } -result 0
 
-test file-autofetch-blocked-download {a gated autofetch fails without touching the network} \
+test file-autofetch-blocked-download {a gated autofetch goes idle without touching the network} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy contacts
         set url https://h/tracker.png
@@ -558,7 +558,7 @@ test file-autofetch-blocked-download {a gated autofetch fails without touching t
         set full [$::_client file AttachPath $url]
         list [af_last] onDisk=[file exists $full] \
              part=[file exists $full.part]
-    } -result {{failed autofetch-blocked} onDisk=0 part=0}
+    } -result {{idle {}} onDisk=0 part=0}
 
 # The gate sits below the on-disk lookups, so a tightened policy must not
 # blank an image that is already local.
@@ -602,7 +602,7 @@ test file-autofetch-max-honest-length {an over-cap Content-Length aborts at once
         set id [af_transfer 1000]
         $::_client file ProgressCb $id "" 2000 0
         af_last
-    } -result {failed autofetch-too-large}
+    } -result {idle {}}
 
 # A server that understates or omits Content-Length is caught by the bytes.
 test file-autofetch-max-lying-length {an over-cap byte count aborts mid-stream} \
@@ -612,7 +612,7 @@ test file-autofetch-max-lying-length {an over-cap byte count aborts mid-stream} 
         set early [af_last]
         $::_client file ProgressCb $id "" 0 1400
         list early $early late [af_last]
-    } -result {early {active {}} late {failed autofetch-too-large}}
+    } -result {early {active {}} late {idle {}}}
 
 test file-autofetch-max-under-cap {a transfer within the cap is left alone} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
@@ -680,7 +680,7 @@ proc cx_settle {} {
     return [af_last]
 }
 
-test file-cancel-in-flight-download {cancelling a live download reports cancelled, not the transport error} \
+test file-cancel-in-flight-download {cancelling a live download ends idle, not on the transport error} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         lassign [cx_start silent] srv port
         set url http://127.0.0.1:$port/slow.png
@@ -694,9 +694,9 @@ test file-cancel-in-flight-download {cancelling a live download reports cancelle
             cb=[expr {$::_cx_cb eq ""}] part=[file exists $full.part]]
         cx_stop $srv
         set res
-    } -result {started=active {failed cancelled} cb=1 part=0}
+    } -result {started=active {idle {}} cb=1 part=0}
 
-test file-cancel-in-flight-upload {cancelling an upload stalled at discovery reports cancelled} \
+test file-cancel-in-flight-upload {cancelling an upload stalled at discovery ends it idle} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache cancelme.bin]
         set f [open $src wb]
@@ -707,7 +707,7 @@ test file-cancel-in-flight-upload {cancelling an upload stalled at discovery rep
             -command [list apply {{u} {set ::_cx_cb $u}}]
         $::_client file cancel -id 9100000
         list [af_last] cb=[expr {$::_cx_cb eq ""}]
-    } -result {{failed cancelled} cb=1}
+    } -result {{idle {}} cb=1}
 
 # One transfer serves every caller that asked for the url, so cancelling has to
 # resolve them all.
@@ -726,7 +726,7 @@ test file-cancel-coalesced-download {cancelling a shared download resolves every
             second=[expr {$::_cx_second eq ""}]]
         cx_stop $srv
         set res
-    } -result {{failed cancelled} first=1 second=1}
+    } -result {{idle {}} first=1 second=1}
 
 test file-cancel-unknown-transfer {cancelling something that isn't running does nothing} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
@@ -735,9 +735,9 @@ test file-cancel-unknown-transfer {cancelling something that isn't running does 
         af_last
     } -result {}
 
-# The size cap aborts the same way cancel does, so its reason has to survive
+# The size cap aborts the same way cancel does, so its state has to survive
 # the http callback too.
-test file-autofetch-max-live-request {an over-cap fetch on the wire reports autofetch-too-large} \
+test file-autofetch-max-live-request {an over-cap fetch on the wire ends idle, not failed} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy everyone
         tacky setting set -key attachment_autofetch_max -value 4096
@@ -750,6 +750,6 @@ test file-autofetch-max-live-request {an over-cap fetch on the wire reports auto
         lappend res part=[file exists $full.part] onDisk=[file exists $full]
         cx_stop $srv
         set res
-    } -result {failed autofetch-too-large part=0 onDisk=0}
+    } -result {idle {} part=0 onDisk=0}
 
 file delete -force -- $::_upcache

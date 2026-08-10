@@ -106,16 +106,11 @@ snit::type attachmentxfer {
     method Report {key idx ev} {
         set state [dict get $ev -state]
         set direction [dict get $ev -direction]
-        # An image the policy held back isn't an error: with no state row the
-        # attachment keeps its plain click-to-load caption.
-        if {$state eq "failed"
-            && [string match autofetch-* [dict get $ev -error]]} return
-        # A cancelled download drops its row too; a cancelled upload stays
+        # A download that ends idle (held back, capped or cancelled) drops its
+        # row and leaves the plain click-to-load caption. An upload can only
+        # get there by being cancelled, which leaves the message dead: it shows
         # failed, which is what its message row now says.
-        if {$state eq "failed" && $direction eq "download"
-            && [dict get $ev -error] eq "cancelled"} {
-            set state cancelled
-        }
+        if {$state eq "idle" && $direction eq "upload"} { set state failed }
         {*}$options(-update-command) $key $idx $direction \
             $state [dict get $ev -loaded] [dict get $ev -total] \
             [dict get $ev -thumbpath]

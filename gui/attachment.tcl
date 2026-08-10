@@ -76,13 +76,13 @@ snit::widget attachment {
     }
 
     # Transfer state row: a progress bar with Cancel while active, an error +
-    # Retry on failure, removed on done or cancelled. upload/download use
+    # Retry on failure, removed on done or idle. upload/download use
     # separate rows ($win.up / $win.dl) so an uploading image keeps both its
     # bar and its thumbnail.
     method setState {direction state loaded total} {
         set w $win.[expr {$direction eq "upload" ? "up" : "dl"}]
         switch -- $state {
-            done - cancelled { catch {destroy $w} }
+            done - idle { catch {destroy $w} }
             failed { $self ShowFailed $w $direction }
             active { $self ShowActive $w $direction $loaded $total }
         }

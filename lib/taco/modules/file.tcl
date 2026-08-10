@@ -5,8 +5,12 @@ package require tclwuffs
 # File transfers (XEP-0363 upload + download). Every transfer has an id and
 # reports progress/completion through one event, both directions:
 #
-#   file <Update> -id ID -direction up|down -state active|done|failed \
+#   file <Update> -id ID -direction up|down -state active|done|failed|idle \
 #       -loaded L -total T -url U -localpath P -thumbpath TP -error MSG
+#
+# `idle` is the neutral end: nothing transferring, nothing on disk, a fetch
+# will start it. That covers a declined autofetch, a size-capped abort and a
+# cancel. -error is only ever set on `failed`.
 #
 # Upload id is the caller's (the message own_id), known before the GET URL
 # exists. Download is keyed and coalesced by URL; a local path passed as -url is
@@ -23,7 +27,7 @@ package require tclwuffs
 #
 # A download the client starts by itself (rendering an inline image) passes
 # -auto 1 -from SENDER and is subject to the autofetch policy and size cap;
-# one the user asked for is never gated.
+# one the user asked for is never gated. Either gate ends the transfer `idle`.
 #
 # Public API:
 #   $client file download -url U  [-command {cb $localPath}] \
@@ -95,7 +99,7 @@ snit::type taco_file {
             url $url localpath "" thumbpath "" error "" \
             cmds {} done 0 lastfrac -1 timer "" fh "" httptoken "" \
             mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes \
-            abortreason ""]
+            abortstate "" abortreason ""]
         return $id
     }
 
@@ -112,7 +116,7 @@ snit::type taco_file {
     method ProgressCb {id token total current} {
         if {![info exists Transfers($id)]} return
         if {[$self OverMaxBytes $id $total $current]} {
-            $self Abort $id autofetch-too-large
+            $self Abort $id idle autofetch-too-large
             return
         }
         dict set Transfers($id) loaded $current
@@ -133,37 +137,38 @@ snit::type taco_file {
     }
 
     # ::http::reset runs the request's -command callback before it returns, so
-    # OnDownloaded/OnPutDone reach Terminal first with their generic error; the
-    # recorded reason is what Terminal reports instead.
-    method Abort {id reason} {
+    # OnDownloaded/OnPutDone reach Terminal first with their generic failure;
+    # the recorded state and reason are what Terminal reports instead.
+    method Abort {id state reason} {
         set t $Transfers($id)
+        dict set Transfers($id) abortstate $state
         dict set Transfers($id) abortreason $reason
         catch {::http::reset [dict get $t httptoken]}
         catch {close [dict get $t fh]}
-        $self Terminal $id failed $reason
+        $self Terminal $id $state $reason
     }
 
     # Single terminal point for both directions: set state, emit, invoke the
     # per-transfer commands with the result (getUrl for upload, localpath for
-    # download; "" on failure), then drop the registry entry.
-    method Terminal {id state {error ""}} {
+    # download; "" on anything but done), then drop the registry entry. The
+    # reason is diagnostic; only a failure puts it on the event.
+    method Terminal {id state {reason ""}} {
         if {![info exists Transfers($id)]} return
         if {[dict get $Transfers($id) done]} return
-        set reason [dict get $Transfers($id) abortreason]
-        if {$reason ne ""} {
-            set state failed
-            set error $reason
+        if {[dict get $Transfers($id) abortstate] ne ""} {
+            set state [dict get $Transfers($id) abortstate]
+            set reason [dict get $Transfers($id) abortreason]
         }
         dict set Transfers($id) done 1
         dict set Transfers($id) state $state
-        dict set Transfers($id) error $error
+        dict set Transfers($id) error [expr {$state eq "failed" ? $reason : ""}]
         set t $Transfers($id)
         catch {after cancel [dict get $t timer]}
         if {[dict get $t tmpfile] ne ""} {
             catch {file delete -- [dict get $t tmpfile]}
         }
-        if {$state eq "failed" && $error ne ""} {
-            jlog inform "file transfer failed: $error"
+        if {$reason ne "" && $state in {failed idle}} {
+            jlog inform "file transfer $state: $reason"
         }
         $self EmitUpdate $id
         if {$state eq "done"} {
@@ -188,7 +193,7 @@ snit::type taco_file {
             set id $DownloadByUrl($opts(-url))
         }
         if {$id eq "" || ![info exists Transfers($id)]} return
-        $self Abort $id cancelled
+        $self Abort $id idle cancelled
     }
 
     # --- Download (derives image thumbnails) ----------------------------
@@ -251,7 +256,7 @@ snit::type taco_file {
         if {$opts(-auto) && ![$self AutofetchAllowed $opts(-from)]} {
             set id [$self NewTransfer download $url]
             if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
-            $self Terminal $id failed autofetch-blocked
+            $self Terminal $id idle autofetch-blocked
             return
         }
 
