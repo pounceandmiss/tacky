@@ -112,6 +112,19 @@ test chatlist-unread-counts {entries carry unread; a read chat and a quiet conta
             [dict get $unread quiet@example.com]
     } -result {2 0 0}
 
+test chatlist-unread-mentions {entries count the unread messages that named us} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert room@muc.example.com?join timestamp 100 body a
+        chatlist_chat_insert room@muc.example.com?join timestamp 200 body b \
+            mentions_me 1
+        chatlist_chat_insert alice@example.com timestamp 300 body c
+        set entries [by_jid [c chatlist get]]
+        list [dict get [dict get $entries room@muc.example.com?join] unread] \
+            [dict get [dict get $entries room@muc.example.com?join] unread_mentions] \
+            [dict get [dict get $entries alice@example.com] unread_mentions]
+    } -result {2 1 0}
+
 test chatlist-ownread-reemits-item {a watermark move re-emits the entry with a fresh count} \
     {*}$chatlist_common \
     -body {

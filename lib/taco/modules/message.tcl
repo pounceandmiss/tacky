@@ -2302,7 +2302,21 @@ snit::type taco_message {
             attachments [ExtractAttachments $msgNode $body] \
             server_status "" \
             encryption $enc \
-            sender_fp  $senderFp
+            sender_fp  $senderFp \
+            mentions_me [$self MentionsMe $chatJid $body $ownId \
+                [jid resource $rawFrom]]
+    }
+
+    # Does this room message name our nick? Word-boundary and caseless.
+    # Rooms only - a 1:1 message has nothing to mention - and nothing we
+    # said counts, whether it echoed back with our id or under our nick.
+    method MentionsMe {chatJid body ownId senderNick} {
+        if {$ownId ne "" || $body eq ""} { return 0 }
+        if {![string match {*\?join} $chatJid]} { return 0 }
+        set nick [$client muc myNick -jid [regsub {\?join$} $chatJid {}]]
+        if {$nick eq "" || $senderNick eq $nick} { return 0 }
+        set quoted [regsub -all {\W} $nick {\\&}]
+        return [regexp -nocase -- "\\y$quoted\\y" $body]
     }
 }
 

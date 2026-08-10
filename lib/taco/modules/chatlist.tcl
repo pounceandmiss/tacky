@@ -11,7 +11,8 @@
 # chat, room@muc/nick = MUC PM. The ?join suffix is the tell for group vs 1:1.
 #
 # Each entry also carries `unread`: how many of the other side's messages
-# sit past our own read watermark (see message markOwnRead).
+# sit past our own read watermark (see message markOwnRead), and
+# `unread_mentions`: how many of those named us.
 #
 # The module is the sole funnel: it consumes roster/bookmarks/chats/room-state
 # and read-watermark signals and normalizes them into three protocol-agnostic
@@ -48,6 +49,7 @@ snit::type taco_chatlist {
     tackymethod get {args} {
         set activity [$self ActivityMap]
         set unread [$client message messagestore unreadCounts]
+        set mentions [$client message messagestore mentionCounts]
 
         set entries {}
         set seen {}
@@ -55,19 +57,21 @@ snit::type taco_chatlist {
         foreach item [$client roster get] {
             set bare [dict get $item jid]
             lappend entries [$self MakeEntry $bare roster $item \
-                [$self Lookup $activity $bare] [$self Lookup $unread $bare]]
+                [$self Lookup $activity $bare] [$self Lookup $unread $bare] \
+                [$self Lookup $mentions $bare]]
             dict set seen $bare 1
         }
         foreach item [$client bookmarks get] {
             set chatJid [dict get $item jid]?join
             lappend entries [$self MakeEntry $chatJid bookmarks $item \
-                [$self Lookup $activity $chatJid] [$self Lookup $unread $chatJid]]
+                [$self Lookup $activity $chatJid] [$self Lookup $unread $chatJid] \
+                [$self Lookup $mentions $chatJid]]
             dict set seen $chatJid 1
         }
         dict for {chatJid ts} $activity {
             if {[dict exists $seen $chatJid]} continue
             lappend entries [$self MakeEntry $chatJid free {} $ts \
-                [$self Lookup $unread $chatJid]]
+                [$self Lookup $unread $chatJid] [$self Lookup $mentions $chatJid]]
         }
         return $entries
     }
@@ -80,33 +84,35 @@ snit::type taco_chatlist {
         set bare [regsub {\?join$} $chatJid {}]
         set isRoom [expr {$bare ne $chatJid}]
         set unread [$client message messagestore unreadCount $chatJid]
+        set mentions [$client message messagestore mentionCount $chatJid]
         if {$isRoom} {
             set bm [$self BookmarkEntry $bare]
             if {$bm ne ""} {
                 return [$self MakeEntry $chatJid bookmarks $bm \
-                    [$self Activity $chatJid] $unread]
+                    [$self Activity $chatJid] $unread $mentions]
             }
         } else {
             set r [$self RosterEntry $bare]
             if {$r ne ""} {
                 return [$self MakeEntry $chatJid roster $r \
-                    [$self Activity $chatJid] $unread]
+                    [$self Activity $chatJid] $unread $mentions]
             }
         }
         set ts [$self Activity $chatJid]
         if {$ts > 0} {
-            return [$self MakeEntry $chatJid free {} $ts $unread]
+            return [$self MakeEntry $chatJid free {} $ts $unread $mentions]
         }
         return ""
     }
 
-    method MakeEntry {chatJid source base ts unread} {
+    method MakeEntry {chatJid source base ts unread mentions} {
         set entry $base
         dict set entry jid $chatJid
         dict set entry source $source
         dict set entry groupchat [expr {[string match {*\?join} $chatJid] ? 1 : 0}]
         dict set entry last_activity $ts
         dict set entry unread $unread
+        dict set entry unread_mentions $mentions
         if {![dict exists $entry name]} { dict set entry name "" }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
         return $entry

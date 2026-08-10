@@ -18,6 +18,7 @@ and get back replies and events.
   - [bookmarks](#bookmarks)
   - [presence](#presence)
   - [message](#message)
+  - [notify](#notify)
   - [mam](#mam)
   - [omemo](#omemo)
   - [avatar](#avatar)
@@ -309,7 +310,7 @@ sorting.
 
     chat_entry = {jid: string, name: string, source: string,
                   groupchat: bool, autojoin: bool, last_activity: int,
-                  unread: int}
+                  unread: int, unread_mentions: int}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -319,7 +320,8 @@ message. `groupchat` is `true` when the jid has `?join`. `source` is
 can be `""` (always is for `free`). `last_activity` is the last message
 time in microseconds, or `0`. `unread` counts the other side's messages past
 your read watermark (see [Read state](#read-state)); your own messages and
-retracted tombstones never count.
+retracted tombstones never count. `unread_mentions` is how many of those
+named you (see [notify](#notify)), and is always `0` outside group chats.
 
 Per source, an entry carries extra fields:
 
@@ -514,7 +516,45 @@ device's `<displayed>` marker reaches this one.
 
 `<OwnRead>` fires on every move, from any of those sources. `ownRead` gives one
 chat's watermark and unread count; each `chatlist` entry carries its own
-`unread`, so a chat list needs no extra call.
+`unread`, so a chat list needs no extra call. Which of those are worth
+interrupting the user over is [notify](#notify)'s job.
+
+## notify
+
+    notify get {chat: string} -> {muted: bool, mentions: bool}
+    notify set {chat: string, muted?: bool, mentions?: bool}
+
+Events:
+
+    notify <Alert>    {jid: string, timestamp: int, unread: int, mention: bool}
+    notify <Settings> {jid: string, muted: bool, mentions: bool}
+
+`<Alert>` means this message is worth telling the user about; presenting it -
+a desktop notification, a sound, a badge - is the frontend's job. `unread` is
+the chat's total at that moment, so a burst collapses into one notification
+reading "Name (12)" instead of twelve. `mention` marks a group-chat message
+that named you.
+
+There is no "the user is looking at this chat" call. The gate is the read
+watermark: a message alerts only while it sits past it, and the alert is held
+briefly before firing, so a chat the user is reading marks itself read (via
+`markOwnRead`) first and never alerts. Dismiss a shown alert when
+`message <OwnRead>` moves past it; that event covers reads on your other
+devices too.
+
+Messages that arrived while you were offline alert once catch-up settles,
+capped at 10 per chat per catch-up, with `unread` still reporting the true
+total. Nothing from before the account's first connection alerts, so the
+opening archive fetch is silent.
+
+`muted` and `mentions` are the per-chat policy: alert when
+`(mention && mentions) || !muted`. A mention overrides the mute, so a muted
+room still pings on your nick; set `mentions` to `false` to silence that too.
+Unconfigured chats take a derived default - group chats start muted, 1:1 chats
+do not, `mentions` starts on for both - which leaves a public room
+mention-only without a setting for it.
+
+`notify_delay_ms` (default `500`) and `notify_floor` are `setting` keys.
 
 ## mam
 

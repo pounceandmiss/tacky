@@ -134,6 +134,10 @@ snit::type taco_messagestore {
                 -- couldn't produce ciphertext - no usable recipients).
                 -- Reserved for a future delivery-failure path: 'send'.
                 fail_reason    TEXT NOT NULL DEFAULT '',
+                -- the body named our MUC nick (room messages only; 1:1 has
+                -- nothing to mention). Stamped at ingest, so the live and
+                -- MAM paths agree and counts stay in SQL.
+                mentions_me    INTEGER NOT NULL DEFAULT 0,
                 -- Tcl list of attachment dicts {url type name size mime};
                 -- derived from XEP-0066 OOB / URL bodies on store. Empty
                 -- for plain text messages.
@@ -179,6 +183,15 @@ snit::type taco_messagestore {
                 -- that row's server_id, else origin_id. Not a lookup key;
                 -- carried for a future XEP-0490 publish.
                 read_id   TEXT NOT NULL DEFAULT ''
+            );
+
+            -- Per-chat notification policy. A row exists only where the user
+            -- overrode the derived default (see notifyPolicy); mentions
+            -- bypass the mute rather than sharing one axis with it.
+            CREATE TABLE IF NOT EXISTS chat_notify(
+                chat_jid  TEXT PRIMARY KEY,
+                muted     INTEGER NOT NULL DEFAULT 0,
+                mentions  INTEGER NOT NULL DEFAULT 1
             );
         }
     }
@@ -387,15 +400,18 @@ snit::type taco_messagestore {
                     ? $m(reply_to) : ""}]
                 set attach [expr {[info exists m(attachments)] \
                     ? $m(attachments) : ""}]
+                set mention [expr {[info exists m(mentions_me)] \
+                    ? $m(mentions_me) : 0}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
-                        encryption, sender_fp, fail_reason, attachments)
+                        encryption, sender_fp, fail_reason, mentions_me,
+                        attachments)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $senderFp, $failReason, $attach)
+                        $senderFp, $failReason, $mention, $attach)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -846,6 +862,25 @@ snit::type taco_messagestore {
         return $moved
     }
 
+    # The newest unread messages past $floorTs, newest first, as
+    # {timestamp mention} pairs. The catch-up sweep caps how many it takes;
+    # `unreadCount` still reports the true total.
+    method unreadTail {chatJid floorTs limit} {
+        set rows {}
+        $options(-db) eval {
+            SELECT timestamp, mentions_me FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+              AND COALESCE(own_id,'')='' AND retracted=0
+              AND timestamp > $floorTs
+              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
+                                        WHERE chat_jid=$chatJid), 0)
+            ORDER BY timestamp DESC LIMIT $limit
+        } row {
+            lappend rows [list $row(timestamp) $row(mentions_me)]
+        }
+        return $rows
+    }
+
     # Unread = theirs (own_id empty), kind='message', not a tombstone, and
     # newer than the watermark.
     method unreadCount {chatJid} {
@@ -874,6 +909,68 @@ snit::type taco_messagestore {
             dict set counts $row(jid) $row(n)
         }
         return $counts
+    }
+
+    # Did one stored message name us? Queried rather than carried on the
+    # message dict, which keeps it out of every SELECT list.
+    method mentionAt {chatJid ts} {
+        set v [$options(-db) onecolumn {
+            SELECT mentions_me FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$ts
+        }]
+        return [expr {$v eq "" ? 0 : $v}]
+    }
+
+    method mentionCount {chatJid} {
+        return [$options(-db) onecolumn {
+            SELECT COUNT(*) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+              AND COALESCE(own_id,'')='' AND retracted=0 AND mentions_me=1
+              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
+                                        WHERE chat_jid=$chatJid), 0)
+        }]
+    }
+
+    # chat_jid -> unread messages that named us. Absent when none.
+    method mentionCounts {} {
+        set counts {}
+        $options(-db) eval {
+            SELECT m.chat_jid AS jid, COUNT(*) AS n
+            FROM chat_message m
+            LEFT JOIN chat_own_read r ON r.chat_jid=m.chat_jid
+            WHERE m.kind='message' AND COALESCE(m.own_id,'')=''
+              AND m.retracted=0 AND m.mentions_me=1
+              AND m.timestamp > COALESCE(r.read_ts, 0)
+            GROUP BY m.chat_jid
+        } row {
+            dict set counts $row(jid) $row(n)
+        }
+        return $counts
+    }
+
+    # --- Notification policy ---------------------------------------
+
+    # {muted mentions} for a chat. With no stored override, rooms start
+    # muted and 1:1 chats do not. `?join` is the room test, so a MUC PM
+    # counts as a direct conversation and defaults unmuted.
+    method notifyPolicy {chatJid} {
+        set res [dict create \
+            muted [expr {[string match {*\?join} $chatJid] ? 1 : 0}] \
+            mentions 1]
+        $options(-db) eval {
+            SELECT muted, mentions FROM chat_notify WHERE chat_jid=$chatJid
+        } row {
+            dict set res muted $row(muted)
+            dict set res mentions $row(mentions)
+        }
+        return $res
+    }
+
+    method setNotifyPolicy {chatJid muted mentions} {
+        $options(-db) eval {
+            INSERT OR REPLACE INTO chat_notify(chat_jid, muted, mentions)
+            VALUES($chatJid, $muted, $mentions)
+        }
     }
 
     # --- Reactions (XEP-0444) --------------------------------------
