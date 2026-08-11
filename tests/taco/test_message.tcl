@@ -2617,6 +2617,40 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
              $dbCount
     } -result {2 {found it} sid1 {found another} 0 sid2 2}
 
+test message-search-remote-hits-carry-match-ranges {an archive hit is annotated like a local one} \
+    {*}$msg_common \
+    -body {
+        msg_prime_search
+        set result {}
+        tacky message search -source remote -acc $acc -chat alice@example.com \
+            -query "needle" -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+
+        set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+        set qid [mam_queryid]
+        $::_client mam onResultMessage [j message -from user@test.example.com {
+            j /as-is [mam_result id sid1 queryid $qid \
+                from alice@example.com/phone body "a needle here" \
+                stamp 2024-01-01T10:00:00Z]
+        }]
+        # The archive matched this one on a stem or synonym we can't point
+        # at; it reports no range rather than a guess.
+        $::_client mam onResultMessage [j message -from user@test.example.com {
+            j /as-is [mam_result id sid2 queryid $qid \
+                from alice@example.com/phone body "a pin here" \
+                stamp 2024-06-15T12:00:00Z]
+        }]
+        $::_client iq feed [j iq -type result -id $iqId {
+            j fin -ns urn:xmpp:mam:2 -complete true {
+                j set -ns http://jabber.org/protocol/rsm {
+                    j first #body sid1
+                    j last #body sid2
+                }
+            }
+        }]
+        lmap m [dict get $result messages] {dict get $m content matches}
+    } -result {{2 6} {}}
+
 test message-search-skips-empty-body {search skips results with empty body} \
     {*}$msg_common \
     -body {
@@ -2937,6 +2971,69 @@ test message-search-local-before {source local -before pages to older matches} \
         set r [msg_search -chat alice@example.com -query x -source local -before 300]
         lmap m [dict get $r messages] {dict get $m timestamp}
     } -result {200 100}
+
+# Search: where the hit matched
+
+proc msg_search_matches {args} {
+    lmap m [dict get [msg_search {*}$args] messages] {
+        dict get $m content matches
+    }
+}
+
+test message-search-reports-every-match-range {a hit says where it matched, once per occurrence} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {the cat sat on the cat mat}]]
+        msg_search_matches -chat alice@example.com -query cat -source local
+    } -result {{4 3 19 3}}
+
+test message-search-ranges-index-the-display-body {offsets index the body as rendered, styling delimiters gone} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {say *needle* now}]]
+        set m [lindex [dict get [msg_search -chat alice@example.com \
+            -query needle -source local] messages] 0]
+        set body [dict get $m content body]
+        lassign [dict get $m content matches] offset length
+        string range $body $offset [expr {$offset + $length - 1}]
+    } -result {needle}
+
+test message-search-ranges-index-a-caption {a media hit's offsets index its caption, not its raw body} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {look, a cat http://ex/a.png} \
+            attachments {{url http://ex/a.png type image name a.png size "" mime ""}}]]
+        set m [lindex [dict get [msg_search -chat alice@example.com \
+            -query cat -source local] messages] 0]
+        set caption [dict get $m content caption]
+        lassign [dict get $m content matches] offset length
+        string range $caption $offset [expr {$offset + $length - 1}]
+    } -result {cat}
+
+test message-search-match-outside-the-rendered-text-reports-no-range {a hit on text that isn't drawn reports no range rather than a wrong one} \
+    {*}$msg_common \
+    -body {
+        # The body is the attachment URL, so the caption is empty: the row
+        # matches, but there is nothing on screen to point at.
+        msg_store [list [msg_msg timestamp 100 body http://ex/a.png \
+            attachments {{url http://ex/a.png type image name a.png size "" mime ""}}]]
+        msg_search_matches -chat alice@example.com -query a.png -source local
+    } -result {{}}
+
+test message-search-folds-case-like-the-store {a lowercase query marks an uppercase hit} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {The Needle}]]
+        msg_search_matches -chat alice@example.com -query needle -source local
+    } -result {{4 6}}
+
+test message-search-folds-ascii-only {folding stops at ASCII, as the store's match does} \
+    -body {
+        # The store would not have matched this row, so a range claiming it did
+        # would highlight text the search never found.
+        list [search_match_ranges "CAFE au lait" cafe] \
+             [search_match_ranges "CAFÉ au lait" café]
+    } -result {{0 4} {}}
 
 # Search: an archive that cannot run the search
 #

@@ -153,6 +153,32 @@ snit::type taco_messagestore {
             CREATE INDEX IF NOT EXISTS idx_chat_message_hole
                 ON chat_message(chat_jid, timestamp) WHERE kind='hole';
 
+            -- Full-text index behind `search`. Trigram keeps LIKE's substring
+            -- semantics and ASCII-only folding, so only the speed changes.
+            -- The content stays in chat_message, indexed by rowid - stable,
+            -- since nothing VACUUMs here. The triggers cover every writer.
+            CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
+                body, content=chat_message, content_rowid=rowid,
+                tokenize='trigram');
+
+            CREATE TRIGGER IF NOT EXISTS msg_fts_insert
+            AFTER INSERT ON chat_message WHEN new.kind='message' BEGIN
+                INSERT INTO msg_fts(rowid, body) VALUES(new.rowid, new.body);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS msg_fts_delete
+            AFTER DELETE ON chat_message WHEN old.kind='message' BEGIN
+                INSERT INTO msg_fts(msg_fts, rowid, body)
+                VALUES('delete', old.rowid, old.body);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS msg_fts_update
+            AFTER UPDATE OF body ON chat_message WHEN old.kind='message' BEGIN
+                INSERT INTO msg_fts(msg_fts, rowid, body)
+                VALUES('delete', old.rowid, old.body);
+                INSERT INTO msg_fts(rowid, body) VALUES(new.rowid, new.body);
+            END;
+
             -- XEP-0444 reactions. One row per (message, reactor); a
             -- reactor's full current emoji set is a Tcl list in `emojis`
             -- ('' = retracted). Keyed by the wire target_id (referenced
@@ -578,12 +604,13 @@ snit::type taco_messagestore {
         return [dict create messages $rows bounded $bounded]
     }
 
-    # Full-text search by LIKE match on body. Returns message dicts
-    # (newest first, capped at -limit). Holes have NULL body so
-    # they're naturally excluded. Retracted rows keep their body as a
-    # tombstone but read back with no content, so they're excluded too.
-    # The query's own LIKE metacharacters
-    # (% _ \) are escaped so they match literally.
+    # Full-text search by LIKE match on body, run against the msg_fts trigram
+    # index. Returns message dicts (newest first, capped at -limit). Holes
+    # have NULL body so they're naturally excluded. Retracted rows keep their
+    # body as a tombstone but read back with no content, so they're excluded
+    # too. The query's own LIKE metacharacters (% _ \) are escaped so they
+    # match literally - but ESCAPE costs the index, so it is only spelled out
+    # for a query that actually contains one.
     #
     # An empty jid searches every chat in the account. Equal timestamps in
     # different chats are common - MAM ingest derives them from second-
@@ -603,7 +630,10 @@ snit::type taco_messagestore {
                         attachments
                  FROM chat_message
                  WHERE kind='message' AND retracted=0
-                   AND body LIKE $pattern ESCAPE '\'}
+                   AND rowid IN (SELECT rowid FROM msg_fts
+                                 WHERE body LIKE $pattern}
+        if {$escaped ne $query} { append sql { ESCAPE '\'} }
+        append sql {)}
         if {$jid ne ""} {
             append sql { AND chat_jid=$jid}
             if {$before ne ""} { append sql { AND timestamp < $before} }

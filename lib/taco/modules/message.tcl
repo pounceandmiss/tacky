@@ -1780,7 +1780,7 @@ snit::type taco_message {
             }
             remote {
                 $self MamSearch $chatJid $query $limit $before $opts(-field) \
-                    [mymethod OnSearch $chatJid $callback $tag]
+                    [mymethod OnSearch $chatJid $query $callback $tag]
             }
             default {
                 error "search: unknown -source \"$opts(-source)\""
@@ -1799,7 +1799,27 @@ snit::type taco_message {
                 lappend last [dict get $tail chat_jid]
             }
         }
-        {*}$callback [dict create messages $rows complete $complete last $last]
+        {*}$callback [dict create messages [$self AnnotateMatches $rows $query] \
+            complete $complete last $last]
+    }
+
+    # Say where each hit matched, so the caller highlights it instead of
+    # running a second match of its own. Offsets index the rendered string, so
+    # a match on text that isn't drawn - an attachment URL, a styling
+    # delimiter, a stem the archive matched remotely - reports no range at all
+    # rather than a wrong one.
+    method AnnotateMatches {rows query} {
+        lmap row $rows {
+            if {[dict exists $row content]} {
+                set content [dict get $row content]
+                set shown [expr {[dict get $content type] eq "media"
+                    ? "caption" : "body"}]
+                dict set content matches \
+                    [search_match_ranges [dict get $content $shown] $query]
+                dict set row content $content
+            }
+            set row
+        }
     }
 
     method MamSearch {chatJid query limit before field callback} {
@@ -1822,7 +1842,7 @@ snit::type taco_message {
         $self LocalSearch $chatJid $query $limit "" $callback
     }
 
-    method OnSearch {chatJid callback tag mamResult} {
+    method OnSearch {chatJid query callback tag mamResult} {
         if {[dict exists $mamResult error]} {
             set err [dict create messages {} complete 0 last "" error 1]
             if {[dict exists $mamResult error_condition]
@@ -1837,7 +1857,8 @@ snit::type taco_message {
 
         set messages [$self SearchIngest $chatJid $mamResult]
 
-        {*}$callback [dict create messages $messages \
+        {*}$callback [dict create \
+            messages [$self AnnotateMatches $messages $query] \
             complete [dict get $mamResult complete] \
             last [dict get $mamResult last]]
     }
@@ -2370,6 +2391,26 @@ proc attachment_caption {body attachments} {
         if {$trimmed eq [dict get $att url]} { return "" }
     }
     return $body
+}
+
+# Character ranges where $query occurs in $text, as a flat {offset length ...}
+# list - the styling entities' offset convention, into the string they index.
+# Folds ASCII only, as the store's match does; `string tolower` would fold
+# further and mark occurrences the search never matched on.
+proc search_match_ranges {text query} {
+    if {$query eq "" || $text eq ""} { return {} }
+    set fold {A a B b C c D d E e F f G g H h I i J j K k L l M m
+              N n O o P p Q q R r S s T t U u V v W w X x Y y Z z}
+    set haystack [string map $fold $text]
+    set needle [string map $fold $query]
+    set len [string length $needle]
+    set ranges {}
+    set pos 0
+    while {[set at [string first $needle $haystack $pos]] >= 0} {
+        lappend ranges $at $len
+        set pos [expr {$at + $len}]
+    }
+    return $ranges
 }
 
 # Single-element attachment list for an outgoing send. `url` is the local

@@ -61,6 +61,10 @@ proc enrich_store_message {storeDict resolve} {
         if {[dict exists $content formatting]} {
             dict set d formatting [dict get $content formatting]
         }
+        # Search hits only: where the query matched, in formatting's offsets.
+        if {[dict exists $content matches]} {
+            dict set d matches [dict get $content matches]
+        }
     }
     if {[dict exists $storeDict reply_id] && [dict get $storeDict reply_id] ne ""} {
         set rto [dict get $storeDict reply_to]

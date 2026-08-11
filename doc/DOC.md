@@ -425,12 +425,13 @@ Event:
                reply_author_jid?: string, reply_body?: string,
                reactions?: {*: {reactors: [string], mine: bool}}}
 
-    content = {type: "text",  body: string, formatting?: formatting}
-            | {type: "media", attachments: [attachment], caption: string, formatting?: formatting}
+    content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
+            | {type: "media", attachments: [attachment], caption: string, formatting?: formatting, matches?: matches}
 
     formatting = [{type: span_type, offset: int, length: int}]
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
                | "preformatted" | "quote"
+    matches    = [{offset: int, length: int}]
     attachment = {url: string, type: "image" | "file", name: string, size: int, mime: string}
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
@@ -458,6 +459,8 @@ removed from that string. A span's `type` is `bold`, `italic`, `overstrike`,
 `monospace`, `preformatted`, or `quote`. Spans may overlap - two styles over
 the same run are two separate entries (each single-type), and the renderer
 combines overlapping spans when drawing (as with TDLib `textEntity`).
+`matches` appears on `message search` results only: one entry per occurrence of
+the query, in the same offsets as `formatting`.
 A **retracted** message carries no `content` (the tombstone has no payload, and
 its former body/attachments are never shipped); the `retracted` flag is the
 signal. Deletion is a message-level state, not a content type (matching TDLib);
@@ -966,6 +969,12 @@ that is local-only: a remote `source` without a `chat` is an error rather than a
 silent downgrade. Its `last` cursor is a `{timestamp, chat_jid}` pair, since
 equal timestamps in different chats are ordinary - the backend only keeps them
 unique within one chat. Each result carries the `chat_jid` it came from.
+
+Every hit carries `content.matches`: where the query matched, in the offsets
+`formatting` uses - into `body`, or `caption` for a media message. Highlight
+from it rather than re-matching the query yourself. It is empty when the match
+lies outside that string: an attachment URL the caption drops, a styling
+character stripped on the way out, or a stem the archive matched remotely.
 
 Jump to a hit with `message goto {date: ts, source: remote}`, which fills the
 context around a hit stored as an isolated island. Whichever source found it,
