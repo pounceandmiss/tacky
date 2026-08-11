@@ -3027,13 +3027,41 @@ test message-search-folds-case-like-the-store {a lowercase query marks an upperc
         msg_search_matches -chat alice@example.com -query needle -source local
     } -result {{4 6}}
 
-test message-search-folds-ascii-only {folding stops at ASCII, as the store's match does} \
+test message-search-ranges-fold-every-script {folding follows the tokenizer past ASCII} \
     -body {
-        # The store would not have matched this row, so a range claiming it did
-        # would highlight text the search never found.
-        list [search_match_ranges "CAFE au lait" cafe] \
-             [search_match_ranges "CAFÉ au lait" café]
-    } -result {{0 4} {}}
+        list [search_match_ranges "Привет мир" привет] \
+             [search_match_ranges "привет мир" ПРИВЕТ]
+    } -result {{0 6} {0 6}}
+
+test message-search-ranges-mark-the-typed-prefix {a prefix hit marks what was typed, not the whole word} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {нужный человек}]]
+        msg_search_matches -chat alice@example.com -query нужн -source local
+    } -result {{0 4}}
+
+test message-search-ranges-start-at-a-word {the same letters inside a word are not marked} \
+    -body {
+        # Only the second is a word the store could have matched.
+        search_match_ranges "aneedle needle" needle
+    } -result {8 6}
+
+test message-search-ranges-cover-each-query-word {every word of the query is marked, in body order} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {the haystack and the needle}]]
+        msg_search_matches -chat alice@example.com -query {needle haystack} -source local
+    } -result {{4 8 21 6}}
+
+test message-search-diacritic-hit-reports-no-range {the tokenizer strips diacritics and the scanner can't follow} \
+    {*}$msg_common \
+    -body {
+        # A real hit, but nothing in the text reads "grun" to mark.
+        msg_store [list [msg_msg timestamp 100 body {STRASSE GRÜN}]]
+        set r [msg_search -chat alice@example.com -query grun -source local]
+        list [llength [dict get $r messages]] \
+             [dict get [lindex [dict get $r messages] 0] content matches]
+    } -result {1 {}}
 
 # Search: an archive that cannot run the search
 #

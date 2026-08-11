@@ -944,11 +944,16 @@ span catchup covered (the server demonstrably never got it), and marked
 the archive can no longer say either way.
 
 **Search.** `message search` takes a `source`, mirroring `goto`. `source:
-local` (the default) is a substring match over the bodies already stored for
-one chat (LIKE metacharacters in the query match literally), with `before` as
-an exclusive timestamp cursor. It covers only what the cache holds, but it is
-the only source that matches OMEMO messages, whose bodies reach the store
-decrypted and sit on the server as ciphertext. Retracted messages never match.
+local` (the default) runs over the bodies already stored for one chat, with
+`before` as an exclusive timestamp cursor. Each query word matches a body word
+from its start and every word must match, in any order: `нужн` finds `нужный`,
+`needle haystack` finds a body carrying both, and `eedle` finds nothing -
+mid-word text isn't findable. Case and diacritics are ignored, in every
+script, and the query is only ever text: `AND`, quotes and brackets in it
+match themselves. It covers only what the
+cache holds, but it is the only source that matches OMEMO messages, whose
+bodies reach the store decrypted and sit on the server as ciphertext.
+Retracted messages never match.
 
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
 `before: last`, which on this path is an RSM cursor rather than a timestamp.
@@ -971,10 +976,12 @@ equal timestamps in different chats are ordinary - the backend only keeps them
 unique within one chat. Each result carries the `chat_jid` it came from.
 
 Every hit carries `content.matches`: where the query matched, in the offsets
-`formatting` uses - into `body`, or `caption` for a media message. Highlight
-from it rather than re-matching the query yourself. It is empty when the match
-lies outside that string: an attachment URL the caption drops, a styling
-character stripped on the way out, or a stem the archive matched remotely.
+`formatting` uses - into `body`, or `caption` for a media message. One entry
+per matched word, covering the typed prefix rather than the whole word.
+Highlight from it rather than re-matching the query yourself. It is empty when
+the match isn't literally in that string: an attachment URL the caption drops,
+a styling character stripped on the way out, a diacritic the matcher ignored
+(`grun` finding `GRÜN`), or a stem the archive matched remotely.
 
 Jump to a hit with `message goto {date: ts, source: remote}`, which fills the
 context around a hit stored as an isolated island. Whichever source found it,

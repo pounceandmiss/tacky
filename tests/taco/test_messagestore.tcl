@@ -1019,23 +1019,57 @@ test messagestore-search-scoped-ignores-other-chats {naming a chat still confine
         ms_search_ts alice@example.com needle
     } -result {100}
 
-test messagestore-search-escapes-like-wildcards {% in the query matches literally, not as a wildcard} \
+test messagestore-search-matches-a-word-prefix {a query word matches from the start of a word, not inside one} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body {50% off}] \
-            [ms_msg timestamp 200 body {500 items}]]
-        ms_search_ts alice@example.com 50%
-    } -result {100}
+            [ms_msg timestamp 100 body {a needle here}] \
+            [ms_msg timestamp 200 body {needlework}] \
+            [ms_msg timestamp 300 body {a fine sewing-needle}]]
+        list [ms_search_ts alice@example.com needle] \
+             [ms_search_ts alice@example.com eedle]
+    } -result {{300 200 100} {}}
 
-test messagestore-search-escapes-underscore {_ in the query matches literally, not as a wildcard} \
+test messagestore-search-folds-case-in-every-script {folding is the tokenizer's, so it reaches past ASCII} \
     {*}$ms_common \
     -body {
         ms_batch [list \
-            [ms_msg timestamp 100 body a_b] \
-            [ms_msg timestamp 200 body axb]]
-        ms_search_ts alice@example.com a_b
-    } -result {100}
+            [ms_msg timestamp 100 body {Привет мир}] \
+            [ms_msg timestamp 200 body {привет всем}]]
+        list [ms_search_ts alice@example.com привет] \
+             [ms_search_ts alice@example.com ПРИВЕТ]
+    } -result {{200 100} {200 100}}
+
+test messagestore-search-requires-every-word {a multi-word query ANDs, in any order} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body {the needle in the haystack}] \
+            [ms_msg timestamp 200 body {just a needle}]]
+        list [ms_search_ts alice@example.com {needle haystack}] \
+             [ms_search_ts alice@example.com {haystack needle}]
+    } -result {100 100}
+
+test messagestore-search-query-syntax-is-not-operators {FTS operators and punctuation in a query are text, not syntax} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 body {foo AND bar}] \
+            [ms_msg timestamp 200 body {50% off}] \
+            [ms_msg timestamp 300 body {say "hi" now}]]
+        list [ms_search_ts alice@example.com AND] \
+             [ms_search_ts alice@example.com 50%] \
+             [ms_search_ts alice@example.com {"hi"}] \
+             [ms_search_ts alice@example.com {foo(bar}]
+    } -result {100 200 300 {}}
+
+test messagestore-search-wordless-query-matches-nothing {a query with nothing indexable matches nothing, not everything} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body {a needle here}]]
+        list [ms_search_ts alice@example.com ---] \
+             [ms_search_ts alice@example.com ""]
+    } -result {{} {}}
 
 test messagestore-search-follows-an-edit {a corrected message is findable by its new text, not its old} \
     {*}$ms_common \
