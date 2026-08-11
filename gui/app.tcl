@@ -7,6 +7,8 @@ snit::type app_type {
     option -rtcma-debug-level -default "" -readonly yes
     option -tackyd -default "" -readonly yes
 
+    component notifier
+
     variable windows {}
     variable winCounter 0
     variable setupWin ""
@@ -32,12 +34,14 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
+        install notifier using notifier $self.notifier -controller $self
 
         ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
         catch {::tacky unlisten $self}
+        catch {$notifier destroy}
         foreach w $windows {
             catch {destroy $w}
         }
@@ -101,6 +105,13 @@ snit::type app_type {
             }
         }
         return ""
+    }
+
+    method OpenChatFor {acc jid} {
+        set w [$self SpawnWindow $acc]
+        $self RaiseWindow $w
+        $w OpenChat -acc $acc -jid $jid \
+            -groupchat [expr {[string match {*\?join} $jid] ? 1 : 0}]
     }
 
     method RaiseWindow {w} {
