@@ -12,7 +12,7 @@ set notify_common [tacky_env -mock conn -account $acc -extra-setup {
     set ::alerts {}
     tacky listen notify <Notify> {apply {{ev} {
         lappend ::alerts [list [dict get $ev -jid] [dict get $ev -mention] \
-            [dict get $ev -unread] [dict get $ev -nick]]
+            [dict get $ev -unread] [dict get $ev -nick] [dict get $ev -body]]
     }}}
 }]
 
@@ -141,6 +141,12 @@ test notify-carries-contact-name {a 1:1 notification names the contact} \
         lindex [lindex $::alerts 0] 3
     } -result {Alice R}
 
+test notify-carries-body {the alert carries the message text} \
+    {*}$notify_common -body {
+        notify_incoming "are you around later?"
+        lindex [lindex $::alerts 0] 4
+    } -result {are you around later?}
+
 test notify-room-mentions-off-silent {mentions=0 silences even a nick match} \
     {*}$notify_common -body {
         notify_join room@conf.example.com me
@@ -182,6 +188,28 @@ test notify-catchup-alerts {a backlog alerts once settled, carrying the true tot
         notify_catchup_done alice@example.com
         list [llength $::alerts] [lindex [lindex $::alerts end] 2]
     } -result {3 3}
+
+test notify-catchup-carries-body {a backlog alert carries its message text} \
+    {*}$notify_common -body {
+        notify_store_unread alice@example.com 3
+        notify_catchup_done alice@example.com
+        lmap a $::alerts {lindex $a 4}
+    } -result {{backlog 0} {backlog 1} {backlog 2}}
+
+# The stored body of an attachment send is the URL itself, which is not
+# something to put in front of the user.
+test notify-catchup-attachment-body-empty {an attachment backlog alerts with no text} \
+    {*}$notify_common -body {
+        set url https://files.example.com/cat.png
+        $::_client message messagestore store [list [dict create \
+            timestamp [clock microseconds] chat_jid alice@example.com \
+            from_jid alice@example.com/phone body $url \
+            attachments [list [dict create url $url type image \
+                name cat.png size 12 mime image/png]] \
+            server_id "" own_id "" raw_xml "" server_status ""]]
+        notify_catchup_done alice@example.com
+        lindex [lindex $::alerts 0] 4
+    } -result {}
 
 test notify-catchup-caps-burst {a large backlog is capped, but the total is not} \
     {*}$notify_common -body {

@@ -12,7 +12,7 @@
 # mute. Rooms default to muted, which leaves a public room pinging on your
 # nick alone.
 #
-#   notify <Notify>   -jid J -timestamp T -nick N -unread C -mention B
+#   notify <Notify>   -jid J -timestamp T -nick N -body S -unread C -mention B
 #   notify <Settings> -jid J -muted B -mentions B
 
 snit::type taco_notify {
@@ -86,37 +86,42 @@ snit::type taco_notify {
         if {$ts <= [$self Watermark $opts(-jid)]} return
         set mention [$self Store mentionAt $opts(-jid) $ts]
         if {![$self ShouldNotify $opts(-jid) $mention]} return
-        $self Schedule $opts(-jid) $ts $mention \
-            [dict get $opts(-message) from_jid]
+        $self Schedule [dict create jid $opts(-jid) ts $ts mention $mention \
+            from [dict get $opts(-message) from_jid] \
+            body [ContentPreview $opts(-message)]]
     }
 
-    method Schedule {chatJid ts mention fromJid} {
-        set key [list $chatJid $ts]
+    method Schedule {alert} {
+        set key [PendingKey $alert]
         if {[dict exists $Pending $key]} return
         set delay [$self Delay]
         if {$delay <= 0} {
-            $self Fire $chatJid $ts $mention $fromJid
+            $self Fire $alert
             return
         }
-        dict set Pending $key \
-            [after $delay [mymethod Fire $chatJid $ts $mention $fromJid]]
+        dict set Pending $key [after $delay [mymethod Fire $alert]]
     }
 
-    method Fire {chatJid ts mention fromJid} {
-        dict unset Pending [list $chatJid $ts]
-        if {$ts <= [$self Watermark $chatJid]} return
-        $self Notify $chatJid $ts $mention $fromJid
+    method Fire {alert} {
+        dict unset Pending [PendingKey $alert]
+        set chatJid [dict get $alert jid]
+        if {[dict get $alert ts] <= [$self Watermark $chatJid]} return
+        $self Notify $alert
     }
 
     # Forward-only per chat, so a catch-up sweep and a live arrival can't
     # announce the same message twice.
-    method Notify {chatJid ts mention fromJid} {
+    method Notify {alert} {
+        set chatJid [dict get $alert jid]
+        set ts [dict get $alert ts]
         if {[dict exists $LastAlerted $chatJid]
             && $ts <= [dict get $LastAlerted $chatJid]} return
         dict set LastAlerted $chatJid $ts
         $client emit notify <Notify> -jid $chatJid -timestamp $ts \
-            -nick [$self SenderName $chatJid $fromJid] \
-            -unread [$self Store unreadCount $chatJid] -mention $mention
+            -nick [$self SenderName $chatJid [dict get $alert from]] \
+            -body [dict get $alert body] \
+            -unread [$self Store unreadCount $chatJid] \
+            -mention [dict get $alert mention]
     }
 
     # Who to put on the notification: the room nick, or the contact's name
@@ -153,9 +158,10 @@ snit::type taco_notify {
         set rows [$self Store unreadTail \
             $opts(-jid) [$self Floor] $CatchupBurstMax]
         foreach row [lreverse $rows] {
-            lassign $row ts mention fromJid
+            lassign $row ts mention fromJid body attachments
             if {![$self ShouldNotify $opts(-jid) $mention]} continue
-            $self Notify $opts(-jid) $ts $mention $fromJid
+            $self Notify [dict create jid $opts(-jid) ts $ts mention $mention \
+                from $fromJid body [RowPreview $body $attachments]]
         }
     }
 
@@ -198,5 +204,26 @@ snit::type taco_notify {
 
     proc AsBool {value} {
         return [expr {$value in {1 true yes on}}]
+    }
+
+    proc PendingKey {alert} {
+        return [list [dict get $alert jid] [dict get $alert ts]]
+    }
+
+    # Preview text, from a message dict and from a stored row respectively. An
+    # attachment carries a caption in place of a body, and nothing at all when
+    # the body was only the URL; a retracted row has no content to show.
+    proc ContentPreview {msg} {
+        if {![dict exists $msg content]} { return "" }
+        set content [dict get $msg content]
+        foreach key {body caption} {
+            if {[dict exists $content $key]} { return [dict get $content $key] }
+        }
+        return ""
+    }
+
+    proc RowPreview {body attachments} {
+        if {[llength $attachments] == 0} { return $body }
+        return [attachment_caption $body $attachments]
     }
 }

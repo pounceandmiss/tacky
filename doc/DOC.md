@@ -526,7 +526,7 @@ interrupting the user over is [notify](#notify)'s job.
 
 Events:
 
-    notify <Notify>   {jid: string, timestamp: int, nick: string,
+    notify <Notify>   {jid: string, timestamp: int, nick: string, body: string,
                        unread: int, mention: bool}
     notify <Settings> {jid: string, muted: bool, mentions: bool}
 
@@ -534,9 +534,11 @@ Events:
 a desktop notification, a sound, a badge - is the frontend's job. `nick` is who
 sent it, resolved the way `author get` resolves it (see
 [The chat window](#the-chat-window)): the participant nick in a group chat, the
-roster name then PEP nick then bare JID in a 1:1. `unread` is the chat's total
-at that moment, so a burst collapses into one notification reading "Name (12)"
-instead of twelve. `mention` marks a group-chat message that named you.
+roster name then PEP nick then bare JID in a 1:1. `body` is the full message
+text; trimming it for display is the frontend's job. For an attachment it is the
+caption, empty when there was none. `unread` is the chat's total at that moment,
+so a burst collapses into one notification reading "Name (12)" instead of
+twelve. `mention` marks a group-chat message that named you.
 
 There is no "the user is looking at this chat" call. The gate is the read
 watermark: a message alerts only while it sits past it, and the alert is held

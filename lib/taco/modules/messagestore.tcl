@@ -868,7 +868,8 @@ snit::type taco_messagestore {
     method unreadTail {chatJid floorTs limit} {
         set rows {}
         $options(-db) eval {
-            SELECT timestamp, mentions_me, from_jid FROM chat_message
+            SELECT timestamp, mentions_me, from_jid, body, attachments
+            FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
               AND timestamp > $floorTs
@@ -876,7 +877,8 @@ snit::type taco_messagestore {
                                         WHERE chat_jid=$chatJid), 0)
             ORDER BY timestamp DESC LIMIT $limit
         } row {
-            lappend rows [list $row(timestamp) $row(mentions_me) $row(from_jid)]
+            lappend rows [list $row(timestamp) $row(mentions_me) \
+                $row(from_jid) $row(body) $row(attachments)]
         }
         return $rows
     }
