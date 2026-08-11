@@ -2393,24 +2393,29 @@ proc attachment_caption {body attachments} {
     return $body
 }
 
-# Character ranges where $query occurs in $text, as a flat {offset length ...}
+# Character ranges where $query matched $text, as a flat {offset length ...}
 # list - the styling entities' offset convention, into the string they index.
-# Folds ASCII only, as the store's match does; `string tolower` would fold
-# further and mark occurrences the search never matched on.
+# Mirrors the store's match: each query word against the start of a body word,
+# folded as unicode61 folds. Diacritics are the one thing it can't follow, so
+# a hit found only through those is marked nowhere rather than wrongly.
 proc search_match_ranges {text query} {
-    if {$query eq "" || $text eq ""} { return {} }
-    set fold {A a B b C c D d E e F f G g H h I i J j K k L l M m
-              N n O o P p Q q R r S s T t U u V v W w X x Y y Z z}
-    set haystack [string map $fold $text]
-    set needle [string map $fold $query]
-    set len [string length $needle]
+    if {$text eq ""} { return {} }
+    set haystack [string tolower $text]
     set ranges {}
-    set pos 0
-    while {[set at [string first $needle $haystack $pos]] >= 0} {
-        lappend ranges $at $len
-        set pos [expr {$at + $len}]
+    foreach word [search_query_words $query] {
+        set needle [string tolower $word]
+        set len [string length $needle]
+        set pos 0
+        while {[set at [string first $needle $haystack $pos]] >= 0} {
+            set before [string index $haystack [expr {$at - 1}]]
+            if {$at == 0 || ![string is alnum -strict $before]} {
+                lappend ranges [list $at $len]
+            }
+            set pos [expr {$at + 1}]
+        }
     }
-    return $ranges
+    # Repeated or prefix-overlapping query words can land on one spot.
+    return [concat {*}[lsort -integer -index 0 [lsort -unique $ranges]]]
 }
 
 # Single-element attachment list for an outgoing send. `url` is the local

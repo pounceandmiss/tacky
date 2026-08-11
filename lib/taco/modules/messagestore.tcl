@@ -153,13 +153,14 @@ snit::type taco_messagestore {
             CREATE INDEX IF NOT EXISTS idx_chat_message_hole
                 ON chat_message(chat_jid, timestamp) WHERE kind='hole';
 
-            -- Full-text index behind `search`. Trigram keeps LIKE's substring
-            -- semantics and ASCII-only folding, so only the speed changes.
-            -- The content stays in chat_message, indexed by rowid - stable,
-            -- since nothing VACUUMs here. The triggers cover every writer.
+            -- Full-text index behind `search`. unicode61 folds case for every
+            -- script, not just ASCII; the cost is that it indexes whole
+            -- words, so only word prefixes are findable. The content stays in
+            -- chat_message, indexed by rowid - stable, since nothing VACUUMs
+            -- here. The triggers cover every writer.
             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
                 body, content=chat_message, content_rowid=rowid,
-                tokenize='trigram');
+                tokenize='unicode61');
 
             CREATE TRIGGER IF NOT EXISTS msg_fts_insert
             AFTER INSERT ON chat_message WHEN new.kind='message' BEGIN
@@ -604,13 +605,12 @@ snit::type taco_messagestore {
         return [dict create messages $rows bounded $bounded]
     }
 
-    # Full-text search by LIKE match on body, run against the msg_fts trigram
-    # index. Returns message dicts (newest first, capped at -limit). Holes
-    # have NULL body so they're naturally excluded. Retracted rows keep their
-    # body as a tombstone but read back with no content, so they're excluded
-    # too. The query's own LIKE metacharacters (% _ \) are escaped so they
-    # match literally - but ESCAPE costs the index, so it is only spelled out
-    # for a query that actually contains one.
+    # Full-text search over the msg_fts index: each query word matches a word
+    # of the body by prefix, and a body must match every word. Returns message
+    # dicts (newest first, capped at -limit). Holes have NULL body so they're
+    # naturally excluded. Retracted rows keep their body as a tombstone but
+    # read back with no content, so they're excluded too. A query with no
+    # indexable word matches nothing rather than everything.
     #
     # An empty jid searches every chat in the account. Equal timestamps in
     # different chats are common - MAM ingest derives them from second-
@@ -623,17 +623,15 @@ snit::type taco_messagestore {
         array set opts $args
         set limit $opts(-limit)
         set before $opts(-before)
-        set escaped [string map [list \\ \\\\ % \\% _ \\_] $query]
-        set pattern "%${escaped}%"
+        set match [fts_match_expr $query]
+        if {$match eq ""} { return {} }
         set sql {SELECT timestamp, chat_jid, from_jid, from_resource, body,
                         server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
                         attachments
                  FROM chat_message
                  WHERE kind='message' AND retracted=0
                    AND rowid IN (SELECT rowid FROM msg_fts
-                                 WHERE body LIKE $pattern}
-        if {$escaped ne $query} { append sql { ESCAPE '\'} }
-        append sql {)}
+                                 WHERE msg_fts MATCH $match)}
         if {$jid ne ""} {
             append sql { AND chat_jid=$jid}
             if {$before ne ""} { append sql { AND timestamp < $before} }
@@ -1295,6 +1293,24 @@ snit::type taco_messagestore {
             incr ts $step
         }
     }
+}
+
+# The words of a search query. A word with nothing alphanumeric in it indexes
+# to no token, so it can only make the query unparseable.
+proc search_query_words {query} {
+    lmap w [regexp -all -inline {\S+} $query] {
+        if {![regexp {[[:alnum:]]} $w]} continue
+        set w
+    }
+}
+
+# FTS5 expression matching every query word by prefix. Quoting each word (and
+# doubling any quote of its own) is what keeps `AND`, a stray bracket and the
+# rest of the query syntax as text to match rather than operators to obey.
+proc fts_match_expr {query} {
+    join [lmap w [search_query_words $query] {
+        format {"%s"*} [string map {\" \"\"} $w]
+    }] " "
 }
 
 proc ReplyPreview {body} {
