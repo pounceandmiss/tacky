@@ -1037,6 +1037,16 @@ test messagestore-search-escapes-underscore {_ in the query matches literally, n
         ms_search_ts alice@example.com a_b
     } -result {100}
 
+test messagestore-search-follows-an-edit {a corrected message is findable by its new text, not its old} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body {the needle}]]
+        store applyEdit alice@example.com sid1 {the pin} "<xml/>" 200 \
+            {encryption {} sender_fp {}}
+        list [ms_search_ts alice@example.com needle] \
+             [ms_search_ts alice@example.com pin]
+    } -result {{} 100}
+
 # resolveReply (XEP-0461 target lookup)
 
 test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves with no author hint} \

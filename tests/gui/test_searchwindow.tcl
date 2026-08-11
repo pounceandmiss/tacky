@@ -145,6 +145,18 @@ proc sw_text {} {
     [.sw.ca textwidget] get 1.0 end
 }
 
+test sw-highlights-where-the-backend-matched {the hit is marked in the body as drawn, styling stripped} -setup {
+    sw_setup
+} -body {
+    sw_create
+    # Stored with the styling delimiters, drawn without them: an offset taken
+    # against the raw body would land a character late.
+    sw_store alice@example.com 100 "say *needle* now"
+    sw_run needle
+    set t [.sw.ca textwidget]
+    $t get {*}[$t tag ranges search_match]
+} -cleanup { sw_cleanup } -result {needle}
+
 test sw-global-spans-every-chat {results come from every chat, in one time order} -setup {
     sw_setup
 } -body {

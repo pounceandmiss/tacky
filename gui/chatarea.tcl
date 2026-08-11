@@ -284,20 +284,17 @@ snit::widget chatarea {
         set HighlightedSlot $slot
     }
 
-    # Mark every occurrence of $pattern within one row's body. Independent of
-    # `highlight message`: that picks out a whole row, this picks out text
-    # inside one. Cleared with the row, so a caller that re-runs a search
-    # clears first.
-    method {highlight matches} {key pattern} {
+    # Mark the backend's match ranges - a flat {offset length ...} list, in
+    # the body offsets the styling entities use. Independent of `highlight
+    # message`: that picks out a whole row, this picks out text inside one.
+    # Cleared with the row, so a caller that re-runs a search clears first.
+    method {highlight matches} {key ranges} {
         set slot [$rows slot $key]
-        if {$slot eq "" || $pattern eq ""} return
-        if {[catch {$text index item.$slot.body.first} pos]} return
-        set last item.$slot.body.last
-        while 1 {
-            set pos [$text search -nocase -count n -- $pattern $pos $last]
-            if {$pos eq ""} break
-            $text tag add search_match $pos "$pos + $n chars"
-            set pos "$pos + $n chars"
+        if {$slot eq "" || [llength $ranges] == 0} return
+        if {[llength [$text tag ranges item.$slot.body]] == 0} return
+        foreach {offset length} $ranges {
+            set from "item.$slot.body.first + $offset chars"
+            $text tag add search_match $from "$from + $length chars"
         }
     }
 

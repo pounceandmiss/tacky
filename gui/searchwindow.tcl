@@ -213,8 +213,12 @@ snit::widget searchwindow {
         set enriched [lmap msg $messages {
             $self Enrich $msg
         }]
-        foreach key [$ca apply $enriched] {
-            $ca highlight matches $key $query
+        $ca apply $enriched
+        # Where the backend matched. A row `apply` didn't draw is a no-op.
+        foreach msg $enriched {
+            if {[dict exists $msg matches]} {
+                $ca highlight matches [dict get $msg key] [dict get $msg matches]
+            }
         }
     }
 

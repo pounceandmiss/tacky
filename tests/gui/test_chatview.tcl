@@ -1566,30 +1566,34 @@ set ca_signals_common {
     }
 }
 
-test chatarea-highlight-matches-tags-every-occurrence {each hit inside a body gets the match tag} \
+test chatarea-highlight-matches-tags-each-range {the backend's ranges index the body, not the row} \
     {*}$ca_common \
     -body {
+        # Offsets are into the body alone; the author "test" precedes it.
         .ca apply [list [ca_msg 100 "the cat sat on the cat mat"]]
-        .ca highlight matches 100 cat
+        .ca highlight matches 100 {4 3 19 3}
         set r [[.ca textwidget] tag ranges search_match]
-        list [expr {[llength $r] / 2}] [[.ca textwidget] get [lindex $r 0] [lindex $r 1]]
-    } -result {2 cat}
+        list [expr {[llength $r] / 2}] \
+            [[.ca textwidget] get [lindex $r 0] [lindex $r 1]] \
+            [[.ca textwidget] get [lindex $r 2] [lindex $r 3]]
+    } -result {2 cat cat}
 
-test chatarea-highlight-matches-ignores-case {a hit is found regardless of case, and keeps the text as written} \
+test chatarea-highlight-matches-tags-a-caption {a media row's ranges index its caption} \
     {*}$ca_common \
     -body {
-        .ca apply [list [ca_msg 100 "Cat"]]
-        .ca highlight matches 100 cat
-        set r [[.ca textwidget] tag ranges search_match]
-        [.ca textwidget] get {*}$r
-    } -result {Cat}
+        .ca apply [list [ca_msg_att 100 "http://ex/a.png" \
+            {{url http://ex/a.png type file name a.png size "" mime ""}} \
+            "look, a cat"]]
+        .ca highlight matches 100 {8 3}
+        [.ca textwidget] get {*}[[.ca textwidget] tag ranges search_match]
+    } -result {cat}
 
-test chatarea-highlight-matches-stays-in-the-body {a term matching the author or timestamp is not tagged} \
+test chatarea-highlight-matches-survives-an-empty-body {a caption-less attachment draws no body to index} \
     {*}$ca_common \
     -body {
-        # ca_msg draws the author as "test"; the body says something else.
-        .ca apply [list [ca_msg 100 "hello"]]
-        .ca highlight matches 100 test
+        .ca apply [list [ca_msg_att 100 "http://ex/a.png" \
+            {{url http://ex/a.png type file name a.png size "" mime ""}} ""]]
+        .ca highlight matches 100 {0 3}
         [.ca textwidget] tag ranges search_match
     } -result {}
 
