@@ -35,17 +35,10 @@ all: tacky tackyd tackyd-json
 
 # The three native binaries share one build tree so the heavy deps
 # (libdatachannel etc.) compile once, not once per binary; binaries 2 and 3 just
-# reuse the dep stamps in the shared PREFIX. Windows builds into a separate tree
-# (below) - sharing stays within an OS, so Linux and Windows never share a dep
-# source dir and their in-tree ELF/PE artifacts can't poison each other.
+# reuse the dep stamps in the shared PREFIX. Every other platform gets its own
+# tree (below), and each tree belongs to one toolchain, so no two ever share a
+# dep source dir or poison each other's artifacts.
 LINUX_BUILD := $(CURDIR)/build/linux
-WIN_BUILD   := $(CURDIR)/build/windows
-
-# The Windows bundler (zippy/build.tcl) runs on the host, so it needs a 9.0-line
-# tclsh that runs natively; the cross-compiled PE tclsh can't. Reuse the one the
-# native build produces, falling back to a tclsh9.0 on PATH.
-WIN_HOST_TCLSH := $(LINUX_BUILD)/_build/local/bin/tclsh9.0
-HOST_TCLSH     := $(if $(wildcard $(WIN_HOST_TCLSH)),$(WIN_HOST_TCLSH),tclsh9.0)
 
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
@@ -79,13 +72,42 @@ lib: dist-dir
 # ==== Windows cross-build ====
 # Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
 # as the native build; TARGET_OS=windows swaps in the win/ recipes and bundles
-# with a host tclsh9.0. All three share build/windows (deps compile once), kept
-# separate from build/linux so ELF/PE artifacts never cross; ships $*.exe.
+# with a host tclsh9.0. The three binaries share one tree (deps compile once),
+# kept separate from build/linux so ELF/PE artifacts never cross; ships $*.exe.
+#
+#   make win            host mingw-w64 (Arch: gcc 16)  -> build/windows/
+#   make DOCKER=1 win   zippy's pinned mingw profile   -> build/windows-docker/
+#
+# A tree belongs to one toolchain: a gcc 16 object wants libgcc symbols gcc 12's
+# runtime lacks, and a shared _build-win would link that with nothing reporting
+# it. Separate BASEDIRs do it, not a docker cache mount (IN_DOCKER_BUILD_SUBDIR=
+# turns it off), so the container tree stays under build/ for `make clean`.
+# Under DOCKER=1 the inner make runs at /src, so BASEDIR, the shim/icon paths and
+# HOST_TCLSH (the image's tcl9.0) are container paths, and build/windows-docker
+# is pre-created host-owned so the tree lands back as the host user. The host
+# bundler needs a natively runnable 9.0 tclsh - the cross PE one can't - so
+# reuse the native build's, else a tclsh9.0 on PATH.
+
+ifdef DOCKER
+  WIN_BUILD := build/windows-docker
+  WIN_MAKE  := IN_DOCKER_BUILD_SUBDIR= \
+               IN_DOCKER_CCACHE_DIR=/src/$(WIN_BUILD)/.ccache \
+               zippy/in_docker.sh mingw make
+  WIN_ROOT  := /src
+  WIN_TCLSH := /usr/local/bin/tclsh9.0
+else
+  WIN_HOST_TCLSH := $(LINUX_BUILD)/_build/local/bin/tclsh9.0
+  WIN_BUILD := build/windows
+  WIN_MAKE  := $(MAKE)
+  WIN_ROOT  := $(CURDIR)
+  WIN_TCLSH := $(if $(wildcard $(WIN_HOST_TCLSH)),$(WIN_HOST_TCLSH),tclsh9.0)
+endif
 
 win: win-tacky win-tackyd win-tackyd-json
 
 win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	mkdir -p $(WIN_BUILD)
+	$(WIN_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=windows \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
@@ -93,26 +115,27 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    $(if $($*_ICON),WIN_ICON=$(CURDIR)/$($*_ICON)) \
-	    HOST_TCLSH=$(HOST_TCLSH) \
-	    BASEDIR=$(WIN_BUILD) \
+	    $(if $($*_ICON),WIN_ICON=$(WIN_ROOT)/$($*_ICON)) \
+	    HOST_TCLSH=$(WIN_TCLSH) \
+	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
 	    win-app
 	cp $(WIN_BUILD)/$*.exe dist/$*.exe
 
 # Windows libtacky.a: the same static-library build as `lib`, cross-compiled to
 # a MinGW PE archive. Ships alongside the native one as dist/libtacky-win.a.
 win-lib: dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	mkdir -p $(WIN_BUILD)
+	$(WIN_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=windows \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(tackyd-json_DEPS)" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    LIB_SHIM_SRC=$(CURDIR)/embed/tacky.c \
+	    LIB_SHIM_SRC=$(WIN_ROOT)/embed/tacky.c \
 	    LIB_NAME=tacky \
-	    HOST_TCLSH=$(HOST_TCLSH) \
-	    BASEDIR=$(WIN_BUILD) \
+	    HOST_TCLSH=$(WIN_TCLSH) \
+	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
 	    win-lib
 	cp $(WIN_BUILD)/libtacky.a dist/libtacky-win.a
 
@@ -122,15 +145,17 @@ win-lib: dist-dir
 # this routes through zippy's ndk docker profile (like `make linux`). The inner
 # make runs in the container at /src, so BASEDIR is the container path, not
 # $(CURDIR)/...; pre-create build/android host-owned so its tree (and the output
-# binary/jniLibs) land back in the bind-mounted project as the host user. No
-# cache-mount isolation is needed - nothing host-native ever builds Android, so
-# build/android can't be poisoned. Output:
+# binary/jniLibs) land back in the bind-mounted project as the host user.
+# IN_DOCKER_BUILD_SUBDIR= turns off the cache mount as the Windows targets do:
+# BASEDIR isolates the tree, and only the ndk container ever writes it. Output:
 # dist/jniLibs/arm64-v8a/{libtackyd_json.so, libc++_shared.so}.
 
 ANDROID_BUILD := build/android
 
 android: dist-dir
 	mkdir -p $(ANDROID_BUILD)
+	IN_DOCKER_BUILD_SUBDIR= \
+	IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
 	zippy/in_docker.sh ndk \
 	make -f zippy/zippy.mk \
 	    TARGET_OS=android \
@@ -151,6 +176,8 @@ android: dist-dir
 # native and MinGW ones as dist/libtacky-android.a.
 android-lib: dist-dir
 	mkdir -p $(ANDROID_BUILD)
+	IN_DOCKER_BUILD_SUBDIR= \
+	IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
 	zippy/in_docker.sh ndk \
 	make -f zippy/zippy.mk \
 	    TARGET_OS=android \
@@ -269,9 +296,10 @@ dist-dir:
 clean:
 	rm -rf build dist
 
-# Drop the Windows build trees and .exe outputs, keeping the fetched dep
-# sources under build/*/_build/deps so a rebuild doesn't re-clone. Use after a
-# dep pin bump to force a clean PE rebuild from the existing sources.
+# Drop the Windows build trees and .exe outputs (both flavours), keeping the
+# fetched dep sources under build/windows*/_build/deps so a rebuild doesn't
+# re-clone. Use after a dep pin bump to force a clean PE rebuild from the
+# existing sources.
 win-clean:
-	rm -rf build/*/_build-win
-	rm -f build/*/*.exe build/*/*.exe.debug dist/*.exe
+	rm -rf build/windows*/_build-win
+	rm -f build/windows*/*.exe build/windows*/*.exe.debug dist/*.exe
