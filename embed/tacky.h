@@ -1,8 +1,8 @@
 /*
  * tacky.h - C ABI for driving the tacky XMPP backend as a linked library.
  *
- * The library runs a Tcl interpreter (taco + the tackyd-json JSON contract) on a
- * dedicated backend thread. The host talks to it purely in JSON:
+ * The library runs a Tcl interpreter (the backend + the tackyd-json JSON
+ * contract) on a dedicated backend thread. The host talks to it purely in JSON:
  *
  *   - tacky_send()  feeds a request  ["module","method",{args}]        (or +token)
  *   - the emit callback delivers replies ["result",token,data] /
@@ -34,22 +34,22 @@ typedef struct tacky tacky;
  * opaque pointer passed to tacky_create(). */
 typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
 
-/* Start the backend thread and construct `taco`. `taco_args` is a NULL-
- * terminated array of C strings forwarded to the taco constructor (may be NULL
+/* Start the backend thread and construct the backend. `backend_args` is a NULL-
+ * terminated array of C strings forwarded to its constructor (may be NULL
  * for none). Returns as soon as requests can be queued; the backend
  * initializes asynchronously and processes queued requests, in order, once it
  * is up. Returns NULL only on immediate failure (allocation, thread spawn).
  * If initialization fails, the backend emits
  * ["event","backend","Dead",{"error":...}] and goes dead: no replies ever
  * arrive, and the handle must still be passed to tacky_destroy(). */
-tacky *tacky_create(const char *const *taco_args,
+tacky *tacky_create(const char *const *backend_args,
                     tacky_emit_fn emit, void *ud);
 
 /* Queue a JSON request onto the backend thread. `json` is UTF-8, `len` bytes;
  * the bytes are copied, so the caller keeps ownership. */
 void tacky_send(tacky *t, const char *json, size_t len);
 
-/* Tear down: destroy `taco`, stop the backend event loop, join the thread, and
+/* Tear down: destroy the backend, stop its event loop, join the thread, and
  * free the handle. No callbacks fire after this returns. */
 void tacky_destroy(tacky *t);
 

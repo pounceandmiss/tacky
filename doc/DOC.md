@@ -52,17 +52,21 @@ UTF-8; repeat. Write: `body = payload.encode("utf-8")`, then
     msg='["account", "list", {}, 1]'
     printf '%d\n%s' ${#msg} "$msg" | tclsh9.0 bin/tackyd-json.tcl; echo
 
-**C library.** `make lib` builds `dist/libtacky.a` (`make win-lib` cross-
-compiles the MinGW `dist/libtacky-win.a`). The ABI is `embed/tacky.h`:
+**C library.** `make lib` builds `dist/libtacky.a`; `make win-lib` and
+`make android-lib` cross-compile the MinGW `dist/libtacky-win.a` and the
+NDK arm64 `dist/libtacky-android.a`. Each is one archive with the whole Tcl
+runtime, the backend and every dependency merged in, so link order doesn't
+matter and there's nothing to group. They contain C++ (libdatachannel), so
+link the host app with `g++`, not `gcc`. The ABI is `embed/tacky.h`:
 
-    tacky *tacky_create(const char *const *taco_args, tacky_emit_fn emit, void *ud);
+    tacky *tacky_create(const char *const *backend_args, tacky_emit_fn emit, void *ud);
     void tacky_send(tacky *t, const char *json, size_t len);
     void tacky_destroy(tacky *t);
 
 `tacky_create` starts the backend on its own thread and returns right
-away. `taco_args` is a NULL-terminated array of taco_type constructor args
-(e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
-`-cache-dir` to override the defaults in [Storage layout](#storage-layout).
+away. `backend_args` is a NULL-terminated array of backend constructor
+options (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir`
+and `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
 Each `tacky_send` carries one complete JSON request; each emit callback
 delivers one complete JSON reply or event.
 If the backend fails to start up it emits

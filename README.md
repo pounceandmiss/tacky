@@ -11,7 +11,6 @@ A desktop XMPP chat client built with Tcl/Tk. Pre-alpha.
 ## Core ideas
 - Portable backend aiming for a very high level api: libtacky doesn't just help you form and send stanzas, it aims to take care of all the business logic, local caching, settings, calls, etc. It is fully decoupled from gui, and offers a JSON api to be used from other languages.
 - Lightweight, tries to be easily distributable - self-contained statically-linked executable with all dependencies including calls at ~15mb
-- Advanced MAM handling: it's aware that the message history it has is not full. Lazy loads from server, aims to support server-side search.
 
 ## Alternative frontends
 
@@ -73,38 +72,15 @@ The backend can also be built as a self-contained static library and linked
 straight into a native app, instead of shipped as an executable. 
 
 ```sh
-make lib        # native   -> dist/libtacky.a
-make win-lib    # MinGW/PE -> dist/libtacky-win.a
+make lib          # native    -> dist/libtacky.a
+make win-lib      # MinGW/PE  -> dist/libtacky-win.a
+make android-lib  # NDK arm64 -> dist/libtacky-android.a
 ```
 
-The result is one self-contained archive - the whole Tcl runtime, taco and every
-dependency are merged in, so it links with no `--start-group`. It contains C++
-(libdatachannel), so link the host app with `g++`, not `gcc`.
-
-The C surface (`embed/tacky.h`) is just a pipe to the real API is taco's JSON
-contract. Three functions and one callback:
-
-```c
-tacky *tacky_create(const char *const *taco_args,
-                    tacky_emit_fn emit, void *ud);
-void tacky_send(tacky *t, const char *json, size_t len);
-void tacky_destroy(tacky *t);
-
-typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
-```
-
-You send requests and receive replies and events as UTF-8 JSON:
-
-- request: `["module","method",{args}]`, optionally with a token `[...,token]`
-- reply: `["result",token,data]` or `["error",token,msg]`
-- event: `["event",module,"<Event>",{args}]`
-
-The `token` is an optional correlation id echoed back on the matching reply.
-
-The emit callback fires on the backend thread, not the caller's: copy the bytes,
-hand them to your own loop, return promptly, and don't re-enter tacky from
-inside it. `tacky_send` is safe to call from any thread; create and destroy from
-one owning thread.
+One archive, with the whole Tcl runtime, the backend and every dependency
+merged in. The ABI is `embed/tacky.h` - three functions and a callback - and
+the API it carries is the backend's JSON contract: see
+[doc/DOC.md](doc/DOC.md#ways-to-run-it).
 
 ## Tests
 
