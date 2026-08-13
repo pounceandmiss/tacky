@@ -1200,7 +1200,8 @@ test messagestore-mark-remote-status-advances {markers advance none->delivered->
         ms_batch [list [ms_msg timestamp 100 own_id oid1 body a]]
         set d [store markRemoteStatus alice@example.com oid1 delivered]
         set r [store markRemoteStatus alice@example.com oid1 read]
-        list [dict get $d remote_status] [dict get $r remote_status] \
+        list [dict get [lindex $d 0] remote_status] \
+             [dict get [lindex $r 0] remote_status] \
              [ms_remote alice@example.com]
     } -result {delivered read read}
 
@@ -1244,6 +1245,80 @@ test messagestore-mark-remote-status-wrong-chat-noop {a marker scoped to another
         set r [store markRemoteStatus bob@example.com oid1 read]
         list $r [ms_remote alice@example.com]
     } -result {{} none}
+
+# XEP-0333 <displayed/> means "all messages up to this point", so a read
+# marker also promotes the earlier outgoing rows it covers.
+proc ms_remotes {{jid alice@example.com}} {
+    testdb eval {
+        SELECT remote_status FROM chat_message
+        WHERE chat_jid=$jid AND kind='message' ORDER BY timestamp
+    }
+}
+
+test messagestore-mark-remote-read-covers-earlier {a read marker promotes every earlier outgoing row} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id oid2 body b] \
+            [ms_msg timestamp 300 own_id oid3 body c]]
+        store markRemoteStatus alice@example.com oid2 delivered
+        store markRemoteStatus alice@example.com oid3 read
+        ms_remotes
+    } -result {read read read}
+
+test messagestore-mark-remote-read-leaves-later-alone {a read marker does not touch rows after its target} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id oid2 body b] \
+            [ms_msg timestamp 300 own_id oid3 body c]]
+        store markRemoteStatus alice@example.com oid2 read
+        ms_remotes
+    } -result {read read none}
+
+test messagestore-mark-remote-read-reports-each-row {the returned list carries one entry per row moved, oldest first} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id oid2 body b]]
+        lmap r [store markRemoteStatus alice@example.com oid2 read] {
+            dict get $r timestamp
+        }
+    } -result {100 200}
+
+test messagestore-mark-remote-read-skips-already-read {a repeat read marker reports nothing} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id oid2 body b]]
+        store markRemoteStatus alice@example.com oid2 read
+        list [store markRemoteStatus alice@example.com oid2 read] [ms_remotes]
+    } -result {{} {read read}}
+
+test messagestore-mark-remote-delivered-covers-one {an 0184 receipt marks only the row it names} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id oid2 body b]]
+        store markRemoteStatus alice@example.com oid2 delivered
+        ms_remotes
+    } -result {none delivered}
+
+test messagestore-mark-remote-read-skips-incoming {incoming rows inside the covered range stay none} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 own_id oid1 body a] \
+            [ms_msg timestamp 200 own_id "" origin_id "" body b] \
+            [ms_msg timestamp 300 own_id oid3 body c]]
+        store markRemoteStatus alice@example.com oid3 read
+        ms_remotes
+    } -result {read none read}
 
 # --- Own read watermark ------------------------------------------------------
 
