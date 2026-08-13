@@ -818,29 +818,51 @@ snit::type taco_messagestore {
         }
     }
 
-    # Advance an outgoing message's remote_status from an incoming
+    # Advance outgoing messages' remote_status from an incoming
     # XEP-0184/0333 marker. $targetId is the marker's referenced id,
     # matched against our own_id (fallback origin_id). Forward-only: a
     # lower or equal rank (duplicate / out-of-order marker) is a no-op.
-    # Returns {chat_jid, timestamp, remote_status} if a row changed,
-    # else "" so the caller can skip the <Status>.
+    # 'read' is an XEP-0333 <displayed/>, which means all messages up to
+    # this point, so it also covers earlier rows; 'delivered' is an
+    # XEP-0184 receipt and covers only the row it names.
+    # Returns a timestamp-ordered list of {chat_jid, timestamp,
+    # remote_status}, one per changed row, empty if nothing moved.
     method markRemoteStatus {chatJid targetId status} {
-        if {$targetId eq ""} { return "" }
-        set changed ""
+        if {$targetId eq ""} { return {} }
+        set changed {}
         $options(-db) transaction {
+            set targetTs ""
             $options(-db) eval {
-                SELECT timestamp, remote_status FROM chat_message
+                SELECT timestamp FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message' AND own_id != ''
                   AND (own_id=$targetId OR origin_id=$targetId)
                 LIMIT 1
             } row {
-                if {[RemoteStatusRank $status] > [RemoteStatusRank $row(remote_status)]} {
-                    set ts $row(timestamp)
+                set targetTs $row(timestamp)
+            }
+            if {$targetTs ne ""} {
+                set from [expr {$status eq "read" ? 0 : $targetTs}]
+                set rank [RemoteStatusRank $status]
+                # Collected first; updating mid-eval would edit the table
+                # being walked. The != prunes what a repeat marker re-scans.
+                set stale {}
+                $options(-db) eval {
+                    SELECT timestamp, remote_status FROM chat_message
+                    WHERE chat_jid=$chatJid AND kind='message' AND own_id != ''
+                      AND timestamp BETWEEN $from AND $targetTs
+                      AND remote_status != $status
+                    ORDER BY timestamp
+                } row {
+                    if {$rank > [RemoteStatusRank $row(remote_status)]} {
+                        lappend stale $row(timestamp)
+                    }
+                }
+                foreach ts $stale {
                     $options(-db) eval {
                         UPDATE chat_message SET remote_status=$status
                         WHERE chat_jid=$chatJid AND timestamp=$ts
                     }
-                    set changed [dict create \
+                    lappend changed [dict create \
                         chat_jid $chatJid timestamp $ts remote_status $status]
                 }
             }

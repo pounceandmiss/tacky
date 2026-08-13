@@ -1159,6 +1159,26 @@ test message-marker-displayed-marks-read \
         dict get [lindex [msg_store_latest alice@example.com] 0] remote_status
     } -result read
 
+test message-marker-displayed-covers-the-burst \
+    {a displayed marker on the newest send marks the whole burst read} \
+    {*}$msg_common -body {
+        foreach body {one two three} {
+            tacky message send -acc $acc -chat alice@example.com -body $body
+        }
+        set oid [dict get [lindex [msg_store_latest alice@example.com] end] own_id]
+        set ::_st {}
+        set tag [tacky listen message <Status> {apply {{ev} {
+            lappend ::_st [dict get $ev -remote_status]
+        }}}]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j displayed -ns urn:xmpp:chat-markers:0 -id $oid
+        }]
+        tacky unlisten $tag
+        list [lmap m [msg_store_latest alice@example.com] {
+            dict get $m remote_status
+        }] $::_st
+    } -result {{read read read} {read read read}}
+
 test message-marker-displayed-then-received-no-regress \
     {a receipt arriving after a displayed marker does not downgrade read} \
     {*}$msg_common -body {

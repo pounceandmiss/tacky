@@ -383,10 +383,11 @@ snit::type taco_message {
     }
 
     # A bodyless XEP-0184 receipt / XEP-0333 chat marker from the peer
-    # advances the referenced outgoing message's remote_status
-    # (delivered/read) and emits a <Status>. Returns 1 if the stanza was a
-    # marker (consumed here), else 0 so OnMessage falls through to
-    # ingestLive. A 'displayed' outranks a co-present 'received'.
+    # advances outgoing messages' remote_status (delivered/read), one
+    # <Status> per row that moved. Returns 1 if the stanza was a marker
+    # (consumed here), else 0 so OnMessage falls through to ingestLive.
+    # A 'displayed' outranks a co-present 'received', and covers every
+    # message up to its target rather than just the one it names.
     method HandleMarker {chatJid stanza} {
         set targetId [xsearch $stanza displayed \
             -ns urn:xmpp:chat-markers:0 -get @id]
@@ -403,11 +404,10 @@ snit::type taco_message {
             }
         }
         if {$tier eq ""} { return 0 }
-        set changed [$messagestore markRemoteStatus $chatJid $targetId $tier]
-        if {$changed ne ""} {
+        foreach row [$messagestore markRemoteStatus $chatJid $targetId $tier] {
             $client emit message <Status> -jid $chatJid \
-                -timestamp [dict get $changed timestamp] \
-                -remote_status [dict get $changed remote_status]
+                -timestamp [dict get $row timestamp] \
+                -remote_status [dict get $row remote_status]
         }
         return 1
     }
