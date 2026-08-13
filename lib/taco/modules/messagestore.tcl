@@ -1210,7 +1210,9 @@ snit::type taco_messagestore {
     # send, search) read back via get ids so live messages are
     # enriched too.
     method RowToDict {row} {
-        set d [messagestyling::enrich $row]
+        # sqlite3's `eval ... row {}` sets row(*) to the column list, which
+        # `array get` hands us. Drop it before it reaches the wire.
+        set d [messagestyling::enrich [dict remove $row *]]
         # Direction is a protocol fact, not a display concern: a message is
         # ours iff it carries an own_id, which ingest sets when it resolves
         # the sender as us (bare JID in 1:1, occupant-id in a MUC). The GUI
