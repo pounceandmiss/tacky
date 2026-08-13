@@ -52,40 +52,38 @@ UTF-8; repeat. Write: `body = payload.encode("utf-8")`, then
     msg='["account", "list", {}, 1]'
     printf '%d\n%s' ${#msg} "$msg" | tclsh9.0 bin/tackyd-json.tcl; echo
 
-**C library.** `make lib` builds `dist/libtacky.a`; `make win-lib` and
-`make android-lib` cross-compile the MinGW `dist/libtacky-win.a` and the
-NDK arm64 `dist/libtacky-android.a`. Each is one archive with the whole Tcl
-runtime, the backend and every dependency merged in, so link order doesn't
-matter and there's nothing to group. They contain C++ (libdatachannel), so
-link the host app with `g++`, not `gcc`. The ABI is `embed/tacky.h`:
+**C library.** `make lib` builds a static library (the README lists the
+per-platform targets). Everything is merged into one archive, so link order
+doesn't matter; it contains C++, so link the host app with `g++`. The ABI is
+`embed/tacky.h`:
 
     tacky *tacky_create(const char *const *backend_args, tacky_emit_fn emit, void *ud);
     void tacky_send(tacky *t, const char *json, size_t len);
     void tacky_destroy(tacky *t);
 
-`tacky_create` starts the backend on its own thread and returns right
-away. `backend_args` is a NULL-terminated array of backend constructor
-options (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir`
-and `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
-Each `tacky_send` carries one complete JSON request; each emit callback
-delivers one complete JSON reply or event.
-If the backend fails to start up it emits
-`["event","backend","Dead",{"error":"..."}]` and goes dead: no replies
-arrive, and you still have to destroy the handle. You can call `tacky_send`
-from any thread; the emit callback fires on the backend thread, so copy
-the bytes out before you return (they're invalid afterward), hand them to
-your own loop, and don't block. `tests/lib_driver.c` is a minimal host
-(`make test-lib`).
+- `tacky_create` starts the backend on its own thread and returns right away.
+  `backend_args` is a NULL-terminated array of backend constructor options
+  (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
+  `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
+- `tacky_send` carries one complete JSON request; each emit callback delivers
+  one complete JSON reply or event.
+- Threading: `tacky_send` is callable from any thread. The emit callback fires
+  on the backend thread - copy the bytes out before returning (they're invalid
+  afterward), hand them to your own loop, don't block.
+- Startup failure: the backend emits
+  `["event","backend","Dead",{"error":"..."}]` and goes dead - no replies
+  arrive, and the handle still has to be destroyed.
+
+`tests/lib_driver.c` is a minimal host (`make test-lib`).
 
 **In-process Tcl.** The `tacky` command runs the backend in the same or a
-separate thread/process transparently. A Tcl frontend calls it through the
-same requests:
+separate thread/process transparently. Keyword args only; `-command` and
+`-onerror` are command prefixes run on the result and on an error, `-tag`
+groups calls so they can be cancelled together:
 
     tacky module method ?...args? ?-tag $tag? ?-command $cb? ?-onerror $ecb?
 
-Keyword args only. `-command` and `-onerror` are command prefixes run on
-the result and on an error; `-tag` groups calls so you can cancel them
-together. The two transports line up directly:
+The two transports line up directly:
 
     JSON                                Tcl
     ["mod","method",{"k":"v"}]          tacky mod method -k v
@@ -94,35 +92,13 @@ together. The two transports line up directly:
     ["error", token, message]           $ecb message
     ["event","mod","E",{...}]           a fired listen/observe callback
 
-On the Tcl side keys pick up a `-` and event names pick up `<>` (Tk
-binding style); the JSON wire drops both and carries bare names, in both
-directions - an event name sent *in* as a `pull` argument is bare too
-(`{"event": "Tail"}`). The argument and result values are the same either
-way, except binary ones: JSON carries them base64 in both directions, the
-Tcl transports raw bytes. Errors route three ways: with both `-command`
-and `-onerror`, a failure goes to `-onerror`; with just `-command`, it
-comes back as an `error <MethodError>` event (`-module -method -message
--errorinfo`); with neither, it's re-thrown right there.
-
-The Tcl binding adds frontend-side subscription sugar on top of the raw
-firehose, which could be used as inspiration for any frontend, including
-json:
-
-    tacky listen ?-tag $tag? $module $event ?-field $value ...? $command
-    tacky unlisten $tag
-    tacky observe ?-tag $tag? $module $event ?-field $value ...? $command
-
-`listen` registers a filtered callback and hands back a tag (auto-assigned
-unless you pass one); field filters like `-acc` and `-jid` narrow down
-which events fire it. `unlisten` drops every listener under a tag.
-`observe` is `listen` plus one immediate delivery of the current value - a
-getter and a subscribe in a single call - for pullable events.
-
-Cancelling: `tacky unlisten $tag` keeps the frontend from firing a pending
-callback; `tacky $module cancel -acc $acc -tag $tag` is an optimization
-that tells the backend to drop the work itself. E.g. a widget torn down
-mid-request *must* `unlisten` its tag, and *should* also call the module's
-`cancel`.
+Tcl keys take a `-` and event names take `<>` (Tk binding style); the JSON
+wire carries both bare, in both directions. Values match either way except
+binary ones: JSON carries them base64, Tcl carries raw bytes. An error goes
+to `-onerror`, or to an `error <MethodError>` event if only `-command` was
+given, or is re-thrown if neither was. On top of the raw firehose the binding
+adds frontend-side sugar - `tacky listen` / `observe` / `unlisten`, filtered
+callbacks under a cancellable tag.
 
 ## Storage layout
 
