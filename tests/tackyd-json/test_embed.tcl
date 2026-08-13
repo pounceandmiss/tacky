@@ -5,11 +5,13 @@ package require tcltest
 namespace import ::tcltest::*
 
 # Main-thread sink the backend thread calls (via thread::send -async) per
-# emitted JSON message. Complete once either reply for token 1 arrives.
+# emitted JSON message. Complete once either reply for token 1 arrives, or a
+# bgerror report, which is all a tokenless request produces.
 proc on_emit {json} {
     lappend ::received $json
     if {[string match {\["result",1,*} $json] ||
-        [string match {\["error",1,*} $json]} {
+        [string match {\["error",1,*} $json] ||
+        [string match {BGERROR *} $json]} {
         set ::done 1
     }
 }
@@ -70,4 +72,34 @@ test embed-threaded-base64-error {a bad binary argument answers the token instea
     set timeout [await_reply]
     if {$timeout ne ""} { return $timeout }
     string match {\["error",1,*base64*} [lindex $::received end]
+} -result 1
+
+# A tokenless request has nowhere to send a reply, so a synchronous failure can
+# only surface through bgerror. The JSON path used to swallow these.
+#
+# Dispatch from `after 0`, not straight off thread::send: that puts the throw on
+# Tcl's background-error path (bgerror), which is what the C shim reaches via
+# Tcl_BackgroundException. A bare async send lands in thread::errorproc instead.
+set embed_bgerror $embed_common
+dict set embed_bgerror -setup "[dict get $embed_common -setup]
+    thread::send \$::be {
+        proc bgerror {message} {
+            thread::send -async \$::main \[list on_emit \"BGERROR \$message\"]
+        }
+    }"
+
+test embed-threaded-fireforget-error {a tokenless synchronous failure reaches bgerror} \
+    {*}$embed_bgerror -body {
+    thread::send -async $::be {after 0 {tackyd_dispatch {["avatar","publish",{"data":"Zm9v"}]}}}
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    expr {[lsearch -glob $::received {BGERROR *}] >= 0}
+} -result 1
+
+test embed-threaded-fireforget-decode-error {a tokenless bad argument reaches bgerror} \
+    {*}$embed_bgerror -body {
+    thread::send -async $::be {after 0 {tackyd_dispatch {["avatar","publish",{"data":"!!!"}]}}}
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    expr {[lsearch -glob $::received {BGERROR *base64*}] >= 0}
 } -result 1

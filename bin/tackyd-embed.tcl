@@ -13,84 +13,13 @@
 #                               ["result",token,data]                success reply
 #                               ["error",token,message]              error reply
 #
-# The transport glue below mirrors bin/tackyd-json.tcl verbatim; only the two
-# transport ends differ (pipesend -> tacky_native_emit, lenpipe reader ->
-# tackyd_dispatch). Schema conversion, token wiring, and taco are reused.
+# Schema conversion, token wiring and dispatch live in the tackyd-json
+# package, shared with the daemon; only the sink differs.
 
 package require taco
 package require tackyd-json
 
-# Maps callback token -> schema key (e.g. "roster/get") so the emit path can
-# serialise the result with the right schema.
-variable _token_schemas [dict create]
-
-# Define "tacky" before creating taco_type, because the taco constructor calls
-# `tacky emit` for existing accounts.
-namespace eval ::tacky_ns {
-    namespace export emit
-    namespace ensemble create -command ::tacky
-    proc emit {module event args} {
-        # Callback results/errors -> ["result", token, data] / ["error", token, msg]
-        if {$module eq "callback" && [dict exists $args -token]} {
-            set token [dict get $args -token]
-            if {[dict exists $::_token_schemas $token]} {
-                set schema [dict get $::_token_schemas $token]
-                dict unset ::_token_schemas $token
-            } else {
-                set schema $module/$event
-            }
-            set result [dict get $args -result]
-            if {$event eq "<Error>"} {
-                tacky_native_emit [json::write array \
-                    [json::write string error] \
-                    $token \
-                    [json::write string $result]]
-            } else {
-                tacky_native_emit [json::write array \
-                    [json::write string result] \
-                    $token \
-                    [jsonify convert $schema $result string]]
-            }
-            return
-        }
-        # Broadcast events -> ["event", module, "Event", {args}]
-        # $event stays bracketed as the schema key.
-        set args [strip_dashes $args]
-        set json_args [jsonify convert $module/$event $args]
-        tacky_native_emit [json::write array \
-            [json::write string event] \
-            [json::write string $module] \
-            [json::write string [wire_event $event]] \
-            $json_args]
-    }
-}
-
-# Dispatch one JSON request array on the backend thread.
-#   ["chatlist","search",{"acc":"a@b"},5] -> taco chatlist search -acc a@b (token 5)
-proc tackyd_dispatch {msg} {
-    set parts [::json::json2dict $msg]
-    set module [lindex $parts 0]
-    set method [lindex $parts 1]
-    # Optional token (4th element) -> wire up -command/-onerror internally.
-    set token [lindex $parts 3]
-    # Nothing times out a request, so an escaping throw would hang the caller.
-    if {[catch {
-        set args [add_dashes \
-            [jsonify decode_args $module/$method [lindex $parts 2]]]
-        if {$token ne ""} {
-            dict set ::_token_schemas $token $module/$method
-            dict set args -command \
-                [list tacky emit callback <Result> -token $token -result]
-            dict set args -onerror \
-                [list tacky emit callback <Error> -token $token -result]
-        }
-        taco $module $method {*}$args
-    } err]} {
-        if {$token ne ""} {
-            tacky emit callback <Error> -token $token -result $err
-        }
-    }
-}
+tackyd_json_install_emit tacky_native_emit
 
 # Create the taco backend. Pass taco_type constructor args (e.g. -transient 0).
 # tacky_native_emit must already be defined, since the constructor may emit.

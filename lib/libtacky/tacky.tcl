@@ -4,6 +4,10 @@ package require jid
 # Split the --debug-* flags (jlog configureDebug's options) out of an args list
 # into {debugFlags restArgs}; the rest go to taco_type, which rejects unknown
 # options.
+#
+# lib/tackyd/tackyd.tcl carries the daemon's copy. This runs in the GUI process,
+# which must not load that package: it installs a stdio bgerror that would
+# replace the Tk error dialog. Keep the two flag lists in step.
 proc tacky_split_debug {arglist} {
     set flags {
         -debug-level -debug-file
@@ -166,13 +170,28 @@ oo::class create tacky_base {
         }
     }
 
+    # Allocate a one-shot callback token holding $entry, whose first element
+    # must be the tag: unlisten and listening match on it.
+    method TokenNew {entry} {
+        set token [incr TokenCounter]
+        dict set Callbacks $token $entry
+        return $token
+    }
+
+    # Pop a token's entry, or "" if it is unknown: already fired, or cancelled
+    # by unlisten.
+    method TokenPop {token} {
+        if {![dict exists $Callbacks $token]} { return "" }
+        set entry [dict get $Callbacks $token]
+        dict unset Callbacks $token
+        return $entry
+    }
+
     # Look up token, remove entry (one-shot), invoke original command.
     # Silently ignores unknown tokens (callback was cancelled).
     method _callback {args} {
-        set token [dict get $args -token]
-        if {![dict exists $Callbacks $token]} return
-        set entry [dict get $Callbacks $token]
-        dict unset Callbacks $token
+        set entry [my TokenPop [dict get $args -token]]
+        if {$entry eq ""} return
         lassign $entry _tag cmd
         {*}$cmd [dict get $args -result]
     }
@@ -207,10 +226,8 @@ oo::class create tacky_base {
             }
             foreach opt {-command -onerror} {
                 if {![dict exists $args $opt]} continue
-                set orig [dict get $args $opt]
-                set token [incr TokenCounter]
+                set token [my TokenNew [list $tag [dict get $args $opt]]]
                 set event [dict get {-command <Result> -onerror <Error>} $opt]
-                dict set Callbacks $token [list $tag $orig]
                 dict set args $opt \
                     [list tacky emit callback $event -token $token -result]
             }
@@ -334,17 +351,17 @@ set _tacky_backend_script [file join [file dirname [info script]] .. .. bin tack
 # to allocate a wire-level token and let the child wire its own
 # internal callbacks against it.  Keeps the callback string off the
 # wire.
+#
+# Both use the base's token store: one token per request holding
+# {tag cmd err} here, one per callback holding {tag cmd} there.  Tag is
+# first either way, so unlisten/listening need no special case.
 oo::class create tacky_process_type {
     superclass tacky_base
     variable Pipe
-    variable Callbacks
-    variable TokenCounter
 
     constructor {args} {
         next
         package require lenpipe
-        set Callbacks [dict create]
-        set TokenCounter 0
         # -tackyd is a launcher concern (which daemon to spawn), not a taco
         # option, so pull it out before forwarding the rest to the daemon.
         set explicit ""
@@ -387,8 +404,7 @@ oo::class create tacky_process_type {
             set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]
             set cmd [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
             set err [expr {[dict exists $args -onerror] ? [dict get $args -onerror] : ""}]
-            set token [incr TokenCounter]
-            dict set Callbacks $token [list $tag $cmd $err]
+            set token [my TokenNew [list $tag $cmd $err]]
             dict unset args -command
             dict unset args -onerror
             set wants {}
@@ -412,21 +428,13 @@ oo::class create tacky_process_type {
             }
             result {
                 lassign $msg _ token data
-                if {[dict exists $Callbacks $token]} {
-                    set entry [dict get $Callbacks $token]
-                    dict unset Callbacks $token
-                    set cmd [lindex $entry 1]
-                    if {$cmd ne ""} { {*}$cmd $data }
-                }
+                lassign [my TokenPop $token] _tag cmd
+                if {$cmd ne ""} { {*}$cmd $data }
             }
             error {
                 lassign $msg _ token errmsg
-                if {[dict exists $Callbacks $token]} {
-                    set entry [dict get $Callbacks $token]
-                    dict unset Callbacks $token
-                    set err [lindex $entry 2]
-                    if {$err ne ""} { {*}$err $errmsg }
-                }
+                lassign [my TokenPop $token] _tag _cmd err
+                if {$err ne ""} { {*}$err $errmsg }
             }
         }
     }

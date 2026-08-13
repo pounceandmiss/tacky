@@ -14,13 +14,7 @@
 lappend auto_path [file normalize [file join [file dirname [info script]] .. lib]]
 package require taco
 package require lenpipe
-
-proc pipesend {msg} {
-    set bytes [encoding convertto utf-8 $msg]
-    puts stdout [string length $bytes]
-    puts -nonewline stdout $bytes
-    flush stdout
-}
+package require tackyd
 
 # Define "tacky" before creating taco_type — taco's constructor calls
 # `tacky emit` for existing accounts.  Module=callback (used by the
@@ -44,8 +38,6 @@ namespace eval ::tacky_ns {
     }
 }
 
-chan configure stdout -translation binary -buffering full
-
 lenpipe create _pipe stdin \
     -onmessage {apply {{msg} {
         lassign $msg module method args
@@ -68,31 +60,4 @@ lenpipe create _pipe stdin \
         exit 0
     }}}
 
-proc bgerror {message} {
-    set info $::errorInfo
-    if {[catch {jlog error $info -obj bgerror}]} {
-        puts stderr $info
-    }
-}
-
-set _debug {}
-set _taco_args {}
-foreach {_k _v} $::argv {
-    switch -- $_k {
-        -debug-level - --debug-level { lappend _debug -debug-level $_v }
-        -debug-file  - --debug-file  { lappend _debug -debug-file $_v }
-        -libdatachannel-debug-level - --libdatachannel-debug-level {
-            lappend _debug -libdatachannel-debug-level $_v
-        }
-        -rtcma-debug-level - --rtcma-debug-level {
-            lappend _debug -rtcma-debug-level $_v
-        }
-        default { lappend _taco_args $_k $_v }
-    }
-}
-# stdout is the lenpipe wire; jlog configureDebug routes logs to stderr or
-# the --debug-file, never stdout.
-jlog configureDebug {*}$_debug
-
-taco_type create taco {*}$_taco_args
-vwait forever
+tackyd_main $::argv
