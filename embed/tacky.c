@@ -34,7 +34,7 @@ struct tacky {
     Tcl_Interp   *interp;   /* backend-thread-owned */
     tacky_emit_fn emit;
     void         *ud;
-    char        **args;     /* NULL-terminated copy of taco_args */
+    char        **args;     /* NULL-terminated copy of backend_args */
     char         *err;      /* init failure message for the <Dead> event */
 
     /* create()/teardown handshake (lock+cond guard ready, then done) */
@@ -295,7 +295,7 @@ static void reap(tacky *c) {
     free(c);
 }
 
-tacky *tacky_create(const char *const *taco_args,
+tacky *tacky_create(const char *const *backend_args,
                            tacky_emit_fn emit, void *ud) {
     tacky *c;
     size_t n = 0, i;
@@ -309,11 +309,11 @@ tacky *tacky_create(const char *const *taco_args,
     c->emit = emit;
     c->ud = ud;
 
-    if (taco_args) { while (taco_args[n]) n++; }
+    if (backend_args) { while (backend_args[n]) n++; }
     c->args = (char **)calloc(n + 1, sizeof(char *));
     if (!c->args) { free(c); return NULL; }
     for (i = 0; i < n; i++) {
-        c->args[i] = strdup(taco_args[i]);
+        c->args[i] = strdup(backend_args[i]);
         if (!c->args[i]) { free_args(c->args); free(c); return NULL; }
     }
 
