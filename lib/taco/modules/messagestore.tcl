@@ -844,7 +844,9 @@ snit::type taco_messagestore {
                 set from [expr {$status eq "read" ? 0 : $targetTs}]
                 set rank [RemoteStatusRank $status]
                 # Collected first; updating mid-eval would edit the table
-                # being walked. The != prunes what a repeat marker re-scans.
+                # being walked. A 'read' marker range-scans the chat back to
+                # its start every time; the != can't narrow that scan, it
+                # only keeps a repeat marker from re-UPDATEing every row.
                 set stale {}
                 $options(-db) eval {
                     SELECT timestamp, remote_status FROM chat_message
