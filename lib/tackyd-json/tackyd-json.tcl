@@ -283,3 +283,87 @@ proc add_dashes {d} {
     }
     return $out
 }
+
+# Entry-point glue shared by bin/tackyd-json.tcl (lenpipe) and
+# bin/tackyd-embed.tcl (native callback); only the sink differs.
+
+# Maps callback token -> schema key (e.g. "roster/get") so the emit path can
+# serialise the result with the right schema.
+variable _token_schemas [dict create]
+
+# $sink is a command prefix taking one complete JSON message. Install before
+# creating taco_type: the constructor emits for already-known accounts.
+proc tackyd_json_install_emit {sink} {
+    namespace eval ::tacky_ns [list variable sink $sink]
+    namespace eval ::tacky_ns {
+        namespace export emit
+        namespace ensemble create -command ::tacky
+        proc emit {module event args} {
+            variable sink
+            # Callback results/errors -> ["result", token, data] / ["error", token, msg]
+            if {$module eq "callback" && [dict exists $args -token]} {
+                set token [dict get $args -token]
+                if {[dict exists $::_token_schemas $token]} {
+                    set schema [dict get $::_token_schemas $token]
+                    dict unset ::_token_schemas $token
+                } else {
+                    set schema $module/$event
+                }
+                set result [dict get $args -result]
+                if {$event eq "<Error>"} {
+                    {*}$sink [json::write array \
+                        [json::write string error] \
+                        $token \
+                        [json::write string $result]]
+                } else {
+                    {*}$sink [json::write array \
+                        [json::write string result] \
+                        $token \
+                        [jsonify convert $schema $result string]]
+                }
+                return
+            }
+            # Broadcast events -> ["event", module, "Event", {args}]
+            # $event stays bracketed as the schema key.
+            set args [strip_dashes $args]
+            set json_args [jsonify convert $module/$event $args]
+            {*}$sink [json::write array \
+                [json::write string event] \
+                [json::write string $module] \
+                [json::write string [wire_event $event]] \
+                $json_args]
+        }
+    }
+}
+
+# Dispatch one JSON request array.
+#   ["chatlist","search",{"acc":"a@b"},5] -> taco chatlist search -acc a@b (token 5)
+proc tackyd_dispatch {msg} {
+    set parts [::json::json2dict $msg]
+    set module [lindex $parts 0]
+    set method [lindex $parts 1]
+    # Optional token (4th element) -> wire up -command/-onerror internally.
+    set token [lindex $parts 3]
+    # taco never sees a decode failure, so taco_call cannot route it; answer the
+    # token here. Nothing times out a request, so an escaping throw would hang
+    # the caller.
+    if {[catch {
+        add_dashes [jsonify decode_args $module/$method [lindex $parts 2]]
+    } args]} {
+        if {$token eq ""} {
+            return -code error $args
+        }
+        tacky emit callback <Error> -token $token -result $args
+        return
+    }
+    if {$token ne ""} {
+        dict set ::_token_schemas $token $module/$method
+        dict set args -command \
+            [list tacky emit callback <Result> -token $token -result]
+        dict set args -onerror \
+            [list tacky emit callback <Error> -token $token -result]
+    }
+    # taco_call, not taco: it routes a synchronous error to -onerror, and lets a
+    # tokenless one reach bgerror instead of dropping it.
+    taco_call ::taco $module $method {*}$args
+}
