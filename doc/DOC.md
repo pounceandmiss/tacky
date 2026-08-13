@@ -7,8 +7,11 @@ and get back replies and events.
 
 - [Using the backend](#using-the-backend)
   - [Ways to run it](#ways-to-run-it)
-  - [Requests, replies, events](#requests-replies-events)
+    - [JSON subprocess](#json-subprocess)
+    - [C library](#c-library)
+    - [Tcl command](#tcl-command)
   - [Storage layout](#storage-layout)
+  - [Requests, replies, events](#requests-replies-events)
 - [Reference](#reference)
   - [account](#account)
   - [register](#register)
@@ -40,8 +43,10 @@ and get back replies and events.
 Three ways to run the backend. All of them speak the same requests and
 events, so the rest of this doc applies whichever you pick.
 
-**JSON subprocess.** `tclsh9.0 bin/tackyd-json.tcl` reads JSON from stdin
-and writes JSON to stdout, each message length-prefixed:
+### JSON subprocess
+
+`tclsh9.0 bin/tackyd-json.tcl` reads JSON from stdin and writes JSON to
+stdout, each message length-prefixed:
 
     <byte_count>\n<payload>
 
@@ -52,9 +57,11 @@ UTF-8; repeat. Write: `body = payload.encode("utf-8")`, then
     msg='["account", "list", {}, 1]'
     printf '%d\n%s' ${#msg} "$msg" | tclsh9.0 bin/tackyd-json.tcl; echo
 
-**C library.** `make lib` builds a static library (the README lists the
-per-platform targets). Everything is merged into one archive, so link order
-doesn't matter; it contains C++, so link the host app with `g++`. The ABI is
+### C library
+
+`make lib` builds a static library (the README lists the per-platform
+targets). Everything is merged into one archive, so link order doesn't
+matter; it contains C++, so link the host app with `g++`. The ABI is
 `embed/tacky.h`:
 
     tacky *tacky_create(const char *const *backend_args, tacky_emit_fn emit, void *ud);
@@ -76,10 +83,12 @@ doesn't matter; it contains C++, so link the host app with `g++`. The ABI is
 
 `tests/lib_driver.c` is a minimal host (`make test-lib`).
 
-**In-process Tcl.** The `tacky` command runs the backend in the same or a
-separate thread/process transparently. Keyword args only; `-command` and
-`-onerror` are command prefixes run on the result and on an error, `-tag`
-groups calls so they can be cancelled together:
+### Tcl command
+
+The `tacky` command runs the backend in the same or a separate thread/process
+transparently. Keyword args only; `-command` and `-onerror` are command
+prefixes run on the result and on an error, `-tag` groups calls so they can
+be cancelled together:
 
     tacky module method ?...args? ?-tag $tag? ?-command $cb? ?-onerror $ecb?
 
@@ -107,19 +116,15 @@ back to a platform default. All three are created mode 0700 on platforms with
 file modes. The XDG variables below fall back to `~/.config`, `~/.local/share`
 and `~/.cache`.
 
-|         | Linux | macOS | Windows |
-| ------- | ----- | ----- | ------- |
-| config  | `$XDG_CONFIG_HOME/tacky` | `~/Library/Application Support/tacky` | `%APPDATA%\tacky` |
-| data    | `$XDG_DATA_HOME/tacky` | `~/Library/Application Support/tacky` | `%LOCALAPPDATA%\tacky\data` |
-| cache   | `$XDG_CACHE_HOME/tacky` | `~/Library/Caches/tacky` | `%LOCALAPPDATA%\tacky\cache` |
+|        | Linux                    | macOS                                 | Windows                      |
+| ------ | ------------------------ | ------------------------------------- | ---------------------------- |
+| config | `$XDG_CONFIG_HOME/tacky` | `~/Library/Application Support/tacky` | `%APPDATA%\tacky`            |
+| data   | `$XDG_DATA_HOME/tacky`   | `~/Library/Application Support/tacky` | `%LOCALAPPDATA%\tacky\data`  |
+| cache  | `$XDG_CACHE_HOME/tacky`  | `~/Library/Caches/tacky`              | `%LOCALAPPDATA%\tacky\cache` |
 
-config holds `accounts.db`. data holds one `<jid>.db` per account - OMEMO
-identity key, ratchet state, trust decisions and message history - plus
-downloaded attachments. cache holds only what can be regenerated: thumbnails
-and upload staging.
-
-Data does not roam on Windows because the OMEMO identity key is per-device;
-two installs sharing one device id corrupt each other's ratchets.
+config holds `accounts.db`. data holds one `<jid>.db` per account - its state
+and message history with downloaded attachments. cache holds only what can
+be regenerated: thumbnails and upload staging.
 
 `-transient yes` keeps every database in RAM and puts attachments in a
 temporary directory that is removed on shutdown.
@@ -378,9 +383,9 @@ Event:
 
     message send {chat: string, body: string, reply_to_ts?: int}
     message sendFile {chat: string, path: string}
-    message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}  -> [message]
-    message goto {chat: string, date: int, source: string, limit?: int, tag?: string}     -> goto_result
-    message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}   -> goto_result
+    message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
+    message goto {chat: string, date: int, source: "local" | "remote", limit?: int, tag?: string}  -> goto_result
+    message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}            -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
     message edit {chat: string, timestamp: int, body: string}
     message retract {chat: string, timestamp: int}
@@ -417,35 +422,64 @@ Event:
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool, last: string}
 
-`timestamp` doubles as the row id - it's unique, and the backend bumps it
-by a microsecond if two would collide. `before`/`after` on `history` are
-exclusive cursors; `source` on `goto` is `local` or `remote`.
-`server_status` is `""` (the server has it), `pending`, `uploading`, or
-`failed`, and tracks the hop to your own server. `remote_status` is the hop
-after that - what the far end has done with it - and is `none` (nothing back
-yet), `delivered` (XEP-0184 or XEP-0333 `<received>`), or `read` (XEP-0333
-`<displayed>`). It only ever moves forward along that order, so a duplicate or
-out-of-order marker never walks it back, and it stays `none` on incoming
-messages, where there is nothing to report. The two are independent axes: read
-`server_status` first, since a message that hasn't reached your server yet has
-nothing to say about the far end. `encryption` is `"omemo"` or `""`.
-`content` is the typed payload:
-`type: "text"` carries a `body`, `type: "media"` carries an `attachments` list
-plus a `caption` (grouped attachments are just more than one entry). Each
-`attachment` has a `type` of `"image"` (render inline) or `"file"` (a download
-chip). `formatting` (XEP-0393 styling spans) indexes into whichever of
-`body`/`caption` the variant carries, with the styling characters already
-removed from that string. A span's `type` is `bold`, `italic`, `overstrike`,
-`monospace`, `preformatted`, or `quote`. Spans may overlap - two styles over
-the same run are two separate entries (each single-type), and the renderer
-combines overlapping spans when drawing (as with TDLib `textEntity`).
-`matches` appears on `message search` results only: one entry per occurrence of
-the query, in the same offsets as `formatting`.
-A **retracted** message carries no `content` (the tombstone has no payload, and
-its former body/attachments are never shipped); the `retracted` flag is the
-signal. Deletion is a message-level state, not a content type (matching TDLib);
-future kinds like `call` or `system` events extend the `content` union. See
-[The chat window](#the-chat-window), [Attachments](#attachments),
+An incoming text message, as it arrives on `<New>`:
+
+    ["event", "message", "New",
+     {"acc": "me@example.com", "jid": "peer@example.com",
+      "message": {
+        "timestamp": 1786637183834216,
+        "chat_jid": "peer@example.com",
+        "from_jid": "peer@example.com", "from_resource": "phone",
+        "is_outgoing": false,
+        "server_id": "kR3nQ8vP", "own_id": "", "occupant_id": "",
+        "server_status": "", "remote_status": "none",
+        "encryption": "omemo", "fail_reason": "",
+        "edited": false, "edited_ts": 0, "retracted": false,
+        "content": {"type": "text", "body": "hey, look at this"}}}]
+
+The same message carrying a photo instead. Only `content` differs: the body
+becomes `caption`, and the files are listed in `attachments`.
+
+    "content": {
+      "type": "media",
+      "caption": "the roof, this morning",
+      "attachments": [
+        {"url": "https://upload.example.com/8f2a/roof.jpg", "type": "image",
+         "name": "roof.jpg", "size": 184320, "mime": "image/jpeg"}]}
+
+- `timestamp` doubles as the row id - unique within a chat, and the backend
+  bumps it by a microsecond if two would collide. `before`/`after` on
+  `history` are exclusive cursors.
+- `server_status` tracks the hop to your own server: `""` (it has the
+  message), `pending`, `uploading`, or `failed`.
+- `remote_status` is the hop after that, what the far end has done with it:
+  `none` (nothing back yet), `delivered` (XEP-0184 or XEP-0333 `<received>`),
+  or `read` (XEP-0333 `<displayed>`). It only ever moves forward along that
+  order, so a duplicate or out-of-order marker never walks it back, and it
+  stays `none` on incoming messages. A `<displayed>` marker means every message
+  up to its target, so it takes each earlier outgoing message in the chat to
+  `read` too, one `<Status>` per row; an XEP-0184 receipt moves only the message
+  it names. The two are independent axes - read
+  `server_status` first, since a message that hasn't reached your server yet
+  has nothing to say about the far end.
+- `encryption` is `"omemo"` or `""`.
+- `content` is the typed payload: `type: "text"` carries a `body`,
+  `type: "media"` carries an `attachments` list plus a `caption` (grouped
+  attachments are just more than one entry). Each `attachment` has a `type` of
+  `"image"` (render inline) or `"file"` (a download chip). Deletion is a
+  message-level state rather than a content type, so future kinds like `call`
+  or `system` extend this union - switch on `type` and tolerate unknown ones.
+- `formatting` (XEP-0393 styling spans) indexes into whichever of
+  `body`/`caption` the variant carries, with the styling characters already
+  removed from that string. Spans may overlap: two styles over the same run
+  are two separate single-type entries, combined by the renderer.
+- `matches` appears on `message search` results only: one entry per occurrence
+  of the query, in the same offsets as `formatting`.
+- A retracted message carries no `content` - the `retracted` flag is the
+  signal. The row itself is deliberately kept, so pagination anchors and reply
+  resolution keep working.
+
+See [The chat window](#the-chat-window), [Attachments](#attachments),
 [OMEMO](#omemo-1).
 
 Events:
@@ -461,27 +495,13 @@ Events:
     message <CatchupDone> {jid: string, count: int}
     message <Tail>        {jid: string, timestamp: int}
 
-These events each carry one kind of change to a message already on screen,
-found by `timestamp`. If the target isn't displayed, drop it. `<Status>`
-updates send/receipt state in place (`server_status`
-`pending`/`uploading`/`failed`, `remote_status` `none`/`delivered`/`read`,
-`fail_reason`), and carries only the fields that changed. It also carries
-`encryption` when a resend rewrote the row's stamp, which is a downgrade to
-cleartext: redraw the row so its lock indicator matches what goes on the
-wire. `<Confirmed>` is a
-pending send the server acknowledged: it
-always carries `newtimestamp` (equal to `timestamp` when the stamp held, the
-relocated server stamp when it moved) and clears `server_status` to `""` -
-update in place when equal, rekey and re-sort when it moved. It's the only
-event that clears to `""`, and the only one that shifts a message's slot.
-`<Reactions>` replaces the aggregated reaction map. `<Edited>` re-sends the
-whole `message` row for a content edit, redraw it in place. `<Retracted>`
-flips the displayed message to a tombstone - unlike
-TDLib `updateDeleteMessages`, it does not remove the message: the row is kept
-(the `retracted` envelope flag is set, `content` is dropped) so pagination
-anchors, reply resolution, and slot/attribution keep working, and the client
-redraws the placeholder in place from the header it already holds. That is why
-it carries only `timestamp`, not a row.
+`<Status>`, `<Confirmed>`, `<Reactions>`, `<Edited>` and `<Retracted>` each
+change a message already on screen, found by `timestamp` - drop one whose
+target isn't displayed. `<Status>` carries only the fields that changed, plus
+`encryption` when a resend rewrote the row to cleartext. `<Confirmed>` always
+carries `newtimestamp` and is the only event that clears `server_status` to
+`""`, and the only one that can move a message's slot. What to do with each is
+in [The chat window](#the-chat-window).
 
 ### Read state
 
@@ -513,36 +533,33 @@ Events:
                        unread: int, mention: bool}
     notify <Settings> {jid: string, muted: bool, mentions: bool}
 
-`<Notify>` means this message is worth telling the user about; presenting it -
-a desktop notification, a sound, a badge - is the frontend's job. `nick` is who
-sent it, resolved the way `author get` resolves it (see
-[The chat window](#the-chat-window)): the participant nick in a group chat, the
-roster name then PEP nick then bare JID in a 1:1. `body` is the full message
-text; trimming it for display is the frontend's job. For an attachment it is the
-caption, empty when there was none. `unread` is the chat's total at that moment,
-so a burst collapses into one notification reading "Name (12)" instead of
-twelve. `mention` marks a group-chat message that named you.
+`<Notify>` means this message is worth telling the user about even if they are
+not looking at the app; how to tell them is the frontend's job.
 
-There is no "the user is looking at this chat" call. The gate is the read
-watermark: a message alerts only while it sits past it, and the alert is held
-briefly before firing, so a chat the user is reading marks itself read (via
-`markOwnRead`) first and never alerts. Dismiss a shown alert when
-`message <OwnRead>` moves past it; that event covers reads on your other
+- `nick` is who sent it, resolved the way `author get` does.
+- `body` is the full message text - trimming it for display is the frontend's
+  job. For an attachment it is the caption, empty when there was none.
+- `unread` is the chat's total at that moment, so a burst can collapse into a
+  single "Name (12)" alert.
+- `mention` marks a group-chat message that named you.
+
+The gate is the read watermark, not a "user is looking at this chat" call:
+a message alerts only while it sits past the watermark, and the alert is held
+for `notify_delay_ms` (default `500`) first, so a chat the user is reading
+marks itself read via `markOwnRead` and never alerts. Dismiss a shown alert
+when `message <OwnRead>` moves past it - that covers reads on your other
 devices too.
 
 Messages that arrived while you were offline alert once catch-up settles,
 capped at 10 per chat per catch-up, with `unread` still reporting the true
-total. Nothing from before the account's first connection alerts, so the
-opening archive fetch is silent.
+total. `notify_floor` is stamped at the account's first connection, so nothing
+older ever alerts and the opening archive fetch is silent. Both are `setting`
+keys.
 
 `muted` and `mentions` are the per-chat policy: alert when
-`(mention && mentions) || !muted`. A mention overrides the mute, so a muted
-room still pings on your nick; set `mentions` to `false` to silence that too.
-Unconfigured chats take a derived default - group chats start muted, 1:1 chats
-do not, `mentions` starts on for both - which leaves a public room
-mention-only without a setting for it.
-
-`notify_delay_ms` (default `500`) and `notify_floor` are `setting` keys.
+`(mention && mentions) || !muted`, so a mention pierces a mute unless
+`mentions` is false too. Unconfigured chats take a derived default - group
+chats start muted, 1:1 chats do not, `mentions` starts on for both.
 
 ## mam
 
@@ -551,19 +568,20 @@ mention-only without a setting for it.
                                               end_id: string, end_timestamp: int}
     mam formfields {to?: string}          -> [string]   query fields the archive offers
 
-What the archive itself can do, for gating a UI on it. History and search go
-through `message`, which drives MAM for you; nothing here fetches messages.
+What the archive itself can do, for gating a UI on it. Nothing here fetches
+messages - history and search go through `message`, which drives MAM for you.
 
-`fulltextSupported` takes a **chat** JID and routes the way archive queries do -
-a room asks its own archive, a 1:1 asks yours - and answers whether a server-side
-search is worth offering (see [The chat window](#the-chat-window)). The other
-two take a **`to`**
-JID naming the archive directly, defaulting to your own account's when omitted;
-pass a room JID for that room's. `metadata` reports the oldest and newest entries,
-with every value `""` for an empty archive and an `error: true` key on an IQ
-error. `formfields` lists the filter fields the archive advertises, returning an
-empty list on error - the presence of a fulltext field there is what
-`fulltextSupported` is checking.
+`chat` is a chat JID (`room@host?join` for a room), which `fulltextSupported`
+resolves to whichever archive would answer it: the room's own, or yours. `to`
+names an archive directly and defaults to yours, so pass a room JID for that
+room's.
+
+- `fulltextSupported` - whether a server-side search is worth offering (see
+  [The chat window](#the-chat-window)).
+- `metadata` - the oldest and newest entries; every value `""` for an empty
+  archive, plus an `error: true` key on an IQ error.
+- `formfields` - the filter fields the archive advertises, empty on error. A
+  fulltext field among them is what `fulltextSupported` checks for.
 
 ## omemo
 
@@ -610,26 +628,27 @@ Events:
 
     avatar_meta = {hash: string, type: string, bytes: int, width: int, height: int}
 
-The full-size image is content-addressed by hash: `metadata` maps a JID to
-its current hash, and `data` gives you the bytes as they were published
-(often JPEG, not always PNG). The backend never resizes - scale on your
-end. It only fetches bytes for JIDs you've marked `visible`, and that's
-refcounted, so balance each `visible` with an `invisible`. `visible` also
-re-emits `<Update>` for an already-cached avatar, so listening is enough.
-`publish` sends `data` as-is; a ~128px PNG is a safe size. `publish` and
-`disable` update your own cached entry and emit `<Update>` for your JID as
-soon as the server confirms, without waiting for the PEP echo. Over JSON
-`data` is base64 in both directions, and input that isn't valid base64
-comes back as an error; the Tcl transports take and return raw bytes. See
-`avatarcache_base` in `lib/libtacky/tacky.tcl` for a caching example.
+The full-size image is content-addressed by hash: `metadata` maps a JID to its
+current hash, and `data` gives you the bytes as they were published. The
+backend fetches bytes for JIDs you've marked `visible`, and that's refcounted,
+so balance each `visible` with an `invisible`. `visible` also re-emits `<Update>`
+for an already-cached avatar, so listening is enough. `refresh` re-requests a
+JID's metadata node instead of trusting the cached hash, for when no
+notification arrived; it still only fetches bytes for a `visible` JID, leaves
+the cache alone if that JID publishes no avatar, and reports nothing on an IQ
+error.
+
+`publish` sends `data` as-is. A ~128px PNG is a safe size. `publish` and
+`disable` update your own cached entry and emit `<Update>` for your JID as soon
+as the server confirms, without waiting for the PEP echo.
 
 Avatars come from XEP-0084 (PEP) or XEP-0153 (vCard, for group chats and
 occupants). PEP wins: a JID with a PEP avatar ignores its vCard hash.
 
-`inject` seeds the local cache for any JID with no server round-trip, for
-fixtures and tests: it writes what a PEP arrival would, emits `<Update>`,
-and returns the hash. Empty `data` clears the JID and returns `""`. Nothing
-is published, your own JID included.
+For tests and fixtures: `inject` seeds the local cache for any JID with no
+server round-trip. It writes what a PEP arrival would, emits `<Update>`, and
+returns the hash. Empty `data` clears the JID and returns `""`. Nothing is
+published.
 
 Events:
 
@@ -695,10 +714,9 @@ message timestamp; for a download, match on `url`.
     calls hangup {sid: string, reason?: string}                    reason default: success
     calls setDevices {sid: string, input?: string, output?: string}
 
-`start` rings the peer and returns the session id. That id also shows up on
-`<Outgoing>`, which is the reliable source no matter the transport.
-`setDevices` overrides the mic and speaker for a single call; an empty id
-means the system default. See [Voice calls](#voice-calls).
+`start` rings the peer. Take the session id from `<Outgoing>`.
+`setDevices` overrides the mic and speaker for a single call; an empty id means the system default. See
+[Voice calls](#voice-calls).
 
 Events:
 
@@ -737,37 +755,32 @@ Events:
 
 # Guides
 
-The stateful protocols you'll actually implement. The Reference above has
-the signatures; these walk through the flows.
-
 ## Accounts and sign-in
 
-**Startup.** The backend connects every enabled account by itself at
-init - there's no "connect" call. Your only startup decision is what to show:
-run `account list {enabled: 1}`, and if it's non-empty open the main UI,
-otherwise show setup. Do the same check in reverse when the last account
-window closes - no accounts left means back to setup, otherwise quit.
+**Startup.** The backend connects every enabled account at init; there is no
+connect call. Run `account list {enabled: 1}` and open the main UI if it
+returns anything, setup if it doesn't.
 
-**Sign-in.** There's no separate "verify credentials" call - signing in
-*is* creating the account and watching what the connection does. Subscribe
-to `conn <Ready>`, `<AuthError>`, and `<ConnError>` for the account, then
-`account add` followed by `account enable`. On `<Ready>`, keep the account
-and move on. On failure (show the `message`), or if the user backs out,
-call `account remove` - the account got stored before it was ever
-validated, so an abandoned sign-in has to clean itself up. `<ConnError>`
-isn't terminal (the backend keeps retrying); `<AuthError>` is.
+**Sign-in.** Creating the account is the credential check. Subscribe to
+`conn <Ready>`, `<AuthError>` and `<ConnError>` for the account, then call
+`account add` and `account enable`. Keep the account on `<Ready>`. On failure,
+show the `message` and call `account remove`: `account add` stores the account
+before anything validates it, so an abandoned sign-in leaves a row behind.
+`<ConnError>` is retried by the backend; `<AuthError>` is terminal.
 
-**Sign-up.** XEP-0077 registration runs over its own throwaway connection
-(the `register` module), keyed by a `token`. The flow: `register connect`,
-wait for `<Form>`, pull the field list with `register form` and render it
-(`username` and `password` are the usual fields, but the server decides
-the set; `<MediaReady>` hands you CAPTCHA bytes for a field via
-`register media`), then `register submit` with the filled-in values.
-`<Error>` can fire at either step, and you may have to re-fetch the form
-after a failed submit - an expired CAPTCHA, say. On `<Success>` the account
-exists on the server but your local store has never heard of it, so finish
-it off exactly like sign-in (`account add` then `enable`). `register cancel`,
-or just dropping the session, tears it down at any point.
+**Sign-up.** XEP-0077 registration runs through the `register` module, keyed
+by a `token`:
+
+1. `register connect`, then wait for `<Form>`.
+2. `register form` for the field list, and render it. `username` and
+   `password` are the usual fields, but the server picks the set.
+   `<MediaReady>` carries CAPTCHA bytes, fetched with `register media`.
+3. `register submit` with the filled-in values.
+
+`<Error>` can fire at either step, and a failed submit may need the form
+re-fetched, since a CAPTCHA expires. `<Success>` means the account exists on
+the server but not locally, so finish with `account add` and `account enable`
+as above. `register cancel` or dropping the session tears it down.
 
 ## The chat window
 
@@ -781,58 +794,60 @@ Three things have to stay true:
 - **No stale displays** - never apply a result whose cursor has been
   invalidated (the user culled or jumped away).
 
-**Data model.** `timestamp` is both the sort key and the unique id. The
-backend keeps one ordered timeline per chat and hands back contiguous
-batches for pagination queries. Pending outgoing messages sort in by
-timestamp like everything else.
+**Data model.** A message is keyed by its chat plus its `timestamp`, which is
+unique within that chat and doubles as the sort key. Equal timestamps in
+different chats are ordinary, so anything spanning chats keys on both. The
+backend keeps one ordered timeline per chat and hands back contiguous batches
+for pagination queries. Pending outgoing messages sort in by timestamp like
+everything else.
 
-**What the frontend holds.** Beyond the messages on screen, one flag:
-whether the window reaches the conversation tail. Accepting live events
-hinges on that flag, and an empty window counts as at-tail. You identify
-in-flight requests by a token. The reference chat view keeps one cancel
-scope per direction - live, older-page, newer-page, and goto. Cancelling by
-that token is what stops racing results from breaking contiguity. The
-pagination cursors are just the first and last timestamps in the window,
-passed as `before` and `after`.
+**Reaching the tail.** Track whether the window reaches the end of the
+conversation; an empty window counts as reaching it. Live events may only be
+applied while that holds - otherwise a `<New>` lands beside a message it does
+not belong next to, and contiguity is gone. Culling the newer end or jumping
+with `goto` ends it; a newer-page result whose newest timestamp matches the
+last `<Tail>` restores it.
+
+Requests carry a `tag`, and cancelling by tag is what keeps a result that
+outlived its cursor from being applied. The pagination cursors are just the
+first and last timestamps in the window, passed as `before` and `after`.
 
 **Paging.** `message history` with no cursor gives you the newest page.
 `before` (exclusive) pages older, `after` (exclusive) pages newer, always
 oldest-first, capped at `limit` (default 50). It's local-first: it returns
-local rows right away and only reaches for the server (MAM) when a cursor
-anchors a fill *and* the local read came up short of `limit`. A cursorless
+local rows right away and reaches for the server (MAM) only when both hold: a
+cursor anchors the fill, and the local read came up short of `limit`. A cursorless
 initial load shows only the contiguous local tail and won't auto-fetch
 older history - scrolling up (a `before` page) pulls the next page
 from MAM. When the user scrolls toward an edge, fire a tagged `history` for
 that direction, unless one is already in flight there. When the window
 culls an end, cancel any in-flight request on that end, since its cursor
-just moved and the result would be stale. Culling the newer end also clears
-the at-tail flag. Subscribe to `message <Tail>`, which pushes the chat's
-newest real-message timestamp whenever it changes. On a newer-page result,
-if the window's newest timestamp matches the last `<Tail>`, you're back at
-the tail, so set the flag.
+just moved and the result would be stale. Culling the newer end also gives up
+the tail. Subscribe to `message <Tail>`, which pushes the chat's newest
+real-message timestamp whenever it changes. On a newer-page result, a window
+whose newest timestamp matches the last `<Tail>` has reached it again.
 
-**Initial load and goto.** When the chat opens, call
-`message history` with no cursor. The newest page comes back (local if it's
-stored, otherwise fetched from MAM). That empty-local fetch is the one time
-a cursorless load hits the server, and it has no timeout - so treat the
-per-request callback as best-effort and lean on live `<New>` events and the
-catchup repaint below to fill an empty window once you're connected.
-"Scroll to bottom" cancels in-flight requests, clears the window, sets the
-flag false, and re-runs the initial load. A jump calls `message goto`: if the returned `anchor` is already in
-the window, just scroll to it, otherwise clear and apply `messages`. The
-flag stays false after a goto until the user gets back to the tail -
-scroll-to-bottom, or paging forward until the at-tail check flips.
-`goto`'s `bounded_before` and `bounded_after` flag a side that was cut off
-at a hole: there's more history that way, and paging fills it in.
-`gotoReply` (XEP-0461) jumps to a reply's target and returns the same
-shape.
+**Initial load.** When the chat opens, call `message history` with no cursor;
+the newest page comes back, local if it's stored and from MAM if not. That
+empty-local fetch is the one time a cursorless load hits the server, and it
+has no timeout - treat the callback as best-effort and let live `<New>` events
+and the catchup reconcile below fill an empty window once you're connected.
+"Scroll to bottom" cancels in-flight requests, clears the window, gives up the
+tail, and re-runs this.
 
-**Replies.** Send one with `message send {reply_to_ts}`, naming the target by
-its `timestamp`. The backend resolves that row to the id a peer resolves
-against - stanza-id in a room, origin-id in a 1:1, since peers never see our
-server id - and prefixes the wire body with a `> ` quote of the target marked
-as a XEP-0428 fallback span. Pass the reply text alone: the quote is added on
-the way out and stripped on the way in, so a stored `body` never contains it.
+**Jumping.** `message goto` returns an `anchor`: scroll to it if it's already
+in the window, otherwise clear and apply `messages`. A jump gives up the tail
+until the user returns to it. `bounded_before` and `bounded_after` mark a side
+cut off at a hole - there's more history that way, and paging fills it in.
+`gotoReply` (XEP-0461) jumps to a reply's target and returns the same shape.
+
+**Replies.** `message send` takes an optional `reply_to_ts` - the `timestamp`
+of the message being answered. The backend resolves that row to the id a peer
+resolves against - stanza-id in a room, origin-id in a 1:1, since peers never
+see our server id - and prefixes the wire body with a `> ` quote of the target
+marked as a XEP-0428 fallback span. Pass the reply text alone: the quote is
+added on the way out and stripped on the way in, so a stored `body` never
+contains it.
 A `reply_to_ts` naming a row that isn't stored sends as an ordinary message
 rather than failing.
 
@@ -842,8 +857,8 @@ the wire. `reply_author_jid` is that author normalized the way `from_jid` is -
 an occupant JID in a room, a bare JID in a 1:1 - so it resolves through
 `author get` like any other author. `reply_body` is a shortened preview of the
 target, for rendering the quote inline; it is absent when the target isn't in
-the store. Jump to it with `gotoReply {reply_id, reply_to}`, which resolves the
-id locally and then behaves like `goto`. An uncached target comes back with no
+the store. Jump to it by passing `reply_id` and `reply_to` to `gotoReply`,
+which resolves the id locally and then behaves like `goto`. An uncached target comes back with no
 `messages` and an empty `anchor` - there is no fetch-by-stanza-id, so a target
 beyond a hole is not reachable this way.
 
@@ -853,13 +868,15 @@ the account archive holds no groupchat. Catchup writes to the store without
 emitting `<New>` - nothing arrived, it was backfilled. In-place corrections
 still arrive as their own events, so a row already on screen stays current.
 
-A sync is bracketed by `<CatchupStarted>` and `<CatchupDone>`, both carrying
-a `jid`: the room's for a room sync, empty for the account sync. A
-disconnect closes an open bracket with a zero `count`, so the pair always
-completes. `<CatchupDone>` also fires per chat that gained messages, with
-that chat's `count`, before the empty-`jid` one carrying the total. Those
-per-chat counts are what unread or notification UI should read; `<New>` is
-not, since it also fires for your own outgoing messages.
+A sync is bracketed by `<CatchupStarted>` and `<CatchupDone>`, both carrying a
+`jid`: the room's for a room sync, empty for the account sync. A disconnect
+closes an open bracket with a zero `count`, so the pair always completes.
+
+An account sync emits an extra `<CatchupDone>` per chat that gained messages,
+carrying that chat's own `jid` and `count`, before the empty-`jid` one with
+the total. A room sync emits only the bracketing one, whose `count` is that
+room's. Those per-chat counts are what unread or notification UI should read;
+`<New>` is not, since it also fires for your own outgoing messages.
 
 Take the bracket that matches your chat - its own `jid`, or the empty one if
 it isn't a room - and reconcile when it closes: if your newest displayed
@@ -868,16 +885,15 @@ Discard a page whose newest doesn't reach that `<Tail>`, since a hole sits
 between you and the tail and appending would only walk the user backwards;
 leave them the scroll-to-bottom path instead.
 
-**Live messages.** On `<New>`, insert it at its timestamp-sorted spot if
-the at-tail flag is set, otherwise drop it. Drop it inside an open catchup
-bracket too: the archive may hold history you don't have yet, so the at-tail
-flag is a claim you can't check, and the reconcile above places the message
+**Live messages.** On `<New>`, insert it at its timestamp-sorted spot if the
+window reaches the tail, otherwise drop it. Drop it inside an open catchup
+bracket too: the archive may hold history you don't have yet, so reaching the
+tail is a claim you can't check, and the reconcile above places the message
 once the sync settles.
 
 **Updates to a shown message.** Five events change a message already on
-screen rather than adding one. Switch on the event, never sniff which field
-is present. All find their target by `timestamp` and drop silently if it
-isn't displayed. `<Status>` updates the send/receipt state where the row
+screen rather than adding one. All find their target by `timestamp` and drop
+silently if it isn't displayed. `<Status>` updates the send/receipt state where the row
 sits. `<Reactions>` swaps the reaction map. `<Edited>` carries a full
 `message` row to redraw in place for a content edit. `<Retracted>` flips the
 row to a tombstone in place - it carries only `timestamp`, so redraw the
@@ -889,15 +905,15 @@ only one that shifts a message's slot.
 **Causing those updates.** Five calls, all naming their target by `timestamp`
 and all silently doing nothing when it isn't stored. `edit` (XEP-0308) sends a
 correction of one of your own messages and swaps the stored body immediately,
-so `<Edited>` arrives without waiting for the echo. `react` (XEP-0444)
-*toggles* one emoji in your own reaction set - it is not "add"; call it again
-with the same emoji to take it back. The set is sent whole because the
+so `<Edited>` arrives without waiting for the echo. `react` (XEP-0444) toggles
+one emoji in your own reaction set rather than adding it; call it again with
+the same emoji to take it back. The set is sent whole because the
 protocol has no delta, and `reactClear` drops all of yours at once.
 
 Deleting splits by chat kind, so pick by chat rather than offering both.
-`retract` (XEP-0424) withdraws one of *your own* 1:1 messages and tombstones it
-locally at once; called on a room it does nothing. `moderate` (XEP-0425) asks
-a room to retract *anyone's* message and is the room path. It deliberately does
+`retract` (XEP-0424) withdraws one of your own 1:1 messages and tombstones it
+locally at once; called on a room it does nothing. `moderate` (XEP-0425) is the
+room path, and asks the room to retract anyone's message. It deliberately does
 not tombstone locally: the room's own broadcast drives the change through the
 receive path, so a rejected request leaves the message intact and no
 `<Retracted>` ever arrives. The service enforces moderator role, so a rejection
@@ -928,19 +944,15 @@ local` (the default) runs over the bodies already stored for one chat, with
 `before` as an exclusive timestamp cursor. Each query word matches a body word
 from its start and every word must match, in any order: `нужн` finds `нужный`,
 `needle haystack` finds a body carrying both, and `eedle` finds nothing -
-mid-word text isn't findable. Case and diacritics are ignored, in every
-script, and the query is only ever text: `AND`, quotes and brackets in it
-match themselves. It covers only what the
-cache holds, but it is the only source that matches OMEMO messages, whose
-bodies reach the store decrypted and sit on the server as ciphertext.
+mid-word text isn't findable. Case and diacritics are ignored.
 Retracted messages never match.
 
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
 `before: last`, which on this path is an RSM cursor rather than a timestamp.
 Few servers implement the field, so check first with `mam fulltextSupported
 {chat: string} -> bool`; a search against an archive that advertises none comes
-back `{error: true, unsupported: true}` rather than silently matching
-everything. `field` selects the full-text form field explicitly.
+back empty with `error: true` and `unsupported: true` rather than silently
+matching everything. `field` selects the full-text form field explicitly.
 
 `source: both` runs the remote leg for its cache-filling effect - hits are
 stored on the way through - and then answers from the store, so one matching
@@ -950,10 +962,15 @@ set already fetched, so it skips the remote leg and fetches one server page per
 search.
 
 Omitting `chat` searches every chat in the account. MAM queries one archive, so
-that is local-only: a remote `source` without a `chat` is an error rather than a
-silent downgrade. Its `last` cursor is a `{timestamp, chat_jid}` pair, since
-equal timestamps in different chats are ordinary - the backend only keeps them
-unique within one chat. Each result carries the `chat_jid` it came from.
+that is local-only: a remote `source` without a `chat` is an error.
+Its `last` cursor is a `{timestamp, chat_jid}` pair, and each
+result carries the `chat_jid` it came from.
+
+`last` is a continuation token rather than a value to read: pass it back as
+`before` to a call with the same `source` and the same scoping. The three
+paths encode it differently, and crossing them fails quietly - a remote cursor
+handed to a local search matches every row, so paging stops advancing instead
+of erroring.
 
 Every hit carries `content.matches`: where the query matched, in the offsets
 `formatting` uses - into `body`, or `caption` for a media message. One entry
@@ -986,8 +1003,7 @@ its `type` - an `image` inline, a `file` as a download chip - then the
 [Attachments](#attachments)). Around the content go the parts covered
 elsewhere in this section: the sender name, the reaction row from `reactions`,
 and for your own messages the send state in `server_status` and delivery or
-read state in `remote_status`. Switch on `content.type` rather than sniffing
-which fields are present.
+read state in `remote_status`.
 
 ## Attachments
 
