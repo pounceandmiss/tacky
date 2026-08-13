@@ -17,6 +17,8 @@ snit::type taco_account {
     option -data-dir -default ""
 
     variable valid_columns {username domain password resource enabled}
+    # Added by the transport when a request carries a token, not fields.
+    variable transport_opts {-command -onerror -tag}
 
     constructor args {
         $self configurelist $args
@@ -102,7 +104,7 @@ snit::type taco_account {
         }
 
         dict for {key value} $args {
-            if {$key eq "-acc"} continue
+            if {$key eq "-acc" || $key in $transport_opts} continue
             set field [string range $key 1 end]
             if {$field ni $valid_columns} {
                 error "Invalid field: $field"
