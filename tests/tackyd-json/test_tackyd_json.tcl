@@ -66,6 +66,22 @@ test json-backend-callback-search {callback result with schema} -setup {
             [json::write object timestamp 100 body {"hi"} is_outgoing false]] \
         complete true]]
 
+test json-backend-callback-search-unsupported {search error flags are booleans} -setup {
+    _test_clear
+} -body {
+    set result [dict create \
+        messages {} complete 0 last "" error 1 unsupported 1]
+    _test_on_result 42 message/search $result
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"result"} 42 \
+    [json::write object \
+        messages [json::write array] \
+        complete false \
+        last {""} \
+        error true \
+        unsupported true]]
+
 test json-backend-callback-list {callback with list of ints} -setup {
     _test_clear
 } -body {
