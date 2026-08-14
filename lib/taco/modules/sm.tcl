@@ -33,10 +33,13 @@ snit::type sm {
     option -write
     option -ack-command -default ""
 
-    # Ack request strategy
+    # Ack request strategy: every N stanzas, plus a delayed ask for a burst
+    # that stops short of N - otherwise a lone stanza waits for traffic that
+    # may never come, and a durable send never leaves 'pending'.
     variable ackRequestTimer ""
     variable unackedCount 0
     option -ack-frequency -default 5  ;# Request ack every N stanzas
+    option -ack-delay -default 1000   ;# ms before asking for a short burst
     # Max unacked stanzas before we force an error.  A half-open TCP
     # connection (network partition) can cause the queue to grow without
     # bound because the server never ACKs.  When exceeded, outStanza
@@ -195,12 +198,14 @@ snit::type sm {
                 set resumed 1
                 set state running
 
-                # Resend any unacknowledged stanzas
+                # Resend any unacknowledged stanzas. These bypass the counter,
+                # so ask for their ack here.
                 if {[llength $queue] > 0} {
                     jlog inform "Resending [llength $queue] unacked stanzas"
                     foreach stanza $queue {
                         {*}$options(-write) $stanza
                     }
+                    $self RequestAck
                 }
             }
 
@@ -328,11 +333,33 @@ snit::type sm {
 
                 if {$unackedCount >= $options(-ack-frequency)} {
                     jlog debug "Requesting ack after $unackedCount unacked stanzas"
-                    {*}$options(-write) [j r -ns "urn:xmpp:sm:3"]
-                    set unackedCount 0
+                    $self RequestAck
+                } elseif {$ackRequestTimer eq ""} {
+                    set ackRequestTimer \
+                        [after $options(-ack-delay) [mymethod OnAckDelay]]
                 }
             }
         }
+    }
+
+    # Ask the server how far it has got, dropping any pending delayed ask.
+    method RequestAck {} {
+        if {$ackRequestTimer ne ""} {
+            after cancel $ackRequestTimer
+            set ackRequestTimer ""
+        }
+        {*}$options(-write) [j r -ns "urn:xmpp:sm:3"]
+        set unackedCount 0
+    }
+
+    method OnAckDelay {} {
+        set ackRequestTimer ""
+        # unackedCount 0 means an <a/> arrived meanwhile.
+        if {$state ne "running" || $unackedCount == 0} {
+            return
+        }
+        jlog debug "Requesting ack for $unackedCount stanza(s) after the delay"
+        $self RequestAck
     }
 
     method Incr {varName} {

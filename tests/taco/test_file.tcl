@@ -324,6 +324,19 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
     set res
 } -result [list 1 uploading [file join /tmp uptest_[pid].bin]]
 
+# origin_id is a reply-target key, so a share's row needs it like a send's does.
+test file-sendfile-records-its-origin-id {a share's row carries an origin id} {*}$file_env -body {
+    set tmp /tmp/uporigin_[pid].bin
+    set f [open $tmp w]; puts -nonewline $f "data"; close $f
+    tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
+    lassign [$::_client db eval {
+        SELECT own_id, origin_id FROM chat_message
+        WHERE chat_jid='bob@example.com'
+    }] ownId originId
+    file delete $tmp
+    expr {$ownId ne "" && $originId eq $ownId}
+} -result 1
+
 # Collect server_status off every message <Status> fired during $script.
 proc up_patch_statuses {script} {
     set ::_up_patches {}
@@ -344,6 +357,31 @@ test file-upload-success-patches-pending {a completed upload emits a <Status> fl
             /tmp/a.png "" https://h/a.png
     }
 } -result pending
+
+# Without the markers remote_status can never leave 'sent'.
+test file-upload-share-asks-for-markers {the plaintext share requests receipts and markers} {*}$file_env -body {
+    up_store_uploading bob@example.com 7350000
+    $::_client conn clear
+    $::_client message OnUploaded bob@example.com 7350000 7350000 \
+        /tmp/a.png "" https://h/a.png
+    set stanza [lindex [$::_client conn get_written] end]
+    set oob [lindex [xsearch $stanza x -ns jabber:x:oob] 0]
+    list [xsearch $oob url -gather body] \
+        [llength [xsearch $stanza request -ns urn:xmpp:receipts]] \
+        [llength [xsearch $stanza markable -ns urn:xmpp:chat-markers:0]]
+} -result {https://h/a.png 1 1}
+
+# The share goes out off the send path, so it has to mark itself in flight or
+# the reconnect retry sends the row a second time.
+test file-upload-share-not-resent-by-retry {RetryPending leaves a just-sent share alone} {*}$file_env -body {
+    up_store_uploading bob@example.com 7360000
+    $::_client conn clear
+    $::_client message OnUploaded bob@example.com 7360000 7360000 \
+        /tmp/a.png "" https://h/a.png
+    set afterSend [llength [$::_client conn get_written]]
+    $::_client message RetryPending
+    list $afterSend [llength [$::_client conn get_written]]
+} -result {1 1}
 
 test file-upload-failure-patches-failed {a failed upload emits a <Status> flipping the row to failed} {*}$file_env -body {
     up_store_uploading bob@example.com 7400000
