@@ -16,6 +16,16 @@ namespace eval ::test::omemo_unit {
     variable ROMEO       "romeo@montague.lit"
 }
 
+# Count axolotl bundle-fetch IQs for $dev in a list of written stanzas.
+proc ::test::omemo_unit::bundleFetches {written dev} {
+    set n 0
+    foreach s $written {
+        set node [xsearch $s pubsub items -get @node]
+        if {$node eq "eu.siacs.conversations.axolotl.bundles:$dev"} { incr n }
+    }
+    return $n
+}
+
 # taco_client's constructor derives -jid from -username + -host and
 # clobbers any constructor-provided -jid (client.tcl line 42), so we
 # always set -jid via `c configure` in -extra-setup after construction.
@@ -255,6 +265,59 @@ test omemo-unit-no-key-for-us-surfaces-error \
             -ns eu.siacs.conversations.axolotl] 0]
         c omemo DoDecrypt $encNode $::test::omemo_unit::ROMEO 42 0
     } -result {decrypt_error {[OMEMO] Message not encrypted for this device}}
+
+# A KeyTransport (no <payload>) carries no body and is routinely aimed at
+# our other devices. Surfacing a placeholder for one put "3 messages I
+# can't decrypt" in the self-chat on every restart of another own client.
+
+test omemo-unit-keytransport-no-key-for-us-is-silent \
+    {payload-less stanza with no <key rid=ourdev> is a KeyTransport, not an error} \
+    {*}$jid_common -body {
+        set ourDev [c omemo device_id]
+        set otherRid [expr {$ourDev + 7}]
+        set msg [j message \
+                -from $::test::omemo_unit::JULIET_BARE \
+                -to   $::test::omemo_unit::JULIET_BARE \
+                -type chat -id stanza-1 {
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid 42 {
+                    j key -rid $otherRid .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
+                }
+            }
+        }]
+        set encNode [lindex [xsearch $msg encrypted \
+            -ns eu.siacs.conversations.axolotl] 0]
+        c omemo DoDecrypt $encNode $::test::omemo_unit::JULIET_BARE 42 0
+    } -result {keytransport {}}
+
+# Healing off an undecryptable KeyTransport answers it with another
+# KeyTransport our other devices also can't read - a heal ping-pong.
+test omemo-unit-keytransport-undecryptable-does-not-heal \
+    {payload-less stanza we can't decrypt is dropped without a bundle-fetch heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set ourDev [c omemo device_id]
+        set msg [j message \
+                -from $::test::omemo_unit::ROMEO \
+                -to   $::test::omemo_unit::JULIET_BARE \
+                -type chat -id stanza-1 {
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid 648103571 {
+                    j key -rid $ourDev .body Zm9v
+                    j iv .body AAAAAAAAAAAAAAAA
+                }
+            }
+        }]
+        set encNode [lindex [xsearch $msg encrypted \
+            -ns eu.siacs.conversations.axolotl] 0]
+        set before [llength [c conn get_written]]
+        set res [c omemo DoDecrypt $encNode $::test::omemo_unit::ROMEO 648103571 0]
+        list result $res fetches [::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571]
+    } -result {result {keytransport {}} fetches 0}
 
 # MAM-replay invariants (regression coverage for "ghost messages on
 # chat reopen"). All four cases used to leak the cleartext EME fallback
@@ -650,17 +713,8 @@ test omemo-unit-eager-bundle-fetch-skips-own-device \
 # =====================================================================
 # Session recovery ("heal"): never delete on failure, one
 # rate-limited re-key + KeyTransport per peer-device. Most tests observe
-# the bundle-fetch IQ; the last drives the real re-key with a minted bundle.
-
-# Count axolotl bundle-fetch IQs for $dev in a list of written stanzas.
-proc ::test::omemo_unit::bundleFetches {written dev} {
-    set n 0
-    foreach s $written {
-        set node [xsearch $s pubsub items -get @node]
-        if {$node eq "eu.siacs.conversations.axolotl.bundles:$dev"} { incr n }
-    }
-    return $n
-}
+# the bundle-fetch IQ (::test::omemo_unit::bundleFetches, defined up top);
+# the last drives the real re-key with a minted bundle.
 
 # ESTATE (no session) used to be dropped and never recovered.
 test omemo-unit-recover-no-session-heals \
