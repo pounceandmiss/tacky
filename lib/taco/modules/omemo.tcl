@@ -194,6 +194,13 @@ snit::type taco_omemo {
 
         $self Migrate
 
+        # Both the store and the trust rows are keyed on the bare jid, which
+        # is known before the stream binds: pick it up here so an offline or
+        # disabled account still answers the introspection methods. Only a
+        # test client has no bare jid to derive.
+        catch {set accountJid [jid bare [$client cget -jid]]}
+        $self LoadStore
+
         # Storage callbacks: skipped-key delete-on-read + 2000-key cap.
         omemo::set_storage \
             -load  [mymethod OnLoadSkipped] \
@@ -338,22 +345,28 @@ snit::type taco_omemo {
     # Store and device-id
     # =====================================================================
 
-    method EnsureStore {} {
-        if {$store ne ""} return
+    # Generating an identity belongs to a connected account, so it stays in
+    # EnsureStore: this only picks up a store that is already on disk.
+    method LoadStore {} {
+        if {$store ne ""} { return 1 }
         set row [$db eval {
             SELECT device_id, blob FROM omemo_store WHERE account_jid=$accountJid
         }]
+        if {[llength $row] == 0} { return 0 }
+        lassign $row deviceId blob
         set store ${selfns}::store
-        if {[llength $row] == 0} {
-            set deviceId [$self GenerateDeviceId]
-            omemo::store create $store -device $deviceId
-            $store setup
-            $self PersistStore
-        } else {
-            lassign $row deviceId blob
-            omemo::store create $store -device $deviceId
-            $store deserialize $blob
-        }
+        omemo::store create $store -device $deviceId
+        $store deserialize $blob
+        return 1
+    }
+
+    method EnsureStore {} {
+        if {[$self LoadStore]} return
+        set deviceId [$self GenerateDeviceId]
+        set store ${selfns}::store
+        omemo::store create $store -device $deviceId
+        $store setup
+        $self PersistStore
     }
 
     method GenerateDeviceId {} {
