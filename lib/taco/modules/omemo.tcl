@@ -1197,6 +1197,10 @@ snit::type taco_omemo {
             lappend candidates [list $isPrekey $keyData]
         }
         if {[llength $candidates] == 0} {
+            # A KeyTransport addressed to our OTHER devices carries no key
+            # for us by design, and has no body to show either way. Only a
+            # payload message is worth a placeholder.
+            if {!$hasPayload} { return [list keytransport ""] }
             # Sender's devicelist for us is stale - they didn't include
             # a key for our deviceId. User-actionable: peer should
             # refresh the devicelist on their end (often resolves by
@@ -1245,6 +1249,16 @@ snit::type taco_omemo {
             set lastEcode [dict get $opts -errorcode]
         }
         if {!$ok} {
+            # An undecryptable KeyTransport is neither a message nor proof
+            # of a session worth healing: healing answers it with another
+            # KeyTransport, which our other devices can't decrypt either,
+            # so the heal ping-pongs across the devicelist. Conversations
+            # and Dino both drop it silently.
+            if {!$hasPayload} {
+                jlog debug "OMEMO keytransport from $peerJid/$peerDev\
+                    undecryptable; ignoring"
+                return [list keytransport ""]
+            }
             $self HandleDecryptError $peerJid $peerDev $lastEcode $lastErr \
                 $candidates $isMam
             # EKEYGONE (key already consumed) and EUSER (replayed prekey)
@@ -1269,7 +1283,10 @@ snit::type taco_omemo {
             if {![$self EnsureTrustRow $peerJid $peerDev $remoteIk]} {
                 # Trust check moved the row to compromised (or it was
                 # already compromised). Surface so the user knows their
-                # peer's identity has changed and they can take action.
+                # peer's identity has changed and they can take action -
+                # but a KeyTransport has no message to hang that on, and
+                # the compromised trust row is what the key list reads.
+                if {!$hasPayload} { return [list keytransport ""] }
                 return [list decrypt_error \
                     "\[OMEMO\] Sender's identity key changed - possible MITM"]
             }
