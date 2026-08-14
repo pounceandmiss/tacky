@@ -630,11 +630,12 @@ Events:
 
 The full-size image is content-addressed by hash: `metadata` maps a JID to its
 current hash, and `data` gives you the bytes as they were published. The
-backend fetches bytes for JIDs you've marked `visible`, and that's refcounted,
-so balance each `visible` with an `invisible`. `visible` also re-emits `<Update>`
-for an already-cached avatar, so listening is enough. `refresh` re-requests a
-JID's metadata node instead of trusting the cached hash, for when no
-notification arrived; it still only fetches bytes for a `visible` JID, leaves
+backend fetches bytes for JIDs you've marked `visible`. The marks are a set,
+not counted references: a repeat `visible` does nothing, one `invisible` clears
+the mark, and the set outlives a dropped connection. `visible` also re-emits
+`<Update>` for an already-cached avatar, so listening is enough. `refresh`
+re-requests a JID's metadata node instead of trusting the cached hash, for when
+no notification arrived; it still only fetches bytes for a `visible` JID, leaves
 the cache alone if that JID publishes no avatar, and reports nothing on an IQ
 error.
 

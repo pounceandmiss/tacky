@@ -123,6 +123,49 @@ test avatar-visible-reprimes-after-invisible {a fresh 0->1 transition primes aga
         llength $::avatar_updates
     } -result 2
 
+# Helper: a PEP metadata push announcing $hash
+proc pep_metadata {from hash} {
+    j message -from $from {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node urn:xmpp:avatar:metadata {
+                j item -id $hash {
+                    j metadata -ns urn:xmpp:avatar:metadata {
+                        j info -id $hash -type image/png -bytes 10 \
+                            -width 64 -height 64
+                    }
+                }
+            }
+        }
+    }
+}
+
+proc avatar_data_requested {} {
+    foreach stanza [c.conn get_written] {
+        if {[xsearch $stanza pubsub items -get @node] eq "urn:xmpp:avatar:data"} {
+            return 1
+        }
+    }
+    return 0
+}
+
+test avatar-visible-survives-disconnect {a dropped connection leaves a visible JID marked} \
+    {*}$avatar_common \
+    -body {
+        c avatar visible -jid alice@example.com
+        c bus publish <Disconnect>
+        c.conn clear
+        c.conn feed [pep_metadata alice@example.com newhash]
+        avatar_data_requested
+    } -result 1
+
+test avatar-invisible-parks-fetch {an unmarked JID's new hash is parked, not fetched} \
+    {*}$avatar_common \
+    -body {
+        c.conn clear
+        c.conn feed [pep_metadata alice@example.com newhash]
+        avatar_data_requested
+    } -result 0
+
 # XEP-0084 (PEP) beats XEP-0153 (vCard)
 
 test avatar-vcard-keeps-pubsub {a vCard result never overwrites a PEP avatar} \
