@@ -744,7 +744,7 @@ snit::type taco_message {
         set msg [dict create \
             timestamp $oid chat_jid $chatJid \
             from_jid $fromJid from_resource $fromRes \
-            body "" server_id "" own_id $oid raw_xml "" \
+            body "" server_id "" own_id $oid origin_id $oid raw_xml "" \
             encryption $encMode \
             attachments [OutgoingAttachment $path $path] \
             server_status uploading]
@@ -790,14 +790,22 @@ snit::type taco_message {
                 own_id $oid encryption omemo reply_id "" reply_to ""]
             return
         }
+        # BuildMessageStanza knows nothing of <x>, so this path repeats its
+        # 1:1 marker requests (XEP-0184/0333) itself.
         set stanza [j message -to $toJid -type $msgType -id $oid {
             j body #body $url
             j x -ns jabber:x:oob { j url #body $url }
+            if {$msgType eq "chat"} {
+                j request -ns urn:xmpp:receipts
+                j markable -ns urn:xmpp:chat-markers:0
+            }
         }]
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
             [OutgoingAttachment $url $path] ""
         $client emit message <Status> -jid $chatJid \
             -timestamp $ts -server_status pending
+        # In flight from here, so RetryPending doesn't send it twice.
+        $self MarkWired $oid
         $client write $stanza
     }
 

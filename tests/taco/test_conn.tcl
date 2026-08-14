@@ -616,6 +616,52 @@ test conn-write-buffer-flushed-after-ready {write buffer flushed when conn reach
         dict get [lindex [c.base get_written] end] tag
     } -result {message}
 
+# -- SM ack requests ---------------------------------------------------------
+
+# How many <r/>s the connection has asked for so far.
+proc sm_ack_requests {} {
+    set n 0
+    foreach s [c.base get_written] {
+        if {[dict get $s tag] eq "r" && [dict get $s ns] eq "urn:xmpp:sm:3"} {
+            incr n
+        }
+    }
+    return $n
+}
+
+# A stanza with no traffic behind it must still get an <r/>, or nothing ever
+# confirms it.
+test conn-sm-lone-stanza-asks-for-an-ack {a single stanza is acked-for after the delay} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-lone"
+        c.sm configure -ack-delay 20
+        c.base clear
+        c write [j message -to "friend@example.com" {j body #body "alone"}]
+        set immediate [sm_ack_requests]
+        after 60 {set ::_sm_waited 1}
+        vwait ::_sm_waited
+        list $immediate [sm_ack_requests]
+    } -result {0 1}
+
+# Asking on the threshold cancels the delayed ask instead of asking twice.
+test conn-sm-burst-asks-once {a full burst asks on the threshold and not again} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-burst"
+        c.sm configure -ack-delay 20
+        c.base clear
+        for {set i 0} {$i < 5} {incr i} {
+            c write [j message -to "friend@example.com" {j body #body "m$i"}]
+        }
+        set immediate [sm_ack_requests]
+        after 60 {set ::_sm_waited 1}
+        vwait ::_sm_waited
+        list $immediate [sm_ack_requests]
+    } -result {1 1}
+
 # -- SM queue overflow -------------------------------------------------------
 
 test conn-sm-queue-overflow-triggers-reconnect {SM queue overflow triggers disconnect/reconnect} \
