@@ -67,6 +67,32 @@ test omemo-unit-device-id-persists {device_id and store persist across reload} -
     tacky destroy
 } -result {dev_match 1 fp_match 1}
 
+# A disabled account never fires <Ready>, but the GUI still opens its
+# own-key panel.
+test omemo-unit-offline-getters-answer {getters work without OnReady} -setup {
+    tacky_type create ::tacky
+    sqlite3 omemodb2 :memory:
+    taco_client c1 -db omemodb2 -username juliet -host capulet.lit
+    c1 omemo OnReady
+    set d1 [c1 omemo device_id]
+    set fp1 [c1 omemo own_fingerprint]
+    c1 db eval {
+        INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+            identity_pk, trust, active, last_activation)
+        VALUES('juliet@capulet.lit','juliet@capulet.lit',7,x'00','undecided',1,1)
+    }
+    c1 destroy
+    taco_client c2 -db omemodb2 -username juliet -host capulet.lit
+} -body {
+    list dev_match [expr {[c2 omemo device_id] == $d1}] \
+        fp_match [expr {[c2 omemo own_fingerprint] eq $fp1}] \
+        rows [llength [c2 omemo trustList -jid juliet@capulet.lit]]
+} -cleanup {
+    c2 destroy
+    omemodb2 close
+    tacky destroy
+} -result {dev_match 1 fp_match 1 rows 1}
+
 test omemo-unit-trust-undecided-to-trusted-ok {free transition} \
     {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
