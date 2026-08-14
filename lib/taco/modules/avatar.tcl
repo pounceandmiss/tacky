@@ -45,7 +45,7 @@ snit::type taco_avatar {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        set VisibleJids [dict create]
+        array set VisibleJids {}
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
         array set ActiveTags {}
@@ -56,8 +56,8 @@ snit::type taco_avatar {
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
+    # VisibleJids survives: it tracks what the frontend displays, not the session.
     method OnDisconnect {args} {
-        set VisibleJids [dict create]
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
         array unset ActiveTags
@@ -351,29 +351,27 @@ snit::type taco_avatar {
         }
     }
 
+    # Membership, not a count: the frontend collapses every tracker of a JID
+    # into one mark.
     method visible {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
-        set count 0
-        if {[dict exists $VisibleJids $jid]} {
-            set count [dict get $VisibleJids $jid]
+        if {[info exists VisibleJids($jid)]} return
+        set VisibleJids($jid) 1
+
+        set fetching 0
+        if {[dict exists $PendingVCardHash $jid]} {
+            dict unset PendingVCardHash $jid
+            $self FetchVCard $jid
+            set fetching 1
         }
-        dict set VisibleJids $jid [incr count]
-        if {$count == 1} {
-            set fetching 0
-            if {[dict exists $PendingVCardHash $jid]} {
-                dict unset PendingVCardHash $jid
-                $self FetchVCard $jid
-                set fetching 1
-            }
-            if {[dict exists $PendingPubSubHash $jid]} {
-                set hash [dict get $PendingPubSubHash $jid]
-                dict unset PendingPubSubHash $jid
-                $self FetchData $jid $hash
-                set fetching 1
-            }
-            if {!$fetching} {
-                $self PrimeFromCache $jid
-            }
+        if {[dict exists $PendingPubSubHash $jid]} {
+            set hash [dict get $PendingPubSubHash $jid]
+            dict unset PendingPubSubHash $jid
+            $self FetchData $jid $hash
+            set fetching 1
+        }
+        if {!$fetching} {
+            $self PrimeFromCache $jid
         }
     }
 
@@ -393,17 +391,11 @@ snit::type taco_avatar {
 
     method invisible {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
-        if {![dict exists $VisibleJids $jid]} return
-        set count [dict get $VisibleJids $jid]
-        if {$count <= 1} {
-            dict unset VisibleJids $jid
-        } else {
-            dict set VisibleJids $jid [expr {$count - 1}]
-        }
+        unset -nocomplain VisibleJids($jid)
     }
 
     method IsVisible {jid} {
-        dict exists $VisibleJids $jid
+        info exists VisibleJids($jid)
     }
 
     # XEP-0153: detect vCard avatar hash in presence.

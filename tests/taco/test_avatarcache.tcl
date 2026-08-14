@@ -150,6 +150,20 @@ test avatarcache-track-independent-sizes {same jid at two sizes builds two image
              [expr {$i32 ne $i64}]
     } -result {1 1 1}
 
+test avatarcache-visibility-per-jid {one visible mark per jid, dropped on the last untrack} \
+    {*}$ac_common \
+    -body {
+        avatarcache track -acc user@test -jid c@d -size 32 -tag t32 \
+            -command {apply {{img} {}}}
+        avatarcache track -acc user@test -jid c@d -size 64 -tag t64 \
+            -command {apply {{img} {}}}
+        set client [tacky client user@test]
+        avatarcache untrack -tag t32
+        set stillVisible [$client avatar IsVisible c@d]
+        avatarcache untrack -tag t64
+        list $stillVisible [$client avatar IsVisible c@d]
+    } -result {1 0}
+
 test avatarcache-injected-master {an injected avatar reaches a tracking frontend} \
     {*}$ac_common \
     -body {

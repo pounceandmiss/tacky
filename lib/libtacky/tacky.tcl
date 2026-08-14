@@ -469,7 +469,8 @@ if 0 {
 
         avatarcache untrack -tag $tag
             Unregisters the callback and decrements refcount.
-            At zero the image is deleted and avatar invisible is called.
+            At zero the image is deleted; when the jid's last tracked size
+            goes, avatar invisible is called.
 
         avatarcache default
             Returns the shared default image handle.
@@ -478,12 +479,14 @@ if 0 {
 oo::class create avatarcache_base {
     variable Images
     variable Refcounts
+    variable JidRefs
     variable Tags
     variable DefaultImage
 
     constructor {} {
         set Images [dict create]
         set Refcounts [dict create]
+        set JidRefs [dict create]
         set Tags [dict create]
         set DefaultImage [my CreateDefault]
         ::tacky listen -tag [self] avatar <Update> \
@@ -520,6 +523,13 @@ oo::class create avatarcache_base {
 
         dict set Tags $tag [list $acc $jid $size $command]
 
+        # Visibility is per jid, images are per (jid, size): one mark for the
+        # jid however many sizes it is tracked at.
+        set jkey "$acc\n$jid"
+        set jrefs 0
+        if {[dict exists $JidRefs $jkey]} { set jrefs [dict get $JidRefs $jkey] }
+        dict set JidRefs $jkey [expr {$jrefs + 1}]
+
         if {[dict exists $Images $key]} {
             dict set Refcounts $key [expr {[dict get $Refcounts $key] + 1}]
             return [dict get $Images $key]
@@ -530,7 +540,9 @@ oo::class create avatarcache_base {
         dict set Images $key $img
         dict set Refcounts $key 1
 
-        ::tacky avatar visible -acc $acc -jid $jid
+        if {$jrefs == 0} {
+            ::tacky avatar visible -acc $acc -jid $jid
+        }
         my Fetch $acc $jid $size
 
         # Return current image — may have been replaced by a
@@ -547,11 +559,21 @@ oo::class create avatarcache_base {
         dict unset Tags $tag
         set key "$acc\n$jid\n$size"
 
+        set jkey "$acc\n$jid"
+        if {[dict exists $JidRefs $jkey]} {
+            set jrefs [expr {[dict get $JidRefs $jkey] - 1}]
+            if {$jrefs <= 0} {
+                dict unset JidRefs $jkey
+                ::tacky avatar invisible -acc $acc -jid $jid
+            } else {
+                dict set JidRefs $jkey $jrefs
+            }
+        }
+
         if {![dict exists $Refcounts $key]} return
 
         set count [dict get $Refcounts $key]
         if {$count <= 1} {
-            ::tacky avatar invisible -acc $acc -jid $jid
             catch {my DeleteImage [dict get $Images $key]}
             dict unset Images $key
             dict unset Refcounts $key
