@@ -675,8 +675,8 @@ Event:
 
 ## file
 
-    file download {acc: string, url: string,
-                   auto?: bool, from?: string}  -> string  local path ("" on failure)
+    file download {acc: string, url: string, auto?: bool, from?: string,
+                   thumbmax?: int}              -> string  local path ("" on failure)
     file cancel {acc: string, id: int}
     file cancel {acc: string, url: string}
     file uncache {acc: string, url: string}
@@ -1034,11 +1034,17 @@ encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 `file download` grabs the `https://` version and decrypts it for you.
 
 **Downloading.** `file download` pulls the file into the data dir and, for an
-image, makes a PNG thumbnail (max 320px) under the cache dir. Progress and the
+image, makes a PNG thumbnail under the cache dir. Progress and the
 final state come on `file <Update>`: the last event carries `localpath`
 (plus `thumbpath` for an image) on `done`, or an `error` on `failed` - no
 upload service, server refused, network died. A transfer the user cancelled
 or the autofetch settings held back ends `idle` instead.
+
+`thumbmax` is the thumbnail's long side in pixels - pick what your display
+needs. It defaults to 320, is capped at 2048, and a smaller image is never
+upscaled to it. Each size is cached separately, so asking for two sizes of one
+URL costs two thumbnails; a download that joins one already in flight gets the
+size that fetch asked for, and its own size on the next call.
 
 **Autofetch.** Two settings bound what gets pulled without the user asking.
 `attachment_autofetch` is `everyone` (the default), `contacts` (a roster
