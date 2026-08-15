@@ -168,12 +168,28 @@ test json-backend-callback-resources {resources is a map of presence objects} -s
     _test_clear
 } -body {
     _test_on_result 9 presence/resources \
-        [dict create laptop [dict create priority 5 show away]]
+        [dict create laptop [dict create priority 5 show away \
+            idle_since 1755252000000000 \
+            client [dict create name Dino features {urn:xmpp:ping urn:xmpp:time}]]]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"result"} 9 \
     [json::write object \
-        laptop [json::write object priority 5 show {"away"}]]]
+        laptop [json::write object \
+            priority 5 show {"away"} idle_since 1755252000000000 \
+            client [json::write object name {"Dino"} features \
+                [json::write array {"urn:xmpp:ping"} {"urn:xmpp:time"}]]]]]
+
+test json-backend-callback-software-version {softwareVersion is an object with a bool error} -setup {
+    _test_clear
+} -body {
+    _test_on_result 12 caps/softwareVersion \
+        [dict create name Dino version 0.5 os Linux error 0 error_text ""]
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"result"} 12 \
+    [json::write object \
+        name {"Dino"} version {"0.5"} os {"Linux"} error false error_text {""}]]
 
 test json-backend-callback-call-start {start returns a scalar sid string} -setup {
     _test_clear

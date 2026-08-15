@@ -155,7 +155,7 @@ jsonify_type jsonify \
         bookmark    {autojoin bool}
         chat_entry  {groupchat bool autojoin bool last_activity int unread int unread_mentions int approved bool groups list}
         avatar_meta {bytes int width int height int}
-        presence    {priority int}
+        presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
         audio_device {default bool}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
@@ -193,6 +193,7 @@ jsonify_type jsonify \
         presence/get            presence
         presence/isOnline       bool
         presence/resources      {map presence}
+        caps/softwareVersion    {dict {error bool}}
         audio/getVolume         double
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}

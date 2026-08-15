@@ -12,6 +12,10 @@ if 0 {
         Instantiated by Client, not directly.
         $client caps cNode          - get <c/> element dict for inclusion in presence
         $client caps getFeatures $ver - get cached feature list for a ver hash
+        $client caps discoFor $ver  - get cached identity + features for a ver hash
+
+    Tacky API:
+        tacky caps softwareVersion -acc $acc -to $fullJid -command $cb
 }
 
 snit::type taco_caps {
@@ -96,7 +100,8 @@ snit::type taco_caps {
         set name    [xsearch $queryNode name -get body]
         set version [xsearch $queryNode version -get body]
         set os      [xsearch $queryNode os -get body]
-        {*}$callback [dict create name $name version $version os $os]
+        {*}$callback [dict create name $name version $version os $os \
+            error 0 error_text ""]
     }
 
     # Register an additional disco feature (e.g. namespace+notify for PEP)
@@ -126,6 +131,35 @@ snit::type taco_caps {
             return [lindex $row 0]
         }
         return {}
+    }
+
+    # Cached identity and features for a verification hash, or {} if unknown.
+    method discoFor {ver} {
+        if {$ver eq ""} {
+            return {}
+        }
+        $client db eval {
+            SELECT identities, features FROM caps_cache WHERE ver=$ver
+        } row {
+            set identity [PreferredIdentity $row(identities)]
+            return [dict merge $identity [dict create features $row(features)]]
+        }
+        return {}
+    }
+
+    # Of several identities, the client one names the software.
+    proc PreferredIdentity {identities} {
+        set chosen [lindex $identities 0]
+        foreach identity $identities {
+            if {[dict get $identity category] eq "client"} {
+                set chosen $identity
+                break
+            }
+        }
+        if {$chosen eq ""} {
+            return {name "" category "" type ""}
+        }
+        return $chosen
     }
 
     method BuildIfNeeded {} {
@@ -282,18 +316,31 @@ snit::type taco_caps {
         set featureList [lsort [xsearch $queryNode feature -gather @var]]
         set featuresStr [join $featureList " "]
         set node [xsearch $queryNode -get @node]
+        set identities [lmap identityNode [xsearch $queryNode identity] {
+            dict create name [xsearch $identityNode -get @name] \
+                category [xsearch $identityNode -get @category] \
+                type [xsearch $identityNode -get @type]
+        }]
 
         $client db eval {
-            INSERT OR REPLACE INTO caps_cache(ver, node, features)
-            VALUES ($expectedVer, $node, $featuresStr)
+            INSERT OR REPLACE INTO caps_cache(ver, node, identities, features)
+            VALUES ($expectedVer, $node, $identities, $featuresStr)
         }
+
+        $client bus publish <CapsResolved> -jid $from
     }
 
     method Migrate {} {
+        # A pure cache: an older shape is dropped, not migrated.
+        set columns [$client db eval {SELECT name FROM pragma_table_info('caps_cache')}]
+        if {"identities" ni $columns} {
+            $client db eval {DROP TABLE IF EXISTS caps_cache}
+        }
         $client db eval {
             CREATE TABLE IF NOT EXISTS caps_cache(
                 ver TEXT PRIMARY KEY,
                 node TEXT,
+                identities TEXT,
                 features TEXT
             );
         }
