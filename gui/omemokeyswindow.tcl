@@ -7,7 +7,7 @@
 # own all the fingerprint/trust rendering; this window just composes them.
 #
 # Usage:
-#   omemokeyswindow open romeo@montague.lit juliet@capulet.lit
+#   omemokeyswindow open romeo@montague.lit juliet@capulet.lit ?fingerprint?
 
 package require snit
 
@@ -16,20 +16,23 @@ snit::widget omemokeyswindow {
 
     option -acc -readonly yes
     option -jid -default "" -configuremethod SetJid
+    option -highlight -default ""
 
     variable blindTrust 0
 
     # One window per account; create it, or raise the existing one and
-    # re-point its peer panel to $jid.
-    typemethod open {acc jid} {
+    # re-point its peer panel to $jid. $highlight is set first because
+    # configuring -jid is what rebuilds that panel.
+    typemethod open {acc jid {highlight ""}} {
         set w .omemokeys_[string map {@ _ . _ / _} $acc]
         if {[winfo exists $w]} {
+            $w configure -highlight $highlight
             $w configure -jid $jid
             wm deiconify $w
             raise $w
             return $w
         }
-        return [omemokeyswindow $w -acc $acc -jid $jid]
+        return [omemokeyswindow $w -acc $acc -highlight $highlight -jid $jid]
     }
 
     constructor args {
@@ -71,7 +74,8 @@ snit::widget omemokeyswindow {
         catch {destroy $win.theirs}
         wm title $win "OMEMO Keys - [jid bare $options(-jid)]"
         omemokeyspanel $win.theirs \
-            -acc $options(-acc) -jid $options(-jid)
+            -acc $options(-acc) -jid $options(-jid) \
+            -highlight $options(-highlight)
         pack $win.theirs -after $win.theirlbl -fill both -expand yes \
             -padx 8 -pady {0 4}
     }
