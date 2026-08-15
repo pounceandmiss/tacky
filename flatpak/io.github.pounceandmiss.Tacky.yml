@@ -88,10 +88,9 @@ modules:
         dest-filename: Img-2.1.1.tar.gz
 
       # ---- git deps (with submodules) ----
-      # tclmtls: short SHA - expand to the full 40-char commit for Flathub.
       - type: git
-        url: https://github.com/chpock/tclmtls.git
-        commit: 5b41f04
+        url: https://github.com/pounceandmiss/tclmtls.git
+        commit: 0d4055aa3f9bb5ef827e2ee76281102f54c7eca0
         dest: build/linux/_build/deps/tclmtls
       - type: git
         url: https://github.com/Mbed-TLS/mbedtls.git
@@ -99,11 +98,11 @@ modules:
         dest: build/linux/_build/deps/mbedtls
       - type: git
         url: https://github.com/pounceandmiss/libdatachannel-tcl.git
-        commit: 77a9111abf208c6e41895ca093d6a1b03e764c5a
+        commit: 9ae99076fd98df9157637b54d98fbe9bfb4b7ce0
         dest: build/linux/_build/deps/libdatachannel-tcl
       - type: git
         url: https://github.com/pounceandmiss/rtc-ma.git
-        commit: 6f1455f16947de8339835026c0f9ac1b5e038ef8
+        commit: 07442896dce38ccc150c5b396bbd6b39cbcf3545
         dest: build/linux/_build/deps/rtc-ma
       # libdatachannel + opus: pre-staged for rtc/rtc-ma's offline cmake build.
       - type: git
@@ -117,11 +116,11 @@ modules:
         dest-filename: opus-1.6.1.tar.gz
       - type: git
         url: https://github.com/pounceandmiss/picomemo-tcl.git
-        commit: b354edb7c9033a94ec31d3da66bc8cb29e85d5ee
+        commit: 9523cb71d85510f61f342c84b1fc8176aff8797f
         dest: build/linux/_build/deps/picomemo-tcl
       - type: git
         url: https://github.com/pounceandmiss/tclwuffs.git
-        commit: c1d3eee88d6dec9161555e6df7e9cc3ea2348542
+        commit: ddd4721499e2a2ad5f6ee0568c816591fbaf7e1b
         dest: build/linux/_build/deps/tclwuffs
       - type: git
         url: https://github.com/petasis/tkdnd.git
