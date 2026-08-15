@@ -49,6 +49,19 @@ proc answer_disco {from} {
     }]
 }
 
+test presence-resource-cap {resources past the cap are dropped, not tracked} \
+    {*}$presence_common -body {
+        set ::taco_presence::MaxResources 3
+        try {
+            for {set i 0} {$i < 6} {incr i} {
+                c.conn feed [presence_available peer@example.com/res$i]
+            }
+            dict size [c presence resources -jid peer@example.com]
+        } finally {
+            set ::taco_presence::MaxResources 50
+        }
+    } -result 3
+
 test presence-idle-since {XEP-0319 idle timestamp lands as microseconds} \
     {*}$presence_common -body {
         c.conn feed [presence_available peer@example.com/phone \

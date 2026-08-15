@@ -109,7 +109,13 @@ snit::type xmppreader {
     
     # zap whitespaces (you don't want this in real life circumstance)
     option -zap -default no
-    
+
+    # Per-stanza caps; tripping one throws, which OnReadable turns into a
+    # stream teardown. Defaults sit well above any real XMPP stanza.
+    option -max-stanza-size -default 1048576
+    option -max-depth -default 100
+    option -max-elements -default 65536
+
     # (optional) channel that will be parsed when you call `start`
     option -channel
 
@@ -125,6 +131,8 @@ snit::type xmppreader {
     variable Cb
     variable NodeList
     variable AfterID ""
+    variable CurSize 0
+    variable CurElems 0
 
     constructor {args} {
         install expat using expat $self.expat -namespace -final no \
@@ -191,6 +199,22 @@ snit::type xmppreader {
     }
     
     method OnElemStart {tag attrs} {
+        # A top-level stanza begins with only the stream root on the stack.
+        if {[llength $NodeList] == 1} {
+            set CurSize 0
+            set CurElems 0
+        }
+        if {[llength $NodeList] >= 1} {
+            incr CurElems
+            incr CurSize [expr {[string length $tag] + [string length $attrs]}]
+            if {$CurSize > $options(-max-stanza-size)
+                || $CurElems > $options(-max-elements)
+                || [llength $NodeList] >= $options(-max-depth)} {
+                error "stanza exceeds parser limits (size $CurSize\
+                    depth [llength $NodeList] elems $CurElems)"
+            }
+        }
+
         set ns {}
         regexp {(.*):(.*)} $tag -> ns tag
         set node [list tag $tag ns $ns children {} attrs {}]
@@ -248,6 +272,10 @@ snit::type xmppreader {
     method OnCdata cdata {
         if {$options(-zap) && [string is space $cdata]} {
             return
+        }
+        incr CurSize [string length $cdata]
+        if {$CurSize > $options(-max-stanza-size)} {
+            error "stanza body exceeds parser limit (size $CurSize)"
         }
         set node [lpop NodeList end]
         if {[dict get $node children] eq ""} {

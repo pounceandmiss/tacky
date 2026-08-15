@@ -136,3 +136,44 @@ test xmpprw-header-error-keeps-stream-root \
         list $::_xrwGot [lindex $::_xrwBg 0]
     } -cleanup {::_xrwR destroy; _xrwCleanup} \
     -result {iq {hdr boom}}
+
+test xmpprw-oversize-stanza-tears-stream-down \
+    {a stanza past -max-stanza-size reports to error-command} \
+    -setup _xrwSetup -body {
+        ::jab::readChannel $::_xrwRd -max-stanza-size 50 \
+            -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
+            -error-command {apply {msg {lappend ::_xrwErr $msg}}}
+        puts -nonewline $::_xrwWr \
+            "[::jab::header]<message><body>[string repeat x 100]</body></message>"
+        _xrwDrain
+        list $::_xrwGot [llength $::_xrwErr] \
+            [string match "XML parse error:*exceeds*" [lindex $::_xrwErr 0]]
+    } -cleanup _xrwCleanup \
+    -result {{} 1 1}
+
+test xmpprw-deep-nesting-tears-stream-down \
+    {a stanza past -max-depth reports to error-command} \
+    -setup _xrwSetup -body {
+        ::jab::readChannel $::_xrwRd -max-depth 4 \
+            -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
+            -error-command {apply {msg {lappend ::_xrwErr $msg}}}
+        puts -nonewline $::_xrwWr \
+            "[::jab::header]<a><b><c><d><e/></d></c></b></a>"
+        _xrwDrain
+        list $::_xrwGot [llength $::_xrwErr] \
+            [string match "XML parse error:*exceeds*" [lindex $::_xrwErr 0]]
+    } -cleanup _xrwCleanup \
+    -result {{} 1 1}
+
+test xmpprw-normal-stanza-under-caps-still-parses \
+    {default caps do not disturb an ordinary stanza} \
+    -setup _xrwSetup -body {
+        ::jab::readChannel $::_xrwRd \
+            -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
+            -error-command {apply {msg {lappend ::_xrwErr $msg}}}
+        puts -nonewline $::_xrwWr \
+            "[::jab::header]<message><body>hello</body></message>"
+        _xrwDrain
+        list $::_xrwGot [llength $::_xrwErr]
+    } -cleanup _xrwCleanup \
+    -result {message 0}

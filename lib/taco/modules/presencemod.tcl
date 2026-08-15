@@ -30,6 +30,9 @@ snit::type taco_presence {
     # bareJid -> dict(resource -> {show status priority idle_since caps_node caps_ver})
     variable Presence -array {}
 
+    # Cap on resources tracked per bare JID; new ones past it are dropped.
+    typevariable MaxResources 50
+
     option -client -readonly yes
 
     constructor args {
@@ -162,6 +165,12 @@ snit::type taco_presence {
             if {![info exists Presence($bare)]} {
                 set Presence($bare) [dict create $resource $info]
             } else {
+                if {![dict exists $Presence($bare) $resource]
+                    && [dict size $Presence($bare)] >= $MaxResources} {
+                    jlog debug "presence: $bare at resource cap\
+                        ($MaxResources); dropping $resource"
+                    return
+                }
                 dict set Presence($bare) $resource $info
             }
         }
