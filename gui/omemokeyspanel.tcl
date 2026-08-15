@@ -5,7 +5,8 @@
 # trust / Undecided radio triplet per device, and a "Set all" triplet when
 # there are 2+ settable devices. When -jid is this account's own bare jid the
 # current device is badged (from own_fingerprint/device_id) and excluded from
-# the trust controls. A compromised device is read-only. Left-click a
+# the trust controls. A compromised device is read-only. -highlight badges the
+# device with that fingerprint as a message's origin. Left-click a
 # fingerprint to copy it; right-click for a Copy menu. Live-updates via the
 # omemo <TrustList> event; a plain trust flip refreshes in place (no rebuild).
 #
@@ -22,6 +23,7 @@ snit::widget omemokeyspanel {
     option -acc -readonly yes
     option -jid -readonly yes
     option -height -default 200 -readonly yes
+    option -highlight -default "" -readonly yes
 
     variable isOwn 0
     variable content
@@ -179,6 +181,12 @@ snit::widget omemokeyspanel {
             -text [$self FormatFingerprint [dict get $dev fingerprint]]
         $self BindCopy $row.fp [dict get $dev fingerprint]
         pack $row.fp -anchor w
+        if {$options(-highlight) ne ""
+            && [dict get $dev fingerprint] eq $options(-highlight)} {
+            ttk::label $row.origin -text "message origin" \
+                -font {Helvetica 10 bold} -foreground royalblue3
+            pack $row.origin -anchor w -padx {12 0}
+        }
         if {!$active} {
             ttk::label $row.inactive -text "(inactive)" -foreground gray40
             pack $row.inactive -anchor w -padx {12 0}

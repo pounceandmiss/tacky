@@ -472,7 +472,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -488,7 +488,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT * FROM (
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -514,7 +514,7 @@ snit::type taco_messagestore {
         if {$sentTs eq ""} {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
@@ -528,7 +528,7 @@ snit::type taco_messagestore {
         }
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
@@ -572,7 +572,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -586,7 +586,7 @@ snit::type taco_messagestore {
             $options(-db) eval {
                 SELECT * FROM (
                     SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                            attachments
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -626,7 +626,7 @@ snit::type taco_messagestore {
         set match [fts_match_expr $query]
         if {$match eq ""} { return {} }
         set sql {SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                        server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                        server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                         attachments
                  FROM chat_message
                  WHERE kind='message' AND retracted=0
@@ -676,7 +676,7 @@ snit::type taco_messagestore {
         set target {}
         $options(-db) eval {
             SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                    attachments
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
@@ -697,7 +697,7 @@ snit::type taco_messagestore {
         foreach ts $timestamps {
             $options(-db) eval {
                 SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, fail_reason,
+                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
                        attachments
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts

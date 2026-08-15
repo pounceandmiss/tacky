@@ -403,7 +403,7 @@ Event:
     message = {timestamp: int, chat_jid: string, from_jid: string,
                is_outgoing: bool,
                server_status: string, remote_status: string,
-               encryption: string, fail_reason: string,
+               encryption: string, sender_fp: string, fail_reason: string,
                edited: bool, edited_ts: int, retracted: bool,
                content?: content,
                reply_id?: string, reply_to?: string,
@@ -433,7 +433,7 @@ An incoming text message, as it arrives on `<New>`:
         "is_outgoing": false,
         "server_id": "kR3nQ8vP", "own_id": "", "occupant_id": "",
         "server_status": "", "remote_status": "none",
-        "encryption": "omemo", "fail_reason": "",
+        "encryption": "omemo", "sender_fp": "05a1b2c3d4e5f6...", "fail_reason": "",
         "edited": false, "edited_ts": 0, "retracted": false,
         "content": {"type": "text", "body": "hey, look at this"}}}]
 
@@ -463,6 +463,10 @@ becomes `caption`, and the files are listed in `attachments`.
   `server_status` first, since a message that hasn't reached your server yet
   has nothing to say about the far end.
 - `encryption` is `"omemo"` or `""`.
+- `sender_fp` is the identity-key fingerprint of the peer device whose OMEMO
+  session decrypted the message; `""` on a cleartext row and on your own sends.
+  It matches the `fingerprint` of an `omemo trustList` row, which is how you
+  resolve it to a device id and its trust state.
 - `content` is the typed payload: `type: "text"` carries a `body`,
   `type: "media"` carries an `attachments` list plus a `caption` (grouped
   attachments are just more than one entry). Each `attachment` has a `type` of
@@ -1082,6 +1086,10 @@ only way down is an explicit `message resend {plaintext: 1}`, which
 rewrites the one row and leaves the chat toggle alone. That rewrite rides
 the row's `<Status>` as an `encryption` field, so a displayed message never
 keeps a lock it no longer has.
+
+**Message origin** - a decrypted row carries `sender_fp`, the fingerprint of
+the peer device that sent it. Join it against `trustList` for that device's id
+and trust state.
 
 **UI.** For the encryption switch, subscribe to `omemo <Enabled>` for the
 peer and call `setEnabled` when it's toggled. For the key panel, subscribe

@@ -5,9 +5,9 @@ package require snit
 # messageactions - what the user can do to a single message: the right-click
 # menu, the emoji picker behind "Add Reaction", and the reaction chips.
 #
-# Anything it can carry out itself (reacting, fetching raw XML) it does. The
-# rest lands in a composer this doesn't own, so it goes out as a virtual event
-# on -widget:
+# Anything it can carry out itself (reacting, fetching raw XML, opening the
+# OMEMO keys window) it does. The rest lands in a composer this doesn't own,
+# so it goes out as a virtual event on -widget:
 #
 #   <<ReplyTo>>         -data {key author snippet}
 #   <<EditMessage>>     -data {key text}
@@ -81,6 +81,12 @@ snit::type messageactions {
             }
         }
         $m add command -label "View XML" -command [mymethod viewxml $key]
+        # Which of the peer's devices sent this. OMEMO is 1:1 only.
+        if {!$options(-groupchat) && [dict exists $sd sender_fp]
+            && [dict get $sd sender_fp] ne ""} {
+            $m add command -label "Show OMEMO key" \
+                -command [mymethod showkey [dict get $sd sender_fp]]
+        }
         $m add command -label "Find in Chat" \
             -command [mymethod Announce <<FindInChat>>]
         tk_popup $m $rootX $rootY
@@ -107,6 +113,11 @@ snit::type messageactions {
             -command {apply {{xml} {
                 xmlstanza showxml $xml
             }}}
+    }
+
+    method showkey {fp} {
+        omemokeyswindow open $options(-acc) \
+            [jid norm [jid bare $options(-chat)]] $fp
     }
 
     # Chip click: toggle our reaction (add if absent, retract if present).

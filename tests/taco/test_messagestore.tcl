@@ -1472,6 +1472,29 @@ test messagestore-occupant-id-roundtrips {occupant_id is stored and read back} \
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
     } -result {occ-abc}
 
+# Each getter carries its own copy of the SELECT column list.
+test messagestore-sender-fp-on-every-read-path \
+    {sender_fp reaches the message dict from every getter} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body needle sender_fp aabbcc]]
+        set out {}
+        foreach getter {
+            {get latest alice@example.com}
+            {get before alice@example.com 200}
+            {get after  alice@example.com 50}
+            {get around alice@example.com 100 4}
+        } {
+            lappend out [dict get \
+                [lindex [ms_msgs [store {*}$getter]] 0] sender_fp]
+        }
+        foreach rows [list [store get ids alice@example.com 100] \
+                           [store search alice@example.com needle]] {
+            lappend out [dict get [lindex $rows 0] sender_fp]
+        }
+        lsort -unique $out
+    } -result {aabbcc}
+
 test messagestore-occupant-id-defaults-empty {a message dict without occupant_id stores empty} \
     {*}$ms_common \
     -body {
