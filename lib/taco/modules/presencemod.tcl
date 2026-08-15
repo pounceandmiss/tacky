@@ -7,7 +7,8 @@
 #   -jid $bareJid           (presence changed for specific JID)
 
 if 0 {
-    taco_presence - tracks 1-1 contact availability (show/status/priority per resource).
+    taco_presence - tracks 1-1 contact availability per resource:
+    show/status/priority, XEP-0319 idle time, XEP-0115 client details.
 
     In-memory only — presence is ephemeral (re-received on every reconnect).
     Trusts the server for presence authorization — any presence stanza
@@ -26,7 +27,7 @@ if 0 {
 
 snit::type taco_presence {
     variable client
-    # bareJid → dict(resource → {show status priority})
+    # bareJid -> dict(resource -> {show status priority idle_since caps_node caps_ver})
     variable Presence -array {}
 
     option -client -readonly yes
@@ -35,6 +36,7 @@ snit::type taco_presence {
         $self configurelist $args
         set client $options(-client)
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <CapsResolved> [mymethod OnCapsResolved]
     }
 
     destructor {
@@ -46,12 +48,18 @@ snit::type taco_presence {
         $client emit presence <Changed> -action clear
     }
 
-    # Returns best-resource presence: {show $s status $t priority $p}
-    # If no resources known, returns {show offline status "" priority 0}
+    method OnCapsResolved {args} {
+        set bareJid [jid norm [jid bare [dict get $args -jid]]]
+        if {[info exists Presence($bareJid)]} {
+            $client emit presence <Changed> -jid $bareJid
+        }
+    }
+
+    # Returns best-resource presence, or the offline shape if none are known.
     tackymethod get {args} {
         set bareJid [jid norm [dict get $args -jid]]
         if {![info exists Presence($bareJid)]} {
-            return {show offline status "" priority 0}
+            return [Offline]
         }
         set resDict $Presence($bareJid)
         set bestRes ""
@@ -64,18 +72,44 @@ snit::type taco_presence {
             }
         }
         if {$bestRes eq ""} {
-            return {show offline status "" priority 0}
+            return [Offline]
         }
-        return [dict get $resDict $bestRes]
+        return [$self Entry [dict get $resDict $bestRes]]
     }
 
-    # Returns full resource dict, or {}
+    # Returns dict(resource -> presence), or {}
     tackymethod resources {args} {
         set bareJid [jid norm [dict get $args -jid]]
         if {![info exists Presence($bareJid)]} {
             return {}
         }
-        return $Presence($bareJid)
+        set result {}
+        dict for {res info} $Presence($bareJid) {
+            dict set result $res [$self Entry $info]
+        }
+        return $result
+    }
+
+    proc Offline {} {
+        return {show offline status "" priority 0 idle_since 0 client {}}
+    }
+
+    # Public shape of one stored resource.
+    method Entry {info} {
+        set ver [dict get $info caps_ver]
+        set disco [$client caps discoFor $ver]
+        if {$disco eq ""} {
+            set clientInfo {}
+        } else {
+            set clientInfo [dict merge \
+                [dict create node [dict get $info caps_node] ver $ver] $disco]
+        }
+        return [dict create \
+            show [dict get $info show] \
+            status [dict get $info status] \
+            priority [dict get $info priority] \
+            idle_since [dict get $info idle_since] \
+            client $clientInfo]
     }
 
     # Returns 1 if any resource is available, 0 otherwise
@@ -115,7 +149,15 @@ snit::type taco_presence {
             set priority [xsearch $stanza priority -get body]
             if {$priority eq ""} { set priority 0 }
 
-            set info [dict create show $show status $status priority $priority]
+            set since [xsearch $stanza idle -ns urn:xmpp:idle:1 -get @since]
+            set idle [expr {$since ne "" ? [ParseTimestamp $since] : ""}]
+            if {$idle eq ""} { set idle 0 }
+
+            set capsNs http://jabber.org/protocol/caps
+            set info [dict create show $show status $status priority $priority \
+                idle_since $idle \
+                caps_node [xsearch $stanza c -ns $capsNs -get @node] \
+                caps_ver [xsearch $stanza c -ns $capsNs -get @ver]]
 
             if {![info exists Presence($bare)]} {
                 set Presence($bare) [dict create $resource $info]

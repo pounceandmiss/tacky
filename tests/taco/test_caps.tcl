@@ -120,3 +120,25 @@ test caps-hash-2 {Cheogram real-world verification hash} {*}$caps_common -body {
 
     c.caps HashDiscoQuery $queryNode
 } -result {hAx0qhppW5/ZjrpXmbXW0F2SJVM=}
+
+test caps-disco-identity {a resolved hash reports the client identity, not the first} {*}$caps_common -body {
+    set queryNode [j query -ns http://jabber.org/protocol/disco#info {
+        j identity -category pubsub -type pep
+        j identity -category client -type phone -name Conversations
+        j feature -var urn:xmpp:receipts
+    }]
+    set ver [c.caps HashDiscoQuery $queryNode]
+    c.conn feed [j presence -from peer@example.com/phone {
+        j c -ns http://jabber.org/protocol/caps -hash sha-1 \
+            -node http://conversations.im -ver $ver
+    }]
+    c.conn feed [j iq -type result -from peer@example.com/phone \
+        -id [xsearch [lindex [c.conn get_written] end] -get @id] {
+            j /as-is $queryNode
+        }]
+    c.caps discoFor $ver
+} -result {name Conversations category client type phone features urn:xmpp:receipts}
+
+test caps-disco-unknown {an unresolved hash reports nothing} {*}$caps_common -body {
+    c.caps discoFor sha-1-nobody-published-this
+} -result {}

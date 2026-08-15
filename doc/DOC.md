@@ -19,7 +19,9 @@ and get back replies and events.
   - [setting](#setting)
   - [chatlist](#chatlist)
   - [bookmarks](#bookmarks)
+  - [roster](#roster)
   - [presence](#presence)
+  - [caps](#caps)
   - [message](#message)
   - [notify](#notify)
   - [mam](#mam)
@@ -365,19 +367,90 @@ has to show its state before it opens.
 Changes emit `bookmarks <Changed>`, but a frontend watches `chatlist <Item>` /
 `<Remove>` instead - the funneled events carry the room state too.
 
+## roster
+
+    roster get {}                                                 -> [roster_item]
+    roster request {}                                                refetch from the server
+    roster item {jid: string, name?: string, groups?: [string]}
+    roster add {jid: string, name?: string, groups?: [string]}        item + subscribe
+    roster remove {jid: string}
+    roster subscription {jid: string}   -> string   none|to|from|both, "" if absent
+    roster subscribe {jid: string}
+    roster approve {jid: string}
+    roster unsubscribe {jid: string}
+    roster deny {jid: string}
+
+    roster_item = {jid: string, name: string, subscription: string,
+                   ask: string, approved: bool, groups: [string]}
+
+The contact list, and the subscription handshake around it. `chatlist` merges
+the roster into its entries, so a frontend reads contacts there and changes
+them here.
+
+`item` upserts one contact as an atomic replace (RFC 6121 2.4): omitting
+`groups` keeps the stored groups, passing `[]` clears them. `add` is `item`
+plus `subscribe`. `remove` deletes the item and cancels the subscription in
+both directions.
+
+`subscribe` asks to see a contact's presence and `unsubscribe` gives that up;
+`approve` and `deny` answer someone asking about yours (a `<Subscribe>` event
+with `type: "subscribe"`). None of them wait: the outcome arrives as a later
+`<Subscribe>` or `<Changed>`.
+
+Events:
+
+    roster <Changed>   {acc: string, action: string, jid?: string}
+    roster <Subscribe> {acc: string, jid: string, type: string}
+
+`action` is `add`, `update`, `remove` (each with a `jid`), or `clear` - the
+whole roster was replaced, so refetch. `type` is `subscribe`, `subscribed`,
+`unsubscribe`, or `unsubscribed`.
+
 ## presence
 
     presence get {jid: string}         -> presence      best resource
     presence resources {jid: string}   -> {*: presence}  per-resource
     presence isOnline {jid: string}    -> bool
 
-    presence = {show: string, status: string, priority: int}
+    presence = {show: string, status: string, priority: int,
+                idle_since: int, client: client_info}
+
+    client_info = {node: string, ver: string, name: string,
+                   category: string, type: string, features: [string]}
+
+`jid` is a bare JID; `resources` is keyed by resource, and the key is `""` for
+a contact whose presence came from a bare JID. `get` picks the highest-priority
+resource, or reports `show: "offline"` when none are known.
+
+`idle_since` is when the resource went idle (XEP-0319), in microseconds, or `0`
+if it said nothing. `client` is the software behind the resource, from its
+entity capabilities (XEP-0115): `node` and `ver` come off the presence, the rest
+off the disco#info reply that hash resolves to. It is `{}` until that reply
+arrives, which fires another `<Changed>`, and stays `{}` for a client that
+advertises no caps.
 
 Event:
 
-    presence <Changed> {acc: string, jid: string}
+    presence <Changed> {acc: string, jid?: string, action?: string}
 
-`jid` is a bare JID.
+`jid` names the contact whose presence moved. On disconnect it is
+`action: "clear"` with no `jid`: all presence is dropped, and re-received on the
+next connect.
+
+## caps
+
+    caps softwareVersion {to: string} -> {name: string, version: string,
+                                          os: string, error: bool,
+                                          error_text: string}
+
+XEP-0092: what software an entity runs, self-reported as a free-text name and
+version. `to` is a full JID - a bare one answers for the account itself,
+omitting it asks your own server. An entity that will not answer comes back as
+`error: true` with a reason in `error_text`, not as an `["error", ...]` reply.
+
+One round trip per resource, so it is a request rather than something the
+backend collects. What a resource supports needs no call: `presence resources`
+carries it in `client`.
 
 ## message
 
