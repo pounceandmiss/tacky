@@ -471,6 +471,48 @@ test file-download-local-thumbnail {download of a local image emits a sized PNG 
              w=[dict get $d width] h=[dict get $d height]
     } -result {local=1 state=done sniff=png w=320 h=192}
 
+test file-thumbmax-range {an unusable or absurd -thumbmax falls back to the default} \
+    {*}$file_env -body {
+        set r {}
+        foreach want {0 -5 banana {} inf nan 200 2048 99999 640.0} {
+            lappend r [$::_client file ThumbMax $want]
+        }
+        set r
+    } -result {320 320 320 320 2048 320 200 2048 2048 640}
+
+test file-download-thumbmax {-thumbmax picks the size, and sizes coexist} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set src [file join $::_upcache sized.png]
+        file mkdir [file dirname $src]
+        set w 600; set h 360
+        set px [string repeat [binary format cccc 10 120 200 255] [expr {$w * $h}]]
+        set f [open $src wb]
+        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
+        close $f
+        $::_client file download -url $src -thumbmax 200
+        $::_client file download -url $src -thumbmax 100
+        set small [$::_client file ThumbPath $src 100]
+        set big   [$::_client file ThumbPath $src 200]
+        set d [::tclwuffs::decode [up_readb $big]]
+        list w=[dict get $d width] h=[dict get $d height] \
+             both=[expr {[file exists $small] && [file exists $big]}] \
+             default=[file exists [$::_client file ThumbPath $src 320]]
+    } -result {w=200 h=120 both=1 default=0}
+
+test file-download-thumbmax-no-upscale {a small image is not upscaled to -thumbmax} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set src [file join $::_upcache tiny.png]
+        file mkdir [file dirname $src]
+        set w 32; set h 16
+        set px [string repeat [binary format cccc 9 9 9 255] [expr {$w * $h}]]
+        set f [open $src wb]
+        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
+        close $f
+        $::_client file download -url $src -thumbmax 960
+        set d [::tclwuffs::decode [up_readb [$::_client file ThumbPath $src 960]]]
+        list w=[dict get $d width] h=[dict get $d height]
+    } -result {w=32 h=16}
+
 test file-download-non-image-no-thumb {a non-image (undecodable) file downloads with no thumbnail} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache notimg.png]

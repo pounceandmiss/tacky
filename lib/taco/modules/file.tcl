@@ -15,7 +15,8 @@ package require tclwuffs
 # Upload id is the caller's (the message own_id), known before the GET URL
 # exists. Download is keyed and coalesced by URL; a local path passed as -url is
 # used in place (outgoing, pre-upload); for images a PNG thumbnail is derived
-# (wuffs) and surfaced as -thumbpath.
+# (wuffs) and surfaced as -thumbpath, at the -thumbmax the caller asks for:
+# only the client knows what its display needs.
 #
 # Downloaded originals live under the data dir; thumbnails and upload staging
 # under the cache dir, since a purge can regenerate both.
@@ -31,7 +32,7 @@ package require tclwuffs
 #
 # Public API:
 #   $client file download -url U  [-command {cb $localPath}] \
-#       [-auto 0|1] [-from JID]                                ;# "" on failure
+#       [-auto 0|1] [-from JID] [-thumbmax PX]                 ;# "" on failure
 #   $client file upload   -id ID -path P [-encrypt 0|1] \
 #       -command {cb $getUrl}                                  ;# "" on failure
 #   $client file cancel   -id ID | -url U
@@ -45,6 +46,7 @@ snit::type taco_file {
     typevariable DISCO_INFO  http://jabber.org/protocol/disco#info
     typevariable TIMEOUT_MS 60000
     typevariable THUMB_MAX  320
+    typevariable THUMB_LIMIT 2048
     typevariable HttpRegistered 0
     typevariable AUTOFETCH_DEFAULT everyone
     typevariable AUTOFETCH_MAX_DEFAULT 5242880
@@ -99,7 +101,7 @@ snit::type taco_file {
             url $url localpath "" thumbpath "" error "" \
             cmds {} done 0 lastfrac -1 timer "" fh "" httptoken "" \
             mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes \
-            abortstate "" abortreason ""]
+            thumbmax $THUMB_MAX abortstate "" abortreason ""]
         return $id
     }
 
@@ -223,13 +225,26 @@ snit::type taco_file {
         }
     }
 
+    # The thumbnail's long side in pixels. It names a cache file, so an unusable
+    # value falls back to the default and an absurd one is capped rather than
+    # filling the cache with second copies of the originals. Taken as a double,
+    # since a JSON client does not choose how its number is written.
+    method ThumbMax {want} {
+        if {![string is double -strict $want] || !($want > 0)} { return $THUMB_MAX }
+        if {$want >= $THUMB_LIMIT} { return $THUMB_LIMIT }
+        return [expr {int(round($want))}]
+    }
+
     method download {args} {
-        array set opts {-url "" -command "" -auto 0 -from ""}
+        array set opts {-url "" -command "" -auto 0 -from "" -thumbmax 0}
         array set opts $args
         set url $opts(-url)
         set cmd $opts(-command)
+        set tmax [$self ThumbMax $opts(-thumbmax)]
 
-        # Join an in-flight download of the same url.
+        # Join an in-flight download of the same url. <Update> carries one
+        # thumbpath, so a joiner gets the size that fetch already asked for;
+        # another size comes off disk on the next request.
         if {[info exists DownloadByUrl($url)]} {
             if {$cmd ne ""} {
                 dict lappend Transfers($DownloadByUrl($url)) cmds $cmd
@@ -245,7 +260,7 @@ snit::type taco_file {
                 set id [$self NewTransfer download $url]
                 if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
                 dict set Transfers($id) localpath $src
-                dict set Transfers($id) thumbpath [$self SafeThumb $url $src]
+                dict set Transfers($id) thumbpath [$self SafeThumb $url $src $tmax]
                 $self Terminal $id done
                 return
             }
@@ -266,6 +281,7 @@ snit::type taco_file {
         set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
         set id [$self NewTransfer download $url "" $max]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+        dict set Transfers($id) thumbmax $tmax
         set DownloadByUrl($url) $id
         set fetchUrl $url
         set parsed [aesgcm_parse $url]
@@ -321,7 +337,8 @@ snit::type taco_file {
         if {![info exists Transfers($id)]} return
         set url [dict get $Transfers($id) url]
         dict set Transfers($id) localpath $full
-        dict set Transfers($id) thumbpath [$self SafeThumb $url $full]
+        dict set Transfers($id) thumbpath \
+            [$self SafeThumb $url $full [dict get $Transfers($id) thumbmax]]
         $self Terminal $id done
     }
 
@@ -559,11 +576,11 @@ snit::type taco_file {
     # --- Thumbnails -----------------------------------------------------
 
     # Thumbnail path for an image, or "" for a non-image / undecodable file.
-    method SafeThumb {url full} {
+    method SafeThumb {url full max} {
         if {[attachment_kind $url] ne "image"} { return "" }
-        set thumb [$self ThumbPath $url $THUMB_MAX]
+        set thumb [$self ThumbPath $url $max]
         if {[file exists $thumb]} { return $thumb }
-        if {[catch {$self RenderThumb $full $thumb $THUMB_MAX} err]} {
+        if {[catch {$self RenderThumb $full $thumb $max} err]} {
             jlog inform "thumbnail failed: $err"
             return ""
         }
