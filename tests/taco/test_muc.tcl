@@ -240,6 +240,23 @@ test muc-occupants-listed {occupants returns all occupant dicts} \
         llength [c muc occupants -jid room@muc.example.com]
     } -result {2}
 
+test muc-occupant-cap {occupants past the cap are dropped, not tracked} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        set ::taco_muc::MaxOccupants 3
+        try {
+            for {set i 0} {$i < 6} {incr i} {
+                c.conn feed [muc_presence \
+                    from room@muc.example.com/o$i \
+                    role participant affiliation member self 0]
+            }
+            llength [c muc occupants -jid room@muc.example.com]
+        } finally {
+            set ::taco_muc::MaxOccupants 10000
+        }
+    } -result 3
+
 test muc-occupant-by-nick {occupant returns dict for a specific nick} \
     {*}$muc_common \
     -body {

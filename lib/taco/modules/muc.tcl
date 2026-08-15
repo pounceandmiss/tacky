@@ -60,6 +60,9 @@ snit::type taco_muc {
     # roomJid -> join -command callback (pending joins)
     variable JoinCallbacks -array {}
 
+    # Cap on occupants tracked per room; new ones past it are dropped.
+    typevariable MaxOccupants 10000
+
     option -client -readonly yes
 
     constructor args {
@@ -616,6 +619,13 @@ snit::type taco_muc {
     }
 
     method OnOccupantPresence {roomJid nick stanza mucX} {
+        set occs [dict get $Rooms($roomJid) occupants]
+        if {![dict exists $occs $nick]
+            && [dict size $occs] >= $MaxOccupants} {
+            jlog debug "muc: $roomJid at occupant cap\
+                ($MaxOccupants); dropping $nick"
+            return
+        }
         set occupant [$self ParseItem $mucX $nick $stanza]
         dict set Rooms($roomJid) occupants $nick $occupant
         $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
