@@ -64,6 +64,12 @@ proc mam_result {args} {
     }
 }
 
+# Helper: drive one account-catchup page as a whole run. A result with no RSM
+# `first` has no cursor to page from, so it settles the run on its own.
+proc msg_catchup {mamResult} {
+    $::_client message OnCatchup [dict create counts {} mins {} floor ""] 1 $mamResult
+}
+
 # Helper: extract the MAM queryid from the last written IQ
 proc mam_queryid {} {
     set written [$::_client conn get_written]
@@ -115,6 +121,36 @@ proc msg_muc_join {room nick} {
 # Helper: complete a catchup by feeding MAM results + fin IQ
 proc msg_catchup_finish {results {complete true}} {
     msg_mam_finish [mam_catchup_iq] $results $complete
+}
+
+# Helper: the most recently written MAM query IQ - the continuation a paging
+# run just asked for, where mam_catchup_iq keeps returning the first one.
+proc msg_last_mam_iq {} {
+    set found ""
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} {
+            set found $stanza
+        }
+    }
+    return $found
+}
+
+# Helper: answer the catchup query, then end the run by giving its
+# continuation an empty page. The archive has nothing more to hand over but
+# never claims the start, which is how a run stops short of it.
+proc msg_catchup_finish_short {results} {
+    msg_catchup_finish $results false
+    msg_mam_finish [msg_last_mam_iq] {} false
+}
+
+# Helper: how many message stanzas have been written, ignoring the IQ traffic
+# a catchup run generates on its own.
+proc msg_written_messages {} {
+    set n 0
+    foreach stanza [$::_client conn get_written] {
+        if {[dict get $stanza tag] eq "message"} { incr n }
+    }
+    return $n
 }
 
 # Helper: feed MAM results + fin for one specific query IQ. A room query is
@@ -804,7 +840,7 @@ test message-catchup-displayless-confirms-send \
         # Our own message comes back via catchup but carries no body.
         set rn [mam_result id arch-1 from $acc to alice@example.com \
             origin_id oid-conf body ""]
-        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        msg_catchup [dict create messages [list $rn] complete 1]
         # Confirmed in place (no duplicate inserted, original body intact).
         set rows [msg_store_latest alice@example.com]
         list nrows [llength $rows] \
@@ -829,7 +865,7 @@ test message-catchup-floor-sweeps-undeduped-chat \
             timestamp 1704067100000000 server_id sb1 body old-bob]]
         $::_client message PlaceReconnectHoles
         # The floor is bob's 00:00:00 message; nothing in the page dedups.
-        $::_client message OnCatchup [dict create complete 1 messages [list \
+        msg_catchup [dict create complete 1 messages [list \
             [mam_result id sb2 from bob@example.com \
                 stamp 2024-01-01T00:00:00Z body new-bob] \
             [mam_result id sa2 from alice@example.com \
@@ -841,6 +877,36 @@ test message-catchup-floor-sweeps-undeduped-chat \
              bob [llength [$::_client message messagestore hole list \
                 bob@example.com]]
     } -result {alice 0 bob 1}
+
+# notify alerts off <CatchupDone>, so a run that emitted per page would alert
+# on page one and alert again on page two for the same chat.
+test message-catchup-pages-settle-once \
+    {a paged run reports each chat once, carrying every page's count} \
+    {*}$msg_common \
+    -body {
+        set ::_done {}
+        tacky listen -tag catchupdone message <CatchupDone> \
+            {apply {{ev} {
+                if {[dict get $ev -jid] ne ""} {
+                    lappend ::_done [dict get $ev -jid] [dict get $ev -count]
+                }
+            }}}
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id p1 queryid $qid from alice@example.com to $acc \
+                body one stamp 2024-01-01T00:01:00Z]] false
+        # The continuation resumes from the page's oldest id.
+        set cont [msg_last_mam_iq]
+        set cursor [xsearch $cont query -ns urn:xmpp:mam:2 \
+            set -ns http://jabber.org/protocol/rsm before -get body]
+        set qid2 [xsearch $cont query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $cont [list \
+            [mam_result id p2 queryid $qid2 from alice@example.com to $acc \
+                body two stamp 2024-01-01T00:00:00Z]] true
+        tacky unlisten catchupdone
+        list cursor $cursor done $::_done
+    } -result {cursor p1 done {alice@example.com 2}}
 
 # =============================================================================
 # Stranded sends: settle pending rows against the archive after catchup
@@ -868,7 +934,7 @@ test message-catchup-resends-row-inside-archive-span \
             encryption "" timestamp $::inside_2025]]
         set before [llength [$::_client conn get_written]]
         # Archive floor is 2024; the row sits above it and was not echoed.
-        $::_client message OnCatchup [dict create complete 0 messages [list \
+        msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-a from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
         set db [$::_client message messagestore cget -db]
@@ -887,7 +953,7 @@ test message-catchup-fails-row-predating-archive \
             from_jid $acc own_id oid-old server_status pending \
             encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
-        $::_client message OnCatchup [dict create complete 0 messages [list \
+        msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-b from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
         set db [$::_client message messagestore cget -db]
@@ -907,7 +973,7 @@ test message-catchup-complete-archive-never-fails \
         msg_store [list [msg_msg chat_jid alice@example.com body "ancient" \
             from_jid $acc own_id oid-comp server_status pending \
             encryption "" timestamp 1000000]]
-        $::_client message OnCatchup [dict create complete 1 messages [list \
+        msg_catchup [dict create complete 1 messages [list \
             [mam_result id arch-c from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
         set db [$::_client message messagestore cget -db]
@@ -927,7 +993,7 @@ test message-catchup-error-retries-without-failing \
             from_jid $acc own_id oid-err server_status pending \
             encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
-        $::_client message OnCatchup [dict create error timeout]
+        msg_catchup [dict create error timeout]
         set db [$::_client message messagestore cget -db]
         $db eval {
             SELECT server_status, fail_reason FROM chat_message
@@ -947,7 +1013,7 @@ test message-catchup-floor-spans-displayless-nodes \
         msg_store [list [msg_msg chat_jid alice@example.com body "mid" \
             from_jid $acc own_id oid-mid server_status pending \
             encryption "" timestamp 1500000000000000]]
-        $::_client message OnCatchup [dict create complete 0 messages [list \
+        msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-d from bob@example.com to $acc \
                 body "" stamp 2017-01-01T00:00:00Z] \
             [mam_result id arch-e from bob@example.com to $acc \
@@ -974,16 +1040,16 @@ test message-catchup-skips-send-made-during-catchup \
             encryption "" timestamp 1000000]]
         # Written to the current stream, awaiting its ack.
         $::_client message MarkWired oid-live
-        set before [llength [$::_client conn get_written]]
-        msg_catchup_finish [list \
+        set before [msg_written_messages]
+        msg_catchup_finish_short [list \
             [mam_result id arch-f queryid $qid from bob@example.com to $acc \
-                body "other" stamp 2024-01-01T00:00:00Z]] false
+                body "other" stamp 2024-01-01T00:00:00Z]]
         set db [$::_client message messagestore cget -db]
         $db eval {
             SELECT server_status, fail_reason FROM chat_message
             WHERE own_id='oid-live'} row {}
         list status $row(server_status) reason $row(fail_reason) \
-            wrote [expr {[llength [$::_client conn get_written]] > $before}]
+            wrote [expr {[msg_written_messages] > $before}]
     } -result {status pending reason {} wrote 0}
 
 # Confirmation has to win over both other outcomes: the row is settled
@@ -996,7 +1062,7 @@ test message-catchup-confirmed-row-not-resent-or-failed \
             from_jid $acc own_id oid-conf2 server_status pending \
             encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
-        $::_client message OnCatchup [dict create complete 0 messages [list \
+        msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-g from $acc to alice@example.com \
                 origin_id oid-conf2 body "landed" stamp 2024-06-01T00:00:00Z] \
             [mam_result id arch-h from bob@example.com to $acc \
@@ -1018,7 +1084,7 @@ test message-catchup-muc-row-defers-not-failed \
         msg_store [list [msg_msg chat_jid room@conf.example.com?join \
             body "to room" from_jid $acc own_id oid-muc \
             server_status pending encryption "" timestamp 1000000]]
-        $::_client message OnCatchup [dict create complete 0 messages [list \
+        msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-i from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
         set db [$::_client message messagestore cget -db]
@@ -1118,7 +1184,7 @@ test message-catchup-duplicate-own-no-redecrypt \
             server_status "" encryption omemo]]
         set rn [mam_result id arch-9 from $acc to alice@example.com \
             origin_id oid-dup body ""]
-        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        msg_catchup [dict create messages [list $rn] complete 1]
         set rows [msg_store_latest alice@example.com]
         list nrows [llength $rows] \
             body [dict get [lindex $rows 0] content body]
@@ -2635,10 +2701,10 @@ test message-catchup-incomplete-places-hole {catchup with complete=false places 
     -body {
         msg_ready
         set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
-        msg_catchup_finish [list \
+        msg_catchup_finish_short [list \
             [mam_result id s1 queryid $qid \
                 from alice@example.com/phone to user@test.example.com \
-                body msg1 stamp 2024-01-01T10:00:00Z]] false
+                body msg1 stamp 2024-01-01T10:00:00Z]]
         # alice@example.com had no pre-existing citizens, so catchup
         # adds an older-edge hole below the catchup message.
         llength [$::_client message messagestore hole list alice@example.com]
@@ -3705,7 +3771,7 @@ test message-reaction-from-mam {a reaction arriving via MAM catchup aggregates o
                 }
             }
         }]
-        $::_client message OnCatchup [dict create messages [list $rn] complete 1]
+        msg_catchup [dict create messages [list $rn] complete 1]
         dict get [lindex [msg_store_latest alice@example.com] 0] reactions
     } -result {👍 {reactors alice@example.com mine 0}}
 
