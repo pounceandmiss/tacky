@@ -207,6 +207,7 @@ jsonify_type jsonify \
         nick/get                string
         vcard/nick              string
         setting/list            list
+        log/getlevel            string
         debugtap/on             int
         message/rawxml          string
         message/ownRead         {dict {timestamp int unread int}}

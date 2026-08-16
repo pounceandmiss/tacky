@@ -44,14 +44,18 @@ package require tkwuffs
 package require tkdnd
 
 proc bgerror {message} {
-    # Snapshot first: every catch below overwrites ::errorInfo (snit's cget
-    # swallows an internal cache miss), which would report the wrong trace.
+    # Snapshot first: the catch below overwrites ::errorInfo, which would
+    # report the wrong trace.
     set info $::errorInfo
-    if {[info commands jlog] ne "" && ![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
-        catch {jlog error $info -obj bgerror}
+    # Through the API, not a local jlog: in process mode the backend owns the
+    # log file and this process has no sink at all. A failed call means tacky
+    # is gone or its pipe is dead, and the dialog carries the message without
+    # the trace, so stderr is the only place left for it.
+    set logged [expr {![catch {::tacky log error $info -obj gui.bgerror}]}]
+    if {$::consoleErrors || !$logged} {
+        puts stderr $info
     }
     if {$::consoleErrors} {
-        puts stderr $info
         return
     }
     set ::errorInfo $info

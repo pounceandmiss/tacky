@@ -72,7 +72,7 @@ snit::type app_type {
     method OnMethodError {eargs} {
         set msg [dict get $eargs -message]
         if {[dict exists $eargs -errorinfo]} {
-            catch {::tacky jlog error [dict get $eargs -errorinfo] -obj gui.methoderror}
+            catch {::tacky log error [dict get $eargs -errorinfo] -obj gui.methoderror}
         }
         set w ""
         if {[dict exists $eargs -acc]} {

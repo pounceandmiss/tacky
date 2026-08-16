@@ -198,7 +198,8 @@ snit::widget chatarea {
         # and leave a placeholder so the batch continues.
         if {[catch {$self DrawMessage msgins $slot $msg} err]} {
             catch {$text del item.$slot.first item.$slot.last}
-            catch {jlog error "DrawMessage failed for $key: $err" -obj chatarea}
+            catch {::tacky log error "DrawMessage failed for $key: $err" \
+                -obj gui.chatarea}
             $self DrawErrorPlaceholder msgins $slot
         }
         return 1

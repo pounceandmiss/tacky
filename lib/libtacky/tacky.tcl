@@ -198,17 +198,31 @@ oo::class create tacky_base {
         {*}$run [dict get $args -result]
     }
 
-    # Forward jlog calls to the backend thread where the jlog singleton lives.
-    # Auto-captures -obj and -acc from the caller's snit scope via uplevel.
-    method jlog {level text args} {
-        array set opts $args
+    # tacky log <level> <text> ?-opt v?  sugar for `write`, auto-capturing
+    #                                    -obj and -acc from the caller's scope
+    # tacky log <method> ?-opt v?        the rest of the module
+    #
+    # Naming a method `log` shadows the module for `unknown`, so this routes
+    # both. No method is named after a level, which makes the first word enough
+    # to tell them apart. "none" counts as a level here so a caller passing a
+    # configured one reaches write, which drops it, instead of dispatching a
+    # method that doesn't exist.
+    method log {args} {
+        set first [lindex $args 0]
+        if {$first ni {verbose debug info warning error fatal none}} {
+            # Not _send: only unknown allocates the callback token, and
+            # getlevel is useless without one.
+            tailcall my unknown log {*}$args
+        }
+        array set opts [lrange $args 2 end]
         if {![info exists opts(-obj)]} {
             catch {set opts(-obj) gui.[uplevel 1 {set self}]}
         }
         if {![info exists opts(-acc)]} {
             catch {set opts(-acc) [uplevel 1 {set options(-acc)}]}
         }
-        my _send jlog $level $text {*}[array get opts]
+        my _send log write -level $first -text [lindex $args 1] \
+            {*}[array get opts]
     }
 
     # Subclass must override: deliver command to backend.
@@ -248,8 +262,9 @@ oo::class create tacky_type {
         next
         package require taco
         lassign [tacky_split_debug $args] debug rest
-        set Taco [taco_type taco {*}$rest]
+        # Before taco: its constructor logs, and the sink has to exist by then.
         jlog configureDebug {*}$debug
+        set Taco [taco_type taco {*}$rest]
     }
 
     destructor {
