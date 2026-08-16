@@ -1309,6 +1309,16 @@ snit::type taco_message {
         }
     }
 
+    method ArchiveErrorText {condition} {
+        switch -- $condition {
+            remote-server-timeout  { return "The message archive did not respond" }
+            service-unavailable    { return "This server keeps no message archive" }
+            feature-not-implemented { return "This server keeps no message archive" }
+            forbidden              { return "You do not have access to that archive" }
+            default                { return "Couldn't reach the message archive" }
+        }
+    }
+
     method ModerateErrorText {condition} {
         switch -- $condition {
             forbidden      { return "You do not have permission to delete messages in this room" }
@@ -1430,12 +1440,13 @@ snit::type taco_message {
 
     method history {args} {
         set defaults [dict create -before "" -after "" -limit 50 \
-            -command "" -tag ""]
+            -command "" -onerror "" -tag ""]
         set opts [dict merge $defaults $args]
 
         set chatJid [dict get $opts -chat]
         set limit   [dict get $opts -limit]
         set callback [dict get $opts -command]
+        set onerror [dict get $opts -onerror]
         set before [dict get $opts -before]
         set after [dict get $opts -after]
         set tag [dict get $opts -tag]
@@ -1477,15 +1488,15 @@ snit::type taco_message {
             }
         }
 
-        $self QueryServer $chatJid $before $after $limit $callback $tag \
-            $bounded 0
+        $self QueryServer $chatJid $before $after $limit $callback $onerror \
+            $tag $bounded 0
     }
 
     # Fire one MAM page anchored on the nearest citizen in the queried
     # direction (oldest at-or-after $before, newest at-or-before $after), or
     # cursorless when none exists. `attempt` bounds the OnFetch retry loop.
-    method QueryServer {chatJid before after limit callback tag wasBounded \
-                        attempt} {
+    method QueryServer {chatJid before after limit callback onerror tag \
+                        wasBounded attempt} {
         set direction [expr {$after ne "" ? "newer" : "older"}]
         set mamArgs [list -max $limit]
         set cursorId ""
@@ -1515,12 +1526,13 @@ snit::type taco_message {
         }
 
         lappend mamArgs -command [mymethod OnFetch $chatJid $before $after \
-            $limit $callback $tag $direction $wasBounded $cursorId $attempt]
+            $limit $callback $onerror $tag $direction $wasBounded $cursorId \
+            $attempt]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
-    method OnFetch {chatJid before after limit callback tag direction \
+    method OnFetch {chatJid before after limit callback onerror tag direction \
                     wasBounded cursorId attempt mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -1533,10 +1545,18 @@ snit::type taco_message {
                 && $attempt < $MaxCursorRetries} {
                 $messagestore demote $chatJid $cursorId
                 $self QueryServer $chatJid $before $after $limit $callback \
-                    $tag $wasBounded [expr {$attempt + 1}]
+                    $onerror $tag $wasBounded [expr {$attempt + 1}]
                 return
             }
             set local [$self GetLocal $chatJid $before $after $limit]
+            # A short page is an ordinary answer - the caller renders it and
+            # comes back for more. An empty one is not: it reads as "the
+            # archive ends here", which is how a caller stops paging for good
+            # over what may be a passing failure. Say it failed instead.
+            if {$onerror ne "" && [llength [dict get $local messages]] == 0} {
+                {*}$onerror [$self ArchiveErrorText $cond]
+                return
+            }
             {*}$callback [dict get $local messages]
             return
         }
@@ -1573,7 +1593,8 @@ snit::type taco_message {
                 set rsmFlag [expr {$direction eq "older" ? "-before" : "-after"}]
                 $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
                     -command [mymethod OnFetch $chatJid $before $after $limit \
-                        $callback $tag $direction $wasBounded "" $attempt]
+                        $callback $onerror $tag $direction $wasBounded "" \
+                        $attempt]
                 return
             }
         }
@@ -1656,7 +1677,7 @@ snit::type taco_message {
     #   local:  get around from local store
     #   remote: MAM fetch from -start $date, store, then get around
     method goto {args} {
-        set defaults [dict create -source local -limit 50 -tag ""]
+        set defaults [dict create -source local -limit 50 -tag "" -onerror ""]
         set opts [dict merge $defaults $args]
 
         set chatJid  [dict get $opts -chat]
@@ -1665,6 +1686,7 @@ snit::type taco_message {
         set limit    [dict get $opts -limit]
         set tag      [dict get $opts -tag]
         set callback [dict get $opts -command]
+        set onerror  [dict get $opts -onerror]
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
@@ -1679,14 +1701,23 @@ snit::type taco_message {
         # remote: fetch from server first, then get around
         $client mam queryChat $chatJid \
             -start [FormatTimestampISO $date] -max $limit \
-            -command [mymethod OnGoto $chatJid $date $limit $callback $tag]
+            -command [mymethod OnGoto $chatJid $date $limit $callback $onerror \
+                $tag]
     }
 
-    method OnGoto {chatJid date limit callback tag mamResult} {
+    method OnGoto {chatJid date limit callback onerror tag mamResult} {
         if {[dict exists $mamResult error]} {
             # Fall back to local
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
             set result [$messagestore get around $chatJid $date $limit]
+            # Nothing local to land on either: the jump did not happen, and
+            # saying so beats answering with an empty page.
+            if {$onerror ne "" && [llength [dict get $result messages]] == 0} {
+                set cond [expr {[dict exists $mamResult error_condition]
+                    ? [dict get $mamResult error_condition] : ""}]
+                {*}$onerror [$self ArchiveErrorText $cond]
+                return
+            }
             {*}$callback $result
             return
         }
