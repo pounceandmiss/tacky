@@ -75,6 +75,9 @@ matter; it contains C++, so link the host app with `g++`. The ABI is
   `backend_args` is a NULL-terminated array of backend constructor options
   (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
   `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
+  It also takes the `--debug-level` and `--debug-file` flags from
+  [log](#log) - without a file the backend logs to the host's stderr, which a
+  service process usually discards.
 - `tacky_send` carries one complete JSON request; each emit callback delivers
   one complete JSON reply or event.
 - Threading: `tacky_send` is callable from any thread. The emit callback fires
@@ -837,6 +840,8 @@ Events:
     log write    {level: string, text: string, obj?: string, acc?: string}  -> ""
     log setlevel {level: string, obj?: string}                              -> ""
     log getlevel {obj?: string}                                             -> string
+    log setfile  {path: string}                                             -> ""
+    log getfile  {}                                                         -> string   "" when logging to stderr
 
 The backend's logger. The frontend's lines land in the same file as the backend's
 own, set by `--debug-file` at startup, otherwise to stderr. 
@@ -853,7 +858,12 @@ own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
 read or move the default the rest inherit. Backend objects are already named
 this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`). `write` without `obj` records `frontend`.
 
-`setlevel` is per process and not persisted. 
+`setfile` moves the sink at runtime, for a debug toggle or an export; an empty
+`path` goes back to stderr. The file is held open only for the length of one
+record, so it can be rotated or truncated underneath the backend and the next
+record recreates it.
+
+`setlevel` and `setfile` are per process and not persisted. 
 
 The log file can hold full stanzas, even encrypted message bodies, so should be treated as highly sensitive.
 

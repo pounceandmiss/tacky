@@ -6,6 +6,7 @@ snit::type jlog_type {
     # logged when their ancestor moved.
     variable explicit
     variable filewarned 0
+    variable logfile ""
     option -logproc
     option -defaultlevel warning
 
@@ -125,6 +126,29 @@ snit::type jlog_type {
         return [$self getLevel $opts(-obj)]
     }
 
+    # An empty path sends records back to stderr. The writer holds the file
+    # open only for the length of a record, so a host is free to rotate or
+    # truncate underneath us; the next record recreates it.
+    method setfile {args} {
+        array set opts {-path ""}
+        array set opts $args
+        set logfile $opts(-path)
+        if {$logfile eq ""} {
+            $self configure -logproc [list $self stderrWriter]
+            return
+        }
+        # Create the parent dir; the per-line writer fails otherwise.
+        file mkdir [file dirname $logfile]
+        # A new file earns a fresh complaint if it turns out to be unwritable.
+        set filewarned 0
+        $self configure -logproc [list $self fileWriter $logfile]
+        return
+    }
+
+    method getfile {args} {
+        return $logfile
+    }
+
     method CheckLevel {level} {
         if {$level ni $LEVELS} {
             error "unknown log level \"$level\": must be one of [join $LEVELS {, }]"
@@ -198,13 +222,7 @@ snit::type jlog_type {
         if {$o(-debug-level) ne ""} {
             $self configure -defaultlevel $o(-debug-level)
         }
-        if {$o(-debug-file) ne ""} {
-            # Create the parent dir; the per-line writer fails otherwise.
-            file mkdir [file dirname $o(-debug-file)]
-            $self configure -logproc [list $self fileWriter $o(-debug-file)]
-        } else {
-            $self configure -logproc [list $self stderrWriter]
-        }
+        $self setfile -path $o(-debug-file)
         if {$o(-libdatachannel-debug-level) ne "" \
                 && [info commands ::rtc::set-log-level] ne ""} {
             # Native verbosity is the library's job; don't let jlog re-filter.
@@ -231,4 +249,6 @@ snit::type taco_log {
     tackymethod write {args} { jlog write {*}$args }
     tackymethod setlevel {args} { jlog setlevel {*}$args }
     tackymethod getlevel {args} { jlog getlevel {*}$args }
+    tackymethod setfile {args} { jlog setfile {*}$args }
+    tackymethod getfile {args} { jlog getfile {*}$args }
 }
