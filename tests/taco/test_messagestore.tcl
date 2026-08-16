@@ -595,6 +595,25 @@ test messagestore-hole-add-different-gaps {holes in different gaps both stored} 
         llength [store hole list alice@example.com]
     } -result {2}
 
+test messagestore-hole-add-adjacent-citizens-no-room \
+    {no hole is placed between citizens a microsecond apart} \
+    {*}$ms_common \
+    -body {
+        # One store batch packs colliding stamps onto consecutive
+        # microseconds, so 100 and 101 are contiguous by construction and the
+        # gap below 101 has nowhere to put a marker.
+        ms_batch [list \
+            [ms_msg timestamp 50 server_id s0 body a] \
+            [ms_msg timestamp 100 server_id s1 body b] \
+            [ms_msg timestamp 101 server_id s2 body c]]
+        store hole add alice@example.com older 101
+        # Placing it anyway walks past 100 and lands at 99, bracketing the
+        # run at 50 that the batch already proved contiguous.
+        list holes [llength [store hole list alice@example.com]] \
+            below [llength [dict get [store get before alice@example.com 101] \
+                messages]]
+    } -result {holes 0 below 2}
+
 test messagestore-hole-add-skips-pending {pendings don't count as gap bounds; hole sits adjacent to citizen} \
     {*}$ms_common \
     -body {

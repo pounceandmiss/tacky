@@ -241,6 +241,13 @@ snit::type taco_messagestore {
         if {$exists ne ""} return
         set step [expr {$direction eq "older" ? -1 : 1}]
         set ts [$self BumpTs $jid [expr {$anchorTs + $step}] $step]
+        # BumpTs walks until it finds a free microsecond, which can carry it
+        # out of the gap entirely when the neighbouring one is taken - and
+        # `store` packs colliding stamps into consecutive microseconds, so
+        # that happens. Landing outside would mark a gap that isn't there and
+        # leave the one we meant unmarked. Nowhere to land means the two
+        # citizens came out of one contiguous batch, so there is no gap.
+        if {$ts <= $lo || $ts >= $hi} return
         $options(-db) eval {
             INSERT INTO chat_message(timestamp, chat_jid, kind)
             VALUES($ts, $jid, 'hole')
