@@ -164,7 +164,7 @@ oo::class create tacky_base {
     # everything else → normal listener dispatch.
     method emit {module event args} {
         if {$module eq "callback"} {
-            my _callback {*}$args
+            my _callback $event {*}$args
         } else {
             my dispatch $module $event $args
         }
@@ -189,11 +189,13 @@ oo::class create tacky_base {
 
     # Look up token, remove entry (one-shot), invoke original command.
     # Silently ignores unknown tokens (callback was cancelled).
-    method _callback {args} {
+    method _callback {event args} {
         set entry [my TokenPop [dict get $args -token]]
         if {$entry eq ""} return
-        lassign $entry _tag cmd
-        {*}$cmd [dict get $args -result]
+        lassign $entry _tag cmd err
+        set run [expr {$event eq "<Error>" ? $err : $cmd}]
+        if {$run eq ""} return
+        {*}$run [dict get $args -result]
     }
 
     # Forward jlog calls to the backend thread where the jlog singleton lives.
@@ -217,17 +219,19 @@ oo::class create tacky_base {
     # Intercept outgoing calls: store -command/-onerror in Callbacks and
     # replace them with {tacky emit callback <Result|Error> -token N -result}
     # so the backend round-trips through emit on completion.
+    #
+    # Both options share one token, because only one of them can ever fire.
+    # A token apiece would leave the loser behind for good, and `listening`
+    # would go on reporting the call as outstanding - which is exactly how a
+    # caller that gates on it stops asking.
     method unknown {module method args} {
         if {[dict exists $args -command] || [dict exists $args -onerror]} {
-            if {[dict exists $args -tag]} {
-                set tag [dict get $args -tag]
-            } else {
-                set tag ""
-            }
-            foreach opt {-command -onerror} {
+            set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]
+            set cmd [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
+            set err [expr {[dict exists $args -onerror] ? [dict get $args -onerror] : ""}]
+            set token [my TokenNew [list $tag $cmd $err]]
+            foreach {opt event} {-command <Result> -onerror <Error>} {
                 if {![dict exists $args $opt]} continue
-                set token [my TokenNew [list $tag [dict get $args $opt]]]
-                set event [dict get {-command <Result> -onerror <Error>} $opt]
                 dict set args $opt \
                     [list tacky emit callback $event -token $token -result]
             }
@@ -352,9 +356,8 @@ set _tacky_backend_script [file join [file dirname [info script]] .. .. bin tack
 # internal callbacks against it.  Keeps the callback string off the
 # wire.
 #
-# Both use the base's token store: one token per request holding
-# {tag cmd err} here, one per callback holding {tag cmd} there.  Tag is
-# first either way, so unlisten/listening need no special case.
+# Both use the base's token store, one token per request holding
+# {tag cmd err}, so unlisten/listening need no special case either way.
 oo::class create tacky_process_type {
     superclass tacky_base
     variable Pipe
