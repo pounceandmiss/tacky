@@ -630,6 +630,39 @@ test chatview-catchup-indicator-ignores-other-chat {another chat's sync shows no
         .cv loading visible
     } -result {0}
 
+# Fail every outstanding archive query the way a server with no MAM would.
+proc cv_fail_mam {} {
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] eq ""} continue
+        $::_client iq feed [j iq -type error -id [dict get $stanza attrs id] {
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+    }
+    $::_client conn clear
+}
+
+test chatview-history-error-shows-why {a page that could not reach the archive says so} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+        set idle [.cv loading visible]
+        cv_fail_mam
+        wait
+        list $idle [.cv loading visible] [.cv loading cget -text]
+    } -result {0 1 {This server keeps no message archive}}
+
+test chatview-history-error-frees-the-direction {a failed page does not wedge the loader} \
+    -setup { cv_setup; cv_create -pack -nomam } \
+    -cleanup { cv_cleanup } \
+    -body {
+        cv_fail_mam
+        wait
+        # The gate OnThirsty consults before asking for another page.
+        ::tacky listening .cv/new
+    } -result {0}
+
 # -- scroll-to-bottom on incoming/outgoing ---------------------------------------
 
 # Parameterised scroll test: direction × scroll position.

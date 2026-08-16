@@ -57,6 +57,12 @@ snit::widget chatview {
     # which owns the overlay strip.
     variable GotoBusy 0
 
+    # Why the last page or jump failed, or "" if it did not. A page that
+    # cannot reach the archive comes back empty-handed, which looks exactly
+    # like reaching the end of the history - so say which happened. Cleared
+    # by the next page that lands and by any new jump.
+    variable LoadError ""
+
     # Backend-pushed newest real-message timestamp for this chat (message
     # <Tail>). The at-tail check compares the newest displayed id against it;
     # tracking it by event instead of a per-scroll query keeps the check
@@ -158,10 +164,13 @@ snit::widget chatview {
         if {[::tacky listening $win/new]} return
         ::tacky message history -acc $options(-acc) \
             -chat $options(-jid) -limit 50 \
-            -tag $win/new -command [mymethod OnInitialLoadDone]
+            -tag $win/new -command [mymethod OnInitialLoadDone] \
+            -onerror [mymethod OnLoadFailed]
     }
 
     method OnInitialLoadDone {messages} {
+        set LoadError ""
+        $self UpdateLoading
         $self ProcessBatch $messages
         # Initial load fetches the newest page by definition; we are
         # at the tail even when the result is empty (empty conversation
@@ -183,6 +192,7 @@ snit::widget chatview {
     # Cancel in-flight loads and leave the live tail before a non-tail jump.
     method ResetForGoto {} {
         set GotoBusy 0
+        set LoadError ""
         $self UpdateLoading
         foreach tag [list $win/goto $win/old $win/new] {
             ::tacky unlisten $tag
@@ -213,11 +223,13 @@ snit::widget chatview {
         ::tacky message goto -acc $options(-acc) \
             -chat $options(-jid) -date $target -source $source \
             -limit 50 -tag $win/goto \
-            -command [mymethod OnGotoDone]
+            -command [mymethod OnGotoDone] \
+            -onerror [mymethod OnGotoFailed]
     }
 
     method OnGotoDone {result} {
         set GotoBusy 0
+        set LoadError ""
         $self UpdateLoading
         set messages [dict get $result messages]
         set anchor [dict get $result anchor]
@@ -246,11 +258,28 @@ snit::widget chatview {
         $self UpdateLoading
     }
 
-    # Both states share one strip; the user's own request outranks the
-    # background sync.
+    # A page that could not be fetched, from either the scroll-driven fill or
+    # a jump. Nothing was added, so the window is unchanged; all the user
+    # needs is to be told why it stopped growing.
+    method OnLoadFailed {message} {
+        set LoadError $message
+        $self UpdateLoading
+    }
+
+    method OnGotoFailed {message} {
+        set GotoBusy 0
+        set LoadError $message
+        $self UpdateLoading
+    }
+
+    # All three states share one strip: a request still running outranks a
+    # failed one, and both outrank the background sync.
     method UpdateLoading {} {
         if {$GotoBusy} {
             $area loading configure -text "Loading…" -cancellable 1
+            $area loading show
+        } elseif {$LoadError ne ""} {
+            $area loading configure -text $LoadError -cancellable 0
             $area loading show
         } elseif {$CatchupBusy} {
             $area loading configure -text "Syncing history…" -cancellable 0
@@ -308,7 +337,8 @@ snit::widget chatview {
         if {$newest eq $DbNewest} return
         ::tacky message history -acc $options(-acc) \
             -chat $options(-jid) -after $newest -limit 50 \
-            -tag $win/new -command [mymethod OnCatchupLoadDone]
+            -tag $win/new -command [mymethod OnCatchupLoadDone] \
+            -onerror [mymethod OnLoadFailed]
     }
 
     # A page stopping short of the tail means a hole sits in between.
@@ -329,13 +359,15 @@ snit::widget chatview {
                 -chat $options(-jid) \
                 -before $edgeId -limit 50 \
                 -tag $win/$direction \
-                -command [mymethod OnLoadDone $direction]
+                -command [mymethod OnLoadDone $direction] \
+                -onerror [mymethod OnLoadFailed]
         } else {
             ::tacky message history -acc $options(-acc) \
                 -chat $options(-jid) \
                 -after $edgeId -limit 50 \
                 -tag $win/$direction \
-                -command [mymethod OnLoadDone $direction]
+                -command [mymethod OnLoadDone $direction] \
+                -onerror [mymethod OnLoadFailed]
         }
     }
 
@@ -353,6 +385,8 @@ snit::widget chatview {
 
     method OnLoadDone {direction messages} {
         set atEnd [$area atEnd]
+        set LoadError ""
+        $self UpdateLoading
         $self ProcessBatch $messages
         if {$direction eq "new"} {
             # If thirst caught up to the pushed tail, rejoin the live tail
