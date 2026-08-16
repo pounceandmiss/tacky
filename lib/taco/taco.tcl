@@ -98,6 +98,7 @@ snit::type taco_type {
     component audio -public audio
     component register -public register
     component debugtap -public debugtap
+    component log -public log
 
     option -transient -default 1 -readonly yes
     option -config-dir -readonly yes -default ""
@@ -144,6 +145,7 @@ snit::type taco_type {
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
         install debugtap using taco_debugtap ${selfns}::debugtap -taco $self
+        install log using taco_log ${selfns}::log
         foreach jid [$self account list] {
             $self emit account <Added> -acc $jid
         }
@@ -173,10 +175,6 @@ snit::type taco_type {
 
     method emit {module event args} {
         tacky emit $module $event {*}$args
-    }
-
-    method jlog {args} {
-        jlog {*}$args
     }
 
     method connect {} {

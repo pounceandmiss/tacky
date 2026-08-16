@@ -1,23 +1,27 @@
 package require snit
 
 snit::type jlog_type {
-    variable levels
+    # Levels set through setLevel; everything else inherits, resolved per call.
+    # Caching a resolved level here would freeze descendants that had already
+    # logged when their ancestor moved.
+    variable explicit
+    variable filewarned 0
     option -logproc
     option -defaultlevel warning
 
     # Shared with the native loggers (libdatachannel / rtc-ma); ordered least
     # to most severe, with "none" last as a silence-everything threshold.
     typevariable LEVELS {verbose debug info warning error fatal none}
-    
+
     constructor args {
-        array set levels {}
+        array set explicit {}
         $self configurelist $args
     }
-    
+
     method log {level text args} {
         $self Log -level $level -text $text {*}$args
     }
-    
+
     method Log {args} {
         array set opts {-obj "" -level debug}
         array set opts $args
@@ -34,10 +38,7 @@ snit::type jlog_type {
             if {$options(-logproc) ne ""} {
                 {*}$options(-logproc) [array get opts]
             } else {
-                puts "Log $opts(-obj): \[$opts(-level)\] $opts(-text)"
-                if {[info exists opts(-stanza)]} {
-                    puts [jwrite -pretty $opts(-stanza)]
-                }
+                puts [$self FormatLine [array get opts]]
             }
         }
     }
@@ -47,36 +48,30 @@ snit::type jlog_type {
     method inform {text args} {
         $self Log -level info -text $text {*}$args
     }
-    
+
     method debug {text args} {
         $self Log -level debug -text $text {*}$args
     }
-    
+
     method error {text args} {
         $self Log -level error -text $text {*}$args
     }
-    
+
     method getLevel obj {
-        if {[info exists levels($obj)]} {
-            return $levels($obj) 
-        }
-        
-        if {[regexp {(.*)\.([^.]+)$} $obj -> parent tail]} {
-            set levels($obj) [$self getLevel $parent]
-        } else {
-            set levels($obj) $options(-defaultlevel)
-        }
-        
-        set levels($obj)
-    }
-    
-    method setLevel {obj level {recursive no}} {
         set obj [$self NormalizeObj $obj]
-        set levels($obj) $level
-        set mask [expr {$recursive ? "$obj*": $obj}]
-        foreach key [array names levels $mask] {
-            set levels($key) $level
+        while {1} {
+            if {[info exists explicit($obj)]} {
+                return $explicit($obj)
+            }
+            if {![regexp {(.*)\.[^.]+$} $obj -> parent]} {
+                return $options(-defaultlevel)
+            }
+            set obj $parent
         }
+    }
+
+    method setLevel {obj level} {
+        set explicit([$self NormalizeObj $obj]) $level
     }
 
     method NormalizeObj {obj} {
@@ -88,29 +83,99 @@ snit::type jlog_type {
         return ::$obj
     }
 
+    # -- named-arg surface, driven by the `log` module ----------------------
+    # The positional methods above stay for the in-process callers; these take
+    # the option lists a transport can carry.
+
+    method write {args} {
+        array set opts {-obj "" -level "" -text "" -acc ""}
+        array set opts $args
+        $self CheckLevel $opts(-level)
+        # getlevel and --debug-level both hand out "none", so a caller piping a
+        # configured level through lands here asking for no output.
+        if {$opts(-level) eq "none"} {
+            return
+        }
+        # Name it here, or the -obj guess in Log grabs the transport's frame.
+        if {$opts(-obj) eq ""} {
+            set opts(-obj) frontend
+        }
+        $self Log -level $opts(-level) -text $opts(-text) \
+            -obj $opts(-obj) -acc $opts(-acc)
+    }
+
+    method setlevel {args} {
+        array set opts {-obj "" -level ""}
+        array set opts $args
+        $self CheckLevel $opts(-level)
+        if {$opts(-obj) eq ""} {
+            $self configure -defaultlevel $opts(-level)
+        } else {
+            $self setLevel $opts(-obj) $opts(-level)
+        }
+        return
+    }
+
+    method getlevel {args} {
+        array set opts {-obj ""}
+        array set opts $args
+        if {$opts(-obj) eq ""} {
+            return $options(-defaultlevel)
+        }
+        return [$self getLevel $opts(-obj)]
+    }
+
+    method CheckLevel {level} {
+        if {$level ni $LEVELS} {
+            error "unknown log level \"$level\": must be one of [join $LEVELS {, }]"
+        }
+    }
+
+    # One record, one write, so concurrent appenders can't interleave a line.
+    method FormatLine {opts_list} {
+        array set opts {-obj "" -level debug -text "" -acc ""}
+        array set opts $opts_list
+        set now [clock milliseconds]
+        set ts [clock format [expr {$now / 1000}] -format {%Y-%m-%d %H:%M:%S}]
+        append ts [format .%03d [expr {$now % 1000}]]
+        set who $opts(-obj)
+        if {$opts(-acc) ne ""} {
+            set who "$opts(-acc) $who"
+        }
+        set line "\[$ts $opts(-level)\] $who: $opts(-text)"
+        if {[info exists opts(-stanza)]} {
+            append line \n [jwrite -pretty $opts(-stanza)]
+        }
+        return $line
+    }
+
     # -logproc target: one timestamped line per record on stderr.
     method stderrWriter {opts_list} {
-        array set opts {-obj "" -level debug -text ""}
-        array set opts $opts_list
-        set ts [clock format [clock seconds] -format %H:%M:%S]
-        puts stderr "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
-        if {[info exists opts(-stanza)]} {
-            puts stderr [jwrite -pretty $opts(-stanza)]
-        }
+        puts stderr [$self FormatLine $opts_list]
     }
 
     # -logproc target: one file for every account plus native (libdatachannel /
     # rtc-ma) lines. Open/append/close per line so it survives a crash.
+    #
+    # A log call must never throw into the handler that made it, so an
+    # unwritable file costs that record a stderr line instead. Later records
+    # still try the file: the cause may be transient.
     method fileWriter {file opts_list} {
-        array set opts {-obj "" -level debug -text ""}
-        array set opts $opts_list
-        set fd [open $file a]
-        set ts [clock format [clock seconds] -format %H:%M:%S]
-        puts $fd "\[$ts $opts(-level)\] $opts(-obj): $opts(-text)"
-        if {[info exists opts(-stanza)]} {
-            puts $fd [jwrite -pretty $opts(-stanza)]
+        set line [$self FormatLine $opts_list]
+        if {[catch {
+            set fd [open $file a]
+            try {
+                puts $fd $line
+            } finally {
+                close $fd
+            }
+        } err]} {
+            if {!$filewarned} {
+                set filewarned 1
+                catch {puts stderr "jlog: cannot write $file: $err"}
+            }
+            catch {puts stderr $line}
         }
-        close $fd
     }
 
     # Native log callback sink, invoked as `jlog nativeLog source id level msg`
@@ -158,4 +223,12 @@ snit::type jlog_type {
 
 if {[info commands jlog] eq ""} {
     jlog_type jlog
+}
+
+# The `log` module: the singleton above reached through the tacky API, so a
+# frontend writes into the same file as the backend.
+snit::type taco_log {
+    tackymethod write {args} { jlog write {*}$args }
+    tackymethod setlevel {args} { jlog setlevel {*}$args }
+    tackymethod getlevel {args} { jlog getlevel {*}$args }
 }

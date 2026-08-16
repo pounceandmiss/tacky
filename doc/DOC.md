@@ -31,6 +31,7 @@ and get back replies and events.
   - [file](#file)
   - [calls](#calls)
   - [audio](#audio)
+  - [log](#log)
 - [Guides](#guides)
   - [Accounts and sign-in](#accounts-and-sign-in)
   - [The chat window](#the-chat-window)
@@ -830,6 +831,33 @@ Events:
 
     audio <PreferredDevice> {kind: string, id: string}       preferred device changed
     audio <Volume>          {kind: string, volume: double}   gain changed
+
+## log
+
+    log write    {level: string, text: string, obj?: string, acc?: string}  -> ""
+    log setlevel {level: string, obj?: string}                              -> ""
+    log getlevel {obj?: string}                                             -> string
+
+The backend's logger. The frontend's lines land in the same file as the backend's
+own, set by `--debug-file` at startup, otherwise to stderr. 
+
+Levels, least to most severe:
+
+    verbose  debug  info  warning  error  fatal  none
+
+The default is `warning`, or `--debug-level` cli arg value.
+
+`obj` names the source, as a dotted hierarchy: an object with no level of its
+own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
+"debug"}` covers `gui.chatlist` and everything else under `gui`. Omit `obj` to
+read or move the default the rest inherit. Backend objects are already named
+this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`). `write` without `obj` records `frontend`.
+
+`setlevel` is per process and not persisted. 
+
+The log file can hold full stanzas, even encrypted message bodies, so should be treated as highly sensitive.
+
+`write` is non-blocking, so the log may not be written by the time it returns.
 
 # Guides
 

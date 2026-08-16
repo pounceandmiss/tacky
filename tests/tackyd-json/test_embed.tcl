@@ -103,3 +103,16 @@ test embed-threaded-fireforget-decode-error {a tokenless bad argument reaches bg
     if {$timeout ne ""} { return $timeout }
     expr {[lsearch -glob $::received {BGERROR *base64*}] >= 0}
 } -result 1
+
+# The log module is the one surface a JSON frontend drives with no account and
+# no stanza: dashless args in, a scalar string reply out.
+test embed-threaded-log-level {log setlevel then getlevel round-trips over JSON} \
+    {*}$embed_common -body {
+    thread::send -async $::be {
+        tackyd_dispatch {["log","setlevel",{"obj":"::probe","level":"verbose"}]}
+        tackyd_dispatch {["log","getlevel",{"obj":"::probe.child"},1]}
+    }
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    lindex $::received end
+} -result {["result",1,"verbose"]}
