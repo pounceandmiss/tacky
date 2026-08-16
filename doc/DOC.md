@@ -75,9 +75,9 @@ matter; it contains C++, so link the host app with `g++`. The ABI is
   `backend_args` is a NULL-terminated array of backend constructor options
   (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
   `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
-  It also takes the `--debug-level` and `--debug-file` flags from
-  [log](#log) - without a file the backend logs to the host's stderr, which a
-  service process usually discards.
+  It also takes `-debug-level` and `-debug-file` from [log](#log) - without a
+  file the backend logs to the host's stderr, which a service process usually
+  discards.
 - `tacky_send` carries one complete JSON request; each emit callback delivers
   one complete JSON reply or event.
 - Threading: `tacky_send` is callable from any thread. The emit callback fires
