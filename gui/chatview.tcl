@@ -58,7 +58,7 @@ snit::widget chatview {
     variable GotoBusy 0
 
     # Why the last page or jump failed, or "" if it did not. Feeds
-    # UpdateLoading too; cleared by the next page that lands.
+    # UpdateLoading; cleared by the next page that lands.
     variable LoadError ""
 
     # Backend-pushed newest real-message timestamp for this chat (message
@@ -256,8 +256,6 @@ snit::widget chatview {
         $self UpdateLoading
     }
 
-    # Nothing was added, so the window is unchanged - the strip is all the
-    # user gets to say why it stopped growing.
     method OnLoadFailed {message} {
         set LoadError $message
         $self UpdateLoading
