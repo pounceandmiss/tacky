@@ -219,11 +219,8 @@ oo::class create tacky_base {
     # Intercept outgoing calls: store -command/-onerror in Callbacks and
     # replace them with {tacky emit callback <Result|Error> -token N -result}
     # so the backend round-trips through emit on completion.
-    #
-    # Both options share one token, because only one of them can ever fire.
-    # A token apiece would leave the loser behind for good, and `listening`
-    # would go on reporting the call as outstanding - which is exactly how a
-    # caller that gates on it stops asking.
+    # One token for both, since only one can fire: a token apiece leaves the
+    # loser behind and `listening` never goes false for that tag again.
     method unknown {module method args} {
         if {[dict exists $args -command] || [dict exists $args -onerror]} {
             set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]

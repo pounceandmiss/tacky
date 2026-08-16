@@ -57,10 +57,8 @@ snit::widget chatview {
     # which owns the overlay strip.
     variable GotoBusy 0
 
-    # Why the last page or jump failed, or "" if it did not. A page that
-    # cannot reach the archive comes back empty-handed, which looks exactly
-    # like reaching the end of the history - so say which happened. Cleared
-    # by the next page that lands and by any new jump.
+    # Why the last page or jump failed, or "" if it did not. Feeds
+    # UpdateLoading too; cleared by the next page that lands.
     variable LoadError ""
 
     # Backend-pushed newest real-message timestamp for this chat (message
@@ -258,9 +256,8 @@ snit::widget chatview {
         $self UpdateLoading
     }
 
-    # A page that could not be fetched, from either the scroll-driven fill or
-    # a jump. Nothing was added, so the window is unchanged; all the user
-    # needs is to be told why it stopped growing.
+    # Nothing was added, so the window is unchanged - the strip is all the
+    # user gets to say why it stopped growing.
     method OnLoadFailed {message} {
         set LoadError $message
         $self UpdateLoading
@@ -268,12 +265,11 @@ snit::widget chatview {
 
     method OnGotoFailed {message} {
         set GotoBusy 0
-        set LoadError $message
-        $self UpdateLoading
+        $self OnLoadFailed $message
     }
 
-    # All three states share one strip: a request still running outranks a
-    # failed one, and both outrank the background sync.
+    # All three share one strip; a running request outranks a failed one, and
+    # both outrank the background sync.
     method UpdateLoading {} {
         if {$GotoBusy} {
             $area loading configure -text "Loading…" -cancellable 1

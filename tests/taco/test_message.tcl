@@ -1700,7 +1700,7 @@ test message-history-archive-error-with-nothing-local-is-reported \
     } -result {none {This server keeps no message archive}}
 
 test message-history-archive-error-without-onerror-falls-back-to-local \
-    {a caller that asked about no errors still gets today's empty page} \
+    {a caller with no -onerror still gets the empty page it always did} \
     {*}$msg_common \
     -body {
         set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
