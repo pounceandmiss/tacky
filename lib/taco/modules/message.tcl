@@ -53,6 +53,12 @@ snit::type taco_message {
     # <CatchupDone>, keyed by room chat jid or "" for the account archive.
     variable CatchupInFlight
 
+    # Pages the account catchup will walk back before giving up on reaching
+    # the previous session. Deep enough that an ordinary absence lands whole
+    # - a shallow floor over-reports pending sends as undelivered - without
+    # turning a first login on a busy account into a full archive pull.
+    typevariable MaxCatchupPages 5
+
     constructor {args} {
         $self configurelist $args
         set client $options(-client)
@@ -146,29 +152,91 @@ snit::type taco_message {
     method DoCatchup {} {
         if {![$self CatchupStart ""]} return
         $client mam query -before {} -max 50 \
-            -command [mymethod OnCatchup]
+            -command [mymethod OnCatchup \
+                [dict create counts {} mins {} floor ""] 1]
     }
 
-    method OnCatchup {mamResult} {
+    # One page of the account catchup. $acc carries what the earlier pages of
+    # this run established (per-chat counts, per-chat oldest, and the run's
+    # floor); $page is this page's number. A single page only reaches back 50
+    # messages, which on an account that was away a while leaves the other
+    # chats untouched and the floor high enough that RetryPending condemns
+    # delivered sends.
+    method OnCatchup {acc page mamResult} {
         if {[dict exists $mamResult error]} {
-            $self CatchupSettled "" 0
-            # No archive evidence, so nothing can be judged undelivered.
-            # Retry everything, fail nothing.
-            $self RetryPending "" 0
+            # Whatever earlier pages established still stands; only this
+            # page's range is unknown. An error on the first page leaves no
+            # evidence at all, so RetryPending judges nothing.
+            $self SettleCatchup $acc 0
             return
         }
 
-        lassign [$self CatchupPage $mamResult ""] perChatCount archiveFloor
+        set acc [$self MergeCatchupPage $acc \
+            [$self CatchupPage $mamResult ""]]
 
+        if {![$self CatchupIsLast $mamResult $page]} {
+            $client mam query -before [dict get $mamResult first] -max 50 \
+                -command [mymethod OnCatchup $acc [expr {$page + 1}]]
+            return
+        }
+
+        $self SettleCatchup $acc [dict get $mamResult complete]
+    }
+
+    # False while the archive says more history exists, we have a cursor to
+    # ask from, and we haven't walked back far enough already.
+    method CatchupIsLast {mamResult page} {
+        if {[dict get $mamResult complete]} { return 1 }
+        if {$page >= $MaxCatchupPages} { return 1 }
+        return [expr {![dict exists $mamResult first]
+            || [dict get $mamResult first] eq ""}]
+    }
+
+    method MergeCatchupPage {acc pageResult} {
+        lassign $pageResult pageCounts pageFloor pageMin
+        set counts [dict get $acc counts]
+        dict for {jid n} $pageCounts {
+            dict incr counts $jid $n
+        }
+        dict set acc counts $counts
+        set mins [dict get $acc mins]
+        dict for {jid ts} $pageMin {
+            if {![dict exists $mins $jid] || $ts < [dict get $mins $jid]} {
+                dict set mins $jid $ts
+            }
+        }
+        dict set acc mins $mins
+        set floor [dict get $acc floor]
+        if {$pageFloor ne "" && ($floor eq "" || $pageFloor < $floor)} {
+            dict set acc floor $pageFloor
+        }
+        return $acc
+    }
+
+    # Close the whole run at once: one <CatchupDone> per chat carrying every
+    # page's share, so notify doesn't alert per page and re-alert on the next.
+    method SettleCatchup {acc complete} {
+        if {!$complete} {
+            $self PlaceCatchupFloorHoles [dict get $acc mins]
+        }
         set totalCount 0
-        dict for {jid n} $perChatCount {
+        dict for {jid n} [dict get $acc counts] {
             $client emit message <CatchupDone> -jid $jid -count $n
             incr totalCount $n
         }
         $self CatchupSettled "" $totalCount
         # Anything still pending after the archive has had its say either
         # never reached the server or predates what the archive covered.
-        $self RetryPending $archiveFloor [dict get $mamResult complete]
+        $self RetryPending [dict get $acc floor] $complete
+    }
+
+    # Bound the older edge of what a run that stopped short actually fetched.
+    # Belongs to the run, not a page: an intermediate page's oldest sits inside
+    # the range the next page goes on to prove contiguous.
+    method PlaceCatchupFloorHoles {mins} {
+        dict for {jid minTs} $mins {
+            $messagestore hole add $jid older $minTs
+        }
     }
 
     # Fetch a joined room's own archive - the account archive holds no
@@ -184,7 +252,10 @@ snit::type taco_message {
             $self CatchupSettled $roomChatJid 0
             return
         }
-        lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _
+        lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _ mins
+        if {![dict get $mamResult complete]} {
+            $self PlaceCatchupFloorHoles $mins
+        }
         set n [expr {[dict exists $perChatCount $roomChatJid]
             ? [dict get $perChatCount $roomChatJid] : 0}]
         $self CatchupSettled $roomChatJid $n
@@ -203,7 +274,8 @@ snit::type taco_message {
     # happened to dedup against the cache. Any hole a covered chat holds in
     # that span is therefore a proven false positive and gets swept.
     #
-    # Returns {perChatCount archiveFloor}.
+    # Returns {perChatCount archiveFloor perChatMin}. Bounding the older edge
+    # is the caller's job, once its whole run has stopped.
     method CatchupPage {mamResult fixedChatJid} {
         set myBareJid [jid bare [$client cget -jid]]
         set perChatCount [dict create]
@@ -294,18 +366,10 @@ snit::type taco_message {
             $messagestore hole removeBetween $jid $archiveFloor $maxTs
         }
 
-        # Place older-edge hole for any chat in this catchup if the
-        # MAM query reports more older history.
-        if {![dict get $mamResult complete]} {
-            dict for {jid minTs} $perChatMin {
-                $messagestore hole add $jid older $minTs
-            }
-        }
-
         dict for {jid _} $perChatMax {
             $self EmitTail $jid
         }
-        return [list $perChatCount $archiveFloor]
+        return [list $perChatCount $archiveFloor $perChatMin]
     }
 
     method OnDisconnect {args} {
