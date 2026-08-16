@@ -2276,11 +2276,26 @@ test message-catchup-disconnect-closes-bracket {a disconnect settles a sync whos
         }}}
         msg_ready
         set before $::_events
-        # mam discards the pending callback here without invoking it, so
-        # nothing else will ever close this bracket.
+        # The query outlives the drop, but it cannot answer until the session
+        # is back - too long to leave the sync showing as running.
         $::_client conn fire_disconnect "network gone"
         list $before $::_events
     } -result {{} :0}
+
+test message-catchup-settles-once-across-a-drop {the query answering later does not re-close a settled bracket} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        tacky listen message <CatchupDone> {apply {{ev} {
+            lappend ::_events [dict get $ev -jid]:[dict get $ev -count]
+        }}}
+        msg_ready
+        $::_client conn fire_disconnect "network gone"
+        set afterDrop $::_events
+        # mam kept the callback, so the sync's own query still lands.
+        msg_catchup_finish {}
+        list $afterDrop $::_events
+    } -result {:0 :0}
 
 test message-muc-catchup-start-carries-room {a room sync opens under the room's jid, not the account's} \
     {*}$msg_common \
