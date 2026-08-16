@@ -63,6 +63,35 @@ tacky_test account-get-badfield {get routes invalid field name to -onerror} \
         tacky_await_error tacky account get -acc user@example.com -field bogus
     } -result {Invalid field: bogus}
 
+# -- token bookkeeping -----------------------------------------------------
+# Only one of -command/-onerror can fire, so the other must not be left
+# behind: a caller that gates new work on `listening $tag` would never ask
+# again.
+
+tacky_test account-listening-clears-after-a-result \
+    {a result releases the tag even though -onerror was supplied} \
+    {*}$common \
+    -body {
+        set ::_done 0
+        tacky account list -tag probe \
+            -command {apply {{r} { set ::_done 1 }}} \
+            -onerror {apply {{m} { set ::_done 1 }}}
+        if {!$::_done} { vwait ::_done }
+        tacky listening probe
+    } -result 0
+
+tacky_test account-listening-clears-after-an-error \
+    {an error releases the tag even though -command was supplied} \
+    {*}$common \
+    -body {
+        set ::_done 0
+        tacky account get -acc user@example.com -field bogus -tag probe \
+            -command {apply {{r} { set ::_done 1 }}} \
+            -onerror {apply {{m} { set ::_done 1 }}}
+        if {!$::_done} { vwait ::_done }
+        tacky listening probe
+    } -result 0
+
 # -- MethodError -----------------------------------------------------------
 # Must behave identically in all three transports; process used to swallow it.
 
