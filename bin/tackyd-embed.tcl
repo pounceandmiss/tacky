@@ -18,11 +18,20 @@
 
 package require taco
 package require tackyd-json
+# For tackyd_split_argv, and for a bgerror that reaches jlog: a host embedding
+# us has no console to lose background errors to. Nothing here calls its
+# stdio sender.
+package require tackyd
 
 tackyd_json_install_emit tacky_native_emit
 
-# Create the taco backend. Pass taco_type constructor args (e.g. -transient 0).
+# Create the taco backend. Pass taco_type constructor args (e.g. -transient 0)
+# and jlog's --debug-* flags; without the latter the host's stdout is the only
+# sink, which on a service process is nowhere.
 # tacky_native_emit must already be defined, since the constructor may emit.
 proc tackyd_embed_init {args} {
-    taco_type create taco {*}$args
+    lassign [tackyd_split_argv $args] debug tacoArgs
+    # Before taco: its constructor logs, and the sink has to exist by then.
+    jlog configureDebug {*}$debug
+    taco_type create taco {*}$tacoArgs
 }

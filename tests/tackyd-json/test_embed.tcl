@@ -104,6 +104,37 @@ test embed-threaded-fireforget-decode-error {a tokenless bad argument reaches bg
     expr {[lsearch -glob $::received {BGERROR *base64*}] >= 0}
 } -result 1
 
+# An embedded host has no console: without --debug-file reaching configureDebug,
+# every record falls through to the host's stdout, which on a service process is
+# nowhere. Startup flags have to survive tackyd_embed_init's arg split.
+test embed-threaded-debug-file {--debug-file at init routes records to the file} \
+    -constraints hasThread -setup {
+    set ::logfile [makeFile {} embed-debug.log]
+    set proj [file normalize [file join [file dirname [info script]] .. ..]]
+    set ::be [thread::create]
+    thread::send $::be [list set ::auto_path $::auto_path]
+    thread::send $::be [list set ::proj $proj]
+    thread::send $::be [list set ::logfile $::logfile]
+    thread::send $::be {
+        lappend auto_path [file join $proj lib]
+        proc tacky_native_emit {json} {}
+        source [file join $proj bin tackyd-embed.tcl]
+        tackyd_embed_init --debug-level debug --debug-file $::logfile
+    }
+} -cleanup {
+    catch {thread::send $::be {catch {taco destroy}}}
+    catch {thread::release $::be}
+    removeFile embed-debug.log
+    unset -nocomplain ::be ::logfile
+} -body {
+    thread::send $::be {tackyd_dispatch {["log","write",{"level":"error","text":"from the host","obj":"host"}]}}
+    set fh [open $::logfile r]
+    set text [read $fh]
+    close $fh
+    list [string match "*host: from the host*" $text] \
+         [expr {[thread::send $::be {jlog getfile}] eq $::logfile}]
+} -result {1 1}
+
 # The log module is the one surface a JSON frontend drives with no account and
 # no stanza: dashless args in, a scalar string reply out.
 test embed-threaded-log-level {log setlevel then getlevel round-trips over JSON} \

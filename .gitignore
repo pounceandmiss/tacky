@@ -1,0 +1,17 @@
+# Editor backups and autosave files
+*~
+\#*\#
+.\#*
+*.bak
+
+# Build output
+/build/
+/dist/
+
+# Debug / scratch dirs
+/debug-dir/
+/debugdir/
+
+# Local agent tooling state
+/.claude/settings.local.json
+/.claude/worktrees/

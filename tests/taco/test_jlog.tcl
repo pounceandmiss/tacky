@@ -80,6 +80,35 @@ test jlog-format-omits-empty-acc {an accountless line has no stray separator} \
         string match {*] ::c: boom} [jprobe FormatLine {-level error -text boom -obj ::c}]
     } -result 1
 
+# -- choosing the sink -----------------------------------------------------
+
+test jlog-setfile-redirects {setfile points later records at the new file} \
+    {*}$probe -body {
+        set path [makeFile {} jlog-setfile.log]
+        jprobe setfile -path $path
+        jprobe setLevel ::c debug
+        jprobe log error "to the file" -obj ::c
+        set fh [open $path r]
+        set text [read $fh]
+        close $fh
+        list [string match "*::c: to the file*" $text] [jprobe getfile]
+    } -cleanup {
+        removeFile jlog-setfile.log
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -match glob -result {1 *jlog-setfile.log}
+
+test jlog-setfile-empty-returns-to-stderr {an empty path drops the file sink} \
+    {*}$probe -body {
+        jprobe setfile -path [makeFile {} jlog-setfile.log]
+        jprobe setfile -path ""
+        list [jprobe getfile] [lindex [jprobe cget -logproc] end]
+    } -cleanup {
+        removeFile jlog-setfile.log
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result {{} stderrWriter}
+
 # -- writer robustness -----------------------------------------------------
 
 test jlog-file-failure-does-not-throw {an unwritable log file never throws into the caller} \
