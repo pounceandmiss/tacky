@@ -36,9 +36,19 @@ all: tacky tackyd tackyd-json
 # The three native binaries share one build tree so the heavy deps
 # (libdatachannel etc.) compile once, not once per binary; binaries 2 and 3 just
 # reuse the dep stamps in the shared PREFIX. Every other platform gets its own
-# tree (below), and each tree belongs to one toolchain, so no two ever share a
-# dep source dir or poison each other's artifacts.
+# tree (below), and each tree belongs to one toolchain, so no two ever share
+# compiled artifacts.
 LINUX_BUILD := $(CURDIR)/build/linux
+
+# One source cache shared by the native and Windows trees. zippy defaults
+# DEPSDIR to $(BASEDIR)/_build/deps, which would give each target here its own
+# copy of every dep; the sources are platform-neutral and compiled output still
+# isolates by BASEDIR.
+#
+# Android is excluded: omemo and tclwuffs have no out-of-tree build and zippy
+# only redirects them to an isolated copy under WIN, so an android build would
+# leave its objects in the shared checkout.
+DEPS_DIR := $(CURDIR)/build/deps
 
 tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
@@ -49,6 +59,7 @@ tacky tackyd tackyd-json: %: dist-dir
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
 	    BASEDIR=$(LINUX_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
 	    app
 	cp $(LINUX_BUILD)/$* dist/$*
 
@@ -66,6 +77,7 @@ lib: dist-dir
 	    LIB_SHIM_SRC=$(CURDIR)/embed/tacky.c \
 	    LIB_NAME=tacky \
 	    BASEDIR=$(LINUX_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
 	    lib
 	cp $(LINUX_BUILD)/libtacky.a dist/libtacky.a
 
@@ -103,6 +115,10 @@ else
   WIN_TCLSH := $(if $(wildcard $(WIN_HOST_TCLSH)),$(WIN_HOST_TCLSH),tclsh9.0)
 endif
 
+# The shared dep cache from whichever root the inner make sees: under DOCKER=1
+# that is the container's /src, not the host's $(CURDIR).
+WIN_DEPS_DIR := $(WIN_ROOT)/build/deps
+
 win: win-tacky win-tackyd win-tackyd-json
 
 win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
@@ -118,6 +134,7 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    $(if $($*_ICON),WIN_ICON=$(WIN_ROOT)/$($*_ICON)) \
 	    HOST_TCLSH=$(WIN_TCLSH) \
 	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
+	    DEPSDIR=$(WIN_DEPS_DIR) \
 	    win-app
 	cp $(WIN_BUILD)/$*.exe dist/$*.exe
 
@@ -136,6 +153,7 @@ win-lib: dist-dir
 	    LIB_NAME=tacky \
 	    HOST_TCLSH=$(WIN_TCLSH) \
 	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
+	    DEPSDIR=$(WIN_DEPS_DIR) \
 	    win-lib
 	cp $(WIN_BUILD)/libtacky.a dist/libtacky-win.a
 
@@ -281,6 +299,7 @@ $(LINUX_BUILD)/tclsh: Makefile
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(COMMON_DEPS)" \
 	    BASEDIR=$(LINUX_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
 	    tclsh
 
 $(LINUX_BUILD)/wish: Makefile
@@ -288,6 +307,7 @@ $(LINUX_BUILD)/wish: Makefile
 	    SHELL_TYPE=wish \
 	    DEPS="$(COMMON_DEPS) tkwuffs tkdnd" \
 	    BASEDIR=$(LINUX_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
 	    wish
 
 dist-dir:
@@ -296,10 +316,9 @@ dist-dir:
 clean:
 	rm -rf build dist
 
-# Drop the Windows build trees and .exe outputs (both flavours), keeping the
-# fetched dep sources under build/windows*/_build/deps so a rebuild doesn't
-# re-clone. Use after a dep pin bump to force a clean PE rebuild from the
-# existing sources.
+# Drop the Windows build trees and .exe outputs (both flavours). The fetched dep
+# sources live in build/deps, not under the per-target tree, so a rebuild doesn't
+# re-clone. Use after a dep pin bump to force a clean PE rebuild.
 win-clean:
 	rm -rf build/windows*/_build-win
 	rm -f build/windows*/*.exe build/windows*/*.exe.debug dist/*.exe
