@@ -123,6 +123,15 @@ proc msg_catchup_finish {results {complete true}} {
     msg_mam_finish [mam_catchup_iq] $results $complete
 }
 
+# Helper: how many MAM queries have gone out.
+proc msg_mam_query_count {} {
+    set n 0
+    foreach stanza [$::_client conn get_written] {
+        if {[xsearch $stanza query -ns urn:xmpp:mam:2] ne ""} { incr n }
+    }
+    return $n
+}
+
 # Helper: the most recently written MAM query IQ - the continuation a paging
 # run just asked for, where mam_catchup_iq keeps returning the first one.
 proc msg_last_mam_iq {} {
@@ -1909,6 +1918,22 @@ test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page
         } -complete true
         lmap m $result { dict get $m content body }
     } -result {x y}
+
+test message-history-fill-loop-stops-at-page-cap \
+    {an unbroken run of displayless pages stops rather than walking the archive} \
+    {*}$msg_common \
+    -body {
+        set ::result pending
+        tacky message history -acc $acc -chat alice@example.com -limit 2 \
+            -command [list apply {{r} { set ::result $r }}]
+        # Every page is receipts and the archive always claims more behind
+        # them, so nothing but the cap ends this.
+        for {set i 0} {$i < 25} {incr i} {
+            msg_mam_respond [list [list id e$i from bob@example.com body "" \
+                stamp 2024-01-01T09:00:00Z]] -complete false
+        }
+        list queries [msg_mam_query_count] answered [expr {$::result ne "pending"}]
+    } -result {queries 20 answered 1}
 
 # =============================================================================
 # History: hole-aware

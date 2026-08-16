@@ -575,6 +575,9 @@ snit::type taco_message {
     # across calls, so the cap only bounds one history call's blast radius.
     typevariable MaxCursorRetries 5
 
+    # Pages one history fill will walk while nothing displayable turns up.
+    typevariable MaxFillPages 20
+
     # Compute (msgType, toJid, fromJid, fromRes) from a chat jid.
     # MUC chats use the `?join` suffix tacky uses internally for the
     # "self as room member" identity.
@@ -1574,13 +1577,13 @@ snit::type taco_message {
 
         lappend mamArgs -command [mymethod OnFetch $chatJid $before $after \
             $limit $callback $onerror $tag $direction $wasBounded $cursorId \
-            $attempt]
+            $attempt 1]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
     method OnFetch {chatJid before after limit callback onerror tag direction \
-                    wasBounded cursorId attempt mamResult} {
+                    wasBounded cursorId attempt page mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
             # item-not-found means the cursor id was never archived (a poisoned
@@ -1628,10 +1631,12 @@ snit::type taco_message {
         # edge only while the local read still has nothing; short pages are
         # returned immediately and the GUI's thirst loop drives further
         # fetching. The pageSize>0 guard stops a complete=false empty
-        # response from spinning.
+        # response from spinning, and MaxFillPages stops a long stretch of
+        # archived receipts or reactions from walking the whole archive
+        # while one caller waits on it - the thirst loop asks again.
         if {!$cancelled
             && [llength [dict get $local messages]] == 0
-            && !$complete && $pageSize > 0} {
+            && !$complete && $pageSize > 0 && $page < $MaxFillPages} {
             set nextCursor [expr {$direction eq "older"
                 ? [dict get $mamResult first] : [dict get $mamResult last]}]
             if {$nextCursor ne ""} {
@@ -1639,7 +1644,7 @@ snit::type taco_message {
                 $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
                     -command [mymethod OnFetch $chatJid $before $after $limit \
                         $callback $onerror $tag $direction $wasBounded "" \
-                        $attempt]
+                        $attempt [expr {$page + 1}]]
                 return
             }
         }
