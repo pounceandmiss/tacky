@@ -1,0 +1,29 @@
+Accept a certificate with an empty issuer RDNSequence.
+
+Mbed TLS already tolerates an empty subject (the `len &&` guard a few lines
+down, there since before 3.0), but rejects an empty issuer with
+X509_INVALID_NAME + ASN1_OUT_OF_DATA - deliberately, per RFC 5280 4.1.2.4 and
+the "inv Issuer, RDNSequence empty" case in test_suite_x509parse.data.
+
+GnuTLS-based WebRTC stacks (Dino among them) self-sign DTLS certs with neither
+DN set, so that rejection kills the handshake and every call to such a peer.
+OpenSSL, BoringSSL and NSS all parse these. Mirror the subject guard rather
+than relaxing mbedtls_x509_get_name(), which CRL, CSR, PKCS#7 and the TLS 1.2
+CertificateRequest CA list also go through.
+
+diff --git a/library/x509_crt.c b/library/x509_crt.c
+--- a/library/x509_crt.c
++++ b/library/x509_crt.c
+@@ -1183,7 +1183,11 @@
+         return MBEDTLS_ERROR_ADD(MBEDTLS_ERR_X509_INVALID_FORMAT, ret);
+     }
+
+-    if ((ret = mbedtls_x509_get_name(&p, p + len, &crt->issuer)) != 0) {
++    /* An empty issuer RDNSequence violates RFC 5280 4.1.2.4, but GnuTLS-based
++     * WebRTC stacks emit self-signed DTLS certs with no issuer or subject DN.
++     * Accept it the way the subject below already does; DTLS-SRTP authenticates
++     * on the fingerprint, and TLS still needs CA + hostname downstream. */
++    if (len && (ret = mbedtls_x509_get_name(&p, p + len, &crt->issuer)) != 0) {
+         mbedtls_x509_crt_free(crt);
+         return ret;
+     }
