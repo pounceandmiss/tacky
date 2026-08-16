@@ -812,6 +812,36 @@ test message-catchup-displayless-confirms-send \
             body [dict get [lindex $rows 0] content body]
     } -result {nrows 1 status {} body secret}
 
+# A reconnect brackets every chat with a `newer` hole. One archive answered the
+# catchup page, so RSM proves that span contiguous for every chat it covers -
+# including chats whose messages all happen to be new. Sweeping only the chats
+# that dedup leaves the others bracketed mid-history, where `get latest` truncates
+# and the chat repaints as if its history were gone.
+test message-catchup-floor-sweeps-undeduped-chat \
+    {a catchup page lifts a reconnect bracket without a per-chat duplicate} \
+    {*}$msg_common \
+    -body {
+        # alice's newest sits above the page floor, bob's below it.
+        msg_store [list [msg_msg chat_jid alice@example.com \
+            timestamp 1704067230000000 server_id sa1 body old-alice]]
+        msg_store [list [msg_msg chat_jid bob@example.com \
+            from_jid bob@example.com/phone \
+            timestamp 1704067100000000 server_id sb1 body old-bob]]
+        $::_client message PlaceReconnectHoles
+        # The floor is bob's 00:00:00 message; nothing in the page dedups.
+        $::_client message OnCatchup [dict create complete 1 messages [list \
+            [mam_result id sb2 from bob@example.com \
+                stamp 2024-01-01T00:00:00Z body new-bob] \
+            [mam_result id sa2 from alice@example.com \
+                stamp 2024-01-01T00:01:00Z body new-alice]]]
+        # alice's bracket sat inside the covered span; bob's sits below it, where
+        # the page says nothing, so it stays.
+        list alice [llength [$::_client message messagestore hole list \
+                alice@example.com]] \
+             bob [llength [$::_client message messagestore hole list \
+                bob@example.com]]
+    } -result {alice 0 bob 1}
+
 # =============================================================================
 # Stranded sends: settle pending rows against the archive after catchup
 #

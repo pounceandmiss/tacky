@@ -110,23 +110,19 @@ snit::type taco_message {
     # then sweep these via store overlap; otherwise they remain and
     # bound future pagination.
     method PlaceReconnectHoles {} {
-        set chatJids {}
+        # Collected before any insert: `hole add` writes to the table this
+        # cursor is reading.
+        set newest {}
         $client db eval {
-            SELECT DISTINCT chat_jid FROM chat_message
+            SELECT chat_jid, MAX(timestamp) AS newest FROM chat_message
             WHERE kind='message' AND server_id IS NOT NULL
               AND server_id != ''
+            GROUP BY chat_jid
         } row {
-            lappend chatJids $row(chat_jid)
+            lappend newest $row(chat_jid) $row(newest)
         }
-        foreach jid $chatJids {
-            set newestTs [$client db onecolumn {
-                SELECT MAX(timestamp) FROM chat_message
-                WHERE chat_jid=$jid AND kind='message'
-                  AND server_id IS NOT NULL AND server_id != ''
-            }]
-            if {$newestTs ne ""} {
-                $messagestore hole add $jid newer $newestTs
-            }
+        foreach {jid newestTs} $newest {
+            $messagestore hole add $jid newer $newestTs
         }
     }
 
@@ -202,11 +198,10 @@ snit::type taco_message {
     # stanzas carry the room in `from` and can't be routed by envelope.
     # Empty routes per message off the envelope.
     #
-    # Per-chat bracket tracking replicates the batch-level overlap sweep
-    # that single-call `store` would do: if any one of this chat's catchup
-    # messages dedups against pre-existing cache, the entire bracket span
-    # is server-contiguous (RSM) and any holes in that span are proven
-    # false positives.
+    # One archive answered this page, so RSM makes it contiguous from its
+    # floor to its top for every chat it covers - not just the chats that
+    # happened to dedup against the cache. Any hole a covered chat holds in
+    # that span is therefore a proven false positive and gets swept.
     #
     # Returns {perChatCount archiveFloor}.
     method CatchupPage {mamResult fixedChatJid} {
@@ -218,11 +213,9 @@ snit::type taco_message {
         # - they still bound the page, and a citizen-only minimum would
         # sit above the true floor and over-report non-delivery.
         set archiveFloor ""
-        # Per-chat: min/max input timestamps, oldest, and whether any
-        # real overlap (dup against an existing citizen) was seen.
-        set perChatMin     [dict create]
-        set perChatMax     [dict create]
-        set perChatOverlap [dict create]
+        # Per-chat min/max input timestamps.
+        set perChatMin [dict create]
+        set perChatMax [dict create]
 
         foreach resultNode [dict get $mamResult messages] {
             if {$fixedChatJid ne ""} {
@@ -284,32 +277,25 @@ snit::type taco_message {
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
                 }
-                duplicate {
-                    dict set perChatOverlap $chatJid 1
-                }
+                duplicate {}
                 new {
                     set result [$messagestore store [list [dict get $r msg]]]
                     if {[llength [dict get $result inserted]] > 0} {
                         dict incr perChatCount $chatJid
-                    } else {
-                        # store's own dedup caught an id-less content match.
-                        dict set perChatOverlap $chatJid 1
                     }
                 }
             }
         }
 
-        # Per-chat sweep over the catchup span if any overlap occurred.
-        dict for {jid _} $perChatOverlap {
-            $messagestore hole removeBetween $jid \
-                [dict get $perChatMin $jid] \
-                [dict get $perChatMax $jid]
+        # The page speaks for everything from its floor up, so sweep from
+        # there rather than from the chat's own oldest message: a reconnect
+        # hole sits below the new arrivals that displaced it.
+        dict for {jid maxTs} $perChatMax {
+            $messagestore hole removeBetween $jid $archiveFloor $maxTs
         }
 
         # Place older-edge hole for any chat in this catchup if the
-        # MAM query reports more older history. For chats with an
-        # existing covering hole (PlaceReconnectHoles), the dedup
-        # invariant makes the add a no-op.
+        # MAM query reports more older history.
         if {![dict get $mamResult complete]} {
             dict for {jid minTs} $perChatMin {
                 $messagestore hole add $jid older $minTs
