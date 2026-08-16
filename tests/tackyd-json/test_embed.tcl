@@ -119,7 +119,9 @@ test embed-threaded-debug-file {--debug-file at init routes records to the file}
         lappend auto_path [file join $proj lib]
         proc tacky_native_emit {json} {}
         source [file join $proj bin tackyd-embed.tcl]
-        tackyd_embed_init --debug-level debug --debug-file $::logfile
+        # Mixed spellings on purpose: a taco option and a debug flag have to
+        # accept the same dashes.
+        tackyd_embed_init --transient 1 -debug-level debug --debug-file $::logfile
     }
 } -cleanup {
     catch {thread::send $::be {catch {taco destroy}}}

@@ -13,7 +13,10 @@ variable tackyd_debug_flags {
 }
 
 # Split an argv into {debugFlags tacoArgs}. Both -foo and --foo spellings are
-# accepted; the rest pass through to taco_type, which rejects unknown options.
+# accepted, for every option and not just the debug ones: taco_type takes a
+# single dash, so passing the rest through verbatim made --debug-file work and
+# --config-dir an error. The rest still reach taco_type, which rejects unknown
+# options.
 proc tackyd_split_argv {argv} {
     set debug {}
     set rest {}
@@ -22,7 +25,7 @@ proc tackyd_split_argv {argv} {
         if {$norm in $::tackyd_debug_flags} {
             lappend debug $norm $v
         } else {
-            lappend rest $k $v
+            lappend rest $norm $v
         }
     }
     return [list $debug $rest]
