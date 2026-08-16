@@ -49,10 +49,14 @@ snit::type taco_mam {
         catch {$client bus unsubscribe $self}
     }
 
+    # An outstanding query has to outlive the stream. iq keeps its pending
+    # handlers across a drop and re-arms their timers on connect, so either
+    # resumption replays the query and the real <fin> arrives, or the timer
+    # fires and OnFin answers with an error. Dropping Callbacks here would
+    # swallow both, since OnFin and SendQuery bail on a missing entry - the
+    # good answer as surely as the failed one. Only the field cache is
+    # session state: it describes a stream we no longer have.
     method OnDisconnect {args} {
-        array unset Results
-        array unset Callbacks
-        array unset Archives
         array unset FieldCache
     }
 
