@@ -21,17 +21,6 @@ proc stanza_error {stanza} {
         text [xsearch $stanza error text -get body]]
 }
 
-# Declare a set of modules as public components.
-# Usage:  taco_modules roster bookmarks muc ...
-# Effect: each module gets `component $mod -public $mod` and an instance
-#         variable $_modules holding the list for iteration.
-snit::macro taco_modules {args} {
-    variable _modules [list {*}$args]
-    foreach mod $args {
-        component $mod -public $mod
-    }
-}
-
 snit::macro tackymethod {name arglist body} {
     method $name $arglist [string map [list %BODY% $body %NAME% $name] {
         set _code [catch {%BODY%} _result _opts]
