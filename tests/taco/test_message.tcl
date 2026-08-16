@@ -1673,6 +1673,78 @@ test message-history-transient-error-no-demote \
         list $queriesBefore $queriesAfter $pSid [llength $::result]
     } -result {1 1 Pbad 0}
 
+# Answer the archive query just written with an IQ error.
+proc msg_history_fails {} {
+    set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+    $::_client iq feed [j iq -type error -id $iqId {
+        j error -type wait {
+            j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+        }
+    }]
+}
+
+test message-history-archive-error-with-nothing-local-is-reported \
+    {an unreachable archive and an empty page is a failure, not "no more history"} \
+    {*}$msg_common \
+    -body {
+        set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
+        msg_store [list [msg_msg timestamp $tsP server_id Pbad body p]]
+        set ::result none
+        set ::failure none
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsP -limit 50 \
+            -command [list apply {{r} { set ::result $r }}] \
+            -onerror [list apply {{m} { set ::failure $m }}]
+        msg_history_fails
+        list $::result $::failure
+    } -result {none {This server keeps no message archive}}
+
+test message-history-archive-error-without-onerror-falls-back-to-local \
+    {a caller that asked about no errors still gets today's empty page} \
+    {*}$msg_common \
+    -body {
+        set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
+        msg_store [list [msg_msg timestamp $tsP server_id Pbad body p]]
+        set ::result none
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsP -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+        msg_history_fails
+        llength $::result
+    } -result 0
+
+test message-history-archive-error-still-answers-a-partial-page \
+    {rows to show make it an ordinary short page, not a failure} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 300 server_id s3 body c] \
+            [msg_msg timestamp 500 server_id s5 body e]]
+        $::_client message messagestore hole add alice@example.com newer 100
+        set ::result none
+        set ::failure none
+        tacky message history -acc $acc -chat alice@example.com \
+            -before 500 -limit 50 \
+            -command [list apply {{r} { set ::result $r }}] \
+            -onerror [list apply {{m} { set ::failure $m }}]
+        msg_history_fails
+        list [llength $::result] $::failure
+    } -result {1 none}
+
+test message-goto-remote-error-with-nothing-local-is-reported \
+    {a jump that reached neither the archive nor the store failed} \
+    {*}$msg_common \
+    -body {
+        set ::result none
+        set ::failure none
+        tacky message goto -acc $acc -chat alice@example.com \
+            -date 500 -source remote -limit 50 \
+            -command [list apply {{r} { set ::result $r }}] \
+            -onerror [list apply {{m} { set ::failure $m }}]
+        msg_history_fails
+        list $::result $::failure
+    } -result {none {This server keeps no message archive}}
+
 # =============================================================================
 # History: empty-body filtering + internal fill loop
 # =============================================================================
