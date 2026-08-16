@@ -113,8 +113,8 @@ snit::type taco_message {
 
     # Bracket any history that arrived during the disconnect window:
     # a `newer` hole after each chat's newest citizen. Catchup may
-    # then sweep these via store overlap; otherwise they remain and
-    # bound future pagination.
+    # then sweep these as far back as its pages reach; otherwise they
+    # remain and bound future pagination.
     method PlaceReconnectHoles {} {
         # Collected before any insert: `hole add` writes to the table this
         # cursor is reading.
@@ -349,7 +349,6 @@ snit::type taco_message {
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
                 }
-                duplicate {}
                 new {
                     set result [$messagestore store [list [dict get $r msg]]]
                     if {[llength [dict get $result inserted]] > 0} {
