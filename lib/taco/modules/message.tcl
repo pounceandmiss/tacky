@@ -139,7 +139,11 @@ snit::type taco_message {
         return 1
     }
 
+    # A sync can be settled twice: once promptly when the stream drops, and
+    # again when the query it was waiting on finally answers. Whichever comes
+    # first closes the bracket; the other finds nothing open and says nothing.
     method CatchupSettled {jid count} {
+        if {![dict exists $CatchupInFlight $jid]} return
         dict unset CatchupInFlight $jid
         $client emit message <CatchupDone> -jid $jid -count $count
     }
@@ -321,12 +325,13 @@ snit::type taco_message {
 
     method OnDisconnect {args} {
         array unset PendingRetry
-        # mam drops pending callbacks on disconnect without calling them, so
-        # close any open interval here or a client waits on it forever.
+        # The query outlives the drop and will settle these itself, but not
+        # until the session comes back - too long to leave a sync showing as
+        # running. Close them now; CatchupSettled makes the later answer a
+        # no-op.
         set open $CatchupInFlight
-        set CatchupInFlight [dict create]
         dict for {jid _} $open {
-            $client emit message <CatchupDone> -jid $jid -count 0
+            $self CatchupSettled $jid 0
         }
     }
 
