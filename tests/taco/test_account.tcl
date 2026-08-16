@@ -64,9 +64,8 @@ tacky_test account-get-badfield {get routes invalid field name to -onerror} \
     } -result {Invalid field: bogus}
 
 # -- token bookkeeping -----------------------------------------------------
-# Only one of -command/-onerror can fire, so the other must not be left
-# behind: a caller that gates new work on `listening $tag` would never ask
-# again.
+# Only one of -command/-onerror fires, and a caller gating on `listening $tag`
+# never asks again if the other is left behind.
 
 tacky_test account-listening-clears-after-a-result \
     {a result releases the tag even though -onerror was supplied} \

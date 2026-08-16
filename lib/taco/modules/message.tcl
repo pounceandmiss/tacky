@@ -139,9 +139,8 @@ snit::type taco_message {
         return 1
     }
 
-    # A sync can be settled twice: once promptly when the stream drops, and
-    # again when the query it was waiting on finally answers. Whichever comes
-    # first closes the bracket; the other finds nothing open and says nothing.
+    # Settled twice when a drop closes the bracket and the query it was
+    # waiting on answers later; whichever gets here first wins.
     method CatchupSettled {jid count} {
         if {![dict exists $CatchupInFlight $jid]} return
         dict unset CatchupInFlight $jid
@@ -325,10 +324,8 @@ snit::type taco_message {
 
     method OnDisconnect {args} {
         array unset PendingRetry
-        # The query outlives the drop and will settle these itself, but not
-        # until the session comes back - too long to leave a sync showing as
-        # running. Close them now; CatchupSettled makes the later answer a
-        # no-op.
+        # The query settles these itself, but not until the session is back -
+        # too long to leave a sync showing as running.
         set open $CatchupInFlight
         dict for {jid _} $open {
             $self CatchupSettled $jid 0
@@ -1311,11 +1308,11 @@ snit::type taco_message {
 
     method ArchiveErrorText {condition} {
         switch -- $condition {
-            remote-server-timeout  { return "The message archive did not respond" }
-            service-unavailable    { return "This server keeps no message archive" }
+            remote-server-timeout   { return "The message archive did not respond" }
+            service-unavailable     -
             feature-not-implemented { return "This server keeps no message archive" }
-            forbidden              { return "You do not have access to that archive" }
-            default                { return "Couldn't reach the message archive" }
+            forbidden               { return "You do not have access to that archive" }
+            default                 { return "Couldn't reach the message archive" }
         }
     }
 
@@ -1549,10 +1546,8 @@ snit::type taco_message {
                 return
             }
             set local [$self GetLocal $chatJid $before $after $limit]
-            # A short page is an ordinary answer - the caller renders it and
-            # comes back for more. An empty one is not: it reads as "the
-            # archive ends here", which is how a caller stops paging for good
-            # over what may be a passing failure. Say it failed instead.
+            # A short page is an ordinary answer; an empty one reads as "the
+            # archive ends here", and callers stop paging for good on it.
             if {$onerror ne "" && [llength [dict get $local messages]] == 0} {
                 {*}$onerror [$self ArchiveErrorText $cond]
                 return
@@ -1710,8 +1705,7 @@ snit::type taco_message {
             # Fall back to local
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
             set result [$messagestore get around $chatJid $date $limit]
-            # Nothing local to land on either: the jump did not happen, and
-            # saying so beats answering with an empty page.
+            # Nothing local to land on either, so the jump did not happen.
             if {$onerror ne "" && [llength [dict get $result messages]] == 0} {
                 set cond [expr {[dict exists $mamResult error_condition]
                     ? [dict get $mamResult error_condition] : ""}]
