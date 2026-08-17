@@ -115,11 +115,17 @@ snit::type taco_author {
         # -action clear has no -jid; conservatively rebuild every tracked
         # 1:1 chat's authors that resolve via roster.
         if {![dict exists $args -jid]} {
+            # RefreshBareIn1to1 walks every tracked chat itself, so gather
+            # the distinct authors first and refresh each one once.
+            set authors [dict create]
             dict for {chatJid entries} $State {
                 if {[IsMucChatJid $chatJid]} continue
                 dict for {fromJid _} $entries {
-                    $self RefreshBareIn1to1 $fromJid
+                    dict set authors $fromJid 1
                 }
+            }
+            dict for {fromJid _} $authors {
+                $self RefreshBareIn1to1 $fromJid
             }
             return
         }

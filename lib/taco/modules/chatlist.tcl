@@ -48,8 +48,7 @@ snit::type taco_chatlist {
 
     tackymethod get {args} {
         set activity [$self ActivityMap]
-        set unread [$client message messagestore unreadCounts]
-        set mentions [$client message messagestore mentionCounts]
+        set tallies [$client message messagestore unreadTallies]
 
         set entries {}
         set seen {}
@@ -57,21 +56,19 @@ snit::type taco_chatlist {
         foreach item [$client roster get] {
             set bare [dict get $item jid]
             lappend entries [$self MakeEntry $bare roster $item \
-                [$self Lookup $activity $bare] [$self Lookup $unread $bare] \
-                [$self Lookup $mentions $bare]]
+                [$self Lookup $activity $bare] [$self Tally $tallies $bare]]
             dict set seen $bare 1
         }
         foreach item [$client bookmarks get] {
             set chatJid [dict get $item jid]?join
             lappend entries [$self MakeEntry $chatJid bookmarks $item \
-                [$self Lookup $activity $chatJid] [$self Lookup $unread $chatJid] \
-                [$self Lookup $mentions $chatJid]]
+                [$self Lookup $activity $chatJid] [$self Tally $tallies $chatJid]]
             dict set seen $chatJid 1
         }
         dict for {chatJid ts} $activity {
             if {[dict exists $seen $chatJid]} continue
             lappend entries [$self MakeEntry $chatJid free {} $ts \
-                [$self Lookup $unread $chatJid] [$self Lookup $mentions $chatJid]]
+                [$self Tally $tallies $chatJid]]
         }
         return $entries
     }
@@ -83,29 +80,30 @@ snit::type taco_chatlist {
     method EntryFor {chatJid} {
         set bare [regsub {\?join$} $chatJid {}]
         set isRoom [expr {$bare ne $chatJid}]
-        set unread [$client message messagestore unreadCount $chatJid]
-        set mentions [$client message messagestore mentionCount $chatJid]
+        set tally [$client message messagestore unreadTally $chatJid]
         if {$isRoom} {
             set bm [$self BookmarkEntry $bare]
             if {$bm ne ""} {
                 return [$self MakeEntry $chatJid bookmarks $bm \
-                    [$self Activity $chatJid] $unread $mentions]
+                    [$self Activity $chatJid] $tally]
             }
         } else {
             set r [$self RosterEntry $bare]
             if {$r ne ""} {
                 return [$self MakeEntry $chatJid roster $r \
-                    [$self Activity $chatJid] $unread $mentions]
+                    [$self Activity $chatJid] $tally]
             }
         }
         set ts [$self Activity $chatJid]
         if {$ts > 0} {
-            return [$self MakeEntry $chatJid free {} $ts $unread $mentions]
+            return [$self MakeEntry $chatJid free {} $ts $tally]
         }
         return ""
     }
 
-    method MakeEntry {chatJid source base ts unread mentions} {
+    method MakeEntry {chatJid source base ts tally} {
+        set unread [dict get $tally unread]
+        set mentions [dict get $tally mentions]
         set entry $base
         dict set entry jid $chatJid
         dict set entry source $source
@@ -146,10 +144,7 @@ snit::type taco_chatlist {
     }
 
     method Activity {chatJid} {
-        set ts [$db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message'
-        }]
+        set ts [$client message maxTimestamp -chat $chatJid]
         if {$ts eq ""} { return 0 }
         return $ts
     }
@@ -158,6 +153,13 @@ snit::type taco_chatlist {
     method Lookup {map key} {
         if {[dict exists $map $key]} { return [dict get $map $key] }
         return 0
+    }
+
+    method Tally {tallies chatJid} {
+        if {[dict exists $tallies $chatJid]} {
+            return [dict get $tallies $chatJid]
+        }
+        return {unread 0 mentions 0}
     }
 
     # -- event funnel ---------------------------------------------------
