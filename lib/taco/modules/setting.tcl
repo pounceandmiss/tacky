@@ -26,18 +26,24 @@ snit::type taco_setting {
         $options(-taco) emit setting <Changed> -key $opts(-key) -value $opts(-value)
     }
 
-    # pull -event <Changed> -key K  (-event ignored — setting has one event)
+    # pull -event <Changed> -key K  (-event ignored - setting has one event)
     tackymethod pull {args} {
-        array set opts $args
-        set key $opts(-key)
-        set value ""
-        $options(-db) eval {SELECT value FROM setting WHERE key=$key} row {
-            set value $row(value)
-        }
-        $options(-taco) emit setting <Changed> -key $key -value $value
+        set key [dict get $args -key]
+        $options(-taco) emit setting <Changed> \
+            -key $key -value [$self get -key $key]
     }
 
     tackymethod list {args} {
         $options(-db) eval {SELECT key FROM setting}
     }
+}
+
+# The taco-level (per-process, not per-account) setting a client module reads
+# through its client's taco object: $default when unset or unreadable.
+proc taco_setting_get {client key {default ""}} {
+    if {[catch {[$client cget -taco] setting get -key $key} value]} {
+        return $default
+    }
+    if {$value eq ""} { return $default }
+    return $value
 }

@@ -154,9 +154,8 @@ snit::type taco_account {
 
         $options(-taco) emit account <Removed> -acc $jid
 
-        # Clean up client object if it exists
-        set client $options(-taco).client($jid)
-        if {[info commands $client] ne ""} {
+        set client [$self liveClient -acc $jid]
+        if {$client ne ""} {
             catch {$client disconnect}
             catch {$client destroy}
         }
@@ -198,10 +197,19 @@ snit::type taco_account {
     method disable {args} {
         set jid [dict get $args -acc]
         $options(-taco) emit account <Disabled> -acc $jid
-        set client $options(-taco).client($jid)
-        if {[info commands $client] ne ""} {
+        set client [$self liveClient -acc $jid]
+        if {$client ne ""} {
             catch {$client disconnect}
         }
         $options(-db) eval {UPDATE account SET enabled=0 WHERE jid=$jid}
+    }
+
+    # The client object taco already built for an account, or "" when it has
+    # none. Unlike `taco client`, this never constructs one: a dormant account
+    # must stay dormant.
+    method liveClient {args} {
+        set client $options(-taco).client([dict get $args -acc])
+        if {[info commands $client] eq ""} { return "" }
+        return $client
     }
 }

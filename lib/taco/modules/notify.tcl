@@ -168,7 +168,7 @@ snit::type taco_notify {
     # Nothing older than the account's first connect ever alerts, so the
     # opening archive fetch stays silent.
     method OnReady {args} {
-        if {[$self Setting notify_floor] ne ""} return
+        if {[taco_setting_get $client notify_floor] ne ""} return
         catch {
             [$client cget -taco] setting set \
                 -key notify_floor -value [clock microseconds]
@@ -186,20 +186,12 @@ snit::type taco_notify {
     }
 
     method Floor {} {
-        set floor [$self Setting notify_floor]
-        return [expr {$floor eq "" ? 0 : $floor}]
+        return [taco_setting_get $client notify_floor 0]
     }
 
     method Delay {} {
-        set ms [$self Setting notify_delay_ms]
+        set ms [taco_setting_get $client notify_delay_ms]
         return [expr {[string is entier -strict $ms] ? $ms : $DefaultDelayMs}]
-    }
-
-    method Setting {key} {
-        if {[catch {[$client cget -taco] setting get -key $key} value]} {
-            return ""
-        }
-        return $value
     }
 
     proc AsBool {value} {
