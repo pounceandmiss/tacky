@@ -139,6 +139,29 @@ test caps-disco-identity {a resolved hash reports the client identity, not the f
     c.caps discoFor $ver
 } -result {name Conversations category client type phone features urn:xmpp:receipts}
 
+test caps-disco-coalesced {presences sharing an unresolved hash ask once} {*}$caps_common -body {
+    set queryNode [j query -ns http://jabber.org/protocol/disco#info {
+        j identity -category client -type pc -name Tacky
+        j feature -var urn:xmpp:receipts
+    }]
+    set ver [c.caps HashDiscoQuery $queryNode]
+    set before [llength [c.conn get_written]]
+    foreach nick {one two three} {
+        c.conn feed [j presence -from room@conference.example.com/$nick {
+            j c -ns http://jabber.org/protocol/caps -hash sha-1 \
+                -node http://tacky.example -ver $ver
+        }]
+    }
+    set queries 0
+    foreach s [lrange [c.conn get_written] $before end] {
+        if {[llength [xsearch $s query \
+                -ns http://jabber.org/protocol/disco#info]] > 0} {
+            incr queries
+        }
+    }
+    set queries
+} -result 1
+
 test caps-disco-unknown {an unresolved hash reports nothing} {*}$caps_common -body {
     c.caps discoFor sha-1-nobody-published-this
 } -result {}
