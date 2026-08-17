@@ -5,17 +5,28 @@ snit::type jlog_type {
     # Caching a resolved level here would freeze descendants that had already
     # logged when their ancestor moved.
     variable explicit
+    variable nativelevel
     variable filewarned 0
     variable logfile ""
     option -logproc
-    option -defaultlevel warning
+    option -defaultlevel -default warning -configuremethod SetDefaultLevel
+    # Past this the log rotates to <path>.1; 0 disables rotation.
+    option -maxlogbytes 4194304
 
     # Shared with the native loggers (libdatachannel / rtc-ma); ordered least
     # to most severe, with "none" last as a silence-everything threshold.
     typevariable LEVELS {verbose debug info warning error fatal none}
 
+    typevariable NATIVE {
+        libdatachannel ::rtc::set-log-level
+        rtcma          ::rtcma::set-log-level
+    }
+
     constructor args {
         array set explicit {}
+        foreach src [dict keys $NATIVE] {
+            set nativelevel($src) none
+        }
         $self configurelist $args
     }
 
@@ -26,6 +37,7 @@ snit::type jlog_type {
     method Log {args} {
         array set opts {-obj "" -level debug}
         array set opts $args
+        $self CheckLevel $opts(-level)
         # Usually the logger is gonna be invoked from a snit object,
         # which I hope all will have somewhat descriptive names, so
         # it's handy to include that name if available.
@@ -39,7 +51,8 @@ snit::type jlog_type {
             if {$options(-logproc) ne ""} {
                 {*}$options(-logproc) [array get opts]
             } else {
-                puts [$self FormatLine [array get opts]]
+                # Never stdout: that is the daemon's wire.
+                $self stderrWriter [array get opts]
             }
         }
     }
@@ -72,7 +85,15 @@ snit::type jlog_type {
     }
 
     method setLevel {obj level} {
+        $self CheckLevel $level
         set explicit([$self NormalizeObj $obj]) $level
+    }
+
+    # An unvalidated threshold loses every comparison in Log, so a typo would
+    # log everything rather than nothing.
+    method SetDefaultLevel {opt level} {
+        $self CheckLevel $level
+        set options($opt) $level
     }
 
     method NormalizeObj {obj} {
@@ -108,7 +129,6 @@ snit::type jlog_type {
     method setlevel {args} {
         array set opts {-obj "" -level ""}
         array set opts $args
-        $self CheckLevel $opts(-level)
         if {$opts(-obj) eq ""} {
             $self configure -defaultlevel $opts(-level)
         } else {
@@ -127,8 +147,8 @@ snit::type jlog_type {
     }
 
     # An empty path sends records back to stderr. The writer holds the file
-    # open only for the length of a record, so a host is free to rotate or
-    # truncate underneath us; the next record recreates it.
+    # open only for the length of a record, so rotation needs no coordination
+    # and a host may truncate underneath us; the next record recreates it.
     method setfile {args} {
         array set opts {-path ""}
         array set opts $args
@@ -139,14 +159,88 @@ snit::type jlog_type {
         }
         # Create the parent dir; the per-line writer fails otherwise.
         file mkdir [file dirname $logfile]
+        $self MakePrivate $logfile
         # A new file earns a fresh complaint if it turns out to be unwritable.
         set filewarned 0
         $self configure -logproc [list $self fileWriter $logfile]
         return
     }
 
+    # setfile by boolean. The directory is ours here, so it can be restricted.
+    method setenabled {args} {
+        array set opts {-enabled 0 -dir ""}
+        array set opts $args
+        if {![string is boolean -strict $opts(-enabled)]} {
+            error "invalid -enabled \"$opts(-enabled)\": must be a boolean"
+        }
+        if {[string is true $opts(-enabled)]} {
+            if {$opts(-dir) eq ""} {
+                error "cannot write a log file: no directory configured"
+            }
+            appdirs_mkprivate $opts(-dir)
+            return [$self setfile -path [file join $opts(-dir) tacky.log]]
+        }
+        return [$self setfile -path ""]
+    }
+
     method getfile {args} {
         return $logfile
+    }
+
+    # Omitting -source drives every native logger.
+    method setnativelevel {args} {
+        array set opts {-source "" -level none}
+        array set opts $args
+        $self CheckLevel $opts(-level)
+        foreach src [$self NativeSources $opts(-source)] {
+            set cmd [dict get $NATIVE $src]
+            if {[info commands $cmd] eq ""} continue
+            # Native verbosity is the library's job; don't let jlog re-filter.
+            $self setLevel $src verbose
+            if {$opts(-level) eq "none"} {
+                # Dropping only the callback leaves the library on its own
+                # stderr sink, so the level has to say none too.
+                {*}$cmd none
+            } else {
+                {*}$cmd $opts(-level) [list $self nativeLog $src]
+            }
+            set nativelevel($src) $opts(-level)
+        }
+        return
+    }
+
+    method getnativelevel {args} {
+        array set opts {-source ""}
+        array set opts $args
+        if {$opts(-source) eq ""} {
+            error "-source is required: one of [join [dict keys $NATIVE] {, }]"
+        }
+        $self NativeSources $opts(-source)
+        return $nativelevel($opts(-source))
+    }
+
+    method NativeSources {source} {
+        if {$source eq ""} {
+            return [dict keys $NATIVE]
+        }
+        if {![dict exists $NATIVE $source]} {
+            error "unknown native log source \"$source\": must be one of\
+                [join [dict keys $NATIVE] {, }]"
+        }
+        return [list $source]
+    }
+
+    # Only the file: setfile's directory may be anywhere the caller named, and
+    # 0700 on a shared /tmp would be vandalism.
+    method MakePrivate {file} {
+        catch {
+            if {![file exists $file]} {
+                close [open $file a]
+            }
+            if {$::tcl_platform(platform) eq "unix"} {
+                file attributes $file -permissions 0600
+            }
+        }
     }
 
     method CheckLevel {level} {
@@ -187,11 +281,23 @@ snit::type jlog_type {
     method fileWriter {file opts_list} {
         set line [$self FormatLine $opts_list]
         if {[catch {
+            # Absent reads as -1, which is also what rotating leaves behind:
+            # either way open remakes the file with the umask's mode, not ours.
+            set size [expr {[catch {file size $file} n] ? -1 : $n}]
+            if {$size >= 0 && $options(-maxlogbytes) > 0
+                    && $size >= $options(-maxlogbytes)} {
+                # Losing a rotation is survivable; throwing at the caller is not.
+                catch {file rename -force $file $file.1}
+                set size -1
+            }
             set fd [open $file a]
             try {
                 puts $fd $line
             } finally {
                 close $fd
+            }
+            if {$size < 0} {
+                $self MakePrivate $file
             }
         } err]} {
             if {!$filewarned} {
@@ -203,9 +309,15 @@ snit::type jlog_type {
     }
 
     # Native log callback sink, invoked as `jlog nativeLog source id level msg`
-    # (id unused). jlog shares the native level vocabulary, so level passes
-    # through unchanged.
+    # (id unused). jlog shares the native level vocabulary, so a known level
+    # passes through unchanged.
     method nativeLog {source id level message} {
+        # Never throw back into C, and never lose the record: a library that
+        # grew a level gets logged loudly instead.
+        if {$level ni $LEVELS} {
+            set message "\[$level\] $message"
+            set level error
+        }
         $self log $level $message -obj ::$source
     }
 
@@ -222,19 +334,17 @@ snit::type jlog_type {
         if {$o(-debug-level) ne ""} {
             $self configure -defaultlevel $o(-debug-level)
         }
-        $self setfile -path $o(-debug-file)
-        if {$o(-libdatachannel-debug-level) ne "" \
-                && [info commands ::rtc::set-log-level] ne ""} {
-            # Native verbosity is the library's job; don't let jlog re-filter.
-            $self setLevel libdatachannel verbose
-            ::rtc::set-log-level $o(-libdatachannel-debug-level) \
-                [list $self nativeLog libdatachannel]
+        # Absent flag, not "go to stderr": leave the installed sink alone.
+        if {$o(-debug-file) ne ""} {
+            $self setfile -path $o(-debug-file)
         }
-        if {$o(-rtcma-debug-level) ne "" \
-                && [info commands ::rtcma::set-log-level] ne ""} {
-            $self setLevel rtcma verbose
-            ::rtcma::set-log-level $o(-rtcma-debug-level) \
-                [list $self nativeLog rtcma]
+        foreach {opt src} {
+            -libdatachannel-debug-level libdatachannel
+            -rtcma-debug-level          rtcma
+        } {
+            if {$o($opt) ne ""} {
+                $self setnativelevel -source $src -level $o($opt)
+            }
         }
     }
 }
@@ -246,9 +356,19 @@ if {[info commands jlog] eq ""} {
 # The `log` module: the singleton above reached through the tacky API, so a
 # frontend writes into the same file as the backend.
 snit::type taco_log {
+    # taco's own cache dir, so an embedded host's sandbox and -transient's temp
+    # root each get the log instead of the real user's.
+    option -cache-dir -default "" -readonly yes
+
     tackymethod write {args} { jlog write {*}$args }
     tackymethod setlevel {args} { jlog setlevel {*}$args }
     tackymethod getlevel {args} { jlog getlevel {*}$args }
+    tackymethod setnativelevel {args} { jlog setnativelevel {*}$args }
+    tackymethod getnativelevel {args} { jlog getnativelevel {*}$args }
     tackymethod setfile {args} { jlog setfile {*}$args }
+    # Ours last: the directory is not the caller's to name.
+    tackymethod setenabled {args} {
+        jlog setenabled {*}$args -dir $options(-cache-dir)
+    }
     tackymethod getfile {args} { jlog getfile {*}$args }
 }

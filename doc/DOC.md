@@ -840,8 +840,11 @@ Events:
     log write    {level: string, text: string, obj?: string, acc?: string}  -> ""
     log setlevel {level: string, obj?: string}                              -> ""
     log getlevel {obj?: string}                                             -> string
-    log setfile  {path: string}                                             -> ""
-    log getfile  {}                                                         -> string   "" when logging to stderr
+    log setnativelevel {level: string, source?: string}                     -> ""
+    log getnativelevel {source: string}                                     -> string   "none" when off
+    log setfile    {path: string}                                           -> ""
+    log setenabled {enabled: boolean}                                       -> ""
+    log getfile    {}                                                       -> string   "" when logging to stderr
 
 The backend's logger. The frontend's lines land in the same file as the backend's
 own, set by `--debug-file` at startup, otherwise to stderr. 
@@ -858,12 +861,33 @@ own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
 read or move the default the rest inherit. Backend objects are already named
 this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`). `write` without `obj` records `frontend`.
 
+`setnativelevel` drives the native loggers, `libdatachannel` and `rtcma`; omit
+`source` to set both. They start off, and `none` turns one off again;
+`--libdatachannel-debug-level` and `--rtcma-debug-level` set them at startup.
+Their output is voluminous, so the ordinary level does not affect them, and jlog
+does not re-filter what the library already did. `getnativelevel` takes one
+`source`, since the two can differ.
+
 `setfile` moves the sink at runtime, for a debug toggle or an export; an empty
 `path` goes back to stderr. The file is held open only for the length of one
-record, so it can be rotated or truncated underneath the backend and the next
-record recreates it.
+record, so it can be truncated underneath the backend and the next record
+recreates it.
 
-`setlevel` and `setfile` are per process and not persisted. 
+At 4 MB the log rotates to `<path>.1`, replacing any previous one; both are 0600.
+
+`setenabled` is the same switch by boolean, with the backend choosing the path:
+`tacky.log` in the cache directory taco was given, created 0600 in a 0700
+directory. An embedded host's sandbox and `-transient`'s temp root both apply.
+
+`getfile` returns that path, the same handoff as an attachment's `localpath`. It
+is `""` whenever records are going to stderr.
+
+All the setters are per process and not persisted. The GUI stores its toggle as
+the `log_to_file` setting and reapplies it at startup; an explicit `--debug-file`
+wins for that run and leaves the setting untouched.
+
+`none` is a threshold, never a severity: `write` drops a record at that level, so
+a caller may pipe a level straight from `getlevel` back into `write`.
 
 The log file can hold full stanzas, even encrypted message bodies, so should be treated as highly sensitive.
 

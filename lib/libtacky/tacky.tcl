@@ -209,6 +209,7 @@ oo::class create tacky_base {
     # method that doesn't exist.
     method log {args} {
         set first [lindex $args 0]
+        # Must match jlog_type's LEVELS; process mode leaves no jlog to read.
         if {$first ni {verbose debug info warning error fatal none}} {
             # Not _send: only unknown allocates the callback token, and
             # getlevel is useless without one.
