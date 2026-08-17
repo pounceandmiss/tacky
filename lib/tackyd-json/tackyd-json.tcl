@@ -114,6 +114,10 @@ snit::type jsonify_type {
         }
     }
 
+    method has_schema {schema_key} {
+        dict exists $schemas $schema_key
+    }
+
     # `default` is the hint used when schema_key is unregistered. Events pass a
     # dict (the built-in default); the result path passes `string`, so a scalar
     # return serializes as a JSON string instead of being parsed as a dict.
@@ -362,7 +366,12 @@ proc tackyd_dispatch {msg} {
         return
     }
     if {$token ne ""} {
-        dict set ::_token_schemas $token $module/$method
+        # Only a known schema is worth recording: an unknown key serialises
+        # the same either way, and a method that never replies (send,
+        # sendFile, retryUpload) would pin its entry forever.
+        if {[jsonify has_schema $module/$method]} {
+            dict set ::_token_schemas $token $module/$method
+        }
         dict set args -command \
             [list tacky emit callback <Result> -token $token -result]
         dict set args -onerror \
