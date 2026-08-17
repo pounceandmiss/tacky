@@ -55,6 +55,7 @@ snit::type taco_file {
     variable ServiceJid  ""   ;# discovered upload component ("" = none/unknown)
     variable MaxFileSize 0    ;# bytes; 0 = unknown / no advertised limit
     variable Discovered  0    ;# whether discovery has been attempted this session
+    variable ServiceWaiters {} ;# commands waiting on the probe in flight
     variable Transfers        ;# array: id -> transfer dict
     variable DownloadByUrl    ;# array: url -> id (active downloads, for coalescing)
     variable Counter 0
@@ -76,11 +77,14 @@ snit::type taco_file {
     }
 
     # A reconnect may land on a different server, so forget the discovered
-    # service and re-probe lazily on the next upload.
+    # service and re-probe lazily on the next upload. A waiter left over from
+    # a cut-off probe would block that re-probe from starting; its upload ends
+    # on its own timeout either way.
     method OnDisconnect {args} {
         set ServiceJid ""
         set MaxFileSize 0
         set Discovered 0
+        set ServiceWaiters {}
     }
 
     # Register the https transport once per interp. mtls::socket mirrors the
@@ -201,20 +205,16 @@ snit::type taco_file {
     # --- Download (derives image thumbnails) ----------------------------
 
     # The autofetch settings are global: taco-level store, not the client's.
-    method SettingOr {key default} {
-        if {[catch {[$client cget -taco] setting get -key $key} v]} { return $default }
-        if {$v eq ""} { return $default }
-        return $v
-    }
-
     method AutofetchMax {} {
-        return [$self SettingOr attachment_autofetch_max $AUTOFETCH_MAX_DEFAULT]
+        return [taco_setting_get $client attachment_autofetch_max \
+            $AUTOFETCH_MAX_DEFAULT]
     }
 
     # A room JID is never a roster entry, so under "contacts" a MUC image waits
     # for a click. Callers exempt the user's own sends by omitting -auto.
     method AutofetchAllowed {from} {
-        switch -- [$self SettingOr attachment_autofetch $AUTOFETCH_DEFAULT] {
+        switch -- [taco_setting_get $client attachment_autofetch \
+                $AUTOFETCH_DEFAULT] {
             never { return 0 }
             contacts {
                 if {$from eq ""} { return 0 }
@@ -255,7 +255,8 @@ snit::type taco_file {
         # A local source file (outgoing attachment, pre-upload) is used in
         # place; an already-downloaded one is served from disk. Both resolve
         # immediately.
-        foreach src [list $url [$self AttachPath $url]] {
+        set full [$self AttachPath $url]
+        foreach src [list $url $full] {
             if {[file isfile $src]} {
                 set id [$self NewTransfer download $url]
                 if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
@@ -277,7 +278,6 @@ snit::type taco_file {
 
         # Fresh remote download. An aesgcm:// URL fetches its https:// form;
         # the ciphertext lands in .part and is decrypted in OnDownloaded.
-        set full [$self AttachPath $url]
         set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
         set id [$self NewTransfer download $url "" $max]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
@@ -364,9 +364,13 @@ snit::type taco_file {
         return $d
     }
 
-    method AttachPath {url} {
+    method UrlHash {url} {
+        return [sha1::sha1 [encoding convertto utf-8 $url]]
+    }
+
+    method AttachPath {url {hash ""}} {
+        if {$hash eq ""} { set hash [$self UrlHash $url] }
         set ext [file extension [attachment_basename $url]]
-        set hash [sha1::sha1 [encoding convertto utf-8 $url]]
         return [file join [$self Root -data-dir] attachments $hash$ext]
     }
 
@@ -379,7 +383,7 @@ snit::type taco_file {
         set path $opts(-path)
         set cmd $opts(-command)
 
-        $self NewTransfer upload "" $id
+        set id [$self NewTransfer upload "" $id]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
 
         if {![file isfile $path] || ![file readable $path]} {
@@ -516,50 +520,59 @@ snit::type taco_file {
 
     # --- Service discovery ----------------------------------------------
 
+    # Uploads started before the probe finishes queue behind it instead of
+    # each running their own disco#items plus a disco#info per component.
     method DiscoverService {cmd} {
         if {$Discovered} {
             {*}$cmd $ServiceJid
             return
         }
+        lappend ServiceWaiters $cmd
+        if {[llength $ServiceWaiters] > 1} return
         set domain [jid domain [$client cget -jid]]
         $client iq request -type get -to $domain \
             -payload [j query -ns $DISCO_ITEMS] \
-            -command [mymethod OnDiscoItems $cmd]
+            -command [mymethod OnDiscoItems]
     }
 
-    method OnDiscoItems {cmd stanza} {
+    method ServiceResolved {jid maxsize} {
+        set ServiceJid $jid
+        set MaxFileSize $maxsize
+        set Discovered 1
+        set waiters $ServiceWaiters
+        set ServiceWaiters {}
+        foreach cmd $waiters { {*}$cmd $ServiceJid }
+    }
+
+    method OnDiscoItems {stanza} {
         set items {}
         xsearch $stanza query item -script it {
             set ij [xsearch $it -get @jid]
             if {$ij ne ""} { lappend items $ij }
         }
-        $self ProbeNext $cmd $items
+        $self ProbeNext $items
     }
 
     # Probe candidate components one at a time; first to advertise the upload
     # feature wins. Caches the result for the rest of the session.
-    method ProbeNext {cmd items} {
+    method ProbeNext {items} {
         if {[llength $items] == 0} {
-            set Discovered 1
-            {*}$cmd ""
+            $self ServiceResolved "" 0
             return
         }
         set items [lassign $items first]
         $client iq request -type get -to $first \
             -payload [j query -ns $DISCO_INFO] \
-            -command [mymethod OnDiscoInfo $cmd $first $items]
+            -command [mymethod OnDiscoInfo $first $items]
     }
 
-    method OnDiscoInfo {cmd jidProbed rest stanza} {
+    method OnDiscoInfo {jidProbed rest stanza} {
         set feat [xsearch $stanza query feature @var $NS]
         if {[llength $feat] > 0} {
-            set ServiceJid $jidProbed
-            set MaxFileSize [$self ReadMaxFileSize $stanza]
-            set Discovered 1
-            {*}$cmd $ServiceJid
+            $self ServiceResolved $jidProbed [$self ReadMaxFileSize $stanza]
             return
         }
-        $self ProbeNext $cmd $rest
+        $self ProbeNext $rest
     }
 
     method ReadMaxFileSize {stanza} {
@@ -593,7 +606,8 @@ snit::type taco_file {
     method RenderThumb {src thumb max} {
         set fh [open $src rb]
         try { set raw [read $fh] } finally { close $fh }
-        set d [::tclwuffs::decode $raw]
+        # dims reads the header only; resize_bytes decodes the source itself.
+        set d [::tclwuffs::dims $raw]
         lassign [fit_within [dict get $d width] [dict get $d height] $max] tw th
         set png [::tclwuffs::resize_bytes $raw $tw $th]
         file mkdir [file dirname $thumb]
@@ -603,7 +617,7 @@ snit::type taco_file {
     }
 
     method ThumbPath {url max} {
-        set hash [sha1::sha1 [encoding convertto utf-8 $url]]
+        set hash [$self UrlHash $url]
         return [file join [$self Root -cache-dir] attachments thumb ${hash}_${max}.png]
     }
 
@@ -614,8 +628,8 @@ snit::type taco_file {
         array set opts {-url ""}
         array set opts $args
         set url $opts(-url)
-        catch {file delete -- [$self AttachPath $url]}
-        set hash [sha1::sha1 [encoding convertto utf-8 $url]]
+        set hash [$self UrlHash $url]
+        catch {file delete -- [$self AttachPath $url $hash]}
         foreach t [glob -nocomplain \
                 [file join [$self Root -cache-dir] attachments thumb ${hash}_*.png]] {
             catch {file delete -- $t}

@@ -212,8 +212,8 @@ test file-discoinfo-match {OnDiscoInfo selects a component advertising the uploa
         }
     }]
     set ::_svc NONE
-    $::_client file OnDiscoInfo [list apply {{s} {set ::_svc $s}}] \
-        upload.test.example.com {} $iq
+    $::_client file DiscoverService [list apply {{s} {set ::_svc $s}}]
+    $::_client file OnDiscoInfo upload.test.example.com {} $iq
     set ::_svc
 } -result upload.test.example.com
 
@@ -224,10 +224,33 @@ test file-discoinfo-no-match {OnDiscoInfo without the feature and no more candid
         }
     }]
     set ::_svc NONE
-    $::_client file OnDiscoInfo [list apply {{s} {set ::_svc $s}}] \
-        comp.test.example.com {} $iq
+    $::_client file DiscoverService [list apply {{s} {set ::_svc $s}}]
+    $::_client file OnDiscoInfo comp.test.example.com {} $iq
     set ::_svc
 } -result {}
+
+# Two uploads racing the first probe must not each run their own disco round.
+test file-discover-coalesces {a second probe request joins the one in flight} \
+    {*}$file_env -body {
+    set ::_svc {}
+    $::_client conn clear
+    set cb [list apply {{s} {lappend ::_svc $s}}]
+    $::_client file DiscoverService $cb
+    $::_client file DiscoverService $cb
+    set items [llength [$::_client conn get_written]]
+    $::_client file OnDiscoItems [j iq -type result {
+        j query -ns http://jabber.org/protocol/disco#items {
+            j item -jid upload.test.example.com
+        }
+    }]
+    set infos [llength [$::_client conn get_written]]
+    $::_client file OnDiscoInfo upload.test.example.com {} [j iq -type result {
+        j query -ns http://jabber.org/protocol/disco#info {
+            j feature -var urn:xmpp:http:upload:0
+        }
+    }]
+    list $items $infos $::_svc
+} -result {1 2 {upload.test.example.com upload.test.example.com}}
 
 # --- storage round-trip ---------------------------------------------------
 
