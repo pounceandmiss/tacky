@@ -69,8 +69,8 @@ proc ::tacky::forms::parse {formNode} {
         # Media (XEP-0158): a cid: uri referencing an inline BOB payload
         if {[set media [xsearch $fieldNode media -get node]] ne ""} {
             set uri [string trim [xsearch $media uri -get body]]
-            regexp {(.*):(.*)} $uri -> uriPrefix uriBody
-            if {$uriPrefix ne "cid"} {
+            if {![regexp {^([^:]+):(.*)$} $uri -> uriPrefix uriBody]
+                || $uriPrefix ne "cid"} {
                 error "Unknown uri: $uri"
             }
             dict set field media [dict create \
