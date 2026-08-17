@@ -36,14 +36,10 @@ set jid_common [tacky_env -taco-client {-db-path :memory:} -extra-setup {
 
 test omemo-unit-schema-created {migrate creates the four tables} \
     {*}$jid_common -body {
-        set tables [list]
         c db eval {
             SELECT name FROM sqlite_master WHERE type='table'
               AND name LIKE 'omemo_%' ORDER BY name
-        } row {
-            lappend tables $row(name)
         }
-        set tables
     } -result {omemo_sessions omemo_skipped omemo_store omemo_trust}
 
 test omemo-unit-device-id-nonzero {EnsureStore generates non-zero 31-bit id} \
