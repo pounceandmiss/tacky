@@ -602,7 +602,8 @@ snit::type conn {
                     -ns urn:ietf:params:xml:ns:xmpp-sasl \
                     -mechanism PLAIN \
                     #body $saslPlain]
-                jlog debug "stanza out" -stanza $authStanza
+                # Never the stanza: its body is base64 of user and password.
+                jlog debug "stanza out: auth mechanism=PLAIN"
                 $base writeStanza $authStanza
             }
             success {
