@@ -127,8 +127,8 @@ snit::type app_type {
         if {[dict exists $eargs -acc]} {
             set w [$self WindowForAccount [dict get $eargs -acc]]
         }
-        if {$w eq ""} { set w [$self AnyVisibleWindow] }
-        if {$w ne "" && [winfo exists $w]} { $w ShowStatus $msg }
+        if {$w eq ""} { set w [$self AnyOpenWindow] }
+        if {$w ne ""} { $w ShowStatus $msg }
     }
 
     method OnBackgroundError {eargs} {
@@ -192,8 +192,11 @@ snit::type app_type {
         }
     }
 
-    method AnyVisibleWindow {} {
-        return [lindex $windows 0]
+    method AnyOpenWindow {} {
+        foreach w $windows {
+            if {[winfo exists $w]} { return $w }
+        }
+        return ""
     }
 
     method EnsureSomethingVisible {} {
@@ -264,8 +267,8 @@ snit::type app_type {
         }
         toplevel .addaccount
         wm title .addaccount "Add Account"
-        set parent [$self AnyVisibleWindow]
-        if {$parent ne "" && [winfo exists $parent]} {
+        set parent [$self AnyOpenWindow]
+        if {$parent ne ""} {
             wm transient .addaccount $parent
         }
         initialsetup .addaccount.setup \

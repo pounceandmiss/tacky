@@ -21,7 +21,6 @@ snit::widget chatlistview {
 
     variable searchquery ""
     variable sortby "recent"
-    variable prescolors 1
     variable showAvatars 1
     variable bookmarkMember 0
     variable trackedAvatars {}
@@ -80,7 +79,6 @@ snit::widget chatlistview {
         grid rowconfigure    $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
 
-        $self ConfigurePresenceTags
         $self ConfigureMucTags
         $self ConfigureMentionTag
 
@@ -139,10 +137,6 @@ snit::widget chatlistview {
             -variable [myvar sortby] -value "name" \
             -command [mymethod Render]
         $settingsmenu add separator
-        settingmenu::checkbutton $settingsmenu "Show presence colors" \
-            -var [myvar prescolors] -key show_presence_colors \
-            -tag $win -tacky $options(-tacky) \
-            -onchange [mymethod ConfigurePresenceTags]
         settingmenu::checkbutton $settingsmenu "Show avatars" \
             -var [myvar showAvatars] -key show_avatars \
             -tag $win -tacky $options(-tacky) \
@@ -309,22 +303,6 @@ snit::widget chatlistview {
         }
         if {!$replaced} { lappend items $entry }
         return $items
-    }
-
-    # -- presence / muc row styling -------------------------------------
-
-    method ConfigurePresenceTags {} {
-        if {$prescolors} {
-            $treeview tag configure available -foreground green4
-            $treeview tag configure away      -foreground goldenrod3
-            $treeview tag configure xa        -foreground darkorange3
-            $treeview tag configure dnd       -foreground red3
-            $treeview tag configure offline   -foreground gray50
-        } else {
-            foreach tag {available away xa dnd offline} {
-                $treeview tag configure $tag -foreground ""
-            }
-        }
     }
 
     method ConfigureMucTags {} {

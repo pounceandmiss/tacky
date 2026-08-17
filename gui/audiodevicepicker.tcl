@@ -150,11 +150,7 @@ snit::widgetadaptor audiobutton {
 
     method MaybeClosePopover {X Y} {
         if {![winfo exists $popover]} return
-        set x1 [winfo rootx $popover]
-        set y1 [winfo rooty $popover]
-        set x2 [expr {$x1 + [winfo width $popover]}]
-        set y2 [expr {$y1 + [winfo height $popover]}]
-        if {$X < $x1 || $X >= $x2 || $Y < $y1 || $Y >= $y2} {
+        if {[click_outside $popover $X $Y]} {
             destroy $popover
         }
     }

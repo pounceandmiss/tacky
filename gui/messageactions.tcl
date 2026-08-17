@@ -35,13 +35,23 @@ snit::type messageactions {
     variable Room ""
     variable MyRole ""
 
+    # Our nick in the room, so a presence can be told apart from every other
+    # occupant's. Tracked from the join and from our own nick changes.
+    variable MyNick ""
+
     constructor args {
         $self configurelist $args
         if {!$options(-groupchat)} return
         regsub {\?join$} $options(-chat) {} Room
         set Room [jid norm [jid bare $Room]]
         ::tacky listen -tag $options(-tag) muc <Presence> \
-            -acc $options(-acc) -jid $Room [mymethod RefreshMyRole]
+            -acc $options(-acc) -jid $Room [mymethod OnPresence]
+        ::tacky listen -tag $options(-tag) muc <Joined> \
+            -acc $options(-acc) -jid $Room [mymethod OnJoined]
+        ::tacky listen -tag $options(-tag) muc <NickChanged> \
+            -acc $options(-acc) -jid $Room [mymethod OnNickChanged]
+        ::tacky muc myNick -acc $options(-acc) -jid $Room \
+            -tag $options(-tag) -command [mymethod SetMyNick]
         $self RefreshMyRole
     }
 
@@ -164,10 +174,7 @@ snit::type messageactions {
 
     method OnPickerClick {pop X Y} {
         if {![winfo exists $pop]} return
-        set x0 [winfo rootx $pop]
-        set y0 [winfo rooty $pop]
-        if {$X < $x0 || $X >= $x0 + [winfo width $pop]
-         || $Y < $y0 || $Y >= $y0 + [winfo height $pop]} {
+        if {[click_outside $pop $X $Y]} {
             catch {ttk::releaseGrab $pop}
             destroy $pop
         }
@@ -178,9 +185,28 @@ snit::type messageactions {
             -timestamp $key -emoji $emoji
     }
 
-    # Re-read our role; seeded at construction and re-run on each of our own
-    # presence updates, since role changes arrive as presence.
-    method RefreshMyRole {args} {
+    # A role change reaches us as our own presence. Every other occupant's says
+    # nothing about it, so joining a busy room costs one query, not one per
+    # occupant.
+    method OnPresence {ev} {
+        if {$MyNick eq "" || [dict get $ev -nick] ne $MyNick} return
+        $self RefreshMyRole
+    }
+
+    # The join always emits our own presence right behind it, which is what
+    # actually refreshes the role.
+    method OnJoined {ev} {
+        $self SetMyNick [dict get $ev -nick]
+    }
+
+    method OnNickChanged {ev} {
+        if {![dict get $ev -self]} return
+        $self SetMyNick [dict get $ev -newNick]
+    }
+
+    method SetMyNick {nick} { set MyNick $nick }
+
+    method RefreshMyRole {} {
         ::tacky muc myRole -acc $options(-acc) -jid $Room \
             -tag $options(-tag) -command [mymethod SetMyRole]
     }

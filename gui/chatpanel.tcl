@@ -269,15 +269,10 @@ snit::widget chatpanel {
     method InstallMenus {} {
         set mb $options(-menubar)
         menu $mb.chat -tearoff 0
-        $mb.chat add command -label "Jump to Date..." \
-            -command [mymethod JumpToDate]
-        $mb.chat add command -label "Find in Chat..." \
-            -command [mymethod OpenFind] -accelerator "Ctrl+F"
-        $mb.chat add command -label "Search Messages..." \
-            -command [mymethod OpenSearch]
         if {$isMuc} {
             $self RebuildMucMenu
         } else {
+            $self AddChatMenuPrefix
             $mb.chat add separator
             $mb.chat add checkbutton -label "Encrypt with OMEMO" \
                 -variable [myvar omemoEnabled] \
@@ -295,16 +290,22 @@ snit::widget chatpanel {
         $mb add cascade -label "Chat" -menu $mb.chat
     }
 
-    method RebuildMucMenu {} {
+    # The entries every chat has, in both layouts.
+    method AddChatMenuPrefix {} {
         set mb $options(-menubar)
-        $mb.chat delete 0 end
-
         $mb.chat add command -label "Jump to Date..." \
             -command [mymethod JumpToDate]
         $mb.chat add command -label "Find in Chat..." \
             -command [mymethod OpenFind] -accelerator "Ctrl+F"
         $mb.chat add command -label "Search Messages..." \
             -command [mymethod OpenSearch]
+    }
+
+    method RebuildMucMenu {} {
+        set mb $options(-menubar)
+        $mb.chat delete 0 end
+
+        $self AddChatMenuPrefix
         $mb.chat add separator
 
         # Always-visible items

@@ -120,8 +120,8 @@ snit::widget chatarea {
     method Measure {what} {
         if {![winfo exists $win]} { return 0 }
         switch -- $what {
-            above  { return [$text count -ypixels 0.0 @0,0] }
-            below  { return [$text count -ypixels @0,[winfo height $text] end-1line] }
+            above  { return [$text viewport above] }
+            below  { return [$text viewport below] }
             height { return [winfo height $text] }
         }
     }
@@ -266,8 +266,7 @@ snit::widget chatarea {
     }
 
     method atEnd {} {
-        set below [$text count -ypixels @0,[winfo height $text] end-1line]
-        return [expr {$below < 10}]
+        return [expr {[$text viewport below] < 10}]
     }
 
     method {see message} {key} {
@@ -361,7 +360,6 @@ snit::widget chatarea {
         $text tag configure tombstone -foreground gray50 -font "$font italic"
     }
 
-    method {messages oldest} {} { $self EdgeKey old }
     method {messages newest} {} { $self EdgeKey new }
 
     # The text widget itself, for the things only it can do: searching its
@@ -507,24 +505,7 @@ snit::widget chatarea {
         }
 
         eval {
-            # Pick the avatar: per-JID if tracked, else default
-            set avatarJid ""
-            if {[info exists message(avatar_jid)]} {
-                set avatarJid $message(avatar_jid)
-            }
-            set imageId [$text image create msgins \
-                -image [$self AvatarImage $avatarJid]]
-            $text tag add $tag $imageId
-            $text tag add $tag.avatar $imageId
-            if {$avatarJid ne ""} {
-                $text tag add from.$avatarJid $imageId
-            }
-            set authorTags [list $tag $tag.author author]
-            if {[info exists message(from_jid)] && $message(from_jid) ne ""} {
-                lappend authorTags author.$message(from_jid)
-            }
-            $text ins msgins $message(display_name) $authorTags
-            $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
+            $self DrawHeader $messageDict $tag
             if {[info exists message(encryption)] && $message(encryption) eq "omemo"} {
                 $text ins msgins " " [list $tag timestamp]
                 set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
@@ -635,10 +616,10 @@ snit::widget chatarea {
         $text ins msgins \n $tag
     }
 
-    # Tombstone for a retracted message: avatar/author/timestamp header (so it
-    # keeps its slot and attribution) followed by a greyed placeholder. Whole
-    # row carries item.$slot so lookup and successor inserts still work.
-    method DrawTombstone {messageDict tag} {
+    # The line every row opens with, up to but not including its newline.
+    # Tagged from.$jid so a later portrait repaints it, author.$jid so a
+    # rename rewrites it.
+    method DrawHeader {messageDict tag} {
         array set message $messageDict
         set avatarJid [expr {[info exists message(avatar_jid)]
             ? $message(avatar_jid) : ""}]
@@ -646,12 +627,24 @@ snit::widget chatarea {
             -image [$self AvatarImage $avatarJid]]
         $text tag add $tag $imageId
         $text tag add $tag.avatar $imageId
+        if {$avatarJid ne ""} {
+            $text tag add from.$avatarJid $imageId
+        }
         set authorTags [list $tag $tag.author author]
         if {[info exists message(from_jid)] && $message(from_jid) ne ""} {
             lappend authorTags author.$message(from_jid)
         }
         $text ins msgins $message(display_name) $authorTags
-        $text ins msgins "  [clock format [expr {$message(timestamp) / 1000000}] -format {%Y-%m-%d %H:%M}]" [list $tag timestamp]
+        $text ins msgins \
+            "  [FormatTimestamp $message(timestamp) {%Y-%m-%d %H:%M}]" \
+            [list $tag timestamp]
+    }
+
+    # Tombstone for a retracted message: the usual header (so it keeps its
+    # slot and attribution) followed by a greyed placeholder. Whole row
+    # carries item.$slot so lookup and successor inserts still work.
+    method DrawTombstone {messageDict tag} {
+        $self DrawHeader $messageDict $tag
         $text ins msgins \n $tag
         $text ins msgins "This message was deleted" [list $tag body tombstone]
         $text ins msgins \n $tag
@@ -739,8 +732,6 @@ snit::widget chatarea {
         if {![winfo exists $f]} return
         $f setState $direction $state $loaded $total
     }
-
-    method deleteById {key} { $self Delete [$rows remove $key] }
 
     method deleteByPos {idx} { $self Delete [$rows removeat $idx] }
 

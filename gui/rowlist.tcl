@@ -134,6 +134,4 @@ snit::type rowlist {
         set Rows {}
         return $rows
     }
-
-    method all {} { return $Rows }
 }

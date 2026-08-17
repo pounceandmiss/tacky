@@ -1,10 +1,9 @@
 # omemokeyswindow - per-account OMEMO fingerprint viewer.
 #
-# One window per account (see the `open` typemethod): it stacks this
-# account's own device keys (omemokeyspanel for the bare account jid) under
-# an account-wide blind-trust toggle, plus a "Their keys" panel that is
-# re-pointed to whichever peer the window was last opened for. The panels
-# own all the fingerprint/trust rendering; this window just composes them.
+# One window per account (see the `open` typemethod): it stacks this account's
+# own keys section (omemoownkeys) over a "Their keys" panel that is re-pointed
+# to whichever peer the window was last opened for. The panels own all the
+# fingerprint/trust rendering; this window just composes them.
 #
 # Usage:
 #   omemokeyswindow open romeo@montague.lit juliet@capulet.lit ?fingerprint?
@@ -17,8 +16,6 @@ snit::widget omemokeyswindow {
     option -acc -readonly yes
     option -jid -default "" -configuremethod SetJid
     option -highlight -default ""
-
-    variable blindTrust 0
 
     # One window per account; create it, or raise the existing one and
     # re-point its peer panel to $jid. $highlight is set first because
@@ -38,25 +35,17 @@ snit::widget omemokeyswindow {
     constructor args {
         $self configurelist $args
 
-        ttk::checkbutton $win.bt \
-            -text "Trust new devices automatically (blind trust, account-wide)" \
-            -variable [myvar blindTrust] -command [mymethod ToggleBlindTrust]
         ttk::button $win.close -text "Close" -command [list destroy $win]
 
         ttk::label $win.mylbl -text "My keys" -font {Helvetica 12 bold}
-        omemokeyspanel $win.mine \
-            -acc $options(-acc) -jid [jid bare $options(-acc)]
+        omemoownkeys $win.mine -acc $options(-acc)
         ttk::label $win.theirlbl -text "Their keys" -font {Helvetica 12 bold}
 
-        pack $win.bt -anchor w -padx 8 -pady {8 4}
         pack $win.close -side bottom -pady 6
-        pack $win.mylbl -anchor w -padx 8 -pady {6 2}
+        pack $win.mylbl -anchor w -padx 8 -pady {8 2}
         pack $win.mine -fill both -expand yes -padx 8
         pack $win.theirlbl -anchor w -padx 8 -pady {6 2}
         $self BuildPeer
-
-        ::tacky observe -tag $win omemo <BlindTrust> -acc $options(-acc) \
-            [mymethod OnBlindTrust]
     }
 
     destructor {
@@ -78,11 +67,5 @@ snit::widget omemokeyswindow {
             -highlight $options(-highlight)
         pack $win.theirs -after $win.theirlbl -fill both -expand yes \
             -padx 8 -pady {0 4}
-    }
-
-    method OnBlindTrust {ev} { set blindTrust [dict get $ev -value] }
-
-    method ToggleBlindTrust {} {
-        ::tacky omemo setBlindTrust -acc $options(-acc) -value $blindTrust
     }
 }

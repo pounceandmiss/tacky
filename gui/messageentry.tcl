@@ -18,9 +18,6 @@ snit::widget messageentry {
     option -attach-command -default ""
     option -request-voice-command -default ""
 
-    # "normal" or "visitor"
-    variable voiceState normal
-
     # Toplevel hosting the emoji picker while open, "" when closed
     variable emojiPopup ""
     # When the popup was last closed by a grab-click on the emoji button (ms);
@@ -64,12 +61,14 @@ snit::widget messageentry {
         # controls (e.g. the OMEMO lock toggle in 1:1 chats). Empty otherwise.
         ttk::frame $win.accessory
 
-        grid $win.grip -row 0 -column 0 -columnspan 5 -sticky ew
+        # Column 1 is the composer's own scrollbar slot, gridded and ungridded
+        # by ScrollSet as the text overflows; the buttons start after it.
+        grid $win.grip -row 0 -column 0 -columnspan 6 -sticky ew
         grid $win.text -row 1 -column 0 -sticky nsew
-        grid $win.attach -row 1 -column 1 -sticky n -padx {4 0}
-        grid $win.emoji -row 1 -column 2 -sticky n -padx {4 0}
-        grid $win.accessory -row 1 -column 3 -sticky n -padx {4 0}
-        grid $win.send -row 1 -column 4 -sticky n -padx {4 0}
+        grid $win.attach -row 1 -column 2 -sticky n -padx {4 0}
+        grid $win.emoji -row 1 -column 3 -sticky n -padx {4 0}
+        grid $win.accessory -row 1 -column 4 -sticky n -padx {4 0}
+        grid $win.send -row 1 -column 5 -sticky n -padx {4 0}
         grid rowconfigure $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
 
@@ -80,16 +79,7 @@ snit::widget messageentry {
 
         # Return sends, Shift-Return inserts newline
         bind $win.text <Shift-Return> continue
-        bind $win.text <Return> "[mymethod OnReturn %s]; break"
-    }
-
-    method OnReturn {state} {
-        $self Send
-        # if {$state & 1} {
-        #     $text insert insert \n
-        # } else {
-        #     $self Send
-        # }
+        bind $win.text <Return> "[mymethod Send]; break"
     }
 
     method Send {} {
@@ -202,10 +192,7 @@ snit::widget messageentry {
     # guard so its release-command doesn't immediately reopen.
     method OnGrabClick {X Y} {
         if {$emojiPopup eq "" || ![winfo exists $emojiPopup]} return
-        set x0 [winfo rootx $emojiPopup]
-        set y0 [winfo rooty $emojiPopup]
-        if {$X < $x0 || $X >= $x0 + [winfo width $emojiPopup]
-         || $Y < $y0 || $Y >= $y0 + [winfo height $emojiPopup]} {
+        if {[click_outside $emojiPopup $X $Y]} {
             if {[winfo containing $X $Y] eq $emojibutton} {
                 set emojiClosedAt [clock milliseconds]
             }
@@ -239,25 +226,6 @@ snit::widget messageentry {
         $text configure -height $lines
     }
 
-    method setVoiceState {state} {
-        set voiceState $state
-        if {$state eq "visitor"} {
-            $sendbutton configure -image "" -text "Request Voice" \
-                -command [mymethod RequestVoice]
-            $text configure -state disabled
-            $attachbutton configure -state disabled
-            $emojibutton configure -state disabled
-            catch {destroy $emojiPopup}
-        } else {
-            $sendbutton configure -text "" \
-                -image elementary/22x22/actions/mail-send.png \
-                -command [mymethod Send]
-            $text configure -state normal
-            $attachbutton configure -state normal
-            $emojibutton configure -state normal
-        }
-    }
-
     method RequestVoice {} {
         if {$options(-request-voice-command) ne ""} {
             {*}$options(-request-voice-command)
@@ -271,14 +239,6 @@ snit::widget messageentry {
 
     method focus {} {
         focus $text
-    }
-
-    method get {} {
-        string trim [$text get 1.0 end-1c]
-    }
-
-    method insert {txt} {
-        $text insert end $txt
     }
 
     # Replace the whole composer content (used when starting an edit).
