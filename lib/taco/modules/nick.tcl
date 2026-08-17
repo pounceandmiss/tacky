@@ -110,6 +110,10 @@ snit::type taco_nick {
 
         set nick [xsearch $stanza pubsub items item nick -get body]
 
+        # An empty fetch means nothing is published, not that the nick was
+        # cleared; only a notification carries a retraction.
+        if {$nick eq ""} return
+
         $client db eval {
             INSERT OR REPLACE INTO pep_nick(jid, nick)
             VALUES ($jid, $nick)
