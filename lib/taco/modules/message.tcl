@@ -318,18 +318,7 @@ snit::type taco_message {
             }
             # A reaction/edit/retract updates a stored message's display; it
             # isn't a citizen and doesn't bound a hole (like drop).
-            if {$verdict eq "reaction"} {
-                $self ApplyReactionVerdict $chatJid $r
-                continue
-            }
-            if {$verdict eq "edit"} {
-                $self ApplyEditVerdict $chatJid $r
-                continue
-            }
-            if {$verdict eq "retract"} {
-                $self ApplyRetractVerdict $chatJid $r
-                continue
-            }
+            if {[$self ApplyPatchVerdict $chatJid $r]} continue
             # drop = displayless new stanza; doesn't bound a hole (as before).
             if {$verdict eq "drop"} continue
 
@@ -500,17 +489,21 @@ snit::type taco_message {
     #               or drop it as a real overlap with an existing citizen.
     #   duplicate → already a citizen; nothing to show.
     #   drop      → displayless (control type / keytransport); nothing.
+    # reaction/edit/retract patch a message already stored rather than adding
+    # one. 1 when the verdict was one of those and has been applied.
+    method ApplyPatchVerdict {chatJid r} {
+        switch [dict get $r verdict] {
+            reaction { $self ApplyReactionVerdict $chatJid $r }
+            edit     { $self ApplyEditVerdict $chatJid $r }
+            retract  { $self ApplyRetractVerdict $chatJid $r }
+            default  { return 0 }
+        }
+        return 1
+    }
+
     method DispatchLive {chatJid verdict} {
+        if {[$self ApplyPatchVerdict $chatJid $verdict]} return
         switch [dict get $verdict verdict] {
-            reaction {
-                $self ApplyReactionVerdict $chatJid $verdict
-            }
-            edit {
-                $self ApplyEditVerdict $chatJid $verdict
-            }
-            retract {
-                $self ApplyRetractVerdict $chatJid $verdict
-            }
             confirmed {
                 $self HandleConfirmation $chatJid \
                     [list [dict get $verdict reconciled]]
@@ -1955,18 +1948,7 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
             set verdict [dict get $r verdict]
-            if {$verdict eq "reaction"} {
-                $self ApplyReactionVerdict $chatJid $r
-                continue
-            }
-            if {$verdict eq "edit"} {
-                $self ApplyEditVerdict $chatJid $r
-                continue
-            }
-            if {$verdict eq "retract"} {
-                $self ApplyRetractVerdict $chatJid $r
-                continue
-            }
+            if {[$self ApplyPatchVerdict $chatJid $r]} continue
             if {$verdict eq "confirmed"} {
                 set rec [dict get $r reconciled]
                 $self HandleConfirmation $chatJid [list $rec]
@@ -2003,16 +1985,8 @@ snit::type taco_message {
         foreach resultNode [dict get $mamResult messages] {
             set r [$self ParseResultNode $resultNode $chatJid]
             lappend parsed $r
+            if {[$self ApplyPatchVerdict $chatJid $r]} continue
             switch [dict get $r verdict] {
-                reaction {
-                    $self ApplyReactionVerdict $chatJid $r
-                }
-                edit {
-                    $self ApplyEditVerdict $chatJid $r
-                }
-                retract {
-                    $self ApplyRetractVerdict $chatJid $r
-                }
                 confirmed {
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
