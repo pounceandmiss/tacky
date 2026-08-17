@@ -158,6 +158,7 @@ jsonify_type jsonify \
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
         audio_device {default bool}
+        call_row    {peer_ringing bool}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
@@ -198,6 +199,7 @@ jsonify_type jsonify \
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
         calls/start             string
+        calls/list              {list call_row}
         author/get              {dict {}}
         register/media          base64
         register/form           form

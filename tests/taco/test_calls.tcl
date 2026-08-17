@@ -292,6 +292,60 @@ test calls-resumed-stream-keeps-calls {resumption keeps the session, so calls su
         dict get [dict get [calls_state] tk-in13] state
     } -result ringing
 
+# -- Enumeration --
+
+test calls-list-empty {nothing in flight is an empty list, not an error} \
+    {*}$calls_env -body {
+        c.calls list
+    } -result {}
+
+test calls-list-outgoing {a call we placed reports outgoing, proposed and a bare peer} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com/phone]
+        set rows [c.calls list]
+        string map [list $sid SID] [list [llength $rows] [lindex $rows 0]]
+    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0}}
+
+test calls-list-incoming {a call rung at us reports incoming, in tacky's own word for it} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-in20 $::PEER]
+        lindex [c.calls list] 0
+    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0}
+
+test calls-list-peer-ringing {a peer device alerting is recorded, and moves no state} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_jmi_in ringing $sid $::PEER]
+        set entry [lindex [c.calls list] 0]
+        list [dict get $entry peer_ringing] [dict get $entry state] \
+            [dict get [dict get [calls_state] $sid] state]
+    } -result {1 proposed proposed}
+
+test calls-list-drops-ended {a call that ended is gone, so a snapshot never carries one} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.calls hangup -sid $sid
+        c.calls list
+    } -result {}
+
+test calls-list-drops-on-fresh-stream {a new session leaves nothing to re-seed from} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-in21 $::PEER]
+        c.conn fire_ready 0
+        c.calls list
+    } -result {}
+
+test calls-list-two-calls {nothing caps this at one, and each call keeps its own direction} \
+    {*}$calls_env -body {
+        c.calls start -to peer@example.com
+        c.conn feed [calls_jmi_in propose tk-in22 other@example.com/tablet]
+        set out {}
+        foreach entry [c.calls list] {
+            lappend out [dict get $entry peer] [dict get $entry direction]
+        }
+        lsort -stride 2 $out
+    } -result {other@example.com incoming peer@example.com outgoing}
+
 # -- Codec filtering --
 
 test calls-filter-opus-only {non-opus payload-types are stripped, other children kept} \

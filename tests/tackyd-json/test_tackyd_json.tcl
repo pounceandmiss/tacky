@@ -198,6 +198,25 @@ test json-backend-callback-call-start {start returns a scalar sid string} -setup
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 11 {"sid-abc123"}]
 
+# Without the schema entry the whole list serialises as one JSON string; without
+# the type entry peer_ringing arrives as "0", which reads as true.
+test json-backend-callback-call-list {live calls serialize as objects with a real bool} -setup {
+    _test_clear
+} -body {
+    _test_on_result 13 calls/list [list \
+        [dict create sid tk-1 peer a@b direction outgoing \
+            state proposed peer_ringing 0] \
+        [dict create sid tk-2 peer c@d direction incoming \
+            state ringing peer_ringing 1]]
+    lindex [_test_sent] 0
+} -result [json::write array \
+    {"result"} 13 \
+    [json::write array \
+        [json::write object sid {"tk-1"} peer {"a@b"} direction {"outgoing"} \
+            state {"proposed"} peer_ringing false] \
+        [json::write object sid {"tk-2"} peer {"c@d"} direction {"incoming"} \
+            state {"ringing"} peer_ringing true]]]
+
 test json-type-reactions {reactions serialize as an object keyed by emoji} -body {
     jsonify to_json \
         [dict create timestamp 1700 \
