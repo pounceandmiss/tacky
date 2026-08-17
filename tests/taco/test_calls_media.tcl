@@ -184,6 +184,20 @@ test media-connected-emits-active {a connected pc surfaces as <Active>} \
             [dict get [dict get [calls_state] $sid] state]]
     } -result {{<Active> -sid SID} active}
 
+test media-list-active {a connected call is the one live state only media can reach} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] state-change connected
+        dict get [lindex [c.calls list] 0] state
+    } -result active
+
+test media-list-peer-stays-bare {the full JID proceed latched does not leak into the list} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        list [dict get [dict get [calls_state] $sid] peer] \
+            [dict get [lindex [c.calls list] 0] peer]
+    } -result {peer@example.com/phone peer@example.com}
+
 test media-failed-emits-failed {a failed pc surfaces as <Failed> and forgets the call} \
     {*}$media_env -body {
         set sid [media_caller]

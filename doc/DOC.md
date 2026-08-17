@@ -795,10 +795,23 @@ message timestamp; for a download, match on `url`.
     calls reject {sid: string, reason?: string}                    reason default: decline
     calls hangup {sid: string, reason?: string}                    reason default: success
     calls setDevices {sid: string, input?: string, output?: string}
+    calls list {}                                                  -> [call_row]
+
+    call_row = {sid: string, peer: string, direction: string, state: string,
+                peer_ringing: bool}
 
 `start` rings the peer. Take the session id from `<Outgoing>`.
 `setDevices` overrides the mic and speaker for a single call; an empty id means the system default. See
 [Voice calls](#voice-calls).
+
+`list` is every call the account has in flight, and the only way to learn a sid
+you didn't see `<Outgoing>` or `<Incoming>` for. A call leaves it the moment
+`<Ended>`/`<Failed>` goes out, so `state` is one of `proposed`, `ringing`,
+`proceeded`, `new`, `connecting` or `active`, never a terminal one. `direction`
+is `outgoing` or `incoming`. Note that `ringing` means *you* are being rung, the
+callee side of `<Incoming>`; the caller side is `peer_ringing`, set once a peer
+device has answered `<Ringing>`. `peer` is bare, as the events report it, even
+after the session has latched a full JID.
 
 Events:
 
@@ -1262,3 +1275,10 @@ Reconnecting without stream resumption ends every live call with `<Ended>`,
 because the peer cannot route anything back to a sid from the dead session.
 A resumed stream keeps its calls, and so does a plain disconnection: the
 media path is peer to peer and can outlive the outage.
+
+Call state lives only in the backend, and only as events, so a client that
+restarted has none of it. `calls list` per account rebuilds it: ask on
+`conn <Ready>`, and on `conn <State>` reaching `connected`, which is what a
+client sees when it reattaches to a backend that stayed up. On a fresh stream
+every sid has already been ended and forgotten before the backend reads the
+request, so the answer is authoritative: a call it does not name is over.

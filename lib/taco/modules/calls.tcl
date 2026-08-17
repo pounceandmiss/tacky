@@ -11,6 +11,9 @@
 # tacky calls setDevices          -acc $jid -sid $sid ?-input $id? ?-output $id?
 #   ;# per-call device override; does not touch the persisted preference.
 #
+# tacky calls list   -acc $jid ?-command $cb?
+#   ;# -> one dict per live call: sid peer direction state peer_ringing
+#
 # Enumeration and the persisted preferred device + volume live on the
 # process-global `audio` module (see lib/taco/modules/audio.tcl). Volume
 # has no per-call override — `tacky audio setVolume` is the only knob.
@@ -94,6 +97,8 @@
 #   peer       : remote JID (bare until proceeded, then full)
 #   initiator  : 1 for caller, 0 for callee
 #   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
+#   peer_ringing : 1 once a peer device answered <ringing> (caller side);
+#     a field, not a state, because the state machine does not move for it
 #   pc         : ::rtc pc id (-1 = not created)
 #   track      : ::rtc track id (-1 = not added/received)
 #   capturer   : ::rtcma capturer handle ("" = none)
@@ -162,7 +167,7 @@ snit::type taco_calls {
         set bare [jid bare $opts(-to)]
         set sid [$self NewSid]
         dict set Calls $sid [dict create \
-            peer $bare initiator 1 state proposed \
+            peer $bare initiator 1 state proposed peer_ringing 0 \
             pc -1 track -1 capturer "" player ""]
         $client emit calls <Outgoing> -sid $sid -to $bare
         $client write [$self BuildJmiMessage $bare propose $sid 1]
@@ -229,6 +234,30 @@ snit::type taco_calls {
         $client emit calls <Ended> -sid $opts(-sid)
         $self Cleanup $opts(-sid)
         return
+    }
+
+    # Every call in flight, one dict each, unordered. The only way to
+    # learn a sid you did not see <Outgoing>/<Incoming> for, which is what
+    # a client that restarted needs. Cleanup drops a session in the same
+    # frame that ends it, so nothing terminal is ever in here. peer is
+    # bare, as the events report it, even once proceed has latched a full
+    # JID.
+    tackymethod list {args} {
+        set out {}
+        dict for {sid call} $Calls {
+            if {[dict get $call initiator]} {
+                set direction outgoing
+            } else {
+                set direction incoming
+            }
+            lappend out [dict create \
+                sid          $sid \
+                peer         [jid bare [dict get $call peer]] \
+                direction    $direction \
+                state        [dict get $call state] \
+                peer_ringing [dict get $call peer_ringing]]
+        }
+        return $out
     }
 
     # Hot-swap mic / speaker for a live call. Empty id = system default.
@@ -622,7 +651,7 @@ snit::type taco_calls {
         # Duplicate or sid collision: ignore.
         if {[dict exists $Calls $sid]} return
         dict set Calls $sid [dict create \
-            peer $from initiator 0 state ringing \
+            peer $from initiator 0 state ringing peer_ringing 0 \
             pc -1 track -1 capturer "" player ""]
         # XEP-0353 §4: tell the initiator this device is alerting the user.
         $client write [$self BuildJmiMessage $from ringing $sid 0]
@@ -635,6 +664,8 @@ snit::type taco_calls {
         if {[dict get $call state] ne "proposed"
                 || ![dict get $call initiator]} return
         if {![$self PeerMatches $sid $from]} return
+        # The state stays proposed, so this is the only trace `list` has.
+        dict set Calls $sid peer_ringing 1
         $client emit calls <Ringing> -sid $sid
     }
 
