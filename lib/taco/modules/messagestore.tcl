@@ -64,9 +64,21 @@
 snit::type taco_messagestore {
     option -db -default ""
 
+    # Columns every message read path returns, in one place so a new column
+    # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
+    typevariable MsgCols {timestamp, chat_jid, from_jid, from_resource, body,
+                          server_id, own_id, occupant_id, edited_ts, retracted,
+                          reply_id, reply_to, raw_xml, server_status,
+                          remote_status, encryption, sender_fp, fail_reason,
+                          attachments}
+
     constructor args {
         $self configurelist $args
         $self Migrate
+    }
+
+    method MsgSql {sql} {
+        return [string map [list @cols@ $MsgCols] $sql]
     }
 
     method Migrate {} {
@@ -476,34 +488,30 @@ snit::type taco_messagestore {
         }]
         set rows {}
         if {$sentTs eq ""} {
-            $options(-db) eval {
+            $options(-db) eval [$self MsgSql {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                           attachments
+                    SELECT @cols@
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp < $cursor
                     ORDER BY timestamp DESC
                     LIMIT $limit
                 ) ORDER BY timestamp ASC
-            } row {
+            }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
             return [dict create messages $rows bounded 0]
         }
-        $options(-db) eval {
+        $options(-db) eval [$self MsgSql {
             SELECT * FROM (
-                SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                       attachments
+                SELECT @cols@
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp < $cursor AND timestamp > $sentTs
                 ORDER BY timestamp DESC
                 LIMIT $limit
             ) ORDER BY timestamp ASC
-        } row {
+        }] row {
             lappend rows [$self RowToDict [array get row]]
         }
         set bounded [expr {[llength $rows] < $limit}]
@@ -519,30 +527,26 @@ snit::type taco_messagestore {
         }]
         set rows {}
         if {$sentTs eq ""} {
-            $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                       attachments
+            $options(-db) eval [$self MsgSql {
+                SELECT @cols@
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp > $cursor
                 ORDER BY timestamp ASC
                 LIMIT $limit
-            } row {
+            }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
             return [dict create messages $rows bounded 0]
         }
-        $options(-db) eval {
-            SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                   attachments
+        $options(-db) eval [$self MsgSql {
+            SELECT @cols@
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND timestamp > $cursor AND timestamp < $sentTs
             ORDER BY timestamp ASC
             LIMIT $limit
-        } row {
+        }] row {
             lappend rows [$self RowToDict [array get row]]
         }
         set bounded [expr {[llength $rows] < $limit}]
@@ -576,32 +580,28 @@ snit::type taco_messagestore {
         }]
         set rows {}
         if {$truncTs eq ""} {
-            $options(-db) eval {
+            $options(-db) eval [$self MsgSql {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                           attachments
+                    SELECT @cols@
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                     ORDER BY timestamp DESC
                     LIMIT $limit
                 ) ORDER BY timestamp ASC
-            } row {
+            }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
         } else {
-            $options(-db) eval {
+            $options(-db) eval [$self MsgSql {
                 SELECT * FROM (
-                    SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                           server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                           attachments
+                    SELECT @cols@
                     FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND timestamp > $truncTs
                     ORDER BY timestamp DESC
                     LIMIT $limit
                 ) ORDER BY timestamp ASC
-            } row {
+            }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
@@ -632,13 +632,11 @@ snit::type taco_messagestore {
         set before $opts(-before)
         set match [fts_match_expr $query]
         if {$match eq ""} { return {} }
-        set sql {SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                        server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                        attachments
+        set sql [$self MsgSql {SELECT @cols@
                  FROM chat_message
                  WHERE kind='message' AND retracted=0
                    AND rowid IN (SELECT rowid FROM msg_fts
-                                 WHERE msg_fts MATCH $match)}
+                                 WHERE msg_fts MATCH $match)}]
         if {$jid ne ""} {
             append sql { AND chat_jid=$jid}
             if {$before ne ""} { append sql { AND timestamp < $before} }
@@ -681,13 +679,11 @@ snit::type taco_messagestore {
         set before [$self get before $jid $nearestTs $halfLimit]
         set after  [$self get after  $jid $nearestTs $halfLimit]
         set target {}
-        $options(-db) eval {
-            SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                   server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                   attachments
+        $options(-db) eval [$self MsgSql {
+            SELECT @cols@
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
-        } row {
+        }] row {
             set target [list [$self RowToDict [array get row]]]
         }
         return [dict create \
@@ -702,13 +698,11 @@ snit::type taco_messagestore {
     method "get ids" {jid timestamps} {
         set rows {}
         foreach ts $timestamps {
-            $options(-db) eval {
-                SELECT timestamp, chat_jid, from_jid, from_resource, body,
-                       server_id, own_id, occupant_id, edited_ts, retracted, reply_id, reply_to, raw_xml, server_status, remote_status, encryption, sender_fp, fail_reason,
-                       attachments
+            $options(-db) eval [$self MsgSql {
+                SELECT @cols@
                 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
-            } row {
+            }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
         }
@@ -943,23 +937,34 @@ snit::type taco_messagestore {
     }
 
     # Unread = theirs (own_id empty), kind='message', not a tombstone, and
-    # newer than the watermark.
-    method unreadCount {chatJid} {
-        return [$options(-db) onecolumn {
-            SELECT COUNT(*) FROM chat_message
+    # newer than the watermark. Mentions are the subset that named us, so
+    # one scan answers both: {unread $n mentions $m}.
+    method unreadTally {chatJid} {
+        set tally {unread 0 mentions 0}
+        $options(-db) eval {
+            SELECT COUNT(*) AS n, COALESCE(SUM(mentions_me=1),0) AS mentions
+            FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
               AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
                                         WHERE chat_jid=$chatJid), 0)
-        }]
+        } row {
+            set tally [list unread $row(n) mentions $row(mentions)]
+        }
+        return $tally
     }
 
-    # chat_jid -> unread count, in one pass. Chats with nothing unread are
-    # absent.
-    method unreadCounts {} {
-        set counts {}
+    method unreadCount {chatJid} {
+        return [dict get [$self unreadTally $chatJid] unread]
+    }
+
+    # chat_jid -> {unread $n mentions $m}, in one pass. Chats with nothing
+    # unread are absent.
+    method unreadTallies {} {
+        set tallies {}
         $options(-db) eval {
-            SELECT m.chat_jid AS jid, COUNT(*) AS n
+            SELECT m.chat_jid AS jid, COUNT(*) AS n,
+                   COALESCE(SUM(m.mentions_me=1),0) AS mentions
             FROM chat_message m
             LEFT JOIN chat_own_read r ON r.chat_jid=m.chat_jid
             WHERE m.kind='message' AND COALESCE(m.own_id,'')=''
@@ -967,7 +972,16 @@ snit::type taco_messagestore {
               AND m.timestamp > COALESCE(r.read_ts, 0)
             GROUP BY m.chat_jid
         } row {
-            dict set counts $row(jid) $row(n)
+            dict set tallies $row(jid) [list unread $row(n) \
+                mentions $row(mentions)]
+        }
+        return $tallies
+    }
+
+    method unreadCounts {} {
+        set counts {}
+        dict for {jid tally} [$self unreadTallies] {
+            dict set counts $jid [dict get $tally unread]
         }
         return $counts
     }
@@ -983,28 +997,15 @@ snit::type taco_messagestore {
     }
 
     method mentionCount {chatJid} {
-        return [$options(-db) onecolumn {
-            SELECT COUNT(*) FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message'
-              AND COALESCE(own_id,'')='' AND retracted=0 AND mentions_me=1
-              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
-                                        WHERE chat_jid=$chatJid), 0)
-        }]
+        return [dict get [$self unreadTally $chatJid] mentions]
     }
 
     # chat_jid -> unread messages that named us. Absent when none.
     method mentionCounts {} {
         set counts {}
-        $options(-db) eval {
-            SELECT m.chat_jid AS jid, COUNT(*) AS n
-            FROM chat_message m
-            LEFT JOIN chat_own_read r ON r.chat_jid=m.chat_jid
-            WHERE m.kind='message' AND COALESCE(m.own_id,'')=''
-              AND m.retracted=0 AND m.mentions_me=1
-              AND m.timestamp > COALESCE(r.read_ts, 0)
-            GROUP BY m.chat_jid
-        } row {
-            dict set counts $row(jid) $row(n)
+        dict for {jid tally} [$self unreadTallies] {
+            set n [dict get $tally mentions]
+            if {$n > 0} { dict set counts $jid $n }
         }
         return $counts
     }
@@ -1093,14 +1094,15 @@ snit::type taco_messagestore {
         set senderFp [dict get $stamp sender_fp]
         set targetTs [$self resolveTargetTs $chatJid $targetId]
         if {$targetTs eq ""} { return "" }
-        set prev [$options(-db) onecolumn {
-            SELECT edited_ts FROM chat_message
+        set prev 0
+        set retracted 0
+        $options(-db) eval {
+            SELECT edited_ts, retracted FROM chat_message
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
-        }]
-        set retracted [$options(-db) onecolumn {
-            SELECT retracted FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$targetTs
-        }]
+        } row {
+            set prev $row(edited_ts)
+            set retracted $row(retracted)
+        }
         if {$retracted} { return "" }
         if {$ts <= $prev} { return "" }
         $options(-db) eval {

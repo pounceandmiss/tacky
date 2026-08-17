@@ -581,7 +581,7 @@ snit::type taco_message {
     # MUC chats use the `?join` suffix tacky uses internally for the
     # "self as room member" identity.
     method DeriveAddressing {chatJid} {
-        if {[string match "*?join" $chatJid]} {
+        if {[string match {*\?join} $chatJid]} {
             set msgType groupchat
             regsub {\?join$} $chatJid {} toJid
             set nick [$client muc myNick -jid $toJid]
@@ -613,11 +613,13 @@ snit::type taco_message {
     #   replyId  XEP-0461 reply target id, or '' when not a reply
     #   replyTo  author of the replied-to message
     #   fbEnd    length of the quote prefix in $body (XEP-0428 fallback span)
+    #   oobUrl   XEP-0066 <x> share url, or '' for no attachment. Cleartext,
+    #            so an OMEMO send keeps the url in the encrypted body instead.
     #
     # OMEMO fail-closed: the wire form encrypts or throws, never cleartext.
     # See security invariant #2 in lib/taco/modules/omemo.tcl.
     method BuildMessageStanza {mode chatJid body oid msgType toJid encMode \
-            {replyId ""} {replyTo ""} {fbEnd 0} {replaceId ""}} {
+            {replyId ""} {replyTo ""} {fbEnd 0} {replaceId ""} {oobUrl ""}} {
         set omemo   [expr {$encMode eq "omemo"}]
         set encWire [expr {$omemo && $mode eq "wire"}]
         return [j message -to $toJid -type $msgType -id $oid {
@@ -647,6 +649,9 @@ snit::type taco_message {
                         j body -start 0 -end $fbEnd
                     }
                 }
+            }
+            if {$oobUrl ne ""} {
+                j x -ns jabber:x:oob { j url #body $oobUrl }
             }
             # Ask 1:1 peers for delivery/read markers (XEP-0184/0333).
             if {$msgType eq "chat"} {
@@ -844,16 +849,9 @@ snit::type taco_message {
                 own_id $oid encryption omemo reply_id "" reply_to ""]
             return
         }
-        # BuildMessageStanza knows nothing of <x>, so this path repeats its
-        # 1:1 marker requests (XEP-0184/0333) itself.
-        set stanza [j message -to $toJid -type $msgType -id $oid {
-            j body #body $url
-            j x -ns jabber:x:oob { j url #body $url }
-            if {$msgType eq "chat"} {
-                j request -ns urn:xmpp:receipts
-                j markable -ns urn:xmpp:chat-markers:0
-            }
-        }]
+        # Plaintext share: the url is both the body and the XEP-0066 <x>.
+        set stanza [$self BuildMessageStanza wire $chatJid $url $oid \
+            $msgType $toJid "" "" "" 0 "" $url]
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
             [OutgoingAttachment $url $path] ""
         $client emit message <Status> -jid $chatJid \
@@ -959,7 +957,7 @@ snit::type taco_message {
             set chatJid [dict get $msg chat_jid]
             # MUC messages must wait for room join. The account archive
             # holds no room traffic, so the floor can't speak to them.
-            if {[string match "*?join" $chatJid]} {
+            if {[string match {*\?join} $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
                 lappend PendingRetry($roomJid) $msg
                 continue
@@ -1215,7 +1213,7 @@ snit::type taco_message {
     tackymethod markDisplayed {args} {
         array set opts $args
         if {![$self MarkersEnabled]} return
-        if {[string match "*?join" $opts(-chat)]} return
+        if {[string match {*\?join} $opts(-chat)]} return
         set originId [$client db onecolumn {
             SELECT origin_id FROM chat_message
             WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
@@ -1527,10 +1525,7 @@ snit::type taco_message {
         # cursor is at or past the latest stored message — there's
         # nothing newer in the archive.
         if {$after ne "" && !$bounded} {
-            set latestTs [$client db onecolumn {
-                SELECT MAX(timestamp) FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message'
-            }]
+            set latestTs [$self maxTimestamp -chat $chatJid]
             if {$latestTs eq "" || $after >= $latestTs} {
                 {*}$callback $localMessages
                 return
