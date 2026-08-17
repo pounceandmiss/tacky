@@ -1,4 +1,5 @@
 package provide tackyd 0.1
+package require taco
 
 # Boilerplate shared by the stdio daemon entry points (bin/tackyd.tcl and
 # bin/tackyd-json.tcl), which differ only in the wire codec: each defines its
@@ -38,12 +39,9 @@ proc pipesend {msg} {
     flush stdout
 }
 
-proc bgerror {message} {
-    set info $::errorInfo
-    if {[catch {jlog error $info -obj bgerror}]} {
-        puts stderr $info
-    }
-}
+# At load, not from tackyd_main: bin/tackyd-embed.tcl requires this package for
+# the bgerror alone and brings taco up its own way.
+taco_install_bgerror
 
 # Bring up the backend and run the event loop. The caller must already have
 # defined `tacky` and its reader: the taco constructor emits for existing

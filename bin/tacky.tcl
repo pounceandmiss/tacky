@@ -43,25 +43,11 @@ package require snit
 package require tkwuffs
 package require tkdnd
 
+# report_background is in gui/app.tcl, sourced below.
 proc bgerror {message} {
-    # Snapshot first: the catch below overwrites ::errorInfo, which would
-    # report the wrong trace.
-    set info $::errorInfo
-    # Through the API, not a local jlog: in process mode the backend owns the
-    # log file and this process has no sink at all. A failed call means tacky
-    # is gone or its pipe is dead, and the dialog carries the message without
-    # the trace, so stderr is the only place left for it.
-    set logged [expr {![catch {::tacky log error $info -obj gui.bgerror}]}]
-    if {$::consoleErrors || !$logged} {
-        puts stderr $info
-    }
-    if {$::consoleErrors} {
-        return
-    }
-    set ::errorInfo $info
-    # tailcall: the dialog answers "Skip Messages" with -code break, which dies
-    # as "invoked break outside of a loop" if it unwinds through this proc.
-    tailcall ::tk::dialog::error::bgerror $message
+    # Snapshot first: report_background's catches overwrite ::errorInfo. tailcall
+    # so the dialog's "Skip Messages" break still passes out of this frame.
+    tailcall report_background $message $::errorInfo
 }
 
 set dir [file normalize [file join [file dirname [info script]] ..]]
