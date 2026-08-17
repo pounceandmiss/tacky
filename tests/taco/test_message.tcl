@@ -27,6 +27,18 @@ proc msg_store_latest {jid args} {
     dict get [$::_client message messagestore get latest $jid {*}$args] messages
 }
 
+# Helper: the last chat_message row matching $where, as a dict ({} if none).
+# The row array has to stay proc-local: test bodies run at global scope, where
+# it would collide with any other test file's `row`.
+proc msg_row {where} {
+    set found {}
+    set db [$::_client message messagestore cget -db]
+    $db eval "SELECT * FROM chat_message WHERE $where" row {
+        set found [array get row]
+    }
+    return $found
+}
+
 # Helper: call history and collect result via -command
 proc msg_history {args} {
     set ::_msg_hist_result {}
@@ -436,15 +448,10 @@ test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not
             j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
             j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
         }]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_id, timestamp, raw_xml FROM chat_message
-            WHERE chat_jid='alice@example.com' AND kind='message'
-        } row {
-            set sid $row(server_id)
-            set ts  $row(timestamp)
-            set xml $row(raw_xml)
-        }
+        set r [msg_row "chat_jid='alice@example.com' AND kind='message'"]
+        set sid [dict get $r server_id]
+        set ts  [dict get $r timestamp]
+        set xml [dict get $r raw_xml]
         list [expr {$sid eq "srv42"}] \
              [expr {$sid ne $ts}] \
              [string match {*<message*} $xml]
@@ -498,15 +505,10 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
             }
         }]
 
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_id, timestamp, raw_xml FROM chat_message
-            WHERE chat_jid='alice@example.com' AND kind='message'
-        } row {
-            set sid $row(server_id)
-            set ts  $row(timestamp)
-            set xml $row(raw_xml)
-        }
+        set r [msg_row "chat_jid='alice@example.com' AND kind='message'"]
+        set sid [dict get $r server_id]
+        set ts  [dict get $r timestamp]
+        set xml [dict get $r raw_xml]
         list [expr {$sid eq "archive-uuid-42"}] \
              [expr {$sid ne $ts}] \
              [string match {*<message*} $xml]
@@ -735,14 +737,11 @@ test message-resend-honors-stamp \
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat alice@example.com \
             -timestamp $ts
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, encryption FROM chat_message
-            WHERE timestamp=$ts} row {}
+        set r [msg_row "timestamp=$ts"]
         # Store is uninitialised here (no OnReady), so encrypt is
         # NOT_READY: the row stays pending, NOT downgraded to plaintext
         # (encryption still 'omemo', nothing written to the wire).
-        list status $row(server_status) enc $row(encryption) \
+        list status [dict get $r server_status] enc [dict get $r encryption] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status pending enc omemo wrote 0}
 
@@ -762,11 +761,8 @@ test message-retrysend-missing-stamp-no-downgrade \
         # Dict deliberately omits `encryption` - the bridge-drop case.
         $::_client message RetrySend [dict create \
             chat_jid alice@example.com body "secret" own_id oid-drop]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, encryption FROM chat_message
-            WHERE own_id='oid-drop'} row {}
-        list status $row(server_status) enc $row(encryption) \
+        set r [msg_row "own_id='oid-drop'"]
+        list status [dict get $r server_status] enc [dict get $r encryption] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status pending enc omemo wrote 0}
 
@@ -828,11 +824,8 @@ test message-omemo-warming-ticks-keep-row-pending \
         for {set i 0} {$i < 20} {incr i} {
             $::_client message OnOmemoSessionReady -jid bob@example.com
         }
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='o-warm'} row {}
-        list status $row(server_status) reason $row(fail_reason)
+        set r [msg_row "own_id='o-warm'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
     } -result {status pending reason {}}
 
 # A re-delivered own message with no displayable body (OMEMO keytransport
@@ -946,11 +939,8 @@ test message-catchup-resends-row-inside-archive-span \
         msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-a from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-inside'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
+        set r [msg_row "own_id='oid-inside'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status pending reason {} wrote 1}
 
@@ -965,11 +955,8 @@ test message-catchup-fails-row-predating-archive \
         msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-b from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-old'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
+        set r [msg_row "own_id='oid-old'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status failed reason delivery wrote 0}
 
@@ -985,11 +972,8 @@ test message-catchup-complete-archive-never-fails \
         msg_catchup [dict create complete 1 messages [list \
             [mam_result id arch-c from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-comp'} row {}
-        list status $row(server_status) reason $row(fail_reason)
+        set r [msg_row "own_id='oid-comp'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
     } -result {status pending reason {}}
 
 # A failed MAM query is no evidence at all - it must not be read as proof
@@ -1003,11 +987,8 @@ test message-catchup-error-retries-without-failing \
             encryption "" timestamp 1000000]]
         set before [llength [$::_client conn get_written]]
         msg_catchup [dict create error timeout]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-err'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
+        set r [msg_row "own_id='oid-err'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status pending reason {} wrote 1}
 
@@ -1027,11 +1008,8 @@ test message-catchup-floor-spans-displayless-nodes \
                 body "" stamp 2017-01-01T00:00:00Z] \
             [mam_result id arch-e from bob@example.com to $acc \
                 body "later" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-mid'} row {}
-        list status $row(server_status) reason $row(fail_reason)
+        set r [msg_row "own_id='oid-mid'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
     } -result {status pending reason {}}
 
 # Catchup runs while the connection is live, so a message sent during the
@@ -1053,11 +1031,8 @@ test message-catchup-skips-send-made-during-catchup \
         msg_catchup_finish_short [list \
             [mam_result id arch-f queryid $qid from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-live'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
+        set r [msg_row "own_id='oid-live'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
             wrote [expr {[msg_written_messages] > $before}]
     } -result {status pending reason {} wrote 0}
 
@@ -1076,11 +1051,8 @@ test message-catchup-confirmed-row-not-resent-or-failed \
                 origin_id oid-conf2 body "landed" stamp 2024-06-01T00:00:00Z] \
             [mam_result id arch-h from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-conf2'} row {}
-        list status $row(server_status) reason $row(fail_reason) \
+        set r [msg_row "own_id='oid-conf2'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
             wrote [expr {[llength [$::_client conn get_written]] > $before}]
     } -result {status {} reason {} wrote 0}
 
@@ -1096,11 +1068,8 @@ test message-catchup-muc-row-defers-not-failed \
         msg_catchup [dict create complete 0 messages [list \
             [mam_result id arch-i from bob@example.com to $acc \
                 body "other" stamp 2024-01-01T00:00:00Z]]]
-        set db [$::_client message messagestore cget -db]
-        $db eval {
-            SELECT server_status, fail_reason FROM chat_message
-            WHERE own_id='oid-muc'} row {}
-        list status $row(server_status) reason $row(fail_reason)
+        set r [msg_row "own_id='oid-muc'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
     } -result {status pending reason {}}
 
 # In-flight is per-connection state held in memory, so a row left pending
