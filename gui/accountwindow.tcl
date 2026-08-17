@@ -26,6 +26,9 @@ snit::widget accountwindow {
     variable inlineGroupchat 0
     variable chatModeVar "inline"
     variable logFileVar 0
+    variable logLevelVar "warning"
+    variable logNativeVar 0
+    variable loggingMenu ""
     # Must match taco_file's fallbacks; it is what enforces them.
     variable autofetchVar "everyone"
     variable autofetchMaxVar 5242880
@@ -82,8 +85,31 @@ snit::widget accountwindow {
         $mb.file add command -label "Search Messages..." \
             -command [mymethod OpenAccountSearch] -accelerator "Ctrl+Shift+F"
         $mb.file add separator
-        settingmenu::checkbutton $mb.file "Write log file" \
-            -var [myvar logFileVar] -key log_to_file -tag $win
+        $mb.file add cascade -label "Logging" -menu $mb.file.logging
+        menu $mb.file.logging -tearoff 0
+        settingmenu::checkbutton $mb.file.logging "Write log file" \
+            -var [myvar logFileVar] -key log_to_file -tag $win \
+            -onchange [mymethod SyncLogFileEntry]
+        $mb.file.logging add cascade -label "Log level" \
+            -menu $mb.file.logging.level
+        menu $mb.file.logging.level -tearoff 0
+        settingmenu::radiogroup $mb.file.logging.level \
+            -entries {
+                "Verbose" verbose
+                "Debug"   debug
+                "Info"    info
+                "Warning" warning
+                "Error"   error
+                "Off"     none
+            } \
+            -var [myvar logLevelVar] -key log_level -tag $win
+        settingmenu::checkbutton $mb.file.logging "Log WebRTC internals" \
+            -var [myvar logNativeVar] -key log_native -tag $win
+        $mb.file.logging add command -label "Show Log File" \
+            -command [mymethod ShowLogFile]
+        # Set last: a stored value reaches -onchange above, mid-build.
+        set loggingMenu $mb.file.logging
+        $self SyncLogFileEntry
         $mb.file add separator
         $mb.file add command -label "Quit" \
             -command [mymethod Quit] -accelerator "Ctrl+Q"
@@ -318,6 +344,25 @@ snit::widget accountwindow {
         $self OpenChat -acc $currentAccount -jid $chat \
             -groupchat [expr {[string match {*\?join} $chat] ? 1 : 0}] \
             -goto $timestamp
+    }
+
+    # By label, not index: the entry moves whenever the menu above it changes.
+    method SyncLogFileEntry {} {
+        if {$loggingMenu eq ""} return
+        $loggingMenu entryconfigure "Show Log File" \
+            -state [expr {$logFileVar ? "normal" : "disabled"}]
+    }
+
+    method ShowLogFile {} {
+        ::tacky log getfile -command [mymethod OnLogPath]
+    }
+
+    method OnLogPath {path} {
+        if {$path eq ""} {
+            $self ShowStatus "No log file is being written"
+            return
+        }
+        showinfm::show $path
     }
 
     method OpenXmlConsole {} {

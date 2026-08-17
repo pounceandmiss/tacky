@@ -114,3 +114,31 @@ test accountwindow-search-hit-jumps-in-an-already-open-chat {a hit in the chat a
 } -cleanup {
     aw_cleanup
 } -result 1
+
+test accountwindow-log-reveal-follows-the-file-switch {Show Log File is live only while a file is written} -setup {
+    aw_setup
+} -body {
+    accountwindow .aw -account user@test.example.com -controller aw_ctrl
+    wait
+    set logging .aw.menubar.file.logging
+    set off [$logging entrycget "Show Log File" -state]
+    tacky setting set -key log_to_file -value 1
+    wait
+    set on [$logging entrycget "Show Log File" -state]
+    list $off $on
+} -cleanup {
+    aw_cleanup
+} -result {disabled normal}
+
+# observe pulls synchronously, so a stored value reaches -onchange while the
+# menu is still being built.
+test accountwindow-log-reveal-survives-a-stored-on {a window opens with the file switch already on} -setup {
+    aw_setup
+} -body {
+    tacky setting set -key log_to_file -value 1
+    accountwindow .aw -account user@test.example.com -controller aw_ctrl
+    wait
+    .aw.menubar.file.logging entrycget "Show Log File" -state
+} -cleanup {
+    aw_cleanup
+} -result normal

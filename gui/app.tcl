@@ -34,10 +34,19 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
-        # An explicit --debug-file owns the sink for this run.
+        # An explicit --debug-* flag owns its setting for this run.
         if {$options(-debug-file) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_to_file \
                 [mymethod ApplyLogFile]
+        }
+        if {$options(-debug-level) eq ""} {
+            ::tacky observe -tag $self setting <Changed> -key log_level \
+                [mymethod ApplyLogLevel]
+        }
+        if {$options(-libdatachannel-debug-level) eq ""
+                && $options(-rtcma-debug-level) eq ""} {
+            ::tacky observe -tag $self setting <Changed> -key log_native \
+                [mymethod ApplyLogNative]
         }
         install notifier using notifier $self.notifier -controller $self
 
@@ -66,10 +75,24 @@ snit::type app_type {
     }
 
     # One applier for every window; the menu items only read and write the key.
+    # An unset setting leaves the backend on its own default.
     method ApplyLogFile {ev} {
         set val [dict get $ev -value]
         if {$val eq ""} return
         ::tacky log setenabled -enabled [expr {!!$val}]
+    }
+
+    method ApplyLogLevel {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} return
+        ::tacky log setlevel -level $val
+    }
+
+    # The menu offers a switch; the native loggers take a level.
+    method ApplyLogNative {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} return
+        ::tacky log setnativelevel -level [expr {$val ? "debug" : "none"}]
     }
 
     method OnAccountList {result} {
