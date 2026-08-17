@@ -17,8 +17,7 @@
 #   tacky omemo blindTrust      -acc $jid                    -> 0|1 (BTBV setting)
 #   tacky omemo setBlindTrust   -acc $jid -value 0|1         -> persists BTBV setting
 #   tacky omemo setEnabled      -acc $jid -jid $j -value 0|1 -> per-chat OMEMO toggle
-#                                                              (read internally via IsEnabled;
-#                                                               GUI observes <Enabled>)
+#   tacky omemo isEnabled       -acc $jid -jid $j            -> 0|1 (that toggle)
 #
 # Async (plain method; pass -command):
 #   $client omemo prepareChat -jid $j ?-command cb?         -> warms peer cache
@@ -2064,6 +2063,15 @@ snit::type taco_omemo {
         $client setting set -key omemo.enabled.$peerJid -value $v
         $client emit omemo <Enabled> -jid $peerJid -value $v
         return $v
+    }
+
+    # isEnabled -jid X -> the per-chat toggle, defaulting on for a chat
+    # nobody has set. A caller that has to know before it draws needs an
+    # answer it can wait for; <Enabled> only says when it changes, and a
+    # pull of it cannot report having gone missing.
+    tackymethod isEnabled {args} {
+        array set opts $args
+        return [$self IsEnabled $opts(-jid)]
     }
 
     # pull -event <Ev> ?-jid X? - re-emit pullable events with current state.

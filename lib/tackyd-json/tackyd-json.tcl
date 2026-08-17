@@ -228,6 +228,7 @@ jsonify_type jsonify \
         omemo/device_id         int
         omemo/account_jid       string
         omemo/blindTrust        bool
+        omemo/isEnabled         bool
         omemo/setBlindTrust     bool
         omemo/setEnabled        bool
         chatlist/get            {list chat_entry}
