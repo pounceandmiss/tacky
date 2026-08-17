@@ -612,13 +612,45 @@ test omemo-unit-devicelist-error-caches-empty \
                 j {item-not-found} -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
-        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO \
-            [list apply {args {}}] $errStanza
+        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO $errStanza
         # Empty list now cached (so the next encrypt TERMINAL-fails) and
         # the blocked sender is woken.
         list cached [c omemo devicelist -jid $::test::omemo_unit::ROMEO] \
             resolved $::_resolved
     } -result {cached {} resolved 1}
+
+test omemo-unit-devicelist-fetch-coalesced \
+    {a second fetch for the same jid rides the first IQ, both waiters fire} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_dlFired 0
+    } -extra-cleanup {
+        unset -nocomplain ::_dlFired
+    }] -body {
+        set before [llength [c conn get_written]]
+        set cb [list apply {{jid devices} { incr ::_dlFired }}]
+        c omemo FetchDevicelist $::test::omemo_unit::ROMEO $cb
+        c omemo FetchDevicelist $::test::omemo_unit::ROMEO $cb
+        set iqs 0
+        foreach s [lrange [c conn get_written] $before end] {
+            if {[xsearch $s pubsub items -get @node]
+                    eq "eu.siacs.conversations.axolotl.devicelist"} { incr iqs }
+        }
+        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO \
+            [j iq -type result -from $::test::omemo_unit::ROMEO {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist {
+                        j item -id current {
+                            j list -ns eu.siacs.conversations.axolotl {
+                                j device -id 5
+                            }
+                        }
+                    }
+                }
+            }]
+        list iqs $iqs fired $::_dlFired
+    } -result {iqs 1 fired 2}
 
 # Eager warm: on learning a devicelist we fetch a bundle for every
 # announced device we have no session with (own + peer) and build the
@@ -1101,8 +1133,7 @@ test omemo-unit-devicelist-transient-error-leaves-pending \
                 j {service-unavailable} -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
-        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO \
-            [list apply {args {}}] $errStanza
+        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO $errStanza
         set ::_resolved
     } -result {0}
 
