@@ -260,17 +260,22 @@ oo::class create tacky_base {
         error "abstract: subclass must override _send"
     }
 
+    # Token for one outgoing call's callbacks, as {token cmd err}. One token
+    # for both, since only one can fire: a token apiece leaves the loser
+    # behind and `listening` never goes false for that tag again.
+    method CallToken {argsDict} {
+        set tag [expr {[dict exists $argsDict -tag] ? [dict get $argsDict -tag] : ""}]
+        set cmd [expr {[dict exists $argsDict -command] ? [dict get $argsDict -command] : ""}]
+        set err [expr {[dict exists $argsDict -onerror] ? [dict get $argsDict -onerror] : ""}]
+        return [list [my TokenNew [list $tag $cmd $err]] $cmd $err]
+    }
+
     # Intercept outgoing calls: store -command/-onerror in Callbacks and
     # replace them with {tacky emit callback <Result|Error> -token N -result}
     # so the backend round-trips through emit on completion.
-    # One token for both, since only one can fire: a token apiece leaves the
-    # loser behind and `listening` never goes false for that tag again.
     method unknown {module method args} {
         if {[dict exists $args -command] || [dict exists $args -onerror]} {
-            set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]
-            set cmd [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
-            set err [expr {[dict exists $args -onerror] ? [dict get $args -onerror] : ""}]
-            set token [my TokenNew [list $tag $cmd $err]]
+            lassign [my CallToken $args] token
             foreach {opt event} {-command <Result> -onerror <Error>} {
                 if {![dict exists $args $opt]} continue
                 dict set args $opt \
@@ -440,20 +445,16 @@ oo::class create tacky_process_type {
     destructor { catch {$Pipe destroy} }
 
     method unknown {module method args} {
-        if {[dict exists $args -command] || [dict exists $args -onerror]} {
-            set tag [expr {[dict exists $args -tag] ? [dict get $args -tag] : ""}]
-            set cmd [expr {[dict exists $args -command] ? [dict get $args -command] : ""}]
-            set err [expr {[dict exists $args -onerror] ? [dict get $args -onerror] : ""}]
-            set token [my TokenNew [list $tag $cmd $err]]
-            dict unset args -command
-            dict unset args -onerror
-            set wants {}
-            if {$cmd ne ""} { lappend wants cmd }
-            if {$err ne ""} { lappend wants err }
-            $Pipe send [list $module $method $args $token $wants]
-        } else {
+        if {![dict exists $args -command] && ![dict exists $args -onerror]} {
             $Pipe send [list $module $method $args]
+            return
         }
+        lassign [my CallToken $args] token cmd err
+        set wants {}
+        if {$cmd ne ""} { lappend wants cmd }
+        if {$err ne ""} { lappend wants err }
+        $Pipe send [list $module $method \
+            [dict remove $args -command -onerror] $token $wants]
     }
 
     method _send {module method args} {
@@ -468,13 +469,11 @@ oo::class create tacky_process_type {
             }
             result {
                 lassign $msg _ token data
-                lassign [my TokenPop $token] _tag cmd
-                if {$cmd ne ""} { {*}$cmd $data }
+                my _callback <Result> -token $token -result $data
             }
             error {
                 lassign $msg _ token errmsg
-                lassign [my TokenPop $token] _tag _cmd err
-                if {$err ne ""} { {*}$err $errmsg }
+                my _callback <Error> -token $token -result $errmsg
             }
         }
     }
@@ -691,9 +690,8 @@ oo::class create avatarcache_base {
     }
 }
 
-proc tacky_init_threaded {args} {
-    package require Thread
-    tacky_threaded_type create tacky {*}$args
+proc tacky_init_class {class args} {
+    $class create tacky {*}$args
     tacky installBgerror
     if {[info commands tk_avatarcache] ne ""} {
         tk_avatarcache create avatarcache
@@ -701,18 +699,15 @@ proc tacky_init_threaded {args} {
 }
 
 proc tacky_init {args} {
-    tacky_type create tacky {*}$args
-    tacky installBgerror
-    if {[info commands tk_avatarcache] ne ""} {
-        tk_avatarcache create avatarcache
-    }
+    tacky_init_class tacky_type {*}$args
+}
+
+proc tacky_init_threaded {args} {
+    package require Thread
+    tacky_init_class tacky_threaded_type {*}$args
 }
 
 proc tacky_init_process {args} {
-    tacky_process_type create tacky {*}$args
-    tacky installBgerror
-    if {[info commands tk_avatarcache] ne ""} {
-        tk_avatarcache create avatarcache
-    }
+    tacky_init_class tacky_process_type {*}$args
 }
 
