@@ -11,7 +11,6 @@ if 0 {
     Usage:
         Instantiated by Client, not directly.
         $client caps cNode          - get <c/> element dict for inclusion in presence
-        $client caps getFeatures $ver - get cached feature list for a ver hash
         $client caps discoFor $ver  - get cached identity + features for a ver hash
 
     Tacky API:
@@ -28,6 +27,9 @@ snit::type taco_caps {
     # Cached values (invalidated when identity/features change)
     variable cachedQueryNode ""
     variable cachedVer ""
+
+    # ver hashes with a disco#info query in flight
+    variable Resolving -array {}
 
     option -client -readonly yes
     option -node -default "https://tacky.example"
@@ -122,15 +124,6 @@ snit::type taco_caps {
                     -hash sha-1 \
                     -node $options(-node) \
                     -ver $cachedVer]
-    }
-
-    # Look up cached features for a verification hash
-    method getFeatures {ver} {
-        set row [$client db eval {SELECT features FROM caps_cache WHERE ver=$ver}]
-        if {$row ne ""} {
-            return [lindex $row 0]
-        }
-        return {}
     }
 
     # Cached identity and features for a verification hash, or {} if unknown.
@@ -289,6 +282,11 @@ snit::type taco_caps {
         set cached [$client db eval {SELECT count(*) FROM caps_cache WHERE ver=$ver}]
         if {$cached} return
 
+        # Nothing is cached until the first reply lands, so without this a
+        # roomful of occupants running one client asks each of them.
+        if {[info exists Resolving($ver)]} return
+        set Resolving($ver) 1
+
         # Query the entity for its disco#info
         set queryNode "$node#$ver"
         $client iq request \
@@ -299,6 +297,7 @@ snit::type taco_caps {
     }
 
     method OnDiscoInfoResult {expectedVer from stanza} {
+        unset -nocomplain Resolving($expectedVer)
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} return
 
@@ -316,7 +315,7 @@ snit::type taco_caps {
         set featureList [lsort [xsearch $queryNode feature -gather @var]]
         set featuresStr [join $featureList " "]
         set node [xsearch $queryNode -get @node]
-        set identities [lmap identityNode [xsearch $queryNode identity] {
+        set theirIdentities [lmap identityNode [xsearch $queryNode identity] {
             dict create name [xsearch $identityNode -get @name] \
                 category [xsearch $identityNode -get @category] \
                 type [xsearch $identityNode -get @type]
@@ -324,7 +323,7 @@ snit::type taco_caps {
 
         $client db eval {
             INSERT OR REPLACE INTO caps_cache(ver, node, identities, features)
-            VALUES ($expectedVer, $node, $identities, $featuresStr)
+            VALUES ($expectedVer, $node, $theirIdentities, $featuresStr)
         }
 
         $client bus publish <CapsResolved> -jid $from
