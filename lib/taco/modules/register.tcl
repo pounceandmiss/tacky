@@ -284,12 +284,11 @@ snit::type taco_register_session {
                 $self HandleRegForm $query
             }
             error {
-                set errText [xsearch $stanza error text -get body]
+                set err [stanza_error $stanza]
+                set errText [dict get $err text]
                 if {$errText eq ""} {
-                    set errChild [xsearch $stanza error 0 -get node]
-                    if {$errChild ne ""} {
-                        set errText [dict get $errChild tag]
-                    } else {
+                    set errText [dict get $err condition]
+                    if {$errText eq "unknown"} {
                         set errText "Registration failed"
                     }
                 }

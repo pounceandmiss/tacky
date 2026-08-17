@@ -160,9 +160,8 @@ snit::type taco_avatar {
     method OnDataPublished {infoAttrs hash publishCtx tag command onerror stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} { set errText "Avatar data publish failed" }
-            $self Answer $tag $onerror $errText
+            $self Answer $tag $onerror \
+                [$self ErrorText $stanza "Avatar data publish failed"]
             return
         }
         set acc [dict get $publishCtx acc]
@@ -181,9 +180,8 @@ snit::type taco_avatar {
 
     method OnPublishComplete {publishCtx tag command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} { set errText "Avatar publish failed" }
-            $self Answer $tag $onerror $errText
+            $self Answer $tag $onerror \
+                [$self ErrorText $stanza "Avatar publish failed"]
             return
         }
         # Cache locally and emit update so UI reflects the change
@@ -236,15 +234,31 @@ snit::type taco_avatar {
 
     method OnDisableComplete {tag command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} { set errText "Avatar disable failed" }
-            $self Answer $tag $onerror $errText
+            $self Answer $tag $onerror \
+                [$self ErrorText $stanza "Avatar disable failed"]
             return
         }
-        set jid [jid norm [jid bare [$client cget -jid]]]
-        $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
-        $client emit avatar <Update> -jid $jid -hash ""
+        $self Forget [jid norm [jid bare [$client cget -jid]]]
         $self Answer $tag $command ""
+    }
+
+    # The server's <text>, or $fallback when it sent none.
+    method ErrorText {stanza fallback} {
+        set text [dict get [stanza_error $stanza] text]
+        if {$text eq ""} { return $fallback }
+        return $text
+    }
+
+    # Drop a JID's avatar and tell the frontend, but only if there was one:
+    # a JID with no cached avatar has nothing to update.
+    method Forget {jid} {
+        set had [$client db onecolumn {
+            SELECT count(*) FROM avatar_metadata WHERE jid=$jid
+        }]
+        $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
+        if {$had} {
+            $client emit avatar <Update> -jid $jid -hash ""
+        }
     }
 
     # Run a -command/-onerror prefix unless the call was cancelled by tag.
@@ -267,13 +281,7 @@ snit::type taco_avatar {
         set rawData $opts(-data)
 
         if {$rawData eq ""} {
-            set had [$client db onecolumn {
-                SELECT count(*) FROM avatar_metadata WHERE jid=$jid
-            }]
-            $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
-            if {$had} {
-                $client emit avatar <Update> -jid $jid -hash ""
-            }
+            $self Forget $jid
             return ""
         }
 
@@ -314,25 +322,15 @@ snit::type taco_avatar {
         # disable carries an empty-but-present <metadata/>, handled below.
         if {$meta eq ""} return
 
-        # Check for empty metadata (avatar disabled)
-        set infoNodes [xsearch $meta info]
-        if {[llength $infoNodes] == 0} {
-            set had [$client db onecolumn {
-                SELECT count(*) FROM avatar_metadata WHERE jid=$from
-            }]
-            $client db eval {DELETE FROM avatar_metadata WHERE jid=$from}
-            if {$had} {
-                $client emit avatar <Update> -jid $from -hash ""
-            }
+        # Empty metadata means the avatar was disabled.
+        set info [lindex [xsearch $meta info] 0]
+        if {$info eq ""} {
+            $self Forget $from
             return
         }
 
-        # Extract info attributes from first <info> element
-        set hash [xsearch $meta info -get @id]
-        set type_ [xsearch $meta info -get @type]
-        set bytes [xsearch $meta info -get @bytes]
-        set width [xsearch $meta info -get @width]
-        set height [xsearch $meta info -get @height]
+        lassign [xsearch $info -get {@id @type @bytes @width @height}] \
+            hash type_ bytes width height
 
         # Upsert metadata
         $client db eval {
@@ -412,8 +410,7 @@ snit::type taco_avatar {
         set hash [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
         if {$hash eq ""} {
             if {$existing ne "" && $source ne "pubsub"} {
-                $client db eval {DELETE FROM avatar_metadata WHERE jid=$jid}
-                $client emit avatar <Update> -jid $jid -hash ""
+                $self Forget $jid
             }
             return
         }
