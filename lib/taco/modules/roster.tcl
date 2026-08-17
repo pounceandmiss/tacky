@@ -195,16 +195,17 @@ snit::type taco_roster {
         $client iq respond -for $stanza -payload [j query -ns jabber:iq:roster]
 
         xsearch $stanza query item -script itemNode {
-        set jid [jid norm [xsearch $itemNode -get @jid]]
+            set jid [jid norm [xsearch $itemNode -get @jid]]
             set subscription [xsearch $itemNode -get @subscription]
             if {$subscription eq ""} {
                 set subscription none
             }
 
-            # In a roster push, ignore invalid subscription values
+            # In a roster push, skip items with an invalid subscription. A
+            # return here would abandon the rest of a multi-item push.
             if {$subscription ni {none to from both remove}} {
                 jlog error "Ignoring subscription='$subscription' for $jid" -stanza $itemNode
-                return
+                continue
             }
 
             if {$subscription eq "remove"} {
