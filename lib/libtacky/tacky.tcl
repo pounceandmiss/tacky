@@ -302,19 +302,7 @@ oo::class create tacky_threaded_type {
         thread::send $TacoTid {package require taco}
         lassign [tacky_split_debug $args] debug rest
         set args $rest
-        # Route backend-thread background errors through jlog, falling back to
-        # raw stderr if no sink is set.
-        thread::send $TacoTid {
-            proc bgerror {message} {
-                # Snapshot before the catches overwrite ::errorInfo.
-                set info $::errorInfo
-                if {![catch {jlog cget -logproc} _lp] && $_lp ne ""} {
-                    catch {jlog error $info -obj bgerror}
-                } else {
-                    puts stderr $info
-                }
-            }
-        }
+        thread::send $TacoTid {taco_install_bgerror}
         thread::send $TacoTid [list jlog configureDebug {*}$debug]
         # Define the proxy in the backend thread: it forwards every emit
         # back to the GUI thread asynchronously.

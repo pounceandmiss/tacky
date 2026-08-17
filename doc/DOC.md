@@ -32,6 +32,7 @@ and get back replies and events.
   - [calls](#calls)
   - [audio](#audio)
   - [log](#log)
+  - [error](#error)
 - [Guides](#guides)
   - [Accounts and sign-in](#accounts-and-sign-in)
   - [The chat window](#the-chat-window)
@@ -910,6 +911,30 @@ a caller may pipe a level straight from `getlevel` back into `write`.
 The log file can hold full stanzas, even encrypted message bodies, so should be treated as highly sensitive.
 
 `write` is non-blocking, so the log may not be written by the time it returns.
+
+## error
+
+Backend failures that no reply can carry. Events only, no methods, nothing
+pullable.
+
+    error <MethodError> {module: string, method: string, message: string,
+                         errorinfo?: string, acc?: string}
+    error <Background>  {message: string, errorinfo?: string}
+
+`<MethodError>` is a request that failed while carrying a `-command` but no
+`-onerror`, so the error had nowhere else to go; over JSON, where both are
+always wired, a token gets an error reply instead and this never fires.
+
+`<Background>` is a failure with no request behind it at all - a timer, a
+socket handler, the stanza loop. The backend has already written the trace to
+its log by the time you get it; the event exists so a frontend can tell the
+user something broke rather than leaving it to the log alone. It is advisory
+and says nothing about whether the session is still healthy. Identical
+messages are collapsed to one event per five seconds, so a repeating failure
+does not flood the wire; the log still keeps every occurrence.
+
+`errorinfo` is a Tcl stack trace, a debug aid only. Do not parse it, do not
+show it to users, and expect it to be absent.
 
 # Guides
 

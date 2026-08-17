@@ -21,6 +21,58 @@ proc stanza_error {stanza} {
         text [xsearch $stanza error text -get body]]
 }
 
+# A background error has no caller to answer: log the trace, then hand the
+# frontend the message so it reports it the way it reports its own. Install only
+# where taco runs without a frontend in the same interp (the daemon, the backend
+# thread); in direct mode the frontend's own bgerror is already the presenter.
+namespace eval ::taco_bg {
+    variable reporting 0
+    variable lastEmit {}
+
+    proc report {message} {
+        variable reporting
+        # Snapshot before the catches below overwrite ::errorInfo.
+        set info $::errorInfo
+        if {$reporting} {
+            catch {puts stderr $info}
+            return
+        }
+        set reporting 1
+        catch {Report $message $info}
+        set reporting 0
+    }
+
+    proc Report {message info} {
+        if {[catch {jlog error $info -obj bgerror}]} {
+            puts stderr $info
+        }
+        if {![Fresh $message]} return
+        # tacky is a no-op proc during threaded teardown and the pipe can be
+        # gone in process mode; the log above is the record either way.
+        catch {tacky emit error <Background> -message $message -errorinfo $info}
+    }
+
+    # One event per distinct message per window, so a throwing `after` repeater
+    # cannot push one per tick. The log still keeps every occurrence.
+    proc Fresh {message} {
+        variable lastEmit
+        set now [clock milliseconds]
+        if {[dict exists $lastEmit $message]
+                && $now - [dict get $lastEmit $message] < 5000} {
+            return 0
+        }
+        if {[dict size $lastEmit] > 64} {
+            set lastEmit {}
+        }
+        dict set lastEmit $message $now
+        return 1
+    }
+}
+
+proc taco_install_bgerror {} {
+    proc ::bgerror {message} {::taco_bg::report $message}
+}
+
 snit::macro tackymethod {name arglist body} {
     method $name $arglist [string map [list %BODY% $body %NAME% $name] {
         set _code [catch {%BODY%} _result _opts]

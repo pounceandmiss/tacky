@@ -1,3 +1,26 @@
+# Shared with bin/tacky.tcl's bgerror, so a background error reads the same
+# whichever side of the wire it came from; `logged` says the backend already
+# wrote the trace. A plain proc, not a typemethod: the tailcall below has to
+# land in bgerror's own frame.
+proc report_background {message info {logged 0}} {
+    if {!$logged} {
+        # Through the API, not a local jlog: in process mode the backend owns the
+        # log file and this process has no sink at all.
+        set logged [expr {![catch {::tacky log error $info -obj gui.bgerror}]}]
+    }
+    set console [expr {[info exists ::consoleErrors] && $::consoleErrors}]
+    if {$console || !$logged} {
+        puts stderr $info
+    }
+    if {$console} {
+        return
+    }
+    set ::errorInfo $info
+    # tailcall: the dialog answers "Skip Messages" with -code break, which dies
+    # as "invoked break outside of a loop" if it unwinds through this proc.
+    tailcall ::tk::dialog::error::bgerror $message
+}
+
 snit::type app_type {
     option -transient -default 0 -readonly yes
     option -backend -default direct -readonly yes
@@ -34,6 +57,7 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
+        ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         # An explicit --debug-* flag owns its setting for this run.
         if {$options(-debug-file) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_to_file \
@@ -115,6 +139,17 @@ snit::type app_type {
         }
         if {$w eq ""} { set w [$self AnyVisibleWindow] }
         if {$w ne "" && [winfo exists $w]} { $w ShowStatus $msg }
+    }
+
+    method OnBackgroundError {eargs} {
+        set info ""
+        if {[dict exists $eargs -errorinfo]} {
+            set info [dict get $eargs -errorinfo]
+        }
+        # Swallow the dialog's "Skip Messages" break: there is no queue to skip
+        # here, and libtacky's dispatch guard would re-report it as a fresh
+        # background error.
+        catch {report_background [dict get $eargs -message] $info 1}
     }
 
     # --- Account windows ---
