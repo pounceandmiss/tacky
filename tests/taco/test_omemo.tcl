@@ -1351,6 +1351,29 @@ test omemo-unit-enabled-explicit-overrides \
         list off $off on $on
     } -result {off 0 on 1}
 
+test omemo-unit-isenabled-getter \
+    {isEnabled answers the same toggle IsEnabled reads} \
+    {*}$jid_common -body {
+        set dflt [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
+        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
+        set off [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
+        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 1
+        set on [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
+        list default $dflt off $off on $on
+    } -result {default 1 off 0 on 1}
+
+# A getter answers the caller and nobody else; the event is for the change.
+test omemo-unit-isenabled-emits-nothing \
+    {isEnabled is a read, so it emits no <Enabled>} \
+    {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+    }] -body {
+        c omemo isEnabled -jid $::test::omemo_unit::ROMEO
+        ::test::omemo_unit::emittedOmemo <Enabled>
+    } -result {}
+
 test omemo-unit-event-enabled \
     {setEnabled emits <Enabled>; pull re-emits current effective value} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {

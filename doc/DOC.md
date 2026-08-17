@@ -681,6 +681,7 @@ room's.
     omemo trust {jid: string, device: int, state: string}      validates the transition
     omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
     omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
+    omemo isEnabled {jid: string}                -> bool   on for a chat never set
     omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles (replies on completion)
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
@@ -1269,8 +1270,11 @@ keeps a lock it no longer has.
 the peer device that sent it. Join it against `trustList` for that device's id
 and trust state.
 
-**UI.** For the encryption switch, subscribe to `omemo <Enabled>` for the
-peer and call `setEnabled` when it's toggled. For the key panel, subscribe
+**UI.** For the encryption switch, read `isEnabled` for the peer before you
+draw it, subscribe to `omemo <Enabled>` to follow it after that, and call
+`setEnabled` when it's toggled. Read rather than assume: the default is on,
+so a switch drawn before the answer arrives can show a padlock over a chat
+that is going out in the clear. For the key panel, subscribe
 to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
 `device` when it's clicked. For a failed message, `fail_reason: "encrypt"`
 leads with "resend as plaintext" (`message resend {plaintext: 1}`), while
