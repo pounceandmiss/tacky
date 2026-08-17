@@ -16,7 +16,7 @@ Options:
                       rtc-ma native log level (default: none)
   -h, --help          Display this help text and exit
 
-Log levels: none, fatal, error, warning, info, debug, verbose"
+Log levels: verbose, debug, info, warning, error, fatal, none"
     exit 0
 }
 

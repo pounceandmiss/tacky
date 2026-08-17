@@ -46,12 +46,62 @@ test jlog-defaultlevel-applies-late {changing -defaultlevel reaches objects that
         jprobe getLevel ::a.b
     } -result verbose
 
+test jlog-defaultlevel-rejected-at-construction {a bad -defaultlevel never reaches an instance} \
+    -body {
+        jlog_type create jbad -defaultlevel dbeug
+    } -cleanup {
+        catch {jbad destroy}
+    } -returnCodes error -match glob -result {*unknown log level "dbeug"*}
+
+test jlog-configuredebug-rejects-unknown-level {--debug-level is not a way around the check} \
+    {*}$probe -body {
+        jprobe configureDebug -debug-level dbeug
+    } -returnCodes error -match glob -result {unknown log level "dbeug"*}
+
+test jlog-setlevel-rejects-unknown-for-subtree {a bad level is refused for an object too} \
+    {*}$probe -body {
+        jprobe setLevel ::a dbeug
+    } -returnCodes error -match glob -result {unknown log level "dbeug"*}
+
+# stdout is the daemon's wire. In a child, to tell the two channels apart.
+test jlog-no-logproc-avoids-stdout {a logger with no sink writes to stderr, not stdout} \
+    -constraints hasProcess -setup {
+        set child [makeFile [subst -nocommands {
+            lappend auto_path [file join [pwd] lib]
+            package require taco
+            jlog_type create t -defaultlevel debug
+            t log error "sink probe" -obj ::c
+        }] jlog-sink.tcl]
+        set outfile [file join [temporaryDirectory] jlog-sink.out]
+        set errfile [file join [temporaryDirectory] jlog-sink.err]
+    } -body {
+        exec [info nameofexecutable] $child > $outfile 2> $errfile
+        list [string match "*sink probe*" [viewFile jlog-sink.out]] \
+             [string match "*sink probe*" [viewFile jlog-sink.err]]
+    } -cleanup {
+        removeFile jlog-sink.tcl
+        file delete -force $outfile $errfile
+    } -result {0 1}
+
 # -- write -----------------------------------------------------------------
 
 test jlog-write-rejects-unknown-level {write rejects a level outside the vocabulary} \
     {*}$probe -body {
         jprobe write -level chatty -text hi
     } -returnCodes error -match glob -result {unknown log level "chatty"*}
+
+test jlog-log-rejects-unknown-level {a misspelled level is refused, not dropped} \
+    {*}$probe -body {
+        jprobe log warnign "vanishes without this"
+    } -returnCodes error -match glob -result {unknown log level "warnign"*}
+
+test jlog-native-unknown-level-survives {an unknown native level is logged, not lost} \
+    {*}$probe -body {
+        jprobe setLevel ::rtcma debug
+        jprobe nativeLog rtcma 0 trace "from the future"
+        set rec [lindex $::jlog_seen 0]
+        list [dict get $rec -level] [dict get $rec -text]
+    } -result {error {[trace] from the future}}
 
 test jlog-write-none-is-silent {write drops a record at the silence threshold} \
     {*}$probe -body {
@@ -109,6 +159,107 @@ test jlog-setfile-empty-returns-to-stderr {an empty path drops the file sink} \
         unset -nocomplain ::jlog_seen
     } -result {{} stderrWriter}
 
+test jlog-setenabled-names-the-file {enabling puts tacky.log in the given directory} \
+    {*}$probe -body {
+        set dir [makeDirectory jlog-cache]
+        jprobe setenabled -enabled 1 -dir $dir
+        string equal [jprobe getfile] [file join $dir tacky.log]
+    } -cleanup {
+        removeDirectory jlog-cache
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result 1
+
+test jlog-setenabled-off-returns-to-stderr {disabling drops the file sink} \
+    {*}$probe -body {
+        jprobe setenabled -enabled 1 -dir [makeDirectory jlog-cache]
+        jprobe setenabled -enabled 0
+        list [jprobe getfile] [lindex [jprobe cget -logproc] end]
+    } -cleanup {
+        removeDirectory jlog-cache
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result {{} stderrWriter}
+
+# Without a cache dir the file would land in the process's cwd.
+test jlog-setenabled-needs-a-directory {enabling with no directory refuses} \
+    {*}$probe -body {
+        jprobe setenabled -enabled 1
+    } -cleanup {
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -returnCodes error -result {cannot write a log file: no directory configured}
+
+test jlog-setenabled-rejects-non-boolean {enabling takes only a boolean} \
+    {*}$probe -body {
+        jprobe setenabled -enabled maybe
+    } -cleanup {
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -returnCodes error -match glob -result {invalid -enabled "maybe"*}
+
+# An embedded host names a cache dir taco honours; the log follows it there.
+test log-setenabled-uses-taco-cache-dir {the module logs into taco's cache dir} \
+    -setup {set logdir [makeDirectory jlog-cache]} -body {
+        taco_log create logprobe -cache-dir $logdir
+        logprobe setenabled -enabled 1 -dir /should/be/overridden
+        string equal [jlog getfile] [file join $logdir tacky.log]
+    } -cleanup {
+        jlog setfile -path ""
+        logprobe destroy
+        removeDirectory jlog-cache
+    } -result 1
+
+# -- native loggers --------------------------------------------------------
+#
+# calls.tcl hard-requires rtc and rtcma, so these drive the real commands.
+
+set native {
+    -setup {jlog_probe}
+    -cleanup {
+        jprobe setnativelevel -level none
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    }
+}
+
+test jlog-setnativelevel-round-trips {a source reads back the level it was set to} \
+    {*}$native -body {
+        jprobe setnativelevel -source rtcma -level debug
+        list [jprobe getnativelevel -source rtcma] \
+             [jprobe getnativelevel -source libdatachannel]
+    } -result {debug none}
+
+test jlog-setnativelevel-covers-every-source {omitting -source drives them all} \
+    {*}$native -body {
+        jprobe setnativelevel -level info
+        list [jprobe getnativelevel -source rtcma] \
+             [jprobe getnativelevel -source libdatachannel]
+    } -result {info info}
+
+test jlog-setnativelevel-none-turns-off {none reads back as off} \
+    {*}$native -body {
+        jprobe setnativelevel -source rtcma -level verbose
+        jprobe setnativelevel -source rtcma -level none
+        jprobe getnativelevel -source rtcma
+    } -result none
+
+test jlog-setnativelevel-stops-jlog-refiltering {the library's own filter is the only one} \
+    {*}$native -body {
+        jprobe setnativelevel -source rtcma -level debug
+        jprobe getLevel ::rtcma
+    } -result verbose
+
+test jlog-setnativelevel-rejects-unknown-source {a bad source name is refused} \
+    {*}$native -body {
+        jprobe setnativelevel -source webrtc -level debug
+    } -returnCodes error -match glob -result {unknown native log source "webrtc"*}
+
+test jlog-getnativelevel-needs-a-source {there is no single native level to report} \
+    {*}$native -body {
+        jprobe getnativelevel
+    } -returnCodes error -match glob -result {-source is required*}
+
 # -- writer robustness -----------------------------------------------------
 
 test jlog-file-failure-does-not-throw {an unwritable log file never throws into the caller} \
@@ -122,6 +273,81 @@ test jlog-file-failure-does-not-throw {an unwritable log file never throws into 
         jprobe destroy
         unset -nocomplain ::jlog_seen
     } -result reached
+
+# ~46 bytes a line, so 100 of them cross a 4k cap exactly once: a second
+# rotation would need roughly twice as many.
+proc jlog_fill {n} {
+    jprobe setLevel ::c debug
+    for {set i 0} {$i < $n} {incr i} {
+        jprobe log error "record $i" -obj ::c
+    }
+}
+
+test jlog-rotate-moves-the-old-records {past the cap the earlier records are in .1} \
+    {*}$probe -body {
+        set path [file join [makeDirectory jlog-rot] app.log]
+        jprobe configure -maxlogbytes 4096
+        jprobe setfile -path $path
+        jlog_fill 100
+        list [string match "*record 0*" [viewFile app.log jlog-rot]] \
+             [string match "*record 0*" [viewFile app.log.1 jlog-rot]] \
+             [string match "*record 99*" [viewFile app.log jlog-rot]]
+    } -cleanup {
+        removeDirectory jlog-rot
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result {0 1 1}
+
+test jlog-rotate-disabled-by-zero {a zero cap leaves the file alone} \
+    {*}$probe -body {
+        set path [file join [makeDirectory jlog-rot] app.log]
+        jprobe configure -maxlogbytes 0
+        jprobe setfile -path $path
+        jlog_fill 100
+        list [string match "*record 0*" [viewFile app.log jlog-rot]] \
+             [file exists $path.1]
+    } -cleanup {
+        removeDirectory jlog-rot
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result {1 0}
+
+test jlog-rotate-keeps-both-private {neither generation is left world-readable} \
+    -constraints unix {*}$probe -body {
+        set path [file join [makeDirectory jlog-rot] app.log]
+        jprobe configure -maxlogbytes 4096
+        jprobe setfile -path $path
+        jlog_fill 100
+        list [string range [file attributes $path -permissions] end-2 end] \
+             [string range [file attributes $path.1 -permissions] end-2 end]
+    } -cleanup {
+        removeDirectory jlog-rot
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result {600 600}
+
+test jlog-setfile-creates-private-file {a log file is readable only by its owner} \
+    -constraints unix {*}$probe -body {
+        jprobe setfile -path [file join [makeDirectory jlog-perm] app.log]
+        string range [file attributes [jprobe getfile] -permissions] end-2 end
+    } -cleanup {
+        removeDirectory jlog-perm
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result 600
+
+test jlog-file-recreated-stays-private {a log deleted underneath comes back owner-only} \
+    -constraints unix {*}$probe -body {
+        jprobe setfile -path [file join [makeDirectory jlog-perm] app.log]
+        file delete [jprobe getfile]
+        jprobe setLevel ::c debug
+        jprobe log error "recreated" -obj ::c
+        string range [file attributes [jprobe getfile] -permissions] end-2 end
+    } -cleanup {
+        removeDirectory jlog-perm
+        jprobe destroy
+        unset -nocomplain ::jlog_seen
+    } -result 600
 
 # -- the log module over each transport ------------------------------------
 

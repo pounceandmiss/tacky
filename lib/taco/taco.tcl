@@ -145,7 +145,8 @@ snit::type taco_type {
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
         install debugtap using taco_debugtap ${selfns}::debugtap -taco $self
-        install log using taco_log ${selfns}::log
+        install log using taco_log ${selfns}::log \
+            -cache-dir $options(-cache-dir)
         foreach jid [$self account list] {
             $self emit account <Added> -acc $jid
         }
