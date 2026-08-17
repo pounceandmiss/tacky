@@ -184,7 +184,7 @@ snit::type sm {
                 set h [xsearch $stanza -get @h]
                 jlog inform "Stream resumed: server received up to h=$h (we sent $out)"
 
-                set ackedCount [$self Hdiff $h $serverh]
+                set ackedCount [$self Acked $h]
                 if {$ackedCount > 0} {
                     if {$options(-ack-command) ne ""} {
                         set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
@@ -214,7 +214,7 @@ snit::type sm {
                 set h ""
                 if {[dict exists $stanza attrs h]} {
                     set h [dict get $stanza attrs h]
-                    set ackedCount [$self Hdiff $h $serverh]
+                    set ackedCount [$self Acked $h]
                     if {$ackedCount > 0} {
                         set queue [lrange $queue $ackedCount end]
                     }
@@ -274,13 +274,7 @@ snit::type sm {
             "a" {
                 set h [xsearch $stanza -get @h]
 
-                set diff [$self Hdiff $h $serverh]
-                if {$diff > 0x7FFFFFFF} {
-                    jlog warn "Server h went backwards: $serverh -> $h"
-                    return
-                }
-
-                set ackedCount $diff
+                set ackedCount [$self Acked $h]
                 if {$ackedCount > 0} {
                     if {$options(-ack-command) ne ""} {
                         set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
@@ -375,6 +369,17 @@ snit::type sm {
     # Modular difference for 32-bit unsigned counters (a - b) mod 2^32
     method Hdiff {a b} {
         return [expr {($a - $b) & 0xFFFFFFFF}]
+    }
+
+    # Stanzas newly acked by a server h. A backwards h wraps to near 2^32,
+    # which would flush the whole queue as delivered, so it acks nothing.
+    method Acked {h} {
+        set diff [$self Hdiff $h $serverh]
+        if {$diff > 0x7FFFFFFF} {
+            jlog warn "Server h went backwards: $serverh -> $h"
+            return 0
+        }
+        return $diff
     }
 
     method getInfo {} {
