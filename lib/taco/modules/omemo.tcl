@@ -142,6 +142,10 @@ snit::type taco_omemo {
     # callbacks to fire when fetch resolves.
     variable BundleFetchWaiters
 
+    # Same for devicelist fetches: key=jid. Every pending chat's send
+    # kicks a fetch for the own devicelist while it is uncached.
+    variable DevicelistFetchWaiters
+
     # Per-(peer_jid, peer_device) bundle fetch state: key=(jid|dev), val=
     # pending|error. There is no success state - a built session is the
     # record of success. encrypt() blocks a send while any candidate is
@@ -177,6 +181,9 @@ snit::type taco_omemo {
     # NOT cleared in OnDisconnect, so reconnects can't re-key in a loop.
     variable HealAt
 
+    # `after idle` token for the coalesced live bundle republish.
+    variable RepublishToken ""
+
     constructor args {
         $self configurelist $args
         set client $options(-client)
@@ -185,6 +192,7 @@ snit::type taco_omemo {
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
+        set DevicelistFetchWaiters [dict create]
         set BundleFetchState [dict create]
         set BundleFetchTimer [dict create]
         set Postponed [list]
@@ -223,6 +231,7 @@ snit::type taco_omemo {
     destructor {
         catch {$client bus unsubscribe $self}
         catch {$client pubsub unhandler $::taco::omemo::NS_DEVICELIST}
+        catch {after cancel $RepublishToken}
         $self CancelBundleTimers
         dict for {key sess} $Sessions {
             catch {$sess destroy}
@@ -295,9 +304,12 @@ snit::type taco_omemo {
         # fetch still resolves by reply or timeout, which TakeBundleWaiters
         # absorbs.
         $self CancelBundleTimers
+        catch {after cancel $RepublishToken}
+        set RepublishToken ""
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
+        set DevicelistFetchWaiters [dict create]
         set BundleFetchState [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
@@ -330,13 +342,13 @@ snit::type taco_omemo {
         set hbs [dict keys $PostponedHeartbeats]
         set PostponedHeartbeats [dict create]
         foreach key $hbs {
-            lassign [split $key |] pj pd
+            lassign [SplitPeerKey $key] pj pd
             $self SendHeartbeat $pj $pd
         }
         set heals [dict keys $PostponedHealing]
         set PostponedHealing [dict create]
         foreach key $heals {
-            lassign [split $key |] pj pd
+            lassign [SplitPeerKey $key] pj pd
             $self Heal $pj $pd
         }
     }
@@ -412,12 +424,16 @@ snit::type taco_omemo {
     method HasPendingBundleFetch {jid} {
         dict for {key state} $BundleFetchState {
             if {$state ne "pending"} continue
-            # Split on the LAST separator: the device id is numeric, but a
-            # JID localpart may legally contain a bar.
-            set sep [string last | $key]
-            if {[string range $key 0 $sep-1] eq $jid} { return 1 }
+            if {[lindex [SplitPeerKey $key] 0] eq $jid} { return 1 }
         }
         return 0
+    }
+
+    # Split a "$jid|$dev" key on the LAST separator: the device id is
+    # numeric, but a JID localpart may legally contain a bar.
+    proc SplitPeerKey {key} {
+        set sep [string last | $key]
+        return [list [string range $key 0 $sep-1] [string range $key $sep+1 end]]
     }
 
     # Called after a bundle fetch for $peerJid/$peerDev settles either way.
@@ -562,7 +578,14 @@ snit::type taco_omemo {
         dict set DeviceLists $accountJid $devices
     }
 
+    # Devicelist fetch with in-flight dedup. command gets called as
+    #   {*}$command $peerJid $devicesOrEmpty
     method FetchDevicelist {peerJid command} {
+        if {[dict exists $DevicelistFetchWaiters $peerJid]} {
+            dict lappend DevicelistFetchWaiters $peerJid $command
+            return
+        }
+        dict set DevicelistFetchWaiters $peerJid [list $command]
         set node $::taco::omemo::NS_DEVICELIST
         set ns $::taco::omemo::NS_PUBSUB
         set toArgs [list]
@@ -571,10 +594,20 @@ snit::type taco_omemo {
             -payload [j pubsub -ns $ns {
                 j items -node $node
             }] \
-            -command [mymethod OnFetchedDevicelist $peerJid $command]
+            -command [mymethod OnFetchedDevicelist $peerJid]
     }
 
-    method OnFetchedDevicelist {peerJid command stanza} {
+    # Waiters for $peerJid, removing them. Empty when OnDisconnect already
+    # dropped them and the reply arrived afterwards.
+    method TakeDevicelistWaiters {peerJid} {
+        if {![dict exists $DevicelistFetchWaiters $peerJid]} { return [list] }
+        set waiters [dict get $DevicelistFetchWaiters $peerJid]
+        dict unset DevicelistFetchWaiters $peerJid
+        return $waiters
+    }
+
+    method OnFetchedDevicelist {peerJid stanza} {
+        set waiters [$self TakeDevicelistWaiters $peerJid]
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
             jlog debug "devicelist fetch for $peerJid: ERROR ([xsearch $stanza error -get @type])"
@@ -594,7 +627,9 @@ snit::type taco_omemo {
             if {$peerJid ne $accountJid && $noNode} {
                 $self UpdatePeerDevicelist $peerJid {}
             }
-            {*}$command $peerJid {}
+            foreach cb $waiters {
+                {*}$cb $peerJid {}
+            }
             return
         }
         set devices [$self ParseDevicelist $stanza]
@@ -607,7 +642,9 @@ snit::type taco_omemo {
         if {$peerJid ne $accountJid} {
             $self UpdatePeerDevicelist $peerJid $devices
         }
-        {*}$command $peerJid $devices
+        foreach cb $waiters {
+            {*}$cb $peerJid $devices
+        }
     }
 
     method ParseDevicelist {stanza} {
@@ -1384,8 +1421,20 @@ snit::type taco_omemo {
         if {$isMam} {
             lappend Postponed [list republish_bundle]
         } else {
-            $self PublishBundle
+            $self SchedulePublishBundle
         }
+    }
+
+    # One republish per burst: an inbound run of prekey messages would
+    # otherwise publish the (identical) refilled bundle once per message.
+    method SchedulePublishBundle {} {
+        if {$RepublishToken ne ""} return
+        set RepublishToken [after idle [mymethod FlushPublishBundle]]
+    }
+
+    method FlushPublishBundle {} {
+        set RepublishToken ""
+        $self PublishBundle
     }
 
     method SendHeartbeat {peerJid peerDev} {
@@ -1868,34 +1917,14 @@ snit::type taco_omemo {
             return $sess
         }
         if {[dict exists $Bundles $key]} {
-            set bundle [dict get $Bundles $key]
-            set pk [::taco::omemo::pickPrekey [dict get $bundle prekeys]]
-            if {$pk eq ""} {
-                jlog debug "EnsureSessionSync $peerJid/$peerDev: cached bundle has no prekeys"
-                $self MarkBundleUnusable $peerJid $peerDev
-                return ""
-            }
-            set sess [$self CreateSessionHandle $peerJid $peerDev]
-            # picomemo verifies spks against ik before deriving any state and
-            # returns OMEMO_ECORRUPT on mismatch, so forged SPK material is
-            # rejected here.
-            if {[catch {
-                $sess initiate $store \
-                    -ik     [dict get $bundle ik] \
-                    -spk    [dict get $bundle spk] \
-                    -spks   [dict get $bundle spks] \
-                    -pk     [dict get $pk pk] \
-                    -spk-id [dict get $bundle spk_id] \
-                    -pk-id  [dict get $pk id]
-            } err]} {
-                jlog debug "EnsureSessionSync $peerJid/$peerDev: initiate failed: $err"
-                catch {$sess destroy}
+            lassign [$self BuildSessionFromBundle $peerJid $peerDev \
+                [dict get $Bundles $key]] sess berr
+            if {$sess eq ""} {
+                jlog debug "EnsureSessionSync $peerJid/$peerDev: $berr"
                 $self MarkBundleUnusable $peerJid $peerDev
                 return ""
             }
             jlog debug "EnsureSessionSync $peerJid/$peerDev: initiated session from cached bundle"
-            dict set Sessions $key $sess
-            $self PersistSession $peerJid $peerDev $sess
             return $sess
         }
         # No bundle on hand. Kick off async fetch + session build so a
