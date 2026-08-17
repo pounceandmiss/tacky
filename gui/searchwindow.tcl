@@ -76,7 +76,7 @@ snit::widget searchwindow {
         pack $bot.status -side left -padx 4 -pady 4
         pack $bot -fill x
         $bot.more configure -state disabled
-        grid remove $bot.more
+        pack forget $bot.more
 
         bind $ca <<MessageClick>> [mymethod OnClick %d]
 
