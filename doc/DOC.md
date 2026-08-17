@@ -279,6 +279,11 @@ event you saw).
 tries, and `connected` clears it. `<AuthError>` is the end of the road -
 the backend stops until you re-enable the account.
 
+`<Ready>` is not pullable, and asking for it is an error: it reports a
+stream coming up, and `resumed` has no answer outside one. It is emitted
+with `state: "connected"`, which does pull, so a client attaching to a
+session that came up while it was away reads that instead.
+
 ## setting
 
 A global key/value store - not tied to any account.
