@@ -212,11 +212,7 @@ snit::type taco_calls {
             $self RetractProposed $opts(-sid) [dict get $call peer]
             return
         }
-        $self TeardownMedia $opts(-sid)
-        $self SendTerminate $opts(-sid) [dict get $call peer] $opts(-reason)
-        $client emit calls <Ended> -sid $opts(-sid)
-        $self Cleanup $opts(-sid)
-        return
+        $self EndSession $opts(-sid) [dict get $call peer] $opts(-reason)
     }
 
     tackymethod hangup {args} {
@@ -224,16 +220,20 @@ snit::type taco_calls {
         array set opts $args
         if {![dict exists $Calls $opts(-sid)]} return
         set call [dict get $Calls $opts(-sid)]
-        set state [dict get $call state]
-        if {$state eq "proposed"} {
+        if {[dict get $call state] eq "proposed"} {
             $self RetractProposed $opts(-sid) [dict get $call peer]
             return
         }
-        $self TeardownMedia $opts(-sid)
-        $self SendTerminate $opts(-sid) [dict get $call peer] $opts(-reason)
-        $client emit calls <Ended> -sid $opts(-sid)
-        $self Cleanup $opts(-sid)
-        return
+        $self EndSession $opts(-sid) [dict get $call peer] $opts(-reason)
+    }
+
+    # End a session that reached Jingle: drop the media, tell the peer, and
+    # report it gone.
+    method EndSession {sid peer reason} {
+        $self TeardownMedia $sid
+        $self SendTerminate $sid $peer $reason
+        $client emit calls <Ended> -sid $sid
+        $self Cleanup $sid
     }
 
     # Every call in flight, one dict each, unordered. The only way to
