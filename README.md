@@ -96,3 +96,7 @@ GUI (gui/)  <->  tacky bridge (lib/libtacky/)  <->  Backend (lib/taco/)  ->  XMP
 
 The bridge supports three backend transport modes, all transparent to the GUI:
 `--backend MODE    Backend mode: direct (default), thread, process`
+
+[doc/HACKING.md](doc/HACKING.md) covers the internals: building and testing from a
+checkout, the `j` and `xsearch` stanza primitives, and backend module structure.
+[doc/DOC.md](doc/DOC.md) is the backend's JSON API.
