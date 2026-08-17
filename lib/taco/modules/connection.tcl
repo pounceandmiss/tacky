@@ -451,6 +451,9 @@ snit::type conn {
     }
 
     # Re-emit current state for `tacky observe` (initial-state sync on attach).
+    # <Ready> stays out: it reports a stream coming up, so -resumed would have
+    # nothing to say. It goes out with <State> connected, which carries the
+    # same news to a client that missed it.
     method pull {args} {
         if {$options(-emit) eq ""} return
         array set opts $args
