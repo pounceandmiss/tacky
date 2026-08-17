@@ -25,6 +25,7 @@ snit::widget accountwindow {
     variable inlineJid ""
     variable inlineGroupchat 0
     variable chatModeVar "inline"
+    variable logFileVar 0
     # Must match taco_file's fallbacks; it is what enforces them.
     variable autofetchVar "everyone"
     variable autofetchMaxVar 5242880
@@ -80,6 +81,9 @@ snit::widget accountwindow {
             -command [mymethod OpenMamInfo]
         $mb.file add command -label "Search Messages..." \
             -command [mymethod OpenAccountSearch] -accelerator "Ctrl+Shift+F"
+        $mb.file add separator
+        settingmenu::checkbutton $mb.file "Write log file" \
+            -var [myvar logFileVar] -key log_to_file -tag $win
         $mb.file add separator
         $mb.file add command -label "Quit" \
             -command [mymethod Quit] -accelerator "Ctrl+Q"

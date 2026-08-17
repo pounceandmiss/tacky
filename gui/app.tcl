@@ -34,6 +34,11 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
+        # An explicit --debug-file owns the sink for this run.
+        if {$options(-debug-file) eq ""} {
+            ::tacky observe -tag $self setting <Changed> -key log_to_file \
+                [mymethod ApplyLogFile]
+        }
         install notifier using notifier $self.notifier -controller $self
 
         ::tacky account list -enabled 1 -command [mymethod OnAccountList]
@@ -58,6 +63,13 @@ snit::type app_type {
             }
         }
         return $out
+    }
+
+    # One applier for every window; the menu items only read and write the key.
+    method ApplyLogFile {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} return
+        ::tacky log setenabled -enabled [expr {!!$val}]
     }
 
     method OnAccountList {result} {
