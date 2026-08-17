@@ -111,14 +111,11 @@ snit::type taco_vcard {
             $client emit vcard <Update>
             {*}$command ok ""
         } else {
-            set errText [xsearch $stanza error text -get body]
+            set err [stanza_error $stanza]
+            set errText [dict get $err text]
             if {$errText eq ""} {
-                set errChild [xsearch $stanza error 0 -get node]
-                if {$errChild ne ""} {
-                    set errText [dict get $errChild tag]
-                } else {
-                    set errText "vCard update failed"
-                }
+                set errText [dict get $err condition]
+                if {$errText eq "unknown"} { set errText "vCard update failed" }
             }
             {*}$command error $errText
         }
