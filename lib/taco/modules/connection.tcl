@@ -293,6 +293,7 @@ snit::type bareconn {
     method OnTransportError {msg} {
         $base close
         set connState disconnected
+        jlog warn "transport error: $msg"
         if {$options(-ondisconnect) ne ""} {
             {*}$options(-ondisconnect) $msg
         }
@@ -431,6 +432,7 @@ snit::type conn {
         }
         set authState disconnected
         $self SetConnState connecting
+        jlog inform "connecting to $options(-host):$options(-port)"
         $base connect $options(-host) $options(-port)
     }
 
@@ -493,6 +495,7 @@ snit::type conn {
         set delay [lindex $reconnectIntervals $idx]
         incr reconnectAttempt
         $self SetConnState waiting
+        jlog inform "reconnect attempt $reconnectAttempt in ${delay}ms"
         set reconnectAfterId [after $delay [mymethod DoReconnect]]
     }
 
@@ -726,6 +729,10 @@ snit::type conn {
     method OnTransportError {msg} {
         set authState disconnected
         set lastError $msg
+        # Every transport failure arrives here - connect, TLS, read, write - so
+        # one line covers them all. Without it the reason only leaves as an
+        # event, and a log from a client that never connected reads as silence.
+        jlog warn "$options(-host):$options(-port): $msg"
         $sm onDisconnect
         $base close
         if {$options(-autoreconnect)} {
@@ -752,6 +759,9 @@ snit::type conn {
         set authErrCmd $options(-onautherror)
         set authState disconnected
         set lastError $message
+        # Louder than a transport error: nothing retries this one. The three
+        # callers pass a whole sentence, so it needs no prefix.
+        jlog error $message
         $sm onDisconnect
         $base close
         $self SetConnState disconnected
