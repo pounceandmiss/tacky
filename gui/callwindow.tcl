@@ -25,6 +25,7 @@ snit::widgetadaptor callwindow {
     component stateLabel
     variable statusVar ""
     variable warningVar ""
+    variable closeTimer ""
 
     # Single global entry point. Creates the window on first call; on
     # subsequent calls it reuses the existing toplevel via Reset (new sid,
@@ -77,6 +78,7 @@ snit::widgetadaptor callwindow {
     }
 
     destructor {
+        after cancel $closeTimer
         catch {::tacky unlisten $win}
         catch {avatarcache untrack -tag $win}
     }
@@ -87,6 +89,8 @@ snit::widgetadaptor callwindow {
     method Reset args {
         $self configurelist $args
 
+        after cancel $closeTimer
+        set closeTimer ""
         catch {::tacky unlisten $win}
         catch {avatarcache untrack -tag $win}
 
@@ -126,13 +130,20 @@ snit::widgetadaptor callwindow {
 
     method Hangup {} {
         ::tacky calls hangup -acc $options(-acc) -sid $options(-sid)
-        # If the backend has already ended the call (e.g. peer-initiated
-        # terminate beat us here), <Ended> already fired and the window
-        # is destroyed. Otherwise let the <Ended> handler close us.
-        # Belt-and-braces: ensure we always go away.
-        if {[winfo exists $win]} {
-            after 100 [list catch [list destroy $win]]
-        }
+        # <Ended> closes us; this only fires if the backend never sends one.
+        if {[winfo exists $win]} { $self CloseAfter 3000 }
+    }
+
+    # One pending close at a time: a stale timer would outlive the window and
+    # close the next call that reuses it.
+    method CloseAfter {ms} {
+        after cancel $closeTimer
+        set closeTimer [after $ms [mymethod Close]]
+    }
+
+    method Close {} {
+        set closeTimer ""
+        catch {destroy $win}
     }
 
     method OnRinging {ev} { set statusVar "Ringing..." }
@@ -140,7 +151,7 @@ snit::widgetadaptor callwindow {
 
     method OnEnded {ev} {
         set statusVar "Ended"
-        after 600 [list catch [list destroy $win]]
+        $self CloseAfter 600
     }
 
     method OnFailed {ev} {
