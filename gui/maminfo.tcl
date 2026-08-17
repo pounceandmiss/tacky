@@ -71,17 +71,11 @@ snit::widget maminfo {
         grid rowconfigure $win 2 -weight 1
 
         # -- Text tags --
-        set boldfont TkTextFont_bold
-        if {$boldfont ni [font names]} {
-            font create $boldfont {*}[font configure TkTextFont] -weight bold
-        }
-        $t tag configure heading -font TkHeadingFont -spacing1 10 -spacing3 4
-        $t tag configure bold -font $boldfont
+        set boldfont [infotext_tags $t]
         $t tag configure label -font $boldfont -lmargin1 14 -lmargin2 14
         $t tag configure value -lmargin1 0 -lmargin2 14
         $t tag configure dim -foreground gray50
         $t tag configure error -foreground red
-        $t tag configure indent -lmargin1 14 -lmargin2 14
 
         if {$options(-target) ne "" && $options(-groupchat)} {
             $win.target insert 0 [jid bare $options(-target)]
@@ -230,10 +224,4 @@ snit::widget maminfo {
             $t ins end "  (none)\n" {indent dim}
         }
     }
-}
-
-proc FormatTimestamp {us} {
-    if {$us eq ""} { return "(empty)" }
-    set secs [expr {$us / 1000000}]
-    return [clock format $secs -format "%Y-%m-%d %H:%M:%S" -gmt 0]
 }

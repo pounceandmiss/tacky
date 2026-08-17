@@ -182,8 +182,7 @@ snit::widget accountwindow {
         set panel [accountpanel $paned.panel \
             -account $currentAccount \
             -open-chat-command [mymethod OpenChat] \
-            -new-chat-command [mymethod OpenNewChat] \
-            -menubar $win.menubar]
+            -new-chat-command [mymethod OpenNewChat]]
         # Request a width so the pane doesn't collapse before async content arrives.
         $panel configure -width 200
         $paned insert 0 $panel -weight 0

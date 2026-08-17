@@ -117,8 +117,10 @@ snit::widgetadaptor signin {
         $win.proceed configure -text "Cancel" -command [mymethod Cancel]
         $win.statuslabel configure -text ""
         tacky listen -tag $win conn <Ready> -acc $jid [mymethod OnReady]
-        tacky listen -tag $win conn <AuthError> -acc $jid [mymethod OnAuthError]
-        tacky listen -tag $win conn <Disconnected> -acc $jid [mymethod OnDisconnected]
+        tacky listen -tag $win conn <AuthError> -acc $jid \
+            [mymethod OnFailed "Authentication failed"]
+        tacky listen -tag $win conn <Disconnected> -acc $jid \
+            [mymethod OnFailed "Connection failed"]
         tacky account add -acc $jid -password $pw
         tacky account enable -acc $jid
     }
@@ -126,9 +128,7 @@ snit::widgetadaptor signin {
     method Cancel {} {
         tacky unlisten $win
         catch { tacky account remove -acc $jid }
-        $win.progressbar stop
-        $win.progressbar configure -mode determinate -value 0
-        $win.proceed configure -text "Proceed" -command [mymethod Proceed]
+        $self Idle
         $win.statuslabel configure -text ""
     }
 
@@ -140,35 +140,25 @@ snit::widgetadaptor signin {
     method OnReady {ev} {
         set succeeded 1
         tacky unlisten $win
-        $win.progressbar stop
-        $win.progressbar configure -mode determinate -value 0
-        $win.proceed configure -text "Proceed" -command [mymethod Proceed]
+        $self Idle
         if {$options(-onsuccess) ne ""} {
             {*}$options(-onsuccess) $jid
         }
     }
 
-    method OnAuthError {ev} {
-        tacky unlisten $win
-        set msg "Authentication failed"
-        if {[dict exists $ev -message]} {
-            set msg [dict get $ev -message]
-        }
+    # The attempt is over, whatever the outcome: stop the spinner and put the
+    # button back to "Proceed".
+    method Idle {} {
         $win.progressbar stop
         $win.progressbar configure -mode determinate -value 0
         $win.proceed configure -text "Proceed" -command [mymethod Proceed]
-        $win.statuslabel configure -text $msg
     }
 
-    method OnDisconnected {ev} {
+    method OnFailed {fallback ev} {
         tacky unlisten $win
-        set msg "Connection failed"
-        if {[dict exists $ev -message]} {
-            set msg [dict get $ev -message]
-        }
-        $win.progressbar stop
-        $win.progressbar configure -mode determinate -value 0
-        $win.proceed configure -text "Proceed" -command [mymethod Proceed]
+        set msg [expr {[dict exists $ev -message]
+            ? [dict get $ev -message] : $fallback}]
+        $self Idle
         $win.statuslabel configure -text $msg
     }
 }
@@ -368,22 +358,34 @@ snit::widget signup {
         tacky register connect -host $server -token $win
     }
 
+    # A step's request is over, whatever the outcome: stop its spinner and put
+    # its action button back.
+    method Idle {step} {
+        if {$step == 1} {
+            set frame $pages.step1
+            set button proceed
+            set label "Proceed"
+            set command [mymethod FetchForm]
+        } else {
+            set frame $pages.step2
+            set button submit
+            set label "Submit"
+            set command [mymethod OnSubmit]
+        }
+        $frame.progressbar stop
+        $frame.progressbar configure -mode determinate -value 0
+        $frame.$button configure -text $label -command $command
+    }
+
     method CancelFetch {} {
         tacky register cancel -token $win
         tacky unlisten $win
-        $pages.step1.progressbar stop
-        $pages.step1.progressbar configure -mode determinate -value 0
-        $pages.step1.proceed configure -text "Proceed" \
-            -command [mymethod FetchForm]
+        $self Idle 1
         $pages.step1.statuslabel configure -text ""
     }
 
     method OnForm {ev} {
-        $pages.step1.progressbar stop
-        $pages.step1.progressbar configure -mode determinate -value 0
-        $pages.step1.proceed configure -text "Proceed" \
-            -command [mymethod FetchForm]
-
+        $self Idle 1
         tacky register form -token $win -tag $win -command [mymethod OnFormData]
     }
 
@@ -433,10 +435,7 @@ snit::widget signup {
     method CancelSubmit {} {
         tacky register cancel -token $win
         tacky unlisten $win
-        $pages.step2.progressbar stop
-        $pages.step2.progressbar configure -mode determinate -value 0
-        $pages.step2.submit configure -text "Submit" \
-            -command [mymethod OnSubmit]
+        $self Idle 2
         $pages.step2.statuslabel configure -text ""
     }
 
@@ -449,10 +448,7 @@ snit::widget signup {
     }
 
     method OnSuccess {ev} {
-        $pages.step2.progressbar stop
-        $pages.step2.progressbar configure -mode determinate -value 0
-        $pages.step2.submit configure -text "Submit" \
-            -command [mymethod OnSubmit]
+        $self Idle 2
 
         # Extract username/password from submitted form values
         set server [$pages.step1.server get]
@@ -477,19 +473,8 @@ snit::widget signup {
         if {[dict exists $ev -message]} {
             set msg [dict get $ev -message]
         }
-        if {$step == 1} {
-            $pages.step1.progressbar stop
-            $pages.step1.progressbar configure -mode determinate -value 0
-            $pages.step1.proceed configure -text "Proceed" \
-                -command [mymethod FetchForm]
-            $pages.step1.statuslabel configure -text $msg
-        } else {
-            $pages.step2.progressbar stop
-            $pages.step2.progressbar configure -mode determinate -value 0
-            $pages.step2.submit configure -text "Submit" \
-                -command [mymethod OnSubmit]
-            $pages.step2.statuslabel configure -text $msg
-        }
+        $self Idle $step
+        $pages.step$step.statuslabel configure -text $msg
     }
 }
 

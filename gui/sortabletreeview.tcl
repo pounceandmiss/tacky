@@ -9,11 +9,6 @@
 #   -sorttypes  dict mapping column IDs to sort type (ascii, integer, real).
 #               Columns not listed default to ascii.
 #               Example: -sorttypes {age integer salary real}
-#
-# Added methods:
-#   sortby col ?-order ascending|descending?   — sort programmatically
-#   sortcolumn                                  — returns current sort column
-#   sortorder                                   — returns current sort order
 
 snit::widgetadaptor sortabletreeview {
 
@@ -202,42 +197,4 @@ snit::widgetadaptor sortabletreeview {
         }
     }
 
-    # ------------------------------------------------------------------
-    # Public methods
-    # ------------------------------------------------------------------
-
-    method sortby {col args} {
-        set order ""
-        set i 0
-        while {$i < [llength $args]} {
-            switch -- [lindex $args $i] {
-                -order {
-                    incr i
-                    set order [lindex $args $i]
-                }
-                default {
-                    error "unknown option \"[lindex $args $i]\": must be -order"
-                }
-            }
-            incr i
-        }
-
-        set sortColumn $col
-        if {$order ne ""} {
-            set sortOrder $order
-        } else {
-            set sortOrder "ascending"
-        }
-
-        $self DoSort $col $sortOrder
-        $self UpdateIndicators
-    }
-
-    method sortcolumn {} {
-        return $sortColumn
-    }
-
-    method sortorder {} {
-        return $sortOrder
-    }
 }

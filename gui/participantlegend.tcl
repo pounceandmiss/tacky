@@ -29,19 +29,10 @@ snit::widget participantlegend {
         pack $t -expand yes -fill both
 
         # -- Text tags --
-        set boldfont TkTextFont_bold
-        if {$boldfont ni [font names]} {
-            font create $boldfont {*}[font configure TkTextFont] -weight bold
-        }
-        $t tag configure heading -font TkHeadingFont -spacing1 10 -spacing3 4
-        $t tag configure bold -font $boldfont
+        set boldfont [infotext_tags $t]
         $t tag configure dim -foreground gray50 -font TkSmallCaptionFont
-        $t tag configure indent -lmargin1 14 -lmargin2 14
-        foreach {tag color} {
-            available green4 away goldenrod3 xa darkorange3
-            dnd red3 offline gray50
-        } {
-            $t tag configure pres_$tag -foreground $color -font $boldfont
+        foreach {state color} [presence_colors] {
+            $t tag configure pres_$state -foreground $color -font $boldfont
         }
 
         # -- Roles --

@@ -21,7 +21,6 @@ snit::widget accountpanel {
     option -tacky -default ::tacky -readonly yes
     option -open-chat-command -default ""
     option -new-chat-command -default ""
-    option -menubar -default "" -readonly yes
 
     delegate option -width to hull
     delegate option -height to hull

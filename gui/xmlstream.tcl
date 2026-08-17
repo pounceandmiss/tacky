@@ -34,6 +34,11 @@ proc xesc {content} {
     string map {< &lt; > &gt; & &amp; \" &quot; ' &apos;} $content
 }
 
+# What the console shows before the user (or a saved setting) says otherwise.
+proc xmlstream_default_filters {} {
+    return {iq 1 presence 0 message 1 nonza 0 ns ""}
+}
+
 snit::widgetadaptor xmlstream {
     option -conn -default "" -configuremethod ConfigureConn
 
@@ -83,9 +88,7 @@ snit::widgetadaptor xmlstream {
 
     constructor args {
         installhull using xmltext
-        array set filters {iq 1 presence 0 message 1 nonza 0
-            ns ""
-        }
+        array set filters [xmlstream_default_filters]
 
         xmlstream_toolbar $win.toolbar -partof $self
         $win.toolbar.filters configure -command [mymethod OnFilters]
@@ -447,15 +450,12 @@ snit::widget xmlstream_toolbar_filter {
     component ns_label
     component ns
     
-    option -client
     variable filters
     option -command
-    
+
     constructor args {
         $self configurelist $args
-        array set filters {iq 1 presence 0 message 1 nonza 0
-            ns ""
-        }
+        array set filters [xmlstream_default_filters]
         foreach type {iq presence message nonza} {
             install $type using ttk::checkbutton $win.$type \
                 -text $type -variable [myvar filters($type)]
@@ -593,59 +593,6 @@ Zs/xD4C6xTFw7rz5CyoXLlqwuHFJUDDcjTYhS5ctX7Fy1eo1a0PDkNweHrFu/YaNm6ZvjoxC8WN0
 zObpW7Zui41D83t8wvb1OxKT0ESTU1LTdqZnpCSjCmdmZefk5mVnZaIpzy8oLCosyIdxAU8QUY2Y
 wZjFAAAAAElFTkSuQmCC
 }
-
-image create photo mate/48x48/status/user-offline \
-    -data {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
-rkJggg==}
-
-
 
 proc xmlconsole {jid} {
     set safe [string map {@ _ . _} $jid]

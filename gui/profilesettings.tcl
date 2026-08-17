@@ -18,7 +18,6 @@ snit::widget profilesettings {
     typevariable PublishEdge 128
 
     variable statusAfter ""
-    variable blindTrust 0
 
     typemethod open {account} {
         set top .profile_[string map {@ _ . _} $account]
@@ -87,16 +86,12 @@ snit::widget profilesettings {
         ttk::label $win.omemolbl -text "My OMEMO keys" \
             -font {Helvetica 12 bold}
         grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
-        ttk::checkbutton $win.omemobt \
-            -text "Trust new devices automatically (blind trust, account-wide)" \
-            -variable [myvar blindTrust] -command [mymethod ToggleBlindTrust]
-        grid $win.omemobt -row 7 -column 0 -columnspan 3 -sticky w -padx 4 -pady {2 4}
-        omemokeyspanel $win.omemokeys -acc $acc -jid [jid bare $acc]
-        grid $win.omemokeys -row 8 -column 0 -columnspan 3 -sticky nsew \
+        omemoownkeys $win.omemokeys -acc $acc
+        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
             -padx 4 -pady 4
 
         grid columnconfigure $win 1 -weight 1
-        grid rowconfigure $win 8 -weight 1
+        grid rowconfigure $win 7 -weight 1
 
         # Nick: load + stay live
         $t nick get -acc $acc -jid $acc \
@@ -111,10 +106,6 @@ snit::widget profilesettings {
         $win.avatarimg configure -image $img
         $t listen -tag $win avatar <Progress> -acc $acc \
             [mymethod OnProgress]
-
-        # Blind-trust toggle: pull current value + stay live.
-        $t observe -tag $win omemo <BlindTrust> -acc $acc \
-            [mymethod OnBlindTrust]
     }
 
     destructor {
@@ -145,13 +136,6 @@ snit::widget profilesettings {
         $win.avatarimg configure -image $img
     }
 
-    method OnBlindTrust {ev} { set blindTrust [dict get $ev -value] }
-
-    method ToggleBlindTrust {} {
-        $options(-tacky) omemo setBlindTrust \
-            -acc $options(-acc) -value $blindTrust
-    }
-
     # --- Actions ---
 
     method SaveName {} {
@@ -180,24 +164,13 @@ snit::widget profilesettings {
         set data [read $fd]
         close $fd
 
-        # Prepare the image client-side: decode, center-crop to a square,
-        # scale to PublishEdge, and PNG-encode. The backend stores and
-        # sends these bytes verbatim.
-        set src [image create photo]
-        if {[catch {::tkwuffs::decode_to_photo $data $src}]} {
-            catch {image delete $src}
+        # Prepare the image client-side: square it off at PublishEdge and
+        # PNG-encode. The backend stores and sends these bytes verbatim.
+        set out [square_photo $data $PublishEdge]
+        if {$out eq ""} {
             $self OnResult Avatar [list error "Unsupported image format"]
             return
         }
-        set w [image width $src]
-        set h [image height $src]
-        set side [expr {min($w, $h)}]
-        set x [expr {($w - $side) / 2}]
-        set y [expr {($h - $side) / 2}]
-        set out [image create photo]
-        ::tkwuffs::crop_photo $src $out $x $y $side $side
-        image delete $src
-        ::tkwuffs::resize_photo $out $out $PublishEdge $PublishEdge
         set png [::tkwuffs::encode_png_from_photo $out]
         image delete $out
 

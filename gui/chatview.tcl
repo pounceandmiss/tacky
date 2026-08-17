@@ -26,7 +26,6 @@ snit::widget chatview {
     option -acc -readonly yes
     option -jid
     option -groupchat -default 0 -readonly yes
-    option -menubar -default ""
 
     # True if AtTail is true AND the viewport is scrolled to the
     # visual bottom. Drives scroll-to-bottom button visibility (button
@@ -136,11 +135,8 @@ snit::widget chatview {
         bind $area <<MessageRightClick>> [list $actions rightclick %d %X %Y]
         bind $area <<ReactToggle>> [list $actions toggle %d]
         bind $area <<ReplyJump>> [mymethod OnReplyJump %d]
-        if {$options(-menubar) ne ""} {
-            $self InstallMenus
-        }
-        bind $win.ca.text <<Yview>> +[mymethod OnScroll]
-        bind $win.ca.text <Configure> [mymethod OnFirstConfigure]
+        bind [$area textwidget] <<Yview>> +[mymethod OnScroll]
+        bind [$area textwidget] <Configure> [mymethod OnFirstConfigure]
         # Refocusing marks the tail read (live arrivals go via OnMessage).
         # The toplevel outlives us, so guard on $win still existing.
         bind [winfo toplevel $win] <FocusIn> +[list apply {{w} {
@@ -154,7 +150,7 @@ snit::widget chatview {
         # back at ~58000, I figure because the widget didn't have real
         # geometry yet, and the cull pass would kick in erasing everything.
         # No idea why it only happened with one chat.
-        bind $win.ca.text <Configure> {}
+        bind [$area textwidget] <Configure> {}
         $self InitialLoad
     }
 
@@ -184,7 +180,6 @@ snit::widget chatview {
             catch {::tacky unlisten $tag}
             catch {::tacky message cancel -acc $options(-acc) -tag $tag}
         }
-        catch {$self RemoveMenus}
     }
 
     # Cancel in-flight loads and leave the live tail before a non-tail jump.
@@ -613,29 +608,6 @@ snit::widget chatview {
             update idletasks
             $area see end
             $self UpdateViewAtTail
-        }
-    }
-
-    method InstallMenus {} {
-        set mb $options(-menubar)
-        menu $mb.chat -tearoff 0
-        $mb add cascade -label "Chat" -menu $mb.chat
-    }
-
-    method RemoveMenus {} {
-        set mb $options(-menubar)
-        if {$mb eq "" || ![winfo exists $mb]} return
-        set last [$mb index end]
-        if {$last ne "none"} {
-            for {set i $last} {$i >= 0} {incr i -1} {
-                if {[$mb type $i] eq "cascade" && [$mb entrycget $i -label] eq "Chat"} {
-                    $mb delete $i
-                    break
-                }
-            }
-        }
-        if {[winfo exists $mb.chat]} {
-            destroy $mb.chat
         }
     }
 }

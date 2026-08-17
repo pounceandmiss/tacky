@@ -41,12 +41,9 @@ snit::widget mucparticipantlist {
         grid columnconfigure $win 0 -weight 1
         grid rowconfigure $win 0 -weight 1
 
-        # Presence color tags
-        $tree tag configure available -foreground green4
-        $tree tag configure away -foreground goldenrod3
-        $tree tag configure xa -foreground darkorange3
-        $tree tag configure dnd -foreground red3
-        $tree tag configure offline -foreground gray50
+        foreach {state color} [presence_colors] {
+            $tree tag configure $state -foreground $color
+        }
 
         # Create group headers
         foreach {role label} {moderator Moderators participant Participants visitor Visitors} {

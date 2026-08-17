@@ -110,7 +110,6 @@ proc cv_setup {} { mock_backend_up }
 
 proc cv_cleanup {} {
     destroy .cv
-    catch { destroy .menubar }
     mock_backend_down
 }
 
@@ -118,9 +117,8 @@ proc cv_cleanup {} {
 #   -pack    — pack the widget and set a small geometry (for thirst tests)
 #   -nomam   — don't complete the initial MAM query (test completes it)
 proc cv_create {args} {
-    menu .menubar
     chatview .cv -acc user@test.example.com \
-        -jid alice@example.com -menubar .menubar
+        -jid alice@example.com
     if {"-pack" in $args} {
         pack .cv -fill both -expand yes
         wm geometry . 400x200
@@ -1555,16 +1553,13 @@ test chatarea-system-insert {system message is inserted with system tag} \
 
 # -- chatarea pagination signals ------------------------------------------------
 
-# Wrap [.ca textwidget] so 'count -ypixels' returns values from the global ::mock_above
-# / ::mock_below. Each is read fresh on every call, so the drop loop sees
-# decreasing pixels as messages are deleted (callers can adjust between calls
-# or use a proc-style global that tracks llength).
+# Wrap [.ca textwidget] so 'viewport above|below' returns ::mock_above /
+# ::mock_below, read fresh each call so a test can shrink them as it deletes.
 proc ca_install_pixel_mock {} {
     rename .ca.text _real_ca_text
     proc ::.ca.text args {
-        if {[lindex $args 0] eq "count" && [lindex $args 1] eq "-ypixels"} {
-            set startIdx [lindex $args 2]
-            if {$startIdx eq "0.0"} {
+        if {[lindex $args 0] eq "viewport"} {
+            if {[lindex $args 1] eq "above"} {
                 return [expr {$::mock_above}]
             } else {
                 return [expr {$::mock_below}]
