@@ -175,6 +175,17 @@ test messagestore-dedup-both-ids-match-own {both IDs set, dedup fires on own_id 
         llength [ms_msgs [store get latest alice@example.com]]
     } -result {1}
 
+# Both copies reach store as 'new': Classify reconciled them before either
+# was written, so store's own check is the only thing between them.
+test messagestore-dedup-server-id-same-batch {duplicate server_id within one batch is not inserted twice} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 server_id sid1 body first] \
+            [ms_msg timestamp 200 server_id sid1 body duplicate]]
+        llength [ms_msgs [store get latest alice@example.com]]
+    } -result {1}
+
 test messagestore-dedup-content-same-batch {content dedup within batch when IDs empty} \
     {*}$ms_common \
     -body {
