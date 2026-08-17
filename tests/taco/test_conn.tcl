@@ -409,6 +409,66 @@ test conn-transport-error-with-autoreconnect {autoreconnect sets state to waitin
         list [c state] $_tdisconnect
     } -result {waiting {}}
 
+# -- Logging ---------------------------------------------------------------
+#
+# Records go through the singleton, which $common otherwise silences; these
+# start listening mid-body so only the step under test is captured.
+
+proc conn_capture_log {} {
+    set ::_tlog {}
+    # Only c: the default threshold is warning, and the routine lines sit
+    # below it, which is the whole point of their level.
+    jlog setLevel ::c verbose
+    jlog configure -logproc {apply {{rec} {lappend ::_tlog $rec}}}
+}
+
+proc conn_logged {level} {
+    set out {}
+    foreach rec $::_tlog {
+        if {[dict get $rec -level] eq $level} {
+            lappend out [dict get $rec -text]
+        }
+    }
+    return $out
+}
+
+test conn-connect-logs-endpoint {connect records what it dialled} \
+    {*}$common \
+    -body {
+        conn_capture_log
+        c connect
+        conn_logged info
+    } -result {{connecting to test.example.com:5222}}
+
+test conn-transport-error-logs {a transport error names the endpoint and the reason} \
+    {*}$common \
+    -body {
+        c connect
+        conn_capture_log
+        c.base inject_error "Connect failed: connection refused"
+        conn_logged warning
+    } -result {{test.example.com:5222: Connect failed: connection refused}}
+
+test conn-reconnect-logs-backoff {a scheduled reconnect records its delay} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        conn_capture_log
+        c.base inject_error "read failed"
+        conn_logged info
+    } -result {{reconnect attempt 1 in 1000ms}}
+
+test conn-auth-error-logs {an auth failure logs at error level} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject [make_features]
+        conn_capture_log
+        c.base inject [make_failure]
+        conn_logged error
+    } -result {{SASL authentication failed}}
+
 # -- Auth error (no reconnect) ---------------------------------------------
 
 test conn-auth-error-no-reconnect {SASL failure does not trigger reconnect} \

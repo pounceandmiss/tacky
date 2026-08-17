@@ -873,7 +873,10 @@ Levels, least to most severe:
 
     verbose  debug  info  warning  error  fatal  none
 
-The default is `warning`, or `--debug-level` cli arg value.
+The default is `warning`, or `--debug-level` cli arg value. It is enough to see
+why a connection failed: `conn` logs the reason a link dropped or never came up
+at `warning`, and a SASL or bind failure at `error`. What it dialled and when it
+will retry next are `info`.
 
 `obj` names the source, as a dotted hierarchy: an object with no level of its
 own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
