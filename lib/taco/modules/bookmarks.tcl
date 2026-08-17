@@ -179,6 +179,12 @@ snit::type taco_bookmarks {
             set nick $row(nick)
             set password $row(password)
         }
+        $self Join $jid $nick $password
+    }
+
+    # Join with a bookmark row's nick/password; an empty nick falls back to
+    # the account default, an empty password means the room is unlocked.
+    method Join {jid nick password} {
         if {$nick eq ""} {
             set nick [$self defaultNick]
         }
@@ -472,15 +478,7 @@ snit::type taco_bookmarks {
     method AutojoinAll {} {
         $client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
             if {[$client muc isJoined -jid $row(jid)]} continue
-            set nick $row(nick)
-            if {$nick eq ""} {
-                set nick [$self defaultNick]
-            }
-            if {$row(password) ne ""} {
-                $client muc join -jid $row(jid) -nick $nick -password $row(password)
-            } else {
-                $client muc join -jid $row(jid) -nick $nick
-            }
+            $self Join $row(jid) $row(nick) $row(password)
         }
     }
 
@@ -490,14 +488,7 @@ snit::type taco_bookmarks {
         } row {
             if {!$row(autojoin)} return
             if {[$client muc isJoined -jid $jid]} return
-            if {$row(nick) eq ""} {
-                set row(nick) [$self defaultNick]
-            }
-            if {$row(password) ne ""} {
-                $client muc join -jid $jid -nick $row(nick) -password $row(password)
-            } else {
-                $client muc join -jid $jid -nick $row(nick)
-            }
+            $self Join $jid $row(nick) $row(password)
         }
     }
 
