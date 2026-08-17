@@ -467,6 +467,37 @@ test conn-emit-autherror-event {-emit receives AuthError event} \
         extract_emitted "<AuthError>" -message
     } -result {{SASL authentication failed}}
 
+# -- pull ---------------------------------------------------------------------
+
+test conn-pull-state {pull -event <State> re-emits the state as it stands} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pull"
+        set ::_temitted {}
+        c pull -event <State>
+        set ::_temitted
+    } -result {{conn <State> -state connected}}
+
+test conn-pull-connerror {pull -event <ConnError> re-emits the standing error} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject_error "read failed"
+        set ::_temitted {}
+        c pull -event <ConnError>
+        set ::_temitted
+    } -result {{conn <ConnError> -message {read failed}}}
+
+# A pull is not a stream coming up, so there is no -resumed to answer with.
+# Clients that were away for the real event read <State> connected instead.
+test conn-pull-rejects-ready {pull -event <Ready> errors} \
+    {*}$common \
+    -body {
+        catch {c pull -event <Ready>} err
+        set err
+    } -result {conn pull: event <Ready> is not pullable}
+
 # -- Bug fix: connect() state guard ----------------------------------------
 
 test conn-connect-while-connected-tears-down {connect while connected tears down and restarts} \
