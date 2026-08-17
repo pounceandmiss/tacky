@@ -127,6 +127,9 @@ snit::type taco_presence {
 
         set type_ [xsearch $stanza -get @type]
 
+        # An error presence reports a delivery failure, not an online resource.
+        if {$type_ eq "error"} return
+
         set bare [jid norm [jid bare $from]]
         set resource [jid resource $from]
 
