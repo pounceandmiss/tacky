@@ -155,7 +155,11 @@ oo::class create tacky_base {
                 }
             }
             if {$match} {
-                {*}$cmd $argsL
+                # A throw would skip the listeners behind it and, in direct
+                # mode, surface as the emitting method's own error.
+                if {[catch {{*}$cmd $argsL} res opts]} {
+                    after idle [list return -options $opts $res]
+                }
             }
         }
     }
@@ -195,7 +199,11 @@ oo::class create tacky_base {
         lassign $entry _tag cmd err
         set run [expr {$event eq "<Error>" ? $err : $cmd}]
         if {$run eq ""} return
-        {*}$run [dict get $args -result]
+        # In direct mode this runs on the emitting method's stack, so a throwing
+        # -command would come back as that method's error and fire -onerror too.
+        if {[catch {{*}$run [dict get $args -result]} res opts]} {
+            after idle [list return -options $opts $res]
+        }
     }
 
     # tacky log <level> <text> ?-opt v?  sugar for `write`, auto-capturing
