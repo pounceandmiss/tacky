@@ -57,8 +57,8 @@ snit::type taco_audio {
         set key [$self DeviceSettingKey $opts(-kind)]
         $options(-taco) setting set -key $key -value $opts(-id)
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
-            set client $options(-taco).client($jid)
-            if {[info commands $client] eq ""} continue
+            set client [$options(-taco) account liveClient -acc $jid]
+            if {$client eq ""} continue
             $client calls applyPreferredDevice \
                 -kind $opts(-kind) -id $opts(-id)
         }
@@ -87,8 +87,8 @@ snit::type taco_audio {
         set key [$self VolumeSettingKey $opts(-kind)]
         $options(-taco) setting set -key $key -value $opts(-volume)
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
-            set client $options(-taco).client($jid)
-            if {[info commands $client] eq ""} continue
+            set client [$options(-taco) account liveClient -acc $jid]
+            if {$client eq ""} continue
             $client calls applyVolume \
                 -kind $opts(-kind) -volume $opts(-volume)
         }
