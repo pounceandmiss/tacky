@@ -6,8 +6,8 @@ package require jid
 # options.
 #
 # lib/tackyd/tackyd.tcl carries the daemon's copy. This runs in the GUI process,
-# which must not load that package: it installs a stdio bgerror that would
-# replace the Tk error dialog. Keep the two flag lists in step.
+# which must not load that package: it installs taco's bgerror at load, over the
+# one installBgerror picks for the transport. Keep the two flag lists in step.
 proc tacky_split_debug {arglist} {
     set flags {
         -debug-level -debug-file
@@ -164,6 +164,27 @@ oo::class create tacky_base {
         }
     }
 
+    # Take over ::bgerror. A background error has no caller to answer, so the
+    # frontend hears about it as error <Background> either way: the backend emits
+    # it for its own, this dispatches ours. tacky_type overrides, since there
+    # taco is in this interp and reports for both.
+    method installBgerror {} {
+        interp alias {} ::bgerror {} [self] bgerror
+    }
+
+    # Lowercase, so TclOO exports it: the alias above is an outside caller.
+    method bgerror {message} {
+        set info $::errorInfo
+        # No local jlog here: the backend owns the log file. If the wire is gone
+        # the dialog carries the message without the trace, so stderr is the
+        # only place left for it.
+        if {[catch {my log error $info -obj gui.bgerror}]} {
+            puts stderr $info
+        }
+        catch {my dispatch error <Background> \
+            [list -message $message -errorinfo $info]}
+    }
+
     # Route incoming messages: "callback" module → one-shot _callback,
     # everything else → normal listener dispatch.
     method emit {module event args} {
@@ -282,6 +303,13 @@ oo::class create tacky_type {
 
     method _send {module method args} {
         taco_call $Taco $module $method {*}$args
+    }
+
+    # taco is in this interp, so its own reporter has the local jlog and emits
+    # the event straight into our dispatch. It covers frontend background errors
+    # too: one ::bgerror cannot tell the two sides apart.
+    method installBgerror {} {
+        taco_install_bgerror
     }
 }
 
@@ -666,6 +694,7 @@ oo::class create avatarcache_base {
 proc tacky_init_threaded {args} {
     package require Thread
     tacky_threaded_type create tacky {*}$args
+    tacky installBgerror
     if {[info commands tk_avatarcache] ne ""} {
         tk_avatarcache create avatarcache
     }
@@ -673,6 +702,7 @@ proc tacky_init_threaded {args} {
 
 proc tacky_init {args} {
     tacky_type create tacky {*}$args
+    tacky installBgerror
     if {[info commands tk_avatarcache] ne ""} {
         tk_avatarcache create avatarcache
     }
@@ -680,6 +710,7 @@ proc tacky_init {args} {
 
 proc tacky_init_process {args} {
     tacky_process_type create tacky {*}$args
+    tacky installBgerror
     if {[info commands tk_avatarcache] ne ""} {
         tk_avatarcache create avatarcache
     }

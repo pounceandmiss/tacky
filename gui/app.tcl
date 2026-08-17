@@ -1,18 +1,8 @@
-# Shared with bin/tacky.tcl's bgerror, so a background error reads the same
-# whichever side of the wire it came from; `logged` says the backend already
-# wrote the trace. A plain proc, not a typemethod: the tailcall below has to
-# land in bgerror's own frame.
-proc report_background {message info {logged 0}} {
-    if {!$logged} {
-        # Through the API, not a local jlog: in process mode the backend owns the
-        # log file and this process has no sink at all.
-        set logged [expr {![catch {::tacky log error $info -obj gui.bgerror}]}]
-    }
-    set console [expr {[info exists ::consoleErrors] && $::consoleErrors}]
-    if {$console || !$logged} {
+# Every background error arrives as error <Background>, from either side of the
+# wire, with the trace already logged. All that is left is showing it.
+proc report_background {message info} {
+    if {[info exists ::consoleErrors] && $::consoleErrors} {
         puts stderr $info
-    }
-    if {$console} {
         return
     }
     set ::errorInfo $info
@@ -149,7 +139,7 @@ snit::type app_type {
         # Swallow the dialog's "Skip Messages" break: there is no queue to skip
         # here, and libtacky's dispatch guard would re-report it as a fresh
         # background error.
-        catch {report_background [dict get $eargs -message] $info 1}
+        catch {report_background [dict get $eargs -message] $info}
     }
 
     # --- Account windows ---
