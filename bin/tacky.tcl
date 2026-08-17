@@ -43,13 +43,6 @@ package require snit
 package require tkwuffs
 package require tkdnd
 
-# report_background is in gui/app.tcl, sourced below.
-proc bgerror {message} {
-    # Snapshot first: report_background's catches overwrite ::errorInfo. tailcall
-    # so the dialog's "Skip Messages" break still passes out of this frame.
-    tailcall report_background $message $::errorInfo
-}
-
 set dir [file normalize [file join [file dirname [info script]] ..]]
 lappend auto_path [file join $dir lib]
 package require libtacky

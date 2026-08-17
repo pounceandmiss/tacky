@@ -48,6 +48,18 @@ test bgerror-suppresses-a-repeat {a repeat is logged but not emitted twice} \
         list [llength $::_bgLog] [llength $::_emitted]
     } -result {3 2}
 
+test bgerror-frontend-side-logs-and-dispatches \
+    {the transport's own reporter logs over the wire and dispatches locally} \
+    {*}$bgenv -body {
+        set ::_bgSeen {}
+        tacky listen error <Background> {apply {{eargs} {lappend ::_bgSeen $eargs}}}
+        set ::errorInfo boom-trace
+        tacky bgerror boom
+        list [llength $::_bgLog] [llength $::_bgSeen] \
+            [dict get [lindex $::_bgSeen 0] -message] \
+            [dict get [lindex $::_bgSeen 0] -errorinfo]
+    } -result {1 1 boom boom-trace}
+
 test bgerror-does-not-recurse {a report raised while reporting is not re-entered} \
     {*}$bgenv -body {
         jlog configure -logproc _bgLogReenter
