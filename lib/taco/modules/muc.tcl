@@ -768,8 +768,8 @@ snit::type taco_muc {
             }
 
             # Config change notifications come as groupchat with muc#user status codes
-            if {[llength $mucX] > 0} {
-                set codes [$self ParseStatusCodes [lindex [xsearch $stanza x -ns http://jabber.org/protocol/muc#user] 0]]
+            if {$mucX ne ""} {
+                set codes [$self ParseStatusCodes $mucX]
                 if {[llength $codes] > 0} {
                     $client emit muc <ConfigChanged> -jid $roomJid -codes $codes
                 }
@@ -791,13 +791,12 @@ snit::type taco_muc {
         }
 
         # Status code 101: affiliation changed while not in room
-        if {[llength $mucX] > 0} {
-            set mucXNode [lindex [xsearch $stanza x -ns http://jabber.org/protocol/muc#user] 0]
-            set codes [$self ParseStatusCodes $mucXNode]
+        if {$mucX ne ""} {
+            set codes [$self ParseStatusCodes $mucX]
             if {101 in $codes} {
-        set roomJid [jid norm [jid bare $from]]
-                set itemAffil [xsearch $mucXNode item -get @affiliation]
-                set itemJid [xsearch $mucXNode item -get @jid]
+                set roomJid [jid norm [jid bare $from]]
+                set itemAffil [xsearch $mucX item -get @affiliation]
+                set itemJid [xsearch $mucX item -get @jid]
                 $client emit muc <AffiliationChanged> \
                     -jid $roomJid -target $itemJid -affiliation $itemAffil
                 return 1
@@ -880,16 +879,20 @@ snit::type taco_muc {
     # Result handler for moderation actions (kick/ban/role/affiliation). On an
     # error stanza it hands -onerror a ready message; success goes to -command.
     method OnActionResult {command onerror stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            if {$onerror ne ""} {
-                set condition [dict get [stanza_error $stanza] condition]
-                {*}$onerror [$self ActionErrorText $condition]
-            }
-            return
-        }
+        if {[$self ReportActionError $onerror $stanza]} return
         if {$command ne ""} {
             {*}$command $stanza
         }
+    }
+
+    # 1 if $stanza is an error (and $onerror, when set, has been told).
+    method ReportActionError {onerror stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} { return 0 }
+        if {$onerror ne ""} {
+            {*}$onerror [$self ActionErrorText \
+                [dict get [stanza_error $stanza] condition]]
+        }
+        return 1
     }
 
     method ActionErrorText {condition} {
@@ -904,13 +907,7 @@ snit::type taco_muc {
     }
 
     method OnListResult {command onerror stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            if {$onerror ne ""} {
-                {*}$onerror [$self ActionErrorText \
-                    [dict get [stanza_error $stanza] condition]]
-            }
-            return
-        }
+        if {[$self ReportActionError $onerror $stanza]} return
         if {$command eq ""} return
 
         set items {}
@@ -929,13 +926,7 @@ snit::type taco_muc {
     }
 
     method OnConfigGetResult {command onerror stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            if {$onerror ne ""} {
-                {*}$onerror [$self ActionErrorText \
-                    [dict get [stanza_error $stanza] condition]]
-            }
-            return
-        }
+        if {[$self ReportActionError $onerror $stanza]} return
         if {$command eq ""} return
 
         set formNode [xsearch $stanza query x -ns jabber:x:data]
@@ -947,13 +938,7 @@ snit::type taco_muc {
     }
 
     method OnDiscoverRoomsResult {command onerror stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            if {$onerror ne ""} {
-                {*}$onerror [$self ActionErrorText \
-                    [dict get [stanza_error $stanza] condition]]
-            }
-            return
-        }
+        if {[$self ReportActionError $onerror $stanza]} return
         if {$command eq ""} return
 
         set rooms {}
