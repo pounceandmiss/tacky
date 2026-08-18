@@ -1255,10 +1255,14 @@ snit::type taco_messagestore {
         if {![dict get $d retracted]} {
             if {[dict exists $d attachments]
                 && [llength [dict get $d attachments]] > 0} {
+                # Rows outlive the shape they were written with.
+                set atts [lmap a [dict get $d attachments] {
+                    dict merge \
+                        {url "" path "" type file name "" size "" mime ""} $a
+                }]
                 set content [dict create type media \
-                    attachments [dict get $d attachments] \
-                    caption [attachment_caption [dict get $d body] \
-                        [dict get $d attachments]]]
+                    attachments $atts \
+                    caption [attachment_caption [dict get $d body] $atts]]
             } else {
                 set content [dict create type text body [dict get $d body]]
             }

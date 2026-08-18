@@ -289,6 +289,8 @@ test file-discover-coalesces {a second probe request joins the one in flight} \
 
 # --- storage round-trip ---------------------------------------------------
 
+# The stored dict has no `path`, as rows written before it existed do not: the
+# read path fills it in rather than letting a reader hit a missing key.
 test file-store-roundtrip {messagestore preserves the attachments column} {*}$file_env -body {
     set att [list [dict create \
         url https://h/p.png type image name p.png size 10 mime image/png]]
@@ -299,7 +301,7 @@ test file-store-roundtrip {messagestore preserves the attachments column} {*}$fi
     set got [lindex [dict get \
         [$::_client message messagestore get latest bob@example.com] messages] 0]
     dict get $got content attachments
-} -result {{url https://h/p.png type image name p.png size 10 mime image/png}}
+} -result {{url https://h/p.png path {} type image name p.png size 10 mime image/png}}
 
 test file-store-caption-derived {messagestore derives an empty caption for a URL-only body} {*}$file_env -body {
     set att [list [dict create \
@@ -331,7 +333,7 @@ proc up_ms {args} {
 proc up_store_uploading {jid ts} {
     up_ms store [list [dict create timestamp $ts chat_jid $jid \
         from_jid me@x body "" server_id "" own_id $ts raw_xml "" \
-        attachments [list [dict create url /tmp/a.png type image \
+        attachments [list [dict create url "" path /tmp/a.png type image \
             name a.png size 4 mime image/png]] \
         server_status uploading]]
 }
@@ -376,11 +378,12 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
     set msgs [dict get \
         [$::_client message messagestore get latest bob@example.com] messages]
     set m [lindex $msgs 0]
+    set att [lindex [dict get $m content attachments] 0]
     set res [list [llength $msgs] [dict get $m server_status] \
-        [dict get [lindex [dict get $m content attachments] 0] url]]
+        url=[dict get $att url] [dict get $att path]]
     file delete $tmp
     set res
-} -result [list 1 uploading [file join /tmp uptest_[pid].bin]]
+} -result [list 1 uploading url= [file join /tmp uptest_[pid].bin]]
 
 # origin_id is a reply-target key, so a share's row needs it like a send's does.
 test file-sendfile-records-its-origin-id {a share's row carries an origin id} {*}$file_env -body {
@@ -515,7 +518,7 @@ test file-download-local-thumbnail {download of a local image emits a sized PNG 
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
         set ::_local ""
-        $::_client file download -url $src \
+        $::_client file download -path $src \
             -command [list apply {{p} {set ::_local $p}}]
         set tp ""; set st ""
         foreach e $::_emitted {
@@ -547,8 +550,8 @@ test file-download-thumbmax {-thumbmax picks the size, and sizes coexist} \
         set f [open $src wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        $::_client file download -url $src -thumbmax 200
-        $::_client file download -url $src -thumbmax 100
+        $::_client file download -path $src -thumbmax 200
+        $::_client file download -path $src -thumbmax 100
         set small [$::_client file ThumbPath $src 100]
         set big   [$::_client file ThumbPath $src 200]
         set d [::tclwuffs::decode [up_readb $big]]
@@ -566,7 +569,7 @@ test file-download-thumbmax-no-upscale {a small image is not upscaled to -thumbm
         set f [open $src wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        $::_client file download -url $src -thumbmax 960
+        $::_client file download -path $src -thumbmax 960
         set d [::tclwuffs::decode [up_readb [$::_client file ThumbPath $src 960]]]
         list w=[dict get $d width] h=[dict get $d height]
     } -result {w=32 h=16}
@@ -578,7 +581,7 @@ test file-download-non-image-no-thumb {a non-image (undecodable) file downloads 
         puts -nonewline $f "not an image"
         close $f
         set ::_local ""
-        $::_client file download -url $src \
+        $::_client file download -path $src \
             -command [list apply {{p} {set ::_local $p}}]
         set tp NONE
         foreach e $::_emitted {
@@ -609,10 +612,10 @@ test file-uncache-keeps-local-source {uncache leaves a local source file untouch
     set f [open $src wb]
     puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
     close $f
-    $::_client file download -url $src
+    $::_client file download -path $src
     set thumb [$::_client file ThumbPath $src 320]
     set thumbWas [file exists $thumb]
-    $::_client file uncache -url $src
+    $::_client file uncache -path $src
     list srcKept=[file exists $src] thumbWas=$thumbWas \
         thumbGone=[expr {![file exists $thumb]}]
 } -result {srcKept=1 thumbWas=1 thumbGone=1}
@@ -709,7 +712,7 @@ test file-autofetch-local-still-resolves {a local source resolves even under nev
         puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
         close $f
         set ::_local NONE
-        $::_client file download -url $src -auto 1 \
+        $::_client file download -path $src -auto 1 \
             -from stranger@elsewhere.example \
             -command [list apply {{p} {set ::_local $p}}]
         list [af_last] local=[expr {$::_local eq $src}]
@@ -724,7 +727,7 @@ test file-autofetch-manual-not-gated {a download without -auto ignores the polic
         puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
         close $f
         set ::_local NONE
-        $::_client file download -url $src \
+        $::_client file download -path $src \
             -command [list apply {{p} {set ::_local $p}}]
         list [af_last] local=[expr {$::_local eq $src}]
     } -result {{done {}} local=1}
@@ -889,5 +892,51 @@ test file-autofetch-max-live-request {an over-cap fetch on the wire ends idle, n
         cx_stop $srv
         set res
     } -result {idle {} part=0 onDisk=0}
+
+proc up_last_url {} {
+    set out ""
+    foreach e $::_emitted {
+        if {[lindex $e 0] ne "file" || [lindex $e 1] ne "<Update>"} continue
+        set out [dict get [lrange $e 2 end] -url]
+    }
+    return $out
+}
+
+# The hole the url/path split closes: a peer's url that happens to name a
+# readable local file used to be served off disk and rendered inline.
+test file-download-url-is-never-a-path {a local file named by -url is refused, not served} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set src [file join $::_upcache elsewhere.png]
+        set px [string repeat [binary format cccc 1 2 3 255] 64]
+        set f [open $src wb]
+        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        close $f
+        set ::_local NONE
+        $::_client file download -url $src \
+            -command [list apply {{p} {set ::_local $p}}]
+        list [af_last] local=$::_local
+    } -result {{failed {unsupported url scheme}} local=}
+
+# The GUI matches an update to the attachment that asked for it, so a path-only
+# transfer has to come back under the path.
+test file-download-path-gone-no-url {a -path whose file is gone fails under its own name} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set gone [file join $::_upcache never-written.png]
+        $::_client file download -path $gone
+        list [af_last] echoed=[expr {[up_last_url] eq $gone}]
+    } -result {{failed {file not readable}} echoed=1}
+
+# A send carries both, and the file is only the better source while it lasts.
+test file-download-path-gone-falls-back-to-url {a send whose local file is gone fetches its url} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        lassign [cx_start serve] srv port
+        set url http://127.0.0.1:$port/mine.png
+        $::_client file download -url $url \
+            -path [file join $::_upcache never-written.png]
+        set res [cx_settle]
+        lappend res onDisk=[file exists [$::_client file AttachPath $url]]
+        cx_stop $srv
+        set res
+    } -result {done {} onDisk=1}
 
 file delete -force -- $::_upcache

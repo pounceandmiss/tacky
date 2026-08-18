@@ -153,7 +153,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string type string name string size int mime string}}}}}}
+        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}

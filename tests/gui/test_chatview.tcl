@@ -1319,7 +1319,7 @@ test chatarea-attachment-image-caption {image attachment renders a clickable cap
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
         set f [.ca attachment path 100 0]
         list [winfo exists $f] [winfo exists $f.cap]
     } -result {1 1}
@@ -1328,10 +1328,27 @@ test chatarea-attachment-file-chip {file attachment renders name + Open/Save but
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
-            [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
+            [list [dict create url https://h/d.pdf path "" type file name d.pdf size "" mime ""]]]]
         set f [.ca attachment path 100 0].chip
         list [winfo exists $f.name] [winfo exists $f.open] [winfo exists $f.save]
     } -result {1 1 1}
+
+# Both sources ride out together: the widget cannot tell which one the backend
+# will serve, and an action that dropped one would lose an uploading send.
+test chatarea-attachment-action-carries-both-sources {an attachment action passes url and path} \
+    -setup {
+        set ::ca_act {}
+        chatarea .ca -attachment-command {lappend ::ca_act}
+        update
+    } \
+    -cleanup { destroy .ca; unset -nocomplain ::ca_act } \
+    -body {
+        .ca apply [list [ca_msg_att 100 "" \
+            [list [dict create url https://h/d.pdf path /tmp/d.pdf type file \
+                name d.pdf size "" mime ""]]]]
+        [.ca attachment path 100 0].chip.open invoke
+        set ::ca_act
+    } -result {open https://h/d.pdf /tmp/d.pdf}
 
 test chatarea-image-load-above-keeps-viewport \
     {a thumbnail loading above the viewport must not move the view} \
@@ -1358,7 +1375,7 @@ test chatarea-image-load-above-keeps-viewport \
             set id [expr {100 + $i * 10}]
             if {$id == 200} {
                 lappend msgs [ca_msg_att $id "" [list [dict create \
-                    url $::ca_png type image name p.png size "" mime ""]]]
+                    url "" path $::ca_png type image name p.png size "" mime ""]]]
             } else {
                 lappend msgs [ca_msg $id "line $i\nbody $i\ntail $i"]
             }
@@ -1382,7 +1399,7 @@ test chatarea-attachment-scroll-relay {attachment widgets relay wheel events to 
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/d.pdf" \
-            [list [dict create url https://h/d.pdf type file name d.pdf size "" mime ""]]]]
+            [list [dict create url https://h/d.pdf path "" type file name d.pdf size "" mime ""]]]]
         set f [.ca attachment path 100 0]
         list [expr {[bind $f <Button-4>] ne ""}] \
              [expr {[bind $f.chip.name <MouseWheel>] ne ""}] \
@@ -1393,7 +1410,7 @@ test chatarea-attachment-uploading-bar {an uploading attachment shows a progress
     {*}$ca_common \
     -body {
         .ca apply [list [ca_upload 100 uploading \
-            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+            [list [dict create url "" path /tmp/x.png type image name x.png size "" mime ""]]]]
         winfo exists [.ca attachment path 100 0].up.bar
     } -result 1
 
@@ -1401,7 +1418,7 @@ test chatarea-attachment-progress {attachment state active sets the bar value} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_upload 100 uploading \
-            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+            [list [dict create url "" path /tmp/x.png type image name x.png size "" mime ""]]]]
         .ca attachment state 100 0 upload active 50 100
         expr {abs([[.ca attachment path 100 0].up.bar cget -value] - 50) < 0.01}
     } -result 1
@@ -1410,7 +1427,7 @@ test chatarea-attachment-uploaded-removes-bar {upload done removes the progress 
     {*}$ca_common \
     -body {
         .ca apply [list [ca_upload 100 uploading \
-            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+            [list [dict create url "" path /tmp/x.png type image name x.png size "" mime ""]]]]
         .ca attachment state 100 0 upload done 0 0
         winfo exists [.ca attachment path 100 0].up
     } -result 0
@@ -1419,7 +1436,7 @@ test chatarea-attachment-failed-retry {a failed upload shows a Retry button} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_upload 100 failed \
-            [list [dict create url /tmp/d.pdf type file name d.pdf size "" mime ""]]]]
+            [list [dict create url "" path /tmp/d.pdf type file name d.pdf size "" mime ""]]]]
         winfo exists [.ca attachment path 100 0].up.retry
     } -result 1
 
@@ -1427,7 +1444,7 @@ test chatarea-attachment-done-then-failed-transition {uploaded then failed swaps
     {*}$ca_common \
     -body {
         .ca apply [list [ca_upload 100 uploading \
-            [list [dict create url /tmp/x.png type image name x.png size "" mime ""]]]]
+            [list [dict create url "" path /tmp/x.png type image name x.png size "" mime ""]]]]
         set hadBar [winfo exists [.ca attachment path 100 0].up.bar]
         .ca attachment state 100 0 upload failed 0 0
         list bar=$hadBar retry=[winfo exists [.ca attachment path 100 0].up.retry] \
@@ -1438,7 +1455,7 @@ test chatarea-attachment-download-bar {a download active state shows a progress 
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
         .ca attachment state 100 0 download active 30 100
         list bar=[winfo exists [.ca attachment path 100 0].dl.bar] \
             val=[expr {abs([[.ca attachment path 100 0].dl.bar cget -value] - 30) < 0.01}]
@@ -1448,7 +1465,7 @@ test chatarea-attachment-download-done-removes-bar {download done removes the ba
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
         .ca attachment state 100 0 download active 30 100
         .ca attachment state 100 0 download done 0 0
         winfo exists [.ca attachment path 100 0].dl
@@ -1458,7 +1475,7 @@ test chatarea-attachment-empty-caption-no-body {an empty caption renders no body
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]] \
             ""]]
         set r [[.ca textwidget] tag ranges [.ca messages tag 100].body]
         expr {[llength $r] == 0 || [[.ca textwidget] get {*}$r] eq ""}
@@ -1468,7 +1485,7 @@ test chatarea-attachment-caption-rendered {a non-empty caption is shown as the b
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "see this https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]] \
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]] \
             "see this https://h/p.png"]]
         set r [[.ca textwidget] tag ranges [.ca messages tag 100].body]
         [.ca textwidget] get {*}$r
@@ -1485,7 +1502,7 @@ test chatarea-attachment-image-bad-path {attachment image with an undecodable fi
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
         .ca attachment image 100 0 /nonexistent/path.png
         winfo exists [.ca attachment path 100 0].img
     } -result 0
@@ -1504,7 +1521,7 @@ test chatarea-attachment-image-frees-photo {destroying the thumbnail label frees
     -cleanup { destroy .ca; file delete -- $::cap_png; unset -nocomplain ::cap_png } \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
-            [list [dict create url https://h/p.png type image name p.png size "" mime ""]]]]
+            [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
         set before [llength [image names]]
         .ca attachment image 100 0 $::cap_png
         set during [llength [image names]]
@@ -1610,7 +1627,7 @@ test chatarea-highlight-matches-tags-a-caption {a media row's ranges index its c
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "http://ex/a.png" \
-            {{url http://ex/a.png type file name a.png size "" mime ""}} \
+            {{url http://ex/a.png path "" type file name a.png size "" mime ""}} \
             "look, a cat"]]
         .ca highlight matches 100 {8 3}
         [.ca textwidget] get {*}[[.ca textwidget] tag ranges search_match]
@@ -1620,7 +1637,7 @@ test chatarea-highlight-matches-survives-an-empty-body {a caption-less attachmen
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "http://ex/a.png" \
-            {{url http://ex/a.png type file name a.png size "" mime ""}} ""]]
+            {{url http://ex/a.png path "" type file name a.png size "" mime ""}} ""]]
         .ca highlight matches 100 {0 3}
         [.ca textwidget] tag ranges search_match
     } -result {}
