@@ -1827,60 +1827,102 @@ snit::type taco_message {
     # falls back to the store alone when the archive can't run the search, and
     # pages locally: a -before cursor means the caller is walking a result set
     # already fetched, so it skips the remote leg.
-    # Callback receives dict: messages, complete, last
+    # -before with -before_chat_jid pages the store, -before_id the archive.
+    # Callback receives dict: messages, complete, last, last_chat_jid, last_id
     method search {args} {
-        array set opts {-limit 20 -tag "" -field "" -source local -chat ""}
+        array set opts {-limit 20 -tag "" -field "" -source local -chat "" \
+            -before "" -before_chat_jid "" -before_id ""}
         array set opts $args
 
         set chatJid $opts(-chat)
-        if {$chatJid eq "" && $opts(-source) ne "local"} {
-            error "search: -source \"$opts(-source)\" needs a -chat"
+        set source $opts(-source)
+        if {$chatJid eq "" && $source ne "local"} {
+            error "search: -source \"$source\" needs a -chat"
         }
         set callback $opts(-command)
         set tag $opts(-tag)
         set query $opts(-query)
         set limit $opts(-limit)
-        set before [expr {[info exists opts(-before)] ? $opts(-before) : ""}]
+        set before $opts(-before)
+        set beforeChat $opts(-before_chat_jid)
+        set beforeId $opts(-before_id)
+
+        $self CheckCursor $source $chatJid $before $beforeChat $beforeId
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
         }
 
-        switch -exact -- $opts(-source) {
+        switch -exact -- $source {
             local {
-                $self LocalSearch $chatJid $query $limit $before $callback
+                $self LocalSearch $chatJid $query $limit \
+                    $before $beforeChat $callback
             }
             both {
                 if {$before ne ""} {
-                    $self LocalSearch $chatJid $query $limit $before $callback
+                    $self LocalSearch $chatJid $query $limit \
+                        $before $beforeChat $callback
                     return
                 }
                 $self MamSearch $chatJid $query $limit "" $opts(-field) \
                     [mymethod OnSearchBoth $chatJid $query $limit $tag $callback]
             }
             remote {
-                $self MamSearch $chatJid $query $limit $before $opts(-field) \
+                $self MamSearch $chatJid $query $limit $beforeId $opts(-field) \
                     [mymethod OnSearch $chatJid $query $callback $tag]
             }
             default {
-                error "search: unknown -source \"$opts(-source)\""
+                error "search: unknown -source \"$source\""
             }
         }
     }
 
-    method LocalSearch {chatJid query limit before callback} {
-        set rows [$messagestore search $chatJid $query -limit $limit -before $before]
+    # Reading a store cursor as an archive one pages nothing rather than
+    # failing: SQLite ranks INTEGER below TEXT, so `timestamp < $rsmId`
+    # matches every row.
+    method CheckCursor {source chatJid before beforeChat beforeId} {
+        if {$source eq "remote"} {
+            if {$before ne "" || $beforeChat ne ""} {
+                error "search: -source \"remote\" pages with -before_id"
+            }
+            return
+        }
+        if {$beforeId ne ""} {
+            error "search: -before_id needs -source \"remote\""
+        }
+        if {$before ne "" && ![string is entier -strict $before]} {
+            error "search: -before is a timestamp, got \"$before\""
+        }
+        if {$chatJid ne ""} {
+            if {$beforeChat ne ""} {
+                error "search: -before_chat_jid belongs to a search with no -chat"
+            }
+            return
+        }
+        if {($before eq "") != ($beforeChat eq "")} {
+            error "search: an account-wide cursor is -before and\
+                   -before_chat_jid together"
+        }
+    }
+
+    method LocalSearch {chatJid query limit before beforeChat callback} {
+        set cursor $before
+        if {$chatJid eq "" && $before ne ""} {
+            set cursor [list $before $beforeChat]
+        }
+        set rows [$messagestore search $chatJid $query -limit $limit -before $cursor]
         set complete [expr {[llength $rows] < $limit}]
         set last ""
+        set lastChat ""
         if {[llength $rows]} {
             set tail [lindex $rows end]
             set last [dict get $tail timestamp]
             if {$chatJid eq ""} {
-                lappend last [dict get $tail chat_jid]
+                set lastChat [dict get $tail chat_jid]
             }
         }
         {*}$callback [dict create messages [$self AnnotateMatches $rows $query] \
-            complete $complete last $last]
+            complete $complete last $last last_chat_jid $lastChat last_id ""]
     }
 
     # Say where each hit matched, so the caller highlights it instead of
@@ -1919,12 +1961,13 @@ snit::type taco_message {
         if {![dict exists $mamResult error]} {
             $self SearchIngest $chatJid $mamResult
         }
-        $self LocalSearch $chatJid $query $limit "" $callback
+        $self LocalSearch $chatJid $query $limit "" "" $callback
     }
 
     method OnSearch {chatJid query callback tag mamResult} {
         if {[dict exists $mamResult error]} {
-            set err [dict create messages {} complete 0 last "" error 1]
+            set err [dict create messages {} complete 0 \
+                last "" last_chat_jid "" last_id "" error 1]
             if {[dict exists $mamResult error_condition]
                 && [dict get $mamResult error_condition] eq "fulltext-unsupported"} {
                 dict set err unsupported 1
@@ -1940,7 +1983,7 @@ snit::type taco_message {
         {*}$callback [dict create \
             messages [$self AnnotateMatches $messages $query] \
             complete [dict get $mamResult complete] \
-            last [dict get $mamResult last]]
+            last "" last_chat_jid "" last_id [dict get $mamResult last]]
     }
 
     method SearchIngest {chatJid mamResult} {

@@ -469,7 +469,8 @@ carries it in `client`.
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
     message goto {chat: string, date: int, source: "local" | "remote", limit?: int, tag?: string}  -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}            -> goto_result
-    message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int, before?: string} -> search_result
+    message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int,
+                    before?: int, before_chat_jid?: string, before_id?: string, tag?: string}       -> search_result
     message edit {chat: string, timestamp: int, body: string}
     message retract {chat: string, timestamp: int}
     message moderate {chat: string, timestamp: int, reason?: string}
@@ -503,7 +504,9 @@ carries it in `client`.
     attachment = {url: string, path: string, type: "image" | "file", name: string, size: int, mime: string}
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
-    search_result = {messages: [message], complete: bool, last: string}
+    search_result = {messages: [message], complete: bool,
+                     last: int, last_chat_jid: string, last_id: string,
+                     error?: bool, unsupported?: bool}
 
 An incoming text message, as it arrives on `<New>`:
 
@@ -1143,7 +1146,7 @@ mid-word text isn't findable. Case and diacritics are ignored.
 Retracted messages never match.
 
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
-`before: last`, which on this path is an RSM cursor rather than a timestamp.
+`before_id: last_id`, the archive's own cursor.
 Few servers implement the field, so check first with `mam fulltextSupported
 {chat: string} -> bool`; a search against an archive that advertises none comes
 back empty with `error: true` and `unsupported: true` rather than silently
@@ -1157,15 +1160,13 @@ set already fetched, so it skips the remote leg and fetches one server page per
 search.
 
 Omitting `chat` searches every chat in the account. MAM queries one archive, so
-that is local-only: a remote `source` without a `chat` is an error.
-Its `last` cursor is a `{timestamp, chat_jid}` pair, and each
-result carries the `chat_jid` it came from.
+that is local-only: a remote `source` without a `chat` is an error. Each result
+carries the `chat_jid` it came from.
 
-`last` is a continuation token rather than a value to read: pass it back as
-`before` to a call with the same `source` and the same scoping. The three
-paths encode it differently, and crossing them fails quietly - a remote cursor
-handed to a local search matches every row, so paging stops advancing instead
-of erroring.
+Each source pages with its own cursor and refuses the others: `before`
+(exclusive) walks the store, `before_id` walks the archive. An account-wide
+search pairs `before` with `before_chat_jid`, since two chats can share a
+timestamp. Cursor fields a search doesn't page with come back empty.
 
 Every hit carries `content.matches`: where the query matched, in the offsets
 `formatting` uses - into `body`, or `caption` for a media message. One entry

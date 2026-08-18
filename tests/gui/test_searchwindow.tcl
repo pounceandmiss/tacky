@@ -167,6 +167,24 @@ test sw-global-spans-every-chat {results come from every chat, in one time order
     .sw.ca messages keys
 } -cleanup { sw_cleanup } -result {{alice@example.com 100} {bob@example.com 300}}
 
+# 26 hits over a page of 20, with the tie at 600 straddling the boundary.
+test sw-global-load-more-resumes-mid-tie {a second page picks up the tied hit the first one stopped on} -setup {
+    sw_setup
+} -body {
+    sw_create_global
+    for {set ts 100} {$ts <= 2500} {incr ts 100} {
+        sw_store [expr {($ts / 100) % 2 ? "alice@example.com" : "bob@example.com"}] \
+            $ts "needle $ts"
+    }
+    sw_store alice@example.com 600 "needle 600 again"
+    sw_run needle
+    set firstPage [llength [.sw.ca messages keys]]
+    .sw.bot.more invoke
+    wait
+    set keys [.sw.ca messages keys]
+    list $firstPage [llength $keys] [llength [lsort -unique $keys]]
+} -cleanup { sw_cleanup } -result {20 26 26}
+
 test sw-global-hides-the-server-box {no archive spans an account, so the server pass is not offered} -setup {
     sw_setup
 } -body {
