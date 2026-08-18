@@ -20,7 +20,7 @@ set notify_common [tacky_env -mock conn -account $acc -extra-setup {
 proc notify_incoming {body {id m1}} {
     $::_client conn feed [j message -type chat -id $id \
         -from alice@example.com/phone {
-            j body #body $body
+            j body -body $body
         }]
 }
 
@@ -28,7 +28,7 @@ proc notify_incoming {body {id m1}} {
 proc notify_room_message {room nick body {id r1}} {
     $::_client conn feed [j message -type groupchat -id $id \
         -from $room/$nick {
-            j body #body $body
+            j body -body $body
         }]
 }
 

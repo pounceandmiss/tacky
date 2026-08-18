@@ -177,7 +177,7 @@ snit::type iq {
             j error -type wait {
                 j remote-server-timeout -ns urn:ietf:params:xml:ns:xmpp-stanzas
                 j text -ns urn:ietf:params:xml:ns:xmpp-stanzas \
-                    #body "No response from the server"
+                    -body "No response from the server"
             }
         }]
     }
@@ -211,7 +211,7 @@ snit::type iq {
                                 {*}$optionalTo \
                                 -type $opts(-type) \
                                 -id $opts(-id) {
-                                    j /as-is $opts(-payload)
+                                    j #as-is $opts(-payload)
                                 }]
         {*}$options(-send-command) $_iq
     }
@@ -228,6 +228,6 @@ snit::type iq {
         }
         set params(-type) $opts(-type)
         set params(-id) $id
-        {*}$options(-send-command) [j iq {*}[array get params] {j /as-is $opts(-payload)}]
+        {*}$options(-send-command) [j iq {*}[array get params] {j #as-is $opts(-payload)}]
     }
 }

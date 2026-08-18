@@ -77,7 +77,7 @@ snit::type mockbaseconn {
 proc make_features {} {
     j features {
         j mechanisms -ns urn:ietf:params:xml:ns:xmpp-sasl {
-            j mechanism #body PLAIN
+            j mechanism -body PLAIN
         }
     }
 }
@@ -108,7 +108,7 @@ proc make_bind_features_with_sm {} {
 proc make_bind_result {jid} {
     j iq -type result -id bind {
         j bind -ns urn:ietf:params:xml:ns:xmpp-bind {
-            j jid #body $jid
+            j jid -body $jid
         }
     }
 }
@@ -355,7 +355,7 @@ test conn-write-before-ready-buffers {stanzas before ready are buffered} \
     {*}$common \
     -body {
         c connect
-        set msg [j message -to "friend@example.com" {j body #body "hello"}]
+        set msg [j message -to "friend@example.com" {j body -body "hello"}]
         c write $msg
         llength [c.base get_written]
     } -result 0
@@ -366,7 +366,7 @@ test conn-write-after-ready-sends {stanzas after ready go through SM} \
         c connect
         drive_to_ready "user@test.example.com/r" "sm-789"
         c.base clear
-        set msg [j message -to "friend@example.com" {j body #body "hello"}]
+        set msg [j message -to "friend@example.com" {j body -body "hello"}]
         c write $msg
         dict get [lindex [c.base get_written] 0] tag
     } -result {message}
@@ -624,7 +624,7 @@ test conn-sm-failed-resends-queued-stanzas {SM failed resends queued stanzas via
         c connect
         drive_to_bind "user@test.example.com/r"
         # In sm-negotiating; write a stanza (goes to SM queue)
-        set msg [j message -to "friend@example.com" {j body #body "queued"}]
+        set msg [j message -to "friend@example.com" {j body -body "queued"}]
         c write $msg
         c.base clear
         # SM failed -> falls back to passthrough and flushes queue
@@ -676,7 +676,7 @@ test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked 
         c connect
         drive_to_ready "user@test.example.com/r" "sm-retry3"
         # Send a stanza that won't be acked
-        c write [j message -to "friend@example.com" {j body #body "unacked"}]
+        c write [j message -to "friend@example.com" {j body -body "unacked"}]
         set _tready_resumed ""
         c.base inject_error "connection lost"
         c connect
@@ -700,7 +700,7 @@ test conn-write-buffer-flushed-after-ready {write buffer flushed when conn reach
     {*}$common \
     -body {
         c connect
-        set msg [j message -to "friend@example.com" {j body #body "early"}]
+        set msg [j message -to "friend@example.com" {j body -body "early"}]
         c write $msg
         c.base clear
         drive_to_ready "user@test.example.com/r" "sm-flush1"
@@ -729,7 +729,7 @@ test conn-sm-lone-stanza-asks-for-an-ack {a single stanza is acked-for after the
         drive_to_ready "user@test.example.com/r" "sm-lone"
         c.sm configure -ack-delay 20
         c.base clear
-        c write [j message -to "friend@example.com" {j body #body "alone"}]
+        c write [j message -to "friend@example.com" {j body -body "alone"}]
         set immediate [sm_ack_requests]
         after 60 {set ::_sm_waited 1}
         vwait ::_sm_waited
@@ -745,7 +745,7 @@ test conn-sm-burst-asks-once {a full burst asks on the threshold and not again} 
         c.sm configure -ack-delay 20
         c.base clear
         for {set i 0} {$i < 5} {incr i} {
-            c write [j message -to "friend@example.com" {j body #body "m$i"}]
+            c write [j message -to "friend@example.com" {j body -body "m$i"}]
         }
         set immediate [sm_ack_requests]
         after 60 {set ::_sm_waited 1}
@@ -786,7 +786,7 @@ test conn-sm-queue-overflow-triggers-reconnect {SM queue overflow triggers disco
         # Send stanzas without any server ACKs until queue overflows
         set err ""
         for {set i 0} {$i < 6} {incr i} {
-            if {[catch {c write [j message -to "friend@example.com" {j body #body "msg$i"}]} e]} {
+            if {[catch {c write [j message -to "friend@example.com" {j body -body "msg$i"}]} e]} {
                 set err $e
                 break
             }
@@ -824,7 +824,7 @@ test conn-sm-queue-overflow-during-flush {SM overflow during FlushWriteBuffer pr
         c connect
         # Buffer 5 stanzas before ready (goes to writeBuffer)
         for {set i 0} {$i < 5} {incr i} {
-            c write [j message -to "friend@example.com" {j body #body "buf$i"}]
+            c write [j message -to "friend@example.com" {j body -body "buf$i"}]
         }
         # Drive to ready — FlushWriteBuffer will overflow at stanza 4
         drive_to_bind "user@test.example.com/r"

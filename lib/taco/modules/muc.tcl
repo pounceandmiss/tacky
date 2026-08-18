@@ -113,7 +113,7 @@ snit::type taco_muc {
             j x -ns http://jabber.org/protocol/muc {
                 if {$mucChildren ne ""} {
                     foreach {ctag cval} $mucChildren {
-                        j $ctag #body $cval
+                        j $ctag -body $cval
                     }
                 }
                 if {$historyAttrs ne ""} {
@@ -135,7 +135,7 @@ snit::type taco_muc {
 
         if {$opts(-status) ne ""} {
             $client write [j presence -to $opts(-jid)/$nick -type unavailable {
-                j status #body $opts(-status)
+                j status -body $opts(-status)
             }]
         } else {
             $client write [j presence -to $opts(-jid)/$nick -type unavailable]
@@ -158,10 +158,10 @@ snit::type taco_muc {
 
         $client write [j presence -to $opts(-jid)/$nick {
             if {$opts(-show) ne ""} {
-                j show #body $opts(-show)
+                j show -body $opts(-show)
             }
             if {$opts(-status) ne ""} {
-                j status #body $opts(-status)
+                j status -body $opts(-status)
             }
         }]
     }
@@ -178,7 +178,7 @@ snit::type taco_muc {
     method pm {args} {
         array set opts $args
         $client write [j message -to $opts(-jid) -type chat {
-            j body #body $opts(-body)
+            j body -body $opts(-body)
             j x -ns http://jabber.org/protocol/muc#user
         }]
     }
@@ -186,7 +186,7 @@ snit::type taco_muc {
     method subject {args} {
         array set opts $args
         $client write [j message -to $opts(-jid) -type groupchat {
-            j subject #body $opts(-body)
+            j subject -body $opts(-body)
         }]
     }
 
@@ -202,7 +202,7 @@ snit::type taco_muc {
             j x -ns http://jabber.org/protocol/muc#user {
                 j invite -to $opts(-to) {
                     if {$opts(-reason) ne ""} {
-                        j reason #body $opts(-reason)
+                        j reason -body $opts(-reason)
                     }
                 }
             }
@@ -217,7 +217,7 @@ snit::type taco_muc {
             j x -ns http://jabber.org/protocol/muc#user {
                 j decline -to $opts(-to) {
                     if {$opts(-reason) ne ""} {
-                        j reason #body $opts(-reason)
+                        j reason -body $opts(-reason)
                     }
                 }
             }
@@ -233,10 +233,10 @@ snit::type taco_muc {
         $client write [j message -to $jid {
             j x -ns jabber:x:data -type submit {
                 j field -var FORM_TYPE {
-                    j value #body http://jabber.org/protocol/muc#request
+                    j value -body http://jabber.org/protocol/muc#request
                 }
                 j field -var muc#role -type list-single -label {Requested role} {
-                    j value #body participant
+                    j value -body participant
                 }
             }
         }]
@@ -261,7 +261,7 @@ snit::type taco_muc {
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item {*}$itemAttrs {
                     if {$opts(-reason) ne ""} {
-                        j reason #body $opts(-reason)
+                        j reason -body $opts(-reason)
                     }
                 }
             }]
@@ -285,7 +285,7 @@ snit::type taco_muc {
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item {*}$itemAttrs {
                     if {$opts(-reason) ne ""} {
-                        j reason #body $opts(-reason)
+                        j reason -body $opts(-reason)
                     }
                 }
             }]
@@ -328,7 +328,7 @@ snit::type taco_muc {
         $client iq request -type set -to $opts(-jid) \
             -command [mymethod OnIqResult $opts(-command)] \
             -payload [j query -ns http://jabber.org/protocol/muc#owner {
-                j /as-is [::tacky::forms::serialize $opts(-form)]
+                j #as-is [::tacky::forms::serialize $opts(-form)]
             }]
     }
 
@@ -372,10 +372,10 @@ snit::type taco_muc {
             -payload [j query -ns http://jabber.org/protocol/muc#owner {
                 j destroy {*}$destroyAttrs {
                     if {$opts(-reason) ne ""} {
-                        j reason #body $opts(-reason)
+                        j reason -body $opts(-reason)
                     }
                     if {$opts(-password) ne ""} {
-                        j password #body $opts(-password)
+                        j password -body $opts(-password)
                     }
                 }
             }]
@@ -401,7 +401,7 @@ snit::type taco_muc {
         $client iq request -type set -to $opts(-jid) \
             -command [mymethod OnIqResult $opts(-command)] \
             -payload [j query -ns jabber:iq:register {
-                j /as-is [::tacky::forms::serialize $opts(-form)]
+                j #as-is [::tacky::forms::serialize $opts(-form)]
             }]
     }
 

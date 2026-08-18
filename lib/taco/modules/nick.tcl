@@ -69,7 +69,7 @@ snit::type taco_nick {
                 j publish -node "http://jabber.org/protocol/nick" {
                     j item {
                         j nick -ns "http://jabber.org/protocol/nick" \
-                            #body $opts(-nick)
+                            -body $opts(-nick)
                     }
                 }
             }]

@@ -168,7 +168,7 @@ test client-carbons-unwraps-self-sent {<sent> carbon from our own bare JID retur
             j sent -ns urn:xmpp:carbons:2 {
                 j forwarded -ns urn:xmpp:forward:0 {
                     j message -from user@test.example.com/res2 -to peer@example.org/x -type chat {
-                        j body #body hello
+                        j body -body hello
                     }
                 }
             }
@@ -187,7 +187,7 @@ test client-carbons-unwraps-received {<received> carbon also unwraps} \
             j received -ns urn:xmpp:carbons:2 {
                 j forwarded -ns urn:xmpp:forward:0 {
                     j message -from peer@example.org/x -to user@test.example.com/res2 -type chat {
-                        j body #body howdy
+                        j body -body howdy
                     }
                 }
             }
@@ -205,7 +205,7 @@ test client-carbons-drops-forged {carbon envelope from a foreign bare JID is dro
             j sent -ns urn:xmpp:carbons:2 {
                 j forwarded -ns urn:xmpp:forward:0 {
                     j message -from user@test.example.com/res2 -to peer@example.org/x {
-                        j body #body forged
+                        j body -body forged
                     }
                 }
             }
@@ -218,7 +218,7 @@ test client-carbons-ignores-plain {a regular message with no carbon wrapper retu
     -body {
         c.conn configure -bound-jid "user@test.example.com/res1"
         set m [j message -from peer@example.org/x -to user@test.example.com -type chat {
-            j body #body hi
+            j body -body hi
         }]
         c UnwrapCarbon $m
     } -result {}
@@ -261,7 +261,7 @@ test client-password-rejected {a rejected change reports through -onerror and ch
         pw_reply -type error {
             j error -type modify {
                 j not-acceptable -ns urn:ietf:params:xml:ns:xmpp-stanzas
-                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas #body "Too weak"
+                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas -body "Too weak"
             }
         }
         list $::pw_err [expr {[$::_client cget -password] eq $before}]

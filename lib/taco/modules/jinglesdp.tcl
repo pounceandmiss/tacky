@@ -598,7 +598,7 @@ proc jinglesdp::BuildTransport {media sessionAttrs} {
             if {[llength $sp] >= 2} {
                 set hash [lindex $sp 0]
                 set body [join [lrange $sp 1 end] " "]
-                j fingerprint -ns $NS_DTLS -hash $hash -setup $setupVal #body $body
+                j fingerprint -ns $NS_DTLS -hash $hash -setup $setupVal -body $body
             }
         }
         if {$iceOptions ne ""} {

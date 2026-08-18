@@ -110,7 +110,7 @@ namespace eval ::test::message_int {
             set client [tacky client $JULIET]
             $client conn writeImmediate [j message \
                 -type chat -to $ROMEO {
-                    j body #body $body
+                    j body -body $body
                 }]
         }]
         return $ev
@@ -289,7 +289,7 @@ namespace eval ::test::message_int {
             set jclient [tacky client $JULIET]
             $jclient conn writeImmediate [j message \
                 -type chat -to $ROMEO {
-                    j body #body "during disconnect"
+                    j body -body "during disconnect"
                 }]
             after 300
 

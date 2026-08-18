@@ -38,7 +38,7 @@ proc media_session_initiate {sid from} {
                 j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
                     -ufrag abc -pwd xyzxyzxyzxyz {
                     j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 \
-                        -hash sha-256 -setup actpass #body AA:BB
+                        -hash sha-256 -setup actpass -body AA:BB
                 }
             }
         }

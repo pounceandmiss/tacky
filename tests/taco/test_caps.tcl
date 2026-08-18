@@ -20,23 +20,23 @@ test caps-verstr-1 {XEP-0115 example verification string} {*}$caps_common -body 
         j feature -var http://jabber.org/protocol/muc
         j x -ns jabber:x:data -type result {
             j field -var FORM_TYPE -type hidden {
-                j value #body urn:xmpp:dataforms:softwareinfo
+                j value -body urn:xmpp:dataforms:softwareinfo
             }
             j field -var ip_version -type text-multi {
-                j value #body ipv4
-                j value #body ipv6
+                j value -body ipv4
+                j value -body ipv6
             }
             j field -var os {
-                j value #body Mac
+                j value -body Mac
             }
             j field -var os_version {
-                j value #body 10.5.1
+                j value -body 10.5.1
             }
             j field -var software {
-                j value #body Psi
+                j value -body Psi
             }
             j field -var software_version {
-                j value #body 0.11
+                j value -body 0.11
             }
         }
     }]
@@ -55,23 +55,23 @@ test caps-hash-1 {XEP-0115 example hash} {*}$caps_common -body {
         j feature -var http://jabber.org/protocol/muc
         j x -ns jabber:x:data -type result {
             j field -var FORM_TYPE -type hidden {
-                j value #body urn:xmpp:dataforms:softwareinfo
+                j value -body urn:xmpp:dataforms:softwareinfo
             }
             j field -var ip_version -type text-multi {
-                j value #body ipv4
-                j value #body ipv6
+                j value -body ipv4
+                j value -body ipv6
             }
             j field -var os {
-                j value #body Mac
+                j value -body Mac
             }
             j field -var os_version {
-                j value #body 10.5.1
+                j value -body 10.5.1
             }
             j field -var software {
-                j value #body Psi
+                j value -body Psi
             }
             j field -var software_version {
-                j value #body 0.11
+                j value -body 0.11
             }
         }
     }]
@@ -134,7 +134,7 @@ test caps-disco-identity {a resolved hash reports the client identity, not the f
     }]
     c.conn feed [j iq -type result -from peer@example.com/phone \
         -id [xsearch [lindex [c.conn get_written] end] -get @id] {
-            j /as-is $queryNode
+            j #as-is $queryNode
         }]
     c.caps discoFor $ver
 } -result {name Conversations category client type phone features urn:xmpp:receipts}

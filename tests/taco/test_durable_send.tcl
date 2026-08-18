@@ -199,7 +199,7 @@ test ds-echo-confirms-pending {MUC echo of sent message confirms pending to ''} 
             {apply {{ev} { lappend ::patches $ev }}}
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
-            j body #body "echo me"
+            j body -body "echo me"
         }]
         # Check DB status updated
         set status [c db onecolumn {
@@ -224,7 +224,7 @@ test ds-echo-no-received {echo of own message does not emit <New>} \
             {apply {{ev} { lappend ::received $ev }}}
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
-            j body #body "echo me"
+            j body -body "echo me"
         }]
         llength $received
     } -result {0}
@@ -239,7 +239,7 @@ test ds-echo-captures-server-id {echo updates server_id on confirmed message} \
         set oid [dict get [lindex $msgs 0] own_id]
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
-            j body #body "echo me"
+            j body -body "echo me"
             j stanza-id -ns urn:xmpp:sid:0 -id srv99 -by room@muc.example.com
         }]
         set sid [c db onecolumn {
@@ -266,7 +266,7 @@ test ds-sm-ack-confirms {OnSmAck confirms pending messages by own_id} \
             -jid room@muc.example.com?join \
             {apply {{ev} { lappend ::patches $ev }}}
         set stanza [j message -to room@muc.example.com -type groupchat -id $oid {
-            j body #body "ack me"
+            j body -body "ack me"
         }]
         c message OnSmAck -stanzas [list $stanza]
         set status [c db onecolumn {
@@ -343,8 +343,8 @@ test ds-sm-ack-command-fires {SM -ack-command fires on <a> with acked stanzas} \
         testsm onConnect
         testsm inStanza [j enabled -ns urn:xmpp:sm:3 -id sid1]
         # Send two stanzas
-        set s1 [j message -to a@b { j body #body one }]
-        set s2 [j message -to c@d { j body #body two }]
+        set s1 [j message -to a@b { j body -body one }]
+        set s2 [j message -to c@d { j body -body two }]
         testsm outStanza $s1
         testsm outStanza $s2
         # Server acks both
@@ -369,7 +369,7 @@ test ds-sm-ack-command-on-resume {SM -ack-command fires on resume for acked stan
         testsm onFeatures [j features { j sm -ns urn:xmpp:sm:3 }]
         testsm onConnect
         testsm inStanza [j enabled -ns urn:xmpp:sm:3 -id sid1]
-        set s1 [j message -to a@b { j body #body queued }]
+        set s1 [j message -to a@b { j body -body queued }]
         testsm outStanza $s1
         testsm onDisconnect
         # Resume — server acks the queued stanza
@@ -388,7 +388,7 @@ test ds-parse-message-has-server-status {ParseMessage includes server_status in 
         tacky listen message <New> \
             {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -from alice@example.com/phone {
-            j body #body "incoming"
+            j body -body "incoming"
         }]
         dict get [dict get $got -message] server_status
     } -result {}
@@ -401,7 +401,7 @@ test ds-incoming-emits-received {incoming 1:1 message emits <New>} \
             -jid alice@example.com \
             {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -from alice@example.com/phone {
-            j body #body "hey"
+            j body -body "hey"
         }]
         list [dict get $got -jid] [dict get $got -message content body] \
              [dict get $got -message server_status]
@@ -411,7 +411,7 @@ test ds-incoming-stores-empty-status {incoming message stored with empty server_
     {*}$ds_msg_common \
     -body {
         c.conn feed [j message -from alice@example.com/phone {
-            j body #body "hey"
+            j body -body "hey"
         }]
         set status [c db onecolumn {
             SELECT server_status FROM chat_message
@@ -437,11 +437,11 @@ test ds-double-confirm-idempotent {echo + SM ack double confirm is harmless} \
         # First: MUC echo confirms
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/me {
-            j body #body "double"
+            j body -body "double"
         }]
         # Second: SM ack also fires
         set stanza [j message -to room@muc.example.com -type groupchat -id $oid {
-            j body #body "double"
+            j body -body "double"
         }]
         c message OnSmAck -stanzas [list $stanza]
         set status [c db onecolumn {

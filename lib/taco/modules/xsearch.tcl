@@ -77,8 +77,8 @@ proc xsearch {node args} {
         # This happens when current arg is @attr and next arg is the value
         if {[string match "@*" $arg] && ($i + 1) < [llength $args]} {
             set nextArg [lindex $args [expr {$i + 1}]]
-            # Check if next arg is NOT an option (doesn't start with -)
-            if {![string match "-*" $nextArg]} {
+            # Only a keyword ends the filter early, so a value may start with -
+            if {$nextArg ni {-gather -get -script -body -ns -tag -tail}} {
                 # This is an attribute value filter
                 set attrName [string range $arg 1 end]
                 set attrValue $nextArg
@@ -226,6 +226,11 @@ proc extractFields {node fields} {
 
 # Extract a single field value from a node
 proc extractSingleField {node field} {
+    # A field is spelled the same in a filter and here, so -body is taken to
+    # mean body.
+    if {[string index $field 0] eq "-"} {
+        set field [string range $field 1 end]
+    }
     switch -glob $field {
         "@*" {
             # Check if field is an attribute (@attr)

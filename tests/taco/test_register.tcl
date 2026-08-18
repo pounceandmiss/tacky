@@ -141,14 +141,14 @@ proc make_reg_features {} {
 proc make_noreg_features {} {
     j features {
         j mechanisms -ns urn:ietf:params:xml:ns:xmpp-sasl {
-            j mechanism .body PLAIN
+            j mechanism -body PLAIN
         }
     }
 }
 
 proc make_reg_result {} {
     j iq -type result -id reg-1 {
-        j /as-is $::sample_reg_query
+        j #as-is $::sample_reg_query
     }
 }
 
@@ -160,7 +160,7 @@ proc make_reg_error {txt} {
     j iq -type error -id reg-2 {
         j error -type cancel {
             j not-allowed -ns urn:ietf:params:xml:ns:xmpp-stanzas
-            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas .body $txt
+            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas -body $txt
         }
     }
 }

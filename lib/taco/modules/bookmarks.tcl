@@ -132,19 +132,19 @@ snit::type taco_bookmarks {
                 j publish-options {
                     j x -ns jabber:x:data -type submit {
                         j field -var FORM_TYPE -type hidden {
-                            j value #body "http://jabber.org/protocol/pubsub#publish-options"
+                            j value -body "http://jabber.org/protocol/pubsub#publish-options"
                         }
                         j field -var pubsub#persist_items {
-                            j value #body true
+                            j value -body true
                         }
                         j field -var pubsub#max_items {
-                            j value #body max
+                            j value -body max
                         }
                         j field -var pubsub#send_last_published_item {
-                            j value #body never
+                            j value -body never
                         }
                         j field -var pubsub#access_model {
-                            j value #body whitelist
+                            j value -body whitelist
                         }
                     }
                 }
@@ -400,10 +400,10 @@ snit::type taco_bookmarks {
         j item -id $bm(jid) {
             j conference {*}$confAttrs {
                 if {$bm(nick) ne ""} {
-                    j nick #body $bm(nick)
+                    j nick -body $bm(nick)
                 }
                 if {$bm(password) ne ""} {
-                    j password #body $bm(password)
+                    j password -body $bm(password)
                 }
                 if {$bm(extensions_xml) ne ""} {
                     # XEP-0402 4.2: extensions from other clients MUST be

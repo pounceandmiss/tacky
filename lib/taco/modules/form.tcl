@@ -98,7 +98,7 @@ proc ::tacky::forms::serialize {form} {
             }
             j field -type [dict get $field type] -var [dict get $field var] {
                 foreach v [dict get $field value] {
-                    j value .body $v
+                    j value -body $v
                 }
             }
         }

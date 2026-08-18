@@ -159,7 +159,7 @@ test bookmarks-wire-result {items result populates the store and triggers autojo
                     j item -id room@muc.example.com {
                         j conference -ns urn:xmpp:bookmarks:1 \
                             -autojoin true -name "Room" {
-                            j nick #body me
+                            j nick -body me
                         }
                     }
                 }
@@ -184,7 +184,7 @@ test bookmarks-wire-notification {pubsub notifications add and retract bookmarks
                     j item -id room@muc.example.com {
                         j conference -ns urn:xmpp:bookmarks:1 \
                             -autojoin true -name "Room" {
-                            j nick #body me
+                            j nick -body me
                         }
                     }
                 }
@@ -213,7 +213,7 @@ test bookmarks-wire-extensions-preserved {republish keeps extensions from the se
                     j item -id room@muc.example.com {
                         j conference -ns urn:xmpp:bookmarks:1 \
                             -autojoin false -name "Room" {
-                            j nick #body me
+                            j nick -body me
                             j extensions {
                                 j pinned -ns urn:example:pinning
                             }
@@ -240,7 +240,7 @@ test bookmarks-wire-foreign-notification-dropped {bookmark events from other sen
                     j item -id trap@muc.evil.example {
                         j conference -ns urn:xmpp:bookmarks:1 \
                             -autojoin true -name "Trap" {
-                            j nick #body me
+                            j nick -body me
                         }
                     }
                 }

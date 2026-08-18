@@ -295,10 +295,10 @@ namespace eval ::test::omemo_int {
                 -type chat {
                     j encrypted -ns eu.siacs.conversations.axolotl {
                         j header -sid $dev {
-                            j key -rid $dev .body Zm9v
-                            j iv .body AAAAAAAAAAAAAAAA
+                            j key -rid $dev -body Zm9v
+                            j iv -body AAAAAAAAAAAAAAAA
                         }
-                        j payload .body Zm9v
+                        j payload -body Zm9v
                     }
                 }]
             $client omemo OnMessage $msg

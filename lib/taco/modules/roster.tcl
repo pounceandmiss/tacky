@@ -113,7 +113,7 @@ snit::type taco_roster {
         $client iq request -type set -payload [j query -ns jabber:iq:roster {
             j item {*}$itemAttrs {
                 foreach group $opts(-groups) {
-                    j group #body $group
+                    j group -body $group
                 }
             }
         }]
