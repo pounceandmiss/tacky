@@ -1,5 +1,11 @@
 # ==== Shared config ====
 
+# dist/ is what CMake and the other consumers import, so an archive that comes
+# out byte-identical has to keep its mtime: a fresh one makes every dependent
+# relink for nothing, and this build is link-bound. cmp on a warm file costs
+# milliseconds against the tens of megabytes the copy would move.
+copy-if-changed = cmp -s $(1) $(2) || cp $(1) $(2)
+
 COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
@@ -61,7 +67,7 @@ tacky tackyd tackyd-json: %: dist-dir
 	    BASEDIR=$(LINUX_BUILD) \
 	    DEPSDIR=$(DEPS_DIR) \
 	    app
-	cp $(LINUX_BUILD)/$* dist/$*
+	$(call copy-if-changed,$(LINUX_BUILD)/$*,dist/$*)
 
 # libtacky.a: the taco backend as a linked C library (embed/tacky.c drives the
 # interp on a private thread; see embed/tacky.h). Same deps/sources as the
@@ -79,7 +85,7 @@ lib: dist-dir
 	    BASEDIR=$(LINUX_BUILD) \
 	    DEPSDIR=$(DEPS_DIR) \
 	    lib
-	cp $(LINUX_BUILD)/libtacky.a dist/libtacky.a
+	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
 
 # ==== Windows cross-build ====
 # Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
@@ -136,7 +142,7 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
 	    DEPSDIR=$(WIN_DEPS_DIR) \
 	    win-app
-	cp $(WIN_BUILD)/$*.exe dist/$*.exe
+	$(call copy-if-changed,$(WIN_BUILD)/$*.exe,dist/$*.exe)
 
 # Windows libtacky.a: the same static-library build as `lib`, cross-compiled to
 # a MinGW PE archive. Ships alongside the native one as dist/libtacky-win.a.
@@ -155,7 +161,7 @@ win-lib: dist-dir
 	    BASEDIR=$(WIN_ROOT)/$(WIN_BUILD) \
 	    DEPSDIR=$(WIN_DEPS_DIR) \
 	    win-lib
-	cp $(WIN_BUILD)/libtacky.a dist/libtacky-win.a
+	$(call copy-if-changed,$(WIN_BUILD)/libtacky.a,dist/libtacky-win.a)
 
 # ==== Android cross-build ====
 # The daemon (tackyd-json) for arm64-v8a, staged as a jniLibs/<abi>/ subtree an
@@ -208,7 +214,7 @@ android-lib: dist-dir
 	    LIB_NAME=tacky \
 	    BASEDIR=/src/$(ANDROID_BUILD) \
 	    android-lib
-	cp $(ANDROID_BUILD)/libtacky.a dist/libtacky-android.a
+	$(call copy-if-changed,$(ANDROID_BUILD)/libtacky.a,dist/libtacky-android.a)
 
 # ==== Portable Linux build ====
 # Build the native binaries against an older glibc (Debian bookworm, 2.36) so
