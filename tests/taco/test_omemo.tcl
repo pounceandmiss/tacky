@@ -211,10 +211,10 @@ test omemo-unit-reflected-guard-drops-own-echo {server echo of our send is dropp
         set msg [j message -from $::test::omemo_unit::JULIET_BARE -type chat {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $dev {
-                    j key -rid $dev .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid $dev -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -231,10 +231,10 @@ test omemo-unit-reflected-guard-allows-cross-device-carbon \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $otherDev {
-                    j key -rid $ourDev .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid $ourDev -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -251,10 +251,10 @@ test omemo-unit-no-key-for-us-surfaces-error \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid $otherRid .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid $otherRid -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set encNode [lindex [xsearch $msg encrypted \
@@ -277,8 +277,8 @@ test omemo-unit-keytransport-no-key-for-us-is-silent \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid $otherRid .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid $otherRid -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
             }
         }]
@@ -302,8 +302,8 @@ test omemo-unit-keytransport-undecryptable-does-not-heal \
                 -type chat -id stanza-1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 648103571 {
-                    j key -rid $ourDev .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid $ourDev -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
             }
         }]
@@ -329,13 +329,13 @@ test omemo-unit-mam-preserves-stanza-id \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-1 {
             j {stanza-id} -ns urn:xmpp:sid:0 -id $sid -by $::test::omemo_unit::JULIET_BARE
-            j body .body "OMEMO encrypted message fallback"
+            j body -body "OMEMO encrypted message fallback"
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid 99 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 99 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set plain [c omemo SynthesisePlain $msg "hello"]
@@ -353,13 +353,13 @@ test omemo-unit-mam-self-sent-blanks-body \
                 -from $::test::omemo_unit::JULIET_BARE \
                 -to   $::test::omemo_unit::ROMEO \
                 -type chat -id wire-2 {
-            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid $ourDev {
-                    j key -rid 7 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 7 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -382,13 +382,13 @@ test omemo-unit-mam-untrusted-blanks-body \
                 -from $::test::omemo_unit::ROMEO \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-3 {
-            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 77 {
-                    j key -rid 1 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 1 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -402,9 +402,9 @@ test omemo-unit-mam-no-header-blanks-body \
                 -from $::test::omemo_unit::ROMEO \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-4 {
-            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -425,10 +425,10 @@ test omemo-unit-onmessage-nonnumeric-sid-drops \
                 -type chat -id wire-nan1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid "abc" {
-                    j key -rid 1 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 1 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -442,7 +442,7 @@ test omemo-unit-onmessage-no-header-drops \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-nh1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         c omemo OnMessage $msg
@@ -455,13 +455,13 @@ test omemo-unit-mam-nonnumeric-sid-blanks-body \
                 -from $::test::omemo_unit::JULIET_BARE \
                 -to   $::test::omemo_unit::JULIET_BARE \
                 -type chat -id wire-nan2 {
-            j body .body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid "abc" {
-                    j key -rid 1 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 1 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         set out [c omemo decryptForwarded $msg]
@@ -1213,10 +1213,10 @@ test omemo-unit-event-decrypt-failed \
                 -type chat -id wire-df1 {
             j encrypted -ns eu.siacs.conversations.axolotl {
                 j header -sid 42 {
-                    j key -rid 99 .body Zm9v
-                    j iv .body AAAAAAAAAAAAAAAA
+                    j key -rid 99 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
                 }
-                j payload .body Zm9v
+                j payload -body Zm9v
             }
         }]
         c omemo OnMessage $msg

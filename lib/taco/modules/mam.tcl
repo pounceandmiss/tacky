@@ -222,39 +222,39 @@ snit::type taco_mam {
         set payload [j query -queryid $queryId -ns urn:xmpp:mam:2 {
             j x -ns jabber:x:data -type submit {
                 j field -var FORM_TYPE -type hidden {
-                    j value #body urn:xmpp:mam:2
+                    j value -body urn:xmpp:mam:2
                 }
                 if {$withJid ne ""} {
                     j field -var with {
-                        j value #body $withJid
+                        j value -body $withJid
                     }
                 }
                 if {$startVal ne ""} {
                     j field -var start {
-                        j value #body $startVal
+                        j value -body $startVal
                     }
                 }
                 if {$endVal ne ""} {
                     j field -var end {
-                        j value #body $endVal
+                        j value -body $endVal
                     }
                 }
                 if {$ftVal ne "" && $ftVar ne ""} {
                     j field -var $ftVar {
-                        j value #body $ftVal
+                        j value -body $ftVal
                     }
                 }
             }
             if {$maxVal ne "" || $hasBefore || $afterVal ne ""} {
                 j set -ns http://jabber.org/protocol/rsm {
                     if {$maxVal ne ""} {
-                        j max #body $maxVal
+                        j max -body $maxVal
                     }
                     if {$hasBefore} {
-                        j before #body $beforeVal
+                        j before -body $beforeVal
                     }
                     if {$afterVal ne ""} {
-                        j after #body $afterVal
+                        j after -body $afterVal
                     }
                 }
             }

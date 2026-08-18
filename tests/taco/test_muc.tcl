@@ -452,7 +452,7 @@ test muc-message-event {groupchat message emits message <New> only} \
         set got {}
         tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "hi all"
+            j body -body "hi all"
         }]
         list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com?join {hi all}}
@@ -475,7 +475,7 @@ test muc-private-message-event {private message emits message <New> only} \
         set got {}
         tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
-            j body #body "secret"
+            j body -body "secret"
         }]
         list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com/someone secret}
@@ -497,7 +497,7 @@ test muc-subject-event {<Subject> event fires and updates getSubject} \
         set got {}
         tacky listen muc <Subject> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type groupchat -from room@muc.example.com/admin {
-            j subject #body "welcome"
+            j subject -body "welcome"
         }]
         list [dict get $got -nick] [dict get $got -subject] \
              [c muc getSubject -jid room@muc.example.com]
@@ -518,7 +518,7 @@ test muc-kicked-event {<Kicked> event fires on 307} \
             j x -ns http://jabber.org/protocol/muc#user {
                 j item -role none -affiliation none {
                     j actor -nick admin
-                    j reason #body "behave"
+                    j reason -body "behave"
                 }
                 j status -code 307
             }
@@ -539,7 +539,7 @@ test muc-banned-event {<Banned> event fires on 301} \
             j x -ns http://jabber.org/protocol/muc#user {
                 j item -role none -affiliation outcast {
                     j actor -nick admin
-                    j reason #body "spam"
+                    j reason -body "spam"
                 }
                 j status -code 301
             }
@@ -567,9 +567,9 @@ test muc-invite-event {<Invite> event fires on incoming invitation} \
         c.conn feed [j message -from room@muc.example.com {
             j x -ns http://jabber.org/protocol/muc#user {
                 j invite -from alice@example.com {
-                    j reason #body "come join"
+                    j reason -body "come join"
                 }
-                j password #body roompass
+                j password -body roompass
             }
         }]
         list [dict get $got -jid] [dict get $got -from] \
@@ -584,7 +584,7 @@ test muc-decline-event {<Decline> event fires on incoming decline} \
         c.conn feed [j message -from room@muc.example.com {
             j x -ns http://jabber.org/protocol/muc#user {
                 j decline -from bob@example.com {
-                    j reason #body "busy"
+                    j reason -body "busy"
                 }
             }
         }]
@@ -645,7 +645,7 @@ test muc-destroyed-event {<Destroyed> event fires} \
             j x -ns http://jabber.org/protocol/muc#user {
                 j item -role none -affiliation none
                 j destroy -jid newroom@muc.example.com {
-                    j reason #body "moved"
+                    j reason -body "moved"
                 }
                 j status -code 110
             }
@@ -719,13 +719,13 @@ test muc-voice-request-event {<VoiceRequest> event fires} \
         c.conn feed [j message -from room@muc.example.com {
             j x -ns jabber:x:data -type submit {
                 j field -var FORM_TYPE {
-                    j value #body http://jabber.org/protocol/muc#request
+                    j value -body http://jabber.org/protocol/muc#request
                 }
                 j field -var muc#jid {
-                    j value #body visitor@example.com
+                    j value -body visitor@example.com
                 }
                 j field -var muc#roomnick {
-                    j value #body newbie
+                    j value -body newbie
                 }
             }
         }]
@@ -746,10 +746,10 @@ test muc-config-get-returns-form {configGet delivers a parsed form dict} \
             j query -ns http://jabber.org/protocol/muc#owner {
                 j x -ns jabber:x:data -type form {
                     j field -var FORM_TYPE -type hidden {
-                        j value #body http://jabber.org/protocol/muc#roomconfig
+                        j value -body http://jabber.org/protocol/muc#roomconfig
                     }
                     j field -var muc#roomconfig_roomname -type text-single {
-                        j value #body Lobby
+                        j value -body Lobby
                     }
                 }
             }
@@ -771,10 +771,10 @@ test muc-discover-rooms-occupants-from-form {discoverRooms reads occupancy from 
                 j item -jid room@muc.example.com -name Lobby {
                     j x -ns jabber:x:data -type result {
                         j field -var FORM_TYPE -type hidden {
-                            j value #body http://jabber.org/protocol/muc#roominfo
+                            j value -body http://jabber.org/protocol/muc#roominfo
                         }
                         j field -var muc#roominfo_occupants {
-                            j value #body 42
+                            j value -body 42
                         }
                     }
                 }
@@ -841,10 +841,10 @@ test muc-listen-filters-by-jid {tacky listen filters message <New> by -jid} \
         tacky listen message <New> -jid room1@muc.example.com?join \
             {apply {{ev} { lappend ::got [dict get $ev -jid] }}}
         c.conn feed [j message -type groupchat -from room1@muc.example.com/nick {
-            j body #body "yes"
+            j body -body "yes"
         }]
         c.conn feed [j message -type groupchat -from room2@muc.example.com/nick {
-            j body #body "no"
+            j body -body "no"
         }]
         set got
     } -result {room1@muc.example.com?join}
@@ -897,7 +897,7 @@ test muc-groupchat-stored {groupchat messages stored under room@muc?join} \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "stored msg"
+            j body -body "stored msg"
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
@@ -910,7 +910,7 @@ test muc-groupchat-emits-received {groupchat message emits message <New> with ?j
         set got {}
         tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "event msg"
+            j body -body "event msg"
         }]
         list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com?join {event msg}}
@@ -921,7 +921,7 @@ test muc-groupchat-own-id-set-for-own-nick {own message via echo sets own_id} \
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -id my-msg-id \
             -from room@muc.example.com/me {
-            j body #body "my echo"
+            j body -body "my echo"
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg own_id
@@ -933,7 +933,7 @@ test muc-groupchat-own-id-empty-for-other-nick {other user message has empty own
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -id some-id \
             -from room@muc.example.com/someone {
-            j body #body "their msg"
+            j body -body "their msg"
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg own_id
@@ -950,7 +950,7 @@ test muc-groupchat-other-id-no-false-confirm {other user's @id matching pending 
         # Someone else sends a message with that same @id
         c.conn feed [j message -type groupchat -id $oid \
             -from room@muc.example.com/someone {
-            j body #body "coincidence"
+            j body -body "coincidence"
         }]
         # Pending message should still be pending
         c db onecolumn {
@@ -967,7 +967,7 @@ test muc-groupchat-occupant-id-not-own-without-self-id \
         c muc join -jid room@muc.example.com -nick me
         c.conn feed [j message -type groupchat -id spoof-id \
             -from room@muc.example.com/me {
-            j body #body "not mine"
+            j body -body "not mine"
             j occupant-id -ns urn:xmpp:occupant-id:0 -id imposter
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
@@ -981,7 +981,7 @@ test muc-groupchat-own-by-occupant-id-not-nick \
         muc_join room@muc.example.com me -occupant occ-me
         c.conn feed [j message -type groupchat -id my-msg-id \
             -from room@muc.example.com/renamed {
-            j body #body "my echo"
+            j body -body "my echo"
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
@@ -994,7 +994,7 @@ test muc-stanza-id-not-from-room-ignored \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "forged sid"
+            j body -body "forged sid"
             j stanza-id -ns urn:xmpp:sid:0 -id forged -by user@test.example.com
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
@@ -1006,7 +1006,7 @@ test muc-pm-stored {private messages stored under room@muc/nick} \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
-            j body #body "secret msg"
+            j body -body "secret msg"
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com/someone] messages]
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
@@ -1019,7 +1019,7 @@ test muc-pm-emits-received {private message emits message <New> with full occupa
         set got {}
         tacky listen message <New> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
-            j body #body "secret event"
+            j body -body "secret event"
         }]
         list [dict get $got -jid] [dict get $got -message content body]
     } -result {room@muc.example.com/someone {secret event}}
@@ -1029,7 +1029,7 @@ test muc-groupchat-not-in-message-module {groupchat messages don't reach message
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "only in muc"
+            j body -body "only in muc"
         }]
         llength [dict get [c message messagestore get latest room@muc.example.com] messages]
     } -result {0}
@@ -1039,7 +1039,7 @@ test muc-pm-not-in-message-module {MUC PMs don't reach message module} \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type chat -from room@muc.example.com/someone {
-            j body #body "private"
+            j body -body "private"
         }]
         # message module would store under bare JID; should be empty
         llength [dict get [c message messagestore get latest room@muc.example.com] messages]
@@ -1050,7 +1050,7 @@ test muc-dm-passes-through {DM from non-MUC contact passes through to message mo
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "regular dm"
+            j body -body "regular dm"
         }]
         set msgs [dict get [c message messagestore get latest alice@example.com] messages]
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
@@ -1061,7 +1061,7 @@ test muc-store-delayed-uses-stamp {stored MUC message uses delay timestamp} \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "old msg"
+            j body -body "old msg"
             j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
@@ -1074,7 +1074,7 @@ test muc-store-extracts-stanza-id {stored MUC message extracts stanza-id} \
     -body {
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
-            j body #body "with sid"
+            j body -body "with sid"
             j stanza-id -ns urn:xmpp:sid:0 -id srv99 -by room@muc.example.com
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
@@ -1085,7 +1085,7 @@ test muc-groupchat-unknown-room-dropped {groupchat from a room we never joined i
     {*}$muc_common \
     -body {
         c.conn feed [j message -type groupchat -from evil@muc.evil.example/mallory {
-            j body #body "injected"
+            j body -body "injected"
         }]
         list [llength [dict get [c message messagestore get latest evil@muc.evil.example?join] messages]] \
             [c muc getSubject -jid evil@muc.evil.example]
@@ -1100,11 +1100,11 @@ test muc-reaction-occupant-id {a groupchat reaction keyed by occupant-id aggrega
         c.conn feed [j message -type groupchat -id srv1 \
             -from room@muc.example.com/someone {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
-            j body #body "hi all"
+            j body -body "hi all"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/other {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction -body 👍 }
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         dict get [lindex $msgs 0] reactions
@@ -1117,10 +1117,10 @@ test muc-reaction-no-occupant-id-dropped {a groupchat reaction with no occupant-
         c.conn feed [j message -type groupchat -id srv1 \
             -from room@muc.example.com/someone {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
-            j body #body "hi all"
+            j body -body "hi all"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/other {
-            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction -body 👍 }
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         dict exists [lindex $msgs 0] reactions
@@ -1150,7 +1150,7 @@ test muc-own-message-by-occupant-id-despite-nick \
         c.conn feed [j message -type groupchat -id my-msg-id \
             -from room@muc.example.com/me-renamed {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
-            j body #body "still mine"
+            j body -body "still mine"
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg is_outgoing
@@ -1164,7 +1164,7 @@ test muc-own-message-not-fooled-by-nick-spoof \
         c.conn feed [j message -type groupchat -id spoof-id \
             -from room@muc.example.com/me {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-impostor
-            j body #body "not mine"
+            j body -body "not mine"
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg is_outgoing
@@ -1178,14 +1178,14 @@ test muc-own-reaction-keyed-by-occupant-id \
         c.conn feed [j message -type groupchat -id srv1 \
             -from room@muc.example.com/someone {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
-            j body #body "hi all"
+            j body -body "hi all"
         }]
         set ts [dict get [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0] timestamp]
         c message react -chat room@muc.example.com?join -timestamp $ts -emoji 👍
         # Room reflects our reaction back stamped with our occupant-id.
         c.conn feed [j message -type groupchat -from room@muc.example.com/me {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
-            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id srv1 { j reaction -body 👍 }
         }]
         set msgs [dict get [c message messagestore get latest room@muc.example.com?join] messages]
         dict get [lindex $msgs 0] reactions
@@ -1197,7 +1197,7 @@ test muc-occupant-id-stored-on-message {a peer message persists its occupant-id}
         muc_join room@muc.example.com me -occupant occ-me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-someone
-            j body #body "hi"
+            j body -body "hi"
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         dict get $msg occupant_id
@@ -1218,12 +1218,12 @@ test muc-edit-by-occupant-id \
             -from room@muc.example.com/other {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j body #body "helo"
+            j body -body "helo"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/other {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
             j replace -ns urn:xmpp:message-correct:0 -id srv1
-            j body #body "hello"
+            j body -body "hello"
         }]
         set m [lindex [muc_msgs] 0]
         list [dict get $m content body] [dict get $m edited] [llength [muc_msgs]]
@@ -1238,12 +1238,12 @@ test muc-edit-occupant-spoof-rejected \
             -from room@muc.example.com/other {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j body #body "helo"
+            j body -body "helo"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/impostor {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-impostor
             j replace -ns urn:xmpp:message-correct:0 -id srv1
-            j body #body "HACKED"
+            j body -body "HACKED"
         }]
         set m [lindex [muc_msgs] 0]
         list [dict get $m content body] [dict get $m edited]
@@ -1258,7 +1258,7 @@ test muc-moderation-tombstones \
             -from room@muc.example.com/other {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j body #body "spam"
+            j body -body "spam"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com {
             j retract -ns urn:xmpp:message-retract:1 -id srv1 {
@@ -1278,7 +1278,7 @@ test muc-occupant-retract-ignored \
             -from room@muc.example.com/other {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j body #body "keep me"
+            j body -body "keep me"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/other {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
@@ -1296,7 +1296,7 @@ test muc-moderate-sends-iq \
             -from room@muc.example.com/other {
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
-            j body #body "spam"
+            j body -body "spam"
         }]
         set ts [dict get [lindex [muc_msgs] 0] timestamp]
         c message moderate -chat room@muc.example.com?join -timestamp $ts
@@ -1320,7 +1320,7 @@ test muc-own-edit-roundtrip-no-duplicate \
             -from room@muc.example.com/me {
             j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
-            j body #body "а"
+            j body -body "а"
         }]
         set m [lindex [muc_msgs] 0]
         set backfilled [dict get $m occupant_id]
@@ -1334,7 +1334,7 @@ test muc-own-edit-roundtrip-no-duplicate \
             j stanza-id -ns urn:xmpp:sid:0 -id srvB -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
             j replace -ns urn:xmpp:message-correct:0 -id $oid
-            j body #body "б"
+            j body -body "б"
         }]
         set msgs [muc_msgs]
         list $backfilled [llength $msgs] \
@@ -1353,7 +1353,7 @@ test muc-edit-replace-id-is-origin-not-stanza-id \
             -from room@muc.example.com/me {
             j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
-            j body #body "а"
+            j body -body "а"
         }]
         set m [lindex [muc_msgs] 0]
         c message edit -chat room@muc.example.com?join \
@@ -1375,12 +1375,12 @@ test muc-own-edit-spoof-still-rejected \
             -from room@muc.example.com/me {
             j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
-            j body #body "mine"
+            j body -body "mine"
         }]
         c.conn feed [j message -type groupchat -from room@muc.example.com/impostor {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-evil
             j replace -ns urn:xmpp:message-correct:0 -id srvA
-            j body #body "HACKED"
+            j body -body "HACKED"
         }]
         set mine ""
         foreach msg [muc_msgs] {

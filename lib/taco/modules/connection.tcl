@@ -607,7 +607,7 @@ snit::type conn {
                 set authStanza [j auth \
                     -ns urn:ietf:params:xml:ns:xmpp-sasl \
                     -mechanism PLAIN \
-                    #body $saslPlain]
+                    -body $saslPlain]
                 # Never the stanza: its body is base64 of user and password.
                 jlog debug "stanza out: auth mechanism=PLAIN"
                 $base writeStanza $authStanza
@@ -640,7 +640,7 @@ snit::type conn {
                 set bindStanza [j iq -id bind -type set {
                     j bind -ns urn:ietf:params:xml:ns:xmpp-bind {
                         if {$options(-resource) ne ""} {
-                            j resource #body $options(-resource)
+                            j resource -body $options(-resource)
                         }
                     }
                 }]

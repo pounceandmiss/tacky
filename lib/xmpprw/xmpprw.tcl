@@ -24,9 +24,10 @@ namespace eval ::jab {}
 #   ::jab::cancelRead $chan              Stop and destroy a channel's reader
 #
 #   j $tag ?key val ...? ?script?   Build a node dict (nestable DSL)
-#     Keys: -attr $val / @attr $val   set an attribute
-#           -ns $uri                  set the namespace
-#           #body $text / .body $text set the text content
+#     Keys: -ns $uri                  set the namespace
+#           -body $text               set the text content
+#           -attr $val                set an attribute
+#           @attr $val                same, for names shadowed by the above
 #     The trailing script adds children by calling j again (see example).
 #   j #as-is $node                  Insert a pre-built node dict as a child
 #
@@ -43,10 +44,10 @@ namespace eval ::jab {}
 #       j query -ns urn:xmpp:mam:2 {
 #           j x -ns jabber:x:data -type submit {
 #               j field -var FORM_TYPE -type hidden {
-#                   j value #body urn:xmpp:mam:2
+#                   j value -body urn:xmpp:mam:2
 #               }
 #               j field -var with {
-#                   j value #body user@example.com
+#                   j value -body user@example.com
 #               }
 #           }
 #       }
@@ -326,82 +327,92 @@ proc ::jab::cancelRead {chan} {
 
 proc j {tag args} {
     upvar ___jStore store
-    
-    set IamMain [expr {![info exists store]}]
-    if {$tag in "#as-is /as-is"} {
-        set node [lindex $args 0]
-        if {[llength $args] != 1 || ![dict exists $node tag]} {
-            error "Usage: j #as-is \$node"
-        }
 
-        lappend store /as-is $node
-    } else {    
-        set haveScript [expr {[llength $args] % 2 > 0}]
-        
-        set opts $args
-        if {$haveScript} {
-            set opts [lrange $args 0 end-1]
-        }
-        lappend store $tag $opts
-        if {$haveScript} {
-            uplevel [lindex $args end]
-        }
-        lappend store /end {}
-        
-    }
-    if {!$IamMain} {
-            return
-    }
-    # This does the same as the XmppStringReader does to prevent duplicating
-    set NodeList {}
-    
-    foreach {tag data} $store {
-        switch -- $tag {
-            /as-is {
-                # data is the ready-made child (not surrounded by a list)
-                set node $data
-                
-                set parent [lpop NodeList end]
-                dict lappend parent children $node
-                lappend NodeList $parent
-                
+    set IamMain [expr {![info exists store]}]
+    # Clear the accumulator however we leave, or an error here leaves the
+    # caller's frame poisoned and every later j call in it returns nothing.
+    try {
+        if {$tag eq "#as-is"} {
+            set node [lindex $args 0]
+            if {[llength $args] != 1 || ![dict exists $node tag]} {
+                error "Usage: j #as-is \$node"
             }
-            /end {
-                set node [lpop NodeList end]
-                if {[llength $NodeList] > 0} {
+
+            lappend store /as-is $node
+        } else {
+            set haveScript [expr {[llength $args] % 2 > 0}]
+
+            set opts $args
+            if {$haveScript} {
+                set opts [lrange $args 0 end-1]
+            }
+            lappend store $tag $opts
+            if {$haveScript} {
+                uplevel [lindex $args end]
+            }
+            lappend store /end {}
+
+        }
+        if {!$IamMain} {
+            return
+        }
+        # This does the same as the XmppStringReader does to prevent duplicating
+        set NodeList {}
+
+        foreach {tag data} $store {
+            switch -- $tag {
+                /as-is {
+                    # data is the ready-made child (not surrounded by a list)
+                    set node $data
+
                     set parent [lpop NodeList end]
                     dict lappend parent children $node
                     lappend NodeList $parent
+
                 }
-            }
-            default {
-                set node {body {} tail {} children {} ns {} attrs {}}
-                dict set node tag $tag
-                foreach {k v} $data {
-                    switch -regexp -matchvar match -- $k {
-                        -ns {
-                            dict set node ns $v
-                        }
-                        @(.*) -
-                        -(.*) {
-                            lassign $match -> attrName
-                            dict set node attrs $attrName $v
-                        }
-                        .body -
-                        "#body" {
-                            dict set node body $v
-                        }
+                /end {
+                    set node [lpop NodeList end]
+                    if {[llength $NodeList] > 0} {
+                        set parent [lpop NodeList end]
+                        dict lappend parent children $node
+                        lappend NodeList $parent
                     }
                 }
-                
-                lappend NodeList $node
+                default {
+                    set node {body {} tail {} children {} ns {} attrs {}}
+                    dict set node tag $tag
+                    foreach {k v} $data {
+                        switch -exact -- $k {
+                            -ns {
+                                dict set node ns $v
+                            }
+                            -body {
+                                dict set node body $v
+                            }
+                            default {
+                                # Anything else prefixed with - or @ is an attribute;
+                                # @ is the escape hatch for names shadowed above.
+                                if {[string length $k] < 2 ||
+                                    [string index $k 0] ni {- @}} {
+                                    error "j $tag: unknown option \"$k\""
+                                }
+                                dict set node attrs [string range $k 1 end] $v
+                            }
+                        }
+                    }
+
+                    lappend NodeList $node
+                }
             }
         }
+
+        set node
+    } finally {
+        if {$IamMain && [info exists store]} {
+            set store {}
+            uplevel unset ___jStore
+        }
     }
-    
-    set store {}
-    uplevel unset ___jStore 
-    set node
 }
 
 proc ::jab::header {{chan ""} args} {

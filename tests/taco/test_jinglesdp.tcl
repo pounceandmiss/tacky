@@ -39,7 +39,7 @@ test jinglesdp-to_sdp-minimal-audio "minimal audio: payload-types + ICE + finger
                 j payload-type -id 0 -name PCMU -clockrate 8000
             }
             j transport -ns $NS_ICE_UDP -ufrag abc -pwd xyz {
-                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass #body AA:BB:CC
+                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass -body AA:BB:CC
             }
         }
     }]
@@ -77,7 +77,7 @@ test jinglesdp-to_sdp-fmtp-and-rtcp-fb "payload parameters and rtcp-fb attach to
                 j rtcp-fb -ns $NS_RTP_FEEDBACK -type goog-remb
             }
             j transport -ns $NS_ICE_UDP -ufrag abc -pwd xyz {
-                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass #body AA
+                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass -body AA
             }
         }
     }]
@@ -99,7 +99,7 @@ test jinglesdp-to_sdp-candidates "ICE candidates -> a=candidate" -body {
                 j payload-type -id 0 -name PCMU -clockrate 8000
             }
             j transport -ns $NS_ICE_UDP -ufrag abc -pwd xyz {
-                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass #body AA
+                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass -body AA
                 j candidate -foundation 1 -component 1 -protocol udp \
                     -priority 2122260223 -ip 192.0.2.1 -port 54321 -type host -generation 0
                 j candidate -foundation 2 -component 1 -protocol udp \
@@ -130,7 +130,7 @@ test jinglesdp-to_sdp-bundle-and-extmap "BUNDLE group and extmap" -body {
                 j rtcp-mux -ns $NS_RTP
             }
             j transport -ns $NS_ICE_UDP -ufrag a -pwd b {
-                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass #body AA
+                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass -body AA
             }
         }
     }]
@@ -159,7 +159,7 @@ test jinglesdp-to_sdp-sources "ssrc and ssrc-group" -body {
                 }
             }
             j transport -ns $NS_ICE_UDP -ufrag a -pwd b {
-                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass #body AA
+                j fingerprint -ns $NS_DTLS -hash sha-256 -setup actpass -body AA
             }
         }
     }]
@@ -180,7 +180,7 @@ test jinglesdp-to_sdp-senders "senders mapping respects initiator flag" -body {
                     j payload-type -id 0 -name PCMU -clockrate 8000
                 }
                 j transport -ns urn:xmpp:jingle:transports:ice-udp:1 -ufrag a -pwd b {
-                    j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 -hash sha-256 -setup actpass #body AA
+                    j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 -hash sha-256 -setup actpass -body AA
                 }
             }
         }

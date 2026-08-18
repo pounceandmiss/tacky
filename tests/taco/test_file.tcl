@@ -82,8 +82,8 @@ test file-unicode-url-hashable {non-ASCII URL can be used for attach/thumb paths
 
 test file-extract-oob {XEP-0066 OOB url becomes an attachment} -body {
     set m [j message {
-        j body #body "https://up.example/abc/pic.png"
-        j x -ns jabber:x:oob { j url #body "https://up.example/abc/pic.png" }
+        j body -body "https://up.example/abc/pic.png"
+        j x -ns jabber:x:oob { j url -body "https://up.example/abc/pic.png" }
     }]
     set atts [ExtractAttachments $m [xsearch $m body -get body]]
     list [llength $atts] [dict get [lindex $atts 0] url] \
@@ -91,26 +91,26 @@ test file-extract-oob {XEP-0066 OOB url becomes an attachment} -body {
 } -result {1 https://up.example/abc/pic.png image pic.png}
 
 test file-extract-bare-url-no-oob {a body that is just a URL is a link, not an attachment} -body {
-    set m [j message { j body #body "https://up.example/x/doc.pdf" }]
+    set m [j message { j body -body "https://up.example/x/doc.pdf" }]
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
 test file-extract-oob-url-bodied {OOB attachment is still recognised when the body is the same URL} -body {
     set m [j message {
-        j body #body "https://up.example/x/pic.png"
-        j x -ns jabber:x:oob { j url #body "https://up.example/x/pic.png" }
+        j body -body "https://up.example/x/pic.png"
+        j x -ns jabber:x:oob { j url -body "https://up.example/x/pic.png" }
     }]
     set atts [ExtractAttachments $m [xsearch $m body -get body]]
     list [llength $atts] [dict get [lindex $atts 0] type]
 } -result {1 image}
 
 test file-extract-plain-text {plain text yields no attachments} -body {
-    set m [j message { j body #body "hello there" }]
+    set m [j message { j body -body "hello there" }]
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
 test file-extract-url-in-sentence {a URL embedded in a sentence is not an attachment} -body {
-    set m [j message { j body #body "see https://x/y.png please" }]
+    set m [j message { j body -body "see https://x/y.png please" }]
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
@@ -118,7 +118,7 @@ test file-extract-url-in-sentence {a URL embedded in a sentence is not an attach
 # recognised as the attachment.
 test file-extract-aesgcm-body {an aesgcm:// body with no OOB is an attachment} -body {
     set u "aesgcm://up.example/x/pic.png#[string repeat aa 44]"
-    set m [j message { j body #body $u }]
+    set m [j message { j body -body $u }]
     set atts [ExtractAttachments $m [xsearch $m body -get body]]
     list [llength $atts] [dict get [lindex $atts 0] type] \
          [dict get [lindex $atts 0] name] [dict get [lindex $atts 0] url]
@@ -126,7 +126,7 @@ test file-extract-aesgcm-body {an aesgcm:// body with no OOB is an attachment} -
 
 # A plaintext https body is still just a link, even now.
 test file-extract-aesgcm-only-for-aesgcm {a plain https body is not promoted by the aesgcm rule} -body {
-    set m [j message { j body #body "https://up.example/x/pic.png" }]
+    set m [j message { j body -body "https://up.example/x/pic.png" }]
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
@@ -150,8 +150,8 @@ test file-extract-rejects-unfetchable-oob {an OOB url we cannot fetch is not an 
     set out {}
     foreach u [list /etc/passwd file:///etc/passwd {\\srv\share\x.png}] {
         set m [j message {
-            j body #body $u
-            j x -ns jabber:x:oob { j url #body $u }
+            j body -body $u
+            j x -ns jabber:x:oob { j url -body $u }
         }]
         lappend out [llength [ExtractAttachments $m [xsearch $m body -get body]]]
     }
@@ -207,7 +207,7 @@ test file-slot-parse {slot result yields put/get URLs and headers} {*}$file_env 
     set iq [j iq -type result {
         j slot -ns urn:xmpp:http:upload:0 {
             j put -url "https://up.example/PUT/pic.png" {
-                j header -name Authorization #body "Bearer xyz"
+                j header -name Authorization -body "Bearer xyz"
             }
             j get -url "https://dl.example/GET/pic.png"
         }
@@ -233,7 +233,7 @@ test file-maxfilesize {ReadMaxFileSize reads max-file-size from the disco#info f
         j query -ns http://jabber.org/protocol/disco#info {
             j feature -var urn:xmpp:http:upload:0
             j x -ns jabber:x:data -type result {
-                j field -var max-file-size { j value #body 5242880 }
+                j field -var max-file-size { j value -body 5242880 }
             }
         }
     }]

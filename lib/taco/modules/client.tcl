@@ -103,7 +103,7 @@ snit::type taco_client {
 
     method OnBound {} {
         set options(-jid) [$conn cget -bound-jid]
-        $conn writeImmediate [j presence {j /as-is [$caps cNode]}]
+        $conn writeImmediate [j presence {j #as-is [$caps cNode]}]
     }
 
     method OnReady {resumed} {
@@ -142,8 +142,8 @@ snit::type taco_client {
         array set opts $args
 
         set payload [j query -ns jabber:iq:register {
-            j username #body [$conn cget -username]
-            j password #body $opts(-password)
+            j username -body [$conn cget -username]
+            j password -body $opts(-password)
         }]
         $iq request -type set -to [$conn cget -host] \
             -payload $payload \

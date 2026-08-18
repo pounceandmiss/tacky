@@ -554,11 +554,11 @@ snit::type taco_omemo {
             j publish-options {
                 j x -ns jabber:x:data -type submit {
                     j field -var FORM_TYPE -type hidden {
-                        j value .body \
+                        j value -body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
                     j field -var pubsub#access_model {
-                        j value .body open
+                        j value -body open
                     }
                 }
             }
@@ -843,18 +843,18 @@ snit::type taco_omemo {
                 j item -id current {
                     j bundle -ns $::taco::omemo::NS_AXOLOTL {
                         j signedPreKeyPublic -signedPreKeyId $spkId \
-                            .body [base64::encode -wrapchar "" $spk]
+                            -body [base64::encode -wrapchar "" $spk]
                         j signedPreKeySignature \
-                            .body [base64::encode -wrapchar "" $spks]
+                            -body [base64::encode -wrapchar "" $spks]
                         j identityKey \
-                            .body [base64::encode -wrapchar "" $ik]
+                            -body [base64::encode -wrapchar "" $ik]
                         j prekeys {
                             foreach pk $prekeys {
                                 set pid [dict get $pk id]
                                 set pdata [::taco::omemo::prefixDjb \
                                     [dict get $pk pk]]
                                 j preKeyPublic -preKeyId $pid \
-                                    .body [base64::encode -wrapchar "" $pdata]
+                                    -body [base64::encode -wrapchar "" $pdata]
                             }
                         }
                     }
@@ -863,11 +863,11 @@ snit::type taco_omemo {
             j publish-options {
                 j x -ns jabber:x:data -type submit {
                     j field -var FORM_TYPE -type hidden {
-                        j value .body \
+                        j value -body \
                             "http://jabber.org/protocol/pubsub#publish-options"
                     }
                     j field -var pubsub#access_model {
-                        j value .body open
+                        j value -body open
                     }
                 }
             }
@@ -1448,8 +1448,8 @@ snit::type taco_omemo {
         set msg [j message -to $peerJid -type chat {
             j encrypted -ns $::taco::omemo::NS_AXOLOTL {
                 j header -sid $deviceId {
-                    j key -rid $peerDev .body [base64::encode -wrapchar "" $hb]
-                    j iv .body [base64::encode -wrapchar "" \
+                    j key -rid $peerDev -body [base64::encode -wrapchar "" $hb]
+                    j iv -body [base64::encode -wrapchar "" \
                         [string repeat \x00 12]]
                 }
             }
@@ -1551,12 +1551,12 @@ snit::type taco_omemo {
                 j header -sid $deviceId {
                     if {$isPrekey} {
                         j key -rid $peerDev -prekey true \
-                            .body [base64::encode -wrapchar "" $p]
+                            -body [base64::encode -wrapchar "" $p]
                     } else {
                         j key -rid $peerDev \
-                            .body [base64::encode -wrapchar "" $p]
+                            -body [base64::encode -wrapchar "" $p]
                     }
-                    j iv .body [base64::encode -wrapchar "" $iv]
+                    j iv -body [base64::encode -wrapchar "" $iv]
                 }
             }
         }]
@@ -1872,15 +1872,15 @@ snit::type taco_omemo {
                     lassign $r rid isPrekey p
                     if {$isPrekey} {
                         j key -rid $rid -prekey true \
-                            .body [base64::encode -wrapchar "" $p]
+                            -body [base64::encode -wrapchar "" $p]
                     } else {
                         j key -rid $rid \
-                            .body [base64::encode -wrapchar "" $p]
+                            -body [base64::encode -wrapchar "" $p]
                     }
                 }
-                j iv .body [base64::encode -wrapchar "" $iv]
+                j iv -body [base64::encode -wrapchar "" $iv]
             }
-            j payload .body [base64::encode -wrapchar "" $ct]
+            j payload -body [base64::encode -wrapchar "" $ct]
         }]
     }
 

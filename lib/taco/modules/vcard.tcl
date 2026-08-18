@@ -71,7 +71,7 @@ snit::type taco_vcard {
             lappend newChildren $child
         }
         if {!$found} {
-            lappend newChildren [j NICKNAME #body $nick]
+            lappend newChildren [j NICKNAME -body $nick]
         }
         dict set CachedVCard children $newChildren
 

@@ -177,3 +177,44 @@ test xmpprw-normal-stanza-under-caps-still-parses \
         list $::_xrwGot [llength $::_xrwErr]
     } -cleanup _xrwCleanup \
     -result {message 0}
+
+# The key dispatch has to match whole keys: it used to be a switch -regexp with
+# unanchored patterns, where a key merely containing "-ns" or ending in "body"
+# landed on the wrong field.
+
+test xmpprw-j-key-fields {-ns and -body set fields, not attributes} \
+    -body {
+        set n [j x -ns urn:example -body hello]
+        list [dict get $n ns] [dict get $n body] [dict get $n attrs]
+    } -result {urn:example hello {}}
+
+test xmpprw-j-key-attrs {any other -name, and every @name, is an attribute} \
+    -body {
+        set n [j x -id 1 @ns N @body B]
+        list [dict get $n ns] [dict get $n body] [dict get $n attrs]
+    } -result {{} {} {id 1 ns N body B}}
+
+test xmpprw-j-key-matched-whole {a key is not matched on a substring} \
+    -body {
+        set out {}
+        foreach k {@xml-ns -xml-ns} {
+            set n [j x $k v]
+            lappend out [list [dict get $n ns] [dict get $n attrs]]
+        }
+        set out
+    } -result {{{} {xml-ns v}} {{} {xml-ns v}}}
+
+test xmpprw-j-key-unprefixed-errors {a key with no - or @ is refused} \
+    -body {
+        set caught {}
+        foreach k {bogus foo-bar mybody - @} {
+            lappend caught [catch {j x $k v}]
+        }
+        set caught
+    } -result {1 1 1 1 1}
+
+test xmpprw-j-error-clears-accumulator \
+    {a failed j leaves the frame usable for the next one} -body {
+        catch {j x -id 1 {j inner bogus v}}
+        dict get [j y -body ok] body
+    } -result ok

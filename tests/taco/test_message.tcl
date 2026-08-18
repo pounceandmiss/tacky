@@ -70,7 +70,7 @@ proc mam_result {args} {
         j forwarded -ns urn:xmpp:forward:0 {
             j delay -ns urn:xmpp:delay -stamp [dict get $opts stamp]
             j message {*}$msgAttrs {
-                j body #body [dict get $opts body]
+                j body -body [dict get $opts body]
             }
         }
     }
@@ -189,7 +189,7 @@ proc msg_mam_finish {iqStanza results {complete true}} {
 
     foreach rn $results {
         $::_client mam onResultMessage [j message -from $archive {
-            j /as-is $rn
+            j #as-is $rn
         }]
     }
 
@@ -204,8 +204,8 @@ proc msg_mam_finish {iqStanza results {complete true}} {
         j fin -ns urn:xmpp:mam:2 -complete $complete {
             j set -ns http://jabber.org/protocol/rsm {
                 if {$first ne ""} {
-                    j first #body $first
-                    j last #body $last
+                    j first -body $first
+                    j last -body $last
                 }
             }
         }
@@ -240,7 +240,7 @@ proc msg_mam_respond {specs args} {
         set rn [mam_result {*}[dict merge $spec [list queryid $qid]]]
         lappend ids [xsearch $rn -get @id]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is $rn
+            j #as-is $rn
         }]
     }
     set first [dict get $opts -first]
@@ -253,8 +253,8 @@ proc msg_mam_respond {specs args} {
         j fin -ns urn:xmpp:mam:2 -complete [dict get $opts -complete] {
             j set -ns http://jabber.org/protocol/rsm {
                 if {$first ne ""} {
-                    j first #body $first
-                    j last #body $last
+                    j first -body $first
+                    j last -body $last
                 }
             }
         }
@@ -273,7 +273,7 @@ proc msg_prime_search {{chatJid alice@example.com}} {
         j query -ns urn:xmpp:mam:2 {
             j x -ns jabber:x:data -type form {
                 j field -var FORM_TYPE -type hidden {
-                    j value #body urn:xmpp:mam:2
+                    j value -body urn:xmpp:mam:2
                 }
                 j field -var with
                 j field -var start
@@ -293,7 +293,7 @@ proc msg_prime_search_unsupported {} {
         j query -ns urn:xmpp:mam:2 {
             j x -ns jabber:x:data -type form {
                 j field -var FORM_TYPE -type hidden {
-                    j value #body urn:xmpp:mam:2
+                    j value -body urn:xmpp:mam:2
                 }
                 j field -var with
                 j field -var start
@@ -392,7 +392,7 @@ test message-live-fields {stored live message has correct fields} \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id orig7 -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
@@ -409,7 +409,7 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "offline msg"
+            j body -body "offline msg"
             j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
@@ -444,7 +444,7 @@ test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
             j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
         }]
@@ -462,7 +462,7 @@ test message-live-foreign-stanza-id-ignored \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id forged -by alice@example.com
         }]
         dict get [lindex [msg_store_latest alice@example.com] 0] server_id
@@ -473,7 +473,7 @@ test message-live-stanza-id-picks-archive-owner \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id forged -by alice@example.com
             j stanza-id -ns urn:xmpp:sid:0 -id genuine -by user@test.example.com
         }]
@@ -491,7 +491,7 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
         set qid [mam_queryid]
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id archive-uuid-42 queryid $qid \
+            j #as-is [mam_result id archive-uuid-42 queryid $qid \
                 from alice@example.com/phone body "mam msg" \
                 stamp 2024-06-15T12:00:00Z]
         }]
@@ -499,8 +499,8 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body archive-uuid-42
-                    j last #body archive-uuid-42
+                    j first -body archive-uuid-42
+                    j last -body archive-uuid-42
                 }
             }
         }]
@@ -522,7 +522,7 @@ test message-live-emits-event {incoming message emits message <New>} \
             set ::_got $ev
         }}}
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "event test"
+            j body -body "event test"
         }]
         list [dict get $_got -jid] \
              [dict get $_got -message from_jid] \
@@ -538,7 +538,7 @@ test message-live-dup-no-event {duplicate message does not emit <New>} \
         }}}
         set stanza [j message -type chat -from alice@example.com/phone \
             -id dup-test {
-            j body #body "dup test"
+            j body -body "dup test"
             j stanza-id -xmlns urn:xmpp:sid:0 -id sid-dup1
         }]
         $::_client conn feed $stanza
@@ -591,19 +591,19 @@ test message-incoming-decrypted-stamps-encryption \
     {*}$msg_common \
     -body {
         set decryptedNode [j message -from alice@example.com/x -type chat {
-            j body #body "secret"
+            j body -body "secret"
             j encryption -ns urn:xmpp:eme:0 \
                 -namespace eu.siacs.conversations.axolotl -name OMEMO
         }]
         dict set decryptedNode decrypted 1
         # Same stanza off the wire: EME marker, but never decrypted.
         set spoofedNode [j message -from alice@example.com/x -type chat {
-            j body #body "not really encrypted"
+            j body -body "not really encrypted"
             j encryption -ns urn:xmpp:eme:0 \
                 -namespace eu.siacs.conversations.axolotl -name OMEMO
         }]
         set plainNode [j message -from alice@example.com/x -type chat {
-            j body #body "hi there"
+            j body -body "hi there"
         }]
         set m1 [$::_client message ParseMessage $decryptedNode \
             -chat_jid alice@example.com -timestamp 1000 -server_id ""]
@@ -644,9 +644,9 @@ test message-extractenvelopeids-ownid-from-id-when-from-self \
     {ExtractEnvelopeIds sets own_id from @id for our own stanzas, '' for peers} \
     {*}$msg_common -body {
         set mine [j message -from $acc/phone -to bob@example.com -type chat \
-                -id uuid-mine { j body #body "from my phone" }]
+                -id uuid-mine { j body -body "from my phone" }]
         set peer [j message -from bob@example.com/x -to $acc -type chat \
-                -id peer-id { j body #body "from bob" }]
+                -id peer-id { j body -body "from bob" }]
         lassign [$::_client message ExtractEnvelopeIds $mine bob@example.com] \
             _s1 own1 _o1
         lassign [$::_client message ExtractEnvelopeIds $peer bob@example.com] \
@@ -666,7 +666,7 @@ test message-self-echo-dedups-not-duplicate \
         # which ParseMessage carries through.
         set echo [j message -from $acc/phone -to bob@example.com -type chat \
                 -id uuid-7 {
-            j body #body "hello"
+            j body -body "hello"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-99 -by user@test.example.com
         }]
         lassign [$::_client message ExtractEnvelopeIds $echo bob@example.com] \
@@ -1204,7 +1204,7 @@ test message-classify-chatstate {a chat state is recognised and parses to nothin
 
 test message-classify-body-is-message {a body is a normal stored message} \
     {*}$msg_common -body {
-        set n [j message -from bob@example.com/x -type chat { j body #body "hi" }]
+        set n [j message -from bob@example.com/x -type chat { j body -body "hi" }]
         list [ClassifyMessage $n "hi"] \
             [dict get [$::_client message ParseMessage $n \
                 -chat_jid bob@example.com -timestamp 1000 -server_id ""] body]
@@ -1311,7 +1311,7 @@ test message-own-marker-advances-watermark \
     {a displayed marker from another of our devices marks the chat read here} \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
-            -from alice@example.com/phone { j body #body hi }]
+            -from alice@example.com/phone { j body -body hi }]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
         msg_own_marker_carbon alice@example.com m1
         expr {[msg_own_read alice@example.com] == $ts}
@@ -1321,7 +1321,7 @@ test message-own-marker-emits-ownread \
     {the watermark move is announced once, and not again for a replay} \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
-            -from alice@example.com/phone { j body #body hi }]
+            -from alice@example.com/phone { j body -body hi }]
         set ::evs {}
         tacky listen message <OwnRead> \
             {apply {{ev} { lappend ::evs [dict get $ev -jid] }}}
@@ -1334,7 +1334,7 @@ test message-own-marker-unknown-id-noop \
     {a marker naming a message we don't have leaves the watermark alone} \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
-            -from alice@example.com/phone { j body #body hi }]
+            -from alice@example.com/phone { j body -body hi }]
         msg_own_marker_carbon alice@example.com nosuch
         msg_own_read alice@example.com
     } -result 0
@@ -1356,12 +1356,12 @@ test message-own-carbon-marks-read \
     {a message we sent from another device catches this one up} \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
-            -from alice@example.com/phone { j body #body hi }]
+            -from alice@example.com/phone { j body -body hi }]
         $::_client conn feed [j message -type chat -from $::acc {
             j sent -ns urn:xmpp:carbons:2 {
                 j forwarded -ns urn:xmpp:forward:0 {
                     j message -type chat -id m2 -from $::acc/other \
-                        -to alice@example.com { j body #body "from my phone" }
+                        -to alice@example.com { j body -body "from my phone" }
                 }
             }
         }]
@@ -1372,7 +1372,7 @@ test message-send-marks-read \
     {writing in a chat clears what was unread above} \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
-            -from alice@example.com/phone { j body #body hi }]
+            -from alice@example.com/phone { j body -body hi }]
         tacky message send -acc $acc -chat alice@example.com -body "reply"
         $::_client message messagestore unreadCount alice@example.com
     } -result 0
@@ -1387,7 +1387,7 @@ test message-send-then-receive-earlier-ts {incoming with earlier timestamp inser
         set earlyTs [expr {$sentTs - 1000000}]
         set earlyStamp [FormatTimestampISO $earlyTs]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "earlier"
+            j body -body "earlier"
             j delay -ns urn:xmpp:delay -stamp $earlyStamp
         }]
         # Both messages should be in DB
@@ -1433,7 +1433,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Confirmed
             -from user@test.example.com/res \
             -to alice@example.com \
             -id $oid {
-            j body #body "echo me"
+            j body -body "echo me"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-echo1 -by user@test.example.com
         }]
 
@@ -1576,15 +1576,15 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
             set rn [mam_result id $sid queryid $qid from $from body $body \
                         stamp $stamp origin_id $oid]
             $::_client mam onResultMessage [j message -from user@test.example.com {
-                j /as-is $rn
+                j #as-is $rn
             }]
         }
 
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body mam1
-                    j last #body mam2
+                    j first -body mam1
+                    j last -body mam2
                 }
             }
         }]
@@ -1959,15 +1959,15 @@ test message-history-mam-sweeps-bounding-hole {MAM response with overlap sweeps 
         # MAM returns older history (no overlap with current cache,
         # complete=false -> places a new hole at the far older edge)
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id mam1 queryid $qid \
+            j #as-is [mam_result id mam1 queryid $qid \
                 from alice@example.com/phone body older \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete false {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body mam1
-                    j last #body mam1
+                    j first -body mam1
+                    j last -body mam1
                 }
             }
         }]
@@ -2019,14 +2019,14 @@ test message-history-cancel-suppresses-callback {cancel tag prevents fetch callb
 
         # Feed a MAM result + fin
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
+            j #as-is [mam_result id sid1 queryid $qid from bob@example.com \
                           body "hello" stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -2048,14 +2048,14 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
         tacky message cancel -acc $acc -tag mytag
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid from bob@example.com \
+            j #as-is [mam_result id sid1 queryid $qid from bob@example.com \
                           body "stored msg" stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -2113,15 +2113,15 @@ test message-goto-remote {goto -source remote fetches MAM then returns getAround
         set qid [mam_queryid]
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "remote msg" \
                 stamp 2024-06-15T12:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -2310,7 +2310,7 @@ test message-catchup-dedup-with-live {catchup deduplicates against live messages
         msg_ready
         # Live message arrives with server_id
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "live msg"
+            j body -body "live msg"
             j stanza-id -ns urn:xmpp:sid:0 -id s1 -by user@test.example.com
         }]
         # Catchup returns same message
@@ -2507,7 +2507,7 @@ test message-catchup-still-patches {a reaction in a catchup page still patches i
                     j message -from alice@example.com/phone \
                             -to user@test.example.com {
                         j reactions -ns urn:xmpp:reactions:0 -id s1 {
-                            j reaction #body 👍
+                            j reaction -body 👍
                         }
                     }
                 }
@@ -2522,7 +2522,7 @@ proc msg_mention_at {jid ts} {
 
 proc msg_room_says {nick body} {
     $::_client conn feed [j message -type groupchat \
-        -from room@muc.example.com/$nick { j body #body $body }]
+        -from room@muc.example.com/$nick { j body -body $body }]
     set res [$::_client message messagestore get latest room@muc.example.com?join]
     set ts [dict get [lindex [dict get $res messages] end] timestamp]
     return [msg_mention_at room@muc.example.com?join $ts]
@@ -2560,7 +2560,7 @@ test message-mention-direct-chat-never {a 1:1 message is never a mention} \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id d1 \
-            -from alice@example.com/phone { j body #body "user hello" }]
+            -from alice@example.com/phone { j body -body "user hello" }]
         set res [$::_client message messagestore get latest alice@example.com]
         set ts [dict get [lindex [dict get $res messages] end] timestamp]
         msg_mention_at alice@example.com $ts
@@ -2654,7 +2654,7 @@ test message-muc-catchup-dedups-join-replay {a replayed message already stored i
         # The room replays a message before the catchup page lands.
         $::_client conn feed [j message -type groupchat \
             -from room@muc.example.com/alice {
-            j body #body "room msg"
+            j body -body "room msg"
             j stanza-id -ns urn:xmpp:sid:0 -id r1 -by room@muc.example.com
             j delay -ns urn:xmpp:delay -stamp 2024-01-01T10:00:00Z
         }]
@@ -2780,12 +2780,12 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
         set qid [mam_queryid]
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "found it" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid2 queryid $qid \
+            j #as-is [mam_result id sid2 queryid $qid \
                 from alice@example.com/phone body "found another" \
                 stamp 2024-06-15T12:00:00Z]
         }]
@@ -2793,8 +2793,8 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete false {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid2
+                    j first -body sid1
+                    j last -body sid2
                 }
             }
         }]
@@ -2827,22 +2827,22 @@ test message-search-remote-hits-carry-match-ranges {an archive hit is annotated 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "a needle here" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         # The archive matched this one on a stem or synonym we can't point
         # at; it reports no range rather than a guess.
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid2 queryid $qid \
+            j #as-is [mam_result id sid2 queryid $qid \
                 from alice@example.com/phone body "a pin here" \
                 stamp 2024-06-15T12:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid2
+                    j first -body sid1
+                    j last -body sid2
                 }
             }
         }]
@@ -2863,12 +2863,12 @@ test message-search-skips-empty-body {search skips results with empty body} \
 
         # Feed one result with empty body and one with content
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid2 queryid $qid \
+            j #as-is [mam_result id sid2 queryid $qid \
                 from alice@example.com/phone body "has content" \
                 stamp 2024-01-01T11:00:00Z]
         }]
@@ -2876,8 +2876,8 @@ test message-search-skips-empty-body {search skips results with empty body} \
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid2
+                    j first -body sid1
+                    j last -body sid2
                 }
             }
         }]
@@ -2914,15 +2914,15 @@ test message-search-cancel-suppresses-callback {cancel tag prevents search callb
         tacky message cancel -acc $acc -tag searchtag
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "found" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -2969,15 +2969,15 @@ test message-search-wraps-inserted-hit-with-holes {a new search hit gets older a
         set qid [mam_queryid]
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "needle in haystack" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -3008,15 +3008,15 @@ test message-search-dedup-hit-adds-no-holes {a search hit that dedups against a 
         set qid [mam_queryid]
 
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "needle in haystack" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -3067,15 +3067,15 @@ test message-search-repeat-does-not-pile-holes {repeating the same search does n
             set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
             set qid [mam_queryid]
             $::_client mam onResultMessage [j message -from user@test.example.com {
-                j /as-is [mam_result id sid1 queryid $qid \
+                j #as-is [mam_result id sid1 queryid $qid \
                     from alice@example.com/phone body "needle in haystack" \
                     stamp 2024-01-01T10:00:00Z]
             }]
             $::_client iq feed [j iq -type result -id $iqId {
                 j fin -ns urn:xmpp:mam:2 -complete true {
                     j set -ns http://jabber.org/protocol/rsm {
-                        j first #body sid1
-                        j last #body sid1
+                        j first -body sid1
+                        j last -body sid1
                     }
                 }
             }]
@@ -3097,20 +3097,20 @@ test message-search-multiple-hits-share-middle-hole {two hits with no citizens b
 
         # Two hits, far apart in archive time.
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "needle one" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid2 queryid $qid \
+            j #as-is [mam_result id sid2 queryid $qid \
                 from alice@example.com/phone body "needle two" \
                 stamp 2024-06-15T12:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete false {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid2
+                    j first -body sid1
+                    j last -body sid2
                 }
             }
         }]
@@ -3305,15 +3305,15 @@ test message-search-both-answers-from-store {both ingests the remote page, then 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is [mam_result id sid1 queryid $qid \
+            j #as-is [mam_result id sid1 queryid $qid \
                 from alice@example.com/phone body "a remote needle" \
                 stamp 2024-01-01T10:00:00Z]
         }]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
                 j set -ns http://jabber.org/protocol/rsm {
-                    j first #body sid1
-                    j last #body sid1
+                    j first -body sid1
+                    j last -body sid1
                 }
             }
         }]
@@ -3378,7 +3378,7 @@ test message-live-reply-fields {reply target id + author parsed into stored fiel
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id origA -from alice@example.com/phone {
-            j body #body "my reply"
+            j body -body "my reply"
             j stanza-id -ns urn:xmpp:sid:0 -id srvA -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TARGET99
         }]
@@ -3390,7 +3390,7 @@ test message-reply-fallback-codepoints {fallback offsets count Unicode codepoint
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id rf3 -from alice@example.com/phone {
-            j body #body "> café\nreply"
+            j body -body "> café\nreply"
             j stanza-id -ns urn:xmpp:sid:0 -id srvRF3 -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
@@ -3404,7 +3404,7 @@ test message-reply-fallback-for-mismatch {a fallback for a different feature is 
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id rf2 -from alice@example.com/phone {
-            j body #body "> hi\nactual reply"
+            j body -body "> hi\nactual reply"
             j stanza-id -ns urn:xmpp:sid:0 -id srvRF2 -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:other:0 {
@@ -3418,7 +3418,7 @@ test message-live-origin-id-captured {origin-id element is captured and resolvab
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id atA -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srvX -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG-A
         }]
@@ -3431,7 +3431,7 @@ test message-live-origin-id-fallback {origin_id falls back to @id when no origin
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id ATID -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srvB -by user@test.example.com
         }]
         set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
@@ -3443,7 +3443,7 @@ test message-live-nonreply-empty {non-reply message has empty reply fields} \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body plain
+            j body -body plain
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg reply_id] [dict get $msg reply_to]
@@ -3453,11 +3453,11 @@ test message-gotoreply-local {gotoReply resolves a reply target locally and retu
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id t1 -from alice@example.com/phone {
-            j body #body "the original"
+            j body -body "the original"
             j stanza-id -ns urn:xmpp:sid:0 -id SRV-TGT -by user@test.example.com
         }]
         $::_client conn feed [j message -type chat -id r1 -from alice@example.com/phone {
-            j body #body "the reply"
+            j body -body "the reply"
             j stanza-id -ns urn:xmpp:sid:0 -id SRV-RPL -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id SRV-TGT
         }]
@@ -3478,7 +3478,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
         $::_client omemo setEnabled -jid alice@example.com -value 0
         set orig "line one\nline two is long enough to clearly exceed the eighty-character display preview cap"
         $::_client conn feed [j message -type chat -id tOrig -from alice@example.com/phone {
-            j body #body $orig
+            j body -body $orig
             j stanza-id -ns urn:xmpp:sid:0 -id SRV1 -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG1
         }]
@@ -3558,7 +3558,7 @@ test message-tail-emitted-on-live \
         tacky listen message <Tail> -jid alice@example.com \
             {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "hi"
+            j body -body "hi"
         }]
         expr {$::_tail ne ""
             && $::_tail == [$::_client message maxTimestamp -chat alice@example.com]}
@@ -3578,7 +3578,7 @@ test message-tail-repushed-on-confirm-move \
             {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
         $::_client conn feed [j message -type chat \
             -from user@test.example.com/res -to alice@example.com -id $oid {
-            j body #body "echo me"
+            j body -body "echo me"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-tail -by user@test.example.com
         }]
         tacky unlisten tailmove
@@ -3611,7 +3611,7 @@ test message-autoreceipt-request \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id m1 -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j request -ns urn:xmpp:receipts
         }]
         msg_written_marker received urn:xmpp:receipts
@@ -3622,7 +3622,7 @@ test message-autoreceipt-markable \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id m2 -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j markable -ns urn:xmpp:chat-markers:0
         }]
         msg_written_marker received urn:xmpp:chat-markers:0
@@ -3633,7 +3633,7 @@ test message-autoreceipt-none \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id m3 -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
         }]
         list [msg_written_marker_count received urn:xmpp:receipts] \
              [msg_written_marker_count received urn:xmpp:chat-markers:0]
@@ -3645,7 +3645,7 @@ test message-autoreceipt-disabled \
     -body {
         [$::_client cget -taco] setting set -key send_chat_markers -value 0
         $::_client conn feed [j message -type chat -id m4 -from alice@example.com/phone {
-            j body #body hi
+            j body -body hi
             j request -ns urn:xmpp:receipts
         }]
         msg_written_marker_count received urn:xmpp:receipts
@@ -3708,7 +3708,7 @@ test message-outgoing-groupchat-no-markers \
 test message-classify-reaction {a reactions stanza is recognised as a reaction control kind} \
     {*}$msg_common -body {
         set n [j message -from bob@example.com/x -type chat {
-            j reactions -ns urn:xmpp:reactions:0 -id abc { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id abc { j reaction -body 👍 }
         }]
         ClassifyMessage $n ""
     } -result reaction
@@ -3718,7 +3718,7 @@ test message-reaction-incoming-1to1 {a peer reaction aggregates onto the target 
         tacky message send -acc $acc -chat alice@example.com -body "hi"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j reactions -ns urn:xmpp:reactions:0 -id $oid { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id $oid { j reaction -body 👍 }
         }]
         dict get [lindex [msg_store_latest alice@example.com] 0] reactions
     } -result {👍 {reactors alice@example.com mine 0}}
@@ -3761,7 +3761,7 @@ test message-reaction-from-mam {a reaction arriving via MAM catchup aggregates o
                 j delay -ns urn:xmpp:delay -stamp 2024-01-02T00:00:00Z
                 j message -type chat -from alice@example.com/phone -to $acc {
                     j reactions -ns urn:xmpp:reactions:0 -id $oid {
-                        j reaction #body 👍
+                        j reaction -body 👍
                     }
                 }
             }
@@ -3780,7 +3780,7 @@ test message-reaction-mam-parsed-has-timestamp \
                 j delay -ns urn:xmpp:delay -stamp 2024-01-02T00:00:00Z
                 j message -type chat -from alice@example.com/phone -to $acc {
                     j reactions -ns urn:xmpp:reactions:0 -id $oid {
-                        j reaction #body 👍
+                        j reaction -body 👍
                     }
                 }
             }
@@ -3798,11 +3798,11 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
             j origin-id -ns urn:xmpp:sid:0 -id m1
-            j body #body "helo"
+            j body -body "helo"
         }]
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
             j replace -ns urn:xmpp:message-correct:0 -id m1
-            j body #body "hello world"
+            j body -body "hello world"
         }]
         set m [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $m content body] [dict get $m edited] \
@@ -3814,7 +3814,7 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
 proc msg_feed_decrypted {id body fp {replaceId ""}} {
     set node [j message -type chat -from alice@example.com/phone -id $id {
         j origin-id -ns urn:xmpp:sid:0 -id $id
-        j body #body $body
+        j body -body $body
         if {$replaceId ne ""} {
             j replace -ns urn:xmpp:message-correct:0 -id $replaceId
         }
@@ -3832,7 +3832,7 @@ test message-edit-cleartext-cannot-rewrite-omemo \
         msg_feed_decrypted m1 "secret" "aabb ccdd"
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
             j replace -ns urn:xmpp:message-correct:0 -id m1
-            j body #body "attacker text"
+            j body -body "attacker text"
         }]
         set rows [msg_store_latest alice@example.com]
         set m [lindex $rows 0]
@@ -3888,14 +3888,14 @@ test message-edit-preserves-reaction-target \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
             j origin-id -ns urn:xmpp:sid:0 -id m1
-            j body #body "hi"
+            j body -body "hi"
         }]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j replace -ns urn:xmpp:message-correct:0 -id m1
-            j body #body "hi there"
+            j body -body "hi there"
         }]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j reactions -ns urn:xmpp:reactions:0 -id m1 { j reaction #body 👍 }
+            j reactions -ns urn:xmpp:reactions:0 -id m1 { j reaction -body 👍 }
         }]
         dict get [lindex [msg_store_latest alice@example.com] 0] reactions
     } -result {👍 {reactors alice@example.com mine 0}}
@@ -3904,7 +3904,7 @@ test message-retract-incoming-1to1 {a peer self-retraction tombstones the messag
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
             j origin-id -ns urn:xmpp:sid:0 -id m1
-            j body #body "secret"
+            j body -body "secret"
         }]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j retract -ns urn:xmpp:message-retract:1 -id m1
@@ -3930,7 +3930,7 @@ test message-retract-own-1to1 {retract tombstones our message and sends <retract
 proc msg_feed_room {{id srv1}} {
     $::_client message ingestLive room@conf.example.com?join \
         [j message -type groupchat -from room@conf.example.com/bob {
-            j body #body "spam"
+            j body -body "spam"
             j stanza-id -ns urn:xmpp:sid:0 -id $id -by room@conf.example.com
         }]
     dict get [lindex [msg_store_latest room@conf.example.com?join] 0] timestamp

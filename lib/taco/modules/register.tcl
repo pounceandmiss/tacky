@@ -206,7 +206,7 @@ snit::type taco_register_session {
             set formNode [::tacky::forms::serialize $filled]
             $conn writeStanza [j iq -type set -id reg-$id {
                 j query -ns jabber:iq:register {
-                    j /as-is $formNode
+                    j #as-is $formNode
                 }
             }]
         } else {
@@ -221,7 +221,7 @@ snit::type taco_register_session {
                         }
                         set vals [dict get $field value]
                         if {[llength $vals] > 0} {
-                            j $var .body [lindex $vals 0]
+                            j $var -body [lindex $vals 0]
                         } else {
                             j $var
                         }
@@ -366,7 +366,7 @@ snit::type taco_register_session {
 
         j x -ns jabber:x:data -type form {
             if {$instructions ne ""} {
-                j instructions .body $instructions
+                j instructions -body $instructions
             }
             foreach child $fields {
                 set ctag [dict get $child tag]
@@ -374,7 +374,7 @@ snit::type taco_register_session {
                 set val [dict get $child body]
                 j field -var $ctag -type $ftype -label $ctag {
                     if {$val ne ""} {
-                        j value .body $val
+                        j value -body $val
                     }
                 }
             }

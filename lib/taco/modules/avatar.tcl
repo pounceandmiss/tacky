@@ -138,7 +138,7 @@ snit::type taco_avatar {
         set dataPayload [j pubsub -ns http://jabber.org/protocol/pubsub {
             j publish -node urn:xmpp:avatar:data {
                 j item -id $hash {
-                    j data -ns urn:xmpp:avatar:data #body $base64Data
+                    j data -ns urn:xmpp:avatar:data -body $base64Data
                 }
             }
         }]

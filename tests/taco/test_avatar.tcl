@@ -47,8 +47,8 @@ proc vcard_result {jid data} {
     j iq -type result -from $jid {
         j vCard -ns vcard-temp {
             j PHOTO {
-                j TYPE #body image/png
-                j BINVAL #body $b64
+                j TYPE -body image/png
+                j BINVAL -body $b64
             }
         }
     }
@@ -63,7 +63,7 @@ proc vcard_presence {from hash} {
     }
     j presence -from $from {
         j x -ns vcard-temp:x:update {
-            j photo #body $hash
+            j photo -body $hash
         }
     }
 }
@@ -256,7 +256,7 @@ proc avatar_iq_error {id text} {
     j iq -type error -id $id {
         j error -type cancel {
             j forbidden -ns urn:ietf:params:xml:ns:xmpp-stanzas
-            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas #body $text
+            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas -body $text
         }
     }
 }

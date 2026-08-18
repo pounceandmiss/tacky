@@ -29,8 +29,8 @@ proc presence_available {from args} {
     set ver [dict get $opts ver]
     set node [dict get $opts node]
     j presence -from $from {
-        j show #body away
-        j priority #body 3
+        j show -body away
+        j priority -body 3
         if {$since ne ""} {
             j idle -ns urn:xmpp:idle:1 -since $since
         }
@@ -45,7 +45,7 @@ proc presence_available {from args} {
 proc answer_disco {from} {
     set id [xsearch [lindex [c.conn get_written] end] -get @id]
     c.conn feed [j iq -type result -from $from -id $id {
-        j /as-is [disco_query]
+        j #as-is [disco_query]
     }]
 }
 

@@ -14,7 +14,7 @@ set acc user@test.example.com
 proc cv_feed {body sid args} {
     $::_client conn feed [j message -type chat \
         -from alice@example.com/phone {
-        j body #body $body
+        j body -body $body
         j stanza-id -ns urn:xmpp:sid:0 -id $sid -by user@test.example.com
         if {[dict exists $args -stamp]} {
             j delay -ns urn:xmpp:delay -stamp [dict get $args -stamp]
@@ -41,7 +41,7 @@ proc mam_result {args} {
         j forwarded -ns urn:xmpp:forward:0 {
             j delay -ns urn:xmpp:delay -stamp [dict get $opts stamp]
             j message {*}$msgAttrs {
-                j body #body [dict get $opts body]
+                j body -body [dict get $opts body]
             }
         }
     }
@@ -76,7 +76,7 @@ proc cv_complete_mam_with {iqStanza messages {complete true}} {
         set rn [mam_result id $id queryid $qid \
             from alice@example.com/phone body $body stamp $stamp]
         $::_client mam onResultMessage [j message -from user@test.example.com {
-            j /as-is $rn
+            j #as-is $rn
         }]
     }
 
@@ -87,8 +87,8 @@ proc cv_complete_mam_with {iqStanza messages {complete true}} {
         j fin -ns urn:xmpp:mam:2 -complete $complete {
             j set -ns http://jabber.org/protocol/rsm {
                 if {$first ne ""} {
-                    j first #body $first
-                    j last #body $last
+                    j first -body $first
+                    j last -body $last
                 }
             }
         }
@@ -140,7 +140,7 @@ proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
     }
     $::_client message ingestLive alice@example.com [j message -type chat \
         -from alice@example.com/phone -id $sentTs {
-        j body #body "echo"
+        j body -body "echo"
         j stanza-id -ns urn:xmpp:sid:0 -id $echoSid -by user@test.example.com
         j delay -ns urn:xmpp:delay -stamp $echoStamp
     }] 1
@@ -276,8 +276,8 @@ test chatview-autofetch-blocked-renders-plain-caption \
         tacky setting set -key attachment_autofetch -value contacts
         $::_client conn feed [j message -type chat \
             -from alice@example.com/phone {
-            j body #body "https://h.invalid/pic.png"
-            j x -ns jabber:x:oob { j url #body "https://h.invalid/pic.png" }
+            j body -body "https://h.invalid/pic.png"
+            j x -ns jabber:x:oob { j url -body "https://h.invalid/pic.png" }
             j stanza-id -ns urn:xmpp:sid:0 -id oob1 -by user@test.example.com
         }]
         wait
@@ -311,8 +311,8 @@ test chatview-cancel-download-drops-the-progress-row \
         set url http://127.0.0.1:$port/pic.png
         $::_client conn feed [j message -type chat \
             -from alice@example.com/phone {
-            j body #body $url
-            j x -ns jabber:x:oob { j url #body $url }
+            j body -body $url
+            j x -ns jabber:x:oob { j url -body $url }
             j stanza-id -ns urn:xmpp:sid:0 -id oobc1 -by user@test.example.com
         }]
         wait
@@ -947,7 +947,7 @@ test chatview-reply-jump {clicking a reply jumps to and highlights the target} \
         wait
         set tsTarget [.cv messages newest]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
-            j body #body "the reply"
+            j body -body "the reply"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-rpl -by user@test.example.com
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id srv-tgt
         }]
@@ -1740,12 +1740,12 @@ test chatview-edit-redraws-body {a received correction redraws the message body 
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
             j origin-id -ns urn:xmpp:sid:0 -id m1
-            j body #body "helo"
+            j body -body "helo"
         }]
         wait
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j replace -ns urn:xmpp:message-correct:0 -id m1
-            j body #body "hello world"
+            j body -body "hello world"
         }]
         wait
         set txt [[.cv textwidget] get 1.0 end-1c]
@@ -1758,7 +1758,7 @@ test chatview-retract-tombstones {a received self-retraction redraws the message
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
             j origin-id -ns urn:xmpp:sid:0 -id m1
-            j body #body "secret"
+            j body -body "secret"
         }]
         wait
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
@@ -1782,7 +1782,7 @@ test chatview-edit-at-tail-keeps-tail-pinned \
         # view is no longer at the bottom.
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j replace -ns urn:xmpp:message-correct:0 -id seed14
-            j body #body "edited\nmuch\ntaller\nnow"
+            j body -body "edited\nmuch\ntaller\nnow"
         }]
         wait
         set atEndAfter [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]

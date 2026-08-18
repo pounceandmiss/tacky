@@ -50,7 +50,7 @@ proc sw_answer_fields {fields} {
         j query -ns urn:xmpp:mam:2 {
             j x -ns jabber:x:data -type form {
                 j field -var FORM_TYPE -type hidden {
-                    j value #body urn:xmpp:mam:2
+                    j value -body urn:xmpp:mam:2
                 }
                 foreach f $fields {
                     j field -var $f

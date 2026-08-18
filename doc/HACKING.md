@@ -94,10 +94,14 @@ Option forms:
 | Form                            | Effect                                                |
 | ------------------------------- | ----------------------------------------------------- |
 | `-ns URI`                       | sets the node's namespace                             |
+| `-body text`                    | sets the element's text                               |
 | `-name value`                   | sets attribute `name`                                 |
 | `@name value`                   | same, for attribute names that collide with the above |
-| `.body text` / `#body text`     | sets the element's text                               |
-| `#as-is $node` / `/as-is $node` | splices an already-built node in as a child           |
+| `#as-is $node`                  | splices an already-built node in as a child           |
+
+`-ns` and `-body` name node fields, every other `-name` is an attribute, and
+`@name` is always an attribute. A key with neither prefix is an error rather
+than a silent no-op.
 
 The trailing script is optional.
 
@@ -125,7 +129,9 @@ descending a level or narrowing the current set.
 Terminators:
 
 - `-get fields` returns the fields of the first match. One field returns a bare
-  value, several return a list. `node` yields the whole dict.
+  value, several return a list. `node` yields the whole dict. A field may be
+  spelled with or without the dash it carries as a filter, so `-get -body` and
+  `-get body` are the same.
 - `-gather fields` returns one entry per match.
 - `-script varName body` runs the body per match with the node in `varName`.
 - With none of them, the matching nodes are returned.

@@ -630,10 +630,10 @@ snit::type taco_message {
                     -name OMEMO
             }
             if {$encWire} {
-                j body #body \
+                j body -body \
                     "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
             } else {
-                j body #body $body
+                j body -body $body
             }
             if {$replyId ne ""} {
                 j reply -ns urn:xmpp:reply:0 -to $replyTo -id $replyId
@@ -644,7 +644,7 @@ snit::type taco_message {
                 }
             }
             if {$oobUrl ne ""} {
-                j x -ns jabber:x:oob { j url #body $oobUrl }
+                j x -ns jabber:x:oob { j url -body $oobUrl }
             }
             # Ask 1:1 peers for delivery/read markers (XEP-0184/0333).
             if {$msgType eq "chat"} {
@@ -1308,7 +1308,7 @@ snit::type taco_message {
         $client write [j message -to $toJid -type $msgType \
                 -id [clock microseconds] {
             j retract -ns urn:xmpp:message-retract:1 -id $targetId
-            j body #body "This message was retracted."
+            j body -body "This message was retracted."
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
             j store -ns urn:xmpp:hints
         }]
@@ -1334,7 +1334,7 @@ snit::type taco_message {
             -command [mymethod OnModerateResult $opts(-onerror)] \
             -payload [j moderate -ns urn:xmpp:message-moderate:1 -id $targetId {
                 j retract -ns urn:xmpp:message-retract:1
-                if {$reason ne ""} { j reason #body $reason }
+                if {$reason ne ""} { j reason -body $reason }
             }]
     }
 
@@ -1450,7 +1450,7 @@ snit::type taco_message {
         $client write [j message -to $toJid -type $msgType \
                 -id [clock microseconds] {
             j reactions -ns urn:xmpp:reactions:0 -id $targetId {
-                foreach e $emojis { j reaction #body $e }
+                foreach e $emojis { j reaction -body $e }
             }
             j store -ns urn:xmpp:hints
         }]
