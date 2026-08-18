@@ -17,21 +17,20 @@ test client-onready-sets-jid {OnReady stores bound JID} \
         c cget -jid
     } -result {user@test.example.com/res1}
 
-test client-onready-emits-event {OnReady emits conn <Ready>} \
+test client-onready-emits-state {a session coming up emits conn <State> connected} \
     {*}$common \
     -body {
         c.conn configure -bound-jid "user@test.example.com/res1"
         c.conn fire_ready 0
-        # Find the <Ready> event (fire_ready now emits via -emit)
         set found {}
         foreach ev $_emitted {
-            if {[lindex $ev 1] eq "<Ready>"} {
+            if {[lindex $ev 1] eq "<State>"} {
                 set found $ev
                 break
             }
         }
         list [lindex $found 0] [lindex $found 1] [lindex $found 2] [lindex $found 3] [lindex $found 4] [lindex $found 5]
-    } -result {conn <Ready> -acc user@test.example.com -resumed 0}
+    } -result {conn <State> -acc user@test.example.com -state connected}
 
 # -- OnDisconnect -----------------------------------------------------------
 

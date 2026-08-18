@@ -88,8 +88,8 @@ namespace eval ::test::message_int {
 
         # Wait for both connections to be ready and catchup done
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc romeo@example.local}
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc romeo@example.local -state connected}
+            {conn <State> -acc juliet@example.local -state connected}
         }
         ::test::helpers::waitEvents {
             {message <CatchupDone> -acc romeo@example.local}

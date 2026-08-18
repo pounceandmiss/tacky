@@ -75,8 +75,8 @@ namespace eval ::test::avatar_int {
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc romeo@example.local}
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc romeo@example.local -state connected}
+            {conn <State> -acc juliet@example.local -state connected}
         }
         tacky roster subscribe -acc $ROMEO -jid $JULIET
         tacky roster subscribe -acc $JULIET -jid $ROMEO
@@ -210,7 +210,7 @@ namespace eval ::test::avatar_int {
         set eventArgs [awaitEvent avatar <Update> -acc $JULIET -jid $ROMEO {
             tacky account enable -acc $JULIET
             ::test::helpers::waitEvents {
-                {conn <Ready> -acc juliet@example.local}
+                {conn <State> -acc juliet@example.local -state connected}
             }
             tacky avatar visible -acc $JULIET -jid $ROMEO
         }]
@@ -235,7 +235,7 @@ namespace eval ::test::avatar_int {
         }
         tacky account enable -acc $JULIET
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc juliet@example.local -state connected}
         }
 
         # Romeo now publishes. Juliet should still receive and fetch it.

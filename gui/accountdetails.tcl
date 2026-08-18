@@ -116,7 +116,8 @@ snit::widgetadaptor signin {
         $win.progressbar start
         $win.proceed configure -text "Cancel" -command [mymethod Cancel]
         $win.statuslabel configure -text ""
-        tacky listen -tag $win conn <Ready> -acc $jid [mymethod OnReady]
+        tacky listen -tag $win conn <State> -acc $jid -state connected \
+            [mymethod OnConnected]
         tacky listen -tag $win conn <AuthError> -acc $jid \
             [mymethod OnFailed "Authentication failed"]
         tacky listen -tag $win conn <Disconnected> -acc $jid \
@@ -137,7 +138,7 @@ snit::widgetadaptor signin {
         {*}$options(-back)
     }
 
-    method OnReady {ev} {
+    method OnConnected {ev} {
         set succeeded 1
         tacky unlisten $win
         $self Idle

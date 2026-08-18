@@ -44,7 +44,7 @@ namespace eval ::test::omemo_int {
         return [set $var]
     }
 
-    # Register the account and wait for stream <Ready> + initial MAM
+    # Register the account and wait for the stream to come up + initial MAM
     # catchup. Stops short of warming OMEMO, so the bot's devicelist is
     # NOT cached (the bot isn't in our roster, so no PEP +notify warms
     # it either). The cold-send test relies on this.
@@ -55,7 +55,7 @@ namespace eval ::test::omemo_int {
             -domain $HOST -username test
         tacky account enable -acc $TESTER
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc test@example.local}
+            {conn <State> -acc test@example.local -state connected}
         }
         ::test::helpers::waitEvents {
             {message <CatchupDone> -acc test@example.local}

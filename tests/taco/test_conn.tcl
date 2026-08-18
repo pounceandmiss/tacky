@@ -502,14 +502,6 @@ test conn-emit-state-sequence {-emit receives State events through full connect}
         extract_emitted "<State>" -state
     } -result {connecting authenticating binding connected}
 
-test conn-emit-ready-event {-emit receives Ready event with resumed flag} \
-    {*}$common \
-    -body {
-        c connect
-        drive_to_ready "user@test.example.com/r" "sm-emit2"
-        extract_emitted "<Ready>" -resumed
-    } -result {0}
-
 test conn-emit-disconnected-event {-emit receives Disconnected event} \
     {*}$common \
     -body {
@@ -549,14 +541,13 @@ test conn-pull-connerror {pull -event <ConnError> re-emits the standing error} \
         set ::_temitted
     } -result {{conn <ConnError> -message {read failed}}}
 
-# A pull is not a stream coming up, so there is no -resumed to answer with.
-# Clients that were away for the real event read <State> connected instead.
-test conn-pull-rejects-ready {pull -event <Ready> errors} \
+# An edge event has no standing value to re-emit, so pull refuses it.
+test conn-pull-rejects-autherror {pull -event <AuthError> errors} \
     {*}$common \
     -body {
-        catch {c pull -event <Ready>} err
+        catch {c pull -event <AuthError>} err
         set err
-    } -result {conn pull: event <Ready> is not pullable}
+    } -result {conn pull: event <AuthError> is not pullable}
 
 # -- Bug fix: connect() state guard ----------------------------------------
 

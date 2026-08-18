@@ -70,8 +70,8 @@ namespace eval ::test::tacky_avatar {
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc romeo@example.local}
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc romeo@example.local -state connected}
+            {conn <State> -acc juliet@example.local -state connected}
         }
         tacky roster subscribe -acc $ROMEO -jid $JULIET
         tacky roster subscribe -acc $JULIET -jid $ROMEO
