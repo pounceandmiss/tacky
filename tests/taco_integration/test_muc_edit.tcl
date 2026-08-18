@@ -114,8 +114,8 @@ namespace eval ::test::muc_edit_int {
         tacky account enable -acc $JULIET
 
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc romeo@example.local}
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc romeo@example.local -state connected}
+            {conn <State> -acc juliet@example.local -state connected}
         }
         ::test::helpers::waitEvents {
             {message <CatchupDone> -acc romeo@example.local}

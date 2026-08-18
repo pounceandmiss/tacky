@@ -342,7 +342,7 @@ snit::type bareconn {
 # authState drives the stanza dispatcher to the right handler method.
 # Both reset to "disconnected" on close() or fatal errors.
 # conn emits events via the -emit callback on state transitions and
-# connection lifecycle events (<State>, <Ready>, <Disconnected>, <AuthError>).
+# connection lifecycle events (<State>, <Disconnected>, <AuthError>).
 snit::type conn {
     component base
     component sm
@@ -453,9 +453,6 @@ snit::type conn {
     }
 
     # Re-emit current state for `tacky observe` (initial-state sync on attach).
-    # <Ready> stays out: it reports a stream coming up, so -resumed would have
-    # nothing to say. It goes out with <State> connected, which carries the
-    # same news to a client that missed it.
     method pull {args} {
         if {$options(-emit) eq ""} return
         array set opts $args
@@ -714,12 +711,8 @@ snit::type conn {
             if {$authState ne "ready"} return
             $self SetConnState connected
 
-            set resumed [dict get $info resumed]
-            if {$options(-emit) ne ""} {
-                {*}$options(-emit) conn <Ready> -resumed $resumed
-            }
             if {$options(-onready) ne ""} {
-                {*}$options(-onready) $resumed
+                {*}$options(-onready) [dict get $info resumed]
             }
         }
     }

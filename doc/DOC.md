@@ -270,7 +270,6 @@ and `<ConnError>` are pullable (use Tcl `observe`, or just track the last
 event you saw).
 
     conn <State>     {acc: string, state: string}     every transition
-    conn <Ready>     {acc: string, resumed: bool}      fully online
     conn <ConnError> {acc: string, message: string}    transport failure
     conn <AuthError> {acc: string, message: string}    credentials rejected
 
@@ -279,11 +278,6 @@ event you saw).
 `<ConnError>` gives the reason, `state: "waiting"` is the gap between
 tries, and `connected` clears it. `<AuthError>` is the end of the road -
 the backend stops until you re-enable the account.
-
-`<Ready>` is not pullable, and asking for it is an error: it reports a
-stream coming up, and `resumed` has no answer outside one. It is emitted
-with `state: "connected"`, which does pull, so a client attaching to a
-session that came up while it was away reads that instead.
 
 ## setting
 
@@ -960,10 +954,11 @@ connect call. Run `account list {enabled: 1}` and open the main UI if it
 returns anything, setup if it doesn't.
 
 **Sign-in.** Creating the account is the credential check. Subscribe to
-`conn <Ready>`, `<AuthError>` and `<ConnError>` for the account, then call
-`account add` and `account enable`. Keep the account on `<Ready>`. On failure,
-show the `message` and call `account remove`: `account add` stores the account
-before anything validates it, so an abandoned sign-in leaves a row behind.
+`conn <State>`, `<AuthError>` and `<ConnError>` for the account, then call
+`account add` and `account enable`. Keep the account when `state` reaches
+`connected`. On failure, show the `message` and call `account remove`:
+`account add` stores the account before anything validates it, so an
+abandoned sign-in leaves a row behind.
 `<ConnError>` is retried by the backend; `<AuthError>` is terminal.
 
 **Sign-up.** XEP-0077 registration runs through the `register` module, keyed
@@ -1330,7 +1325,7 @@ media path is peer to peer and can outlive the outage.
 
 Call state lives only in the backend, and only as events, so a client that
 restarted has none of it. `calls list` per account rebuilds it: ask on
-`conn <Ready>`, and on `conn <State>` reaching `connected`, which is what a
-client sees when it reattaches to a backend that stayed up. On a fresh stream
+`conn <State>` reaching `connected`, which a client sees both when a stream
+comes up and when it reattaches to a backend that stayed up. On a fresh stream
 every sid has already been ended and forgotten before the backend reads the
 request, so the answer is authoritative: a call it does not name is over.

@@ -106,9 +106,7 @@ snit::type mock_conn {
     }
 
     method fire_ready {resumed} {
-        if {$options(-emit) ne ""} {
-            {*}$options(-emit) conn <Ready> -resumed $resumed
-        }
+        $self fire_state connected
         if {$options(-onready) ne ""} {
             {*}$options(-onready) $resumed
         }

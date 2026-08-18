@@ -139,8 +139,8 @@ namespace eval ::test::calls_int {
         tacky account enable -acc $JULIET
 
         ::test::helpers::waitEvents {
-            {conn <Ready> -acc romeo@example.local}
-            {conn <Ready> -acc juliet@example.local}
+            {conn <State> -acc romeo@example.local -state connected}
+            {conn <State> -acc juliet@example.local -state connected}
         }
 
         tacky listen -tag calls_int calls <Outgoing> -acc $ROMEO \
