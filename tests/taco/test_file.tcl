@@ -130,6 +130,41 @@ test file-extract-aesgcm-only-for-aesgcm {a plain https body is not promoted by 
     ExtractAttachments $m [xsearch $m body -get body]
 } -result {}
 
+test file-remote-url-schemes {only http/https/aesgcm urls are ones we fetch} -body {
+    set yes {}
+    foreach u [list https://up.example/x.png HTTP://up.example/x.png \
+                    aesgcm://up.example/x.png] {
+        lappend yes [is_remote_attachment_url $u]
+    }
+    set no {}
+    foreach u [list /etc/passwd file:///etc/passwd {data:text/plain,hi} \
+                    C:/Windows/win.ini {\\srv\share\x.png} ""] {
+        lappend no [is_remote_attachment_url $u]
+    }
+    list $yes $no
+} -result {{1 1 1} {0 0 0 0 0 0}}
+
+# A url we will not fetch is not an attachment at all: left in the row it would
+# reach the download path, which serves a readable local file in place.
+test file-extract-rejects-unfetchable-oob {an OOB url we cannot fetch is not an attachment} -body {
+    set out {}
+    foreach u [list /etc/passwd file:///etc/passwd {\\srv\share\x.png}] {
+        set m [j message {
+            j body #body $u
+            j x -ns jabber:x:oob { j url #body $u }
+        }]
+        lappend out [llength [ExtractAttachments $m [xsearch $m body -get body]]]
+    }
+    set out
+} -result {0 0 0}
+
+test file-display-name-strips-bidi {controls and bidi overrides leave the display name} -body {
+    set spoof "https://up.example/x/photo\u202egnp.exe"
+    set ctl "https://up.example/x/re\u0007port\u200f.pdf"
+    list [string length [attachment_basename $spoof]] \
+         [attachment_display_name $spoof] [attachment_display_name $ctl]
+} -result {13 photognp.exe report.pdf}
+
 # --- attachment_caption ---------------------------------------------------
 
 proc cap_att {url} { list [dict create url $url type image name x size "" mime ""] }

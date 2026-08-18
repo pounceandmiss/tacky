@@ -2431,7 +2431,9 @@ proc ExtractAttachments {msgNode body} {
     set atts {}
     xsearch $msgNode x -ns jabber:x:oob url -script u {
         set url [dict get $u body]
-        if {$url ne ""} { lappend atts [attachment_dict $url] }
+        if {[is_remote_attachment_url $url]} {
+            lappend atts [attachment_dict $url]
+        }
     }
     if {[llength $atts] == 0 && [is_aesgcm_url [string trim $body]]} {
         lappend atts [attachment_dict [string trim $body]]
@@ -2441,7 +2443,7 @@ proc ExtractAttachments {msgNode body} {
 
 proc attachment_dict {url} {
     dict create url $url type [attachment_kind $url] \
-        name [attachment_basename $url] size "" mime ""
+        name [attachment_display_name $url] size "" mime ""
 }
 
 # Display text for a message with attachments: the body, emptied when it is
