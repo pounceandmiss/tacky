@@ -647,6 +647,15 @@ proc is_aesgcm_url {url} {
     return [string match -nocase "aesgcm://*" $url]
 }
 
+# Whether an attachment url off the wire is one we will fetch. A bare path, a
+# UNC share, file:// and data: are not.
+proc is_remote_attachment_url {url} {
+    foreach scheme {http:// https:// aesgcm://} {
+        if {[string match -nocase "$scheme*" $url]} { return 1 }
+    }
+    return 0
+}
+
 # Build an aesgcm:// URL from the https:// GET URL plus raw iv/key bytes.
 proc aesgcm_url {httpsUrl iv key} {
     regsub {^[a-zA-Z][a-zA-Z0-9+.-]*://} $httpsUrl {aesgcm://} out
@@ -675,6 +684,14 @@ proc aesgcm_parse {url} {
 proc attachment_basename {url} {
     set bare [lindex [split $url "?#"] 0]
     return [file tail $bare]
+}
+
+# The sender's filename, safe to show: controls and bidi overrides are stripped,
+# since in a label they hide the real extension. The url keeps the wire bytes.
+proc attachment_display_name {url} {
+    regsub -all {[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]} \
+        [attachment_basename $url] "" name
+    return $name
 }
 
 # image (renderable inline) vs file (chip with open/save).
