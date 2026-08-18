@@ -70,7 +70,8 @@ test json-backend-callback-search-unsupported {search error flags are booleans} 
     _test_clear
 } -body {
     set result [dict create \
-        messages {} complete 0 last "" error 1 unsupported 1]
+        messages {} complete 0 \
+        last "" last_chat_jid "" last_id "" error 1 unsupported 1]
     _test_on_result 42 message/search $result
     lindex [_test_sent] 0
 } -result [json::write array \
@@ -78,7 +79,9 @@ test json-backend-callback-search-unsupported {search error flags are booleans} 
     [json::write object \
         messages [json::write array] \
         complete false \
-        last {""} \
+        last null \
+        last_chat_jid {""} \
+        last_id {""} \
         error true \
         unsupported true]]
 

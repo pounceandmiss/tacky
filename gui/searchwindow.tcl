@@ -25,7 +25,8 @@ snit::widget searchwindow {
 
     variable query ""
     variable alsoRemote 0
-    variable lastCursor ""
+    variable lastTs ""
+    variable lastChat ""
     variable isComplete 0
     variable searchTag
     variable ca
@@ -158,7 +159,8 @@ snit::widget searchwindow {
         if {$query eq ""} return
         ::tacky message cancel -acc $options(-acc) -tag $searchTag
         $ca clear
-        set lastCursor ""
+        set lastTs ""
+        set lastChat ""
         set isComplete 0
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
@@ -169,19 +171,27 @@ snit::widget searchwindow {
             -tag $searchTag -command [mymethod OnResults]
     }
 
-    # Paging stays local so lastCursor stays a store cursor, never an RSM id.
+    # The remote leg runs on the first page only; the rest walks the store.
     method LoadMore {} {
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
         ::tacky message search -acc $options(-acc) \
             {*}[$self ChatArgs] -query $query -source local \
-            -before $lastCursor -tag $searchTag \
+            {*}[$self CursorArgs] -tag $searchTag \
             -command [mymethod OnResults]
     }
 
     method ChatArgs {} {
         if {$wholeAccount} { return {} }
         return [list -chat $options(-jid)]
+    }
+
+    # Account-wide, two chats can share a timestamp, so the cursor needs both.
+    method CursorArgs {} {
+        if {$wholeAccount} {
+            return [list -before $lastTs -before_chat_jid $lastChat]
+        }
+        return [list -before $lastTs]
     }
 
     method OnResults {result} {
@@ -193,7 +203,8 @@ snit::widget searchwindow {
             return
         }
 
-        set lastCursor [dict get $result last]
+        set lastTs [dict get $result last]
+        set lastChat [dict get $result last_chat_jid]
         set isComplete [dict get $result complete]
 
         if {$isComplete} {

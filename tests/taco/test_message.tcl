@@ -2810,9 +2810,10 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
              [dict get [lindex $msgs 0] server_id] \
              [dict get [lindex $msgs 1] content body] \
              [dict get $result complete] \
+             [dict get $result last_id] \
              [dict get $result last] \
              $dbCount
-    } -result {2 {found it} sid1 {found another} 0 sid2 2}
+    } -result {2 {found it} sid1 {found another} 0 sid2 {} 2}
 
 test message-search-remote-hits-carry-match-ranges {an archive hit is annotated like a local one} \
     {*}$msg_common \
@@ -2885,12 +2886,12 @@ test message-search-skips-empty-body {search skips results with empty body} \
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {has content}}
 
-test message-search-pagination-before {search with -before sends RSM before element} \
+test message-search-pagination-before {search with -before_id sends RSM before element} \
     {*}$msg_common \
     -body {
         msg_prime_search
         tacky message search -source remote -acc $acc -chat alice@example.com \
-            -query "test" -before "page-cursor-id" -limit 10 \
+            -query "test" -before_id "page-cursor-id" -limit 10 \
             -command [list apply {{r} {}}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
@@ -4018,17 +4019,31 @@ test message-search-unscoped-covers-every-chat {omitting -chat searches the whol
         }
     } -result {bob@example.com alice@example.com}
 
-test message-search-unscoped-cursor-carries-the-chat {the unscoped cursor is the {timestamp chat} pair} \
+test message-search-unscoped-cursor-carries-the-chat {an account-wide cursor names the chat it stopped in} \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
-        dict get [msg_search -query needle] last
+        set r [msg_search -query needle]
+        list [dict get $r last] [dict get $r last_chat_jid]
     } -result {200 bob@example.com}
 
-test message-search-scoped-cursor-stays-a-timestamp {naming a chat keeps the plain timestamp cursor} \
+test message-search-scoped-cursor-stays-a-timestamp {naming a chat leaves the chat half of the cursor empty} \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
-        dict get [msg_search -chat bob@example.com -query needle] last
-    } -result {200}
+        set r [msg_search -chat bob@example.com -query needle]
+        list [dict get $r last] [dict get $r last_chat_jid] [dict get $r last_id]
+    } -result {200 {} {}}
+
+test message-search-unscoped-pages-without-dropping-a-tie {feeding both cursor halves back resumes mid-tie} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com timestamp 200 body needle]]
+        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        set first [msg_search -query needle -limit 1]
+        set rest [msg_search -query needle \
+            -before [dict get $first last] \
+            -before_chat_jid [dict get $first last_chat_jid]]
+        list [lmap m [dict get $first messages] {dict get $m chat_jid}] \
+             [lmap m [dict get $rest messages] {dict get $m chat_jid}]
+    } -result {bob@example.com alice@example.com}
 
 test message-search-unscoped-refuses-a-remote-source {MAM queries one archive, so an unscoped remote search is an error} \
     {*}$msg_common -body {
@@ -4038,3 +4053,41 @@ test message-search-unscoped-refuses-a-remote-source {MAM queries one archive, s
             -onerror [list apply {{msg} { set ::got $msg }}]
         set got
     } -result {search: -source "both" needs a -chat}
+
+# Search: cursors that belong to another search shape
+
+# Helper: run a search expected to be refused, returning the error message
+proc msg_search_refused {args} {
+    set ::_msg_search_error none
+    tacky message search -acc $::acc -query needle {*}$args \
+        -command [list apply {{r} {}}] \
+        -onerror [list apply {{msg} { set ::_msg_search_error $msg }}]
+    set ::_msg_search_error
+}
+
+test message-search-refuses-an-archive-cursor-locally {an RSM id can't page the store, where it would match every row} \
+    {*}$msg_common -body {
+        msg_search_refused -chat alice@example.com -source local \
+            -before_id archive-uuid-42
+    } -result {search: -before_id needs -source "remote"}
+
+test message-search-refuses-a-store-cursor-remotely {a timestamp can't page the archive} \
+    {*}$msg_common -body {
+        msg_search_refused -chat alice@example.com -source remote -before 200
+    } -result {search: -source "remote" pages with -before_id}
+
+test message-search-refuses-a-non-timestamp-before {anything but a timestamp is refused} \
+    {*}$msg_common -body {
+        msg_search_refused -chat alice@example.com -before archive-uuid-42
+    } -result {search: -before is a timestamp, got "archive-uuid-42"}
+
+test message-search-refuses-a-chat-half-when-scoped {the tie-break half belongs to an account-wide search} \
+    {*}$msg_common -body {
+        msg_search_refused -chat alice@example.com -before 200 \
+            -before_chat_jid alice@example.com
+    } -result {search: -before_chat_jid belongs to a search with no -chat}
+
+test message-search-refuses-half-an-account-wide-cursor {an account-wide cursor is both halves or neither} \
+    {*}$msg_common -body {
+        msg_search_refused -before 200
+    } -result {search: an account-wide cursor is -before and -before_chat_jid together}
