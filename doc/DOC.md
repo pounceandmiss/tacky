@@ -500,7 +500,7 @@ carries it in `client`.
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
                | "preformatted" | "quote"
     matches    = [{offset: int, length: int}]
-    attachment = {url: string, type: "image" | "file", name: string, size: int, mime: string}
+    attachment = {url: string, path: string, type: "image" | "file", name: string, size: int, mime: string}
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool, last: string}
@@ -763,19 +763,26 @@ Event:
 
 ## file
 
-    file download {acc: string, url: string, auto?: bool, from?: string,
-                   thumbmax?: int}              -> string  local path ("" on failure)
+    file download {acc: string, url?: string, path?: string, auto?: bool,
+                   from?: string, thumbmax?: int}
+                                                -> string  local path ("" on failure)
     file cancel {acc: string, id: int}
-    file cancel {acc: string, url: string}
-    file uncache {acc: string, url: string}
+    file cancel {acc: string, url?: string, path?: string}
+    file uncache {acc: string, url?: string, path?: string}
 
-`download` pulls a file into the data dir. An already-downloaded file or an
-already-local path comes back immediately, and two downloads of the same URL
-collapse into one. It handles the `aesgcm://` scheme (XEP-0454) for you.
-`cancel` aborts a transfer in either direction - it ends `idle`. Cancel an
-upload by `id`, a download by `url` - which stops the coalesced fetch for every
-caller waiting on it. `uncache` deletes the downloaded file and its thumbnail.
-See [Attachments](#attachments).
+`download` produces a local copy of an attachment. Pass whichever of `url` and
+`path` the attachment carries - both, when it has both. A `path` is one of your
+own files and is used where it lies; a `url` is fetched into the data dir, or
+served from the copy already there. A `url` is never opened as a path, and only
+`http`, `https` and `aesgcm` are fetched; anything else fails. An attachment
+with both is served from its `path` while that file exists and from its `url`
+once it does not. Two downloads of the same source collapse into one. It
+handles the `aesgcm://` scheme (XEP-0454) for you. `cancel` aborts a transfer
+in either direction - it ends `idle`. Cancel an upload by `id`, a download by
+the source you gave it - which stops the coalesced fetch for every caller
+waiting on it. `uncache` deletes the downloaded file and its thumbnail; it only
+ever touches the cache, never the file a `path` names. See
+[Attachments](#attachments).
 
 Set `auto` for a fetch you start yourself, such as rendering an inline image,
 and pass the message's sender as `from`. Those two subject it to the autofetch
@@ -793,7 +800,8 @@ Event:
 or `idle`. `idle` is the neutral end - nothing transferring, nothing on disk,
 a fetch will start it - and covers a declined autofetch, a size-capped abort
 and a cancel. `error` is only ever set on `failed`. For an upload, `id` is the
-message timestamp; for a download, match on `url`.
+message timestamp; for a download, match on `url`, which echoes back the
+source: the `url` you passed, or the `path` when you passed no `url`.
 
 ## calls
 
@@ -1200,21 +1208,27 @@ attachment `type: "image"` inline and `type: "file"` as a chip; more than one
 entry is a grouped/album message under a single `caption`. `caption` is the
 text to show: senders copy the share URL into the body for clients that don't
 understand OOB, so `caption` is `""` when the body was nothing but that URL, and
-the body verbatim otherwise. `size` and `mime` are only set on outgoing
-attachments; on received ones they're `0` and `""`.
+the body verbatim otherwise. `path`, `size` and `mime` are only set on outgoing
+attachments; on received ones they're `""`, `0` and `""`.
+
+`url` is wire data and `path` is a local file, and the two never stand in for
+one another: a received `url` is fetched, never opened off disk, and one we
+cannot fetch is not an attachment at all - the message arrives as plain text.
+`name` is the sender's filename with control characters and bidi overrides
+stripped, so it is safe to display; `url` keeps the wire bytes.
 
 **Sending.** `message sendFile` is optimistic: the message shows up right
-away via `<New>` with `server_status: "uploading"` and the local path
-standing in as the attachment `url`. The backend uploads the file, sends
-the real message with the public URL, and confirmation carries on like any
-other send. A failed upload marks the row `failed`, and
-`message retryUpload` runs it again from the local path it recorded. Each
+away via `<New>` with `server_status: "uploading"`, the attachment's `path`
+set to the local file and its `url` still empty. The backend uploads the file,
+sends the real message with the public URL, and confirmation carries on like
+any other send. A failed upload marks the row `failed`, and
+`message retryUpload` runs it again from the `path` it recorded. Each
 upload transition rides `message <Status>` as a `server_status` change:
 `uploading -> pending` on success, `uploading -> failed` on error, and
 `failed -> uploading` on retry. Byte-level progress and terminal state come
 on `file <Update>` (keyed by the message `timestamp`), which is also where
-the attachment's public URL lands - the message row keeps the local path it
-was drawn with, and the stored row carries the public URL for reload. In an
+the attachment's public URL lands - the row keeps its `path`, so it still
+renders from the local file, and gains the `url` that anyone else needs. In an
 OMEMO chat the file is AES-256-GCM
 encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 `file download` grabs the `https://` version and decrypts it for you.

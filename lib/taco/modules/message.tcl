@@ -779,8 +779,8 @@ snit::type taco_message {
     }
 
     # Attachment send (XEP-0363 + XEP-0066), optimistic + progress:
-    #   1. store now as 'uploading' (attachment url = local path) and emit
-    #      <New> so it shows immediately;
+    #   1. store now as 'uploading' (attachment path = local file, url still
+    #      empty) and emit <New> so it shows immediately;
     #   2. hand the file to the file module, which PUTs it and reports bytes
     #      via `file <Update>` (keyed by the message id);
     #   3. on success promote to 'pending' with the public URL + OOB stanza and
@@ -798,7 +798,7 @@ snit::type taco_message {
             from_jid $fromJid from_resource $fromRes \
             body "" server_id "" own_id $oid origin_id $oid raw_xml "" \
             encryption $encMode \
-            attachments [OutgoingAttachment $path $path] \
+            attachments [OutgoingAttachment "" $path] \
             server_status uploading]
         set inserted [dict get [$messagestore store [list $msg]] inserted]
         set ts [lindex $inserted 0]
@@ -865,7 +865,7 @@ snit::type taco_message {
         if {$row eq "" || ![dict exists $row content] \
             || [dict get $row content type] ne "media"} return
         set atts [dict get $row content attachments]
-        set path [dict get [lindex $atts 0] url]
+        set path [dict get [lindex $atts 0] path]
         set oid [dict get $row own_id]
         set encMode [expr {[dict exists $row encryption] \
             ? [dict get $row encryption] : ""}]
@@ -2441,8 +2441,9 @@ proc ExtractAttachments {msgNode body} {
     return $atts
 }
 
+# A received attachment has no `path`: only our own send sets one.
 proc attachment_dict {url} {
-    dict create url $url type [attachment_kind $url] \
+    dict create url $url path "" type [attachment_kind $url] \
         name [attachment_display_name $url] size "" mime ""
 }
 
@@ -2481,11 +2482,10 @@ proc search_match_ranges {text query} {
     return [concat {*}[lsort -integer -index 0 [lsort -unique $ranges]]]
 }
 
-# Single-element attachment list for an outgoing send. `url` is the local
-# path while uploading, then the public URL once known; `path` is always the
-# local file (drives name/size/mime).
+# Single-element attachment list for an outgoing send. `url` is empty until the
+# upload completes; `path` is always the local file (drives name/size/mime).
 proc OutgoingAttachment {url path} {
-    list [dict create url $url type [attachment_kind $path] \
+    list [dict create url $url path $path type [attachment_kind $path] \
         name [file tail $path] \
         size [expr {[file isfile $path] ? [file size $path] : ""}] \
         mime [attachment_mime $path]]

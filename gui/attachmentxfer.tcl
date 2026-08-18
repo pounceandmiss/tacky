@@ -21,11 +21,11 @@ snit::type attachmentxfer {
     # {*}$cmd $key $idx $direction $state $loaded $total $thumbpath.
     option -update-command -default control::no-op
 
-    # url -> list of "key,idx" awaiting a thumbnail. One download can serve
+    # source -> list of "key,idx" awaiting a thumbnail. One download can serve
     # several messages quoting the same URL, so each update fans out.
     variable Pending
 
-    # url -> 1 for a download the user cancelled, so its failure isn't
+    # source -> 1 for a download the user cancelled, so its failure isn't
     # reported as one.
     variable Cancelled
 
@@ -41,12 +41,17 @@ snit::type attachmentxfer {
         catch {::tacky unlisten $options(-tag)}
     }
 
+    # An attachment names a wire url, a local file of our own, or both; the
+    # backend decides which it serves. Updates come back keyed by the url, or
+    # by the path when there is no url yet.
+    method Key {url path} { expr {$url ne "" ? $url : $path} }
+
     # Kick off the inline-thumbnail fetch for each image attachment of a
     # message. The file module downloads (remote) or reads in place (local),
     # derives the thumbnail, and reports back through `file <Update>`.
     # -auto subjects the fetch to the autofetch policy and size cap. Our own
-    # sends are exempt: from history they refetch the public URL that replaced
-    # the local path on upload.
+    # sends are exempt: theirs is the file on disk, or the URL it was uploaded
+    # to.
     method fetch {msg} {
         if {![dict exists $msg attachments]} return
         set key [dict get $msg key]
@@ -54,8 +59,8 @@ snit::type attachmentxfer {
         set idx 0
         foreach att [dict get $msg attachments] {
             if {[dict get $att type] eq "image"} {
-                $self Download [dict get $att url] $key $idx \
-                    -auto $auto -from [dict get $msg from_jid]
+                $self Download [dict get $att url] [dict get $att path] \
+                    $key $idx -auto $auto -from [dict get $msg from_jid]
             }
             incr idx
         }
@@ -63,31 +68,33 @@ snit::type attachmentxfer {
 
     # Click-to-reload after "Delete from cache" or a held-back autofetch: the
     # same path as the initial fetch, minus the gating.
-    method load {url key idx} { $self Download $url $key $idx }
+    method load {url path key idx} { $self Download $url $path $key $idx }
 
-    method Download {url key idx args} {
+    method Download {url path key idx args} {
+        set src [$self Key $url $path]
         set slot "$key,$idx"
-        set waiting [dict getdef $Pending $url {}]
+        set waiting [dict getdef $Pending $src {}]
         if {$slot ni $waiting} {
-            dict set Pending $url [lappend waiting $slot]
+            dict set Pending $src [lappend waiting $slot]
         }
-        dict unset Cancelled $url
-        ::tacky file download -acc $options(-acc) -url $url {*}$args
+        dict unset Cancelled $src
+        ::tacky file download -acc $options(-acc) \
+            -url $url -path $path {*}$args
     }
 
-    # Uploads are cancelled by message id, downloads by url - which stops the
-    # fetch for every message waiting on that URL.
-    method cancel {direction url key} {
+    # Uploads are cancelled by message id, downloads by source - which stops
+    # the fetch for every message waiting on it.
+    method cancel {direction url path key} {
         if {$direction eq "upload"} {
             ::tacky file cancel -acc $options(-acc) -id $key
             return
         }
-        dict set Cancelled $url 1
-        ::tacky file cancel -acc $options(-acc) -url $url
+        dict set Cancelled [$self Key $url $path] 1
+        ::tacky file cancel -acc $options(-acc) -url $url -path $path
     }
 
     # Upload events key on -id (the message id); download events key on -url,
-    # which may have several attachments waiting on it.
+    # the source, which may have several attachments waiting on it.
     method OnTransfer {ev} {
         set direction [dict get $ev -direction]
         if {$direction eq "upload"} {
@@ -122,34 +129,36 @@ snit::type attachmentxfer {
             -chat $options(-chat) -timestamp $key
     }
 
-    # A local path is already on disk; anything else is fetched (from cache
-    # when it is there) and the action runs on the downloaded copy.
-    method open {url} { $self WithLocalCopy $url attachment_os_open }
+    # Every action runs on a local copy: our own file where it lies, or the
+    # download (from cache when it is there).
+    method open {url path} { $self WithLocalCopy $url $path attachment_os_open }
 
-    method openfolder {url} { $self WithLocalCopy $url showinfm::show }
-
-    method uncache {url} {
-        ::tacky file uncache -acc $options(-acc) -url $url
+    method openfolder {url path} {
+        $self WithLocalCopy $url $path showinfm::show
     }
 
-    method save {url name} {
+    method uncache {url path} {
+        ::tacky file uncache -acc $options(-acc) -url $url -path $path
+    }
+
+    method save {url path name} {
         set dest [tk_getSaveFile -initialfile $name -parent [$self Parent]]
         if {$dest eq ""} return
-        $self WithLocalCopy $url [mymethod CopyTo $dest]
+        $self WithLocalCopy $url $path [mymethod CopyTo $dest]
     }
 
-    method WithLocalCopy {url action} {
-        if {[file exists $url]} { {*}$action $url; return }
-        dict unset Cancelled $url
-        ::tacky file download -acc $options(-acc) -url $url \
-            -command [mymethod OnLocalCopy $action $url]
+    method WithLocalCopy {url path action} {
+        set src [$self Key $url $path]
+        dict unset Cancelled $src
+        ::tacky file download -acc $options(-acc) -url $url -path $path \
+            -command [mymethod OnLocalCopy $action $src]
     }
 
     # An open/save can ride along on a thumbnail fetch already in flight; a
     # cancel that stops it is not an error to report.
-    method OnLocalCopy {action url path} {
-        set cancelled [dict exists $Cancelled $url]
-        dict unset Cancelled $url
+    method OnLocalCopy {action src path} {
+        set cancelled [dict exists $Cancelled $src]
+        dict unset Cancelled $src
         if {$path eq ""} {
             if {!$cancelled} {
                 $self Complain "Download Failed" \

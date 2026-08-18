@@ -50,14 +50,15 @@ snit::widget chatarea {
 
     # Where the rendered attachment widgets send what the user asked for. The
     # action leads, so a single object with these methods can be the whole
-    # callback:
-    #   {*}$cmd open       $url            download (cached) and open with the OS
-    #   {*}$cmd save       $url $filename  download (cached) and copy to a path
-    #   {*}$cmd openfolder $url            show the cached file in its folder
-    #   {*}$cmd uncache    $url            delete the cached copy from disk
-    #   {*}$cmd load       $url $key $idx  (re)fetch an image thumbnail
-    #   {*}$cmd retry      $key            retry a failed upload
-    #   {*}$cmd cancel     $direction $url $key   abort a transfer in flight
+    # callback. An attachment names a wire url, a local file of our own, or
+    # both, and the pair always travels together:
+    #   {*}$cmd open       $url $path            open with the OS
+    #   {*}$cmd save       $url $path $filename  copy to a path of the user's
+    #   {*}$cmd openfolder $url $path            show the local copy in its folder
+    #   {*}$cmd uncache    $url $path            delete the cached copy from disk
+    #   {*}$cmd load       $url $path $key $idx  (re)fetch an image thumbnail
+    #   {*}$cmd retry      $key                  retry a failed upload
+    #   {*}$cmd cancel     $direction $url $path $key   abort a transfer
     option -attachment-command -default control::no-op
 
     # Virtual events. Both carry the caller's key in -data, never the slot,
@@ -689,7 +690,8 @@ snit::widget chatarea {
         catch {destroy $f}
         attachment $f \
             -command [mymethod AttachmentAction] \
-            -url [dict get $att url] -kind [dict get $att type] \
+            -url [dict get $att url] -path [dict get $att path] \
+            -kind [dict get $att type] \
             -name [dict get $att name] -id $key -idx $idx \
             -scroll-target $text
         $text window create msgins -window $f -padx 40 -pady 2

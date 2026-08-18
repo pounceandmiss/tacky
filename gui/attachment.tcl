@@ -10,7 +10,8 @@ snit::widget attachment {
     hulltype ttk::frame
 
     option -command -default ""       ;# {*}$cmd <action> ...; see chatarea
-    option -url  -default ""
+    option -url  -default ""          ;# wire url ("" while uploading)
+    option -path -default ""          ;# local file; our own sends only
     option -kind -default file        ;# image | file
     option -name -default ""
     option -id   -default ""          ;# message id, passed to load/retry callbacks
@@ -47,12 +48,20 @@ snit::widget attachment {
         if {[$self hasImage]} {
             $self Open
         } else {
-            $self Cb load $options(-url) $options(-id) $options(-idx)
+            $self Load
         }
     }
 
-    method Open {} { $self Cb open $options(-url) }
-    method Save {} { $self Cb save $options(-url) $options(-name) }
+    method Load {} {
+        $self Cb load $options(-url) $options(-path) \
+            $options(-id) $options(-idx)
+    }
+
+    method Open {} { $self Cb open $options(-url) $options(-path) }
+
+    method Save {} {
+        $self Cb save $options(-url) $options(-path) $options(-name)
+    }
 
     method hasImage {} { winfo exists $win.img }
     method dropImage {} { catch {destroy $win.img} }
@@ -124,7 +133,7 @@ snit::widget attachment {
     }
 
     method Cancel {direction} {
-        $self Cb cancel $direction $options(-url) $options(-id)
+        $self Cb cancel $direction $options(-url) $options(-path) $options(-id)
     }
 
     # Upload retry re-runs the upload; download retry re-fetches the thumbnail
@@ -133,7 +142,7 @@ snit::widget attachment {
         if {$direction eq "upload"} {
             $self Cb retry $options(-id)
         } else {
-            $self Cb load $options(-url) $options(-id) $options(-idx)
+            $self Load
         }
     }
 
@@ -170,13 +179,13 @@ snit::widget attachment {
         return $m
     }
 
-    method OpenFolder {} { $self Cb openfolder $options(-url) }
+    method OpenFolder {} { $self Cb openfolder $options(-url) $options(-path) }
 
     # Drop the cached copy on disk and the inline thumbnail; the message keeps
     # its caption/chip and re-fetches the next time the thumbnail is requested.
     method Uncache {} {
         $self dropImage
-        $self Cb uncache $options(-url)
+        $self Cb uncache $options(-url) $options(-path)
     }
 }
 
