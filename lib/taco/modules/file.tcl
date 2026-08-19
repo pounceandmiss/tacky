@@ -360,8 +360,9 @@ snit::type taco_file {
                 $self Terminal $id failed "decrypt: $err"
                 return
             }
-        } else {
-            catch {file rename -force -- $full.part $full}
+        } elseif {[catch {file rename -force -- $full.part $full} err]} {
+            $self Terminal $id failed "rename: $err"
+            return
         }
         if {![info exists Transfers($id)]} return
         set url [dict get $Transfers($id) url]
