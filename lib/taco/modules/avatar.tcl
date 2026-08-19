@@ -375,15 +375,27 @@ snit::type taco_avatar {
 
     # Contacts get a PEP re-push every connect; a room's vCard avatar is only
     # fetched on a cache miss at join, so without this a cached room avatar
-    # never reaches the frontend again.  The join skips unservable bytes.
+    # never reaches the frontend again.
+    #
+    # A row whose bytes are missing is fetched rather than skipped.  The
+    # metadata is written when the hash is announced and the bytes arrive after,
+    # so a fetch that failed - or a process that ended in between - leaves an
+    # entry naming an image nothing holds.  The pending-hash dicts are what would
+    # normally re-ask, and they do not survive the session, so a mark placed
+    # afterwards is the last thing in a position to.  <Update> still waits for
+    # the bytes: it is emitted from the fetch, as everywhere else.
     method PrimeFromCache {jid} {
-        set hash [$client db onecolumn {
-            SELECT m.hash FROM avatar_metadata m
-            JOIN avatar_data d ON d.hash = m.hash
-            WHERE m.jid = $jid
+        lassign [$self CachedRow $jid] hash source
+        if {$hash eq ""} return
+        set cached [$client db onecolumn {
+            SELECT count(*) FROM avatar_data WHERE hash=$hash
         }]
-        if {$hash ne ""} {
+        if {$cached} {
             $client emit avatar <Update> -jid $jid -hash $hash
+        } elseif {$source eq "vcard"} {
+            $self FetchVCard $jid
+        } else {
+            $self FetchData $jid $hash
         }
     }
 
