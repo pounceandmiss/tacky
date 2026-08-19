@@ -718,7 +718,11 @@ current hash, and `data` gives you the bytes as they were published. The
 backend fetches bytes for JIDs you've marked `visible`. The marks are a set,
 not counted references: a repeat `visible` does nothing, one `invisible` clears
 the mark, and the set outlives a dropped connection. `visible` also re-emits
-`<Update>` for an already-cached avatar, so listening is enough. `refresh`
+`<Update>` for an already-cached avatar, so listening is enough, and re-fetches
+the bytes when the cached hash has none behind it - a download that failed, or
+one the process did not outlive. That state is why `metadata` can name a hash
+`data` answers "" for: only `<Update>` waits for the bytes, so a frontend that
+builds an image out of a hash wants that one, not the read. `refresh`
 re-requests a JID's metadata node instead of trusting the cached hash, for when
 no notification arrived; it still only fetches bytes for a `visible` JID, leaves
 the cache alone if that JID publishes no avatar, and reports nothing on an IQ

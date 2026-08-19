@@ -90,7 +90,7 @@ test avatar-visible-primes-strips-join {a group chat JID's ?join suffix is not p
         set ::avatar_updates
     } -result {{room@muc.example.com abc123}}
 
-test avatar-visible-no-data-silent {visible stays quiet when the bytes are not cached} \
+test avatar-visible-no-data-silent {an <Update> waits for the bytes, it does not announce a hash the cache cannot serve} \
     {*}$avatar_common \
     -body {
         avatar_seed room@muc.example.com abc123 -source vcard -data ""
@@ -148,6 +148,15 @@ proc avatar_data_requested {} {
     return 0
 }
 
+proc avatar_vcard_requested {} {
+    foreach stanza [c.conn get_written] {
+        if {[xsearch $stanza vCard -ns vcard-temp] ne ""} {
+            return 1
+        }
+    }
+    return 0
+}
+
 test avatar-visible-survives-disconnect {a dropped connection leaves a visible JID marked} \
     {*}$avatar_common \
     -body {
@@ -165,6 +174,46 @@ test avatar-invisible-parks-fetch {an unmarked JID's new hash is parked, not fet
         c.conn feed [pep_metadata alice@example.com newhash]
         avatar_data_requested
     } -result 0
+
+# Bytes missing behind a cached hash: what a failed fetch, or a process that
+# ended between the announcement and the download, leaves in the metadata table.
+# The pending-hash dicts that would re-ask are dropped with the session, so the
+# next mark is the last thing in a position to.
+
+test avatar-visible-refetches-missing-pubsub-bytes {a mark re-fetches PEP bytes the cache is missing} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed alice@example.com abc123 -data ""
+        c.conn clear
+        c avatar visible -jid alice@example.com
+        avatar_data_requested
+    } -result 1
+
+test avatar-visible-refetches-missing-vcard-bytes {a vCard avatar is re-asked of the JID, not of its PEP node} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed room@muc.example.com/nick abc123 -source vcard -data ""
+        c.conn clear
+        c avatar visible -jid room@muc.example.com/nick
+        list [avatar_vcard_requested] [avatar_data_requested]
+    } -result {1 0}
+
+test avatar-visible-cached-asks-for-nothing {bytes already held are served without a round trip} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed alice@example.com abc123
+        c.conn clear
+        c avatar visible -jid alice@example.com
+        list [avatar_vcard_requested] [avatar_data_requested]
+    } -result {0 0}
+
+test avatar-visible-unknown-jid-asks-for-nothing {a JID with no metadata row has nothing to re-fetch} \
+    {*}$avatar_common \
+    -body {
+        c.conn clear
+        c avatar visible -jid stranger@example.com
+        list [avatar_vcard_requested] [avatar_data_requested]
+    } -result {0 0}
 
 # XEP-0084 (PEP) beats XEP-0153 (vCard)
 
