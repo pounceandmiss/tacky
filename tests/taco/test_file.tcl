@@ -769,6 +769,24 @@ test file-autofetch-max-unset-means-unlimited {maxbytes 0 never aborts} \
         af_last
     } -result {active {}}
 
+# A 200 whose bytes never make it into place: reporting done would hand the
+# caller a localpath with no file behind it. http::status and ncode read the
+# token as a plain array, so a stand-in one needs no request.
+test file-download-rename-failure-reports-failed \
+    {a completed download that cannot be moved into place fails, not done} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1 \
+            -extra-cleanup {unset -nocomplain ::_ft}] -body {
+        array set ::_ft {status ok http {HTTP/1.1 200 OK}}
+        set url http://h/gone.png
+        set id [$::_client file NewTransfer download $url]
+        set full [$::_client file AttachPath $url]
+        # No .part on disk, so the rename into place cannot succeed.
+        $::_client file OnDownloaded $id nochan $full ::_ft
+        list [lindex [af_last] 0] \
+             [string match {rename: *} [lindex [af_last] 1]] \
+             [file exists $full]
+    } -result {failed 1 0}
+
 # --- cancel ---------------------------------------------------------------
 #
 # ::http::reset runs the request's -command callback before it returns, so only

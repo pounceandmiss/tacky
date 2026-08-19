@@ -48,6 +48,7 @@ snit::type app_type {
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
+        ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
         # An explicit --debug-* flag owns its setting for this run.
         if {$options(-debug-file) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_to_file \
@@ -140,6 +141,21 @@ snit::type app_type {
         # here, and libtacky's dispatch guard would re-report it as a fresh
         # background error.
         catch {report_background [dict get $eargs -message] $info}
+    }
+
+    # Process mode only: the daemon is gone. Nothing reaches it any more, no
+    # pending reply will ever arrive, and every later call raises a channel
+    # error of its own. There is no respawn, so say it once and close.
+    method OnProcessExit {eargs} {
+        set w [$self AnyOpenWindow]
+        if {$w eq "" && $setupWin ne "" && [winfo exists $setupWin]} {
+            set w $setupWin
+        }
+        set opts [list -icon error -title "Backend Stopped" \
+            -message "The tacky backend stopped. Tacky has to close."]
+        if {$w ne ""} { lappend opts -parent $w }
+        catch {tk_messageBox {*}$opts}
+        $self Quit
     }
 
     # --- Account windows ---
