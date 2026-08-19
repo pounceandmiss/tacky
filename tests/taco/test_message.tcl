@@ -417,6 +417,20 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
         expr {[dict get $msg timestamp] == $expected}
     } -result {1}
 
+test message-live-unparseable-stamp-uses-arrival \
+    {a delay stamp we cannot parse falls back to arrival time} \
+    {*}$msg_common \
+    -body {
+        set before [clock microseconds]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "bad stamp"
+            j delay -ns urn:xmpp:delay -stamp 9999999999999-13-45T99:99:99Z
+        }]
+        set msg [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $msg content body] \
+             [expr {[dict get $msg timestamp] >= $before}]
+    } -result {{bad stamp} 1}
+
 test message-live-no-body-ignored {message without body is not stored} \
     {*}$msg_common \
     -body {

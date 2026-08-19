@@ -295,8 +295,13 @@ snit::type taco_message {
             } else {
                 set fwdNode [lindex [xsearch $resultNode forwarded \
                                         -ns urn:xmpp:forward:0] 0]
-                set msgNode [$client ensureTo \
+                set msgNode [$client ingressAddresses \
                     [lindex [xsearch $fwdNode message] 0]]
+                if {$msgNode eq ""} {
+                    jlog warn "MAM: skipping result with unroutable address" \
+                        -stanza $resultNode
+                    continue
+                }
 
                 set fromBare [jid norm [jid bare [xsearch $msgNode -get @from]]]
                 set toBare   [jid norm [jid bare [xsearch $msgNode -get @to]]]
@@ -473,7 +478,10 @@ snit::type taco_message {
     # explicitly via isOwn) then funnels into the shared Classify core.
     method ingestLive {chatJid stanza {isOwn 0}} {
         set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
-        set ts [expr {$stamp ne "" ? [ParseTimestamp $stamp] : [clock microseconds]}]
+        # A stamp we cannot parse is no stamp: the store does arithmetic
+        # on what it gets, so hand it now rather than ParseTimestamp's "".
+        set ts [ParseTimestamp $stamp]
+        if {$ts eq ""} { set ts [clock microseconds] }
         set idArgs {}
         if {$isOwn} {
             set idArgs [list -own_id [xsearch $stanza -get @id]]
@@ -2047,7 +2055,14 @@ snit::type taco_message {
         set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
         set ts [ParseTimestamp \
             [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]]
-        set msgNode [lindex [xsearch $fwdNode message] 0]
+        if {$ts eq ""} { set ts [clock microseconds] }
+        set msgNode [$client ingressAddresses \
+            [lindex [xsearch $fwdNode message] 0]]
+        if {$msgNode eq ""} {
+            jlog warn "MAM: skipping result with unroutable address" \
+                -stanza $resultNode
+            return [dict create verdict drop timestamp $ts]
+        }
         set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
         return [$self Classify $chatJid $msgNode $ts $ids]
     }

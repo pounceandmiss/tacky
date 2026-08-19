@@ -187,6 +187,33 @@ snit::type taco_client {
         return $stanza
     }
 
+    # RFC 6120 §8.1.1.1, the mirror of ensureTo: an inbound stanza with
+    # no 'from' comes from our own account.
+    method ensureFrom {stanza} {
+        if {![dict exists $stanza attrs from]
+            || [dict get $stanza attrs from] eq ""} {
+            dict set stanza attrs from [jid bare $options(-jid)]
+        }
+        return $stanza
+    }
+
+    # Fill in the addresses a stanza may omit, then refuse one we cannot
+    # read as a JID: consumers compare from/to as JIDs, and the jid
+    # package throws rather than returning a sentinel. Returns "" for a
+    # refusal. fillFrom is 0 for iq, whose response routing reads an
+    # absent from as "our own server answering".
+    method ingressAddresses {stanza {fillFrom 1}} {
+        if {![dict exists $stanza tag]} { return "" }
+        set stanza [$self ensureTo $stanza]
+        if {$fillFrom} {
+            set stanza [$self ensureFrom $stanza]
+        }
+        foreach addr [xsearch $stanza -get {@from @to}] {
+            if {$addr ne "" && ![jid valid $addr]} { return "" }
+        }
+        return $stanza
+    }
+
     # XEP-0280 carbon unwrap. Returns the forwarded inner <message> if
     # $stanza is a <sent> or <received> carbon from our own bare JID;
     # empty string otherwise (not a carbon, or a forged one from a
@@ -203,7 +230,9 @@ snit::type taco_client {
             if {$fwd eq ""} return
             set inner [xsearch $fwd message -get node]
             if {$inner eq ""} return
-            return [$self ensureTo $inner]
+            # An inner message we cannot address is as unusable as a
+            # forged envelope: same empty return.
+            return [$self ingressAddresses $inner]
         }
         return
     }
@@ -211,7 +240,13 @@ snit::type taco_client {
     method OnStanza {stanza} {
         set tag [dict get $stanza tag]
         if {$tag in {message iq presence}} {
-            set stanza [$self ensureTo $stanza]
+            set addressed [$self ingressAddresses $stanza \
+                [expr {$tag ne "iq"}]]
+            if {$addressed eq ""} {
+                jlog warn "drop: unroutable address" -stanza $stanza
+                return
+            }
+            set stanza $addressed
         }
         switch -- $tag {
             iq       { $iq feed $stanza }
