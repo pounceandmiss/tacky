@@ -198,6 +198,29 @@ test avatar-visible-refetches-missing-vcard-bytes {a vCard avatar is re-asked of
         list [avatar_vcard_requested] [avatar_data_requested]
     } -result {1 0}
 
+test avatar-visible-refetches-missing-bytes-once {a repeated mark does not re-ask for bytes this session already went after} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed alice@example.com abc123 -data ""
+        c avatar visible -jid alice@example.com
+        c avatar invisible -jid alice@example.com
+        c.conn clear
+        c avatar visible -jid alice@example.com
+        avatar_data_requested
+    } -result 0
+
+test avatar-visible-refetches-changed-hash {a hash that moved on since the unanswered fetch is asked for} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed alice@example.com abc123 -data ""
+        c avatar visible -jid alice@example.com
+        c avatar invisible -jid alice@example.com
+        avatar_seed alice@example.com def456 -data ""
+        c.conn clear
+        c avatar visible -jid alice@example.com
+        avatar_data_requested
+    } -result 1
+
 test avatar-visible-cached-asks-for-nothing {bytes already held are served without a round trip} \
     {*}$avatar_common \
     -body {

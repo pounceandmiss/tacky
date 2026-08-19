@@ -38,6 +38,7 @@ snit::type taco_avatar {
     variable VisibleJids
     variable PendingVCardHash
     variable PendingPubSubHash
+    variable RefetchedHash
     variable ActiveTags
 
     option -client -readonly yes
@@ -48,6 +49,7 @@ snit::type taco_avatar {
         array set VisibleJids {}
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
+        set RefetchedHash [dict create]
         array set ActiveTags {}
         $self Migrate
         $client pubsub handler urn:xmpp:avatar:metadata \
@@ -60,6 +62,7 @@ snit::type taco_avatar {
     method OnDisconnect {args} {
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
+        set RefetchedHash [dict create]
         array unset ActiveTags
     }
 
@@ -384,6 +387,10 @@ snit::type taco_avatar {
     # normally re-ask, and they do not survive the session, so a mark placed
     # afterwards is the last thing in a position to.  <Update> still waits for
     # the bytes: it is emitted from the fetch, as everywhere else.
+    #
+    # Once per session per hash, like those dicts: a mark is a UI transition and
+    # comes round again every time the frontend rebuilds a list, while a row the
+    # server would not serve stays unservable.
     method PrimeFromCache {jid} {
         lassign [$self CachedRow $jid] hash source
         if {$hash eq ""} return
@@ -392,7 +399,12 @@ snit::type taco_avatar {
         }]
         if {$cached} {
             $client emit avatar <Update> -jid $jid -hash $hash
-        } elseif {$source eq "vcard"} {
+            return
+        }
+        if {[dict exists $RefetchedHash $jid]
+            && [dict get $RefetchedHash $jid] eq $hash} return
+        dict set RefetchedHash $jid $hash
+        if {$source eq "vcard"} {
             $self FetchVCard $jid
         } else {
             $self FetchData $jid $hash

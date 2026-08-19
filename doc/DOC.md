@@ -720,7 +720,8 @@ not counted references: a repeat `visible` does nothing, one `invisible` clears
 the mark, and the set outlives a dropped connection. `visible` also re-emits
 `<Update>` for an already-cached avatar, so listening is enough, and re-fetches
 the bytes when the cached hash has none behind it - a download that failed, or
-one the process did not outlive. That state is why `metadata` can name a hash
+one the process did not outlive. That re-fetch runs once per connection per
+hash, so re-marking a JID whose bytes the server will not serve costs nothing. That state is why `metadata` can name a hash
 `data` answers "" for: only `<Update>` waits for the bytes, so a frontend that
 builds an image out of a hash wants that one, not the read. `refresh`
 re-requests a JID's metadata node instead of trusting the cached hash, for when
