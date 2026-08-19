@@ -222,6 +222,50 @@ test client-carbons-ignores-plain {a regular message with no carbon wrapper retu
         c UnwrapCarbon $m
     } -result {}
 
+# -- Ingress addressing -----------------------------------------------------
+
+test client-ingress-fills-absent-from \
+    {RFC 6120 §8.1.1.1: a stanza with no from comes from our own account} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        xsearch [c ingressAddresses [j message -type chat {
+            j body -body hi
+        }]] -get @from
+    } -result {user@test.example.com}
+
+test client-ingress-keeps-absent-iq-from \
+    {an iq keeps its absent from: response routing reads it as our server} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        xsearch [c ingressAddresses [j iq -type result -id 7] 0] -get @from
+    } -result {}
+
+test client-ingress-refuses-unparseable-address \
+    {a from we cannot read as a JID leaves nothing to attribute the stanza to} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        list [c ingressAddresses [j message -from @@@//.. -type chat {
+                  j body -body hi
+              }]] \
+             [c ingressAddresses [j message -from peer@example.org -to @@@ \
+                  -type chat {j body -body hi}]]
+    } -result {{} {}}
+
+test client-stanza-unaddressed-does-not-throw \
+    {an absent or unparseable address costs the stanza, not the stream} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        list [catch {c.conn feed [j message -type chat {j body -body hi}]}] \
+             [catch {c.conn feed [j message -from @@@//.. -type chat {
+                  j body -body hi
+              }]}] \
+             [catch {c.conn feed [j presence -from @@@]}]
+    } -result {0 0 0}
+
 # -- changePassword ---------------------------------------------------------
 
 set pw_common [tacky_env -mock conn -account user@test.example.com]
