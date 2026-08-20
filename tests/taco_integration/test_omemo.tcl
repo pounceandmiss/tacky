@@ -1,6 +1,4 @@
-# OMEMO 0.3 integration tests. Run via:
-#   tests/servers/with_prosody.sh tests/servers/omemo-bot/with_bot.sh \
-#     tclsh ./test_all.tcl -match omemo-int-*
+# OMEMO 0.3 end-to-end cover against a real peer implementation.
 #
 # Wires a `test@example.local` account against the dockerized omemo-bot
 # (`bot@example.local`, decrypt+echo) running alongside Prosody. The
@@ -30,7 +28,11 @@ namespace eval ::test::omemo_int {
         set listenerArgs [lrange $args 0 end-1]
         set var [namespace current]::_await_[incr [namespace current]::_awaitCounter]
         set $var ""
+        # <New> fires for our own sends too, synchronously, so without
+        # this guard the await settles on the message we just sent.
         set tag [tacky listen {*}$listenerArgs [list apply {{var argsL} {
+            if {[dict exists $argsL -message]
+                && [dict get $argsL -message is_outgoing]} return
             set $var $argsL
         }} $var]]
         uplevel 1 $script
@@ -123,8 +125,10 @@ namespace eval ::test::omemo_int {
         set ::test::omemo_int::_collectDone 0
         set tag [tacky listen message <New> -acc $TESTER -jid $BOT \
             [list apply {{accVar want ev} {
+                set m [dict get $ev -message]
+                if {[dict get $m is_outgoing]} return
                 lappend $accVar [string trimright \
-                    [::test::helpers::msgText [dict get $ev -message]]]
+                    [::test::helpers::msgText $m]]
                 if {[llength [set $accVar]] >= $want} {
                     set ::test::omemo_int::_collectDone 1
                 }
@@ -319,11 +323,14 @@ namespace eval ::test::omemo_int {
                 UPDATE omemo_trust SET trust='compromised', identity_pk=$bogus
                 WHERE account_jid=$tester AND peer_jid=$bot
             }
-            set caught 0
-            if {[catch {sendOmemo "should fail"} _ opts]} {
-                set caught 1
+            # Every recipient is refused, so the row lands failed.
+            tacky message send -acc $::test::omemo_int::TESTER \
+                -chat $bot -body "should fail"
+            $client db onecolumn {
+                SELECT server_status='failed' AND fail_reason='encrypt'
+                FROM chat_message
+                WHERE chat_jid=$bot AND body='should fail'
             }
-            set caught
         } -result {1}
 
     # 9. Manual distrust round-trip + sticky compromised assertions.
@@ -346,9 +353,6 @@ namespace eval ::test::omemo_int {
             foreach d $botDevs {
                 $client omemo trust -jid $bot -device $d -state untrusted
             }
-            puts stderr "DBG botDevs=$botDevs"
-            puts stderr "DBG trust rows: [$client db eval {SELECT peer_device, trust FROM omemo_trust WHERE peer_jid=$bot}]"
-            puts stderr "DBG cached devicelist: [$client omemo devicelist -jid $bot]"
             # Send no longer throws on encrypt failure - the outbox
             # absorbs the failure and persists the row with
             # server_status='failed' so the GUI can surface a tap-to-
@@ -360,7 +364,6 @@ namespace eval ::test::omemo_int {
                 FROM chat_message
                 WHERE chat_jid=$bot AND body='while untrusted'
             }]
-            puts stderr "DBG sendFailed=$sendFailed"
             # Flip back to trusted; send works again.
             foreach d $botDevs {
                 $client omemo trust -jid $bot -device $d -state trusted
