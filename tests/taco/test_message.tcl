@@ -4105,3 +4105,52 @@ test message-search-refuses-half-an-account-wide-cursor {an account-wide cursor 
     {*}$msg_common -body {
         msg_search_refused -before 200
     } -result {search: an account-wide cursor is -before and -before_chat_jid together}
+
+# -- Error stanzas are never content ------------------------------------------
+#
+# A type=error stanza reports a failed delivery and echoes the original back.
+# Classify must refuse all of it, and above the reaction/edit branches: those
+# patch a message already stored, so an echoed payload reaching them rewrites
+# someone else's message instead of adding one.
+
+test message-error-verdict-drop {an error stanza's echoed body is not stored} \
+    {*}$msg_common \
+    -body {
+        set node [j message -type error -from alice@example.com/phone {
+            j body -body "echoed back"
+        }]
+        dict get [$::_client message Classify \
+            alice@example.com $node 1000 {{} {} {}}] verdict
+    } -result drop
+
+test message-error-reactions-drop {an error echoing <reactions> patches nothing} \
+    {*}$msg_common \
+    -body {
+        set node [j message -type error -from alice@example.com/phone {
+            j reactions -ns urn:xmpp:reactions:0 -id target-1 {
+                j reaction -body "ok"
+            }
+        }]
+        dict get [$::_client message Classify \
+            alice@example.com $node 1000 {{} {} {}}] verdict
+    } -result drop
+
+test message-error-replace-drop {an error echoing <replace> edits nothing} \
+    {*}$msg_common \
+    -body {
+        set node [j message -type error -from alice@example.com/phone {
+            j replace -ns urn:xmpp:message-correct:0 -id target-1
+            j body -body "edited"
+        }]
+        dict get [$::_client message Classify \
+            alice@example.com $node 1000 {{} {} {}}] verdict
+    } -result drop
+
+test message-error-mam-wrapped-drop {an error nested in a MAM result is not content} \
+    {*}$msg_common \
+    -body {
+        set rn [mam_result id sid9 from room@muc.example.com/alice type error \
+                    body "echoed back" stamp 2024-06-15T12:30:00Z]
+        dict get [$::_client message ParseResultNode \
+            $rn room@muc.example.com?join] verdict
+    } -result drop
