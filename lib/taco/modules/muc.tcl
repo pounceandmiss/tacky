@@ -33,7 +33,7 @@
 # tacky muc rooms -acc $jid
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
-# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick
+# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes
 # tacky listen muc <Error> $cmd              ;# -jid $room -error $errorType -stanza $stanza
 # tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict
 # tacky listen muc <Unavailable> $cmd        ;# -jid $room -nick $nick -reason $r -codes $codes -occupant $dict
@@ -53,7 +53,7 @@
 snit::type taco_muc {
     variable client
 
-    # roomJid -> dict: nick, subject, joined, occupants (dict nick->occupantDict)
+    # roomJid -> dict: nick, subject, joined, leaving, occupants (dict nick->occupantDict)
     # Each occupantDict: {nick $n jid $fullJid role $r affiliation $a show $s status $st}
     variable Rooms -array {}
 
@@ -92,7 +92,7 @@ snit::type taco_muc {
         # Initialize room tracking state
         set Rooms($opts(-jid)) [dict create \
             nick $opts(-nick) myOccupantId "" subject "" joined 0 \
-            occupants [dict create]]
+            leaving 0 occupants [dict create]]
 
         if {$opts(-command) ne ""} {
             set JoinCallbacks($opts(-jid)) $opts(-command)
@@ -132,6 +132,9 @@ snit::type taco_muc {
 
         if {![info exists Rooms($opts(-jid))]} return
         set nick [dict get $Rooms($opts(-jid)) nick]
+        # The room's unavailable echo is identical whether we left or were
+        # put out, so record that we asked.
+        dict set Rooms($opts(-jid)) leaving 1
 
         if {$opts(-status) ne ""} {
             $client write [j presence -to $opts(-jid)/$nick -type unavailable {
@@ -685,9 +688,8 @@ snit::type taco_muc {
         }
 
         if {$isSelf} {
-            set myNick [dict get $Rooms($roomJid) nick]
-            $self CleanupRoom $roomJid
-            $client emit muc <Left> -jid $roomJid -nick $myNick
+            $self SelfLeft $roomJid \
+                [expr {![dict get $Rooms($roomJid) leaving]}] $codes
             return
         }
 
@@ -705,6 +707,18 @@ snit::type taco_muc {
         if {$from eq ""} { return 0 }
 
         set type_ [xsearch $stanza -get @type]
+
+        # An error from a room we are in reports a failed delivery, not a
+        # message. Claim it: falling through reaches message.tcl, which files
+        # anything from a bare jid into a 1:1 chat - a phantom conversation
+        # with the room, holding whatever body the error echoed back.
+        if {$type_ eq "error" && [jid valid $from]} {
+            set errRoom [jid norm [jid bare $from]]
+            if {[info exists Rooms($errRoom)]} {
+                $self OnRoomError $errRoom $stanza
+                return 1
+            }
+        }
 
         # Check for mediated invitation or decline (can arrive even when not in room)
         set mucX [xsearch $stanza x -ns http://jabber.org/protocol/muc#user]
@@ -1102,6 +1116,39 @@ snit::type taco_muc {
         set myAffil [$self MyOccupantField $roomJid affiliation]
         dict set occupant caps [$self OccupantCaps $myRole $myAffil $occupant]
         return $occupant
+    }
+
+    # The only part of a room's error worth acting on is a self-removal
+    # notice (110 with role none): some servers report putting us out this
+    # way instead of with the <presence type='unavailable'> XEP-0045 7.14
+    # asks for. Unhandled, the room stays marked joined for the session, so
+    # isJoined holds every rejoin path off it and its messages are lost.
+    method OnRoomError {roomJid stanza} {
+        set mucX [lindex [xsearch $stanza x \
+            -ns http://jabber.org/protocol/muc#user] 0]
+        if {$mucX eq ""} return
+        set codes [$self ParseStatusCodes $mucX]
+        if {110 ni $codes} return
+        if {[xsearch $mucX item -get @role] ne "none"} return
+        jlog inform "$roomJid: removed by an error stanza\
+            ([dict get [stanza_error $stanza] condition])"
+        # A room may answer a leave we asked for this way; re-entering
+        # would undo the request.
+        $self SelfLeft $roomJid \
+            [expr {![dict get $Rooms($roomJid) leaving]}] $codes
+    }
+
+    # We are out of this room: drop its state and say so. `involuntary` is 1
+    # when the server put us out rather than us asking, and `codes` carries
+    # the status codes behind it; bookmarks decides on re-entry from both.
+    method SelfLeft {roomJid involuntary codes} {
+        set myNick ""
+        if {[info exists Rooms($roomJid)]} {
+            set myNick [dict get $Rooms($roomJid) nick]
+        }
+        $self CleanupRoom $roomJid
+        $client emit muc <Left> -jid $roomJid -nick $myNick \
+            -involuntary $involuntary -codes $codes
     }
 
     method CleanupRoom {roomJid} {

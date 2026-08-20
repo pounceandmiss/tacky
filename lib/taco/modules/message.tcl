@@ -69,6 +69,7 @@ snit::type taco_message {
         set CatchupInFlight [dict create]
         $client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
+        $client bus subscribe $self muc:<Left>   [mymethod OnMucLeft]
         $client bus subscribe $self omemo:<SessionReady> \
             [mymethod OnOmemoSessionReady]
         # A peer's devicelist resolving (to devices or empty) also wakes
@@ -130,6 +131,23 @@ snit::type taco_message {
         foreach {jid newestTs} $newest {
             $messagestore hole add $jid newer $newestTs
         }
+    }
+
+    # Put out of a room, we missed whatever it broadcast while we were gone.
+    # DoMucCatchup fetches one page on the way back in, so a longer absence
+    # still leaves a gap: bracket it with a `newer` hole as a reconnect does,
+    # and pagination reaches the rest. A voluntary leave has no gap to record.
+    method OnMucLeft {args} {
+        array set opts {-jid "" -involuntary 0}
+        array set opts $args
+        if {!$opts(-involuntary)} return
+        set chatJid $opts(-jid)?join
+        set newestTs [$client db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+        }]
+        if {$newestTs eq ""} return
+        $messagestore hole add $chatJid newer $newestTs
     }
 
     # False when a sync is already running for this key, so a rejoin can't

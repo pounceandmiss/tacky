@@ -28,6 +28,10 @@ snit::type taco_bookmarks {
     variable mucStatus {}
     variable mucReason {}
 
+    # Rooms already re-entered after being put out, this stream. One attempt
+    # per stream bounds a server that keeps removing us.
+    variable mucRejoined {}
+
     # Fields `item` accepts from a caller. jid is excluded: it is the key and
     # is canonicalized separately, so a caller's raw ?join form must not
     # overwrite it.
@@ -250,11 +254,27 @@ snit::type taco_bookmarks {
     }
 
     method OnMucLeft {args} {
-        array set opts {-jid ""}
+        array set opts {-jid "" -involuntary 0 -codes {}}
         array set opts $args
         dict set mucStatus $opts(-jid) left
         dict unset mucReason $opts(-jid)
         $self EmitRoomState $opts(-jid)
+        if {$opts(-involuntary)} {
+            $self RejoinAfterRemoval $opts(-jid) $opts(-codes)
+        }
+    }
+
+    # Re-enter a room the server put us out of, but only where being out is
+    # a failure rather than a decision: a ban, a kick and a room turning
+    # members-only are decisions to respect. AutojoinOne carries the rest of
+    # the policy - it re-enters only an autojoin room we are not already in.
+    method RejoinAfterRemoval {jid codes} {
+        foreach code {301 307 321 322} {
+            if {$code in $codes} return
+        }
+        if {[dict exists $mucRejoined $jid]} return
+        dict set mucRejoined $jid 1
+        $self AutojoinOne $jid
     }
 
     method EmitRoomState {jid} {
@@ -265,6 +285,7 @@ snit::type taco_bookmarks {
     method OnDisconnect {args} {
         set mucStatus {}
         set mucReason {}
+        set mucRejoined {}
     }
 
     method ResolveMucStatus {jid} {
