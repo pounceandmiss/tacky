@@ -2081,6 +2081,14 @@ snit::type taco_message {
     #   {verdict new       timestamp T msg M}         new, store M
     #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
     method Classify {chatJid msgNode ts ids} {
+        # An error stanza reports a failed delivery; it is never content.
+        # What it echoes back describes the original message, so storing any
+        # of it files another author's text into this chat. Above the patch
+        # branches: an echoed <reactions> or <replace> would otherwise
+        # rewrite a message already stored.
+        if {[xsearch $msgNode -get @type] eq "error"} {
+            return [dict create verdict drop timestamp $ts]
+        }
         set reaction [$self ParseReaction $chatJid $msgNode]
         if {$reaction ne ""} {
             # `timestamp` keeps the reaction verdict uniform with the
