@@ -215,8 +215,8 @@ until docker exec "${MYSQL_CONTAINER_NAME}" \
   mysql -u "${MYSQL_USER}" -p"${MYSQL_PASS}" "${MYSQL_DB}" -e "SELECT 1" >/dev/null 2>&1; do
   sleep 2
   _mysql_elapsed=$((_mysql_elapsed + 2))
-  if [ "$_mysql_elapsed" -ge 60 ]; then
-    echo "ERROR: MySQL did not start within 60s."
+  if [ "$_mysql_elapsed" -ge 180 ]; then
+    echo "ERROR: MySQL did not start within 180s."
     exit 1
   fi
 done
