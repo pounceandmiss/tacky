@@ -72,6 +72,7 @@ namespace eval ::taco::omemo {
     variable NS_DEVICELIST eu.siacs.conversations.axolotl.devicelist
     variable NS_BUNDLES eu.siacs.conversations.axolotl.bundles
     variable NS_PUBSUB http://jabber.org/protocol/pubsub
+    variable NS_PUBSUB_OWNER http://jabber.org/protocol/pubsub#owner
     variable NS_EME urn:xmpp:eme:0
     variable SKIPPED_CAP 2000
     # Curve25519 public-key type tag (= libsignal Curve.DJB_TYPE): the
@@ -538,7 +539,7 @@ snit::type taco_omemo {
         $client bus publish omemo:<SelfReady>
     }
 
-    method DoPublishDevicelist {devices} {
+    method DoPublishDevicelist {devices {withOptions 1}} {
         set node $::taco::omemo::NS_DEVICELIST
         set ns $::taco::omemo::NS_PUBSUB
         $client iq request -type set -payload [j pubsub -ns $ns {
@@ -551,30 +552,36 @@ snit::type taco_omemo {
                     }
                 }
             }
-            j publish-options {
-                j x -ns jabber:x:data -type submit {
-                    j field -var FORM_TYPE -type hidden {
-                        j value -body \
-                            "http://jabber.org/protocol/pubsub#publish-options"
-                    }
-                    j field -var pubsub#access_model {
-                        j value -body open
+            if {$withOptions} {
+                j publish-options {
+                    j x -ns jabber:x:data -type submit {
+                        j field -var FORM_TYPE -type hidden {
+                            j value -body \
+                                "http://jabber.org/protocol/pubsub#publish-options"
+                        }
+                        j field -var pubsub#access_model {
+                            j value -body open
+                        }
                     }
                 }
             }
-        }] -command [mymethod OnDevicelistPublished $devices]
+        }] -command [mymethod OnDevicelistPublished $devices $withOptions]
     }
 
     # Caching only on the ack leaves a failed (or unanswered) announce
     # looking un-announced, so the next +notify or reconnect republishes.
-    method OnDevicelistPublished {devices stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            jlog warn "devicelist publish REJECTED\
-                ([xsearch $stanza error -get @type]:\
-                 [xsearch $stanza error * -gather tag])"
+    method OnDevicelistPublished {devices withOptions stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} {
+            dict set DeviceLists $accountJid $devices
+            if {!$withOptions} {
+                $self MakeNodeOpen $::taco::omemo::NS_DEVICELIST
+            }
             return
         }
-        dict set DeviceLists $accountJid $devices
+        jlog warn "devicelist publish REJECTED\
+            ([xsearch $stanza error -get @type]:\
+             [xsearch $stanza error * -gather tag])"
+        if {$withOptions} { $self DoPublishDevicelist $devices 0 }
     }
 
     # Devicelist fetch with in-flight dedup. command gets called as
@@ -829,7 +836,7 @@ snit::type taco_omemo {
         return [expr {$localPk eq $serverPk}]
     }
 
-    method DoPublishBundle {} {
+    method DoPublishBundle {{withOptions 1}} {
         set b [$store bundle]
         set node ${::taco::omemo::NS_BUNDLES}:${deviceId}
         set ns $::taco::omemo::NS_PUBSUB
@@ -860,26 +867,88 @@ snit::type taco_omemo {
                     }
                 }
             }
-            j publish-options {
-                j x -ns jabber:x:data -type submit {
-                    j field -var FORM_TYPE -type hidden {
-                        j value -body \
-                            "http://jabber.org/protocol/pubsub#publish-options"
-                    }
-                    j field -var pubsub#access_model {
-                        j value -body open
+            if {$withOptions} {
+                j publish-options {
+                    j x -ns jabber:x:data -type submit {
+                        j field -var FORM_TYPE -type hidden {
+                            j value -body \
+                                "http://jabber.org/protocol/pubsub#publish-options"
+                        }
+                        j field -var pubsub#access_model {
+                            j value -body open
+                        }
                     }
                 }
             }
-        }] -command [mymethod OnBundlePublished]
+        }] -command [mymethod OnBundlePublished $withOptions]
     }
 
     # No state to unwind: the next OnReady or prekey-use republishes.
-    method OnBundlePublished {stanza} {
-        if {[xsearch $stanza -get @type] ne "error"} return
+    method OnBundlePublished {withOptions stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} {
+            if {!$withOptions} {
+                $self MakeNodeOpen ${::taco::omemo::NS_BUNDLES}:${deviceId}
+            }
+            return
+        }
         jlog warn "bundle publish REJECTED\
             ([xsearch $stanza error -get @type]:\
              [xsearch $stanza error * -gather tag])"
+        if {$withOptions} { $self DoPublishBundle 0 }
+    }
+
+    # Widen a node we just published bare. At the server's default access
+    # model it stays unreadable to anyone not already subscribed to our
+    # presence, which is what leaves us undiscoverable until we message
+    # someone first.
+    method MakeNodeOpen {node} {
+        $client iq request -type get -payload \
+            [j pubsub -ns $::taco::omemo::NS_PUBSUB_OWNER {
+                j configure -node $node
+            }] -command [mymethod OnNodeConfigForm $node]
+    }
+
+    method OnNodeConfigForm {node stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            jlog warn "$node config fetch REJECTED\
+                ([xsearch $stanza error * -gather tag])"
+            return
+        }
+        set formNode [xsearch $stanza pubsub configure x \
+            -ns jabber:x:data -get node]
+        if {$formNode eq ""} {
+            jlog warn "$node config carries no form; access model left alone"
+            return
+        }
+        set form [::tacky::forms::parse $formNode]
+        set access ""
+        foreach f [dict get $form fields] {
+            if {[dict get $f var] eq "pubsub#access_model"} {
+                set access [lindex [dict get $f value] 0]
+            }
+        }
+        if {$access eq "open"} return
+        if {$access eq ""} {
+            jlog warn "$node config offers no access_model field"
+            return
+        }
+        $client iq request -type set -payload \
+            [j pubsub -ns $::taco::omemo::NS_PUBSUB_OWNER {
+                j configure -node $node {
+                    j #as-is [::tacky::forms::serialize \
+                        [::tacky::forms::apply $form \
+                            {pubsub#access_model open}]]
+                }
+            }] -command [mymethod OnNodeOpened $node]
+    }
+
+    method OnNodeOpened {node stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} {
+            jlog debug "$node widened to access_model=open"
+            return
+        }
+        jlog warn "$node access_model=open REJECTED\
+            ([xsearch $stanza error * -gather tag])"
     }
 
     # Bundle fetch with in-flight dedup. command gets called as

@@ -11,6 +11,8 @@ USERS=(
   "test:testpass"
   "romeo:romeopass"
   "juliet:julietpass"
+  "omemoa:omemoapass"
+  "omemob:omemobpass"
   "search1a:search1apass"
   "search1b:search1bpass"
   "search2a:search2apass"

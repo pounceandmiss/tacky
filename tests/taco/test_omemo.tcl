@@ -1447,7 +1447,7 @@ test omemo-unit-devicelist-publish-error-not-cached \
     }] -body {
         set dev [c omemo device_id]
         c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
-        c omemo OnDevicelistPublished [list 77 $dev] \
+        c omemo OnDevicelistPublished [list 77 $dev] 1 \
             [::test::omemo_unit::publishError]
         c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE
     } -result {77}
@@ -1460,10 +1460,110 @@ test omemo-unit-devicelist-publish-ack-caches \
     }] -body {
         set dev [c omemo device_id]
         c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
-        c omemo OnDevicelistPublished [list 77 $dev] [j iq -type result]
+        c omemo OnDevicelistPublished [list 77 $dev] 1 [j iq -type result]
         expr {[c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE]
               eq [list 77 $dev]}
     } -result {1}
+
+test omemo-unit-devicelist-publish-error-retries-bare \
+    {a rejected announce republishes without publish-options} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        set before [llength [c conn get_written]]
+        c omemo OnDevicelistPublished [list $dev] 1 \
+            [::test::omemo_unit::publishError]
+        set out [list]
+        foreach s [lrange [c conn get_written] $before end] {
+            set node [xsearch $s pubsub publish -get @node]
+            if {$node eq "eu.siacs.conversations.axolotl.devicelist"} {
+                lappend out opts \
+                    [llength [xsearch $s pubsub publish-options]]
+            }
+        }
+        set out
+    } -result {opts 0}
+
+test omemo-unit-bare-publish-widens-node \
+    {an acked bare announce asks the server for the node config} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        set before [llength [c conn get_written]]
+        c omemo OnDevicelistPublished [list $dev] 0 [j iq -type result]
+        set out [list]
+        foreach s [lrange [c conn get_written] $before end] {
+            set cfg [xsearch $s pubsub \
+                -ns http://jabber.org/protocol/pubsub#owner configure]
+            if {[llength $cfg] > 0} {
+                lappend out [xsearch $s -get @type] \
+                    [xsearch [lindex $cfg 0] -get @node]
+            }
+        }
+        set out
+    } -result {get eu.siacs.conversations.axolotl.devicelist}
+
+test omemo-unit-node-config-submits-open \
+    {the config round-trip resubmits the form with access_model=open} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo OnNodeConfigForm eu.siacs.conversations.axolotl.devicelist \
+            [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub#owner {
+                    j configure -node eu.siacs.conversations.axolotl.devicelist {
+                        j x -ns jabber:x:data -type form {
+                            j field -var FORM_TYPE -type hidden {
+                                j value -body \
+                                    "http://jabber.org/protocol/pubsub#node_config"
+                            }
+                            j field -var pubsub#access_model -type list-single {
+                                j value -body whitelist
+                            }
+                            j field -var pubsub#max_items -type text-single {
+                                j value -body 1
+                            }
+                        }
+                    }
+                }
+            }]
+        set out [list]
+        foreach s [lrange [c conn get_written] $before end] {
+            foreach f [xsearch $s pubsub configure x field] {
+                lappend out [xsearch $f -get @var] \
+                    [xsearch $f value -get body]
+            }
+        }
+        set out
+    } -result {FORM_TYPE http://jabber.org/protocol/pubsub#node_config pubsub#access_model open pubsub#max_items 1}
+
+test omemo-unit-node-already-open-no-submit \
+    {an already-open node is left alone} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo OnNodeConfigForm eu.siacs.conversations.axolotl.devicelist \
+            [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub#owner {
+                    j configure -node eu.siacs.conversations.axolotl.devicelist {
+                        j x -ns jabber:x:data -type form {
+                            j field -var pubsub#access_model -type list-single {
+                                j value -body open
+                            }
+                        }
+                    }
+                }
+            }]
+        llength [lrange [c conn get_written] $before end]
+    } -result {0}
 
 # publish-options are preconditions: each field is another way for the
 # server to reject the announce outright.
