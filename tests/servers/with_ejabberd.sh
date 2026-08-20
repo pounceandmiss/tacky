@@ -141,6 +141,19 @@ modules:
   mod_mam:
     db_type: sql
     default: always
+  mod_muc:
+    host: "conference.@HOST@"
+    access:
+      - allow
+    access_create: local
+    access_persistent: local
+    access_admin: admin
+    access_mam:
+      - allow
+    default_room_options:
+      mam: true
+      public: true
+      persistent: false
   mod_ping: {}
   mod_private: {}
   mod_pubsub:
