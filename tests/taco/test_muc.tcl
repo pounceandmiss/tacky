@@ -1388,3 +1388,225 @@ test muc-own-edit-spoof-still-rejected \
         }
         list [dict get $mine content body] [dict get $mine edited]
     } -result {mine 0}
+
+# -- Error stanzas from a room ------------------------------------------------
+#
+# Some servers report putting us out of a room by returning the broadcast
+# they could not deliver as type=error, with the removal notice folded in:
+# `role none` + status 110 is about us, while the body and occupant-id still
+# belong to whoever wrote the message. XEP-0045 7.14 asks for a
+# <presence type='unavailable'> instead, so nothing else recognises it.
+
+proc muc_error {args} {
+    set defaults {
+        from room@muc.example.com/me by room@muc.example.com
+        role none codes 110 body "" occupant "" sid "" x 1
+    }
+    set opts [dict merge $defaults $args]
+    set from [dict get $opts from]
+    set by [dict get $opts by]
+    set role [dict get $opts role]
+    set codes [dict get $opts codes]
+    set body [dict get $opts body]
+    set occ [dict get $opts occupant]
+    set sid [dict get $opts sid]
+    set withX [dict get $opts x]
+
+    j message -type error -from $from -id 60f2fa56-6ebc-40d2-aa72-99b3f7a5c5a7 {
+        if {$sid ne ""} {
+            j stanza-id -ns urn:xmpp:sid:0 -id $sid -by $by
+        }
+        if {$occ ne ""} {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+        }
+        j error -type cancel {
+            j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            j text -ns urn:ietf:params:xml:ns:xmpp-stanzas \
+                -body "User session terminated"
+        }
+        if {$withX} {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -jid user@test.example.com/res -role $role \
+                    -affiliation member
+                foreach code $codes {
+                    j status -code $code
+                }
+            }
+        }
+        if {$body ne ""} {
+            j body -body $body
+        }
+    }
+}
+
+test muc-error-no-phantom-chat {a room's error stanza never becomes a 1:1 chat} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error body "no see how." occupant other-occ \
+                         sid 1787209304870024]
+        list [c db onecolumn {
+                  SELECT count(*) FROM chat_message
+                  WHERE chat_jid='room@muc.example.com'}] \
+             [c db onecolumn {
+                  SELECT count(*) FROM chat_message
+                  WHERE chat_jid='room@muc.example.com?join'
+                    AND kind='message'}]
+    } -result {0 0}
+
+test muc-error-bodyless-no-chat {a bodyless room error makes no chat row either} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error]
+        c db onecolumn {SELECT count(*) FROM chat_message}
+    } -result 0
+
+test muc-error-removal-leaves-room {110 with role none in an error puts us out} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error]
+        list [dict get $::got -jid] [dict get $::got -nick] \
+             [dict get $::got -involuntary] \
+             [c muc isJoined -jid room@muc.example.com]
+    } -result {room@muc.example.com me 1 0}
+
+test muc-error-without-removal-notice-stays {an error with no 110 leaves us joined} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error codes {} body "bounced"]
+        list [c muc isJoined -jid room@muc.example.com] \
+             [c db onecolumn {SELECT count(*) FROM chat_message}]
+    } -result {1 0}
+
+test muc-error-unknown-room-not-claimed {an error from a room we are not in stores nothing} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_error from other@muc.example.com/me \
+                         by other@muc.example.com body "bounced"]
+        c db onecolumn {SELECT count(*) FROM chat_message}
+    } -result 0
+
+test muc-error-removal-rejoins-autojoin-room {being put out re-enters an autojoin room} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [muc_error]
+        set tos {}
+        foreach st [c.conn get_written] {
+            lappend tos [xsearch $st -get @to]
+        }
+        set tos
+    } -result {room@muc.example.com/me}
+
+test muc-error-removal-skips-non-autojoin-room {a room we do not autojoin is left alone} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 0, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [muc_error]
+        llength [c.conn get_written]
+    } -result 0
+
+test muc-error-removal-rejoins-once-per-stream {a room that keeps ejecting us gets one answer} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [muc_error]
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error]
+        set joins 0
+        foreach st [c.conn get_written] {
+            if {[xsearch $st -get @to] eq "room@muc.example.com/me"} {
+                incr joins
+            }
+        }
+        set joins
+    } -result 2
+
+test muc-left-voluntary-not-involuntary {leaving on purpose is not a removal} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c muc leave -jid room@muc.example.com
+        c.conn feed [muc_presence from room@muc.example.com/me \
+                         type unavailable role none self 1]
+        dict get $::got -involuntary
+    } -result 0
+
+test muc-left-kick-reports-codes {a kick reports its status codes on <Left>} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_presence from room@muc.example.com/me \
+                         type unavailable role none self 1 codes 307]
+        list [dict get $::got -involuntary] [dict get $::got -codes]
+    } -result {1 {110 307}}
+
+test muc-left-kick-not-rejoined {a kick is an answer, not a failure to retry} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [muc_presence from room@muc.example.com/me \
+                         type unavailable role none self 1 codes 307]
+        llength [c.conn get_written]
+    } -result 0
+
+test muc-left-voluntary-writes-no-rejoin {leaving an autojoin room on purpose stays left} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c muc leave -jid room@muc.example.com
+        c.conn clear
+        c.conn feed [muc_presence from room@muc.example.com/me \
+                         type unavailable role none self 1]
+        list [llength [c.conn get_written]] \
+             [c muc isJoined -jid room@muc.example.com]
+    } -result {0 0}
+
+test muc-error-after-leave-not-rejoined {a room answering our leave with an error stays left} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c muc leave -jid room@muc.example.com
+        c.conn clear
+        c.conn feed [muc_error]
+        list [dict get $::got -involuntary] [llength [c.conn get_written]]
+    } -result {0 0}
