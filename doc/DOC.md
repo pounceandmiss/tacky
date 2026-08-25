@@ -716,14 +716,28 @@ Events:
 The full-size image is content-addressed by hash: `metadata` maps a JID to its
 current hash, and `data` gives you the bytes as they were published. The
 backend fetches bytes for JIDs you've marked `visible`. The marks are a set,
-not counted references: a repeat `visible` does nothing, one `invisible` clears
-the mark, and the set outlives a dropped connection. `visible` also re-emits
-`<Update>` for an already-cached avatar, so listening is enough, and re-fetches
-the bytes when the cached hash has none behind it - a download that failed, or
-one the process did not outlive. That re-fetch runs once per connection per
-hash, so re-marking a JID whose bytes the server will not serve costs nothing. That state is why `metadata` can name a hash
-`data` answers "" for: only `<Update>` waits for the bytes, so a frontend that
-builds an image out of a hash wants that one, not the read. `refresh`
+not counted references: marking twice is the same as marking once, one
+`invisible` clears the mark however many trackers you had, and the set outlives
+a dropped connection. Collapsing your own trackers into one mark is yours to
+do; releasing is optional, and a mark left standing only keeps that avatar
+current.
+
+Every `visible` re-emits `<Update>` for an already-cached avatar, not only the
+first, so listening is enough and re-marking is how you ask again - a frontend
+rebuilt over a backend that kept running has no other route back to the cache.
+A mark also re-fetches the bytes when the cached hash has none behind it (a
+download that failed, or one the process did not outlive), as does a session
+coming up under marks already placed. That re-fetch runs once per connection
+per hash, so re-marking a JID whose bytes the server will not serve costs
+nothing.
+
+Any chat JID may be passed: the `?join` suffix is not part of the JID an avatar
+lives under (the resource is, so MUC occupants stay distinct). `<Update>`
+reports that cut form, and it is what to key a cache by.
+
+A hash whose bytes never arrived is why `metadata` can name a hash `data`
+answers "" for: only `<Update>` waits for the bytes, so a frontend that builds
+an image out of a hash wants that one, not the read. `refresh`
 re-requests a JID's metadata node instead of trusting the cached hash, for when
 no notification arrived; it still only fetches bytes for a `visible` JID, leaves
 the cache alone if that JID publishes no avatar, and reports nothing on an IQ
@@ -743,8 +757,8 @@ published.
 
 Events:
 
-    avatar <Update>   {jid: string, hash: string}      changed, arrived, removed (hash ""), or first `visible`
-    avatar <Progress> {acc: string, message: string}   during your own publish
+    avatar <Update>   {acc: string, jid: string, hash: string}   changed, arrived, removed (hash ""), or any `visible`
+    avatar <Progress> {acc: string, message: string}             during your own publish
 
 ## nick
 
