@@ -23,6 +23,13 @@ if 0 {
         tacky avatar inject -acc $acc -jid $jid -data $bytes ?-type $mime? ?-width $w? ?-height $h?
             Seed the local cache for any JID without touching the network.
             Empty -data clears. Returns the hash.
+        tacky avatar visible -acc $acc -jid $jid
+            Mark a JID as shown: its avatar is kept current, and every mark
+            re-emits <Update> for what the cache already holds.
+        tacky avatar invisible -acc $acc -jid $jid
+            Drop the mark. An unmarked JID's new hash is parked, not fetched.
+        tacky avatar refresh -acc $acc -jid $jid
+            Re-read a JID's metadata node instead of trusting the cached hash.
 
     Events:
         tacky listen avatar <Update> -acc ...
@@ -56,6 +63,7 @@ snit::type taco_avatar {
             [mymethod OnMetadataNotification]
         $client caps addFeature urn:xmpp:avatar:metadata+notify
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <Ready> [mymethod OnReady]
     }
 
     # VisibleJids survives: it tracks what the frontend displays, not the session.
@@ -353,10 +361,11 @@ snit::type taco_avatar {
     }
 
     # Membership, not a count: the frontend collapses every tracker of a JID
-    # into one mark.
+    # into one mark.  Every mark primes, not only the first: a frontend rebuilt
+    # over a backend that kept running - the ordinary Android lifecycle - has no
+    # other way back to what the cache holds.
     method visible {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
-        if {[info exists VisibleJids($jid)]} return
         set VisibleJids($jid) 1
 
         set fetching 0
@@ -379,28 +388,27 @@ snit::type taco_avatar {
     # Contacts get a PEP re-push every connect; a room's vCard avatar is only
     # fetched on a cache miss at join, so without this a cached room avatar
     # never reaches the frontend again.
-    #
+    method PrimeFromCache {jid} {
+        lassign [$self CachedRow $jid] hash source
+        if {$hash eq ""} return
+        if {[$self HasBytes $hash]} {
+            $client emit avatar <Update> -jid $jid -hash $hash
+            return
+        }
+        $self RefetchMissing $jid $hash $source
+    }
+
     # A row whose bytes are missing is fetched rather than skipped.  The
     # metadata is written when the hash is announced and the bytes arrive after,
     # so a fetch that failed - or a process that ended in between - leaves an
     # entry naming an image nothing holds.  The pending-hash dicts are what would
-    # normally re-ask, and they do not survive the session, so a mark placed
-    # afterwards is the last thing in a position to.  <Update> still waits for
-    # the bytes: it is emitted from the fetch, as everywhere else.
+    # normally re-ask, and they do not survive the session.  <Update> still waits
+    # for the bytes: it is emitted from the fetch, as everywhere else.
     #
-    # Once per session per hash, like those dicts: a mark is a UI transition and
-    # comes round again every time the frontend rebuilds a list, while a row the
-    # server would not serve stays unservable.
-    method PrimeFromCache {jid} {
-        lassign [$self CachedRow $jid] hash source
-        if {$hash eq ""} return
-        set cached [$client db onecolumn {
-            SELECT count(*) FROM avatar_data WHERE hash=$hash
-        }]
-        if {$cached} {
-            $client emit avatar <Update> -jid $jid -hash $hash
-            return
-        }
+    # Once per session per hash, like those dicts: marks come round every time
+    # the frontend rebuilds a list, while a row the server would not serve stays
+    # unservable.
+    method RefetchMissing {jid hash source} {
         if {[dict exists $RefetchedHash $jid]
             && [dict get $RefetchedHash $jid] eq $hash} return
         dict set RefetchedHash $jid $hash
@@ -408,6 +416,23 @@ snit::type taco_avatar {
             $self FetchVCard $jid
         } else {
             $self FetchData $jid $hash
+        }
+    }
+
+    method HasBytes {hash} {
+        $client db onecolumn {
+            SELECT count(*) FROM avatar_data WHERE hash=$hash
+        }
+    }
+
+    # The re-ask normally rides a mark, and a reconnect provokes none: the
+    # frontend that lived through it has no list to rebuild.  Rows the cache can
+    # serve are left alone; whoever marked them has their hash already.
+    method OnReady {args} {
+        foreach jid [array names VisibleJids] {
+            lassign [$self CachedRow $jid] hash source
+            if {$hash eq "" || [$self HasBytes $hash]} continue
+            $self RefetchMissing $jid $hash $source
         }
     }
 

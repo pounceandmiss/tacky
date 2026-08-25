@@ -553,8 +553,8 @@ oo::class create avatarcache_base {
         array set opts $args
         set acc [jid norm $opts(-acc)]
         # Accept chat JIDs: a group chat's ?join suffix is not part of
-        # the JID the avatar lives under (resource kept for occupants)
-        set jid [jid norm [regsub {\?join$} $opts(-jid) {}]]
+        # the JID the avatar lives under (resource kept for occupants).
+        set jid [jid norm [jid noquery $opts(-jid)]]
         set tag $opts(-tag)
         set command $opts(-command)
         set size $opts(-size)
@@ -562,8 +562,8 @@ oo::class create avatarcache_base {
 
         dict set Tags $tag [list $acc $jid $size $command]
 
-        # Visibility is per jid, images are per (jid, size): one mark for the
-        # jid however many sizes it is tracked at.
+        # Visibility is per jid, images are per (jid, size): the count is what
+        # lets the last tracker of a jid be the one to drop the mark.
         set jkey "$acc\n$jid"
         set jrefs 0
         if {[dict exists $JidRefs $jkey]} { set jrefs [dict get $JidRefs $jkey] }
@@ -579,13 +579,13 @@ oo::class create avatarcache_base {
         dict set Images $key $img
         dict set Refcounts $key 1
 
-        if {$jrefs == 0} {
-            ::tacky avatar visible -acc $acc -jid $jid
-        }
-        my Fetch $acc $jid $size
+        # The mark does the fetching: it re-emits <Update> for a cached avatar,
+        # and OnUpdate builds every size tracked for the jid - including the one
+        # registered just above, which is why that goes in first.
+        ::tacky avatar visible -acc $acc -jid $jid
 
         # Return current image — may have been replaced by a
-        # synchronous fetch callback during the Fetch above.
+        # synchronous fetch callback during the mark above.
         return [dict get $Images $key]
     }
 

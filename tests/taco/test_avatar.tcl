@@ -100,7 +100,7 @@ test avatar-visible-no-data-silent {an <Update> waits for the bytes, it does not
         set ::avatar_updates
     } -result {}
 
-test avatar-visible-once-per-transition {only the 0->1 visible transition primes} \
+test avatar-visible-primes-every-mark {a re-mark primes again, not only the first mark} \
     {*}$avatar_common \
     -body {
         avatar_seed room@muc.example.com abc123 -source vcard
@@ -109,9 +109,9 @@ test avatar-visible-once-per-transition {only the 0->1 visible transition primes
         c avatar visible -jid room@muc.example.com
         update idletasks
         llength $::avatar_updates
-    } -result 1
+    } -result 2
 
-test avatar-visible-reprimes-after-invisible {a fresh 0->1 transition primes again} \
+test avatar-visible-reprimes-after-invisible {a dropped mark is no bar to the next one priming} \
     {*}$avatar_common \
     -body {
         avatar_seed room@muc.example.com abc123 -source vcard
@@ -177,8 +177,8 @@ test avatar-invisible-parks-fetch {an unmarked JID's new hash is parked, not fet
 
 # Bytes missing behind a cached hash: what a failed fetch, or a process that
 # ended between the announcement and the download, leaves in the metadata table.
-# The pending-hash dicts that would re-ask are dropped with the session, so the
-# next mark is the last thing in a position to.
+# The pending-hash dicts that would re-ask are dropped with the session, so a
+# mark - or the session coming up under one already placed - is what re-asks.
 
 test avatar-visible-refetches-missing-pubsub-bytes {a mark re-fetches PEP bytes the cache is missing} \
     {*}$avatar_common \
@@ -203,7 +203,6 @@ test avatar-visible-refetches-missing-bytes-once {a repeated mark does not re-as
     -body {
         avatar_seed alice@example.com abc123 -data ""
         c avatar visible -jid alice@example.com
-        c avatar invisible -jid alice@example.com
         c.conn clear
         c avatar visible -jid alice@example.com
         avatar_data_requested
@@ -214,12 +213,56 @@ test avatar-visible-refetches-changed-hash {a hash that moved on since the unans
     -body {
         avatar_seed alice@example.com abc123 -data ""
         c avatar visible -jid alice@example.com
-        c avatar invisible -jid alice@example.com
         avatar_seed alice@example.com def456 -data ""
         c.conn clear
         c avatar visible -jid alice@example.com
         avatar_data_requested
     } -result 1
+
+# A session coming up is the other end of that throttle: a frontend that lived
+# through the reconnect has no list to rebuild, so nothing places the mark that
+# would otherwise carry the re-ask.
+
+# <Ready> reaches every module, and the rest want a bound JID to work from, so
+# these run against a session that came up once already.
+set avatar_ready_common [tacky_env -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+} -bound-jid user@test.example.com/res]
+
+test avatar-ready-refetches-missing-bytes {a new session goes after bytes a marked JID is still missing} \
+    {*}$avatar_ready_common \
+    -body {
+        avatar_seed alice@example.com abc123 -data ""
+        c avatar visible -jid alice@example.com
+        c bus publish <Disconnect>
+        c.conn clear
+        c.conn fire_ready 0
+        avatar_data_requested
+    } -result 1
+
+test avatar-ready-leaves-a-served-jid-alone {a session up is silent about avatars the cache can serve} \
+    {*}$avatar_ready_common \
+    -body {
+        avatar_seed alice@example.com abc123
+        c avatar visible -jid alice@example.com
+        c bus publish <Disconnect>
+        c.conn clear
+        avatar_watch
+        c.conn fire_ready 0
+        update idletasks
+        list $::avatar_updates [avatar_data_requested]
+    } -result {{} 0}
+
+test avatar-ready-ignores-an-unmarked-jid {an unmarked JID is not re-asked for} \
+    {*}$avatar_ready_common \
+    -body {
+        avatar_seed alice@example.com abc123 -data ""
+        c bus publish <Disconnect>
+        c.conn clear
+        c.conn fire_ready 0
+        avatar_data_requested
+    } -result 0
 
 test avatar-visible-cached-asks-for-nothing {bytes already held are served without a round trip} \
     {*}$avatar_common \
