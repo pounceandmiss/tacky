@@ -7,7 +7,7 @@
 #
 # It also fires <<EmojiSelected>> on the widget, with the glyph in %d.
 #
-# The glyph table is generated - see tools/emoji/gen_emoji.tcl. Rendering uses a
+# The glyph table is generated - see gen/gen_emoji.tcl. Rendering uses a
 # single text widget, not 1900 buttons: each glyph is one tagged span, and a
 # search just clears and re-inserts the matches. The table ships in emoji/
 # beside this file and is parsed lazily on first open.

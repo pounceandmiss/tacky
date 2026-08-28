@@ -1,4 +1,4 @@
-set _icondir [file join $::dir icons]
+set _icondir [file join $::dir gui icons]
 
 # All app icons are bundled in icons/ (faithful copies from the mate theme).
 # Names mirror the mate theme layout; sizes match where each is drawn.
