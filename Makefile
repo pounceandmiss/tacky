@@ -14,9 +14,9 @@ COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
 
 tacky_SHELL := wish
 tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd
-tacky_SRC   := lib bin gui icons
+tacky_SRC   := lib bin gui
 tacky_ENT   := bin/tacky.tcl
-tacky_ICON  := icons/tacky.ico
+tacky_ICON  := gui/icons/tacky.ico
 
 tackyd_SHELL := tclsh
 tackyd_DEPS  := $(COMMON_DEPS)

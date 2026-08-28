@@ -1,5 +1,5 @@
 # 1384 emoji - GENERATED from Unicode emoji 16.0 + CLDR en. Do not edit by hand.
-# regenerate: cd tools/emoji && tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../../lib/emojipicker/emoji/emojitable.tcl
+# regenerate: cd gui/emojipicker/gen && tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../emoji/emojitable.tcl
 namespace eval ::emoji {}
 set ::emoji::table {
     {😀 {grinning face} {cheerful cheery face grin grinning happy laugh nice smile smiling teeth face smiling} {Smileys & Emotion}}

@@ -1,5 +1,5 @@
 #!/usr/bin/env tclsh
-# Generates lib/emojipicker/emoji/emojitable.tcl. Re-run only to bump the
+# Generates ../emoji/emojitable.tcl. Re-run only to bump the
 # Unicode/CLDR data; the generated table is committed and ships as-is.
 #
 #   inputs : emoji-test.txt   Unicode emoji 16.0 (UTS#51 - groups + names)
@@ -12,8 +12,8 @@
 # One record per emoji:  { <char> <name> <keywords> <category> }
 # Skin-tone variants (modifiers U+1F3FB..U+1F3FF) are dropped.
 #
-# Regenerate (run from tools/emoji/):
-#   tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../../lib/emojipicker/emoji/emojitable.tcl
+# Regenerate (run from gui/emojipicker/gen/):
+#   tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../emoji/emojitable.tcl
 
 lassign $argv testFile cldrFile
 if {$testFile eq "" || $cldrFile eq ""} {
@@ -83,7 +83,7 @@ foreach line [split [slurp $testFile] \n] {
 }
 
 puts "# [llength $records] emoji - GENERATED from Unicode emoji 16.0 + CLDR en. Do not edit by hand."
-puts "# regenerate: cd tools/emoji && tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../../lib/emojipicker/emoji/emojitable.tcl"
+puts "# regenerate: cd gui/emojipicker/gen && tclsh gen_emoji.tcl emoji-test.txt cldr-en.xml > ../emoji/emojitable.tcl"
 puts "namespace eval ::emoji {}"
 puts "set ::emoji::table \{"
 foreach rec $records {

@@ -31,14 +31,14 @@ modules:
           /app/share/applications/io.github.pounceandmiss.Tacky.desktop
       - install -Dm644 io.github.pounceandmiss.Tacky.metainfo.xml
           /app/share/metainfo/io.github.pounceandmiss.Tacky.metainfo.xml
-      - install -Dm644 icons/tacky.svg
+      - install -Dm644 gui/icons/tacky.svg
           /app/share/icons/hicolor/scalable/apps/io.github.pounceandmiss.Tacky.svg
       # PNG fallbacks for menus without an SVG loader.
-      - install -Dm644 icons/tacky-64.png
+      - install -Dm644 gui/icons/tacky-64.png
           /app/share/icons/hicolor/64x64/apps/io.github.pounceandmiss.Tacky.png
-      - install -Dm644 icons/tacky-128.png
+      - install -Dm644 gui/icons/tacky-128.png
           /app/share/icons/hicolor/128x128/apps/io.github.pounceandmiss.Tacky.png
-      - install -Dm644 icons/tacky-256.png
+      - install -Dm644 gui/icons/tacky-256.png
           /app/share/icons/hicolor/256x256/apps/io.github.pounceandmiss.Tacky.png
 
     sources:
