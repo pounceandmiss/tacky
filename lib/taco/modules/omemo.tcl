@@ -55,7 +55,8 @@
 #                                                           - backend-only signal
 #
 # Storage lives in the shared client SQLite (same DB messagestore uses).
-# Tables: omemo_store, omemo_sessions, omemo_skipped, omemo_trust.
+# Tables: omemo_store, omemo_sessions, omemo_skipped, omemo_trust,
+#         omemo_spk.
 #
 # Trust model: BTBV with four states (undecided, trusted, untrusted,
 # compromised). The compromised state is system-set (identity-key
@@ -86,6 +87,11 @@ namespace eval ::taco::omemo {
     # out on its own, so a server that swallows the IQ would wedge the
     # chat for the whole connection without this.
     variable BUNDLE_FETCH_TIMEOUT_MS 10000
+    # Age at which our signed prekey is rotated, checked once per connect.
+    # picomemo retains the previous signed prekey across one rotation, so a
+    # peer whose cached bundle is up to one interval stale can still build
+    # a session; rotating faster than peers refetch would strand them.
+    variable SPK_ROTATE_MS 604800000
 
     # OMEMO 0.3 wire format (matches libsignal / oldmemo) carries
     # Curve25519 public keys as 33 bytes: a 0x05 DJB-type prefix
@@ -281,6 +287,10 @@ snit::type taco_omemo {
                 last_activation INTEGER NOT NULL,
                 PRIMARY KEY (account_jid, peer_jid, peer_device)
             );
+            CREATE TABLE IF NOT EXISTS omemo_spk(
+                account_jid TEXT PRIMARY KEY,
+                rotated_at  INTEGER NOT NULL
+            );
         }
     }
 
@@ -291,6 +301,9 @@ snit::type taco_omemo {
     method OnReady {args} {
         set accountJid [jid bare [$client cget -jid]]
         $self EnsureStore
+        # Before PublishBundle: a rotation changes spk/spk_id/spks, which
+        # is the field-level mismatch that makes the publish below carry it.
+        $self MaybeRotateSignedPreKey
         # Republish our devicelist (no-op if already on-list) and our
         # bundle. Both go through pubsub with publish-options.
         $self PublishDevicelist
@@ -379,6 +392,9 @@ snit::type taco_omemo {
         omemo::store create $store -device $deviceId
         $store setup
         $self PersistStore
+        # setup generated the first signed prekey; start its clock so a new
+        # store doesn't rotate a seconds-old key on its first connect.
+        $self StampSpkRotation
     }
 
     method GenerateDeviceId {} {
@@ -396,6 +412,71 @@ snit::type taco_omemo {
             INSERT OR REPLACE INTO omemo_store(account_jid, device_id, blob)
             VALUES($accountJid, $deviceId, $blob)
         }
+    }
+
+    # Drop in-memory store mutations that failed to persist, so the handle
+    # matches disk again.
+    method ReloadStoreFromDisk {} {
+        set stored [$db eval {
+            SELECT blob FROM omemo_store WHERE account_jid=$accountJid
+        }]
+        if {[llength $stored] == 0} return
+        $store deserialize [lindex $stored 0]
+    }
+
+    # Epoch-ms of the last signed-prekey rotation, or "" if never recorded.
+    # "" is a store predating this table: it still carries the signed prekey
+    # from account creation, so MaybeRotateSignedPreKey treats it as due.
+    method SpkRotatedAt {} {
+        set stamp [$db eval {
+            SELECT rotated_at FROM omemo_spk WHERE account_jid=$accountJid
+        }]
+        if {[llength $stamp] == 0} { return "" }
+        return [lindex $stamp 0]
+    }
+
+    method StampSpkRotation {} {
+        set now [clock milliseconds]
+        $db eval {
+            INSERT OR REPLACE INTO omemo_spk(account_jid, rotated_at)
+            VALUES($accountJid, $now)
+        }
+    }
+
+    # Rotate the signed prekey once it reaches SPK_ROTATE_MS. Called from
+    # OnReady, so at most once per connection.
+    #
+    # Blob and stamp go in one transaction: a rotated store persisted
+    # without its stamp looks due again next connect, and a second rotation
+    # drops the retained previous key, stranding peers still holding the
+    # bundle we published before the first. A failed write also rolls the
+    # in-memory store back, or OnReady's publish advertises a signed prekey
+    # whose private half never reached disk.
+    method MaybeRotateSignedPreKey {} {
+        if {$store eq ""} return
+        set last [$self SpkRotatedAt]
+        if {$last ne "" && [clock milliseconds] - $last \
+                < $::taco::omemo::SPK_ROTATE_MS} {
+            return
+        }
+        if {[catch {$store rotate_signed_prekey} err]} {
+            # The current signed prekey stays valid and publishable;
+            # OnReady retries next connect.
+            jlog debug "OMEMO signed prekey rotation failed: $err"
+            return
+        }
+        if {[catch {
+            $db eval {BEGIN}
+            $self PersistStore
+            $self StampSpkRotation
+            $db eval {COMMIT}
+        } perr]} {
+            catch {$db eval {ROLLBACK}}
+            catch {$self ReloadStoreFromDisk}
+            jlog debug "OMEMO signed prekey rotation not persisted: $perr"
+            return
+        }
+        jlog debug "OMEMO rotated signed prekey for $accountJid"
     }
 
     method PersistSession {peerJid peerDev sess} {

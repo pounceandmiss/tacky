@@ -26,6 +26,20 @@ proc ::test::omemo_unit::bundleFetches {written dev} {
     return $n
 }
 
+# Signed prekey (id + public key) from the last bundle publish in
+# $written, or "" if there is none.
+proc ::test::omemo_unit::publishedSpk {written} {
+    set out ""
+    foreach s $written {
+        set id [xsearch $s pubsub publish item bundle signedPreKeyPublic \
+            -get @signedPreKeyId]
+        if {$id eq ""} continue
+        set out [list $id [xsearch $s pubsub publish item bundle \
+            signedPreKeyPublic -get body]]
+    }
+    return $out
+}
+
 # taco_client's constructor derives -jid from -username + -host and
 # clobbers any constructor-provided -jid (client.tcl line 42), so we
 # always set -jid via `c configure` in -extra-setup after construction.
@@ -34,13 +48,13 @@ set jid_common [tacky_env -taco-client {-db-path :memory:} -extra-setup {
     c omemo OnReady
 }]
 
-test omemo-unit-schema-created {migrate creates the four tables} \
+test omemo-unit-schema-created {migrate creates the five tables} \
     {*}$jid_common -body {
         c db eval {
             SELECT name FROM sqlite_master WHERE type='table'
               AND name LIKE 'omemo_%' ORDER BY name
         }
-    } -result {omemo_sessions omemo_skipped omemo_store omemo_trust}
+    } -result {omemo_sessions omemo_skipped omemo_spk omemo_store omemo_trust}
 
 test omemo-unit-device-id-nonzero {EnsureStore generates non-zero 31-bit id} \
     {*}$jid_common -body {
@@ -72,6 +86,128 @@ test omemo-unit-device-id-persists {device_id and store persist across reload} -
     omemodb1 close
     tacky destroy
 } -result {dev_match 1 fp_match 1}
+
+# Signed-prekey rotation. Test bodies run at global scope, so locals here
+# are spk-prefixed rather than leaking common names into later files.
+
+test omemo-unit-spk-fresh-not-rotated {a new store keeps its first signed prekey} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkFirst [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkSecond [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        list published [expr {$spkFirst ne ""}] \
+            stable [expr {$spkFirst eq $spkSecond}]
+    } -result {published 1 stable 1}
+
+test omemo-unit-spk-rotates-when-stale {an aged signed prekey is rotated} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkFirst [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        set spkOld [expr {[clock milliseconds]
+            - $::taco::omemo::SPK_ROTATE_MS - 1}]
+        c db eval {UPDATE omemo_spk SET rotated_at=$spkOld}
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkSecond [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        expr {$spkFirst ne $spkSecond}
+    } -result 1
+
+test omemo-unit-spk-unstamped-rotates {a store predating omemo_spk is due} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkFirst [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        c db eval {DELETE FROM omemo_spk}
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkSecond [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        list rotated [expr {$spkFirst ne $spkSecond}] \
+            stamped [expr {[c omemo SpkRotatedAt] ne ""}]
+    } -result {rotated 1 stamped 1}
+
+# picomemo retains only one previous signed prekey, so rotating twice in
+# a row strands peers still holding the pre-rotation bundle.
+test omemo-unit-spk-rotates-once {a rotation stamps, so the next connect is a no-op} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set spkOld [expr {[clock milliseconds]
+            - $::taco::omemo::SPK_ROTATE_MS - 1}]
+        c db eval {UPDATE omemo_spk SET rotated_at=$spkOld}
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkFirst [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkSecond [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        list restamped [expr {[c omemo SpkRotatedAt] > $spkOld}] \
+            stable [expr {$spkFirst eq $spkSecond}]
+    } -result {restamped 1 stable 1}
+
+# A rotated signed prekey must reach disk before it is advertised, or
+# peers build sessions against a key whose private half we no longer have.
+test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} -setup {
+    tacky_type create ::tacky
+    rename conn _real_conn
+    rename mock_conn conn
+    sqlite3 omemodb3 :memory:
+    taco_client c1 -db omemodb3
+    c1 configure -jid $::test::omemo_unit::JULIET
+    c1 omemo OnReady
+    set spkOld [expr {[clock milliseconds]
+        - $::taco::omemo::SPK_ROTATE_MS - 1}]
+    c1 db eval {UPDATE omemo_spk SET rotated_at=$spkOld}
+    c1 omemo MaybeRotateSignedPreKey
+    set spkBefore [llength [c1 conn get_written]]
+    c1 omemo DoPublishBundle
+    set spkFirst [::test::omemo_unit::publishedSpk \
+        [lrange [c1 conn get_written] $spkBefore end]]
+    c1 destroy
+    taco_client c2 -db omemodb3
+    c2 configure -jid $::test::omemo_unit::JULIET
+} -body {
+    c2 omemo OnReady
+    set spkBefore [llength [c2 conn get_written]]
+    c2 omemo DoPublishBundle
+    set spkSecond [::test::omemo_unit::publishedSpk \
+        [lrange [c2 conn get_written] $spkBefore end]]
+    list published [expr {$spkFirst ne ""}] \
+        survived [expr {$spkFirst eq $spkSecond}]
+} -cleanup {
+    catch {c2 destroy}
+    catch {omemodb3 close}
+    catch {tacky destroy}
+    catch {rename conn mock_conn}
+    catch {rename _real_conn conn}
+    unset -nocomplain spkOld spkBefore spkFirst spkSecond
+} -result {published 1 survived 1}
 
 # A disabled account never fires <Ready>, but the GUI still opens its
 # own-key panel.
