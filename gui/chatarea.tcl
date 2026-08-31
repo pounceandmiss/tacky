@@ -281,7 +281,7 @@ snit::widget chatarea {
         set slot [$rows slot $key]
         if {$slot eq ""} return
         $self highlight clear
-        $text tag configure item.$slot -background yellow
+        $text tag configure item.$slot -background [palette highlight]
         set HighlightedSlot $slot
     }
 
@@ -312,31 +312,37 @@ snit::widget chatarea {
     }
 
     method SetFont {{font {Helvetica 13}}} {
+        # The three faces every tag below is built from, so a size or family
+        # change is one edit rather than a dozen.
+        set small [SmallerFont $font 2]
+        set tiny  [SmallerFont $font 3]
+        set mono  [MonoFont $font]
         # Message body - bigger indent, a little breathing room below/between lines
         $text tag configure body -lmargin1 40 -lmargin2 40 -spacing2 2 -spacing3 6
         # Author name - bold accent color, space above to separate messages
-        $text tag configure author -font "$font bold" -foreground #2d6da3 \
-            -spacing1 10
+        $text tag configure author -font "$font bold" \
+            -foreground [palette accent] -spacing1 10
         # XEP-0461 reply preview: inset, lightly-filled block, clickable.
         $text tag configure replyref -lmargin1 52 -lmargin2 52 \
-            -background #f0f3f6 -font "Helvetica 11"
-        $text tag configure replyref.author -font "Helvetica 11 bold"
-        $text tag configure replyref.body -foreground #666666
+            -background [palette inset] -font $small
+        $text tag configure replyref.author -font "$small bold"
+        $text tag configure replyref.body -foreground [palette muted]
         # Formatting gimmicks
-        $text tag configure entity.quote -foreground green -lmargin1 40 -lmargin2 55
-        $text tag configure entity.preformatted -font "Courier 13"
+        $text tag configure entity.quote -foreground [palette quote] \
+            -lmargin1 40 -lmargin2 55
+        $text tag configure entity.preformatted -font $mono
         $text configure -font $font
         # Cross-product of bold/italic/monospace/overstrike entity tags.
         foreach bold {0 1} {
             foreach italic {0 1} {
-                foreach mono {0 1} {
+                foreach fixed {0 1} {
                     foreach over {0 1} {
-                        if {!$bold && !$italic && !$mono && !$over} continue
+                        if {!$bold && !$italic && !$fixed && !$over} continue
                         set parts {}
-                        set fontspec [expr {$mono ? {Courier 13} : $font}]
+                        set fontspec [expr {$fixed ? $mono : $font}]
                         if {$bold}   { lappend parts bold;       append fontspec " bold" }
                         if {$italic} { lappend parts italic;     append fontspec " italic" }
-                        if {$mono}   { lappend parts monospace }
+                        if {$fixed}  { lappend parts monospace }
                         set opts [list -font $fontspec]
                         if {$over}   { lappend parts overstrike; lappend opts -overstrike yes }
                         $text tag configure "entity.[join $parts .]" {*}$opts
@@ -344,21 +350,36 @@ snit::widget chatarea {
                 }
             }
         }
-        $text tag configure receipt -foreground #888888
-        $text tag configure receipt.read -foreground #2d6da3
+        $text tag configure receipt -foreground [palette dim]
+        $text tag configure receipt.read -foreground [palette accent]
         # XEP-0444 reaction chips
         $text tag configure reaction -lmargin1 40 -lmargin2 40 \
-            -font "Helvetica 11" -spacing1 2 -spacing3 4
+            -font $small -spacing1 2 -spacing3 4
         # Search hits inside a body; see `highlight matches`.
-        $text tag configure search_match -background yellow -font "$font bold"
-        $text tag configure timestamp -foreground #888888 -font "Helvetica 10"
-        $text tag configure system -foreground gray50 -font "$font italic" \
+        $text tag configure search_match -background [palette highlight] \
+            -font "$font bold"
+        $text tag configure timestamp -foreground [palette dim] -font $tiny
+        $text tag configure system -foreground [palette system] \
+            -font "$font italic" \
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
-        $text tag configure drawerror -foreground #b04040 \
+        $text tag configure drawerror -foreground [palette error] \
             -font "$font italic" -lmargin1 40 -lmargin2 40 -spacing3 6
         # XEP-0308 "(edited)" marker and XEP-0424/0425 retraction tombstone
-        $text tag configure edited -foreground #888888
-        $text tag configure tombstone -foreground gray50 -font "$font italic"
+        $text tag configure edited -foreground [palette dim]
+        $text tag configure tombstone -foreground [palette system] \
+            -font "$font italic"
+    }
+
+    # The same family, $by points down. Keeps the secondary text tied to the
+    # body face instead of naming a size of its own.
+    proc SmallerFont {font by} {
+        lassign $font family size
+        return [list $family [expr {$size - $by}]]
+    }
+
+    # The fixed-width face at the body's size.
+    proc MonoFont {font} {
+        return [list Courier [lindex $font 1]]
     }
 
     method {messages newest} {} { $self EdgeKey new }

@@ -22,11 +22,21 @@ snit::type notifier {
     typevariable Gap 8
     typevariable LifeMs 8000
 
-    typevariable Card    #ffffff
-    typevariable Border  #b8b8b8
-    typevariable Dim     #666666
-    typevariable Accent  #4a76c8
-    typevariable Mention #d08b18
+    typevariable Card
+    typevariable Border
+    typevariable Dim
+    typevariable Accent
+    typevariable Mention
+
+    # Snit compiles the type body in its own interp, so the palette can only
+    # be read once, out here, where the real one is.
+    typeconstructor {
+        set Card    [palette notify-card]
+        set Border  [palette notify-border]
+        set Dim     [palette muted]
+        set Accent  [palette notify-accent]
+        set Mention [palette mention]
+    }
 
     constructor args {
         $self configurelist $args

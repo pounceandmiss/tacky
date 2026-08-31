@@ -48,8 +48,7 @@ lappend auto_path [file join $dir lib]
 lappend auto_path [file join $dir gui]
 package require libtacky
 
-foreach script [lsort [glob [file join $dir gui *.tcl]]] {
-    source $script
-}
+source [file join $dir gui load.tcl]
+load_gui [file join $dir gui]
 
 app_type app {*}$argv
