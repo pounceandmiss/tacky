@@ -38,10 +38,16 @@ if {$idx >= 0} {
 }
 
 package require Tk
-ttk::style theme use clam
+# Native widgets where available; clam on X11.
+switch -- [tk windowingsystem] {
+    aqua  { ttk::style theme use aqua }
+    win32 { ttk::style theme use vista }
+    default { ttk::style theme use clam }
+}
 package require snit
 package require tkwuffs
-package require tkdnd
+# Optional: unavailable on macOS builds; chatpanel.tcl no-ops without it.
+catch {package require tkdnd}
 
 set dir [file normalize [file join [file dirname [info script]] ..]]
 lappend auto_path [file join $dir lib]
