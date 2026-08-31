@@ -16,7 +16,6 @@ snit::widget messageentry {
 
     option -send-command -default ""
     option -attach-command -default ""
-    option -request-voice-command -default ""
 
     # Toplevel hosting the emoji picker while open, "" when closed
     variable emojiPopup ""
@@ -224,12 +223,6 @@ snit::widget messageentry {
         set lineH [font metrics [$text cget -font] -linespace]
         set lines [expr {max(1, $newH / $lineH)}]
         $text configure -height $lines
-    }
-
-    method RequestVoice {} {
-        if {$options(-request-voice-command) ne ""} {
-            {*}$options(-request-voice-command)
-        }
     }
 
     # Container left of the Send button for caller-supplied controls.
