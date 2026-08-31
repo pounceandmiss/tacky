@@ -51,9 +51,9 @@ snit::widget omemokeyspanel {
             -jid $options(-jid) [mymethod OnTrustList]
         if {$isOwn} {
             ::tacky omemo own_fingerprint -acc $options(-acc) \
-                -command [mymethod OnOwnFp]
+                -tag $win -command [mymethod OnOwnFp]
             ::tacky omemo device_id -acc $options(-acc) \
-                -command [mymethod OnOwnDev]
+                -tag $win -command [mymethod OnOwnDev]
         }
     }
 

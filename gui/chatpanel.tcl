@@ -327,13 +327,13 @@ snit::widget chatpanel {
 
         # Permission-gated items — fetched asynchronously and inserted
         ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
-            -command [mymethod OnMyNickForMenu]
+            -tag $win -command [mymethod OnMyNickForMenu]
     }
 
     method OnMyNickForMenu {nick} {
         if {$nick eq ""} return
         ::tacky muc occupant -acc $options(-acc) -jid $roomJid -nick $nick \
-            -command [mymethod OnOccupantForMenu]
+            -tag $win -command [mymethod OnOccupantForMenu]
     }
 
     method OnOccupantForMenu {occ} {
@@ -434,7 +434,7 @@ snit::widget chatpanel {
 
     method ChangeNickname {} {
         ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
-            -command [mymethod OnMyNickForChange]
+            -tag $win -command [mymethod OnMyNickForChange]
     }
 
     method OnMyNickForChange {myNick} {
@@ -526,7 +526,7 @@ snit::widget chatpanel {
     method DoFind {} {
         ::tacky message search -acc $options(-acc) -source local -limit 500 \
             -chat $options(-jid) -query $findQuery \
-            -command [mymethod OnFindResults]
+            -tag $win -command [mymethod OnFindResults]
     }
 
     method OnFindResults {result} {
