@@ -22,11 +22,9 @@ snit::widget omemokeyswindow {
     # configuring -jid is what rebuilds that panel.
     typemethod open {acc jid {highlight ""}} {
         set w .omemokeys_[path_safe $acc]
-        if {[winfo exists $w]} {
+        if {[raise_existing $w]} {
             $w configure -highlight $highlight
             $w configure -jid $jid
-            wm deiconify $w
-            raise $w
             return $w
         }
         return [omemokeyswindow $w -acc $acc -highlight $highlight -jid $jid]

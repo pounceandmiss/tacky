@@ -11,11 +11,7 @@ snit::widget participantlegend {
 
     typemethod show {} {
         set top .participant_legend
-        if {[winfo exists $top]} {
-            wm deiconify $top
-            raise $top
-            return
-        }
+        if {[raise_existing $top]} return
         toplevel $top
         wm title $top "Participant Legend"
         wm resizable $top false false

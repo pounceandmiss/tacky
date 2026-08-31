@@ -327,11 +327,7 @@ snit::widget accountwindow {
 
     method OpenAccountSearch {} {
         if {$currentAccount eq ""} return
-        if {[winfo exists $win.search]} {
-            wm deiconify $win.search
-            raise $win.search
-            return
-        }
+        if {[raise_existing $win.search]} return
         searchwindow $win.search -acc $currentAccount \
             -goto-command [mymethod OnSearchGoto]
     }

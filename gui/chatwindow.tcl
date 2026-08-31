@@ -4,11 +4,7 @@ snit::widgetadaptor chatwindow {
     option -groupchat -default 0 -readonly yes
 
     typemethod open {w args} {
-        if {[winfo exists $w]} {
-            wm deiconify $w
-            raise $w
-            return $w
-        }
+        if {[raise_existing $w]} { return $w }
         return [chatwindow $w {*}$args]
     }
 

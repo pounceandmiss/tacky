@@ -497,11 +497,9 @@ snit::widgetadaptor xmlstanza {
 
     typemethod show {stanza {title "XML Stanza"}} {
         set w .xml_stanza_viewer
-        if {[winfo exists $w]} {
+        if {[raise_existing $w]} {
             $w.xs configure -stanza $stanza
             wm title $w $title
-            wm deiconify $w
-            raise $w
             return $w
         }
         toplevel $w
@@ -597,11 +595,7 @@ wZjFAAAAAElFTkSuQmCC
 proc xmlconsole {jid} {
     set safe [path_safe $jid]
     set w .xmlconsole-$safe
-    if {[winfo exists $w]} {
-        wm deiconify $w
-        raise $w
-        return $w
-    }
+    if {[raise_existing $w]} { return $w }
     toplevel $w
     wm title $w "XML Console — $jid"
     wm geometry $w 600x400

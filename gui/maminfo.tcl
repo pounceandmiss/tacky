@@ -23,11 +23,7 @@ snit::widget maminfo {
     typemethod open {account args} {
         array set opts $args
         set top .maminfo_[path_safe $account]
-        if {[winfo exists $top]} {
-            wm deiconify $top
-            raise $top
-            return
-        }
+        if {[raise_existing $top]} return
         toplevel $top
         wm title $top "MAM Archive Info"
         wm resizable $top 1 0

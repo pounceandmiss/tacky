@@ -33,10 +33,8 @@ snit::widgetadaptor callwindow {
     # competing for attention.
     typemethod show {args} {
         set w .callwindow
-        if {[winfo exists $w]} {
+        if {[raise_existing $w]} {
             $w Reset {*}$args
-            wm deiconify $w
-            raise $w
             return $w
         }
         return [callwindow $w {*}$args]

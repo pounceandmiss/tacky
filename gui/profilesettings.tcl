@@ -21,11 +21,7 @@ snit::widget profilesettings {
 
     typemethod open {account} {
         set top .profile_[path_safe $account]
-        if {[winfo exists $top]} {
-            wm deiconify $top
-            raise $top
-            return
-        }
+        if {[raise_existing $top]} return
         toplevel $top
         wm title $top "Profile"
         wm resizable $top 1 1

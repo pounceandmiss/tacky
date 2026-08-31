@@ -18,11 +18,7 @@ snit::widgetadaptor incomingcalldialog {
         array set opts $args
         set safe [path_safe $opts(-sid)]
         set w .incomingcall_$safe
-        if {[winfo exists $w]} {
-            wm deiconify $w
-            raise $w
-            return $w
-        }
+        if {[raise_existing $w]} { return $w }
         return [incomingcalldialog $w {*}$args]
     }
 

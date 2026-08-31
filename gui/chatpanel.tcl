@@ -584,11 +584,7 @@ snit::widget chatpanel {
     }
 
     method OpenSearch {} {
-        if {[winfo exists $win.search]} {
-            wm deiconify $win.search
-            raise $win.search
-            return
-        }
+        if {[raise_existing $win.search]} return
         searchwindow $win.search -acc $options(-acc) -jid $options(-jid) \
             -goto-command [mymethod GotoMessage]
     }
