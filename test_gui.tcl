@@ -14,7 +14,7 @@ lappend auto_path \
     [file join $dir gui] \
     [file join $dir tests taco]
 
-# Match production load order from bin/tacky.tcl so gui/*.tcl can be sourced.
+# The theme has to be set before tackygui builds its styles, as in bin/tacky.tcl.
 package require Tk
 ttk::style theme use clam
 
@@ -28,8 +28,7 @@ package require snit
 package require libtacky
 package require taco
 
-source [file join $dir gui load.tcl]
-load_gui [file join $dir gui]
+package require tackygui
 
 # Not a sleep: the backend runs in-process, so what tests observe lands
 # synchronously or on an idle/after-0 callback, and update drains both.

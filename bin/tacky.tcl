@@ -48,7 +48,6 @@ lappend auto_path [file join $dir lib]
 lappend auto_path [file join $dir gui]
 package require libtacky
 
-source [file join $dir gui load.tcl]
-load_gui [file join $dir gui]
+package require tackygui
 
 app_type app {*}$argv
