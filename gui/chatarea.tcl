@@ -505,81 +505,79 @@ snit::widget chatarea {
             return
         }
 
-        eval {
-            $self DrawHeader $messageDict $tag
-            if {[info exists message(encryption)] && $message(encryption) eq "omemo"} {
-                $text ins msgins " " [list $tag timestamp]
-                set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
-                $text tag add $tag $lockId
-            }
-            $text ins msgins \n $tag
+        $self DrawHeader $messageDict $tag
+        if {[info exists message(encryption)] && $message(encryption) eq "omemo"} {
+            $text ins msgins " " [list $tag timestamp]
+            set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
+            $text tag add $tag $lockId
+        }
+        $text ins msgins \n $tag
 
-            $self DrawReplyPreview $messageDict $tag
+        $self DrawReplyPreview $messageDict $tag
 
-            # The backend supplies `caption` (body with redundant attachment
-            # URLs removed) for attachment messages; plain messages have none.
-            set displayBody [expr {[info exists message(caption)]
-                ? $message(caption) : $message(body)}]
-            set hasAttachments [expr {[info exists message(attachments)]
-                && [llength $message(attachments)] > 0}]
-            set remoteStatus [expr {[info exists message(remote_status)]
-                ? $message(remote_status) : "none"}]
-            $text ins msgins $displayBody [list $tag body message $tag.body]
-            if {[info exists message(edited)] && $message(edited)} {
-                $text ins msgins "  (edited)" [list $tag edited]
+        # The backend supplies `caption` (body with redundant attachment
+        # URLs removed) for attachment messages; plain messages have none.
+        set displayBody [expr {[info exists message(caption)]
+            ? $message(caption) : $message(body)}]
+        set hasAttachments [expr {[info exists message(attachments)]
+            && [llength $message(attachments)] > 0}]
+        set remoteStatus [expr {[info exists message(remote_status)]
+            ? $message(remote_status) : "none"}]
+        $text ins msgins $displayBody [list $tag body message $tag.body]
+        if {[info exists message(edited)] && $message(edited)} {
+            $text ins msgins "  (edited)" [list $tag edited]
+        }
+        # Plain message: receipt trails the body. Attachment: below.
+        if {$message(is_outgoing) && !$hasAttachments} {
+            $self DrawReceiptGlyph $slot \
+                $message(server_status) $remoteStatus
+        }
+        $text ins msgins \n $tag
+
+        # Formatting offsets index into the body. An empty body draws no
+        # $tag.body characters, so $tag.body.first would not resolve -
+        # skip rather than let the index lookup throw and abort the draw.
+        if {[info exists message(formatting)]
+            && [llength [$text tag ranges $tag.body]] > 0} {
+            # Font-affecting styles must combine into one tag per run (Tk
+            # fonts don't merge across tags); block styles apply as-is.
+            set fontSpans {}
+            set applied {}
+            foreach {type offset length} $message(formatting) {
+                if {$type in {bold italic monospace overstrike}} {
+                    lappend fontSpans $type $offset $length
+                } else {
+                    lappend applied $type $offset $length
+                }
             }
-            # Plain message: receipt trails the body. Attachment: below.
-            if {$message(is_outgoing) && !$hasAttachments} {
+            foreach {type offset length} \
+                    [concat $applied [entitytags::combine $fontSpans]] {
+                $text tag add entity.$type \
+                    "$tag.body.first + $offset chars" \
+                    "$tag.body.first + $offset chars + $length chars"
+            }
+        }
+
+        if {$hasAttachments} {
+            set aidx 0
+            foreach att $message(attachments) {
+                $self DrawAttachment $tag $slot $message(key) $aidx $att \
+                    $message(server_status)
+                incr aidx
+            }
+            if {$message(is_outgoing)} {
+                # Receipt right of the last attachment, before its newline.
+                set lastWin $text.att_${slot}_[expr {$aidx - 1}]
+                $text mark set msgins "$lastWin + 1 chars"
                 $self DrawReceiptGlyph $slot \
                     $message(server_status) $remoteStatus
             }
-            $text ins msgins \n $tag
+        }
 
-            # Formatting offsets index into the body. An empty body draws no
-            # $tag.body characters, so $tag.body.first would not resolve -
-            # skip rather than let the index lookup throw and abort the draw.
-            if {[info exists message(formatting)]
-                && [llength [$text tag ranges $tag.body]] > 0} {
-                # Font-affecting styles must combine into one tag per run (Tk
-                # fonts don't merge across tags); block styles apply as-is.
-                set fontSpans {}
-                set applied {}
-                foreach {type offset length} $message(formatting) {
-                    if {$type in {bold italic monospace overstrike}} {
-                        lappend fontSpans $type $offset $length
-                    } else {
-                        lappend applied $type $offset $length
-                    }
-                }
-                foreach {type offset length} \
-                        [concat $applied [entitytags::combine $fontSpans]] {
-                    $text tag add entity.$type \
-                        "$tag.body.first + $offset chars" \
-                        "$tag.body.first + $offset chars + $length chars"
-                }
-            }
-
-            if {$hasAttachments} {
-                set aidx 0
-                foreach att $message(attachments) {
-                    $self DrawAttachment $tag $slot $message(key) $aidx $att \
-                        $message(server_status)
-                    incr aidx
-                }
-                if {$message(is_outgoing)} {
-                    # Receipt right of the last attachment, before its newline.
-                    set lastWin $text.att_${slot}_[expr {$aidx - 1}]
-                    $text mark set msgins "$lastWin + 1 chars"
-                    $self DrawReceiptGlyph $slot \
-                        $message(server_status) $remoteStatus
-                }
-            }
-
-            if {[info exists message(reactions)]
-                && [dict size $message(reactions)] > 0} {
-                $text mark set msgins item.$slot.last
-                $self DrawReactions $slot $message(key) $message(reactions)
-            }
+        if {[info exists message(reactions)]
+            && [dict size $message(reactions)] > 0} {
+            $text mark set msgins item.$slot.last
+            $self DrawReactions $slot $message(key) $message(reactions)
         }
     }
 
