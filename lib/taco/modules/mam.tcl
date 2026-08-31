@@ -31,6 +31,14 @@ snit::type taco_mam {
     variable Archives    ;# array: Archives($queryId) = bare archive JID ("" = own archive)
     variable FieldCache  ;# array: FieldCache($target) = fulltext field name or ""
 
+    # The resource is persisted (account.tcl `resource`), so a later run or a
+    # second tacky answers to the same full JID and receives whatever the
+    # archives queued for it. A bare counter restarts at 1 each run, so the
+    # Nth query of two sessions names different archives under one id, and a
+    # room's page arrives against another room's query, where it is refused
+    # and lost. Minted once, not per session: a resumed query is answered
+    # with the id we already sent.
+    variable idTag ""
     variable idCounter 0
 
     typevariable KnownFulltextFields [list withtext {{urn:xmpp:fulltext:0}fulltext}]
@@ -42,6 +50,7 @@ snit::type taco_mam {
         array set Callbacks {}
         array set Archives {}
         array set FieldCache {}
+        binary scan [omemo::random 8] H* idTag
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
     }
 
@@ -70,7 +79,7 @@ snit::type taco_mam {
                   -after "" -max "" -field-var "" -command ""]
         set opts [dict merge $defaults $args]
 
-        set queryId mam[incr idCounter]
+        set queryId mam-$idTag-[incr idCounter]
 
         # Track -before presence (special: empty string = "before end")
         dict set opts -has-before [dict exists $opts -before]

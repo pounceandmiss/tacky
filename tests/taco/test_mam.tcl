@@ -153,3 +153,59 @@ test mam-result-muc-archive-matched {MUC query results must come from the room} 
         }
         set ids
     } -result {real1}
+
+# Two MUC archives, one query id: a room answering an id minted for another
+# room gets its page dropped, and must not be filed under the room we asked.
+test mam-result-other-room-dropped-not-misfiled {a room's results never land in another room's query} \
+    {*}$mam_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        set ::got NEVER
+        c mam query -to wanted@muc.example.com \
+            -command {apply {{r} { set ::got $r }}}
+        set req [lindex [c.conn get_written] end]
+        set queryId [xsearch $req query -ns urn:xmpp:mam:2 -get @queryid]
+        c.conn feed [j message -from other@muc.elsewhere.example {
+            j result -ns urn:xmpp:mam:2 -queryid $queryId -id stray1 {
+                j forwarded -ns urn:xmpp:forward:0
+            }
+        }]
+        c.conn feed [j message -from wanted@muc.example.com {
+            j result -ns urn:xmpp:mam:2 -queryid $queryId -id real1 {
+                j forwarded -ns urn:xmpp:forward:0
+            }
+        }]
+        c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+            -from wanted@muc.example.com {
+            j fin -ns urn:xmpp:mam:2 -complete true
+        }]
+        mam_result_ids $::got
+    } -result {real1}
+
+set mam_two_sessions [tacky_env -mock conn -taco-client {
+    -host test.example.com -port 5222
+    -username user -password pass -resource res
+} -extra-cleanup {catch {c2 destroy}}]
+
+# A second session of one account - the next run, or another tacky on the
+# same persisted resource - starts its own counter, and the server addresses
+# both by the same full JID. A bare sequence number would mean a different
+# archive in each.
+test mam-query-ids-do-not-collide-across-sessions {a second session mints its own query ids} \
+    {*}$mam_two_sessions \
+    -body {
+        c configure -jid user@test.example.com/res
+        taco_client c2 -host test.example.com -port 5222 \
+            -username user -password pass -resource res
+        c2 configure -jid user@test.example.com/res
+        set ids {}
+        foreach cl {c c2} {
+            for {set i 1} {$i <= 3} {incr i} {
+                $cl mam query -to room$i@muc.example.com \
+                    -command {apply {{r} {}}}
+                lappend ids [xsearch [lindex [$cl.conn get_written] end] \
+                                 query -ns urn:xmpp:mam:2 -get @queryid]
+            }
+        }
+        list [llength $ids] [llength [lsort -unique $ids]]
+    } -result {6 6}
