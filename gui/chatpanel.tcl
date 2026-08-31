@@ -344,9 +344,9 @@ snit::widget chatpanel {
         set role [dict get $occ role]
         set affil [dict get $occ affiliation]
 
-        # Insert permission-gated items before the trailing separator
-        # Static menu: Jump to Date, Find in Chat, Search Messages, sep, Participants, sep, Invite, Change Nick = indices 0-7
-        set insertIdx 8
+        # By label, not index: everything above shifts as the menu changes.
+        # Lands on the separator that opens the trailing Leave Room block.
+        set insertIdx [expr {[$mb.chat index "Leave Room"] - 1}]
         if {$role eq "visitor"} {
             $mb.chat insert $insertIdx separator
             incr insertIdx
