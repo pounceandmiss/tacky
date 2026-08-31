@@ -281,7 +281,7 @@ snit::widget accountwindow {
     method Openchatwindow {args} {
         array set opts {-groupchat 0 -goto ""}
         array set opts $args
-        set safe [string map {@ _ . _ / _ ? _} $opts(-jid)]
+        set safe [path_safe $opts(-jid)]
         set w [chatwindow open .chatwin_$safe -acc $opts(-acc) \
             -jid $opts(-jid) -groupchat $opts(-groupchat)]
         if {$opts(-goto) ne ""} {

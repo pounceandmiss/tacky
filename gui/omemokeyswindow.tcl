@@ -21,7 +21,7 @@ snit::widget omemokeyswindow {
     # re-point its peer panel to $jid. $highlight is set first because
     # configuring -jid is what rebuilds that panel.
     typemethod open {acc jid {highlight ""}} {
-        set w .omemokeys_[string map {@ _ . _ / _} $acc]
+        set w .omemokeys_[path_safe $acc]
         if {[winfo exists $w]} {
             $w configure -highlight $highlight
             $w configure -jid $jid

@@ -194,7 +194,7 @@ snit::type notifier {
     method keys {} { return $Order }
 
     proc WindowPath {key} {
-        return .toast_[string map {@ _ . _ / _ ? _} [join $key _]]
+        return .toast_[path_safe [join $key _]]
     }
 
     # A chat jid carries ?join for a room; neither the avatar nor the label

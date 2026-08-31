@@ -167,7 +167,7 @@ snit::type app_type {
             $self RaiseWindow $existing
             return $existing
         }
-        set safe [string map {@ _ . _ / _} $jid]
+        set safe [path_safe $jid]
         set w .acctwin_${safe}_[incr winCounter]
         accountwindow $w -account $jid -controller $self
         lappend windows $w

@@ -22,7 +22,7 @@ snit::widget maminfo {
 
     typemethod open {account args} {
         array set opts $args
-        set top .maminfo_[string map {@ _ . _} $account]
+        set top .maminfo_[path_safe $account]
         if {[winfo exists $top]} {
             wm deiconify $top
             raise $top

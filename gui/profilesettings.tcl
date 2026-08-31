@@ -20,7 +20,7 @@ snit::widget profilesettings {
     variable statusAfter ""
 
     typemethod open {account} {
-        set top .profile_[string map {@ _ . _} $account]
+        set top .profile_[path_safe $account]
         if {[winfo exists $top]} {
             wm deiconify $top
             raise $top
