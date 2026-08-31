@@ -821,6 +821,7 @@ snit::type taco_calls {
     # removed this sid — bail then.
     method StartIncomingMedia {sid sdp iceServers} {
         if {![dict exists $Calls $sid]} return
+        set peer [dict get $Calls $sid peer]
         set pc [$self CreatePc $sid $iceServers]
         # Apply the offer; on-track fires async to drive AttachMedia.
         # NOTE: do NOT call set-local-description here — libdatachannel's
@@ -830,13 +831,30 @@ snit::type taco_calls {
         # runs in signaling state Stable, where Unspec is treated as
         # Offer, which would generate a fresh offer and silently
         # overwrite the auto-generated answer.
-        ::rtc::pc::set-remote-description $pc $sdp offer
+        #
+        # An offer libdatachannel won't apply — a stale or duplicate
+        # session-initiate, say — throws here. The session-initiate IQ
+        # is already acked, so the peer thinks the call is live;
+        # terminate it instead of leaving that to time out.
+        if {[catch {::rtc::pc::set-remote-description $pc $sdp offer} err]} {
+            $client emit calls <Failed> -sid $sid \
+                -reason "remote offer rejected: $err"
+            $self TeardownMedia $sid
+            $self SendTerminate $sid $peer general-error
+            $self Cleanup $sid
+            return
+        }
         # Drain any candidates that arrived (and were buffered) while
-        # this side's pc was still -1.
+        # this side's pc was still -1. A rejected one isn't fatal to an
+        # offer that just applied cleanly, so skip it.
         if {[dict exists $Calls $sid pending_remote_candidates]} {
             foreach entry [dict get $Calls $sid pending_remote_candidates] {
                 lassign $entry name full
-                ::rtc::pc::add-remote-candidate $pc $full $name
+                if {[catch {
+                    ::rtc::pc::add-remote-candidate $pc $full $name
+                } err]} {
+                    jlog debug "buffered candidate rejected: $err"
+                }
             }
             dict unset Calls $sid pending_remote_candidates
         }
@@ -855,7 +873,16 @@ snit::type taco_calls {
             return
         }
         set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
-        ::rtc::pc::set-remote-description $pc $sdp answer
+        # A duplicate/retransmitted accept applies fine once but is
+        # rejected the second time — not fatal to the call already
+        # running, so warn rather than fail it, and answer with an IQ
+        # error instead of AckIq so a retrying peer stops.
+        if {[catch {::rtc::pc::set-remote-description $pc $sdp answer} err]} {
+            $client emit calls <Warning> -sid $sid \
+                -reason "session-accept rejected: $err"
+            $self IqError $stanza not-acceptable
+            return
+        }
         $self AckIq $stanza
     }
 
@@ -893,7 +920,16 @@ snit::type taco_calls {
                             [list $name $full]
                     }
                 } else {
-                    ::rtc::pc::add-remote-candidate $pc $full $name
+                    # A candidate libdatachannel rejects (stale,
+                    # duplicate, wrong ufrag) is skipped like an
+                    # unparsable one above — other candidates may
+                    # still connect.
+                    if {[catch {
+                        ::rtc::pc::add-remote-candidate $pc $full $name
+                    } err]} {
+                        jlog debug "transport-info: candidate rejected: $err"
+                        continue
+                    }
                 }
             }
         }
