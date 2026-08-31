@@ -15,7 +15,11 @@ lappend auto_path \
 
 # Match production load order from bin/tacky.tcl so gui/*.tcl can be sourced.
 package require Tk
-ttk::style theme use clam
+switch -- [tk windowingsystem] {
+    aqua  { ttk::style theme use aqua }
+    win32 { ttk::style theme use vista }
+    default { ttk::style theme use clam }
+}
 
 # Keep the test window above others and mapped. Tests measure real geometry
 # (bbox, count -ypixels, winfo height); if the toplevel is obscured or not

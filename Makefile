@@ -33,6 +33,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 .PHONY: all \
 	tacky tackyd tackyd-json lib \
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
+	mac mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
 	linux flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
@@ -45,6 +46,7 @@ all: tacky tackyd tackyd-json
 # tree (below), and each tree belongs to one toolchain, so no two ever share
 # compiled artifacts.
 LINUX_BUILD := $(CURDIR)/build/linux
+MAC_BUILD   := $(CURDIR)/build/macos
 
 # One source cache shared by the native and Windows trees. zippy defaults
 # DEPSDIR to $(BASEDIR)/_build/deps, which would give each target here its own
@@ -86,6 +88,44 @@ lib: dist-dir
 	    DEPSDIR=$(DEPS_DIR) \
 	    lib
 	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
+
+# zippy has no mac-app/.dmg target - TARGET_OS=macos just retargets `app`.
+# tkdnd is X11-only and errors under TARGET_OS=macos, so it's filtered out.
+mac: mac-tacky mac-tackyd mac-tackyd-json
+
+mac-tacky mac-tackyd mac-tackyd-json: mac-%: dist-dir
+	$(MAKE) -f zippy/zippy.mk \
+	    TARGET_OS=macos \
+	    BIN_NAME=$* \
+	    SHELL_TYPE=$($*_SHELL) \
+	    DEPS="$(filter-out tkdnd,$($*_DEPS))" \
+	    SOURCES="$($*_SRC)" \
+	    ENTRY_SCRIPT="$($*_ENT)" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    BASEDIR=$(MAC_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
+	    app
+	$(call copy-if-changed,$(MAC_BUILD)/$*,dist/$*-macos)
+
+mac-lib: dist-dir
+	$(MAKE) -f zippy/zippy.mk \
+	    TARGET_OS=macos \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(tackyd-json_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    LIB_SHIM_SRC=$(CURDIR)/embed/tacky.c \
+	    LIB_NAME=tacky \
+	    BASEDIR=$(MAC_BUILD) \
+	    DEPSDIR=$(DEPS_DIR) \
+	    lib
+	$(call copy-if-changed,$(MAC_BUILD)/libtacky.a,dist/libtacky-macos.a)
+
+# Drop the macOS build tree and its dist outputs, like win-clean.
+mac-clean:
+	rm -rf $(MAC_BUILD)
+	rm -f dist/*-macos dist/*-macos.a dist/*-macos.debug
 
 # ==== Windows cross-build ====
 # Static .exe binaries via MinGW-w64 (zippy/windows.mk). Same per-binary config
