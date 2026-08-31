@@ -1,5 +1,23 @@
 package provide taco 0.1
 
+# tcllib's sha1 (and friends) probe for optional C accelerators we don't
+# bundle, inside a catch. Tcl's tclPkgUnknown keeps its "already scanned" state
+# in proc-local variables, so each miss re-sources every pkgIndex.tcl in
+# auto_path - eight full sweeps of ~137 files, for nothing. Record the misses
+# once so the probes resolve without searching.
+#
+# Here rather than in an entry point for two reasons: every entry point reaches
+# taco, and `package require taco` has already forced the sweep that registers
+# everything, which is what makes an empty `package versions` mean "absent"
+# rather than "not looked for yet". Running this any earlier would wrongly
+# poison an accelerator that is genuinely installed.
+foreach _pkg {tcllibc sha1c md5c cryptkit Trf} {
+    if {[package versions $_pkg] eq ""} {
+        package ifneeded $_pkg 0 [list error "$_pkg is not bundled"]
+    }
+}
+unset -nocomplain _pkg
+
 package require sqlite3
 package require mtls
 package require base64
