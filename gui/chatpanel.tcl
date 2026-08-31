@@ -183,9 +183,9 @@ snit::widget chatpanel {
         lassign $data ts body
         $self CancelReply
         set editingTs $ts
-        if {![$self HasBanner edit]} {
-            set slot [[$self ShowBanner edit -close-command \
-                [mymethod CancelEdit]] body]
+        set slot [[$self ShowBanner edit \
+            -close-command [mymethod CancelEdit]] body]
+        if {![winfo exists $slot.lbl]} {
             pack [ttk::label $slot.lbl -anchor w -text "Editing message"] \
                 -fill x -expand yes
         }
