@@ -84,13 +84,15 @@ snit::widget searchwindow {
         if {!$wholeAccount} {
             $self Authors $options(-jid)
             ::tacky mam fulltextSupported -acc $options(-acc) \
-                -chat $options(-jid) -command [mymethod OnRemoteCapability]
+                -chat $options(-jid) -tag $searchTag \
+                -command [mymethod OnRemoteCapability]
         }
 
         focus $top.entry
     }
 
     destructor {
+        catch {::tacky unlisten $searchTag}
         catch {::tacky message cancel -acc $options(-acc) -tag $searchTag}
         dict for {chat obj} $authorsByChat { catch {$obj destroy} }
     }

@@ -30,7 +30,7 @@ snit::type authornames {
         ::tacky listen -tag $options(-tag) author <Changed> \
             -acc $options(-acc) -chat $options(-chat) [mymethod OnChanged]
         ::tacky author get -acc $options(-acc) -chat $options(-chat) \
-            -command [mymethod OnSeed]
+            -tag $options(-tag) -command [mymethod OnSeed]
         if {$options(-show-jid-setting)} {
             ::tacky observe -tag $options(-tag) setting <Changed> \
                 -key show_jid_in_1to1 [mymethod OnShowJidSetting]

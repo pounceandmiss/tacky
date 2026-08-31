@@ -151,7 +151,7 @@ snit::type attachmentxfer {
         set src [$self Key $url $path]
         dict unset Cancelled $src
         ::tacky file download -acc $options(-acc) -url $url -path $path \
-            -command [mymethod OnLocalCopy $action $src]
+            -tag $options(-tag) -command [mymethod OnLocalCopy $action $src]
     }
 
     # An open/save can ride along on a thumbnail fetch already in flight; a
