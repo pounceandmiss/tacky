@@ -24,7 +24,7 @@ snit::widget chatlistview {
     variable showAvatars 1
     variable bookmarkMember 0
     variable trackedAvatars {}
-    # Flat list of chat entries (chatlist get shape), patched by <Item>/<Remove>
+    # jid -> chat entry (chatlist get shape), patched by <Item>/<Remove>
     variable model {}
 
     # Row style per backend room_state enum (taco_bookmarks RoomState).  Tags
@@ -186,22 +186,22 @@ snit::widget chatlistview {
             -tag $win -command [mymethod OnData]
     }
 
+    # `chatlist get` answers with a flat list; key it on the way in.
     method OnData {data} {
-        set model $data
+        set model [dict create]
+        foreach entry $data {
+            dict set model [dict get $entry jid] $entry
+        }
         $self Render
     }
 
     method OnItem {ev} {
-        array set opts {-jid "" -item ""}
-        array set opts $ev
-        set model [$self ModelUpsert $opts(-jid) $opts(-item)]
+        dict set model [dict get $ev -jid] [dict get $ev -item]
         $self Render
     }
 
     method OnRemove {ev} {
-        array set opts {-jid ""}
-        array set opts $ev
-        set model [$self ModelRemove $opts(-jid)]
+        dict unset model [dict get $ev -jid]
         $self Render
     }
 
@@ -236,9 +236,8 @@ snit::widget chatlistview {
 
     method VisibleEntries {} {
         set out {}
-        foreach entry $model {
-            if {[$self MatchesQueryLocal [dict get $entry jid] \
-                    [dict get $entry name]]} {
+        dict for {jid entry} $model {
+            if {[$self MatchesQueryLocal $jid [dict get $entry name]]} {
                 lappend out $entry
             }
         }
@@ -275,34 +274,9 @@ snit::widget chatlistview {
 
     # -- model helpers ---------------------------------------------------
 
+    # The entry for a chat, or "" when we don't hold one.
     method ModelItem {jid} {
-        foreach item $model {
-            if {[dict get $item jid] eq $jid} { return $item }
-        }
-        return {}
-    }
-
-    method ModelRemove {jid} {
-        set items {}
-        foreach item $model {
-            if {[dict get $item jid] ne $jid} { lappend items $item }
-        }
-        return $items
-    }
-
-    method ModelUpsert {jid entry} {
-        set items {}
-        set replaced 0
-        foreach item $model {
-            if {[dict get $item jid] eq $jid} {
-                lappend items $entry
-                set replaced 1
-            } else {
-                lappend items $item
-            }
-        }
-        if {!$replaced} { lappend items $entry }
-        return $items
+        return [dict getdef $model $jid {}]
     }
 
     method ConfigureMucTags {} {
