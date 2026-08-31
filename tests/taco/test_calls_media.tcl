@@ -58,6 +58,27 @@ proc media_transport_info {sid from} {
     }
 }
 
+proc media_session_accept {sid from} {
+    j iq -type set -from $from -to user@test.example.com -id sa1 {
+        j jingle -ns urn:xmpp:jingle:1 -action session-accept -sid $sid {
+            j content -creator initiator -name audio {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio {
+                    j payload-type -id 111 -name opus -clockrate 48000 -channels 2
+                }
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
+                    -ufrag def -pwd defdefdefdef {
+                    j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 \
+                        -hash sha-256 -setup active -body CC:DD
+                }
+            }
+        }
+    }
+}
+
+proc media_error_condition {stanza} {
+    return [xsearch $stanza error * -ns urn:ietf:params:xml:ns:xmpp-stanzas -get tag]
+}
+
 # Answer the XEP-0215 request the module makes before standing up a pc.
 proc media_answer_extdisco {} {
     set id ""
@@ -298,5 +319,63 @@ test media-setdevices-warns-on-failure {a mic that will not reopen warns and kee
             [lindex [calls_events] end] \
             [dict exists [calls_state] $sid]]
     } -result {{<Warning> -sid SID -reason {input device unavailable: busy}} 1}
+
+# -- Rejected signaling --
+
+test media-accept-rejected-warns {a rejected session-accept warns without touching the live call} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fail ::rtc::pc::set-remote-description "invalid state" "* answer"
+        c.conn feed [media_session_accept $sid $::MEDIA_PEER]
+        set resp [calls_last_written]
+        string map [list $sid SID] [list \
+            [lindex [calls_events] end] \
+            [xsearch $resp -get @type] \
+            [media_error_condition $resp] \
+            [dict exists [calls_state] $sid]]
+    } -result {{<Warning> -sid SID -reason {session-accept rejected: invalid state}} error not-acceptable 1}
+
+test media-offer-rejected-fails-and-terminates \
+    {a rejected offer emits <Failed> and terminates the session} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtc::pc::set-remote-description "invalid state" "* offer"
+        c.conn feed [calls_jmi_in propose tk-m6 $::MEDIA_PEER]
+        c.calls accept -sid tk-m6
+        c.conn feed [media_session_initiate tk-m6 $::MEDIA_PEER]
+        media_answer_extdisco
+        set jingle [xsearch [calls_last_written] jingle -ns urn:xmpp:jingle:1 -get node]
+        list \
+            [lindex [calls_events] end] \
+            [dict exists [calls_state] tk-m6] \
+            [xsearch $jingle -get @action] \
+            [xsearch $jingle -get @sid] \
+            [xsearch $jingle reason * -get tag]
+    } -result {{<Failed> -sid tk-m6 -reason {remote offer rejected: invalid state}} 0 session-terminate tk-m6 general-error}
+
+test media-buffered-candidate-rejected-is-skipped \
+    {a rejected buffered candidate is skipped, not fatal to the call} \
+    {*}$media_env -body {
+        c.conn feed [calls_jmi_in propose tk-m7 $::MEDIA_PEER]
+        c.calls accept -sid tk-m7
+        c.conn feed [media_transport_info tk-m7 $::MEDIA_PEER]
+        mockrtc::fail ::rtc::pc::add-remote-candidate "invalid candidate"
+        c.conn feed [media_session_initiate tk-m7 $::MEDIA_PEER]
+        media_answer_extdisco
+        list \
+            [llength [mockrtc::calls ::rtc::pc::add-remote-candidate]] \
+            [dict exists [calls_state] tk-m7 pending_remote_candidates] \
+            [dict exists [calls_state] tk-m7]
+    } -result {1 0 1}
+
+test media-live-candidate-rejected-still-acks \
+    {a rejected live candidate is skipped and the iq is still acked} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fail ::rtc::pc::add-remote-candidate "invalid candidate"
+        c.conn feed [media_transport_info $sid $::MEDIA_PEER]
+        list \
+            [xsearch [calls_last_written] -get @type] \
+            [dict exists [calls_state] $sid]
+    } -result {result 1}
 
 mockrtc::uninstall
