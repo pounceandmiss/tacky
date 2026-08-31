@@ -102,7 +102,7 @@ snit::widget attachment {
             catch {destroy $w}
             ttk::frame $w
             ttk::progressbar $w.bar -length 200
-            ttk::label $w.lbl -foreground #888888
+            ttk::label $w.lbl -foreground [palette dim]
             ttk::button $w.cancel -text "Cancel" -style Toolbutton \
                 -command [mymethod Cancel $direction]
             pack $w.bar $w.lbl $w.cancel -side left -padx {0 6}
@@ -123,7 +123,7 @@ snit::widget attachment {
     method ShowFailed {w direction} {
         catch {destroy $w}
         ttk::frame $w
-        ttk::label $w.lbl -foreground #c0504d -text \
+        ttk::label $w.lbl -foreground [palette error] -text \
             [expr {$direction eq "upload" ? "Upload failed" : "Download failed"}]
         ttk::button $w.retry -text "Retry" -style Toolbutton \
             -command [mymethod Retry $direction]

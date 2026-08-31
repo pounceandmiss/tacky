@@ -262,7 +262,7 @@ snit::widget chatpanel {
 
     method DropEnter {w} {
         set dropBg($w) [$w cget -background]
-        $w configure -background "#cfe0ff"
+        $w configure -background [palette drop-target]
         return copy
     }
 

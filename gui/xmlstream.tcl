@@ -150,7 +150,7 @@ snit::widgetadaptor xmlstream {
         if {$xml eq "" || $writecmd eq ""} return
         if {[catch {xmppreader string -zap yes $xml} stanza]} {
             set was [$w cget -background]
-            $w configure -background #ffcccc
+            $w configure -background [palette invalid]
             after 600 [list catch [list $w configure -background $was]]
             return
         }

@@ -28,9 +28,8 @@ package require snit
 package require libtacky
 package require taco
 
-foreach script [lsort [glob [file join $dir gui *.tcl]]] {
-    source $script
-}
+source [file join $dir gui load.tcl]
+load_gui [file join $dir gui]
 
 # Not a sleep: the backend runs in-process, so what tests observe lands
 # synchronously or on an idle/after-0 callback, and update drains both.
