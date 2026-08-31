@@ -452,7 +452,7 @@ snit::widget chatlistview {
         set item [$treeview selection]
         set currentName [$treeview item $item -text]
 
-        set new [InputDialog .rename_dlg \
+        set new [input_dialog .rename_dlg -parent $win \
             -title "Rename $jid" \
             -prompt "New name for $jid:" \
             -value $currentName]
@@ -503,7 +503,7 @@ snit::widget chatlistview {
         set item [$treeview selection]
         set currentName [$treeview item $item -text]
 
-        set new [InputDialog .bm_edit_dlg \
+        set new [input_dialog .bm_edit_dlg -parent $win \
             -title "Edit $jid" \
             -prompt "Bookmark name for $jid:" \
             -value $currentName]
@@ -581,53 +581,4 @@ snit::widget chatlistview {
                 -acc $options(-acc) -jid $jid -groupchat $gc
         }
     }
-}
-
-# Simple text input dialog. Returns the entered string, or "" if cancelled.
-#   InputDialog .dlg -title "Title" -prompt "Label:" -value "default"
-proc InputDialog {w args} {
-    array set opts {-title "Input" -prompt "Value:" -value ""}
-    array set opts $args
-
-    # Use per-dialog variables to avoid conflicts if re-entered
-    set resultVar ::_inputdlg_result($w)
-    set doneVar ::_inputdlg_done($w)
-
-    catch {destroy $w}
-    toplevel $w
-    wm title $w $opts(-title)
-    wm resizable $w 0 0
-    wm protocol $w WM_DELETE_WINDOW [list set $doneVar 0]
-
-    set $resultVar $opts(-value)
-    set $doneVar ""
-
-    ttk::label $w.l -text $opts(-prompt)
-    ttk::entry $w.e -textvariable $resultVar -width 30
-    ttk::frame $w.btns
-    ttk::button $w.btns.ok -text OK -command [list set $doneVar 1]
-    ttk::button $w.btns.cancel -text Cancel -command [list set $doneVar 0]
-
-    pack $w.l -padx 10 -pady {10 0} -anchor w
-    pack $w.e -padx 10 -pady 5 -fill x
-    pack $w.btns -pady {0 10}
-    pack $w.btns.ok $w.btns.cancel -side left -padx 5
-
-    $w.e selection range 0 end
-    focus $w.e
-    bind $w.e <Return> [list set $doneVar 1]
-    bind $w <Escape> [list set $doneVar 0]
-
-    try {
-        grab set $w
-        vwait $doneVar
-    } finally {
-        catch {grab release $w}
-    }
-    set done [set $doneVar]
-    set result [set $resultVar]
-    destroy $w
-    unset $resultVar $doneVar
-    if {$done} { return $result }
-    return ""
 }
