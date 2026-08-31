@@ -53,8 +53,7 @@ snit::widget chatpanel {
             -groupchat $options(-groupchat)]
         set entry [messageentry $leftFrame.entry \
             -send-command [mymethod Send] \
-            -attach-command [mymethod Attach] \
-            -request-voice-command [mymethod RequestVoice]]
+            -attach-command [mymethod Attach]]
         pack $cv -expand yes -fill both
         pack $entry -fill x
         if {!$isMuc} {
