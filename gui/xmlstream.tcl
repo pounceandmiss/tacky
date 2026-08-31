@@ -595,7 +595,7 @@ wZjFAAAAAElFTkSuQmCC
 }
 
 proc xmlconsole {jid} {
-    set safe [string map {@ _ . _} $jid]
+    set safe [path_safe $jid]
     set w .xmlconsole-$safe
     if {[winfo exists $w]} {
         wm deiconify $w

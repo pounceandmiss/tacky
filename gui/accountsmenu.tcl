@@ -66,7 +66,7 @@ snit::type accountsmenu {
         }
 
         dict for {jid enabled} $accounts {
-            set safe [string map {@ _ . _} $jid]
+            set safe [path_safe $jid]
             set sub $m.mng_$safe
             menu $sub -tearoff 0
 
