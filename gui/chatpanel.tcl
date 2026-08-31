@@ -27,13 +27,12 @@ snit::widget chatpanel {
     variable sendReceipts 1
     variable omemoEnabled 1
     variable mucList ""
-    variable findBar ""
+    # name -> widget, for the banners packed above the composer.
+    variable banners {}
     variable findMatches {}
     variable findIndex -1
     variable findQuery ""
-    variable replyBar ""
     variable replyToTs ""
-    variable editBar ""
     variable editingTs ""
     variable dropBg -array {}
 
@@ -92,6 +91,46 @@ snit::widget chatpanel {
         catch {$self DestroyParticipants}
     }
 
+    # --- Composer banners ---
+    #
+    # Reply, edit and find each pack a strip above the composer. The pane is
+    # frozen while any is up, so a banner shrinks the chat view rather than
+    # growing the window; it thaws once the last one goes.
+
+    method HasBanner {name} {
+        expr {[dict exists $banners $name]
+            && [winfo exists [dict get $banners $name]]}
+    }
+
+    # The frame a banner's content lives in. "" when it isn't up.
+    method BannerBody {name} {
+        if {![$self HasBanner $name]} { return "" }
+        return [[dict get $banners $name] body]
+    }
+
+    # Create the banner if absent, pack it, and return it. Options apply on
+    # creation only - an already-open banner keeps the content it has.
+    method ShowBanner {name args} {
+        if {![$self HasBanner $name]} {
+            dict set banners $name \
+                [composerbanner $leftFrame.banner_$name {*}$args]
+        }
+        set w [dict get $banners $name]
+        pack propagate $leftFrame 0
+        pack $w -fill x -before $entry
+        return $w
+    }
+
+    method HideBanner {name} {
+        if {[dict exists $banners $name]} {
+            catch {destroy [dict get $banners $name]}
+            dict unset banners $name
+        }
+        if {[dict size $banners] == 0} {
+            pack propagate $leftFrame 1
+        }
+    }
+
     method ApplyParticipants {} {
         if {$showParticipants} {
             $self ShowParticipants
@@ -144,27 +183,19 @@ snit::widget chatpanel {
         lassign $data ts body
         $self CancelReply
         set editingTs $ts
-        if {$editBar eq "" || ![winfo exists $editBar]} {
-            set editBar [ttk::frame $leftFrame.editbar]
-            ttk::label $editBar.lbl -anchor w -text "Editing message"
-            ttk::button $editBar.close -text "×" -style Toolbutton \
-                -command [mymethod CancelEdit]
-            pack $editBar.close -side right -padx 2
-            pack $editBar.lbl -side left -fill x -expand yes -padx {6 2}
+        if {![$self HasBanner edit]} {
+            set slot [[$self ShowBanner edit -close-command \
+                [mymethod CancelEdit]] body]
+            pack [ttk::label $slot.lbl -anchor w -text "Editing message"] \
+                -fill x -expand yes
         }
-        pack propagate $leftFrame 0
-        pack $editBar -fill x -before $entry
         $entry set $body
         $entry focus
     }
 
     method CancelEdit {} {
         set editingTs ""
-        if {$editBar ne "" && [winfo exists $editBar]} {
-            destroy $editBar
-            pack propagate $leftFrame 1
-        }
-        set editBar ""
+        $self HideBanner edit
     }
 
     method ConfirmRetract {id} {
@@ -196,32 +227,19 @@ snit::widget chatpanel {
         lassign $data ts author snippet
         $self CancelEdit
         set replyToTs $ts
-        if {$replyBar eq "" || ![winfo exists $replyBar]} {
-            set replyBar [ttk::frame $leftFrame.replybar]
-            ttk::label $replyBar.icon \
-                -image mate/16x16/actions/mail-reply-sender.png
-            ttk::label $replyBar.lbl -anchor w
-            ttk::button $replyBar.close -text "\u00D7" -style Toolbutton \
-                -command [mymethod CancelReply]
-            pack $replyBar.icon -side left -padx {4 2}
-            pack $replyBar.close -side right -padx 2
-            pack $replyBar.lbl -side left -fill x -expand yes
+        set slot [[$self ShowBanner reply \
+            -icon mate/16x16/actions/mail-reply-sender.png \
+            -close-command [mymethod CancelReply]] body]
+        if {![winfo exists $slot.lbl]} {
+            pack [ttk::label $slot.lbl -anchor w] -fill x -expand yes
         }
-        $replyBar.lbl configure -text "Replying to $author: $snippet"
-        # Freeze the pane's size so the banner shrinks the chat view rather
-        # than growing the window.
-        pack propagate $leftFrame 0
-        pack $replyBar -fill x -before $entry
+        $slot.lbl configure -text "Replying to $author: $snippet"
         $entry focus
     }
 
     method CancelReply {} {
         set replyToTs ""
-        if {$replyBar ne "" && [winfo exists $replyBar]} {
-            destroy $replyBar
-            pack propagate $leftFrame 1
-        }
-        set replyBar ""
+        $self HideBanner reply
     }
 
     method Attach {} {
@@ -471,48 +489,42 @@ snit::widget chatpanel {
     }
 
     method OpenFind {} {
-        if {$findBar ne "" && [winfo exists $findBar]} {
-            focus $findBar.entry
-            return
+        set fresh [expr {![$self HasBanner find]}]
+        set slot [[$self ShowBanner find \
+            -close-command [mymethod CloseFind]] body]
+        if {$fresh} {
+            ttk::label $slot.lbl -text "Find:"
+            ttk::entry $slot.entry -width 30
+            ttk::button $slot.prev -text "Prev" -style Toolbutton \
+                -command [mymethod FindPrev]
+            ttk::button $slot.next -text "Next" -style Toolbutton \
+                -command [mymethod FindNext]
+            ttk::label $slot.status -text ""
+            pack $slot.lbl $slot.entry $slot.prev $slot.next $slot.status \
+                -side left -padx 2
+
+            bind $slot.entry <Return> [mymethod OnFindReturn]
+            bind $slot.entry <Shift-Return> [mymethod FindPrev]
+            bind $slot.entry <Escape> [mymethod CloseFind]
+            $self ResetFind
         }
-        set findBar [ttk::frame $leftFrame.findbar]
-        ttk::label $findBar.lbl -text "Find:"
-        ttk::entry $findBar.entry -width 30
-        ttk::button $findBar.prev -text "Prev" -style Toolbutton \
-            -command [mymethod FindPrev]
-        ttk::button $findBar.next -text "Next" -style Toolbutton \
-            -command [mymethod FindNext]
-        ttk::label $findBar.status -text ""
-        ttk::button $findBar.close -text "\u00D7" -style Toolbutton \
-            -command [mymethod CloseFind]
-        pack $findBar.lbl $findBar.entry $findBar.prev $findBar.next \
-            $findBar.status -side left -padx 2
-        pack $findBar.close -side right -padx 2
-        pack $findBar -fill x -before $entry
-
-        bind $findBar.entry <Return> [mymethod OnFindReturn]
-        bind $findBar.entry <Shift-Return> [mymethod FindPrev]
-        bind $findBar.entry <Escape> [mymethod CloseFind]
-
-        set findMatches {}
-        set findIndex -1
-        set findQuery ""
-        focus $findBar.entry
+        focus $slot.entry
     }
 
     method CloseFind {} {
-        if {$findBar ne "" && [winfo exists $findBar]} {
-            destroy $findBar
-        }
-        set findBar ""
-        set findMatches {}
-        set findIndex -1
-        set findQuery ""
+        $self HideBanner find
+        $self ResetFind
         $cv highlight clear
     }
 
+    method ResetFind {} {
+        set findMatches {}
+        set findIndex -1
+        set findQuery ""
+    }
+
     method OnFindReturn {} {
-        set query [$findBar.entry get]
+        set query [[$self BannerBody find].entry get]
         if {$query eq ""} return
         if {$query eq $findQuery && [llength $findMatches] > 0} {
             $self FindNext
@@ -561,11 +573,12 @@ snit::widget chatpanel {
     }
 
     method UpdateFindStatus {} {
-        if {![winfo exists $findBar.status]} return
+        set status [$self BannerBody find].status
+        if {![winfo exists $status]} return
         if {[llength $findMatches] == 0} {
-            $findBar.status configure -text "No matches"
+            $status configure -text "No matches"
         } else {
-            $findBar.status configure -text \
+            $status configure -text \
                 "[expr {$findIndex + 1}] of [llength $findMatches]"
         }
     }
