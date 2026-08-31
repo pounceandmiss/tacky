@@ -191,10 +191,7 @@ snit::type app_type {
     }
 
     method RaiseWindow {w} {
-        if {![winfo exists $w]} return
-        wm deiconify $w
-        raise $w
-        focus $w
+        if {[raise_existing $w]} { focus $w }
     }
 
     method OnWindowClosed {w} {
@@ -249,10 +246,7 @@ snit::type app_type {
     # --- Setup / add account ---
 
     method ShowSetup {} {
-        if {$setupWin ne "" && [winfo exists $setupWin]} {
-            raise $setupWin
-            return
-        }
+        if {[raise_existing $setupWin]} return
         set setupWin .setup
         toplevel $setupWin
         wm title $setupWin "Welcome to Tacky"
@@ -277,10 +271,7 @@ snit::type app_type {
     }
 
     method OpenAddAccount {} {
-        if {[winfo exists .addaccount]} {
-            raise .addaccount
-            return
-        }
+        if {[raise_existing .addaccount]} return
         toplevel .addaccount
         wm title .addaccount "Add Account"
         set parent [$self AnyOpenWindow]
