@@ -491,8 +491,7 @@ snit::widget chatarea {
 
     # Draws message, doesn't store info about it, doesn't adjust the
     # text accordingly. Internal use only!
-    method DrawMessage {textIndex slot messageDict} {
-        array set message $messageDict
+    method DrawMessage {textIndex slot msg} {
         $text mark set msgins $textIndex
 
         # text tag that will be applied to the whole message
@@ -500,50 +499,50 @@ snit::widget chatarea {
 
         # A retracted (XEP-0424/0425) message renders as a tombstone: header
         # for context, then a placeholder in place of the (now gone) content.
-        if {[info exists message(retracted)] && $message(retracted)} {
-            $self DrawTombstone $messageDict $tag
+        if {[dict getdef $msg retracted 0]} {
+            $self DrawTombstone $msg $tag
             return
         }
 
-        $self DrawHeader $messageDict $tag
-        if {[info exists message(encryption)] && $message(encryption) eq "omemo"} {
+        $self DrawHeader $msg $tag
+        if {[dict getdef $msg encryption ""] eq "omemo"} {
             $text ins msgins " " [list $tag timestamp]
             set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
             $text tag add $tag $lockId
         }
         $text ins msgins \n $tag
 
-        $self DrawReplyPreview $messageDict $tag
+        $self DrawReplyPreview $msg $tag
 
         # The backend supplies `caption` (body with redundant attachment
         # URLs removed) for attachment messages; plain messages have none.
-        set displayBody [expr {[info exists message(caption)]
-            ? $message(caption) : $message(body)}]
-        set hasAttachments [expr {[info exists message(attachments)]
-            && [llength $message(attachments)] > 0}]
-        set remoteStatus [expr {[info exists message(remote_status)]
-            ? $message(remote_status) : "none"}]
+        set displayBody [dict getdef $msg caption [dict get $msg body]]
+        set attachments [dict getdef $msg attachments {}]
+        set hasAttachments [expr {[llength $attachments] > 0}]
+        set remoteStatus [dict getdef $msg remote_status none]
+        set serverStatus [dict getdef $msg server_status ""]
+        set outgoing [dict get $msg is_outgoing]
         $text ins msgins $displayBody [list $tag body message $tag.body]
-        if {[info exists message(edited)] && $message(edited)} {
+        if {[dict getdef $msg edited 0]} {
             $text ins msgins "  (edited)" [list $tag edited]
         }
         # Plain message: receipt trails the body. Attachment: below.
-        if {$message(is_outgoing) && !$hasAttachments} {
-            $self DrawReceiptGlyph $slot \
-                $message(server_status) $remoteStatus
+        if {$outgoing && !$hasAttachments} {
+            $self DrawReceiptGlyph $slot $serverStatus $remoteStatus
         }
         $text ins msgins \n $tag
 
         # Formatting offsets index into the body. An empty body draws no
         # $tag.body characters, so $tag.body.first would not resolve -
         # skip rather than let the index lookup throw and abort the draw.
-        if {[info exists message(formatting)]
+        set formatting [dict getdef $msg formatting {}]
+        if {[llength $formatting] > 0
             && [llength [$text tag ranges $tag.body]] > 0} {
             # Font-affecting styles must combine into one tag per run (Tk
             # fonts don't merge across tags); block styles apply as-is.
             set fontSpans {}
             set applied {}
-            foreach {type offset length} $message(formatting) {
+            foreach {type offset length} $formatting {
                 if {$type in {bold italic monospace overstrike}} {
                     lappend fontSpans $type $offset $length
                 } else {
@@ -560,24 +559,23 @@ snit::widget chatarea {
 
         if {$hasAttachments} {
             set aidx 0
-            foreach att $message(attachments) {
-                $self DrawAttachment $tag $slot $message(key) $aidx $att \
-                    $message(server_status)
+            foreach att $attachments {
+                $self DrawAttachment $tag $slot [dict get $msg key] $aidx \
+                    $att $serverStatus
                 incr aidx
             }
-            if {$message(is_outgoing)} {
+            if {$outgoing} {
                 # Receipt right of the last attachment, before its newline.
                 set lastWin $text.att_${slot}_[expr {$aidx - 1}]
                 $text mark set msgins "$lastWin + 1 chars"
-                $self DrawReceiptGlyph $slot \
-                    $message(server_status) $remoteStatus
+                $self DrawReceiptGlyph $slot $serverStatus $remoteStatus
             }
         }
 
-        if {[info exists message(reactions)]
-            && [dict size $message(reactions)] > 0} {
+        set reactions [dict getdef $msg reactions {}]
+        if {[dict size $reactions] > 0} {
             $text mark set msgins item.$slot.last
-            $self DrawReactions $slot $message(key) $message(reactions)
+            $self DrawReactions $slot [dict get $msg key] $reactions
         }
     }
 
@@ -618,10 +616,8 @@ snit::widget chatarea {
     # The line every row opens with, up to but not including its newline.
     # Tagged from.$jid so a later portrait repaints it, author.$jid so a
     # rename rewrites it.
-    method DrawHeader {messageDict tag} {
-        array set message $messageDict
-        set avatarJid [expr {[info exists message(avatar_jid)]
-            ? $message(avatar_jid) : ""}]
+    method DrawHeader {msg tag} {
+        set avatarJid [dict getdef $msg avatar_jid ""]
         set imageId [$text image create msgins \
             -image [$self AvatarImage $avatarJid]]
         $text tag add $tag $imageId
@@ -630,20 +626,21 @@ snit::widget chatarea {
             $text tag add from.$avatarJid $imageId
         }
         set authorTags [list $tag $tag.author author]
-        if {[info exists message(from_jid)] && $message(from_jid) ne ""} {
-            lappend authorTags author.$message(from_jid)
+        set fromJid [dict getdef $msg from_jid ""]
+        if {$fromJid ne ""} {
+            lappend authorTags author.$fromJid
         }
-        $text ins msgins $message(display_name) $authorTags
+        $text ins msgins [dict get $msg display_name] $authorTags
         $text ins msgins \
-            "  [FormatTimestamp $message(timestamp) {%Y-%m-%d %H:%M}]" \
+            "  [FormatTimestamp [dict get $msg timestamp] {%Y-%m-%d %H:%M}]" \
             [list $tag timestamp]
     }
 
     # Tombstone for a retracted message: the usual header (so it keeps its
     # slot and attribution) followed by a greyed placeholder. Whole row
     # carries item.$slot so lookup and successor inserts still work.
-    method DrawTombstone {messageDict tag} {
-        $self DrawHeader $messageDict $tag
+    method DrawTombstone {msg tag} {
+        $self DrawHeader $msg $tag
         $text ins msgins \n $tag
         $text ins msgins "This message was deleted" [list $tag body tombstone]
         $text ins msgins \n $tag
@@ -651,13 +648,13 @@ snit::widget chatarea {
 
     # Quoted reply preview, drawn at msgins above the body. No-op unless
     # the message carries a reply_id.
-    method DrawReplyPreview {messageDict tag} {
-        array set message $messageDict
-        if {![info exists message(reply_id)] || $message(reply_id) eq ""} return
+    method DrawReplyPreview {msg tag} {
+        set replyId [dict getdef $msg reply_id ""]
+        if {$replyId eq ""} return
         set rtag $tag.replyref
-        set ra [expr {[info exists message(reply_author)] ? $message(reply_author) : ""}]
+        set ra [dict getdef $msg reply_author ""]
         if {$ra eq ""} { set ra "a message" }
-        set preview [expr {[info exists message(reply_body)] ? $message(reply_body) : ""}]
+        set preview [dict getdef $msg reply_body ""]
         if {$preview eq ""} { set preview "Original message" }
         set ricon [$text image create msgins \
             -image mate/16x16/actions/mail-reply-sender.png -padx 3]
@@ -668,10 +665,10 @@ snit::widget chatarea {
         $text ins msgins \n       [list $tag $rtag replyref]
         $text ins msgins $preview [list $tag $rtag replyref replyref.body]
         $text ins msgins \n       [list $tag $rtag replyref]
-        set rto [expr {[info exists message(reply_to)] ? $message(reply_to) : ""}]
+        set rto [dict getdef $msg reply_to ""]
         $text tag bind $rtag <Button-1> \
             [list event generate $win <<ReplyJump>> \
-                 -data [list $message(reply_id) $rto]]
+                 -data [list $replyId $rto]]
     }
 
     # Render one attachment as an embedded `attachment` widget under the body.
