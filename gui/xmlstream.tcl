@@ -30,6 +30,12 @@ package require xmpprw
 #   so they won't appear in copied text. Changing a filter re-evaluates
 #   all accumulated stanzas, drawing or removing them as needed.
 
+# Unique ids, kept off the global ::Counter that lib/xmpprw also bumps.
+namespace eval xmlstream {
+    variable StanzaId 0
+    variable PrefixId 0
+}
+
 proc xesc {content} {
     string map {< &lt; > &gt; & &amp; \" &quot; ' &apos;} $content
 }
@@ -43,6 +49,11 @@ snit::widgetadaptor xmlstream {
     option -conn -default "" -configuremethod ConfigureConn
 
     delegate method * to hull
+
+    component toolbar
+    component sendinput
+    component sendbtn
+
     # list of dicts: {stanza $xml comment $txt id $n drawn 0|1}
     variable stanzas
 
@@ -56,7 +67,7 @@ snit::widgetadaptor xmlstream {
             catch {tacky debugtap off -tap $tapId}
             set tapId ""
             set writecmd ""
-            $win.sendbar.btn state disabled
+            $sendbtn state disabled
         }
         set options($o) $v
         if {$v ne ""} {
@@ -83,28 +94,29 @@ snit::widgetadaptor xmlstream {
         tacky listen -tag $win debugtap <Stanza> -tap $tapId \
             [mymethod onStanza]
         set writecmd [list tacky debugtap write -tap $tapId -stanza]
-        $win.sendbar.btn state !disabled
+        $sendbtn state !disabled
     }
 
     constructor args {
         installhull using xmltext
         array set filters [xmlstream_default_filters]
 
-        xmlstream_toolbar $win.toolbar -partof $self
-        $win.toolbar.filters configure -command [mymethod OnFilters]
-        pack $win.toolbar -fill x -before $win.scroll
+        install toolbar using xmlstream_toolbar $win.toolbar -partof $self
+        $toolbar filters configure -command [mymethod OnFilters]
+        pack $toolbar -fill x -before $win.scroll
 
         ttk::frame $win.sendbar
-        text $win.sendbar.input -height 3 -wrap word
-        ttk::button $win.sendbar.btn -text Send -command [mymethod Send]
-        pack $win.sendbar.btn -side right -fill y
-        pack $win.sendbar.input -side left -fill both -expand yes
-        bind $win.sendbar.input <Control-Return> "[mymethod Send]; break"
-        $win.sendbar.btn state disabled
+        install sendinput using text $win.sendbar.input -height 3 -wrap word
+        install sendbtn using ttk::button $win.sendbar.btn -text Send \
+            -command [mymethod Send]
+        pack $sendbtn -side right -fill y
+        pack $sendinput -side left -fill both -expand yes
+        bind $sendinput <Control-Return> "[mymethod Send]; break"
+        $sendbtn state disabled
         pack $win.sendbar -side bottom -fill x -before $win.scroll
 
         bind $win.text <Control-f> "[mymethod FocusSearch]; break"
-        bind $win.sendbar.input <Control-f> "[mymethod FocusSearch]; break"
+        bind $sendinput <Control-f> "[mymethod FocusSearch]; break"
 
         $self configurelist $args
         set stanzas {}
@@ -114,7 +126,7 @@ snit::widgetadaptor xmlstream {
 
     method OnLoadFilters {value} {
         if {$value ne ""} {
-            $win.toolbar.filters setFilters $value
+            $toolbar filters setFilters $value
         }
     }
 
@@ -124,8 +136,7 @@ snit::widgetadaptor xmlstream {
     }
 
     method FocusSearch {} {
-        focus $win.toolbar.searchentry
-        $win.toolbar.searchentry selection range 0 end
+        $toolbar focusSearch
     }
 
     destructor {
@@ -134,14 +145,13 @@ snit::widgetadaptor xmlstream {
     }
 
     method Send {} {
-        set w $win.sendbar.input
+        set w $sendinput
         set xml [string trim [$w get 1.0 end-1c]]
         if {$xml eq "" || $writecmd eq ""} return
-        try {
-            set stanza [xmppreader string -zap yes $xml]
-        } on error {msg} {
+        if {[catch {xmppreader string -zap yes $xml} stanza]} {
+            set was [$w cget -background]
             $w configure -background #ffcccc
-            after 600 [list catch [list $w configure -background white]]
+            after 600 [list catch [list $w configure -background $was]]
             return
         }
         {*}$writecmd $stanza
@@ -175,7 +185,7 @@ snit::widgetadaptor xmlstream {
         set timestamp [clock seconds]
         set comment "$dir at [clock format $timestamp -f %H:%M:%S]"
         set visible [$self matches $stanza]
-        set id [incr ::Counter]
+        set id [incr ::xmlstream::StanzaId]
         if {$visible} {
             $self drawStanza -comment $comment -stanza $stanza -id $id
         }
@@ -243,7 +253,6 @@ snit::widget xmltext {
         switch -- $start {
             next {
                 set start [lindex [lindex [$win.text tag ranges found] end] end]
-                set dir -forwards
             }
             prev {
                 set start [lindex [lindex [$win.text tag ranges found] 0] 0]
@@ -275,7 +284,7 @@ snit::widget xmltext {
     method drawStanza {args} {
         array set opts $args
         if {![info exists opts(-id)]} {
-            set opts(-id) [incr ::Counter]
+            set opts(-id) [incr ::xmlstream::StanzaId]
         }
         $win.text mark set tmp end-1chars
         $win.text mark gravity tmp left
@@ -325,12 +334,9 @@ snit::widget xmltext {
 
 
         $self WriteAttrs $virtualAttrs $attrsIndentN
-        # $self Write > xmltag
         set closingNewline ""
         if {[dict get $stanza body] ne ""
             || [dict get $stanza children] ne ""} {
-
-            # append res >[xesc [dict get $stanza body]]
             $self Write > xmltag
 
             if {[dict get $stanza body] ne ""} {
@@ -363,20 +369,17 @@ snit::widget xmltext {
         set attrs ""
         foreach {k v} $attrs_ {
             if {[lindex $k 1] ne ""} {
-                # Doing this because I stumbled upon
-                # http://www.w3.org/1999/02/22-rdf-syntax-ns# in my message
-                # history, even though I was told xmpp doesn't use attr
-                # prefixes Expat doesn't seem to let us know what the original
-                # prefix is so we make up our own...  An attr's namespace
-                # prefix can only be specified as a separate attr. We put that
-                # helper attr directly before the helper attr.  Xml is made by
-                # mentally ill people.
+                # XMPP is not supposed to use attribute prefixes, but real
+                # history has them (an rdf-syntax-ns attr turned up in mine).
+                # Expat doesn't hand back the original prefix, and a prefix can
+                # only be declared by a separate attr, so we invent one and
+                # emit the declaration just ahead of the attr that needs it.
                 set attrNs [lindex $k 0]
                 if {[dict exists $Prefixes $attrNs]} {
                     set prefix [dict get $Prefixes [lindex $k 0]]
                     lappend attrs $prefix:[lindex $k 1] $v
                 } else {
-                    set prefix pref[incr ::Counter]
+                    set prefix pref[incr ::xmlstream::PrefixId]
                     lappend attrs xmlns:$prefix $attrNs
                 }
 
@@ -415,17 +418,17 @@ snit::widget xmlstream_toolbar {
     
     constructor args {
         $self configurelist $args
-        install clearbutton using ttk::button $self.clearbutton \
-            -image image/AdwaitaLegacy/22x22/legacy/edit-clear-all \
+        install clearbutton using ttk::button $win.clearbutton \
+            -image adwaita/22x22/actions/edit-clear-all.png \
             -command [list $options(-partof) clear]
         install godown using ttk::button $win.godown \
-            -image mate/22x22/actions/go-down \
+            -image mate/22x22/actions/go-down.png \
             -command [list $options(-partof) seeEnd]
         install searchlabel using ttk::label $win.searchlabel \
-            -image image/AdwaitaLegacy/22x22/legacy/system-search
-        install searchentry using ttk::entry $self.searchentry \
+            -image adwaita/22x22/actions/system-search.png
+        install searchentry using ttk::entry $win.searchentry \
             -textvariable [myvar query]
-        install filters using xmlstream_toolbar_filter $self.filters
+        install filters using xmlstream_toolbar_filter $win.filters
         
         pack $clearbutton $godown $searchlabel $searchentry $filters -side left
         trace add variable [myvar query] write [mymethod OnSearch]
@@ -433,6 +436,14 @@ snit::widget xmlstream_toolbar {
         bind $searchentry <Shift-Return> [mymethod OnSearchReturnKeyPress prev]
     }
     
+    # The filter panel, for the owner to configure and seed.
+    method filters {args} { {*}$filters {*}$args }
+
+    method focusSearch {} {
+        focus $searchentry
+        $searchentry selection range 0 end
+    }
+
     method OnSearch args {
         $options(-partof) find $query
     }
@@ -447,6 +458,7 @@ snit::widget xmlstream_toolbar_filter {
     component iq
     component presence
     component message
+    component nonza
     component ns_label
     component ns
     
@@ -522,74 +534,6 @@ snit::widgetadaptor xmlstanza {
             $self drawStanza -stanza $v
         }
     }
-}
-
-image create photo image/AdwaitaLegacy/22x22/legacy/edit-clear-all -data\
-{iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAADV0lEQVR4AaWSA5QrZxxHZ23ET0e1
-bdu2nm3UfLZt2zbiVEnWo7XtzMT59cs0ddc552Z8/6QAdIsD71IRq/rHLF/ZP7ph2ceR7hX9o7/7
-+/Nui1cPjN11dOo9gnbzSFTo52L5J1Guhf2phB6Jl31I3bZ+uFw4vXowpn+gQd6577Gif1TLtGlU
-eI/EKwfEXrTuGOI/OedRnPyqD2x7hgXIvT09asWyT6jr1wyKFxps61F56WtUGhdh9eBEcflH1N09
-Ei//OHKOduVLnkbrajTZN+DY9HsFMsA50vPuiK1WKkpqQ//YqpIrsyVp1qHxgVUDYrj1I6iobosZ
-g8xBG9QVlr0Kb5nlA1RaZmLN4ERhycfRtwafd0vMmXN2cOazqOZPoejXIaiiX0KOVgnLAbk161KC
-plvi3DNUTMaVqXrGeNHPW1gEKbJbSICvUJbxoJc1yBrzzInqLokZY+oTnElZU579lJBnfhX2y0OR
-qVsH/sds/B7kcIDVpzzVpYxpXcqzvKWXQ6yZAUfZ9/DUfYnW4gGoLxyNdNM4cD+fBGs65mnr+zYG
-lfw8b+4lOOtmw9+yGJ7asfA3Tvnz6K77BoztS2gPKQs6Lc4xpDzNmzWCs3YWPI3z4CgdDG/9BEnY
-UtRfOvqbvoW7fhF4s7q4U2Kppxa1w0nKbymbgnruFYgVwySZq3IUmgo+DIm/JkGXgjOrqjoU5+hk
-j7ImlUOs/gG1eQNRnvHAnyJfwyTU0K9AKBsSEn8Fb9NK0mNFQ7vijPOaBNYoq6/NfR8V3DB34a83
-eRq4t+GuGStJK7LvQ7n9KfjqJ8JdOxr+5qkQa6eTVqiYDjPmTLJHiFwssD/ubS4jm1A+Cf6GyShN
-v91d/OsdqGNel7Ktoh8mA12IuvxPfLaz8iUURSUR4ghR/ysmv4iTO5PeyDGo8vJ/uUcUqqeiKneU
-u8B6Pyqz3kRLySCyFWPAmRSBQOtaFFrvcOxdk/Qa+U5JSCEkEKIJYf8RE2SEfluWxY/M1KoKWfPV
-YqHtCV8NNxau+mVoKPnaV0YPgK95PRij0tW3L9WvQ3FIHkaIJygIvfevTxj40xn5viytKo3WK+oY
-g0xkDCkIkqVVaEOJtN2KtghVER36MF6joRJC5zFBESG8rW9/AzmWD2KlKemWAAAAAElFTkSuQmCC}
-
-
-image create photo image/AdwaitaLegacy/22x22/legacy/system-search -data\
-{iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAFNUlEQVR4AYWVA5AkSxqA/8xyV2Na
-0z0233p3rLNt+y50gbPt0AXPerbNtW2PZ9qcLkxVVuZVxNpfRCH1pTMRYwyuZ89n0FsowDsRgnFg
-sAIAkPscBwRbgMErAw+wV+EOXCPe9lkUpA78ixOEd3oiUUWqimK5uh6QGgTs2ECWyqxw7phppObe
-AAZfHnuEZe4ofvnjaIwDeMob8HqFULW4Y3oZjqZsJ5m3kcwDxGNBmFjbht76wY+g/NEtztTrj2pA
-yEff+hh77Zbilz+BQsSGc9VRNThryvDGGYss876EidS9RSotYIRABaNJoOY6hSPx7337G3xQxbDn
-H79dMilp//ATLH1T8RMfRE8EVO7dGpblVyYFksXVj+uhji3BYFgbHx8JjY5OjBBC4O677941s/u5
-PsnMfuTbX3k3L+sp58Sml1/7yNPsXXAdXNueX70FIfhpOMB7XjnPWWmx4RGxZf3LnZ3dqba2pvQH
-PvDhzqampvfHYrG+kZGRBpP3vzB37mTiyMGDK977rhE+PT9Xt/dv3zu48nO/PAtXgd2GvMMng3I2
-Q6GIgnN844ZXe3q6Eyu7uxc2rFw7q2navW6vHmaOsxMhdKKzs7Mktw2+bGF1bsvG7ayupV62Gbwb
-roN3EIx7RcCHcoLBB+I7Y411uY7m9kxzR0fS5wObEIcuLp78vWlKHIAhaYVCVUtLQ+1ionrTyZnE
-Z1Y310uEwRhcBzZsWOmXAGxBxVIgci4ej5WjtaGiz43iebDDYbJcLDIL44JFiGBEamvzbp6SFK07
-kiiaWBEBDIK6ACF0jdikbhQG8PhkXKWIjs/nNSNK0JCjoqOq9SSX420XSy3xxGNZVBAEN95jSqJg
-cRwP1KyA4QD6FcC1YofCsYIBUF+FmFeo3MVxHKOKwkolAEop6+3tpZOTk9SJWYz6/czjOEzGMmXl
-VGfcB6SQzQNl7MwvGKPXiDUCW9I60OaAI/hFY0zXdUHTsm7DDCyUy9z8/LzQ19fn/gY4ntewKVi4
-omki0QrDDX4iJTNlZliw9YYxtii8ejYHehyVUG8t1EhTz30jnyz5BUvm0o4jWJYlUpqTHPc/lyN8
-sVhRJzc/8C5sFFcO1lr4iLtuTAdeukH8p13sVYvAxj1n9eV6msBtUfsLpT3//ubs4mKQUipQWnLF
-WERIFzUt79vzwJ8/oCXP/fSd9Tn56KwOUyXO+dNeeP6mO+/HAyjMcXD2fd0oGG1vhKTQQBfzaFJn
-ylNUqd3OCCK5xPRKq5x7F9FL/ROxtOzlLHjqBIY9sMJZTBcfOnpm8nM3PYR+MojezGF4YmUMlMFO
-jzTrRFiWKFamglGxZDHBrpC4oisbgkv4YArBkSSGXHQ9rH/nJ+Hu+x4imUz2VyfOTP72psfmj9eh
-KC/B/xQRxnujoMa8gKI+BNjNk64ApDRgx1Jgz1QExDd2g+DxCIZYD+vW98Ff//E/Yljm586cmX6E
-udxw0COXH/TDezgE7xY5GLUpdDEAxCM4r1mwN6XDtpfTfg/Pib+9qzWEI0GPGoh1QWdXN/zz33fb
-mrb8trlEYsc1YuRy8bbg3Ee8+CiS+yxf+JfdRwL38SrKap9X+VWwShXqqv1qR89aiMXjcO99D5nJ
-bHodD9dzRcxfkrtS4aJUufj1VAyjZNr2XwmlX1nSLK5Q2SMPDg5Bd1eHWK7oH79Zi/FF6SWZdJ1U
-uirOjzFEg1WBL0iC0KN4JGbqy9gk9gdvOsYAcFUFV1p+sTL+YhqCCzD3IdFQYJDj8HsA4KFkpvDK
-/wGqpIepz2ay4gAAAABJRU5ErkJggg==}
-
-image create photo mate/22x22/actions/go-down -data\
-{iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAMAAADzapwJAAACLlBMVEUAAAC3t6+3ubSyta+ztq+t
-ra22uLLp6ujo6OavsKuws62oqqOvs6vf4N3Ky8enqaSlraWpraWlqKGmqaKiopmfn5+ipaCeoJqf
-oZyUnJSipJ7k5ePj5OGanJabopubn5iZnJaXm5SSmZKbnZeSlY+Dg3yAgX5+gHt8fnp8fHSanZeW
-mJORkYqanZjY2tbAwb2TlZGDg3yDhIB2eHSWmZOQk42KioqUlIyVl5KPko2SlI+IiIh8g3yChH5z
-dW+Tlo+MjoiDioOAg3xwcW2SkoqPkIyGiIR8fHx+gXtwcm5tbWaLjYeBhH15fHl8gHtvcGxnbmeF
-h4Jtb2pqamSAgnxrb2lnZ2d8fHV6fHhqbGdkamR1dXV0eHJoa2VnZ2Bubm5vcWxmaWRkZGQAAAAA
-AAA0ODRlamNiZGA2NjIAAAAAAAAAAAAlJSNaXFgkJiQAAAAAAAAAAAAAAAD+/v7y8vD29vTv7+71
-9fTm5+Xt7ezu7u3p6ujg4d/u7uz7+/vx8fD5+fjf4Nzs7Orn5+Xw8e/l5eL6+vrv8O/4+PjZ2tbk
-5ePCxMDS09Dr7Ong4d75+fnr6+r4+fjX2NTj4+HHyMXP0Mzo6ebb3dnu7+3q6+rU1dHh4d7Gx8PK
-ysjk5uLW2NT4+Pd9f3rq6unR083DxMDIycbh4t/S1M/39/b7+/r29/bO0Mrd3tvAwr7ExsLe39zN
-z8nr7OrLzce/wb3HycPZ29e9v7u8vLq7vbmbnpp0MP1VAAAAc3RSTlMAIMn5yB/K/v7I+PjI/fzH
-H8f4xh4gyfnIH8r+/sghwffBI/j4I8H3wSHA5CXI/fzHJeTA9+QlH8f4xh4l5PfA5CXkwCPk5CXk
-5CPk5Erk5CXk5ynk5CUl5OcpJeTkJSXk5ykHG0nq7EwTJztn3moEDxgdI0hG3QAAAR9JREFUGNNj
-YIACRiZmFlYGDMDGXszBiSnMVVxSyo0pzMNbxsePKSwgKCQswkAsEBUTl5DEFJaSLpaRReLLySso
-KjEwKBeXlKswMKiqqWtogoS1KoortXUYdPWq9A0YDI2qi2uMQcImxbV19aZm5haWVtY2tpUNjU12
-IGH75pbWtnYHRyDTxqmyo7Or2xkk7OLa09vX3+5myODuMWHipMlTPL3Adpp5T502feIMH1+/mR2z
-Zs/xD4C6xTFw7rz5CyoXLlqwuHFJUDDcjTYhS5ctX7Fy1eo1a0PDkNweHrFu/YaNm6ZvjoxC8WN0
-zObpW7Zui41D83t8wvb1OxKT0ESTU1LTdqZnpCSjCmdmZefk5mVnZaIpzy8oLCosyIdxAU8QUY2Y
-wZjFAAAAAElFTkSuQmCC
 }
 
 proc xmlconsole {jid} {

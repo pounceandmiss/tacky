@@ -12,7 +12,7 @@ snit::widgetadaptor chatscrollbtn {
 
     constructor args {
         installhull using ttk::button \
-            -image mate/22x22/actions/go-down -style Toolbutton
+            -image mate/22x22/actions/go-down.png -style Toolbutton
         $self configurelist $args
 
         # Wheel events on the button are forwarded to the text widget
