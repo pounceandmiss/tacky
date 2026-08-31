@@ -343,21 +343,14 @@ snit::widget chatview {
 
     method OnThirsty {direction edgeId} {
         if {[::tacky listening $win/$direction]} return
-        if {$direction eq "old"} {
-            ::tacky message history -acc $options(-acc) \
-                -chat $options(-jid) \
-                -before $edgeId -limit 50 \
-                -tag $win/$direction \
-                -command [mymethod OnLoadDone $direction] \
-                -onerror [mymethod OnLoadFailed]
-        } else {
-            ::tacky message history -acc $options(-acc) \
-                -chat $options(-jid) \
-                -after $edgeId -limit 50 \
-                -tag $win/$direction \
-                -command [mymethod OnLoadDone $direction] \
-                -onerror [mymethod OnLoadFailed]
-        }
+        # The edge we fetch from is the only difference between the two.
+        set cursor [expr {$direction eq "old" ? "-before" : "-after"}]
+        ::tacky message history -acc $options(-acc) \
+            -chat $options(-jid) \
+            $cursor $edgeId -limit 50 \
+            -tag $win/$direction \
+            -command [mymethod OnLoadDone $direction] \
+            -onerror [mymethod OnLoadFailed]
     }
 
     method OnCulled {directions} {
