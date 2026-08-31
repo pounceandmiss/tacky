@@ -397,8 +397,9 @@ snit::widget chatpanel {
     }
 
     method JumpToDate {} {
-        set dateStr [InputDialog .jump_date_dlg \
-            -title "Jump to Date" -prompt "Date (YYYY-MM-DD):"]
+        set dateStr [input_dialog .jump_date_dlg \
+            -parent $win -title "Jump to Date" \
+            -prompt "Date (YYYY-MM-DD):"]
         if {$dateStr eq ""} return
         if {[catch {clock scan $dateStr -format "%Y-%m-%d"} secs]} {
             tk_messageBox -icon error -title "Invalid Date" \
@@ -437,11 +438,10 @@ snit::widget chatpanel {
     }
 
     method InviteUser {} {
-        set jid [InputDialog .muc_invite_dlg \
-            -title "Invite User" -prompt "JID to invite:"]
+        lassign [input_fields .muc_invite_dlg -parent $win \
+            -title "Invite User" \
+            -fields {"JID to invite:" "" "Reason (optional):" ""}] jid reason
         if {$jid eq ""} return
-        set reason [InputDialog .muc_invite_reason_dlg \
-            -title "Invite User" -prompt "Reason (optional):"]
         set args [list -acc $options(-acc) -jid $roomJid -to $jid]
         if {$reason ne ""} {
             lappend args -reason $reason
@@ -455,7 +455,7 @@ snit::widget chatpanel {
     }
 
     method OnMyNickForChange {myNick} {
-        set newNick [InputDialog .muc_nick_dlg \
+        set newNick [input_dialog .muc_nick_dlg -parent $win \
             -title "Change Nickname" -prompt "New nickname:" \
             -value $myNick]
         if {$newNick eq "" || $newNick eq $myNick} return

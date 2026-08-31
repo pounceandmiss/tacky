@@ -271,7 +271,7 @@ snit::widget mucparticipantlist {
     }
 
     method DoKick {nick} {
-        set reason [InputDialog .muc_kick_dlg \
+        set reason [input_dialog .muc_kick_dlg -parent $win \
             -title "Kick $nick" \
             -prompt "Reason (optional):"]
         set args [list -acc $options(-acc) -jid $options(-jid) -nick $nick]
@@ -283,7 +283,7 @@ snit::widget mucparticipantlist {
     }
 
     method DoBan {nick jid} {
-        set reason [InputDialog .muc_ban_dlg \
+        set reason [input_dialog .muc_ban_dlg -parent $win \
             -title "Ban $nick" \
             -prompt "Reason (optional):"]
         set args [list -acc $options(-acc) -jid $options(-jid) \
