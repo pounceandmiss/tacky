@@ -378,6 +378,12 @@ snit::type conn {
     # Whether to auto-reconnect on transport errors (not auth errors)
     option -autoreconnect -default 0
 
+    # Give up an in-progress connect (TCP+TLS+SASL+bind) after this many ms
+    # if it neither succeeds nor errors on its own (e.g. a firewall silently
+    # dropping packets leaves the socket in a permanent half-open state with
+    # no error to react to). 0 disables the watchdog.
+    option -connect-timeout -default 20000
+
     # Event callback: {*}$cmd conn <Event> ...
     option -emit -default ""
 
@@ -397,6 +403,10 @@ snit::type conn {
 
     # Stanzas queued before the session is ready; flushed on connect
     variable writeBuffer [list]
+
+    # After-id for the in-progress-connect watchdog (see -connect-timeout),
+    # "" if none is pending.
+    variable connectTimeoutAfterId ""
 
     # Reconnect backoff state
     # After-id for the pending reconnect timer, "" if none
@@ -418,6 +428,7 @@ snit::type conn {
 
     destructor {
         $self CancelReconnect
+        $self CancelConnectTimeout
         catch {$sm destroy}
         catch {$base destroy}
     }
@@ -434,6 +445,7 @@ snit::type conn {
         $self SetConnState connecting
         jlog inform "connecting to $options(-host):$options(-port)"
         $base connect $options(-host) $options(-port)
+        $self ArmConnectTimeout
     }
 
     # Gracefully shut down: send </stream:stream>, close socket, notify SM.
@@ -441,11 +453,34 @@ snit::type conn {
     method close {} {
         if {$connState eq "disconnected"} return
         $self CancelReconnect
+        $self CancelConnectTimeout
         set authState disconnected
         $sm onDisconnect
         catch {$base writeNow "</stream:stream>"}
         $base close
         $self SetConnState disconnected
+    }
+
+    # Give up the in-progress connect attempt if it neither succeeds nor
+    # errors on its own within -connect-timeout (see the option's doc).
+    method ArmConnectTimeout {} {
+        $self CancelConnectTimeout
+        if {$options(-connect-timeout) <= 0} return
+        set connectTimeoutAfterId \
+            [after $options(-connect-timeout) [mymethod OnConnectTimeout]]
+    }
+
+    method CancelConnectTimeout {} {
+        if {$connectTimeoutAfterId ne ""} {
+            after cancel $connectTimeoutAfterId
+            set connectTimeoutAfterId ""
+        }
+    }
+
+    method OnConnectTimeout {} {
+        set connectTimeoutAfterId ""
+        $self OnTransportError \
+            "connect timed out after $options(-connect-timeout)ms"
     }
 
     method state {args} {
@@ -476,6 +511,7 @@ snit::type conn {
         set connState $s
         if {$s eq "connected"} {
             set lastError ""
+            $self CancelConnectTimeout
         }
         if {$options(-emit) ne ""} {
             {*}$options(-emit) conn <State> -state $s
@@ -720,6 +756,7 @@ snit::type conn {
     # Called on socket read/write errors or EOF. Tears down the session
     # and either schedules a silent reconnect or fires -ondisconnect.
     method OnTransportError {msg} {
+        $self CancelConnectTimeout
         set authState disconnected
         set lastError $msg
         # Every transport failure arrives here - connect, TLS, read, write - so
@@ -748,6 +785,7 @@ snit::type conn {
     # Called on SASL failure or bind error. No reconnect — auth errors
     # are not transient.
     method OnAuthError {message} {
+        $self CancelConnectTimeout
         set emitCmd $options(-emit)
         set authErrCmd $options(-onautherror)
         set authState disconnected
