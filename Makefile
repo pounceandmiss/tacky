@@ -165,23 +165,39 @@ win-lib: dist-dir
 
 # ==== Android cross-build ====
 # The daemon (tackyd-json) for arm64-v8a, staged as a jniLibs/<abi>/ subtree an
-# Android app drops straight into app/src/main/jniLibs/. There is no host NDK, so
-# this routes through zippy's ndk docker profile (like `make linux`). The inner
-# make runs in the container at /src, so BASEDIR is the container path, not
-# $(CURDIR)/...; pre-create build/android host-owned so its tree (and the output
-# binary/jniLibs) land back in the bind-mounted project as the host user.
+# Android app drops straight into app/src/main/jniLibs/. There is usually no host
+# NDK, so this routes through zippy's ndk docker profile by default (like `make
+# linux`); ANDROID_DOCKER below is for the case where there is one. Under docker
+# the inner make runs in the container at /src, so BASEDIR is the container path
+# rather than $(CURDIR)/...; pre-create build/android host-owned so its tree (and
+# the output binary/jniLibs) land back in the bind-mounted project as the host
+# user.
 # IN_DOCKER_BUILD_SUBDIR= turns off the cache mount as the Windows targets do:
 # BASEDIR isolates the tree, and only the ndk container ever writes it. Output:
 # dist/jniLibs/arm64-v8a/{libtackyd_json.so, libc++_shared.so}.
 
 ANDROID_BUILD := build/android
 
+# ANDROID_DOCKER=0 uses an NDK already on the machine instead of the ndk image:
+# android.mk wants $ANDROID_NDK set and the API-versioned clang wrappers on PATH,
+# which is what that image otherwise provides. It is for a caller already inside
+# a container carrying an NDK, where nesting docker to reach the same toolchain
+# would mean a socket mount and root-owned output. Same arrangement as DOCKER=1
+# on the Windows targets, with the default the other way round.
+ANDROID_DOCKER ?= 1
+ifeq ($(ANDROID_DOCKER),0)
+  ANDROID_MAKE := $(MAKE)
+  ANDROID_ROOT := $(CURDIR)
+else
+  ANDROID_MAKE := IN_DOCKER_BUILD_SUBDIR= \
+                  IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
+                  zippy/in_docker.sh ndk make
+  ANDROID_ROOT := /src
+endif
+
 android: dist-dir
 	mkdir -p $(ANDROID_BUILD)
-	IN_DOCKER_BUILD_SUBDIR= \
-	IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
-	zippy/in_docker.sh ndk \
-	make -f zippy/zippy.mk \
+	$(ANDROID_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=android \
 	    BIN_NAME=tackyd-json \
 	    SHELL_TYPE=$(tackyd-json_SHELL) \
@@ -189,7 +205,7 @@ android: dist-dir
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="$(tackyd-json_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    BASEDIR=/src/$(ANDROID_BUILD) \
+	    BASEDIR=$(ANDROID_ROOT)/$(ANDROID_BUILD) \
 	    android-jnilibs
 	mkdir -p dist/jniLibs
 	cp -r $(ANDROID_BUILD)/jniLibs/. dist/jniLibs/
@@ -200,19 +216,16 @@ android: dist-dir
 # native and MinGW ones as dist/libtacky-android.a.
 android-lib: dist-dir
 	mkdir -p $(ANDROID_BUILD)
-	IN_DOCKER_BUILD_SUBDIR= \
-	IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
-	zippy/in_docker.sh ndk \
-	make -f zippy/zippy.mk \
+	$(ANDROID_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=android \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(tackyd-json_DEPS)" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    LIB_SHIM_SRC=/src/embed/tacky.c \
+	    LIB_SHIM_SRC=$(ANDROID_ROOT)/embed/tacky.c \
 	    LIB_NAME=tacky \
-	    BASEDIR=/src/$(ANDROID_BUILD) \
+	    BASEDIR=$(ANDROID_ROOT)/$(ANDROID_BUILD) \
 	    android-lib
 	$(call copy-if-changed,$(ANDROID_BUILD)/libtacky.a,dist/libtacky-android.a)
 
