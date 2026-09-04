@@ -72,24 +72,24 @@ namespace eval ::test::bareconn {
         c connect $HOST $PORT
         # First connect against a freshly-started prosody includes cold-cache
         # TLS handshake setup; allow more than the default budget.
-        ::test::helpers::waitVar [namespace current]::ready 5000
+        wait_var [namespace current]::ready 5000
         expr {[c state] eq "connected"}
     } -result 1
 
     test barebones-int-002 {Receive stream header after connect} {*}$common -body {
         c connect $HOST $PORT
-        ::test::helpers::waitVar [namespace current]::ready
+        wait_var [namespace current]::ready
         c write [::jab::header "" to $HOST]
-        ::test::helpers::waitVar [namespace current]::headerReceived
+        wait_var [namespace current]::headerReceived
         dict exists $receivedHeader attrs from
     } -result 1
 
     test barebones-int-003 {Features include SASL mechanisms after TLS} {*}$common -body {
         c connect $HOST $PORT
-        ::test::helpers::waitVar [namespace current]::ready
+        wait_var [namespace current]::ready
         c write [::jab::header "" to $HOST]
-        ::test::helpers::waitVar [namespace current]::headerReceived
-        ::test::helpers::waitVar [namespace current]::stanzas
+        wait_var [namespace current]::headerReceived
+        wait_var [namespace current]::stanzas
         set features [lindex $stanzas 0]
         expr {[xsearch $features mechanisms mechanism] ne ""}
     } -result 1
@@ -98,14 +98,14 @@ namespace eval ::test::bareconn {
         # Write before connecting - should buffer
         c write [::jab::header "" to $HOST]
         c connect $HOST $PORT
-        ::test::helpers::waitVar [namespace current]::ready
-        ::test::helpers::waitVar [namespace current]::headerReceived
+        wait_var [namespace current]::ready
+        wait_var [namespace current]::headerReceived
         dict exists $receivedHeader attrs from
     } -result 1
 
     test barebones-int-005 {Connect while already connected is a no-op} {*}$common -body {
         c connect $HOST $PORT
-        ::test::helpers::waitVar [namespace current]::ready
+        wait_var [namespace current]::ready
         # Second connect should silently return
         c connect $HOST $PORT
         expr {[c state] eq "connected"}

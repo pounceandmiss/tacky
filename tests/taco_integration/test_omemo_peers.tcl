@@ -36,11 +36,11 @@ namespace eval ::test::omemo_peer_int {
             -domain $HOST -username omemob
         tacky account enable -acc $PEER
         tacky account enable -acc $OWNER
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc omemoa@example.local -state connected}
             {conn <State> -acc omemob@example.local -state connected}
         }
-        ::test::helpers::waitEvents {
+        wait_events {
             {message <CatchupDone> -acc omemoa@example.local}
             {message <CatchupDone> -acc omemob@example.local}
         }
@@ -74,7 +74,7 @@ namespace eval ::test::omemo_peer_int {
         }} $var]]
         uplevel 1 $script
         try {
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         } on error {msg} {
             tacky unlisten $tag
             error "awaitEvent timeout waiting for [lrange $listenerArgs 0 1]: $msg"
@@ -91,7 +91,7 @@ namespace eval ::test::omemo_peer_int {
         $client iq request {*}$args -command [list apply {{v stanza} {
             set $v [list reply $stanza]
         }} $var]
-        ::test::helpers::waitVar $var $TIMEOUT
+        wait_var $var $TIMEOUT
         return [lindex [set $var] 1]
     }
 

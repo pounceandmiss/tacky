@@ -37,7 +37,7 @@ namespace eval ::test::omemo_int {
         }} $var]]
         uplevel 1 $script
         try {
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         } on error {msg} {
             tacky unlisten $tag
             error "awaitEvent timeout waiting for [lrange $listenerArgs 0 1]: $msg"
@@ -56,10 +56,10 @@ namespace eval ::test::omemo_int {
         tacky account add -acc $TESTER -password testpass \
             -domain $HOST -username test
         tacky account enable -acc $TESTER
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc test@example.local -state connected}
         }
-        ::test::helpers::waitEvents {
+        wait_events {
             {message <CatchupDone> -acc test@example.local}
         }
     }
@@ -135,7 +135,7 @@ namespace eval ::test::omemo_int {
             }} $acc $want]]
         uplevel 1 $script
         if {[llength [set $acc]] < $want} {
-            catch {::test::helpers::waitVar ::test::omemo_int::_collectDone $timeout}
+            catch {wait_var ::test::omemo_int::_collectDone $timeout}
         }
         tacky unlisten $tag
         return [set $acc]

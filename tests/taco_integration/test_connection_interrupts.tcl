@@ -111,20 +111,20 @@ namespace eval ::test::BareInterrupt {
     test bare-int-interrupt-001 {Error callback fires on connection loss} \
         {*}$common -body {
         c connect $HOST $proxyPort
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         expr {$transportError ne ""}
     } -result 1
 
     test bare-int-interrupt-002 {State is disconnected after connection loss} \
         {*}$common -body {
         c connect $HOST $proxyPort
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         # Current implementation auto-closes transport on error
         expr {[c state] eq "disconnected"}
     } -result 1
@@ -198,21 +198,21 @@ namespace eval ::test::AuthInterrupt {
     test auth-int-interrupt-001 {onerror fires on loss while ready} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         if {!$ready} { error "did not reach ready" }
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         expr {$errorMsg ne ""}
     } -result 1
 
     test auth-int-interrupt-002 {isReady false after loss while ready} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         expr {![c isReady]}
     } -result 1
 
@@ -221,9 +221,9 @@ namespace eval ::test::AuthInterrupt {
     test auth-int-interrupt-003 {onerror fires on loss during authentication} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitForState [namespace current]::lastState authenticating
+        wait_value [namespace current]::lastState authenticating
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         expr {$errorMsg ne "" && !$ready}
     } -result 1
 
@@ -232,9 +232,9 @@ namespace eval ::test::AuthInterrupt {
     test auth-int-interrupt-004 {onerror fires on loss during binding} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitForState [namespace current]::lastState binding
+        wait_value [namespace current]::lastState binding
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         expr {$errorMsg ne "" && !$ready}
     } -result 1
 
@@ -243,9 +243,9 @@ namespace eval ::test::AuthInterrupt {
     test auth-int-interrupt-005 {Close after loss during auth is safe} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitForState [namespace current]::lastState authenticating
+        wait_value [namespace current]::lastState authenticating
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done
+        wait_var [namespace current]::done
         c close
         expr {![c isReady]}
     } -result 1
@@ -326,38 +326,38 @@ namespace eval ::test::AutoReconnect {
     test reconnect-001 {Auto-reconnect succeeds after proxy kill} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         list $readyCount [c isReady] [c state]
     } -result {2 1 connected}
 
     test reconnect-002 {state sequence is correct through reconnect} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         set stateLog
     } -result {connecting authenticating binding connected waiting connecting authenticating binding connected}
 
     test reconnect-003 {state reaches waiting before reconnect} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         proxy kill
-        ::test::helpers::waitForState [namespace current]::lastState waiting
+        wait_value [namespace current]::lastState waiting
         c state
     } -result waiting
 
     test reconnect-004 {close during waiting cancels reconnect} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         proxy kill
-        ::test::helpers::waitForState [namespace current]::lastState waiting
+        wait_value [namespace current]::lastState waiting
         c close
         list [c state] $readyCount
     } -result {disconnected 1}
@@ -365,24 +365,24 @@ namespace eval ::test::AutoReconnect {
     test reconnect-005 {Second reconnect also succeeds (backoff resets)} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         # First reconnect cycle
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         # Second reconnect cycle
         set done 0
         proxy kill
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         set readyCount
     } -result 3
 
     test reconnect-006 {isReady is false during waiting state} \
         {*}$common -body {
         c connect
-        ::test::helpers::waitVar [namespace current]::done 6000
+        wait_var [namespace current]::done 6000
         proxy kill
-        ::test::helpers::waitForState [namespace current]::lastState waiting
+        wait_value [namespace current]::lastState waiting
         c isReady
     } -result 0
 }

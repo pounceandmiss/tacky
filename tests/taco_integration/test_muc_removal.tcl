@@ -39,7 +39,7 @@ namespace eval ::test::muc_removal_int {
         uplevel 1 $script
 
         try {
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         } on error {msg} {
             tacky unlisten $tag
             error "awaitEvent timeout waiting for [lrange $listenerArgs 0 1]: $msg"
@@ -60,7 +60,7 @@ namespace eval ::test::muc_removal_int {
             set ${done} 0
             [tacky client $acc] muc createInstant -jid $ROOM \
                 -command [list apply {{dv args} { set $dv 1 }} $done]
-            ::test::helpers::waitVar $done $TIMEOUT
+            wait_var $done $TIMEOUT
         }
         return $ev
     }
@@ -76,7 +76,7 @@ namespace eval ::test::muc_removal_int {
         [tacky client $acc] iq request -type get -to $ROOM \
             -payload [j query -ns http://jabber.org/protocol/disco#info] \
             -command [list apply {{dv args} { set $dv 1 }} $done]
-        ::test::helpers::waitVar $done $TIMEOUT
+        wait_var $done $TIMEOUT
     }
 
     # Rows stored under a chat jid, whatever kind.
@@ -107,11 +107,11 @@ namespace eval ::test::muc_removal_int {
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
 
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
-        ::test::helpers::waitEvents {
+        wait_events {
             {message <CatchupDone> -acc romeo@example.local}
             {message <CatchupDone> -acc juliet@example.local}
         }

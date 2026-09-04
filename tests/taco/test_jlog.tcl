@@ -353,19 +353,19 @@ test jlog-file-recreated-stays-private {a log deleted underneath comes back owne
 
 tacky_test log-getlevel-default {getlevel with no -obj reports the default level} \
     -body {
-        tacky_await tacky log getlevel
+        wait_call tacky log getlevel
     } -result warning
 
 tacky_test log-setlevel-roundtrip {a level set for an object reads back for its children} \
     -body {
         tacky log setlevel -obj ::probe -level verbose
-        list [tacky_await tacky log getlevel -obj ::probe] \
-             [tacky_await tacky log getlevel -obj ::probe.child]
+        list [wait_call tacky log getlevel -obj ::probe] \
+             [wait_call tacky log getlevel -obj ::probe.child]
     } -result {verbose verbose}
 
 tacky_test log-setlevel-rejects-unknown {a bad level reaches -onerror across the wire} \
     -body {
-        tacky_await_error tacky log setlevel -obj ::probe -level chatty
+        wait_call_error tacky log setlevel -obj ::probe -level chatty
     } -match glob -result {unknown log level "chatty"*}
 
 tacky_test log-write-sugar {the level-first sugar reaches write across the wire} \
@@ -381,7 +381,7 @@ tacky_test log-write-sugar {the level-first sugar reaches write across the wire}
 tacky_test log-write-takes-a-level-from-getlevel {writing at a level the API returned does not throw} \
     -body {
         tacky log setlevel -obj gui.testcase -level none
-        tacky log [tacky_await tacky log getlevel -obj gui.testcase] \
+        tacky log [wait_call tacky log getlevel -obj gui.testcase] \
             "goes nowhere" -obj gui.testcase
         return reached
     } -result reached

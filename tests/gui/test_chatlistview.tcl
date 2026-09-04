@@ -10,23 +10,12 @@ set acc user@test.example.com
 # -- helpers --------------------------------------------------------------------
 
 proc clv_setup {} {
-    rename conn _real_conn
-    rename mock_conn conn
-    tacky_type create tacky
-    tk_avatarcache create avatarcache
-    tacky account add -acc user@test.example.com
-    set ::_client [tacky client user@test.example.com]
-    $::_client.conn configure -bound-jid user@test.example.com/res1
-    $::_client.conn fire_ready 0
-    $::_client.conn clear
+    mock_backend_up
 }
 
 proc clv_cleanup {} {
     destroy .clv
-    avatarcache destroy
-    rename conn mock_conn
-    rename _real_conn conn
-    tacky destroy
+    mock_backend_down
 }
 
 proc clv_roster {jid name args} {
