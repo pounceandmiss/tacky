@@ -134,6 +134,10 @@ snit::type mock_conn {
         return $written
     }
 
+    method get_closed {} {
+        return $closed
+    }
+
     method clear {} {
         set written {}
     }

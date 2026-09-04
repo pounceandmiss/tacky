@@ -1,0 +1,32 @@
+Widen the Tcl-side key-length locals to Tcl_Size for Tcl 9.
+
+Tcl_GetByteArrayFromObj's third parameter widened from int* to Tcl_Size*
+(a long) in Tcl 9, to support byte arrays bigger than INT_MAX. SQLCipher's
+key/rekey/open -key handling in tclsqlite.c still declares nKey as a plain
+int, which is now an incompatible-pointer-type compile error against Tcl 9
+headers. Widen the two declarations; nKey still narrows back to int at the
+sqlite3_key/sqlite3_rekey call sites (both take a plain int length), which
+is fine since a passphrase is always tiny.
+
+diff --git a/src/tclsqlite.c b/src/tclsqlite.c
+index 65c95db..7436dfd 100644
+--- a/src/tclsqlite.c
++++ b/src/tclsqlite.c
+@@ -3659,7 +3659,7 @@ deserialize_error:
+   case DB_REKEY: {
+ /* BEGIN SQLCIPHER */
+ #if defined(SQLITE_HAS_CODEC) && !defined(SQLITE_OMIT_CODEC_FROM_TCL)
+-    int nKey;
++    Tcl_Size nKey;
+     void *pKey;
+ #endif
+ /* END SQLCIPHER */
+@@ -4289,7 +4289,7 @@ static int SQLITE_TCLAPI DbMain(
+ /* BEGIN SQLCIPHER */
+ #if defined(SQLITE_HAS_CODEC) && !defined(SQLITE_OMIT_CODEC_FROM_TCL)
+   void *pKey = 0;
+-  int nKey = 0;
++  Tcl_Size nKey = 0;
+ #endif
+ /* END SQLCIPHER */
+   int rc;

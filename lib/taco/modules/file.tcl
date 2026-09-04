@@ -25,8 +25,13 @@ package require tclwuffs
 #
 # XEP-0454 (OMEMO media): `upload -encrypt 1` AES-256-GCMs the file, PUTs the
 # ciphertext, and returns an aesgcm:// URL carrying the key/iv in its fragment;
-# `download` recognises that scheme, fetches the https:// form, and decrypts.
-# The key only ever travels inside the OMEMO-encrypted body.
+# `download` recognises that scheme and fetches the https:// form. In
+# encrypted-storage mode the ciphertext is kept on disk as-is - never
+# decrypted to plaintext at rest - and its key/iv are recorded in the
+# account's attachment_key table, keyed by the same hash AttachPath names
+# the file with; PlainPath decrypts from there on demand for viewing. A
+# plain (non-OMEMO) download, or any download while storage is plaintext,
+# is unaffected: decrypted immediately, never at-rest-encrypted.
 #
 # A download the client starts by itself (rendering an inline image) passes
 # -auto 1 -from SENDER and is subject to the autofetch policy and size cap;
@@ -68,6 +73,13 @@ snit::type taco_file {
         array set Transfers {}
         array set DownloadByUrl {}
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client db eval {
+            CREATE TABLE IF NOT EXISTS attachment_key(
+                hash TEXT PRIMARY KEY,
+                iv   BLOB NOT NULL,
+                key  BLOB NOT NULL
+            )
+        }
     }
 
     destructor {
@@ -75,6 +87,9 @@ snit::type taco_file {
         foreach id [array names Transfers] {
             catch {after cancel [dict get $Transfers($id) timer]}
             catch {::http::reset [dict get $Transfers($id) httptoken]}
+        }
+        if {$ScratchDir ne ""} {
+            catch {file delete -force -- $ScratchDir}
         }
     }
 
@@ -295,7 +310,7 @@ snit::type taco_file {
         # opened where it points.
         set full [$self AttachPath $url]
         if {[file isfile $full]} {
-            $self ServeLocal $srcKey $full $cmd $tmax
+            $self ServeLocal $srcKey [$self PlainPath $full] $cmd $tmax
             return
         }
 
@@ -357,22 +372,111 @@ snit::type taco_file {
             $self Terminal $id failed "http error"
             return
         }
-        if {[info exists Transfers($id)] \
-                && [dict get $Transfers($id) mediakey] ne ""} {
+        set mediakey [dict get $Transfers($id) mediakey]
+        if {$mediakey ne "" && ![$self StorageUnlocked]} {
             if {[catch {$self DecryptPart $id $full} err]} {
                 $self Terminal $id failed "decrypt: $err"
                 return
             }
-        } elseif {[catch {file rename -force -- $full.part $full} err]} {
-            $self Terminal $id failed "rename: $err"
-            return
+        } else {
+            # Plaintext-storage mode leaves nothing OMEMO to keep as
+            # ciphertext; encrypted-storage mode keeps it exactly as
+            # downloaded and records its key, instead of decrypting to
+            # plaintext at rest.
+            if {[catch {file rename -force -- $full.part $full} err]} {
+                $self Terminal $id failed "rename: $err"
+                return
+            }
+            if {$mediakey ne ""} {
+                $self StoreAttachKey [$self UrlHash [dict get $Transfers($id) url]] \
+                    [dict get $Transfers($id) mediaiv] $mediakey
+            }
         }
         if {![info exists Transfers($id)]} return
         set url [dict get $Transfers($id) url]
-        dict set Transfers($id) localpath $full
+        set plain [$self PlainPath $full]
+        dict set Transfers($id) localpath $plain
         dict set Transfers($id) thumbpath \
-            [$self SafeThumb $url $full [dict get $Transfers($id) thumbmax]]
+            [$self SafeThumb $url $plain [dict get $Transfers($id) thumbmax]]
         $self Terminal $id done
+    }
+
+    # Whether local storage encryption is currently active - the gate on
+    # whether a fresh OMEMO download is kept as ciphertext at rest. Reads
+    # `storage state`, not the public `status`: during a pending-decrypt
+    # window the db is still genuinely SQLCipher-encrypted even though
+    # status reports pending-decrypt, and a new attachment still needs an
+    # at-rest key.
+    method StorageUnlocked {} {
+        return [expr {[[$client cget -taco] storage state] eq "unlocked"}]
+    }
+
+    # {iv key} for a hash with a recorded at-rest key, or "" if the file
+    # behind that hash is plaintext.
+    method AttachKeyRow {hash} {
+        set row {}
+        $client db eval {SELECT iv, key FROM attachment_key WHERE hash=$hash} r {
+            set row [list $r(iv) $r(key)]
+        }
+        return $row
+    }
+
+    method StoreAttachKey {hash iv key} {
+        $client db eval {
+            INSERT OR REPLACE INTO attachment_key(hash, iv, key)
+            VALUES ($hash, $iv, $key)
+        }
+    }
+
+    method DropAttachKey {hash} {
+        $client db eval {DELETE FROM attachment_key WHERE hash=$hash}
+    }
+
+    # RAM-backed scratch location when available: /dev/shm is guaranteed
+    # tmpfs on Linux; falls back to cache-dir elsewhere (Windows/macOS, or
+    # any /dev/shm-less sandbox). 0700 so no other local user can read it;
+    # destructor-cleaned so nothing outlives the session.
+    variable ScratchDir ""
+
+    method ScratchRoot {} {
+        if {$ScratchDir ne ""} { return $ScratchDir }
+        set shm /dev/shm
+        if {[file isdirectory $shm] && [file writable $shm]} {
+            set dir [file join $shm "tacky-attach-[pid]-[clock clicks]"]
+            if {![catch {
+                file mkdir $dir
+                file attributes $dir -permissions 0700
+            }]} {
+                set ScratchDir $dir
+                return $ScratchDir
+            }
+        }
+        set ScratchDir [file join [$self Root -cache-dir] attachments plain]
+        return $ScratchDir
+    }
+
+    # $full decrypted into a scratch copy (see ScratchRoot) for the
+    # GUI/thumbnailer to read directly - a no-op returning $full unchanged
+    # for a file with no recorded key (plaintext, whether that's because
+    # storage is plaintext or it was never OMEMO to begin with). Attachments
+    # are immutable, so an existing scratch copy is reused.
+    method PlainPath {full} {
+        set hash [file rootname [file tail $full]]
+        set row [$self AttachKeyRow $hash]
+        if {$row eq {}} { return $full }
+        lassign $row iv key
+        set scratch [file join [$self ScratchRoot] [file tail $full]]
+        if {![file isfile $scratch]} {
+            set fh [open $full rb]
+            try { set ct [read $fh] } finally { close $fh }
+            set pt [::omemo::media_decrypt $key $iv $ct]
+            file mkdir [file dirname $scratch]
+            set tmp $scratch.part
+            set out [open $tmp wb]
+            try { puts -nonewline $out $pt } finally { close $out }
+            file rename -force -- $tmp $scratch
+        }
+        return $scratch
     }
 
     # Decrypt the downloaded ciphertext (.part) to $full. Reads the whole
@@ -398,7 +502,7 @@ snit::type taco_file {
     }
 
     method UrlHash {url} {
-        return [sha1::sha1 [encoding convertto utf-8 $url]]
+        return [attachment_url_hash $url]
     }
 
     method AttachPath {url {hash ""}} {
@@ -662,7 +766,10 @@ snit::type taco_file {
         array set opts $args
         set srcKey [$self SourceKey $opts(-url) $opts(-path)]
         set hash [$self UrlHash $srcKey]
-        catch {file delete -- [$self AttachPath $srcKey $hash]}
+        set full [$self AttachPath $srcKey $hash]
+        catch {file delete -- [file join [$self ScratchRoot] [file tail $full]]}
+        catch {file delete -- $full}
+        $self DropAttachKey $hash
         foreach t [glob -nocomplain \
                 [file join [$self Root -cache-dir] attachments thumb ${hash}_*.png]] {
             catch {file delete -- $t}
@@ -670,7 +777,14 @@ snit::type taco_file {
     }
 }
 
-# --- Shared attachment helpers (also used by message.tcl) ---------------
+# --- Shared attachment helpers (also used by message.tcl and storage.tcl) --
+
+# Names the on-disk file for a download url (AttachPath/ThumbPath), and the
+# attachment_key row for an OMEMO one - both taco_file and the storage
+# migration engine need to land on the same hash for the same url.
+proc attachment_url_hash {url} {
+    return [sha1::sha1 [encoding convertto utf-8 $url]]
+}
 
 # XEP-0454 aesgcm:// URL helpers. The fragment is hex(iv) || hex(key): the
 # key is always the last 32 bytes (64 hex chars); the iv is whatever precedes

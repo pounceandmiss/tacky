@@ -790,6 +790,32 @@ test file-download-rename-failure-reports-failed \
              [file exists $full]
     } -result {failed 1 0}
 
+# --- at-rest decryption (PlainPath) -----------------------------------
+
+test file-plainpath-decrypts-recorded-key \
+    {PlainPath decrypts a ciphertext file using its attachment_key row; a file with no row is returned unchanged} \
+    {*}$file_env -body {
+        set plain "attachment bytes"
+        set enc [::omemo::media_encrypt $plain]
+        set hash deadbeefhash
+        set full [file join [$::_client file Root -data-dir] attachments $hash.bin]
+        file mkdir [file dirname $full]
+        set fh [open $full wb]; puts -nonewline $fh [dict get $enc ct]; close $fh
+        set iv [dict get $enc iv]
+        set key [dict get $enc key]
+        $::_client db eval {
+            INSERT INTO attachment_key(hash, iv, key) VALUES ($hash, $iv, $key)
+        }
+        set scratch [$::_client file PlainPath $full]
+        set fh [open $scratch rb]; set got [read $fh]; close $fh
+
+        set plainFull [file join [$::_client file Root -data-dir] attachments plain.bin]
+        set fh [open $plainFull wb]; puts -nonewline $fh "already plain"; close $fh
+        set unchanged [$::_client file PlainPath $plainFull]
+
+        list [expr {$scratch ne $full}] $got [expr {$unchanged eq $plainFull}]
+    } -result {1 {attachment bytes} 1}
+
 # --- cancel ---------------------------------------------------------------
 #
 # ::http::reset runs the request's -command callback before it returns, so only

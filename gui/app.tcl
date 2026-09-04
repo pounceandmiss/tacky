@@ -40,8 +40,15 @@ snit::type app_type {
                 tacky_init_threaded -transient $options(-transient) \
                     {*}[$self DebugArgs]
             }
-            default {
+            direct {
                 tacky_init -transient $options(-transient) {*}[$self DebugArgs]
+            }
+            default {
+                # A typo here (e.g. "threaded" for "thread") must not
+                # silently fall back to direct mode - that's a real
+                # backend-mode change with no warning at all.
+                error "unknown --backend '$options(-backend)': expected\
+                    direct, thread, or process"
             }
         }
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
@@ -49,6 +56,15 @@ snit::type app_type {
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
+        install notifier using notifier $self.notifier -controller $self
+
+        ::tacky storage status -command [mymethod OnStorageStatus]
+    }
+
+    # `setting` (like every module but `storage`) doesn't exist yet while
+    # locked - observe, which immediately pulls the current value, has to
+    # wait until OnStorageStatus confirms plaintext/unlocked.
+    method ObserveSettings {} {
         # An explicit --debug-* flag owns its setting for this run.
         if {$options(-debug-file) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_to_file \
@@ -63,9 +79,6 @@ snit::type app_type {
             ::tacky observe -tag $self setting <Changed> -key log_native \
                 [mymethod ApplyLogNative]
         }
-        install notifier using notifier $self.notifier -controller $self
-
-        ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
     destructor {
@@ -108,6 +121,32 @@ snit::type app_type {
         set val [dict get $ev -value]
         if {$val eq ""} return
         ::tacky log setnativelevel -level [expr {$val ? "debug" : "none"}]
+    }
+
+    # `.` (withdrawn, per wm withdraw . above) is passed as -parent even
+    # with nothing visible yet - StorageUnlockDialog/StorageGateDialog know
+    # not to set wm transient against a withdrawn window.
+    #
+    # locked and pending-* each show a blocking gate then re-check status,
+    # since resolving one can reveal another (unlocking can turn up a
+    # pending-decrypt; there's no other chain in practice, but re-checking
+    # rather than assuming a fixed sequence costs nothing and stays correct
+    # if that ever changes). Anything else is normal boot.
+    method OnStorageStatus {status} {
+        switch -- $status {
+            locked {
+                StorageUnlockDialog .
+                ::tacky storage status -command [mymethod OnStorageStatus]
+                return
+            }
+            pending-encrypt - pending-decrypt {
+                StorageGateDialog . [string range $status 8 end]
+                ::tacky storage status -command [mymethod OnStorageStatus]
+                return
+            }
+        }
+        $self ObserveSettings
+        ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
     method OnAccountList {result} {

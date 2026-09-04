@@ -34,6 +34,9 @@ snit::type taco_client {
     # Database or database path - if neither provided, creates in-memory db
     option -db -default "" -readonly yes
     option -db-path -default ":memory:" -readonly yes
+    # Verified against accounts.db by taco_storage - "" for plaintext/
+    # transient (default, no PRAGMA key issued).
+    option -passphrase -default "" -readonly yes
 
     # Storage roots for modules that write files (see appdirs)
     option -data-dir -default "" -readonly yes
@@ -63,6 +66,9 @@ snit::type taco_client {
             sqlite3 $self.db $options(-db-path)
             set db $self.db
             set options(-db) $self.db
+            if {$options(-passphrase) ne ""} {
+                taco_pragma_key $db $options(-passphrase)
+            }
             $db eval {
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = NORMAL;
