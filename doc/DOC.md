@@ -17,6 +17,7 @@ and get back replies and events.
   - [register](#register)
   - [conn](#conn)
   - [setting](#setting)
+  - [storage](#storage)
   - [chatlist](#chatlist)
   - [bookmarks](#bookmarks)
   - [roster](#roster)
@@ -135,6 +136,15 @@ be regenerated: thumbnails and upload staging.
 
 `-transient yes` keeps every database in RAM and puts attachments in a
 temporary directory that is removed on shutdown.
+
+Local storage can be encrypted (see [storage](#storage)) - off by default.
+When it is, every db above is SQLCipher-encrypted with the same passphrase.
+Attachments are handled differently: only ones fetched over OMEMO media
+sharing (XEP-0454, `aesgcm://`) are ever encrypted at rest, kept exactly as
+their OMEMO ciphertext with the key recorded in the owning account's db; a
+plain (non-OMEMO) attachment is never encrypted at rest, in either mode.
+Cache stays unencrypted, since everything in it is regenerable.
+`-transient yes` skips all of this - nothing persists to touch.
 
 ## Requests, replies, events
 
@@ -290,6 +300,40 @@ A global key/value store - not tied to any account.
 Event:
 
     setting <Changed> {key: string, value: string}
+
+## storage
+
+Local storage encryption - off by default.
+
+    storage status         {}                    -> string   plaintext|pending-encrypt|locked|pending-decrypt|unlocked
+    storage unlock         {passphrase: string}
+    storage requestEncrypt {}
+    storage requestDecrypt {}
+    storage cancelPending  {}
+    storage encrypt        {passphrase: string}
+    storage decrypt        {}
+
+Events:
+
+    storage <Unlocked>
+    storage <MigrateProgress>   {done: int, total: int}
+    storage <MigrationComplete> {direction: string}
+
+`locked` blocks every other module, including `account`, until `unlock`
+verifies the passphrase - retryable in place on failure, no restart.
+
+Turning encryption on/off is two-step, not live: `requestEncrypt`/
+`requestDecrypt` (from `plaintext`/`unlocked`) just flag intent - no
+passphrase yet, nothing on disk changes - reflected as `pending-encrypt`/
+`pending-decrypt`; `cancelPending` reverts it. The actual migration
+(`encrypt {passphrase}` / `decrypt {}`) only runs at the next startup,
+before any account connects, gated on that pending status - `encrypt`
+collects the passphrase there (never persisted from the request) and drops
+straight into normal operation in that same process, no further restart.
+
+Both stage every db plus every OMEMO/XEP-0454 attachment (a plain one is
+never touched) before swapping anything into place; `<MigrateProgress>`
+fires while that runs, `<MigrationComplete>` once it's done.
 
 ## chatlist
 
@@ -968,9 +1012,14 @@ show it to users, and expect it to be absent.
 
 ## Accounts and sign-in
 
-**Startup.** The backend connects every enabled account at init; there is no
-connect call. Run `account list {enabled: 1}` and open the main UI if it
-returns anything, setup if it doesn't.
+**Startup.** Check `storage status` first: `locked` means no other module
+works yet, so gate everything below on `storage unlock` succeeding;
+`pending-encrypt`/`pending-decrypt` mean a requested migration needs to run
+before anything else does (see [storage](#storage)) - after either gate
+resolves, check `status` again, since unlocking can itself reveal a pending
+decrypt. Once `plaintext` or `unlocked`, the backend connects every enabled
+account at init; there is no connect call. Run `account list {enabled: 1}`
+and open the main UI if it returns anything, setup if it doesn't.
 
 **Sign-in.** Creating the account is the credential check. Subscribe to
 `conn <State>`, `<AuthError>` and `<ConnError>` for the account, then call

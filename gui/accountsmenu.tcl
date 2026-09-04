@@ -105,6 +105,9 @@ snit::type accountsmenu {
             -command $options(-join-room-command)
         $m add command -label "Create Room..." \
             -command $options(-join-room-command)
+        $m add separator
+        $m add command -label "Local Storage..." \
+            -command [list storagesettingsdialog open $options(-parent)]
     }
 
     # --- Actions ---

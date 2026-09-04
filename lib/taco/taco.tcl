@@ -39,6 +39,39 @@ proc stanza_error {stanza} {
         text [xsearch $stanza error text -get body]]
 }
 
+# PRAGMA rejects a bound $var (syntax error) - only a literal in the SQL
+# text - so quote it by hand: double any embedded single quotes.
+proc taco_sql_quote {s} {
+    return [string map {' ''} $s]
+}
+
+proc taco_pragma_key {db passphrase} {
+    $db eval "PRAGMA key = '[taco_sql_quote $passphrase]'"
+}
+
+# Finish, or on a fresh launch resume, a storage encrypt/decrypt migration:
+# staged files under $configDir/.storage-migrate get renamed over their live
+# counterparts (see taco_storage's Migrate). Call before accounts.db is ever
+# opened, so a live file mid-swap is never read stale.
+proc taco_storage_resume {configDir} {
+    set manifestFile [file join $configDir .storage-migrate manifest]
+    if {![file exists $manifestFile]} { return }
+    set fh [open $manifestFile r]
+    set manifest [read $fh]
+    close $fh
+    foreach {staged live} $manifest {
+        file rename -force -- $staged $live
+        # A per-account db may have -wal/-shm sidecars left from a session
+        # that didn't get a clean checkpoint (crash, force-quit). They're
+        # tied to the pre-migration page contents; left in place they'd
+        # confuse the next open of the just-swapped-in file. A freshly
+        # migrated db starts clean - WAL mode gets re-enabled fresh by
+        # client.tcl's next open anyway.
+        file delete -force -- $live-wal $live-shm
+    }
+    file delete -force -- [file dirname $manifestFile]
+}
+
 # A background error has no caller to answer: log the trace, then hand the
 # frontend the message so it reports it the way it reports its own. Install only
 # where taco runs without a frontend in the same interp (the daemon, the backend
@@ -169,6 +202,7 @@ snit::type taco_type {
     component register -public register
     component debugtap -public debugtap
     component log -public log
+    component storage -public storage
 
     option -transient -default 1 -readonly yes
     option -config-dir -readonly yes -default ""
@@ -176,6 +210,12 @@ snit::type taco_type {
     option -cache-dir -readonly yes -default ""
 
     variable TransientRoot ""
+    # Guards CompleteUnlock against running twice: the constructor already
+    # runs it once for a plaintext/unlocked-at-construction db, but
+    # storage encrypt/decrypt also call it (needed when they run from the
+    # pre-boot gate, where the constructor deferred it) - re-installing an
+    # already-installed component would throw.
+    variable CompleteUnlockDone 0
 
     constructor args {
         $self configurelist $args
@@ -203,12 +243,36 @@ snit::type taco_type {
                 appdirs_mkprivate $options($opt)
             }
         }
+        if {$options(-config-dir) ne ""} {
+            taco_storage_resume $options(-config-dir)
+        }
         set db $self.db
         if {$options(-config-dir) ne ""} {
             sqlite3 $self.db [file join $options(-config-dir) accounts.db]
         } else {
             sqlite3 $self.db :memory:
         }
+        install storage using taco_storage ${selfns}::storage -db $db -taco $self \
+            -config-dir $options(-config-dir) -data-dir $options(-data-dir) \
+            -cache-dir $options(-cache-dir)
+        # An encrypted accounts.db can't run any query until `storage unlock`
+        # verifies the passphrase; a pending encrypt request needs a fresh
+        # passphrase from the gate before there's anything to unlock. Either
+        # way the rest defers to CompleteUnlock, which unlock (or the gate's
+        # own storage encrypt call) triggers once resolved.
+        if {[$storage status] in {locked pending-encrypt}} {
+            return
+        }
+        $self CompleteUnlock
+    }
+
+    # Run immediately for a plaintext db, or from unlock/encrypt/decrypt
+    # once verified - idempotent, since more than one of those can apply in
+    # a single process (e.g. a test calling storage encrypt directly on an
+    # already-booted instance).
+    method CompleteUnlock {} {
+        if {$CompleteUnlockDone} return
+        set CompleteUnlockDone 1
         install account using taco_account ${selfns}::account \
             -db $db -taco $self -data-dir $options(-data-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
@@ -248,6 +312,23 @@ snit::type taco_type {
         tacky emit $module $event {*}$args
     }
 
+    # Called by storage encrypt/decrypt before migrating: a real client is
+    # destroyed outright, not just disconnected - its db handle has to
+    # actually close so WAL mode fully checkpoints and drops its -wal/-shm
+    # sidecar files, or they'd be left on disk still tied to the pre-
+    # migration (plaintext) page contents once the main file is swapped for
+    # the encrypted one, corrupting the next open. In practice this is
+    # always a no-op: migrations only ever run at the pre-boot gate, before
+    # any client has connected - kept as cheap insurance regardless.
+    method DisconnectAllAccounts {} {
+        foreach jid [$db eval {SELECT jid FROM account}] {
+            set client $self.client($jid)
+            if {[info commands $client] ne ""} {
+                catch {$client destroy}
+            }
+        }
+    }
+
     method connect {} {
         foreach jid [$db eval {SELECT jid FROM account WHERE enabled=1}] {
             [$self client $jid] connect
@@ -267,7 +348,8 @@ snit::type taco_type {
             set extra [list -data-dir $options(-data-dir) \
                             -cache-dir $options(-cache-dir)]
             if {!$options(-transient)} {
-                lappend extra -db-path [file join $options(-data-dir) $jid.db]
+                lappend extra -db-path [file join $options(-data-dir) $jid.db] \
+                    -passphrase [$storage passphrase]
             }
             taco_client $client \
                 -username $username \
