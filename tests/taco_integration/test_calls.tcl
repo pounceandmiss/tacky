@@ -1,3 +1,5 @@
+package require tacky::testwait
+
 namespace eval ::test::calls_int {
 
     variable HOST "example.local"
@@ -138,7 +140,7 @@ namespace eval ::test::calls_int {
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
 
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }

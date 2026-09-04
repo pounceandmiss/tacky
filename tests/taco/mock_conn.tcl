@@ -138,3 +138,35 @@ snit::type mock_conn {
         set written {}
     }
 }
+
+# Swapping the mock into place is a rename dance with an easy failure mode: a
+# half-done swap leaves the real conn shadowed and every later test in the file
+# builds against the wrong type. Keeping the pair here — the same shape as
+# mockrtc::install/uninstall — gives the six call sites one thing to call.
+#
+# Idempotent on purpose. The unqualified `rename conn _real_conn` this replaces
+# errored outright when a test-local swap nested inside tacky_env's ("command
+# already exists"); a second install is now a no-op.
+#
+# Names are fully qualified because tcltest may run a setup body inside the
+# test's own namespace, where `rename mock_conn conn` would install the mock as
+# a namespace-local command and leave the real conn in place at global scope.
+namespace eval mockconn {
+    variable Installed 0
+}
+
+proc mockconn::install {} {
+    variable Installed
+    if {$Installed} return
+    rename ::conn ::conn__real
+    rename ::mock_conn ::conn
+    set Installed 1
+}
+
+proc mockconn::uninstall {} {
+    variable Installed
+    if {!$Installed} return
+    rename ::conn ::mock_conn
+    rename ::conn__real ::conn
+    set Installed 0
+}

@@ -175,8 +175,7 @@ test omemo-unit-spk-rotates-once {a rotation stamps, so the next connect is a no
 # peers build sessions against a key whose private half we no longer have.
 test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} -setup {
     tacky_type create ::tacky
-    rename conn _real_conn
-    rename mock_conn conn
+    mockconn::install
     sqlite3 omemodb3 :memory:
     taco_client c1 -db omemodb3
     c1 configure -jid $::test::omemo_unit::JULIET
@@ -204,8 +203,7 @@ test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} 
     catch {c2 destroy}
     catch {omemodb3 close}
     catch {tacky destroy}
-    catch {rename conn mock_conn}
-    catch {rename _real_conn conn}
+    mockconn::uninstall
     unset -nocomplain spkOld spkBefore spkFirst spkSecond
 } -result {published 1 survived 1}
 

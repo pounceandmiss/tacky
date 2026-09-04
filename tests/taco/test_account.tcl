@@ -5,7 +5,7 @@ package require tacky::testhelpers
 set common {
     -setup {
         tacky account add -acc user@example.com
-        tacky_await tacky account exists -acc user@example.com
+        wait_call tacky account exists -acc user@example.com
     }
 }
 
@@ -14,13 +14,13 @@ set common {
 tacky_test account-exists-true {exists returns 1 for known account} \
     {*}$common \
     -body {
-        tacky_await tacky account exists -acc user@example.com
+        wait_call tacky account exists -acc user@example.com
     } -result 1
 
 tacky_test account-exists-false {exists returns 0 for unknown account} \
     {*}$common \
     -body {
-        tacky_await tacky account exists -acc nobody@example.com
+        wait_call tacky account exists -acc nobody@example.com
     } -result 0
 
 # -- list ------------------------------------------------------------------
@@ -28,12 +28,12 @@ tacky_test account-exists-false {exists returns 0 for unknown account} \
 tacky_test account-list-one {list returns JID after one add} \
     {*}$common \
     -body {
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {user@example.com}
 
 tacky_test account-list-empty {list returns empty when no accounts} \
     -body {
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {}
 
 # -- get -------------------------------------------------------------------
@@ -41,26 +41,26 @@ tacky_test account-list-empty {list returns empty when no accounts} \
 tacky_test account-get-all {get returns dict of all fields} \
     {*}$common \
     -body {
-        set d [tacky_await tacky account get -acc user@example.com]
+        set d [wait_call tacky account get -acc user@example.com]
         list [dict get $d jid] [dict get $d username] [dict get $d domain]
     } -result {user@example.com user example.com}
 
 tacky_test account-get-field {get -field returns single value} \
     {*}$common \
     -body {
-        tacky_await tacky account get -acc user@example.com -field username
+        wait_call tacky account get -acc user@example.com -field username
     } -result user
 
 tacky_test account-get-noexist {get routes missing account to -onerror} \
     {*}$common \
     -body {
-        tacky_await_error tacky account get -acc nobody@example.com
+        wait_call_error tacky account get -acc nobody@example.com
     } -result {Account doesn't exist: nobody@example.com}
 
 tacky_test account-get-badfield {get routes invalid field name to -onerror} \
     {*}$common \
     -body {
-        tacky_await_error tacky account get -acc user@example.com -field bogus
+        wait_call_error tacky account get -acc user@example.com -field bogus
     } -result {Invalid field: bogus}
 
 # -- token bookkeeping -----------------------------------------------------
@@ -97,7 +97,7 @@ tacky_test account-listening-clears-after-an-error \
 tacky_test account-methoderror-fields {-command without -onerror emits MethodError} \
     {*}$common \
     -body {
-        set e [tacky_await_methoderror tacky account get -acc nobody@example.com]
+        set e [wait_call_methoderror tacky account get -acc nobody@example.com]
         list [dict get $e -module] [dict get $e -method] \
             [dict get $e -acc] [dict get $e -message]
     } -result {account get nobody@example.com {Account doesn't exist: nobody@example.com}}
@@ -105,7 +105,7 @@ tacky_test account-methoderror-fields {-command without -onerror emits MethodErr
 tacky_test account-methoderror-no-acc {MethodError omits -acc when the call had none} \
     {*}$common \
     -body {
-        set e [tacky_await_methoderror tacky account get]
+        set e [wait_call_methoderror tacky account get]
         list [dict get $e -module] [dict exists $e -acc]
     } -result {account 0}
 
@@ -114,30 +114,30 @@ tacky_test account-methoderror-no-acc {MethodError omits -acc when the call had 
 tacky_test account-resource-format {resource returns tacky.<hex>} \
     {*}$common \
     -body {
-        regexp {^tacky\.[0-9a-f]{8}$} [tacky_await tacky account resource -acc user@example.com]
+        regexp {^tacky\.[0-9a-f]{8}$} [wait_call tacky account resource -acc user@example.com]
     } -result 1
 
 tacky_test account-resource-stable {resource is stable across calls} \
     {*}$common \
     -body {
-        set a [tacky_await tacky account resource -acc user@example.com]
-        set b [tacky_await tacky account resource -acc user@example.com]
+        set a [wait_call tacky account resource -acc user@example.com]
+        set b [wait_call tacky account resource -acc user@example.com]
         expr {$a eq $b}
     } -result 1
 
 tacky_test account-resource-persisted {resource is stored in the resource column} \
     {*}$common \
     -body {
-        set r [tacky_await tacky account resource -acc user@example.com]
-        expr {$r eq [tacky_await tacky account get -acc user@example.com -field resource]}
+        set r [wait_call tacky account resource -acc user@example.com]
+        expr {$r eq [wait_call tacky account get -acc user@example.com -field resource]}
     } -result 1
 
 tacky_test account-reroll-changes {rerollResource yields a new persisted resource} \
     {*}$common \
     -body {
-        set a [tacky_await tacky account resource -acc user@example.com]
-        set b [tacky_await tacky account rerollResource -acc user@example.com]
-        set c [tacky_await tacky account resource -acc user@example.com]
+        set a [wait_call tacky account resource -acc user@example.com]
+        set b [wait_call tacky account rerollResource -acc user@example.com]
+        set c [wait_call tacky account resource -acc user@example.com]
         expr {$a ne $b && $b eq $c}
     } -result 1
 
@@ -146,47 +146,43 @@ tacky_test account-reroll-changes {rerollResource yields a new persisted resourc
 tacky_test account-add-rejects-bad-domain {a comma for a dot is rejected, not silently added} \
     -body {
         catch {tacky account add -acc wusspuss@draugr,de}
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {}
 
 tacky_test account-add-rejects-non-bare {a JID carrying a resource is rejected} \
     -body {
         catch {tacky account add -acc user@example.com/phone}
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {}
 
 tacky_test account-add-rejects-no-localpart {a bare domain is not an account JID} \
     -body {
         catch {tacky account add -acc example.com}
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {}
 
 tacky_test account-add-single-label-domain {a single-label domain is accepted} \
     -body {
         tacky account add -acc a@test
-        tacky_await tacky account list
+        wait_call tacky account list
     } -result {a@test}
 
 # -- a plain method's synchronous error reaches the caller ------------------
 #
 # `add` is not a tackymethod, so before taco_call its error escaped the
 # transport: it threw at the call site in direct mode and vanished into a
-# background handler in the others, leaving the caller waiting forever.
-# The guard keeps a regression to a failure rather than a hung suite.
+# background handler in the others, leaving the caller waiting forever. A
+# regression is a failure rather than a hung suite because the wait itself has
+# a deadline — these tests used to arm an `after` guard by hand for that.
 
 tacky_test account-add-error-to-onerror {a plain method's error answers -onerror} \
     -body {
-        set guard [after 5000 {set ::_await_err_done 1}]
-        set msg [tacky_await_error tacky account add -acc "user@example,com"]
-        after cancel $guard
-        set msg
+        wait_call_error tacky account add -acc "user@example,com"
     } -match glob -result {Invalid JID:*}
 
 tacky_test account-add-error-methoderror {with -command alone the error becomes <MethodError>} \
     -body {
-        set guard [after 5000 {set ::_await_me_done 1}]
-        set ev [tacky_await_methoderror tacky account add -acc "user@example,com"]
-        after cancel $guard
+        set ev [wait_call_methoderror tacky account add -acc "user@example,com"]
         list [dict get $ev -module] [dict get $ev -method] \
             [string match {Invalid JID:*} [dict get $ev -message]]
     } -result {account add 1}

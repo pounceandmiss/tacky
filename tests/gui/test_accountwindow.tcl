@@ -7,21 +7,16 @@ package require tacky::mockconn
 
 # tacky + mock client + avatarcache + a stub controller. Pair with aw_cleanup.
 proc aw_setup {} {
-    rename conn _real_conn
-    rename mock_conn conn
-    tacky_type create tacky
-    tk_avatarcache create avatarcache
-    tacky account add -acc user@test.example.com
-    tacky account add -acc user2@test.example.com
-    proc ::aw_ctrl {args} {}
+    backend_up [tacky_env -mock conn -avatarcache tk_avatarcache -extra-setup {
+        tacky account add -acc user@test.example.com
+        tacky account add -acc user2@test.example.com
+        proc ::aw_ctrl {args} {}
+    }]
 }
 
 proc aw_cleanup {} {
     catch {destroy .aw}
-    avatarcache destroy
-    rename conn mock_conn
-    rename _real_conn conn
-    tacky destroy
+    backend_down
     catch {rename ::aw_ctrl ""}
 }
 

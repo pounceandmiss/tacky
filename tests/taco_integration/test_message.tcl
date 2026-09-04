@@ -30,7 +30,7 @@ namespace eval ::test::message_int {
         uplevel 1 $script
 
         try {
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         } on error {msg} {
             tacky unlisten $tag
             error "awaitEvent timeout waiting for [lrange $listenerArgs 0 1]: $msg"
@@ -52,7 +52,7 @@ namespace eval ::test::message_int {
                 set $dv 1
             }} ${var}_done $var]
 
-        ::test::helpers::waitVar ${var}_done $TIMEOUT
+        wait_var ${var}_done $TIMEOUT
         return [set $var]
     }
 
@@ -68,7 +68,7 @@ namespace eval ::test::message_int {
                 set $dv 1
             }} ${var}_done $var]
 
-        ::test::helpers::waitVar ${var}_done $TIMEOUT
+        wait_var ${var}_done $TIMEOUT
         return [set $var]
     }
 
@@ -87,11 +87,11 @@ namespace eval ::test::message_int {
         tacky account enable -acc $JULIET
 
         # Wait for both connections to be ready and catchup done
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
-        ::test::helpers::waitEvents {
+        wait_events {
             {message <CatchupDone> -acc romeo@example.local}
             {message <CatchupDone> -acc juliet@example.local}
         }
@@ -244,7 +244,7 @@ namespace eval ::test::message_int {
                 -domain $HOST -username romeo
             tacky account enable -acc $ROMEO
 
-            ::test::helpers::waitEvents {
+            wait_events {
                 {message <CatchupDone> -acc romeo@example.local}
             }
 
@@ -298,7 +298,7 @@ namespace eval ::test::message_int {
             # "before disconnect" proves the bracket empty so the
             # hole sweeps.
             tacky account enable -acc $ROMEO
-            ::test::helpers::waitEvents {
+            wait_events {
                 {message <CatchupDone> -acc romeo@example.local}
             }
 

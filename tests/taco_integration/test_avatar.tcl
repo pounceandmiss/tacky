@@ -24,7 +24,7 @@ namespace eval ::test::avatar_int {
     # Helper: awaitEvent
     #
     # Registers a tacky listener with filters, runs a script, waits for the
-    # event via waitVar. Returns the event args list.
+    # event via wait_var. Returns the event args list.
     #
     # Usage:
     #   awaitEvent module <Event> ?-field value ...? script
@@ -44,7 +44,7 @@ namespace eval ::test::avatar_int {
         uplevel 1 $script
 
         try {
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         } on error {msg} {
             tacky unlisten $tag
             error "awaitEvent timeout waiting for [lrange $listenerArgs 0 1]: $msg"
@@ -60,7 +60,7 @@ namespace eval ::test::avatar_int {
         set pubVar [namespace current]::_pubDone
         set $pubVar 0
         uplevel 1 $script
-        ::test::helpers::waitVar $pubVar 5000
+        wait_var $pubVar 5000
     }
 
     proc setup {} {
@@ -74,7 +74,7 @@ namespace eval ::test::avatar_int {
 
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
@@ -82,7 +82,7 @@ namespace eval ::test::avatar_int {
         tacky roster subscribe -acc $JULIET -jid $ROMEO
         tacky roster approve -acc $ROMEO -jid $JULIET
         tacky roster approve -acc $JULIET -jid $ROMEO
-        ::test::helpers::waitEvents {
+        wait_events {
             {presence <Changed> -acc romeo@example.local -jid juliet@example.local}
             {presence <Changed> -acc juliet@example.local -jid romeo@example.local}
         }
@@ -99,7 +99,7 @@ namespace eval ::test::avatar_int {
             tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
                 set $var 1
             }} $var]
-            ::test::helpers::waitVar $var $TIMEOUT
+            wait_var $var $TIMEOUT
         }
 
         catch {tacky destroy}
@@ -126,7 +126,7 @@ namespace eval ::test::avatar_int {
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
-            ::test::helpers::waitVar $pubVar 5000
+            wait_var $pubVar 5000
         }]
 
         set hash [dict get $eventArgs -hash]
@@ -148,7 +148,7 @@ namespace eval ::test::avatar_int {
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
-            ::test::helpers::waitVar $pubVar 5000
+            wait_var $pubVar 5000
         }
 
         set data [tacky avatar data -acc $JULIET -hash $SAMPLE_PNG_HASH]
@@ -171,7 +171,7 @@ namespace eval ::test::avatar_int {
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
-            ::test::helpers::waitVar $pubVar 5000
+            wait_var $pubVar 5000
         }
 
         # Passthrough advertises the caller-supplied type/width/height in <info>.
@@ -203,13 +203,13 @@ namespace eval ::test::avatar_int {
             -command [list apply {{var result} {
                 set $var 1
             }} $pubVar]
-        ::test::helpers::waitVar $pubVar 5000
+        wait_var $pubVar 5000
 
         # Juliet starts fresh: reconnect, mark Romeo visible, and expect the
         # avatar to arrive via the server's initial PEP push.
         set eventArgs [awaitEvent avatar <Update> -acc $JULIET -jid $ROMEO {
             tacky account enable -acc $JULIET
-            ::test::helpers::waitEvents {
+            wait_events {
                 {conn <State> -acc juliet@example.local -state connected}
             }
             tacky avatar visible -acc $JULIET -jid $ROMEO
@@ -234,7 +234,7 @@ namespace eval ::test::avatar_int {
             tacky account disable -acc $JULIET
         }
         tacky account enable -acc $JULIET
-        ::test::helpers::waitEvents {
+        wait_events {
             {conn <State> -acc juliet@example.local -state connected}
         }
 
@@ -246,7 +246,7 @@ namespace eval ::test::avatar_int {
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
-            ::test::helpers::waitVar $pubVar 5000
+            wait_var $pubVar 5000
         }]
 
         set hash [dict get $eventArgs -hash]
@@ -268,7 +268,7 @@ namespace eval ::test::avatar_int {
                 -command [list apply {{var result} {
                     set $var 1
                 }} $pubVar]
-            ::test::helpers::waitVar $pubVar 5000
+            wait_var $pubVar 5000
         }
 
         # Disable and wait for the empty-hash removal notification
@@ -278,7 +278,7 @@ namespace eval ::test::avatar_int {
             tacky avatar disable -acc $ROMEO -command [list apply {{var result} {
                 set $var 1
             }} $disVar]
-            ::test::helpers::waitVar $disVar 5000
+            wait_var $disVar 5000
         }]
 
         set meta [tacky avatar metadata -acc $JULIET -jid $ROMEO]
