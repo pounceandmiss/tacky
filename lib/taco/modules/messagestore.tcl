@@ -711,8 +711,13 @@ snit::type taco_messagestore {
 
     # Resolve an XEP-0461 reply target to its stored timestamp, or "".
     #   server_id match  : authoritative (stanza-id is unique in the archive).
-    #   origin_id/own_id : client-generated id, so disambiguate by author
-    #                      (replyTo) — these ids aren't unique across senders.
+    #   origin_id/own_id : client-generated ids aren't unique *across*
+    #                      senders, so a genuine collision (two candidate
+    #                      rows) is disambiguated by author (replyTo). A
+    #                      single candidate is accepted regardless of
+    #                      replyTo, which peers get wrong in practice (e.g.
+    #                      misattributing the author of an undecryptable
+    #                      target) with no ambiguity for it to resolve.
     # MUC authors are compared full (room/nick); 1:1 by bare JID (the reply's
     # `to` is often a full JID while we store the bare author).
     method resolveReply {jid replyId {replyTo ""}} {
@@ -726,21 +731,32 @@ snit::type taco_messagestore {
         if {$ts ne ""} { return $ts }
 
         set isMuc [IsMucChatJid $jid]
-        set result ""
+        set candidates {}
         $options(-db) eval {
             SELECT timestamp, from_jid FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND ( (origin_id != '' AND origin_id=$replyId)
                  OR (own_id    != '' AND own_id=$replyId) )
         } row {
+            lappend candidates [list $row(timestamp) $row(from_jid)]
+        }
+        # A lone 1:1 candidate is trusted even if the peer's reply-to
+        # attribute names the wrong author (real clients get this wrong):
+        # only two senders are possible for this chat_jid. In a MUC,
+        # origin_id/own_id aren't guaranteed unique across the room's many
+        # senders, so a lone candidate still needs the author to match.
+        if {[llength $candidates] == 1 && !$isMuc} {
+            return [lindex $candidates 0 0]
+        }
+        foreach candidate $candidates {
+            lassign $candidate ts fromJid
             if {$replyTo eq ""
-                || ($isMuc && $row(from_jid) eq $replyTo)
-                || (!$isMuc && [jid bare $row(from_jid)] eq [jid bare $replyTo])} {
-                set result $row(timestamp)
-                break
+                || ($isMuc && $fromJid eq $replyTo)
+                || (!$isMuc && [jid bare $fromJid] eq [jid bare $replyTo])} {
+                return $ts
             }
         }
-        return $result
+        return ""
     }
 
     # --- Outgoing upload lifecycle -------------------------------------
@@ -1233,20 +1249,24 @@ snit::type taco_messagestore {
         dict set d retracted [expr {[dict get $d retracted] != 0}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
-            # Normalize the replied-to author the same way from_jid is
-            # normalized, so the GUI reads it instead of parsing chat_jid.
-            dict set d reply_author_jid \
-                [NormalizeAuthorJid $chatJid [dict get $d reply_to]]
             set targetTs [$self resolveReply $chatJid \
                 [dict get $d reply_id] [dict get $d reply_to]]
             if {$targetTs ne ""} {
-                set targetBody [$options(-db) onecolumn {
-                    SELECT body FROM chat_message
+                dict set d reply_to_ts $targetTs
+                # Trust the resolved row's own from_jid over the stanza's
+                # reply-to attribute, which peer clients can get wrong.
+                lassign [$options(-db) eval {
+                    SELECT from_jid, body FROM chat_message
                     WHERE chat_jid=$chatJid AND timestamp=$targetTs
-                }]
+                }] targetFrom targetBody
+                dict set d reply_author_jid \
+                    [NormalizeAuthorJid $chatJid $targetFrom]
                 if {$targetBody ne ""} {
                     dict set d reply_body [ReplyPreview $targetBody]
                 }
+            } else {
+                dict set d reply_author_jid \
+                    [NormalizeAuthorJid $chatJid [dict get $d reply_to]]
             }
         }
         # Fold the payload into a typed content union; a retracted row is a

@@ -727,16 +727,25 @@ snit::type taco_message {
         set replyTo ""
         set wireBody $opts(-body)
         set fbEnd 0
+        set encMode [$self OutgoingEncMode $opts(-chat) $msgType]
         if {[info exists opts(-reply_to_ts)] && $opts(-reply_to_ts) ne ""} {
             lassign [$self BuildReplyTarget $opts(-chat) $opts(-reply_to_ts)] \
                 replyId replyTo quoteBody
-            if {$replyId ne ""} {
+            # An OMEMO-encrypted body is only visible after decryption, by
+            # which point a peer's XEP-0428 fallback-stripping has already
+            # run against the (unrelated) cleartext warning body -- there's
+            # no valid offset to publish. Skip quoting; <reply> alone
+            # covers context there instead of a doubled-up quote.
+            #
+            # TODO: XEP-0420 (SCE) could carry the fallback inside the
+            # encrypted envelope instead; needs an envelope builder/parser
+            # on both send and receive, plus OMEMO 2 (SCE is specified
+            # against urn:xmpp:omemo:2, not our current legacy namespace).
+            if {$replyId ne "" && $encMode ne "omemo"} {
                 lassign [reply::quote $quoteBody] quote fbEnd
                 set wireBody $quote$opts(-body)
             }
         }
-
-        set encMode [$self OutgoingEncMode $opts(-chat) $msgType]
         set stanza ""
         set status "pending"
         set failReason ""
