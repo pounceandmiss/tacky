@@ -30,7 +30,7 @@ snit::widget accountwindow {
     variable logNativeVar 0
     variable loggingMenu ""
     # Must match taco_file's fallbacks; it is what enforces them.
-    variable autofetchVar "everyone"
+    variable autofetchVar "contacts"
     variable autofetchMaxVar 5242880
     variable statusLabel ""
     variable statusAfter ""
