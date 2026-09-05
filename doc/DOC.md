@@ -1262,9 +1262,11 @@ URL costs two thumbnails; a download that joins one already in flight gets the
 size that fetch asked for, and its own size on the next call.
 
 **Autofetch.** Two settings bound what gets pulled without the user asking.
-`attachment_autofetch` is `everyone` (the default), `contacts` (a roster
-subscription of `to`, `from` or `both`), or `never`; a room JID is not a
-roster entry, so under `contacts` group chats don't autofetch.
+`attachment_autofetch` is `contacts` (a roster subscription of `to`, `from` or
+`both`), `everyone`, or `never`; a room JID is not a roster entry, so under
+`contacts` group chats don't autofetch. It defaults to `contacts` because a
+fetch is an outbound request to a host the sender chose: on `everyone` a
+stranger's message reports the user's IP on arrival.
 `attachment_autofetch_max` is a byte cap, default `5242880`, `0` for
 unlimited, checked against `Content-Length` and again against the bytes
 actually arriving. Both apply only to `download` calls made with `auto`, so a

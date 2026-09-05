@@ -50,7 +50,7 @@ snit::type taco_file {
     typevariable THUMB_MAX  320
     typevariable THUMB_LIMIT 2048
     typevariable HttpRegistered 0
-    typevariable AUTOFETCH_DEFAULT everyone
+    typevariable AUTOFETCH_DEFAULT contacts
     typevariable AUTOFETCH_MAX_DEFAULT 5242880
 
     variable client
@@ -213,8 +213,11 @@ snit::type taco_file {
             $AUTOFETCH_MAX_DEFAULT]
     }
 
-    # A room JID is never a roster entry, so under "contacts" a MUC image waits
-    # for a click. Callers exempt the user's own sends by omitting -auto.
+    # Defaults to "contacts": a fetch is an outbound request to a host the
+    # sender chose, so under "everyone" a stranger's message reports our IP on
+    # arrival. A room JID is never a roster entry, so under "contacts" a MUC
+    # image waits for a click. Callers exempt the user's own sends by omitting
+    # -auto.
     method AutofetchAllowed {from} {
         switch -- [taco_setting_get $client attachment_autofetch \
                 $AUTOFETCH_DEFAULT] {

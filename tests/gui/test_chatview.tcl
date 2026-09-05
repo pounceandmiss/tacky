@@ -307,6 +307,9 @@ test chatview-cancel-download-drops-the-progress-row \
     {cancelling an inline image download leaves a plain caption} \
     {*}$cv_common \
     -body {
+        # The default policy holds back a stranger, and this test needs the
+        # fetch to start.
+        tacky setting set -key attachment_autofetch -value everyone
         lassign [cv_deaf_server] srv port
         set url http://127.0.0.1:$port/pic.png
         $::_client conn feed [j message -type chat \

@@ -654,13 +654,16 @@ proc af_last {} {
     return $out
 }
 
-test file-autofetch-defaults {unset settings mean everyone, capped at 5 MB} \
+test file-autofetch-defaults {unset settings mean contacts, capped at 5 MB} \
     {*}$file_env -body {
-        set unset [list [$::_client file AutofetchAllowed stranger@elsewhere.example] \
+        af_contact friend@test.example.com both
+        set unset [list \
+            [$::_client file AutofetchAllowed stranger@elsewhere.example] \
+            [$::_client file AutofetchAllowed friend@test.example.com] \
             [$::_client file AutofetchMax]]
         tacky setting set -key attachment_autofetch_max -value 0
         list $unset stored=[$::_client file AutofetchMax]
-    } -result {{1 5242880} stored=0}
+    } -result {{0 1 5242880} stored=0}
 
 test file-autofetch-contacts {contacts policy admits only a subscribed contact} \
     {*}$file_env -body {
@@ -673,7 +676,7 @@ test file-autofetch-contacts {contacts policy admits only a subscribed contact} 
              nofrom=[$::_client file AutofetchAllowed ""]
     } -result {friend=1 pending=0 stranger=0 nofrom=0}
 
-# MUC images ride on the "everyone" default rather than a special case.
+# MUC images need "everyone" picked deliberately; there is no room exemption.
 test file-autofetch-muc-not-a-contact {contacts policy does not autofetch a room} \
     {*}$file_env -body {
         af_policy contacts
