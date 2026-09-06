@@ -158,11 +158,16 @@ snit::type taco_storage {
         return
     }
 
+    # A resolved gate is a normal boot: run the CompleteUnlock the constructor
+    # or unlock deferred. Not while locked - unlock completes the boot itself.
     tackymethod cancelPending {args} {
         if {[$self MarkerRead] eq ""} {
             error "nothing is pending"
         }
         $self MarkerDelete
+        if {$State ne "locked"} {
+            $options(-taco) CompleteUnlock
+        }
         return
     }
 
