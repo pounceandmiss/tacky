@@ -243,6 +243,77 @@ test storage-cancel-pending-clears-marker {cancelPending reverts status to the p
         list $before [tacky storage status]
     } -result {pending-encrypt plaintext}
 
+test storage-cancel-pending-encrypt-completes-boot \
+    {cancelling the pre-boot encrypt gate installs the modules the constructor deferred} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        tacky storage requestEncrypt
+        tacky destroy
+    } -cleanup {
+        catch {tacky destroy}
+        file delete -force $cfg
+    } -body {
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        set results {}
+        lappend results relaunch=[tacky storage status]
+        tacky storage cancelPending
+        lappend results settings-usable=[expr {![catch {tacky setting get -key log_to_file}]}]
+        lappend results accounts-usable=[expr {![catch {tacky account list}]}]
+        set results
+    } -result {relaunch=pending-encrypt settings-usable=1 accounts-usable=1}
+
+test storage-cancel-pending-decrypt-completes-boot \
+    {cancelling the pre-boot decrypt gate installs the modules unlock deferred} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        tacky storage encrypt -passphrase cancelpass
+        tacky storage requestDecrypt
+        tacky destroy
+    } -cleanup {
+        catch {tacky destroy}
+        file delete -force $cfg
+    } -body {
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        set results {}
+        tacky storage unlock -passphrase cancelpass
+        lappend results after-unlock=[tacky storage status]
+        tacky storage cancelPending
+        lappend results after-cancel=[tacky storage status]
+        lappend results settings-usable=[expr {![catch {tacky setting get -key log_to_file}]}]
+        set results
+    } -result {after-unlock=pending-decrypt after-cancel=unlocked settings-usable=1}
+
+test storage-cancel-pending-decrypt-while-locked-stays-locked \
+    {cancelling a decrypt before unlocking leaves storage locked, boot still deferred} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        tacky storage encrypt -passphrase cancelpass
+        tacky storage requestDecrypt
+        tacky destroy
+    } -cleanup {
+        catch {tacky destroy}
+        file delete -force $cfg
+    } -body {
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        set results {}
+        tacky storage cancelPending
+        lappend results status=[tacky storage status]
+        lappend results settings-installed=[expr {![catch {tacky setting get -key log_to_file}]}]
+        tacky storage unlock -passphrase cancelpass
+        lappend results after-unlock=[tacky storage status]
+        lappend results settings-usable=[expr {![catch {tacky setting get -key log_to_file}]}]
+        set results
+    } -result {status=locked settings-installed=0 after-unlock=unlocked settings-usable=1}
+
 # -- stale pending markers self-heal at construction -------------------------
 
 test storage-stale-encrypt-marker-cleaned-when-actually-locked \

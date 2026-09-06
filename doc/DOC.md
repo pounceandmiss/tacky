@@ -330,6 +330,8 @@ passphrase yet, nothing on disk changes - reflected as `pending-encrypt`/
 before any account connects, gated on that pending status - `encrypt`
 collects the passphrase there (never persisted from the request) and drops
 straight into normal operation in that same process, no further restart.
+Cancelling at that startup gate also drops into normal operation: the
+remaining modules come up and the enabled accounts connect.
 
 Both stage every db plus every OMEMO/XEP-0454 attachment (a plain one is
 never touched) before swapping anything into place; `<MigrateProgress>`
