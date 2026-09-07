@@ -45,7 +45,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 .PHONY: all \
 	tacky tackyd tackyd-json lib \
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
-	mac mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
+	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
 	linux flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
@@ -58,7 +58,10 @@ all: tacky tackyd tackyd-json
 # tree (below), and each tree belongs to one toolchain, so no two ever share
 # compiled artifacts.
 LINUX_BUILD := $(CURDIR)/build/linux
-MAC_BUILD   := $(CURDIR)/build/macos
+# The mac targets are native (see mac-guard), so on a Mac they and the plain
+# build are the same compiler against the same deps - one tree serves both, and
+# `make mac` after a dev build is a relink rather than a second WebRTC build.
+MAC_BUILD   := $(LINUX_BUILD)
 
 # One source cache shared by the native and Windows trees. zippy defaults
 # DEPSDIR to $(BASEDIR)/_build/deps, which would give each target here its own
@@ -102,9 +105,18 @@ lib: dist-dir
 	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
 
 # zippy has no mac-app/.dmg target - TARGET_OS=macos just retargets `app`.
+# It is also not a cross target: it leaves CROSS_OVERLAY unset and builds with
+# the host toolchain, so off a Mac these would emit a Linux binary under a
+# -macos name rather than fail. The mac targets exist for the platform-suffixed
+# dist artifacts (dist/libtacky-macos.a has no other producer); a Mac dev builds
+# and tests through the native targets above.
+mac-guard:
+	@[ "$$(uname -s)" = Darwin ] || { \
+	    echo "make: macOS builds are native; run this on a Mac" >&2; exit 1; }
+
 mac: mac-tacky mac-tackyd mac-tackyd-json
 
-mac-tacky mac-tackyd mac-tackyd-json: mac-%: dist-dir
+mac-tacky mac-tackyd mac-tackyd-json: mac-%: mac-guard dist-dir
 	$(MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=macos \
 	    BIN_NAME=$* \
@@ -118,7 +130,7 @@ mac-tacky mac-tackyd mac-tackyd-json: mac-%: dist-dir
 	    app
 	$(call copy-if-changed,$(MAC_BUILD)/$*,dist/$*-macos)
 
-mac-lib: dist-dir
+mac-lib: mac-guard dist-dir
 	$(MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=macos \
 	    SHELL_TYPE=tclsh \
@@ -133,9 +145,9 @@ mac-lib: dist-dir
 	    lib
 	$(call copy-if-changed,$(MAC_BUILD)/libtacky.a,dist/libtacky-macos.a)
 
-# Drop the macOS build tree and its dist outputs, like win-clean.
+# The mac build shares the native tree, so this drops only the macOS dist
+# outputs; `clean` handles the tree itself.
 mac-clean:
-	rm -rf $(MAC_BUILD)
 	rm -f dist/*-macos dist/*-macos.a dist/*-macos.debug
 
 # ==== Windows cross-build ====
