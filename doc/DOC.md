@@ -532,6 +532,7 @@ carries it in `client`.
                content?: content,
                reply_id?: string, reply_to?: string,
                reply_author_jid?: string, reply_body?: string,
+               reply_to_ts?: int,
                reactions?: {*: {reactors: [string], mine: bool}}}
 
     content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
@@ -1112,18 +1113,22 @@ marked as a XEP-0428 fallback span. Pass the reply text alone: the quote is
 added on the way out and stripped on the way in, so a stored `body` never
 contains it.
 A `reply_to_ts` naming a row that isn't stored sends as an ordinary message
-rather than failing.
+rather than failing. Under OMEMO the quote is skipped and `<reply>` carries the
+context alone: a fallback span indexes the cleartext warning body a peer strips
+against before it decrypts, so no offset into the encrypted text is publishable.
 
-A message that is a reply carries four fields. `reply_id` is the wire id it
+A message that is a reply carries five fields. `reply_id` is the wire id it
 answers and `reply_to` the JID it was addressed to, both as they appeared on
-the wire. `reply_author_jid` is that author normalized the way `from_jid` is -
-an occupant JID in a room, a bare JID in a 1:1 - so it resolves through
-`author get` like any other author. `reply_body` is a shortened preview of the
-target, for rendering the quote inline; it is absent when the target isn't in
-the store. Jump to it by passing `reply_id` and `reply_to` to `gotoReply`,
-which resolves the id locally and then behaves like `goto`. An uncached target comes back with no
-`messages` and an empty `anchor` - there is no fetch-by-stanza-id, so a target
-beyond a hole is not reachable this way.
+the wire. `reply_to_ts` is the `timestamp` of the target row, and `reply_body` a
+shortened preview of it for rendering the quote inline; both are absent when the
+target isn't in the store. `reply_author_jid` is the target's author normalized
+the way `from_jid` is - an occupant JID in a room, a bare JID in a 1:1 - so it
+resolves through `author get` like any other author. It is read off the resolved
+row rather than off `reply_to`, which peers get wrong; with no row to read it
+falls back to `reply_to`. Jump to it by passing `reply_id` and `reply_to` to
+`gotoReply`, which resolves the id locally and then behaves like `goto`. An
+uncached target comes back with no `messages` and an empty `anchor` - there is
+no fetch-by-stanza-id, so a target beyond a hole is not reachable this way.
 
 **Catchup.** On connect the backend syncs your account archive; on joining a
 room it syncs that room's archive, which is the only sync a room gets, since
