@@ -1150,11 +1150,14 @@ test messagestore-resolvereply-author-mismatch {origin_id match but wrong MUC au
         store resolveReply $jid oxxx room@conf.example.com/charlie
     } -result {}
 
-test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when reply-to is a full JID} \
+test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when reply-to is a full JID, disambiguating a same-id collision} \
     {*}$ms_common \
     -body {
-        ms_batch [list [ms_msg timestamp 300 chat_jid bob@example.com \
-            from_jid bob@example.com origin_id u1 body target]]
+        ms_batch [list \
+            [ms_msg timestamp 300 chat_jid bob@example.com \
+                from_jid bob@example.com origin_id u1 body target] \
+            [ms_msg timestamp 400 chat_jid bob@example.com \
+                from_jid me@example.com origin_id u1 body other]]
         store resolveReply bob@example.com u1 bob@example.com/Phone.123
     } -result {300}
 
