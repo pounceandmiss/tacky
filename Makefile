@@ -11,10 +11,14 @@ COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
 # zippy wires up only tkdnd's X11 XDND backend and errors out on TARGET_OS=macos;
-# without it the GUI just loses drag-to-send. Only the native builds take the
-# host as their target, so the cross-builds keep it.
+# without it the GUI just loses drag-to-send. The mac targets name that target
+# outright; the native ones only hit it when the host is the Mac, and every
+# other cross-build keeps tkdnd.
+MACOS_DEPS_EXCL := tkdnd
+macos-deps = $(filter-out $(MACOS_DEPS_EXCL),$(1))
+
 ifeq ($(shell uname -s),Darwin)
-  NATIVE_DEPS_EXCL := tkdnd
+  NATIVE_DEPS_EXCL := $(MACOS_DEPS_EXCL)
 endif
 native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 
@@ -98,7 +102,6 @@ lib: dist-dir
 	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
 
 # zippy has no mac-app/.dmg target - TARGET_OS=macos just retargets `app`.
-# tkdnd is X11-only and errors under TARGET_OS=macos, so it's filtered out.
 mac: mac-tacky mac-tackyd mac-tackyd-json
 
 mac-tacky mac-tackyd mac-tackyd-json: mac-%: dist-dir
@@ -106,7 +109,7 @@ mac-tacky mac-tackyd mac-tackyd-json: mac-%: dist-dir
 	    TARGET_OS=macos \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
-	    DEPS="$(filter-out tkdnd,$($*_DEPS))" \
+	    DEPS="$(call macos-deps,$($*_DEPS))" \
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
