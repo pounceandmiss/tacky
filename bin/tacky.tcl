@@ -38,7 +38,12 @@ if {$idx >= 0} {
 }
 
 package require Tk
-ttk::style theme use clam
+# Native widgets where available; clam on X11.
+switch -- [tk windowingsystem] {
+    aqua  { ttk::style theme use aqua }
+    win32 { ttk::style theme use vista }
+    default { ttk::style theme use clam }
+}
 package require snit
 package require tkwuffs
 # Not built on macOS (no Aqua backend), and chatpanel.tcl already guards every

@@ -4154,3 +4154,42 @@ test message-error-mam-wrapped-drop {an error nested in a MAM result is not cont
         dict get [$::_client message ParseResultNode \
             $rn room@muc.example.com?join] verdict
     } -result drop
+
+test message-carbon-reply-resolves \
+    {a reply carbon-copied from another device resolves reply_body/reply_to_ts against its target} \
+    {*}$msg_common \
+    -body {
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client conn feed [j message -type chat -from $::acc {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id 1788479977524793 \
+                        -from "$::acc/another.im Desktop.10d63b5f" \
+                        -to alice@example.com {
+                        j body -body "original text"
+                    }
+                }
+            }
+        }]
+        $::_client conn feed [j message -type chat -from $::acc {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id 79a0c2cb-7f2d-4d8f-b34f-f6c02baa37b3 \
+                        -from "$::acc/another.im Desktop.10d63b5f" \
+                        -to alice@example.com {
+                        j reply -ns urn:xmpp:reply:0 \
+                            -to "$::acc/another.im Desktop.10d63b5f" \
+                            -id 1788479977524793
+                        j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                            j body -start 0 -end 16
+                        }
+                        j body -body "> original text\nreply text"
+                    }
+                }
+            }
+        }]
+        set reply [lindex [msg_store_latest alice@example.com] 1]
+        list [dict get $reply reply_id] \
+            [dict get $reply reply_body] \
+            [expr {[dict get $reply reply_to_ts] ne ""}]
+    } -result {1788479977524793 {original text} 1}
