@@ -10,6 +10,14 @@ COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
+# zippy wires up only tkdnd's X11 XDND backend and errors out on TARGET_OS=macos;
+# without it the GUI just loses drag-to-send. Only the native builds take the
+# host as their target, so the cross-builds keep it.
+ifeq ($(shell uname -s),Darwin)
+  NATIVE_DEPS_EXCL := tkdnd
+endif
+native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
+
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
@@ -60,7 +68,7 @@ tacky tackyd tackyd-json: %: dist-dir
 	$(MAKE) -f zippy/zippy.mk \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
-	    DEPS="$($*_DEPS)" \
+	    DEPS="$(call native-deps,$($*_DEPS))" \
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -324,7 +332,7 @@ $(LINUX_BUILD)/tclsh: Makefile
 $(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    SHELL_TYPE=wish \
-	    DEPS="$(COMMON_DEPS) tkwuffs tkdnd" \
+	    DEPS="$(call native-deps,$(COMMON_DEPS) tkwuffs tkdnd)" \
 	    BASEDIR=$(LINUX_BUILD) \
 	    DEPSDIR=$(DEPS_DIR) \
 	    wish
