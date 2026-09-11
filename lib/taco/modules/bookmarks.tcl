@@ -7,7 +7,11 @@
 # tacky bookmarks get -acc $jid
 # tacky bookmarks request -acc $jid
 # tacky bookmarks item -acc $jid -jid $roomJid ?-name ...? ?-autojoin ...? ?-nick ...? ?-password ...?
-# tacky bookmarks remove -acc $jid -jid $roomJid
+# tacky bookmarks remove -acc $jid -jid $roomJid ?-leave 0|1?
+#   -leave defaults to 1 (leaves the room first if currently joined, matching
+#   the native GUI's "Leave Room" menu item, which is this call unadorned).
+#   Pass -leave 0 to drop the bookmark without leaving a room you're in -
+#   a plain unstar, as opposed to leaving-and-forgetting.
 # tacky bookmarks nick -acc $jid -jid $roomJid -nick $nick
 # tacky bookmarks leave -acc $jid -jid $roomJid
 # tacky bookmarks autojoin -acc $jid -jid $roomJid
@@ -128,7 +132,7 @@ snit::type taco_bookmarks {
         }
         $self AutojoinOne $bm(jid)
 
-        $client iq request -type set -payload \
+        $client iq request -type set -command [mymethod OnPublishResult $bm(jid)] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node urn:xmpp:bookmarks:1 {
                     j #as-is [$self BookmarkItemNode bm]
@@ -153,6 +157,30 @@ snit::type taco_bookmarks {
                     }
                 }
             }]
+    }
+
+    # The publish/retract IQs above are otherwise fire-and-forget (no
+    # -command means the default no-op in iq.tcl silently swallows an error
+    # response), which let a failed retract go completely unnoticed: the
+    # local row was already gone, so the only sign was the bookmark
+    # reappearing from the next `bookmarks request` full refresh, as if the
+    # removal had never happened. Raising here instead routes the failure
+    # through the normal bgerror -> `error <Background>` path (see
+    # taco.tcl's ::taco_bg), which the frontend already surfaces.
+    method OnPublishResult {jid stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} return
+        error "Could not save bookmark for $jid: [$self ErrorCondition $stanza]"
+    }
+
+    method OnRetractResult {jid stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} return
+        error "Could not remove bookmark for $jid: [$self ErrorCondition $stanza]"
+    }
+
+    method ErrorCondition {stanza} {
+        set condition [xsearch $stanza error * -get tag]
+        if {$condition eq ""} { return unknown }
+        return $condition
     }
 
     # Change nickname in a room and update the bookmark.
@@ -340,16 +368,20 @@ snit::type taco_bookmarks {
         }
     }
 
-    # Remove a bookmark and leave the room if joined
+    # Remove a bookmark, leaving the room first if currently joined unless
+    # -leave 0 asks to just unstar it and stay.
     method remove {args} {
-        set jid [jid norm [jid bare [dict get $args -jid]]]
-        if {[$client muc isJoined -jid $jid]} {
+        array set opts {-leave 1}
+        array set opts $args
+        set jid [jid norm [jid bare $opts(-jid)]]
+        set doLeave [expr {$opts(-leave) ni {0 false}}]
+        if {$doLeave && [$client muc isJoined -jid $jid]} {
             $client muc leave -jid $jid
         }
         $client db eval {DELETE FROM bookmark WHERE jid=$jid}
         $client emit bookmarks <Changed> -action remove -jid $jid
 
-        $client iq request -type set -payload \
+        $client iq request -type set -command [mymethod OnRetractResult $jid] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j retract -node urn:xmpp:bookmarks:1 -notify true {
                     j item -id $jid
