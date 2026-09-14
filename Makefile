@@ -28,6 +28,11 @@ native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 WIN_DEPS_EXCL := rtcmv rtcmv_tk
 win-deps = $(filter-out $(WIN_DEPS_EXCL),$(1))
 
+# Same gap on Android: rtcmv_camera_camera2.c (M6) isn't written either, and
+# FrameChannel already stubs out video reception there for the same reason.
+ANDROID_DEPS_EXCL := rtcmv rtcmv_tk
+android-deps = $(filter-out $(ANDROID_DEPS_EXCL),$(1))
+
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
@@ -270,7 +275,7 @@ android: dist-dir
 	    TARGET_OS=android \
 	    BIN_NAME=tackyd-json \
 	    SHELL_TYPE=$(tackyd-json_SHELL) \
-	    DEPS="$(tackyd-json_DEPS)" \
+	    DEPS="$(call android-deps,$(tackyd-json_DEPS))" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="$(tackyd-json_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -288,7 +293,7 @@ android-lib: dist-dir
 	$(ANDROID_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=android \
 	    SHELL_TYPE=tclsh \
-	    DEPS="$(tackyd-json_DEPS)" \
+	    DEPS="$(call android-deps,$(tackyd-json_DEPS))" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
