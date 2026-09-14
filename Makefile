@@ -22,6 +22,12 @@ ifeq ($(shell uname -s),Darwin)
 endif
 native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 
+# rtc-mv has no Windows camera backend yet (rtcmv_camera_mf.c - M7, not
+# written); building it cross-compiled just fails cmake's configure on a
+# missing source file. Audio-only there until that lands.
+WIN_DEPS_EXCL := rtcmv rtcmv_tk
+win-deps = $(filter-out $(WIN_DEPS_EXCL),$(1))
+
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
@@ -196,7 +202,7 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	    TARGET_OS=windows \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
-	    DEPS="$($*_DEPS)" \
+	    DEPS="$(call win-deps,$($*_DEPS))" \
 	    SOURCES="$($*_SRC)" \
 	    ENTRY_SCRIPT="$($*_ENT)" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -214,7 +220,7 @@ win-lib: dist-dir
 	$(WIN_MAKE) -f zippy/zippy.mk \
 	    TARGET_OS=windows \
 	    SHELL_TYPE=tclsh \
-	    DEPS="$(tackyd-json_DEPS)" \
+	    DEPS="$(call win-deps,$(tackyd-json_DEPS))" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
