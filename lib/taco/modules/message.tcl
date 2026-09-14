@@ -1567,6 +1567,16 @@ snit::type taco_message {
     # Fire one MAM page anchored on the nearest citizen in the queried
     # direction (oldest at-or-after $before, newest at-or-before $after), or
     # cursorless when none exists. `attempt` bounds the OnFetch retry loop.
+    #
+    # A citizen missing a `server_id` (no <stanza-id> ever seen for it --
+    # e.g. a gateway-bridged chat whose live delivery isn't archive-stamped)
+    # can't anchor an RSM cursor at all; falling through to a fully
+    # cursorless query would silently answer with the archive's newest page
+    # instead of paging backward, which reads as "this chat has no more
+    # history" forever after. -start/-end (XEP-0082 time bounds, no
+    # stanza-id required) page by time instead: -end plus RSM's `-before {}`
+    # ("last page of the result set") asks for the newest $limit messages
+    # at-or-before that time, symmetric to -start for the "newer" direction.
     method QueryServer {chatJid before after limit callback onerror tag \
                         wasBounded attempt} {
         set direction [expr {$after ne "" ? "newer" : "older"}]
@@ -1579,7 +1589,11 @@ snit::type taco_message {
                   AND timestamp >= $before
                 ORDER BY timestamp ASC LIMIT 1
             }]
-            if {$cursorId ne ""} { lappend mamArgs -before $cursorId }
+            if {$cursorId ne ""} {
+                lappend mamArgs -before $cursorId
+            } else {
+                lappend mamArgs -end [FormatTimestampISO $before] -before ""
+            }
         } elseif {$after ne ""} {
             set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
@@ -1587,7 +1601,11 @@ snit::type taco_message {
                   AND timestamp <= $after
                 ORDER BY timestamp DESC LIMIT 1
             }]
-            if {$cursorId ne ""} { lappend mamArgs -after $cursorId }
+            if {$cursorId ne ""} {
+                lappend mamArgs -after $cursorId
+            } else {
+                lappend mamArgs -start [FormatTimestampISO $after]
+            }
         } else {
             set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
