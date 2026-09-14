@@ -112,6 +112,7 @@
 
 package require rtc
 package require rtcma
+package require rtcmv
 package require omemo
 
 snit::type taco_calls {
@@ -123,6 +124,13 @@ snit::type taco_calls {
     typevariable MID            audio
     typevariable PAYLOAD_TYPE   111
     typevariable AUDIO_CHANNELS 2
+
+    # Video: a second sendrecv m-line, VP8 only. Mid "video", PT 96,
+    # 90 kHz clock. rtx/NACK is deferred (rtc-mv recovers loss with a
+    # keyframe request), so no apt/rtx payload is offered.
+    typevariable VIDEO_MID   video
+    typevariable VIDEO_PT    96
+    typevariable VIDEO_CLOCK 90000
 
     # Ceiling on candidates buffered during the JMI window; a peer trickles
     # a handful, so anything past this is not worth keeping.
@@ -143,6 +151,7 @@ snit::type taco_calls {
         $client caps addFeature urn:xmpp:jingle:1
         $client caps addFeature urn:xmpp:jingle:apps:rtp:1
         $client caps addFeature urn:xmpp:jingle:apps:rtp:audio
+        $client caps addFeature urn:xmpp:jingle:apps:rtp:video
         $client caps addFeature urn:xmpp:jingle:apps:dtls:0
         $client caps addFeature urn:xmpp:jingle:transports:ice-udp:1
         $client caps addFeature urn:xmpp:jingle-message:0
@@ -160,18 +169,29 @@ snit::type taco_calls {
     # =========================================================================
 
     tackymethod start {args} {
-        array set opts {-to ""}
+        array set opts {-to "" -video 0}
         array set opts $args
         if {$opts(-to) eq ""} { error "start: -to required" }
 
         set bare [jid bare $opts(-to)]
         set sid [$self NewSid]
-        dict set Calls $sid [dict create \
-            peer $bare initiator 1 state proposed peer_ringing 0 \
-            pc -1 track -1 capturer "" player ""]
+        set wantVideo [expr {$opts(-video) ? 1 : 0}]
+        dict set Calls $sid [$self NewCallDict $bare 1 proposed $wantVideo]
         $client emit calls <Outgoing> -sid $sid -to $bare
-        $client write [$self BuildJmiMessage $bare propose $sid 1]
+        $client write [$self BuildJmiMessage $bare propose $sid 1 $wantVideo]
         return $sid
+    }
+
+    # Per-call state dict. peer is bare until proceeded, then full JID.
+    # video_local  : 1 if this side offered/wants to send video
+    # video_remote : 1 if the peer's propose advertised media=video
+    # vtrack/vsender/vreceiver/vchannel : the video half, "" / -1 when absent
+    method NewCallDict {peer initiator state wantVideo} {
+        return [dict create \
+            peer $peer initiator $initiator state $state peer_ringing 0 \
+            pc -1 track -1 capturer "" player "" \
+            video_local $wantVideo video_remote 0 \
+            vtrack -1 vsender "" vreceiver "" vchannel ""]
     }
 
     tackymethod accept {args} {
@@ -255,9 +275,23 @@ snit::type taco_calls {
                 peer         [jid bare [dict get $call peer]] \
                 direction    $direction \
                 state        [dict get $call state] \
-                peer_ringing [dict get $call peer_ringing]]
+                peer_ringing [dict get $call peer_ringing] \
+                video_local  [dict get $call video_local] \
+                video_remote [dict get $call video_remote]]
         }
         return $out
+    }
+
+    # Mute / unmute the local camera on a live video call. Video is
+    # negotiated at start/answer; this only toggles capture.
+    tackymethod setVideo {args} {
+        array set opts {-sid "" -on 1}
+        array set opts $args
+        if {![dict exists $Calls $opts(-sid)]} return
+        set snd [dict get $Calls $opts(-sid) vsender]
+        if {$snd eq ""} return
+        catch {::rtcmv::sender::set-enabled $snd [expr {$opts(-on) ? 1 : 0}]}
+        return
     }
 
     # Hot-swap mic / speaker for a live call. Empty id = system default.
@@ -284,6 +318,19 @@ snit::type taco_calls {
                 $client emit calls <Warning> -sid $opts(-sid) \
                     -reason "output device unavailable: $err"
             }
+        }
+        return
+    }
+
+    # Hook called by the global `video` module after the preferred
+    # camera changes - hot-swap the camera on every live video call.
+    tackymethod applyPreferredCamera {args} {
+        array set opts {-id ""}
+        array set opts $args
+        foreach sid [dict keys $Calls] {
+            set snd [dict get $Calls $sid vsender]
+            if {$snd eq ""} continue
+            catch {::rtcmv::sender::reopen $snd -device-id $opts(-id)}
         }
         return
     }
@@ -368,6 +415,22 @@ snit::type taco_calls {
         return [join $lines \r\n]
     }
 
+    # One sendrecv VP8 video m-line. nack/pli/ccm feedback is advertised
+    # so libwebrtc peers send us PLIs (rtc-mv turns those into keyframes);
+    # rtc-mv itself needs no negotiated header extensions.
+    method BuildVideoMediaDesc {} {
+        set lines [list \
+            "video 9 UDP/TLS/RTP/SAVPF $VIDEO_PT" \
+            "a=mid:$VIDEO_MID" \
+            "a=sendrecv" \
+            "a=rtpmap:$VIDEO_PT VP8/$VIDEO_CLOCK" \
+            "a=rtcp-fb:$VIDEO_PT nack" \
+            "a=rtcp-fb:$VIDEO_PT nack pli" \
+            "a=rtcp-fb:$VIDEO_PT ccm fir" \
+            "a=rtcp-fb:$VIDEO_PT goog-remb"]
+        return [join $lines \r\n]
+    }
+
     # Attach a mic capturer + speaker player to a sendrecv track.
     # rtc-ma supports both on one track id: the player owns the
     # message-callback / RTP recv side, the capturer only ever calls
@@ -414,6 +477,78 @@ snit::type taco_calls {
         dict set Calls $sid player   $player
     }
 
+    # Stand up the rtc-mv sender on a (sendrecv) video track: camera ->
+    # VP8 -> RTP. Emits <VideoPreview> with the local-camera ring so the
+    # GUI can show a self-view.
+    method AttachVideoSender {sid track} {
+        if {[dict get $Calls $sid vsender] ne ""} return
+        set taco [$client cget -taco]
+        set camId ""
+        catch {set camId [$taco video getPreferredCamera]}
+        set snd [::rtcmv::sender::new -device-id $camId -preview 1]
+        if {[catch {::rtcmv::sender::attach $snd $track} err]} {
+            catch {::rtcmv::sender::destroy $snd}
+            $client emit calls <Warning> -sid $sid -reason "video sender: $err"
+            return
+        }
+        ::rtcmv::sender::start $snd
+        dict set Calls $sid vsender $snd
+        if {![catch {::rtcmv::sender::preview-shm $snd} pv]} {
+            $client emit calls <VideoPreview> -sid $sid -direction preview \
+                {*}[$self ShmEventArgs $pv]
+        }
+    }
+
+    # Stand up the rtc-mv receiver on a video track: RTP -> VP8 -> I420
+    # into a named shm ring. Emits <VideoTrack> pointing the GUI at it.
+    method AttachVideoReceiver {sid track} {
+        if {[dict get $Calls $sid vreceiver] ne ""} return
+        set rcv [::rtcmv::receiver::new]
+        if {[catch {::rtcmv::receiver::attach $rcv $track} err]} {
+            catch {::rtcmv::receiver::destroy $rcv}
+            $client emit calls <Warning> -sid $sid -reason "video receiver: $err"
+            return
+        }
+        ::rtcmv::receiver::start $rcv
+        dict set Calls $sid vtrack    $track
+        dict set Calls $sid vreceiver $rcv
+        set sh [::rtcmv::receiver::shm $rcv]
+        dict set Calls $sid vchannel [dict get $sh channel]
+        $client emit calls <VideoTrack> -sid $sid -mid $VIDEO_MID \
+            -direction incoming {*}[$self ShmEventArgs $sh]
+    }
+
+    # Turn an rtc-mv shm dict into calls-event -flag args. The fd is kept
+    # out (POSIX frontends open by name; Android takes it over JNI).
+    method ShmEventArgs {sh} {
+        return [list \
+            -channel   [dict get $sh channel] \
+            -name      [dict get $sh name] \
+            -slots     [dict get $sh slots] \
+            -slotBytes [dict get $sh slotBytes] \
+            -maxWidth  [dict get $sh maxWidth] \
+            -maxHeight [dict get $sh maxHeight] \
+            -format    [dict get $sh format]]
+    }
+
+    # Free the video half of a call. Called from TeardownMedia before the
+    # pc is deleted (the rtc-mv handles own the track callback).
+    method TeardownVideo {sid} {
+        if {![dict exists $Calls $sid]} return
+        set call [dict get $Calls $sid]
+        set snd [dict get $call vsender]
+        set rcv [dict get $call vreceiver]
+        set hadVideo [expr {$snd ne "" || $rcv ne ""}]
+        if {$snd ne ""} { catch {::rtcmv::sender::destroy   $snd} }
+        if {$rcv ne ""} { catch {::rtcmv::receiver::destroy $rcv} }
+        dict set Calls $sid vsender   ""
+        dict set Calls $sid vreceiver ""
+        dict set Calls $sid vtrack    -1
+        if {$hadVideo} {
+            $client emit calls <VideoEnded> -sid $sid -mid $VIDEO_MID
+        }
+    }
+
     # Free media + pc for one call. Ordering matters: rtcma handles
     # own the libdatachannel track's message callback + user pointer,
     # so they must be destroyed before ::rtc::pc::delete frees the
@@ -424,6 +559,7 @@ snit::type taco_calls {
         set capturer [dict get $call capturer]
         set player   [dict get $call player]
         set pc       [dict get $call pc]
+        $self TeardownVideo $sid
         if {$capturer ne ""} { catch {::rtcma::capturer::destroy $capturer} }
         if {$player   ne ""} { catch {::rtcma::player::destroy   $player}   }
         if {$pc != -1} {
@@ -611,10 +747,29 @@ snit::type taco_calls {
         if {![info exists PcToSid($pc)]} return
         set sid $PcToSid($pc)
         set call [dict get $Calls $sid]
-        # On the callee, the offer's m-section creates a track id that
-        # we attach our capturer + player to. The caller already
-        # attached media to its locally-added track, so it shouldn't
-        # see this firing — guard against double-attach anyway.
+
+        # Dispatch by media type, not mid: a real peer's own offer uses
+        # its own BUNDLE mids, not our "audio"/"video" literals. Match
+        # needs the "m=" prefix - get-description returns the full line.
+        set isVideo 0
+        if {![catch {::rtc::track::get-description $tr} desc]} {
+            set isVideo [string match "m=video *" $desc]
+        }
+        if {!$isVideo} {
+            # Fallback covers our own locally-added tracks.
+            set mid ""
+            catch {set mid [::rtc::track::get-mid $tr]}
+            set isVideo [expr {$mid eq $VIDEO_MID}]
+        }
+
+        if {$isVideo} {
+            if {[dict get $call vtrack] != -1} return
+            $self AttachVideoReceiver $sid $tr
+            if {[dict get $call video_local]} {
+                $self AttachVideoSender $sid $tr
+            }
+            return
+        }
         if {[dict get $call track] != -1} return
         $self AttachMedia $sid $tr
     }
@@ -650,12 +805,21 @@ snit::type taco_calls {
         if {[jid bare $from] eq $myBare} return
         # Duplicate or sid collision: ignore.
         if {[dict exists $Calls $sid]} return
-        dict set Calls $sid [dict create \
-            peer $from initiator 0 state ringing peer_ringing 0 \
-            pc -1 track -1 capturer "" player ""]
+
+        set ns urn:xmpp:jingle-message:0
+        set child [xsearch $stanza propose -ns $ns -get node]
+        set hasVideo [$self ProposeHasVideo $child]
+
+        dict set Calls $sid [$self NewCallDict $from 0 ringing 0]
+        dict set Calls $sid video_remote $hasVideo
+        # We answer video symmetrically: if they offered it, we intend to
+        # send it too (the GUI can still mute the camera).
+        dict set Calls $sid video_local $hasVideo
+
         # XEP-0353 §4: tell the initiator this device is alerting the user.
         $client write [$self BuildJmiMessage $from ringing $sid 0]
-        $client emit calls <Incoming> -sid $sid -from [jid bare $from]
+        $client emit calls <Incoming> -sid $sid -from [jid bare $from] \
+            -video $hasVideo
     }
 
     method HandleJmiRinging {stanza sid from} {
@@ -705,6 +869,11 @@ snit::type taco_calls {
         set pc [$self CreatePc $sid $iceServers]
         set track [::rtc::pc::add-track $pc [$self BuildAudioMediaDesc]]
         $self AttachMedia $sid $track
+        if {[dict get $Calls $sid video_local]} {
+            set vt [::rtc::pc::add-track $pc [$self BuildVideoMediaDesc]]
+            $self AttachVideoSender $sid $vt
+            $self AttachVideoReceiver $sid $vt
+        }
         # Empty type = libdatachannel infers offer (no remote desc set).
         ::rtc::pc::set-local-description $pc ""
     }
@@ -742,7 +911,7 @@ snit::type taco_calls {
         }
     }
 
-    method BuildJmiMessage {to action sid wantDescription} {
+    method BuildJmiMessage {to action sid wantDescription {wantVideo 0}} {
         set ns urn:xmpp:jingle-message:0
         return [j message -to $to -type chat {
             if {$wantDescription} {
@@ -750,11 +919,25 @@ snit::type taco_calls {
                     j description \
                         -ns urn:xmpp:jingle:apps:rtp:1 \
                         -media audio
+                    if {$wantVideo} {
+                        j description \
+                            -ns urn:xmpp:jingle:apps:rtp:1 \
+                            -media video
+                    }
                 }
             } else {
                 j $action -ns $ns -id $sid
             }
         }]
+    }
+
+    # Does an inbound JMI <propose> advertise a video <description>?
+    method ProposeHasVideo {child} {
+        foreach d [xsearch $child description \
+                       -ns urn:xmpp:jingle:apps:rtp:1 -gather node] {
+            if {[xsearch $d -get @media] eq "video"} { return 1 }
+        }
+        return 0
     }
 
     # =========================================================================
@@ -803,7 +986,7 @@ snit::type taco_calls {
         # them — producing opus_decode -4 on every packet. Strip
         # non-opus payload-types before to_sdp so the answer offers
         # opus only.
-        set jingle [$self FilterOpusOnly $jingle]
+        set jingle [$self FilterCodecs $jingle]
         set sdp [::jinglesdp::to_sdp $jingle -initiator 0]
         jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
         dict set Calls $sid peer $from
@@ -952,7 +1135,9 @@ snit::type taco_calls {
     # <payload-type> whose name isn't "opus" from each rtp <description>.
     # Mirrors gajim's codec filter: keep the negotiation honest about
     # what we can actually decode.
-    method FilterOpusOnly {jingle} {
+    # Per media kind, keep only what rtc-ma/rtc-mv can decode: opus for
+    # audio, VP8 for video. Everything else gets dropped.
+    method FilterCodecs {jingle} {
         set NS_RTP urn:xmpp:jingle:apps:rtp:1
         set jc {}
         foreach c [dict get $jingle children] {
@@ -961,6 +1146,11 @@ snit::type taco_calls {
                 foreach d [dict get $c children] {
                     if {[dict get $d tag] eq "description"
                             && [dict get $d ns] eq $NS_RTP} {
+                        set media ""
+                        if {[dict exists $d attrs media]} {
+                            set media [dict get $d attrs media]
+                        }
+                        set keep [expr {$media eq "video" ? "vp8" : "opus"}]
                         set dc {}
                         foreach e [dict get $d children] {
                             if {[dict get $e tag] eq "payload-type"} {
@@ -968,7 +1158,7 @@ snit::type taco_calls {
                                 if {[dict exists $e attrs name]} {
                                     set name [dict get $e attrs name]
                                 }
-                                if {![string equal -nocase $name opus]} continue
+                                if {![string equal -nocase $name $keep]} continue
                             }
                             lappend dc $e
                         }

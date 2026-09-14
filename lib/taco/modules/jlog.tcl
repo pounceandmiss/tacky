@@ -20,6 +20,7 @@ snit::type jlog_type {
     typevariable NATIVE {
         libdatachannel ::rtc::set-log-level
         rtcma          ::rtcma::set-log-level
+        rtcmv          ::rtcmv::set-log-level
     }
 
     constructor args {
@@ -329,6 +330,7 @@ snit::type jlog_type {
         array set o {
             -debug-level "" -debug-file ""
             -libdatachannel-debug-level "" -rtcma-debug-level ""
+            -rtcmv-debug-level ""
         }
         array set o $args
         if {$o(-debug-level) ne ""} {
@@ -341,6 +343,7 @@ snit::type jlog_type {
         foreach {opt src} {
             -libdatachannel-debug-level libdatachannel
             -rtcma-debug-level          rtcma
+            -rtcmv-debug-level          rtcmv
         } {
             if {$o($opt) ne ""} {
                 $self setnativelevel -source $src -level $o($opt)

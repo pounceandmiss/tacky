@@ -9,6 +9,7 @@ namespace eval mockrtc {
     variable Cb
     variable Fail {}
     variable Seq
+    variable TrackMid
     variable Installed 0
 
     variable COMMANDS {
@@ -24,6 +25,9 @@ namespace eval mockrtc {
         ::rtc::pc::on-gathering-state-change
         ::rtc::pc::on-state-change
         ::rtc::pc::on-track
+        ::rtc::track::get-mid
+        ::rtc::track::get-description
+        ::rtc::track::request-keyframe
         ::rtcma::capturer::new
         ::rtcma::capturer::attach
         ::rtcma::capturer::start
@@ -36,6 +40,22 @@ namespace eval mockrtc {
         ::rtcma::player::set-volume
         ::rtcma::player::reopen
         ::rtcma::player::destroy
+        ::rtcmv::sender::new
+        ::rtcmv::sender::attach
+        ::rtcmv::sender::start
+        ::rtcmv::sender::reopen
+        ::rtcmv::sender::set-enabled
+        ::rtcmv::sender::set-bitrate
+        ::rtcmv::sender::request-keyframe
+        ::rtcmv::sender::preview-shm
+        ::rtcmv::sender::detach
+        ::rtcmv::sender::destroy
+        ::rtcmv::receiver::new
+        ::rtcmv::receiver::attach
+        ::rtcmv::receiver::start
+        ::rtcmv::receiver::shm
+        ::rtcmv::receiver::detach
+        ::rtcmv::receiver::destroy
     }
 }
 
@@ -69,10 +89,27 @@ proc mockrtc::reset {} {
     variable Cb
     variable Fail
     variable Seq
+    variable TrackMid
+    variable TrackDesc
     set Log {}
     set Fail {}
     array unset Cb
-    array set Seq {pc 100 track 200 handle 300}
+    array unset TrackMid
+    array unset TrackDesc
+    array set Seq {pc 100 track 200 handle 300 vhandle 400}
+}
+
+# A track id with an arbitrary mid + description, independent of our own
+# add-track (which always assigns "audio"/"video" literals) - simulates a
+# real peer's own numbered mid scheme.
+proc mockrtc::remoteTrack {mid desc} {
+    variable Seq
+    variable TrackMid
+    variable TrackDesc
+    set id [incr Seq(track)]
+    set TrackMid($id) $mid
+    set TrackDesc($id) $desc
+    return $id
 }
 
 proc mockrtc::log {} {
@@ -114,6 +151,7 @@ proc mockrtc::Dispatch {cmd args} {
     variable Cb
     variable Fail
     variable Seq
+    variable TrackMid
 
     lappend Log [linsert $args 0 $cmd]
 
@@ -137,9 +175,34 @@ proc mockrtc::Dispatch {cmd args} {
 
     switch -- $cmd {
         ::rtc::pc::new         { return [incr Seq(pc)] }
-        ::rtc::pc::add-track   { return [incr Seq(track)] }
+        ::rtc::pc::add-track   {
+            set id [incr Seq(track)]
+            set desc [lindex $args 1]
+            set TrackMid($id) [expr {[string match "video *" $desc] ? "video" : "audio"}]
+            return $id
+        }
         ::rtcma::capturer::new -
         ::rtcma::player::new   { return [incr Seq(handle)] }
+        ::rtc::track::get-mid  {
+            set id [lindex $args 0]
+            return [expr {[info exists TrackMid($id)] ? $TrackMid($id) : ""}]
+        }
+        ::rtc::track::get-description {
+            # Real shape: an m= line first ("m=" is not optional).
+            set id [lindex $args 0]
+            variable TrackDesc
+            if {[info exists TrackDesc($id)]} { return $TrackDesc($id) }
+            set m [expr {[info exists TrackMid($id)] ? $TrackMid($id) : "audio"}]
+            return "m=$m 9 UDP/TLS/RTP/SAVPF 96"
+        }
+        ::rtcmv::sender::new -
+        ::rtcmv::receiver::new { return [incr Seq(vhandle)] }
+        ::rtcmv::sender::preview-shm -
+        ::rtcmv::receiver::shm {
+            set h [lindex $args 0]
+            return [dict create name "/tv-mock$h" channel "vc-mock$h" fd -1 \
+                slots 6 slotBytes 1400000 maxWidth 1280 maxHeight 720 format I420]
+        }
     }
     return
 }

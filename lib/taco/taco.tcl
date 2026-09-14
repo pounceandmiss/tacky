@@ -199,6 +199,7 @@ snit::type taco_type {
     component account -public account
     component setting -public setting
     component audio -public audio
+    component video -public video
     component register -public register
     component debugtap -public debugtap
     component log -public log
@@ -277,6 +278,7 @@ snit::type taco_type {
             -db $db -taco $self -data-dir $options(-data-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
+        install video using taco_video ${selfns}::video -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
         install debugtap using taco_debugtap ${selfns}::debugtap -taco $self
         install log using taco_log ${selfns}::log \
@@ -292,6 +294,7 @@ snit::type taco_type {
         # dispatches onto a dead thread.
         catch {::rtc::set-log-level none}
         catch {::rtcma::set-log-level none}
+        catch {::rtcmv::set-log-level none}
         catch {
             foreach jid [$db eval {SELECT jid FROM account}] {
                 set client $self.client($jid)

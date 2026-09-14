@@ -6,7 +6,7 @@
 # milliseconds against the tens of megabytes the copy would move.
 copy-if-changed = cmp -s $(1) $(2) || cp $(1) $(2)
 
-COMMON_DEPS := tdom mtls tcllib rtc rtcma omemo tclwuffs
+COMMON_DEPS := tdom mtls tcllib rtc rtcma rtcmv omemo tclwuffs
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
@@ -25,7 +25,7 @@ native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
-tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd
+tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd rtcmv_tk
 tacky_SRC   := lib bin gui
 tacky_ENT   := bin/tacky.tcl
 tacky_ICON  := gui/icons/tacky.ico
@@ -384,10 +384,13 @@ $(LINUX_BUILD)/tclsh: Makefile
 	    DEPSDIR=$(DEPS_DIR) \
 	    tclsh
 
+# tackygui.tcl globs and sources every gui/*.tcl file, callwindow.tcl
+# included, so this dev shell needs rtcmv_tk too - it's not just a
+# release-binary concern.
 $(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f zippy/zippy.mk \
 	    SHELL_TYPE=wish \
-	    DEPS="$(call native-deps,$(COMMON_DEPS) tkwuffs tkdnd)" \
+	    DEPS="$(call native-deps,$(COMMON_DEPS) tkwuffs tkdnd rtcmv_tk)" \
 	    BASEDIR=$(LINUX_BUILD) \
 	    DEPSDIR=$(DEPS_DIR) \
 	    wish

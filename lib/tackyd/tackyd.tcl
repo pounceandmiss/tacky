@@ -11,6 +11,7 @@ package require taco
 variable tackyd_debug_flags {
     -debug-level -debug-file
     -libdatachannel-debug-level -rtcma-debug-level
+    -rtcmv-debug-level
 }
 
 # Split an argv into {debugFlags tacoArgs}. Both -foo and --foo spellings are
