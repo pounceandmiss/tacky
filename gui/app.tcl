@@ -18,6 +18,7 @@ snit::type app_type {
     option -debug-file -default "" -readonly yes
     option -libdatachannel-debug-level -default "" -readonly yes
     option -rtcma-debug-level -default "" -readonly yes
+    option -rtcmv-debug-level -default "" -readonly yes
     option -tackyd -default "" -readonly yes
 
     component notifier
@@ -75,7 +76,8 @@ snit::type app_type {
                 [mymethod ApplyLogLevel]
         }
         if {$options(-libdatachannel-debug-level) eq ""
-                && $options(-rtcma-debug-level) eq ""} {
+                && $options(-rtcma-debug-level) eq ""
+                && $options(-rtcmv-debug-level) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_native \
                 [mymethod ApplyLogNative]
         }
@@ -94,7 +96,8 @@ snit::type app_type {
     method DebugArgs {} {
         set out {}
         foreach opt {-debug-level -debug-file \
-                     -libdatachannel-debug-level -rtcma-debug-level} {
+                     -libdatachannel-debug-level -rtcma-debug-level \
+                     -rtcmv-debug-level} {
             if {$options($opt) ne ""} {
                 lappend out $opt $options($opt)
             }

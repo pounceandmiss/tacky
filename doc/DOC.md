@@ -32,6 +32,7 @@ and get back replies and events.
   - [file](#file)
   - [calls](#calls)
   - [audio](#audio)
+  - [video](#video)
   - [log](#log)
   - [error](#error)
 - [Guides](#guides)
@@ -39,7 +40,7 @@ and get back replies and events.
   - [The chat window](#the-chat-window)
   - [Attachments](#attachments)
   - [OMEMO](#omemo-1)
-  - [Voice calls](#voice-calls)
+  - [Voice and video calls](#voice-and-video-calls)
 
 # Using the backend
 
@@ -868,19 +869,23 @@ source: the `url` you passed, or the `path` when you passed no `url`.
 
 ## calls
 
-    calls start {to: string}                                       -> string   sid
+    calls start {to: string, video?: bool}                         -> string   sid
     calls accept {sid: string}
     calls reject {sid: string, reason?: string}                    reason default: decline
     calls hangup {sid: string, reason?: string}                    reason default: success
     calls setDevices {sid: string, input?: string, output?: string}
+    calls setVideo {sid: string, on?: bool}                        on default: true
     calls list {}                                                  -> [call_row]
 
     call_row = {sid: string, peer: string, direction: string, state: string,
-                peer_ringing: bool}
+                peer_ringing: bool, video_local: bool, video_remote: bool}
 
-`start` rings the peer. Take the session id from `<Outgoing>`.
-`setDevices` overrides the mic and speaker for a single call; an empty id means the system default. See
-[Voice calls](#voice-calls).
+`start` rings the peer; `video: true` offers a video track alongside audio.
+Take the session id from `<Outgoing>`.
+`setDevices` overrides the mic and speaker for a single call; an empty id means the system default.
+`setVideo` mutes or unmutes the local camera on a call that already
+negotiated video - it doesn't add video to a call that didn't. See
+[Voice and video calls](#voice-and-video-calls) below.
 
 `list` is every call the account has in flight, and the only way to learn a sid
 you didn't see `<Outgoing>` or `<Incoming>` for. A call leaves it the moment
@@ -889,20 +894,36 @@ you didn't see `<Outgoing>` or `<Incoming>` for. A call leaves it the moment
 is `outgoing` or `incoming`. Note that `ringing` means *you* are being rung, the
 callee side of `<Incoming>`; the caller side is `peer_ringing`, set once a peer
 device has answered `<Ringing>`. `peer` is bare, as the events report it, even
-after the session has latched a full JID.
+after the session has latched a full JID. `video_local` is whether this side
+offered/is sending video; `video_remote` is whether the peer did.
 
 Events:
 
-    calls <Outgoing> {sid: string, to: string}
-    calls <Incoming> {sid: string, from: string}
-    calls <Ringing>  {sid: string}
-    calls <Active>   {sid: string}
-    calls <Ended>    {sid: string}
-    calls <Failed>   {sid: string, reason: string}
-    calls <Warning>  {sid: string, reason: string}
+    calls <Outgoing>     {sid: string, to: string}
+    calls <Incoming>     {sid: string, from: string, video: bool}
+    calls <Ringing>      {sid: string}
+    calls <Active>       {sid: string}
+    calls <Ended>        {sid: string}
+    calls <Failed>       {sid: string, reason: string}
+    calls <Warning>      {sid: string, reason: string}
+    calls <VideoTrack>   {sid: string, mid: string, direction: string} & shm_ring
+    calls <VideoPreview> {sid: string, direction: string}            & shm_ring
+    calls <VideoEnded>   {sid: string, mid: string}
+
+    shm_ring = {channel: string, name: string, slots: int, slotBytes: int,
+                maxWidth: int, maxHeight: int, format: string}
 
 A call ends on exactly one of `<Ended>` or `<Failed>`. `<Warning>` is just
 informational and doesn't end anything.
+
+`<VideoTrack>` (`direction: "incoming"`) and `<VideoPreview>`
+(`direction: "preview"`, the local camera) each point at an I420 frame ring
+the frontend maps by `name`; `channel` is an opaque token carried alongside
+for platforms (Android) with no shared filesystem namespace to open a name
+from. `<VideoEnded>` fires alongside `<Ended>`/`<Failed>` for any call
+that had video up - `setVideo` only mutes the camera, it doesn't tear the
+video half down on its own. See
+[Voice and video calls](#voice-and-video-calls) for the ring's layout.
 
 ## audio
 
@@ -925,6 +946,22 @@ Events:
 
     audio <PreferredDevice> {kind: string, id: string}       preferred device changed
     audio <Volume>          {kind: string, volume: double}   gain changed
+
+## video
+
+    video enumerateCameras {}                              -> [camera]
+    video getPreferredCamera {}                            -> string   camera id ("" = let the backend pick)
+    video setPreferredCamera {id: string}                  -> ""
+
+    camera = {name: string, id: string, facing: int}
+
+Machine-wide camera selection, the video equivalent of `audio` - one
+preference for the machine, not per account. Setting a camera persists it
+and hot-swaps every live video call on every account.
+
+Events:
+
+    video <PreferredCamera> {id: string}   preferred camera changed
 
 ## log
 
@@ -953,14 +990,15 @@ will retry next are `info`.
 own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
 "debug"}` covers `gui.chatlist` and everything else under `gui`. Omit `obj` to
 read or move the default the rest inherit. Backend objects are already named
-this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`). `write` without `obj` records `frontend`.
+this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`, `rtcmv`). `write` without `obj` records `frontend`.
 
-`setnativelevel` drives the native loggers, `libdatachannel` and `rtcma`; omit
-`source` to set both. They start off, and `none` turns one off again;
-`--libdatachannel-debug-level` and `--rtcma-debug-level` set them at startup.
+`setnativelevel` drives the native loggers, `libdatachannel`, `rtcma` and
+`rtcmv`; omit `source` to set all three. They start off, and `none` turns one
+off again; `--libdatachannel-debug-level`, `--rtcma-debug-level` and
+`--rtcmv-debug-level` set them at startup.
 Their output is voluminous, so the ordinary level does not affect them, and jlog
 does not re-filter what the library already did. `getnativelevel` takes one
-`source`, since the two can differ.
+`source`, since the three can differ.
 
 `setfile` moves the sink at runtime, for a debug toggle or an export; an empty
 `path` goes back to stderr. The file is held open only for the length of one
@@ -1375,10 +1413,12 @@ never the problem. `<FingerprintChanged>`
 per-peer, and a single handler subscribed by `acc` covers every chat at
 once.
 
-## Voice calls
+## Voice and video calls
 
 Audio over Jingle (XEP-0166/0167/0176), set up through Jingle Message
-Initiation (XEP-0353).
+Initiation (XEP-0353). Video rides the same PeerConnection as a second
+track, offered by naming `video: true` on `start`, or answered symmetrically
+when the peer offered it.
 
 Caller: `calls start` sends a JMI `propose` to the bare JID and emits
 `<Outgoing>`. A peer device answering `ringing` gives you `<Ringing>`.
@@ -1386,14 +1426,30 @@ Their `proceed` kicks off fetching ICE servers, building the offer, sending
 `session-initiate`, and trickling candidates; the peer's `session-accept`
 applies the answer, media connects, and you get `<Active>`.
 
-Callee: an incoming `propose` gives you `<Incoming>` and auto-replies
-`ringing`. `calls accept` sends `proceed`, then media setup waits for
-`session-initiate`, which applies the offer and sends `session-accept`.
+Callee: an incoming `propose` gives you `<Incoming>` (with `video: true` if
+the caller offered it) and auto-replies `ringing`. `calls accept` sends
+`proceed`, then media setup waits for `session-initiate`, which applies the
+offer and sends `session-accept`.
 
 Either side ends the call with `calls hangup`. Before media is up the
 caller retracts over JMI instead of terminating; after that it's a Jingle
 `session-terminate`. Both land as `<Ended>`. `calls reject` on a call you
-placed yourself retracts it the same way.
+placed yourself retracts it the same way. Video, if either side had it up,
+ends with the call - there's no partial teardown of just the video half.
+
+Audio is decoded and played by the backend directly; the frontend never
+sees an audio sample. Video is decoded by the backend too, but frames are
+handed to the frontend rather than rendered by the backend itself: each of
+`<VideoTrack>` (remote) and `<VideoPreview>` (local camera) names a shared
+memory region holding a small ring of I420 frames - `slots` slots of
+`slotBytes` each, sized for up to `maxWidth`x`maxHeight`. The frontend opens
+it by `name` and reads the newest complete frame at its own pace; the
+producer never blocks on a slow or absent reader. This works
+the same way whether the frontend is in-process or a separate one talking
+over `--backend process`, since both just open a named region. `channel` is
+an opaque token carried alongside `name`, meant for a frontend with no
+filesystem namespace to open a name from - not currently used by any
+shipped frontend.
 
 Reconnecting without stream resumption ends every live call with `<Ended>`,
 because the peer cannot route anything back to a sid from the dead session.

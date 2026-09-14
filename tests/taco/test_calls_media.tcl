@@ -283,6 +283,37 @@ test media-track-attaches-once {a second on-track does not attach a second time}
             [dict get [dict get [calls_state] tk-m3] track]
     } -result {1 1 555}
 
+# Unlike `mockrtc::fire $pc track 555` above, remoteTrack carries its own
+# mid + description, simulating a real peer's own numbered mid scheme.
+
+test media-ontrack-video-numeric-mid \
+    {a video track with a peer-numbered mid ("0") dispatches to rtc-mv, not rtc-ma} \
+    {*}$media_env -body {
+        media_callee tk-m3v
+        set pc [media_pc tk-m3v]
+        set tr [mockrtc::remoteTrack "0" "m=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\n"]
+        mockrtc::fire $pc track $tr
+        list \
+            [expr {[dict get [dict get [calls_state] tk-m3v] vtrack] eq $tr}] \
+            [dict get [dict get [calls_state] tk-m3v] track] \
+            [llength [mockrtc::calls ::rtcmv::receiver::attach]] \
+            [llength [mockrtc::calls ::rtcma::capturer::attach]]
+    } -result {1 -1 1 0}
+
+test media-ontrack-audio-numeric-mid \
+    {an audio track with a peer-numbered mid ("1") dispatches to rtc-ma, not rtc-mv} \
+    {*}$media_env -body {
+        media_callee tk-m3a
+        set pc [media_pc tk-m3a]
+        set tr [mockrtc::remoteTrack "1" "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n"]
+        mockrtc::fire $pc track $tr
+        list \
+            [expr {[dict get [dict get [calls_state] tk-m3a] track] eq $tr}] \
+            [dict get [dict get [calls_state] tk-m3a] vtrack] \
+            [llength [mockrtc::calls ::rtcma::capturer::attach]] \
+            [llength [mockrtc::calls ::rtcmv::receiver::attach]]
+    } -result {1 -1 1 0}
+
 test media-input-device-falls-back {an unusable mic warns and falls back to the default} \
     {*}$media_env -body {
         mockrtc::fail ::rtcma::capturer::new "device gone" "-device-id *"

@@ -140,7 +140,7 @@ test calls-propose-alerts {an inbound propose replies <ringing> and emits <Incom
             [calls_jmi_sent [calls_last_written]] \
             [dict get [dict get [calls_state] tk-in1] state] \
             [calls_events]
-    } -result {{ringing tk-in1} ringing {{<Incoming> -sid tk-in1 -from peer@example.com}}}
+    } -result {{ringing tk-in1} ringing {{<Incoming> -sid tk-in1 -from peer@example.com -video 0}}}
 
 test calls-propose-carbon-ignored {our own propose carboned back is not a new call} \
     {*}$calls_env -body {
@@ -304,13 +304,13 @@ test calls-list-outgoing {a call we placed reports outgoing, proposed and a bare
         set sid [c.calls start -to peer@example.com/phone]
         set rows [c.calls list]
         string map [list $sid SID] [list [llength $rows] [lindex $rows 0]]
-    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0}}
+    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0 video_local 0 video_remote 0}}
 
 test calls-list-incoming {a call rung at us reports incoming, in tacky's own word for it} \
     {*}$calls_env -body {
         c.conn feed [calls_jmi_in propose tk-in20 $::PEER]
         lindex [c.calls list] 0
-    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0}
+    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0 video_local 0 video_remote 0}
 
 test calls-list-peer-ringing {a peer device alerting is recorded, and moves no state} \
     {*}$calls_env -body {
@@ -348,7 +348,7 @@ test calls-list-two-calls {nothing caps this at one, and each call keeps its own
 
 # -- Codec filtering --
 
-test calls-filter-opus-only {non-opus payload-types are stripped, other children kept} \
+test calls-filter-codecs-audio {non-opus payload-types are stripped from audio, other children kept} \
     {*}$calls_env -body {
         set jingle [j jingle -ns urn:xmpp:jingle:1 {
             j content -creator initiator -name audio {
@@ -360,10 +360,29 @@ test calls-filter-opus-only {non-opus payload-types are stripped, other children
                 }
             }
         }]
-        set filtered [c.calls FilterOpusOnly $jingle]
+        set filtered [c.calls FilterCodecs $jingle]
         set desc [xsearch $filtered content description \
             -ns urn:xmpp:jingle:apps:rtp:1 -get node]
         list \
             [xsearch $desc payload-type -gather @name] \
             [llength [xsearch $desc rtcp-mux -gather node]]
     } -result {opus 1}
+
+test calls-filter-codecs-video {video keeps VP8, drops H264/VP9/rtx} \
+    {*}$calls_env -body {
+        set jingle [j jingle -ns urn:xmpp:jingle:1 {
+            j content -creator initiator -name video {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media video {
+                    j payload-type -id 96 -name VP8 -clockrate 90000
+                    j payload-type -id 98 -name VP9 -clockrate 90000
+                    j payload-type -id 102 -name H264 -clockrate 90000
+                    j payload-type -id 97 -name rtx -clockrate 90000
+                    j rtcp-mux -ns urn:xmpp:jingle:apps:rtp:1
+                }
+            }
+        }]
+        set filtered [c.calls FilterCodecs $jingle]
+        set desc [xsearch $filtered content description \
+            -ns urn:xmpp:jingle:apps:rtp:1 -get node]
+        xsearch $desc payload-type -gather @name
+    } -result {VP8}
