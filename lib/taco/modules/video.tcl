@@ -3,9 +3,11 @@
 # camera live here on taco_type.
 #
 # tacky video enumerateCameras   ?-command $cb?
-#   ;# $cb receives a list of {name <str> id <str> facing <int>}.
+#   ;# $cb receives a list of {name <str> id <str> facing <int>}. Empty on a
+#   ;# backend that does not declare the `cameras` capability.
 # tacky video getPreferredCamera ?-command $cb?
-#   ;# "" means "let rtc-mv pick" (first V4L2 device / the test source).
+#   ;# "" means "let the backend pick" (rtc-mv takes the first V4L2 device,
+#   ;# or the test source).
 # tacky video setPreferredCamera -id $id
 #   ;# persists, hot-swaps the camera on every live video call, emits
 #   ;# <PreferredCamera>.
@@ -13,19 +15,44 @@
 # tacky listen video <PreferredCamera> $cmd  ;# -id $id
 #
 # Preference is stored in the shared `setting` table under `video_camera`.
+# An id the active backend does not recognise falls back to that backend's
+# default camera, the same way audio device preferences do.
 
-package require rtcmv
+package require tacky::media
 
 snit::type taco_video {
     option -db   -default ""
     option -taco -default ""
 
+    # Where a synchronous backend's camera list lands, see enumerateCameras.
+    variable Enumerated {}
+
     constructor args {
         $self configurelist $args
     }
 
-    tackymethod enumerateCameras {args} {
-        return [::rtcmv::enumerate-cameras]
+    # Plain method, not tackymethod: asynchronous, for the reasons in
+    # taco_audio's enumerateDevices.
+    method enumerateCameras {args} {
+        set cmd ""
+        if {[dict exists $args -command]} { set cmd [dict get $args -command] }
+        set Enumerated {}
+        if {[::tacky::media capability cameras]} {
+            if {$cmd ne ""} {
+                ::tacky::media enumerateCameras -command $cmd
+                return
+            }
+            ::tacky::media enumerateCameras -command [mymethod Collected]
+        }
+        if {$cmd ne ""} {
+            uplevel #0 [list {*}$cmd $Enumerated]
+            return
+        }
+        return $Enumerated
+    }
+
+    method Collected {result} {
+        set Enumerated $result
     }
 
     tackymethod getPreferredCamera {args} {
