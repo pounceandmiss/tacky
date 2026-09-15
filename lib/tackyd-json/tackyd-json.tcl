@@ -162,6 +162,7 @@ jsonify_type jsonify \
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
         audio_device {default bool}
+        camera      {facing int}
         call_row    {peer_ringing bool}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
@@ -202,6 +203,10 @@ jsonify_type jsonify \
         audio/getVolume         double
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
+        video/enumerateCameras  {list camera}
+        video/getPreferredCamera string
+        media/list              list
+        media/capabilities      {map bool}
         calls/start             string
         calls/list              {list call_row}
         author/get              {dict {}}
