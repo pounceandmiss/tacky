@@ -119,6 +119,7 @@ snit::type taco_notify {
         dict set LastAlerted $chatJid $ts
         $client emit notify <Notify> -jid $chatJid -timestamp $ts \
             -nick [$self SenderName $chatJid [dict get $alert from]] \
+            -from [dict get $alert from] \
             -body [dict get $alert body] \
             -unread [$self Store unreadCount $chatJid] \
             -mention [dict get $alert mention]
