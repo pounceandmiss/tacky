@@ -7,6 +7,9 @@ Options:
   --backend MODE      Backend mode: direct (default), thread, process
   --tackyd PATH       Path to the tackyd backend binary (process mode only)
   --transient yes     Keep every database in RAM; don't touch stored data
+  --media-backend B   Media backend for calls: auto (default), rtc, webrtc.
+                      One that won't start falls back to rtc.
+  --webrtc-lib PATH   Where to load libtacky_webrtc.so from
   --console 1|0       Print background errors to stderr instead of a dialog
   --debug-level LVL   jlog verbosity (default: warning)
   --debug-file PATH   Write all logs to PATH instead of stderr
