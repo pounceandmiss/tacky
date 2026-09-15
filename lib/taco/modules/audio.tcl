@@ -8,7 +8,8 @@
 #
 # tacky audio enumerateDevices    ?-command $cb?
 #   ;# $cb receives {capture {...} playback {...}}, each value a list of
-#   ;# {name <str> id <str> default 0|1}.
+#   ;# {name <str> id <str> default 0|1}. Both lists are empty on a backend
+#   ;# that does not declare the `audioDevices` capability.
 # tacky audio getPreferredDevice  -kind capture|playback ?-command $cb?
 # tacky audio setPreferredDevice  -kind capture|playback -id $id
 #   ;# persists, hot-swaps every live call on every account, emits
@@ -25,20 +26,52 @@
 # Preferences are stored in the shared `setting` table under the keys
 # `audio_input_device` / `audio_output_device` ("" means system default)
 # and `audio_input_volume` / `audio_output_volume` (linear gain, default
-# "1.0" when unset).
+# "1.0" when unset). They outlive the backend that produced the ids in
+# them: one the active backend does not recognise falls back to that
+# backend's default device, and the call it happens on gets a <Warning>.
 
-package require rtcma
+package require tacky::media
 
 snit::type taco_audio {
     option -db   -default ""
     option -taco -default ""
 
+    # Where a synchronous backend's device list lands, see enumerateDevices.
+    variable Enumerated {}
+
     constructor args {
         $self configurelist $args
     }
 
-    tackymethod enumerateDevices {args} {
-        return [::rtcma::enumerate-devices]
+    # Plain method, not tackymethod: the backend answers when it answers,
+    # so the reply goes out from its callback rather than from a return.
+    # A backend that cannot enumerate reports no devices, which the picker
+    # renders as "system default only".
+    #
+    # Called without -command it can only report a backend that answered in
+    # the same frame, which the in-process ones do; a host backend needs the
+    # callback form. Every caller on the wire has one, since a tokenized
+    # request always carries -command.
+    method enumerateDevices {args} {
+        set cmd ""
+        if {[dict exists $args -command]} { set cmd [dict get $args -command] }
+        set Enumerated [dict create capture {} playback {}]
+        if {[::tacky::media capability audioDevices]} {
+            if {$cmd ne ""} {
+                ::tacky::media enumerateAudioDevices -command $cmd
+                return
+            }
+            ::tacky::media enumerateAudioDevices -command [mymethod Collected]
+        }
+        if {$cmd ne ""} {
+            uplevel #0 [list {*}$cmd $Enumerated]
+            return
+        }
+        return $Enumerated
+    }
+
+    method Collected {result} {
+        set Enumerated $result
     }
 
     tackymethod getPreferredDevice {args} {

@@ -49,18 +49,6 @@ proc calls_session_iq {action sid from} {
     }
 }
 
-# Point a pc id at $sid so the rtc callbacks can be driven without a real
-# peer connection behind them.
-proc calls_fake_pc {sid pc} {
-    foreach v [c.calls info vars] {
-        if {[string match *::PcToSid $v]} {
-            set ${v}($pc) $sid
-            return
-        }
-    }
-    error "calls: no PcToSid variable"
-}
-
 proc calls_transport_info_flood {sid from count} {
     j iq -type set -from $from -to user@test.example.com -id ti2 {
         j jingle -ns urn:xmpp:jingle:1 -action transport-info -sid $sid {
@@ -269,8 +257,7 @@ test calls-pc-disconnected-warns {a faltering media path warns without ending th
     {*}$calls_env -body {
         c.conn feed [calls_jmi_in propose tk-in11 $::PEER]
         c.calls accept -sid tk-in11
-        calls_fake_pc tk-in11 7
-        c.calls OnPcState 7 disconnected
+        c.calls OnPcState tk-in11 disconnected
         list \
             [lindex [calls_events] end] \
             [dict get [dict get [calls_state] tk-in11] state]

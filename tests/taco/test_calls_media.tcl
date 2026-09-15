@@ -23,8 +23,11 @@ mockrtc::install
 
 # -- Helpers --
 
+# The libdatachannel pc behind a call, for driving mockrtc directly. The
+# module itself only ever sees the tacky::media handle.
 proc media_pc {sid} {
-    return [dict get [dict get [calls_state] $sid] pc]
+    return [::tacky::media::rtc::pc-id \
+        [dict get [dict get [calls_state] $sid] pc]]
 }
 
 proc media_session_initiate {sid from} {

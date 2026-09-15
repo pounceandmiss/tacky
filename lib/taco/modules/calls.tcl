@@ -1,7 +1,8 @@
-# Voice calls (XEP-0166/0167/0176) driven directly by libdatachannel
-# (::rtc::*) for ICE/DTLS/RTP + rtc-ma (::rtcma::*) for the
-# mic-in / speaker-out audio path. XEP-0353 Jingle Message Initiation
-# rings the right device without GUI-side resource discovery.
+# Voice calls (XEP-0166/0167/0176). Signaling - Jingle, JMI, SDP conversion,
+# call state - lives here; the media itself is behind `tacky::media`, whose
+# active backend owns ICE/DTLS/RTP and the mic/speaker/camera path. XEP-0353
+# Jingle Message Initiation rings the right device without GUI-side resource
+# discovery.
 #
 # tacky calls start  -acc $jid -to <bare jid> ?-command $cb?   ;# returns sid
 # tacky calls accept -acc $jid -sid $sid
@@ -35,13 +36,13 @@
 #   <- <message><proceed sid/></message> from full JID
 #     -> state=proceeded, peer=full JID
 #     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
-#     -> create pc + sendrecv audio track, attach capturer+player,
-#        set-local-description ""
-#     -> on-local-description(offer)   -> send <jingle action=session-initiate>
-#     -> on-local-candidate * N        -> send <jingle action=transport-info>
-#   <- <jingle action=session-accept>  -> set-remote-description sdp answer
-#   <- <jingle action=transport-info>  -> add-remote-candidate
-#     -> on-state-change connected     -> emit <Active>
+#     -> createPeer + sendrecv audio track, attachAudio,
+#        setLocalDescription
+#     -> localDescription(offer)       -> send <jingle action=session-initiate>
+#     -> iceCandidate * N              -> send <jingle action=transport-info>
+#   <- <jingle action=session-accept>  -> setRemoteDescription sdp answer
+#   <- <jingle action=transport-info>  -> addRemoteCandidate
+#     -> connectionState connected     -> emit <Active>
 #
 #   hangup while proposed: send <message><retract/></message>
 #   hangup after proceed:  pc + media teardown + <jingle action=session-terminate>
@@ -55,14 +56,13 @@
 #     -> state=proceeded, send <message><proceed sid/></message>
 #   <- <jingle action=session-initiate>
 #     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
-#     -> create pc, set-remote-description sdp offer
-#        (libdatachannel auto-negotiation generates + applies the answer
-#        internally — we do NOT call set-local-description here; see
-#        HandleSessionInitiate for why)
-#     -> on-track $tr                  -> attach capturer+player to $tr
-#     -> on-local-description(answer)  -> send <jingle action=session-accept>
-#     -> on-local-candidate * N        -> send <jingle action=transport-info>
-#   <- <jingle action=transport-info>  -> add-remote-candidate
+#     -> createPeer, setRemoteDescription sdp offer, then
+#        setLocalDescription unless the backend declares `autoAnswer`
+#        (see StartIncomingMedia)
+#     -> track $tr                     -> attachAudio / attachVideo* on $tr
+#     -> localDescription(answer)      -> send <jingle action=session-accept>
+#     -> iceCandidate * N              -> send <jingle action=transport-info>
+#   <- <jingle action=transport-info>  -> addRemoteCandidate
 #
 #   reject while ringing:  send <message><reject/></message>
 #   hangup after proceed:  pc + media teardown + <jingle action=session-terminate>
@@ -78,9 +78,9 @@
 #     OnLocalDescription, not from OnGatheringState. The SDP at that
 #     point has no candidates yet — those arrive asynchronously and
 #     are trickled via OnLocalCandidate → transport-info.
-#   - No end-of-candidates marker is emitted. libdatachannel keeps
-#     accepting add-remote-candidate until the pc closes; ICE either
-#     succeeds on what's there or fails via its own timer.
+#   - No end-of-candidates marker is emitted. A backend keeps accepting
+#     addRemoteCandidate until the pc closes; ICE either succeeds on
+#     what's there or fails via its own timer.
 #   - Inbound transport-info while pc == -1 (the JMI-ringing window,
 #     or any race before set-remote-description) is buffered into
 #     [dict get $Calls $sid pending_remote_candidates], not dropped.
@@ -99,38 +99,30 @@
 #   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
 #   peer_ringing : 1 once a peer device answered <ringing> (caller side);
 #     a field, not a state, because the state machine does not move for it
-#   pc         : ::rtc pc id (-1 = not created)
-#   track      : ::rtc track id (-1 = not added/received)
-#   capturer   : ::rtcma capturer handle ("" = none)
-#   player     : ::rtcma player handle ("" = none)
+#   pc         : tacky::media pc handle (-1 = not created)
+#   track      : media handle of the audio track (-1 = not added/received)
 #   pending_remote_candidates : list of [list mid candidate], present
 #     only while inbound trickle has outpaced our pc creation; drained
 #     and unset by HandleSessionInitiate
 #
-# PcToSid maps a libdatachannel pc id back to its sid for the async
-# rtc callbacks
+# The pc handle is this instance plus the sid, so two accounts in one
+# process that end up on either side of the same call do not collide.
+# Media events for a pc come back to OnMediaEvent with that sid bound, so
+# there is no id to map back.
 
-package require rtc
-package require rtcma
-package require rtcmv
+package require tacky::media
 package require omemo
 
 snit::type taco_calls {
     option -client -readonly yes
 
-    # Media constants. Mid is the SDP m-line label, kept identical on
-    # both sides for Jingle <content name=...>. Opus stereo @ 48 kHz
-    # matches rtc-ma's fixed audio pipeline.
-    typevariable MID            audio
-    typevariable PAYLOAD_TYPE   111
-    typevariable AUDIO_CHANNELS 2
-
-    # Video: a second sendrecv m-line, VP8 only. Mid "video", PT 96,
-    # 90 kHz clock. rtx/NACK is deferred (rtc-mv recovers loss with a
-    # keyframe request), so no apt/rtx payload is offered.
-    typevariable VIDEO_MID   video
-    typevariable VIDEO_PT    96
-    typevariable VIDEO_CLOCK 90000
+    # The handles we name our own tracks with. They double as the Jingle
+    # <content name=...> we expect back, since the m-line labels the rtc
+    # backend writes match; a peer using its own mids is dispatched by
+    # media kind instead. The codecs and payload types behind them belong
+    # to the media backend.
+    typevariable MID       audio
+    typevariable VIDEO_MID video
 
     # Ceiling on candidates buffered during the JMI window; a peer trickles
     # a handful, so anything past this is not worth keeping.
@@ -138,13 +130,13 @@ snit::type taco_calls {
 
     variable client
     variable Calls           ;# sid -> dict (see file header)
-    variable PcToSid         ;# pc -> sid
+    variable SdpErrors       ;# sid -> reason, see TakeSdpError
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
         set Calls [dict create]
-        array set PcToSid {}
+        set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
         $client bus subscribe $self <Ready> [mymethod OnFreshStream]
 
@@ -185,13 +177,15 @@ snit::type taco_calls {
     # Per-call state dict. peer is bare until proceeded, then full JID.
     # video_local  : 1 if this side offered/wants to send video
     # video_remote : 1 if the peer's propose advertised media=video
-    # vtrack/vsender/vreceiver/vchannel : the video half, "" / -1 when absent
+    # vtrack       : media handle of the video track, -1 when absent
+    # vsend/vrecv  : 1 once we have asked the backend for that half and it
+    #                has not reported the attach failed
     method NewCallDict {peer initiator state wantVideo} {
         return [dict create \
             peer $peer initiator $initiator state $state peer_ringing 0 \
-            pc -1 track -1 capturer "" player "" \
+            pc -1 track -1 \
             video_local $wantVideo video_remote 0 \
-            vtrack -1 vsender "" vreceiver "" vchannel ""]
+            vtrack -1 vsend 0 vrecv 0]
     }
 
     tackymethod accept {args} {
@@ -288,36 +282,28 @@ snit::type taco_calls {
         array set opts {-sid "" -on 1}
         array set opts $args
         if {![dict exists $Calls $opts(-sid)]} return
-        set snd [dict get $Calls $opts(-sid) vsender]
-        if {$snd eq ""} return
-        catch {::rtcmv::sender::set-enabled $snd [expr {$opts(-on) ? 1 : 0}]}
+        set pc [dict get $Calls $opts(-sid) pc]
+        if {$pc eq -1} return
+        ::tacky::media setVideoEnabled $pc -on [expr {$opts(-on) ? 1 : 0}]
         return
     }
 
     # Hot-swap mic / speaker for a live call. Empty id = system default.
-    # No-op before AttachMedia has populated capturer/player.
+    # A backend with nothing attached yet ignores it; one that refuses the
+    # device answers with an error event, which OnMediaError turns into a
+    # <Warning>.
     tackymethod setDevices {args} {
         array set opts {-sid "" -input __unset__ -output __unset__}
         array set opts $args
         if {![dict exists $Calls $opts(-sid)]} return
-        set call [dict get $Calls $opts(-sid)]
-        set capturer [dict get $call capturer]
-        set player   [dict get $call player]
-        if {$opts(-input) ne "__unset__" && $capturer ne ""} {
-            if {[catch {
-                ::rtcma::capturer::reopen $capturer -device-id $opts(-input)
-            } err]} {
-                $client emit calls <Warning> -sid $opts(-sid) \
-                    -reason "input device unavailable: $err"
-            }
+        set pc [dict get $Calls $opts(-sid) pc]
+        if {$pc eq -1} return
+        if {![::tacky::media capability audioDevices]} return
+        if {$opts(-input) ne "__unset__"} {
+            ::tacky::media setAudioDevice $pc -kind capture -id $opts(-input)
         }
-        if {$opts(-output) ne "__unset__" && $player ne ""} {
-            if {[catch {
-                ::rtcma::player::reopen $player -device-id $opts(-output)
-            } err]} {
-                $client emit calls <Warning> -sid $opts(-sid) \
-                    -reason "output device unavailable: $err"
-            }
+        if {$opts(-output) ne "__unset__"} {
+            ::tacky::media setAudioDevice $pc -kind playback -id $opts(-output)
         }
         return
     }
@@ -327,10 +313,10 @@ snit::type taco_calls {
     tackymethod applyPreferredCamera {args} {
         array set opts {-id ""}
         array set opts $args
+        if {![::tacky::media capability videoDevice]} return
         foreach sid [dict keys $Calls] {
-            set snd [dict get $Calls $sid vsender]
-            if {$snd eq ""} continue
-            catch {::rtcmv::sender::reopen $snd -device-id $opts(-id)}
+            if {![dict get $Calls $sid vsend]} continue
+            ::tacky::media setVideoDevice [dict get $Calls $sid pc] -id $opts(-id)
         }
         return
     }
@@ -348,34 +334,18 @@ snit::type taco_calls {
     }
 
     # Hook called by the global `audio` module after the volume changes —
-    # hot-swap every live call on this client. Values in [0.0, 1.0];
-    # rtcma applies the change atomically on the mixer factor with no
-    # clicks. No-op for calls still before AttachMedia. Out-of-range or
-    # NaN values surface as <Warning>; the call keeps running.
+    # hot-swap every live call on this client. Values in [0.0, 1.0]. A call
+    # with no audio attached yet is a no-op in the backend; a value the
+    # backend rejects surfaces as <Warning> and the call keeps running.
     tackymethod applyVolume {args} {
         array set opts {-kind "" -volume ""}
         array set opts $args
+        if {![::tacky::media capability audioVolume]} return
         foreach sid [dict keys $Calls] {
-            set call [dict get $Calls $sid]
-            if {$opts(-kind) eq "capture"} {
-                set capturer [dict get $call capturer]
-                if {$capturer eq ""} continue
-                if {[catch {
-                    ::rtcma::capturer::set-volume $capturer $opts(-volume)
-                } err]} {
-                    $client emit calls <Warning> -sid $sid \
-                        -reason "input volume rejected: $err"
-                }
-            } else {
-                set player [dict get $call player]
-                if {$player eq ""} continue
-                if {[catch {
-                    ::rtcma::player::set-volume $player $opts(-volume)
-                } err]} {
-                    $client emit calls <Warning> -sid $sid \
-                        -reason "output volume rejected: $err"
-                }
-            }
+            set pc [dict get $Calls $sid pc]
+            if {$pc eq -1} continue
+            ::tacky::media setAudioVolume $pc \
+                -kind $opts(-kind) -volume $opts(-volume)
         }
         return
     }
@@ -384,231 +354,135 @@ snit::type taco_calls {
     # PC + media plumbing
     # =========================================================================
 
-    # Create a fresh pc, hook callbacks, and (caller side) add the audio
-    # track + attach media. Callee path uses CreatePc and then drives
-    # set-remote-description; on-track attaches media.
+    # Create a fresh pc and bind its events to this sid. Caller side then
+    # adds tracks and attaches media; callee side drives
+    # setRemoteDescription and attaches from the `track` events.
     method CreatePc {sid iceServers} {
-        set pc [::rtc::pc::new \
-            -ice-servers $iceServers]
-        set PcToSid($pc) $sid
+        set pc $self/$sid
         dict set Calls $sid pc $pc
-        ::rtc::pc::on-local-description      $pc [mymethod OnLocalDescription]
-        ::rtc::pc::on-local-candidate        $pc [mymethod OnLocalCandidate]
-        ::rtc::pc::on-gathering-state-change $pc [mymethod OnGatheringState]
-        ::rtc::pc::on-state-change           $pc [mymethod OnPcState]
-        ::rtc::pc::on-track                  $pc [mymethod OnTrack]
+        ::tacky::media createPeer $pc \
+            -command [mymethod OnMediaEvent $sid] -ice-servers $iceServers
         return $pc
     }
 
-    # libdatachannel media-description fragment for one sendrecv Opus
-    # audio m-line. Format: "<media> <port> <proto> <pt>\r\na=...\r\n..."
-    # — the bytes after the m= prefix. PT and channels are fixed so the
-    # responder side (which mirrors via on-track) gets matching codec
-    # config from the offer SDP.
-    method BuildAudioMediaDesc {} {
-        set lines [list \
-            "audio 9 UDP/TLS/RTP/SAVPF $PAYLOAD_TYPE" \
-            "a=mid:$MID" \
-            "a=sendrecv" \
-            "a=rtpmap:$PAYLOAD_TYPE opus/48000/$AUDIO_CHANNELS" \
-            "a=fmtp:$PAYLOAD_TYPE minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"]
-        return [join $lines \r\n]
-    }
-
-    # One sendrecv VP8 video m-line. nack/pli/ccm feedback is advertised
-    # so libwebrtc peers send us PLIs (rtc-mv turns those into keyframes);
-    # rtc-mv itself needs no negotiated header extensions.
-    method BuildVideoMediaDesc {} {
-        set lines [list \
-            "video 9 UDP/TLS/RTP/SAVPF $VIDEO_PT" \
-            "a=mid:$VIDEO_MID" \
-            "a=sendrecv" \
-            "a=rtpmap:$VIDEO_PT VP8/$VIDEO_CLOCK" \
-            "a=rtcp-fb:$VIDEO_PT nack" \
-            "a=rtcp-fb:$VIDEO_PT nack pli" \
-            "a=rtcp-fb:$VIDEO_PT ccm fir" \
-            "a=rtcp-fb:$VIDEO_PT goog-remb"]
-        return [join $lines \r\n]
-    }
-
-    # Attach a mic capturer + speaker player to a sendrecv track.
-    # rtc-ma supports both on one track id: the player owns the
-    # message-callback / RTP recv side, the capturer only ever calls
-    # rtcSendMessage. Persisted audio_input_device / audio_output_device
-    # settings pin specific endpoints; on failure (stale id, backend
-    # swap) we fall back to system default so a bad setting can't
-    # brick all calls.
+    # Attach the mic + speaker to a track. The persisted
+    # audio_input_device / audio_output_device settings pin specific
+    # endpoints; a backend that cannot open one falls back to its default
+    # and says so with deviceFallback, so a stale setting - a device that
+    # went away, or an id stored against another backend - can't brick
+    # every call.
     method AttachMedia {sid track} {
         set taco [$client cget -taco]
-        set inId   [$taco audio getPreferredDevice -kind capture]
-        set outId  [$taco audio getPreferredDevice -kind playback]
-        set inVol  [$taco audio getVolume -kind capture]
-        set outVol [$taco audio getVolume -kind playback]
-
-        # rtc-ma self-configures from the negotiated track description
-        # at attach time — no need to pass channels / payload-type here.
-        if {[catch {::rtcma::capturer::new -device-id $inId} capturer]} {
-            $client emit calls <Warning> -sid $sid \
-                -reason "input device unavailable, using default"
-            set capturer [::rtcma::capturer::new]
-        }
-        if {[catch {::rtcma::capturer::attach $capturer $track} err]} {
-            catch {::rtcma::capturer::destroy $capturer}
-            error "capturer attach failed: $err"
-        }
-        ::rtcma::capturer::start $capturer
-        catch {::rtcma::capturer::set-volume $capturer $inVol}
-
-        if {[catch {::rtcma::player::new -device-id $outId} player]} {
-            $client emit calls <Warning> -sid $sid \
-                -reason "output device unavailable, using default"
-            set player [::rtcma::player::new]
-        }
-        if {[catch {::rtcma::player::attach $player $track} err]} {
-            catch {::rtcma::player::destroy $player}
-            catch {::rtcma::capturer::destroy $capturer}
-            error "player attach failed: $err"
-        }
-        ::rtcma::player::start $player
-        catch {::rtcma::player::set-volume $player $outVol}
-
-        dict set Calls $sid track    $track
-        dict set Calls $sid capturer $capturer
-        dict set Calls $sid player   $player
+        dict set Calls $sid track $track
+        ::tacky::media attachAudio [dict get $Calls $sid pc] $track \
+            -input         [$taco audio getPreferredDevice -kind capture] \
+            -output        [$taco audio getPreferredDevice -kind playback] \
+            -input-volume  [$taco audio getVolume -kind capture] \
+            -output-volume [$taco audio getVolume -kind playback]
     }
 
-    # Stand up the rtc-mv sender on a (sendrecv) video track: camera ->
-    # VP8 -> RTP. Emits <VideoPreview> with the local-camera ring so the
-    # GUI can show a self-view.
+    # Camera -> the peer, plus a self-view: the backend answers with a
+    # preview videoChannel, which OnVideoChannel turns into <VideoPreview>.
     method AttachVideoSender {sid track} {
-        if {[dict get $Calls $sid vsender] ne ""} return
+        if {[dict get $Calls $sid vsend]} return
         set taco [$client cget -taco]
         set camId ""
         catch {set camId [$taco video getPreferredCamera]}
-        set snd [::rtcmv::sender::new -device-id $camId -preview 1]
-        if {[catch {::rtcmv::sender::attach $snd $track} err]} {
-            catch {::rtcmv::sender::destroy $snd}
-            $client emit calls <Warning> -sid $sid -reason "video sender: $err"
-            return
-        }
-        ::rtcmv::sender::start $snd
-        dict set Calls $sid vsender $snd
-        if {![catch {::rtcmv::sender::preview-shm $snd} pv]} {
-            $client emit calls <VideoPreview> -sid $sid -direction preview \
-                {*}[$self ShmEventArgs $pv]
-        }
+        dict set Calls $sid vsend 1
+        ::tacky::media attachVideoSender [dict get $Calls $sid pc] $track \
+            -device-id $camId
     }
 
-    # Stand up the rtc-mv receiver on a video track: RTP -> VP8 -> I420
-    # into a named shm ring. Emits <VideoTrack> pointing the GUI at it.
+    # The peer's camera -> a frame channel. The backend answers with an
+    # incoming videoChannel, which OnVideoChannel turns into <VideoTrack>.
     method AttachVideoReceiver {sid track} {
-        if {[dict get $Calls $sid vreceiver] ne ""} return
-        set rcv [::rtcmv::receiver::new]
-        if {[catch {::rtcmv::receiver::attach $rcv $track} err]} {
-            catch {::rtcmv::receiver::destroy $rcv}
-            $client emit calls <Warning> -sid $sid -reason "video receiver: $err"
-            return
+        if {[dict get $Calls $sid vrecv]} return
+        dict set Calls $sid vtrack $track
+        dict set Calls $sid vrecv 1
+        ::tacky::media attachVideoReceiver [dict get $Calls $sid pc] $track
+    }
+
+    # Turn a backend video channel descriptor into calls-event -flag args.
+    # Only the shm form has a ring to name; a host-rendered channel just
+    # carries its id.
+    method VideoEventArgs {ch} {
+        set out {}
+        foreach key {channel name slots slotBytes maxWidth maxHeight format id} {
+            if {[dict exists $ch $key]} {
+                lappend out -$key [dict get $ch $key]
+            }
         }
-        ::rtcmv::receiver::start $rcv
-        dict set Calls $sid vtrack    $track
-        dict set Calls $sid vreceiver $rcv
-        set sh [::rtcmv::receiver::shm $rcv]
-        dict set Calls $sid vchannel [dict get $sh channel]
-        $client emit calls <VideoTrack> -sid $sid -mid $VIDEO_MID \
-            -direction incoming {*}[$self ShmEventArgs $sh]
+        return $out
     }
 
-    # Turn an rtc-mv shm dict into calls-event -flag args. The fd is kept
-    # out (POSIX frontends open by name; Android takes it over JNI).
-    method ShmEventArgs {sh} {
-        return [list \
-            -channel   [dict get $sh channel] \
-            -name      [dict get $sh name] \
-            -slots     [dict get $sh slots] \
-            -slotBytes [dict get $sh slotBytes] \
-            -maxWidth  [dict get $sh maxWidth] \
-            -maxHeight [dict get $sh maxHeight] \
-            -format    [dict get $sh format]]
-    }
-
-    # Free the video half of a call. Called from TeardownMedia before the
-    # pc is deleted (the rtc-mv handles own the track callback).
-    method TeardownVideo {sid} {
-        if {![dict exists $Calls $sid]} return
-        set call [dict get $Calls $sid]
-        set snd [dict get $call vsender]
-        set rcv [dict get $call vreceiver]
-        set hadVideo [expr {$snd ne "" || $rcv ne ""}]
-        if {$snd ne ""} { catch {::rtcmv::sender::destroy   $snd} }
-        if {$rcv ne ""} { catch {::rtcmv::receiver::destroy $rcv} }
-        dict set Calls $sid vsender   ""
-        dict set Calls $sid vreceiver ""
-        dict set Calls $sid vtrack    -1
-        if {$hadVideo} {
-            $client emit calls <VideoEnded> -sid $sid -mid $VIDEO_MID
-        }
-    }
-
-    # Free media + pc for one call. Ordering matters: rtcma handles
-    # own the libdatachannel track's message callback + user pointer,
-    # so they must be destroyed before ::rtc::pc::delete frees the
-    # track. ::rtcma::*::destroy implicitly detaches.
+    # Free media + pc for one call. The backend owns the ordering its own
+    # handles need; all this decides is whether the video half was ever up,
+    # since <VideoEnded> is owed only then.
     method TeardownMedia {sid} {
         if {![dict exists $Calls $sid]} return
         set call [dict get $Calls $sid]
-        set capturer [dict get $call capturer]
-        set player   [dict get $call player]
-        set pc       [dict get $call pc]
-        $self TeardownVideo $sid
-        if {$capturer ne ""} { catch {::rtcma::capturer::destroy $capturer} }
-        if {$player   ne ""} { catch {::rtcma::player::destroy   $player}   }
-        if {$pc != -1} {
-            # Drop callback scripts BEFORE close+delete so any events
-            # already queued by libdatachannel become no-ops at dispatch
-            # time. Otherwise a queued state-change can fire after
-            # `tacky destroy` and try to call a method on a dead snit
-            # instance.
-            catch {::rtc::pc::on-local-description      $pc ""}
-            catch {::rtc::pc::on-local-candidate        $pc ""}
-            catch {::rtc::pc::on-gathering-state-change $pc ""}
-            catch {::rtc::pc::on-state-change           $pc ""}
-            catch {::rtc::pc::on-track                  $pc ""}
-            catch {::rtc::pc::close  $pc}
-            catch {::rtc::pc::delete $pc}
-            unset -nocomplain PcToSid($pc)
+        set hadVideo [expr {[dict get $call vsend] || [dict get $call vrecv]}]
+        if {[dict get $call pc] ne -1} {
+            ::tacky::media closePeer [dict get $call pc]
         }
-        dict set Calls $sid capturer ""
-        dict set Calls $sid player   ""
-        dict set Calls $sid pc       -1
-        dict set Calls $sid track    -1
+        if {$hadVideo} {
+            $client emit calls <VideoEnded> -sid $sid -mid $VIDEO_MID
+        }
+        dict set Calls $sid pc     -1
+        dict set Calls $sid track  -1
+        dict set Calls $sid vtrack -1
+        dict set Calls $sid vsend  0
+        dict set Calls $sid vrecv  0
     }
 
     # =========================================================================
-    # ::rtc::pc::* callbacks (async, delivered on the Tcl main thread)
+    # tacky::media events (async, delivered on the Tcl main thread)
     # =========================================================================
 
-    # Fires once per setLocalDescription (and once on the responder when
-    # set-remote-description triggers libdatachannel's auto-generated
-    # answer). The SDP we get here has no candidates yet — those arrive
-    # asynchronously via on-local-candidate and are trickled separately.
-    method OnLocalDescription {pc sdp sdpType} {
-        if {![info exists PcToSid($pc)]} return
-        set sid $PcToSid($pc)
+    # One sink per call; $sid was bound at createPeer. A call torn down
+    # while the backend still had events queued is gone from Calls, and the
+    # check here is what every handler below relies on to assume it is not.
+    method OnMediaEvent {sid ev} {
+        if {![dict exists $Calls $sid]} return
+        switch -- [dict get $ev type] {
+            localDescription {
+                $self OnLocalDescription $sid \
+                    [dict get $ev sdp] [dict get $ev sdpType]
+            }
+            iceCandidate {
+                $self OnLocalCandidate $sid \
+                    [dict get $ev candidate] [dict get $ev mid]
+            }
+            connectionState { $self OnPcState $sid [dict get $ev state] }
+            gatheringState  { $self OnGatheringState $sid [dict get $ev state] }
+            track           { $self OnTrack $sid $ev }
+            videoChannel    { $self OnVideoChannel $sid $ev }
+            deviceFallback  { $self OnDeviceFallback $sid $ev }
+            error           { $self OnMediaError $sid $ev }
+        }
+    }
+
+    # Fires once per setLocalDescription, and on the responder once more
+    # when an `autoAnswer` backend generates the answer inside
+    # setRemoteDescription. The SDP here has no candidates yet — those
+    # arrive asynchronously and are trickled separately.
+    method OnLocalDescription {sid sdp sdpType} {
         set call [dict get $Calls $sid]
         set me [$client cget -jid]
         set isInitiator [dict get $call initiator]
 
-        # rtc-ma sends raw RTP (no media handler on the track) and does
-        # not honour any negotiated RTP header extensions or transport-cc
-        # feedback. libdatachannel auto-echoes the remote offer's
-        # extmaps into our answer, which mis-advertises capabilities
-        # that libwebrtc-based peers then expect on the wire (notably
-        # sdes:mid for transceiver routing in UNIFIED_PLAN); without
-        # this strip those peers drop every packet we send. See the
-        # SDP sanitization block in include/rtcma.h for the full
-        # rationale.
-        regsub -all -line {^a=extmap(-allow-mixed)?.*\n}      $sdp "" sdp
-        regsub -all -line {^a=rtcp-fb:[^ ]+ transport-cc.*\n} $sdp "" sdp
+        # A backend declaring `sdpSanitize` advertises more on the wire
+        # than it honours. rtc-ma sends raw RTP (no media handler on the
+        # track) and honours neither negotiated RTP header extensions nor
+        # transport-cc feedback, while libdatachannel auto-echoes the
+        # remote offer's extmaps into our answer — notably sdes:mid, which
+        # libwebrtc peers then expect for transceiver routing in
+        # UNIFIED_PLAN and without which they drop every packet we send.
+        # See the SDP sanitization block in include/rtcma.h.
+        if {[::tacky::media capability sdpSanitize]} {
+            regsub -all -line {^a=extmap(-allow-mixed)?.*\n}      $sdp "" sdp
+            regsub -all -line {^a=rtcp-fb:[^ ]+ transport-cc.*\n} $sdp "" sdp
+        }
 
         jlog debug "SDP $sdpType to [dict get $call peer] (sid=$sid)\n$sdp"
 
@@ -634,14 +508,12 @@ snit::type taco_calls {
         }
     }
 
-    # Trickle a single ICE candidate to the peer. libdatachannel emits
-    # the SDP attribute form ("candidate:foo bar baz..."); we strip the
+    # Trickle a single ICE candidate to the peer. The API carries the SDP
+    # attribute form ("candidate:foo bar baz..."); we strip the
     # "candidate:" prefix so jinglesdp::BuildCandidate sees the same
-    # shape it parses out of SDP. Empty mid falls back to the bundle
+    # shape it parses out of SDP. An empty mid falls back to the bundle
     # group's audio MID.
-    method OnLocalCandidate {pc cand mid} {
-        if {![info exists PcToSid($pc)]} return
-        set sid $PcToSid($pc)
+    method OnLocalCandidate {sid cand mid} {
         set call [dict get $Calls $sid]
         set me [$client cget -jid]
         set isInitiator [dict get $call initiator]
@@ -672,10 +544,10 @@ snit::type taco_calls {
         $client iq request -type set -to [dict get $call peer] -payload $jingle
     }
 
-    # Informational only — kept registered for visibility / future
-    # logging hooks. No wire effect; the SDP ships from
-    # OnLocalDescription and candidates trickle via OnLocalCandidate.
-    method OnGatheringState {pc state} {
+    # Informational only — kept for visibility / future logging hooks. No
+    # wire effect; the SDP ships from OnLocalDescription and candidates
+    # trickle via OnLocalCandidate.
+    method OnGatheringState {sid state} {
         return
     }
 
@@ -694,18 +566,15 @@ snit::type taco_calls {
         }
     }
 
-    # libdatachannel state strings: new, connecting, connected,
-    # disconnected, failed, closed. The internal `state` dict field
-    # tracks the full lifecycle; only the connected/closed/failed
-    # transitions are surfaced as <Active>/<Ended>/<Failed>.
-    # new/connecting are libdatachannel internals, too short-lived to
-    # be useful to a GUI, and intentionally not emitted. The pre-media
-    # transitions (<Outgoing>, <Incoming>, <Ringing>) are emitted from
-    # the JMI handlers, not from here.
-    method OnPcState {pc state} {
-        if {![info exists PcToSid($pc)]} return
-        set sid $PcToSid($pc)
-        # ICE lost consent. libdatachannel recovers or moves on to failed by
+    # Backend state strings: new, connecting, connected, disconnected,
+    # failed, closed. The internal `state` dict field tracks the full
+    # lifecycle; only the connected/closed/failed transitions are surfaced
+    # as <Active>/<Ended>/<Failed>. new/connecting are backend internals,
+    # too short-lived to be useful to a GUI, and intentionally not emitted.
+    # The pre-media transitions (<Outgoing>, <Incoming>, <Ringing>) are
+    # emitted from the JMI handlers, not from here.
+    method OnPcState {sid state} {
+        # ICE lost consent. The backend recovers or moves on to failed by
         # itself, so warn and leave the call running.
         if {$state eq "disconnected"} {
             $client emit calls <Warning> -sid $sid \
@@ -743,35 +612,128 @@ snit::type taco_calls {
         }
     }
 
-    method OnTrack {pc tr} {
-        if {![info exists PcToSid($pc)]} return
-        set sid $PcToSid($pc)
+    # The backend reports the media kind: a real peer's offer carries its
+    # own BUNDLE mids, not our "audio"/"video" labels, so the mid is only
+    # good for reporting.
+    method OnTrack {sid ev} {
         set call [dict get $Calls $sid]
-
-        # Dispatch by media type, not mid: a real peer's own offer uses
-        # its own BUNDLE mids, not our "audio"/"video" literals. Match
-        # needs the "m=" prefix - get-description returns the full line.
-        set isVideo 0
-        if {![catch {::rtc::track::get-description $tr} desc]} {
-            set isVideo [string match "m=video *" $desc]
-        }
-        if {!$isVideo} {
-            # Fallback covers our own locally-added tracks.
-            set mid ""
-            catch {set mid [::rtc::track::get-mid $tr]}
-            set isVideo [expr {$mid eq $VIDEO_MID}]
-        }
-
-        if {$isVideo} {
-            if {[dict get $call vtrack] != -1} return
+        set tr [dict get $ev track]
+        if {[dict get $ev kind] eq "video"} {
+            if {[dict get $call vtrack] ne -1} return
             $self AttachVideoReceiver $sid $tr
             if {[dict get $call video_local]} {
                 $self AttachVideoSender $sid $tr
             }
             return
         }
-        if {[dict get $call track] != -1} return
+        if {[dict get $call track] ne -1} return
         $self AttachMedia $sid $tr
+    }
+
+    # A frame channel came up: <VideoTrack> for the peer's camera,
+    # <VideoPreview> for our own self-view.
+    method OnVideoChannel {sid ev} {
+        set args [$self VideoEventArgs [dict get $ev channel]]
+        if {[dict get $ev direction] eq "preview"} {
+            $client emit calls <VideoPreview> -sid $sid \
+                -direction preview {*}$args
+            return
+        }
+        $client emit calls <VideoTrack> -sid $sid -mid [dict get $ev mid] \
+            -direction incoming {*}$args
+    }
+
+    # The backend could not open the device we asked for and used its
+    # default. The call is fine; the user just isn't on the endpoint they
+    # picked, so say so.
+    method OnDeviceFallback {sid ev} {
+        set what [expr {[dict get $ev kind] eq "playback" ? "output" : "input"}]
+        if {[dict get $ev kind] eq "camera"} { set what camera }
+        $client emit calls <Warning> -sid $sid \
+            -reason "$what device unavailable, using default"
+    }
+
+    # Backend errors. Each op the module drives has its own report, since
+    # the text and the consequence differ; anything else falls through to
+    # the generic rule - fatal ends the call, advisory warns and it runs on.
+    method OnMediaError {sid ev} {
+        set op [dict get $ev op]
+        set reason [dict get $ev reason]
+        switch -- $op {
+            setRemoteDescription {
+                # Recorded for the handler that issued it: with a backend
+                # that reports synchronously it is still on the stack and
+                # can answer the IQ accordingly.
+                dict set SdpErrors $sid $reason
+                if {[dict exists $ev sdpType]
+                        && [dict get $ev sdpType] eq "answer"} {
+                    $client emit calls <Warning> -sid $sid \
+                        -reason "session-accept rejected: $reason"
+                    return
+                }
+                # An offer we cannot apply is fatal, and the
+                # session-initiate is already acked — the peer thinks the
+                # call is live, so terminate rather than leave it to
+                # time out.
+                set peer [dict get $Calls $sid peer]
+                $client emit calls <Failed> -sid $sid \
+                    -reason "remote offer rejected: $reason"
+                $self TeardownMedia $sid
+                $self SendTerminate $sid $peer general-error
+                $self Cleanup $sid
+                return
+            }
+            addRemoteCandidate {
+                # Stale, duplicate, wrong ufrag: skipped like an
+                # unparsable one, since the others may still connect.
+                jlog debug "transport-info: candidate rejected: $reason"
+                return
+            }
+            setAudioDevice {
+                $client emit calls <Warning> -sid $sid \
+                    -reason "[$self AudioSide $ev] device unavailable: $reason"
+                return
+            }
+            setAudioVolume {
+                $client emit calls <Warning> -sid $sid \
+                    -reason "[$self AudioSide $ev] volume rejected: $reason"
+                return
+            }
+            attachVideoSender {
+                dict set Calls $sid vsend 0
+                $client emit calls <Warning> -sid $sid \
+                    -reason "video sender: $reason"
+                return
+            }
+            attachVideoReceiver {
+                dict set Calls $sid vrecv 0
+                dict set Calls $sid vtrack -1
+                $client emit calls <Warning> -sid $sid \
+                    -reason "video receiver: $reason"
+                return
+            }
+        }
+        if {[dict exists $ev fatal] && [dict get $ev fatal]} {
+            $client emit calls <Failed> -sid $sid -reason $reason
+            $self TeardownMedia $sid
+            $self Cleanup $sid
+            return
+        }
+        $client emit calls <Warning> -sid $sid -reason $reason
+    }
+
+    method AudioSide {ev} {
+        return [expr {[dict get $ev kind] eq "capture" ? "input" : "output"}]
+    }
+
+    # Did the setRemoteDescription just issued for $sid fail? Only a
+    # backend reporting synchronously can answer in time; with an async one
+    # the IQ is already acked and OnMediaError's report is the whole story.
+    method TakeSdpError {sid} {
+        if {![dict exists $SdpErrors $sid]} { return "" }
+        set err [dict get $SdpErrors $sid]
+        dict unset SdpErrors $sid
+        return $err
     }
 
     # =========================================================================
@@ -867,15 +829,16 @@ snit::type taco_calls {
     method StartOutgoingMedia {sid iceServers} {
         if {![dict exists $Calls $sid]} return
         set pc [$self CreatePc $sid $iceServers]
-        set track [::rtc::pc::add-track $pc [$self BuildAudioMediaDesc]]
-        $self AttachMedia $sid $track
+        ::tacky::media addTrack $pc $MID -kind audio -direction sendrecv
+        $self AttachMedia $sid $MID
+        if {![dict exists $Calls $sid]} return
         if {[dict get $Calls $sid video_local]} {
-            set vt [::rtc::pc::add-track $pc [$self BuildVideoMediaDesc]]
-            $self AttachVideoSender $sid $vt
-            $self AttachVideoReceiver $sid $vt
+            ::tacky::media addTrack $pc $VIDEO_MID -kind video -direction sendrecv
+            $self AttachVideoSender $sid $VIDEO_MID
+            $self AttachVideoReceiver $sid $VIDEO_MID
         }
-        # Empty type = libdatachannel infers offer (no remote desc set).
-        ::rtc::pc::set-local-description $pc ""
+        # No type: with no remote description set, this is the offer.
+        ::tacky::media setLocalDescription $pc
     }
 
     method HandleJmiReject {stanza sid from} {
@@ -979,13 +942,8 @@ snit::type taco_calls {
             $self IqError $stanza out-of-order
             return
         }
-        # rtc-ma only decodes opus. If we leave the peer's other
-        # offered codecs (PCMU/PCMA/G722/telephone-event/...) in the
-        # description, libdatachannel's auto-generated answer accepts
-        # them all and the peer is free to send RTP encoded as any of
-        # them — producing opus_decode -4 on every packet. Strip
-        # non-opus payload-types before to_sdp so the answer offers
-        # opus only.
+        # Strip payload-types the backend cannot decode before to_sdp, so
+        # the answer only offers what we can actually play back.
         set jingle [$self FilterCodecs $jingle]
         set sdp [::jinglesdp::to_sdp $jingle -initiator 0]
         jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
@@ -1004,40 +962,33 @@ snit::type taco_calls {
     # removed this sid — bail then.
     method StartIncomingMedia {sid sdp iceServers} {
         if {![dict exists $Calls $sid]} return
-        set peer [dict get $Calls $sid peer]
         set pc [$self CreatePc $sid $iceServers]
-        # Apply the offer; on-track fires async to drive AttachMedia.
-        # NOTE: do NOT call set-local-description here — libdatachannel's
-        # auto-negotiation (config.disableAutoNegotiation = false by
-        # default) calls setLocalDescription(Answer) internally as part
-        # of setRemoteDescription(Offer). Calling it ourselves afterwards
-        # runs in signaling state Stable, where Unspec is treated as
-        # Offer, which would generate a fresh offer and silently
-        # overwrite the auto-generated answer.
-        #
-        # An offer libdatachannel won't apply — a stale or duplicate
-        # session-initiate, say — throws here. The session-initiate IQ
-        # is already acked, so the peer thinks the call is live;
-        # terminate it instead of leaving that to time out.
-        if {[catch {::rtc::pc::set-remote-description $pc $sdp offer} err]} {
-            $client emit calls <Failed> -sid $sid \
-                -reason "remote offer rejected: $err"
-            $self TeardownMedia $sid
-            $self SendTerminate $sid $peer general-error
-            $self Cleanup $sid
-            return
+        # Apply the offer; `track` events fire async to drive AttachMedia.
+        # A backend that rejects it reports an error, and OnMediaError has
+        # already emitted <Failed>, terminated and cleaned up by the time
+        # this returns — hence the re-check below.
+        ::tacky::media setRemoteDescription $pc -sdp $sdp -type offer
+        if {![dict exists $Calls $sid]} return
+        $self TakeSdpError $sid
+        # An `autoAnswer` backend has applied its own answer as part of
+        # setRemoteDescription(offer) and calling setLocalDescription now
+        # would run in signaling state Stable, where an unspecified type
+        # means Offer — generating a fresh offer that silently overwrites
+        # that answer. libdatachannel does this
+        # (config.disableAutoNegotiation is false by default); libwebrtc
+        # does not, and needs the explicit answer.
+        if {![::tacky::media capability autoAnswer]} {
+            ::tacky::media setLocalDescription $pc -type answer
+            if {![dict exists $Calls $sid]} return
         }
-        # Drain any candidates that arrived (and were buffered) while
-        # this side's pc was still -1. A rejected one isn't fatal to an
-        # offer that just applied cleanly, so skip it.
+        # Drain any candidates that arrived (and were buffered) while this
+        # side's pc was still -1. A rejected one isn't fatal to an offer
+        # that just applied cleanly; OnMediaError logs and skips it.
         if {[dict exists $Calls $sid pending_remote_candidates]} {
             foreach entry [dict get $Calls $sid pending_remote_candidates] {
                 lassign $entry name full
-                if {[catch {
-                    ::rtc::pc::add-remote-candidate $pc $full $name
-                } err]} {
-                    jlog debug "buffered candidate rejected: $err"
-                }
+                ::tacky::media addRemoteCandidate $pc \
+                    -candidate $full -mid $name
             }
             dict unset Calls $sid pending_remote_candidates
         }
@@ -1051,18 +1002,19 @@ snit::type taco_calls {
         set pc [dict get $Calls $sid pc]
         # An accept before we've stood up the pc (still fetching ICE
         # servers, or never offered at all) has nothing to apply to.
-        if {$pc == -1} {
+        if {$pc eq -1} {
             $self IqError $stanza out-of-order
             return
         }
         set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
         # A duplicate/retransmitted accept applies fine once but is
         # rejected the second time — not fatal to the call already
-        # running, so warn rather than fail it, and answer with an IQ
-        # error instead of AckIq so a retrying peer stops.
-        if {[catch {::rtc::pc::set-remote-description $pc $sdp answer} err]} {
-            $client emit calls <Warning> -sid $sid \
-                -reason "session-accept rejected: $err"
+        # running, so OnMediaError warns rather than failing it, and we
+        # answer with an IQ error instead of AckIq so a retrying peer
+        # stops.
+        ::tacky::media setRemoteDescription $pc -sdp $sdp -type answer
+        if {![dict exists $Calls $sid]} return
+        if {[$self TakeSdpError $sid] ne ""} {
             $self IqError $stanza not-acceptable
             return
         }
@@ -1089,7 +1041,7 @@ snit::type taco_calls {
                     continue
                 }
                 set full "candidate:$value"
-                if {$pc == -1} {
+                if {$pc eq -1} {
                     set buffered {}
                     if {[dict exists $Calls $sid pending_remote_candidates]} {
                         set buffered [dict get $Calls $sid pending_remote_candidates]
@@ -1103,16 +1055,8 @@ snit::type taco_calls {
                             [list $name $full]
                     }
                 } else {
-                    # A candidate libdatachannel rejects (stale,
-                    # duplicate, wrong ufrag) is skipped like an
-                    # unparsable one above — other candidates may
-                    # still connect.
-                    if {[catch {
-                        ::rtc::pc::add-remote-candidate $pc $full $name
-                    } err]} {
-                        jlog debug "transport-info: candidate rejected: $err"
-                        continue
-                    }
+                    ::tacky::media addRemoteCandidate $pc \
+                        -candidate $full -mid $name
                 }
             }
         }
@@ -1131,14 +1075,16 @@ snit::type taco_calls {
     # Helpers
     # =========================================================================
 
-    # Walk a session-initiate's Jingle tree and remove any
-    # <payload-type> whose name isn't "opus" from each rtp <description>.
-    # Mirrors gajim's codec filter: keep the negotiation honest about
-    # what we can actually decode.
-    # Per media kind, keep only what rtc-ma/rtc-mv can decode: opus for
-    # audio, VP8 for video. Everything else gets dropped.
+    # Walk a session-initiate's Jingle tree and drop, from each rtp
+    # <description>, every <payload-type> the backend cannot decode.
+    # Mirrors gajim's codec filter: keep the negotiation honest about what
+    # we can actually play. Otherwise a backend that auto-answers accepts
+    # everything the peer offered and is then free to be sent RTP in any
+    # of it — rtc-ma's opus_decode -4 on every packet. A backend with no
+    # opinion for a kind (an empty list) has everything left in.
     method FilterCodecs {jingle} {
         set NS_RTP urn:xmpp:jingle:apps:rtp:1
+        set codecs [::tacky::media codecs]
         set jc {}
         foreach c [dict get $jingle children] {
             if {[dict get $c tag] eq "content"} {
@@ -1150,19 +1096,14 @@ snit::type taco_calls {
                         if {[dict exists $d attrs media]} {
                             set media [dict get $d attrs media]
                         }
-                        set keep [expr {$media eq "video" ? "vp8" : "opus"}]
-                        set dc {}
-                        foreach e [dict get $d children] {
-                            if {[dict get $e tag] eq "payload-type"} {
-                                set name ""
-                                if {[dict exists $e attrs name]} {
-                                    set name [dict get $e attrs name]
-                                }
-                                if {![string equal -nocase $name $keep]} continue
-                            }
-                            lappend dc $e
+                        set keep {}
+                        if {[dict exists $codecs $media]} {
+                            set keep [dict get $codecs $media]
                         }
-                        dict set d children $dc
+                        if {[llength $keep]} {
+                            dict set d children \
+                                [$self KeepPayloadTypes [dict get $d children] $keep]
+                        }
                     }
                     lappend cc $d
                 }
@@ -1172,6 +1113,21 @@ snit::type taco_calls {
         }
         dict set jingle children $jc
         return $jingle
+    }
+
+    method KeepPayloadTypes {children keep} {
+        set out {}
+        foreach e $children {
+            if {[dict get $e tag] eq "payload-type"} {
+                set name ""
+                if {[dict exists $e attrs name]} {
+                    set name [dict get $e attrs name]
+                }
+                if {[lsearch -exact -nocase $keep $name] < 0} continue
+            }
+            lappend out $e
+        }
+        return $out
     }
 
     # Bare <iq type='result'/> ack. Built by hand because $client iq respond
@@ -1234,9 +1190,8 @@ snit::type taco_calls {
     }
 
     method Cleanup {sid} {
+        dict unset SdpErrors $sid
         if {![dict exists $Calls $sid]} return
-        set pc [dict get $Calls $sid pc]
-        if {$pc != -1} { unset -nocomplain PcToSid($pc) }
         dict unset Calls $sid
     }
 
