@@ -198,6 +198,7 @@ snit::type taco_type {
     component db
     component account -public account
     component setting -public setting
+    component media -public media
     component audio -public audio
     component video -public video
     component register -public register
@@ -209,6 +210,9 @@ snit::type taco_type {
     option -config-dir -readonly yes -default ""
     option -data-dir -readonly yes -default ""
     option -cache-dir -readonly yes -default ""
+    # Which media backend calls run on; see lib/taco/modules/media.tcl.
+    option -media-backend -readonly yes -default auto
+    option -webrtc-lib -readonly yes -default ""
 
     variable TransientRoot ""
     # Guards CompleteUnlock against running twice: the constructor already
@@ -277,6 +281,10 @@ snit::type taco_type {
         install account using taco_account ${selfns}::account \
             -db $db -taco $self -data-dir $options(-data-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
+        # Before audio/video/any client: they all talk to whichever backend
+        # this picks, and a call can start as soon as a client connects.
+        install media using taco_media ${selfns}::media -taco $self \
+            -backend $options(-media-backend) -webrtc-lib $options(-webrtc-lib)
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install video using taco_video ${selfns}::video -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self
@@ -305,6 +313,8 @@ snit::type taco_type {
             }
         }
         catch {$db close}
+        # After the clients: their calls hold peer connections on it.
+        catch {::tacky::media close}
         # Last, so nothing is still writing under it.
         if {$TransientRoot ne ""} {
             catch {file delete -force -- $TransientRoot}
