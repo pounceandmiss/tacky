@@ -3,4 +3,7 @@ package ifneeded tacky::testwait 0.1 [list source [file join $dir wait.tcl]]
 package ifneeded tacky::testhelpers 0.1 [list source [file join $dir helpers.tcl]]
 package ifneeded tacky::mockconn 0.1 [list source [file join $dir mock_conn.tcl]]
 package ifneeded tacky::mockrtc 0.1 [list source [file join $dir mock_rtc.tcl]]
+package ifneeded tacky::mockmedia 0.1 [list source [file join $dir mock_media.tcl]]
+package ifneeded tacky::mediaconformance 0.1 \
+    [list source [file join $dir media_conformance.tcl]]
 package ifneeded tacky::callshelpers 0.1 [list source [file join $dir calls_helpers.tcl]]
