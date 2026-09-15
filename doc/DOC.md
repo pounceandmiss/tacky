@@ -31,6 +31,7 @@ and get back replies and events.
   - [nick](#nick)
   - [file](#file)
   - [calls](#calls)
+  - [media](#media)
   - [audio](#audio)
   - [video](#video)
   - [log](#log)
@@ -137,6 +138,9 @@ be regenerated: thumbnails and upload staging.
 
 `-transient yes` keeps every database in RAM and puts attachments in a
 temporary directory that is removed on shutdown.
+
+`-media-backend` and `-webrtc-lib` pick what runs the media half of a call;
+see [media](#media).
 
 Local storage can be encrypted (see [storage](#storage)) - off by default.
 When it is, every db above is SQLCipher-encrypted with the same passphrase.
@@ -925,6 +929,51 @@ that had video up - `setVideo` only mutes the camera, it doesn't tear the
 video half down on its own. See
 [Voice and video calls](#voice-and-video-calls) for the ring's layout.
 
+## media
+
+    media backend      {}                                  -> string   active backend
+    media list         {}                                  -> [string] backends this build has
+    media capabilities {}                                  -> {string: bool}
+
+Which backend runs the media half of a call - ICE/DTLS/RTP and the
+mic/speaker/camera path. One backend serves every account, picked once at
+startup and not switchable afterwards. Signaling (Jingle, JMI, call state)
+is tacky's either way, so `calls`, `audio` and `video` work the same on all
+of them.
+
+    rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always present.
+    webrtc  libwebrtc, in libtacky_webrtc.so. Only where that ships.
+
+Chosen with the backend options `-media-backend` (`auto`, or a name from
+`list`) and `-webrtc-lib` (where to load `libtacky_webrtc.so` from; defaults
+to next to the executable). `auto` is the default and currently means `rtc`.
+A backend that isn't in this build, or won't start, falls back to `rtc` with
+a `<Warning>` - calls still work, on the other backend.
+
+`capabilities` is what the active backend can do. A frontend only needs these
+to grey out a control it would otherwise offer:
+
+    audioDevices  `audio enumerateDevices` / `setPreferredDevice` do anything
+    audioVolume   `audio setVolume` does anything
+    cameras       `video enumerateCameras` returns anything
+    videoDevice   `video setPreferredCamera` does anything
+    videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
+
+Where a capability is absent the matching call is accepted and does nothing,
+and enumeration returns an empty list, so a frontend that ignores this still
+works - it just shows an empty picker.
+
+The rest of the flags (`autoAnswer`, `sdpSanitize`, `trickleIce`) are internal
+to signaling and of no use to a frontend.
+
+Events:
+
+    media <Warning> {name: string, reason: string}   requested backend unavailable
+
+`<Warning>` fires at startup only, when `-media-backend` asked for something
+that isn't there; `name` is what was asked for. There is no event for the
+ordinary case - ask `media backend` whenever you want to know.
+
 ## audio
 
     audio enumerateDevices {}                              -> {capture: [audio_device], playback: [audio_device]}
@@ -942,6 +991,12 @@ persists it and hot-swaps every live call on every account. Volume is a
 linear gain in `[0.0, 1.0]`. Per-call device overrides are
 `calls setDevices`; there's no per-call volume.
 
+A preference outlives the backend that produced the id in it. One the active
+backend doesn't recognise falls back to that backend's default device, and
+the call it happens on gets a `calls <Warning>`; the stored preference is
+left alone. On a backend without the `audioDevices` / `audioVolume`
+capability, enumeration comes back empty and the setters do nothing.
+
 Events:
 
     audio <PreferredDevice> {kind: string, id: string}       preferred device changed
@@ -957,7 +1012,10 @@ Events:
 
 Machine-wide camera selection, the video equivalent of `audio` - one
 preference for the machine, not per account. Setting a camera persists it
-and hot-swaps every live video call on every account.
+and hot-swaps every live video call on every account. An id the active
+backend doesn't recognise falls back to its default camera, exactly as an
+audio device does; without the `cameras` / `videoDevice` capability
+enumeration is empty and the setter does nothing.
 
 Events:
 
@@ -1419,6 +1477,11 @@ Audio over Jingle (XEP-0166/0167/0176), set up through Jingle Message
 Initiation (XEP-0353). Video rides the same PeerConnection as a second
 track, offered by naming `video: true` on `start`, or answered symmetrically
 when the peer offered it.
+
+Everything in this section is tacky's own and does not change with the
+[media](#media) backend: the backend owns ICE/DTLS/RTP and the devices, and
+tacky owns Jingle, JMI and call state. What a backend can vary is whether it
+enumerates devices at all - see `media capabilities`.
 
 Caller: `calls start` sends a JMI `propose` to the bare JID and emits
 `<Outgoing>`. A peer device answering `ringing` gives you `<Ringing>`.
