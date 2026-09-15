@@ -104,6 +104,7 @@ snit::type taco_chatlist {
     method MakeEntry {chatJid source base ts tally} {
         set unread [dict get $tally unread]
         set mentions [dict get $tally mentions]
+        set policy [$client message messagestore notifyPolicy $chatJid]
         set entry $base
         dict set entry jid $chatJid
         dict set entry source $source
@@ -111,6 +112,8 @@ snit::type taco_chatlist {
         dict set entry last_activity $ts
         dict set entry unread $unread
         dict set entry unread_mentions $mentions
+        dict set entry muted [dict get $policy muted]
+        dict set entry mentions [dict get $policy mentions]
         if {![dict exists $entry name]} { dict set entry name "" }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
         return $entry
