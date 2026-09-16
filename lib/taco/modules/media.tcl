@@ -102,6 +102,8 @@ snit::type taco_media {
         if {$name ni [::tacky::media available]} {
             error "$path registered no backend"
         }
+        # -webrtc-debug-level was applied before the library existed.
+        catch {jlog applynative -source webrtc}
         return
     }
 

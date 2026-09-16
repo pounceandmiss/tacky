@@ -12,7 +12,7 @@ proc tacky_split_debug {arglist} {
     set flags {
         -debug-level -debug-file
         -libdatachannel-debug-level -rtcma-debug-level
-        -rtcmv-debug-level
+        -rtcmv-debug-level -webrtc-debug-level
     }
     set debug {}
     set rest {}

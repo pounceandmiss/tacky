@@ -58,7 +58,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
-	linux flatpak flatpak-bundle flatpak-install \
+	linux webrtc-so flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -315,6 +315,38 @@ LINUX_OUT := dist
 
 linux: dist-dir
 	DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile --output $(LINUX_OUT) .
+
+# ==== libwebrtc media backend ====
+# dist/libtacky_webrtc.so from the rtc-webrtc repo; not part of `all`. Needs a
+# native build first. Host build: ship the one built in quack's Rocky 9 image.
+
+WEBRTC_SRC ?= $(HOME)/dev/tacky_calls/rtc-webrtc
+WEBRTC_BUILD := $(CURDIR)/build/webrtc
+WEBRTC_TCL_PREFIX ?= $(LINUX_BUILD)/_build/local
+
+# The .so compiles in rtc-mv's frame ring at zippy's pinned commit.
+WEBRTC_RTCMV_COMMIT := $(shell sed -n 's/^RTCMV_COMMIT[[:space:]]*:=[[:space:]]*//p' \
+                          $(CURDIR)/zippy/zippy.mk)
+WEBRTC_RTCMV_SRC ?= $(DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
+
+webrtc-so: dist-dir
+	@[ -f "$(WEBRTC_SRC)/CMakeLists.txt" ] || { \
+	    echo "make: no wrapper sources at $(WEBRTC_SRC);" >&2; \
+	    echo "    set WEBRTC_SRC=<path to the rtc-webrtc checkout>" >&2; exit 1; }
+	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc/lib/libwebrtc.a" ] && \
+	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang++" ]; } || { \
+	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
+	    exit 1; }
+	@[ -f "$(WEBRTC_TCL_PREFIX)/include/tcl.h" ] || { \
+	    echo "make: no Tcl headers at $(WEBRTC_TCL_PREFIX); run make tclsh first" >&2; \
+	    exit 1; }
+	@[ -f "$(WEBRTC_RTCMV_SRC)/include/rtcmv.h" ] || { \
+	    echo "make: no rtc-mv sources at $(WEBRTC_RTCMV_SRC); run make tclsh first" >&2; \
+	    exit 1; }
+	cmake -S $(WEBRTC_SRC) -B $(WEBRTC_BUILD) -DTCL_PREFIX=$(WEBRTC_TCL_PREFIX) \
+	    -DRTCMV_SRC=$(WEBRTC_RTCMV_SRC)
+	cmake --build $(WEBRTC_BUILD)
+	$(call copy-if-changed,$(WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc.so)
 
 # ==== Flatpak ====
 # Opt-in packaging layer (not part of `all`). Needs flatpak + the

@@ -250,10 +250,32 @@ test jlog-setnativelevel-stops-jlog-refiltering {the library's own filter is the
         jprobe getLevel ::rtcma
     } -result verbose
 
+testConstraint webrtcNotLoaded \
+    [expr {[info commands ::tacky::media::webrtc::set-log-level] eq ""}]
+
+test jlog-setnativelevel-reaches-a-logger-loaded-later {a level set before the library loads is applied once it does} \
+    -constraints webrtcNotLoaded \
+    {*}$native -body {
+        set ::jlog_late {}
+        jprobe setnativelevel -source webrtc -level debug
+        set before [jprobe getnativelevel -source webrtc]
+        namespace eval ::tacky::media::webrtc {}
+        proc ::tacky::media::webrtc::set-log-level {level args} {
+            lappend ::jlog_late $level [llength $args]
+        }
+        jprobe applynative -source webrtc
+        list $before $::jlog_late
+    } -cleanup {
+        jprobe setnativelevel -level none
+        jprobe destroy
+        rename ::tacky::media::webrtc::set-log-level {}
+        unset -nocomplain ::jlog_late ::jlog_seen
+    } -result {debug {debug 1}}
+
 test jlog-setnativelevel-rejects-unknown-source {a bad source name is refused} \
     {*}$native -body {
-        jprobe setnativelevel -source webrtc -level debug
-    } -returnCodes error -match glob -result {unknown native log source "webrtc"*}
+        jprobe setnativelevel -source no-such-library -level debug
+    } -returnCodes error -match glob -result {unknown native log source "no-such-library"*}
 
 test jlog-getnativelevel-needs-a-source {there is no single native level to report} \
     {*}$native -body {

@@ -444,6 +444,10 @@ snit::type taco_calls {
     # check here is what every handler below relies on to assume it is not.
     method OnMediaEvent {sid ev} {
         if {![dict exists $Calls $sid]} return
+        # SDP is logged where it is sent.
+        if {[dict get $ev type] ne "localDescription"} {
+            jlog debug "media event (sid=$sid): [dict remove $ev pc]"
+        }
         switch -- [dict get $ev type] {
             localDescription {
                 $self OnLocalDescription $sid \
@@ -635,10 +639,12 @@ snit::type taco_calls {
     method OnVideoChannel {sid ev} {
         set args [$self VideoEventArgs [dict get $ev channel]]
         if {[dict get $ev direction] eq "preview"} {
+            jlog debug "<VideoPreview> (sid=$sid) $args"
             $client emit calls <VideoPreview> -sid $sid \
                 -direction preview {*}$args
             return
         }
+        jlog debug "<VideoTrack> (sid=$sid) $args"
         $client emit calls <VideoTrack> -sid $sid -mid [dict get $ev mid] \
             -direction incoming {*}$args
     }

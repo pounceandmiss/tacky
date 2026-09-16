@@ -19,6 +19,8 @@ Options:
                       rtc-ma native log level (default: none)
   --rtcmv-debug-level LVL
                       rtc-mv native log level (default: none)
+  --webrtc-debug-level LVL
+                      libwebrtc native log level (default: none)
   -h, --help          Display this help text and exit
 
 Log levels: verbose, debug, info, warning, error, fatal, none"
