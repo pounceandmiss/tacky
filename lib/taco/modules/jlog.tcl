@@ -21,6 +21,7 @@ snit::type jlog_type {
         libdatachannel ::rtc::set-log-level
         rtcma          ::rtcma::set-log-level
         rtcmv          ::rtcmv::set-log-level
+        webrtc         ::tacky::media::webrtc::set-log-level
     }
 
     constructor args {
@@ -195,6 +196,8 @@ snit::type jlog_type {
         $self CheckLevel $opts(-level)
         foreach src [$self NativeSources $opts(-source)] {
             set cmd [dict get $NATIVE $src]
+            # Kept for a library loaded later; see applynative.
+            set nativelevel($src) $opts(-level)
             if {[info commands $cmd] eq ""} continue
             # Native verbosity is the library's job; don't let jlog re-filter.
             $self setLevel $src verbose
@@ -205,7 +208,18 @@ snit::type jlog_type {
             } else {
                 {*}$cmd $opts(-level) [list $self nativeLog $src]
             }
-            set nativelevel($src) $opts(-level)
+        }
+        return
+    }
+
+    # Apply a level asked for before the library behind the source was loaded.
+    method applynative {args} {
+        array set opts {-source ""}
+        array set opts $args
+        foreach src [$self NativeSources $opts(-source)] {
+            if {$nativelevel($src) ne "none"} {
+                $self setnativelevel -source $src -level $nativelevel($src)
+            }
         }
         return
     }
@@ -330,7 +344,7 @@ snit::type jlog_type {
         array set o {
             -debug-level "" -debug-file ""
             -libdatachannel-debug-level "" -rtcma-debug-level ""
-            -rtcmv-debug-level ""
+            -rtcmv-debug-level "" -webrtc-debug-level ""
         }
         array set o $args
         if {$o(-debug-level) ne ""} {
@@ -344,6 +358,7 @@ snit::type jlog_type {
             -libdatachannel-debug-level libdatachannel
             -rtcma-debug-level          rtcma
             -rtcmv-debug-level          rtcmv
+            -webrtc-debug-level         webrtc
         } {
             if {$o($opt) ne ""} {
                 $self setnativelevel -source $src -level $o($opt)

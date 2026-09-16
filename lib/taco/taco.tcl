@@ -303,6 +303,7 @@ snit::type taco_type {
         catch {::rtc::set-log-level none}
         catch {::rtcma::set-log-level none}
         catch {::rtcmv::set-log-level none}
+        catch {::tacky::media::webrtc::set-log-level none}
         catch {
             foreach jid [$db eval {SELECT jid FROM account}] {
                 set client $self.client($jid)
