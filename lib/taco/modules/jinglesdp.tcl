@@ -493,6 +493,30 @@ proc jinglesdp::BuildDescription {media} {
         dict set fmtpMap $id $params
     }
 
+    # Outside the description body: inside a j script, j parameter appends
+    # instead of returning a node.
+    set sourceMap {}
+    set sourceOrder {}
+    foreach val [mm_get_all $mediaAttrs ssrc] {
+        set sp [split $val " "]
+        if {[llength $sp] < 2} continue
+        set sid [lindex $sp 0]
+        set rest [join [lrange $sp 1 end] " "]
+        set kv [split $rest ":"]
+        set pn [lindex $kv 0]
+        set pv [expr {[llength $kv] >= 2 ? [join [lrange $kv 1 end] ":"] : ""}]
+        if {![dict exists $sourceMap $sid]} {
+            lappend sourceOrder $sid
+            dict set sourceMap $sid {}
+        }
+        if {$pv eq ""} {
+            set p [j parameter -name $pn]
+        } else {
+            set p [j parameter -name $pn -value $pv]
+        }
+        dict lappend sourceMap $sid $p
+    }
+
     j description -ns $NS_RTP -media [dict get $media media] {
         if {[dict exists $fbMap "*"]} {
             foreach fb [dict get $fbMap "*"] { j #as-is $fb }
@@ -539,29 +563,6 @@ proc jinglesdp::BuildDescription {media} {
             }
         }
 
-        set sourceMap {}
-        set sourceOrder {}
-        foreach val [mm_get_all $mediaAttrs ssrc] {
-            set sp [split $val " "]
-            if {[llength $sp] < 2} continue
-            set sid [lindex $sp 0]
-            set rest [join [lrange $sp 1 end] " "]
-            set kv [split $rest ":"]
-            set pn [lindex $kv 0]
-            set pv [expr {[llength $kv] >= 2 ? [join [lrange $kv 1 end] ":"] : ""}]
-            if {![dict exists $sourceMap $sid]} {
-                lappend sourceOrder $sid
-                dict set sourceMap $sid {}
-            }
-            if {$pv eq ""} {
-                set p [j parameter -name $pn]
-            } else {
-                set p [j parameter -name $pn -value $pv]
-            }
-            set existing [dict get $sourceMap $sid]
-            lappend existing $p
-            dict set sourceMap $sid $existing
-        }
         foreach sid $sourceOrder {
             j source -ns $NS_RTP_SSMA -ssrc $sid {
                 foreach p [dict get $sourceMap $sid] { j #as-is $p }

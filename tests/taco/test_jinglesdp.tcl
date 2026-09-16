@@ -245,6 +245,24 @@ test jinglesdp-from_sdp-bundle "BUNDLE -> group element" -body {
         [lindex $jcontents 1]
 } -result {BUNDLE 2 audio video 2 audio video}
 
+test jinglesdp-from_sdp-sources "ssrc lines become source elements with parameters" -body {
+    jinglesdp_test::reset
+    set sdp "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:96 VP8/90000\r\na=ice-ufrag:a\r\na=ice-pwd:b\r\na=fingerprint:sha-256 AA\r\na=setup:actpass\r\na=mid:video\r\na=ssrc-group:FID 1111 2222\r\na=ssrc:1111 cname:alice\r\na=ssrc:1111 msid:tacky v\r\na=ssrc:2222 cname:alice\r\n"
+    set jingle [jinglesdp::from_sdp $sdp]
+    set description [xsearch $jingle content description -ns $::NS_RTP -get node]
+    set sources [xsearch $description source -ns $::NS_RTP_SSMA -gather node]
+    set params [xsearch [lindex $sources 0] parameter -gather node]
+    list \
+        [llength $sources] \
+        [xsearch [lindex $sources 0] -get @ssrc] \
+        [xsearch [lindex $sources 1] -get @ssrc] \
+        [llength $params] \
+        [xsearch [lindex $params 0] -get @name] \
+        [xsearch [lindex $params 0] -get @value] \
+        [xsearch [lindex $params 1] -get @name] \
+        [xsearch [lindex $params 1] -get @value]
+} -result {2 1111 2222 2 cname alice msid {tacky v}}
+
 test jinglesdp-from_sdp-candidate "parses candidate line into <candidate> child" -body {
     jinglesdp_test::reset
     set sdp "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:0 PCMU/8000\r\na=ice-ufrag:a\r\na=ice-pwd:b\r\na=fingerprint:sha-256 AA\r\na=setup:actpass\r\na=mid:audio\r\na=candidate:1 1 udp 2122260223 192.0.2.1 54321 typ host generation 0\r\na=candidate:2 1 udp 1686052607 198.51.100.1 56789 typ srflx raddr 10.0.0.1 rport 54321 generation 0\r\n"
