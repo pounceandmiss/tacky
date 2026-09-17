@@ -28,9 +28,8 @@ native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 WIN_DEPS_EXCL := rtcmv rtcmv_tk
 win-deps = $(filter-out $(WIN_DEPS_EXCL),$(1))
 
-# Same gap on Android: rtcmv_camera_camera2.c (M6) isn't written either, and
-# FrameChannel already stubs out video reception there for the same reason.
-ANDROID_DEPS_EXCL := rtcmv rtcmv_tk
+# Android has no Tk. rtcmv builds without a camera there: receive-only.
+ANDROID_DEPS_EXCL := rtcmv_tk
 android-deps = $(filter-out $(ANDROID_DEPS_EXCL),$(1))
 
 # ==== Per-binary config ====
