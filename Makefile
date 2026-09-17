@@ -22,10 +22,8 @@ ifeq ($(shell uname -s),Darwin)
 endif
 native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 
-# rtc-mv has no Windows camera backend yet (rtcmv_camera_mf.c - M7, not
-# written); building it cross-compiled just fails cmake's configure on a
-# missing source file. Audio-only there until that lands.
-WIN_DEPS_EXCL := rtcmv rtcmv_tk
+# No Tk video view on Windows. rtcmv builds without a camera there: receive-only.
+WIN_DEPS_EXCL := rtcmv_tk
 win-deps = $(filter-out $(WIN_DEPS_EXCL),$(1))
 
 # Android has no Tk. rtcmv builds without a camera there: receive-only.
@@ -57,7 +55,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
-	linux webrtc-so android-webrtc-so flatpak flatpak-bundle flatpak-install \
+	linux webrtc-so android-webrtc-so win-webrtc-dll flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -347,10 +345,7 @@ webrtc-so: dist-dir
 	cmake --build $(WEBRTC_BUILD)
 	$(call copy-if-changed,$(WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc.so)
 
-# The same backend for Android arm64-v8a, against android-lib's Tcl and rtc-mv.
-# Needs android-lib first and an NDK in $ANDROID_NDK, so it runs where
-# ANDROID_DOCKER=0 does. The app also needs dist/webrtc-android.jar: libwebrtc's
-# audio goes through its Java classes.
+# The same backend for Android arm64-v8a. Needs android-lib and $ANDROID_NDK.
 ANDROID_WEBRTC_BUILD := $(abspath $(ANDROID_BUILD))/webrtc
 ANDROID_WEBRTC_TCL_PREFIX := $(abspath $(ANDROID_BUILD))/_build-android/local
 ANDROID_WEBRTC_RTCMV_SRC := $(abspath $(ANDROID_BUILD))/_build/deps/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
@@ -372,6 +367,27 @@ android-webrtc-so: dist-dir
 	cmake --build $(ANDROID_WEBRTC_BUILD)
 	$(call copy-if-changed,$(ANDROID_WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc-android.so)
 	$(call copy-if-changed,$(WEBRTC_SRC)/third_party/webrtc-android/jar/webrtc.jar,dist/webrtc-android.jar)
+
+# The same backend for Windows x64, built with clang-cl. Needs win-lib.
+WIN_WEBRTC_BUILD := $(WIN_ROOT)/$(WIN_BUILD)/webrtc
+WIN_WEBRTC_SDK ?= $(WEBRTC_SRC)/third_party/xwin
+WIN_WEBRTC_TCL_VER := $(shell sed -n 's/^TCL_VER[[:space:]]*:=[[:space:]]*//p' $(CURDIR)/zippy/zippy.mk)
+
+win-webrtc-dll: dist-dir
+	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc-windows/lib/webrtc.lib" ] && \
+	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang-cl" ] && \
+	   [ -d "$(WIN_WEBRTC_SDK)/crt" ]; } || { \
+	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
+	    exit 1; }
+	@[ -f "$(WIN_DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)/include/rtcmv.h" ] || { \
+	    echo "make: no rtc-mv sources in $(WIN_DEPS_DIR); run make win-lib first" >&2; \
+	    exit 1; }
+	cmake -S $(WEBRTC_SRC) -B $(WIN_WEBRTC_BUILD) -G Ninja \
+	    -DWEBRTC_WINDOWS_SDK=$(WIN_WEBRTC_SDK) \
+	    -DTCL_SRC=$(WIN_DEPS_DIR)/tcl$(WIN_WEBRTC_TCL_VER) \
+	    -DRTCMV_SRC=$(WIN_DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
+	cmake --build $(WIN_WEBRTC_BUILD)
+	$(call copy-if-changed,$(WIN_WEBRTC_BUILD)/libtacky_webrtc.dll,dist/libtacky_webrtc-win.dll)
 
 # ==== Flatpak ====
 # Opt-in packaging layer (not part of `all`). Needs flatpak + the
