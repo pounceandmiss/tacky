@@ -57,7 +57,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
-	linux webrtc-so flatpak flatpak-bundle flatpak-install \
+	linux webrtc-so android-webrtc-so flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -346,6 +346,32 @@ webrtc-so: dist-dir
 	    -DRTCMV_SRC=$(WEBRTC_RTCMV_SRC)
 	cmake --build $(WEBRTC_BUILD)
 	$(call copy-if-changed,$(WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc.so)
+
+# The same backend for Android arm64-v8a, against android-lib's Tcl and rtc-mv.
+# Needs android-lib first and an NDK in $ANDROID_NDK, so it runs where
+# ANDROID_DOCKER=0 does. The app also needs dist/webrtc-android.jar: libwebrtc's
+# audio goes through its Java classes.
+ANDROID_WEBRTC_BUILD := $(abspath $(ANDROID_BUILD))/webrtc
+ANDROID_WEBRTC_TCL_PREFIX := $(abspath $(ANDROID_BUILD))/_build-android/local
+ANDROID_WEBRTC_RTCMV_SRC := $(abspath $(ANDROID_BUILD))/_build/deps/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
+
+android-webrtc-so: dist-dir
+	@[ -n "$(ANDROID_NDK)" ] || { echo "make: ANDROID_NDK is unset" >&2; exit 1; }
+	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc-android/lib/arm64-v8a/libwebrtc.a" ] && \
+	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang++" ]; } || { \
+	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
+	    exit 1; }
+	@[ -f "$(ANDROID_WEBRTC_TCL_PREFIX)/include/tcl.h" ] || { \
+	    echo "make: no Tcl headers at $(ANDROID_WEBRTC_TCL_PREFIX); run make android-lib first" >&2; \
+	    exit 1; }
+	@[ -f "$(ANDROID_WEBRTC_RTCMV_SRC)/include/rtcmv.h" ] || { \
+	    echo "make: no rtc-mv sources at $(ANDROID_WEBRTC_RTCMV_SRC); run make android-lib first" >&2; \
+	    exit 1; }
+	cmake -S $(WEBRTC_SRC) -B $(ANDROID_WEBRTC_BUILD) -DWEBRTC_ANDROID_NDK=$(ANDROID_NDK) \
+	    -DTCL_PREFIX=$(ANDROID_WEBRTC_TCL_PREFIX) -DRTCMV_SRC=$(ANDROID_WEBRTC_RTCMV_SRC)
+	cmake --build $(ANDROID_WEBRTC_BUILD)
+	$(call copy-if-changed,$(ANDROID_WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc-android.so)
+	$(call copy-if-changed,$(WEBRTC_SRC)/third_party/webrtc-android/jar/webrtc.jar,dist/webrtc-android.jar)
 
 # ==== Flatpak ====
 # Opt-in packaging layer (not part of `all`). Needs flatpak + the
