@@ -121,6 +121,24 @@ proc media_jingle_sent {} {
     return [xsearch [calls_last_written] jingle -ns urn:xmpp:jingle:1 -get node]
 }
 
+# -- ICE servers --
+
+test media-ice-server-ipv6-host-bracketed {an IPv6 extdisco host is bracketed in its URL} \
+    {*}$media_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_jmi_in proceed $sid $::MEDIA_PEER]
+        set id [xsearch [calls_last_written] -get @id]
+        c.conn feed [j iq -type result -from test.example.com \
+            -to user@test.example.com -id $id {
+            j services -ns urn:xmpp:extdisco:2 {
+                j service -type stun -transport udp -host 2001:db8::1 -port 3478
+                j service -type turn -transport udp -host 2001:db8::1 -port 3478 \
+                    -username u -password p
+            }
+        }]
+        dict get [lindex [mockrtc::calls ::rtc::pc::new] 0] -ice-servers
+    } -result {{stun:[2001:db8::1]:3478} {turn:u:p@[2001:db8::1]:3478?transport=udp}}
+
 # -- Offer and answer --
 
 test media-offer-becomes-session-initiate {a local offer ships as session-initiate} \

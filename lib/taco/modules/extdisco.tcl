@@ -106,6 +106,10 @@ snit::type taco_extdisco {
         if {$type_ in {turn turns} && $username ne ""} {
             set userinfo "[$self UrlEncode $username]:[$self UrlEncode $password]@"
         }
+        # An IPv6 literal is bracketed, or its colons read as the port's.
+        if {[string first : $host] >= 0 && [string index $host 0] ne "\["} {
+            set host "\[$host\]"
+        }
         set query ""
         if {$type_ in {turn turns} && $transport ne ""} {
             set query "?transport=[string tolower $transport]"
