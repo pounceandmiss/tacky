@@ -95,7 +95,8 @@ snit::type taco_media {
         }
         set path $options(-webrtc-lib)
         if {$path eq ""} { set path [$self DefaultWebrtcLib] }
-        if {![file exists $path]} {
+        # A bare name is the dynamic linker's to find, as on Android.
+        if {[file tail $path] ne $path && ![file exists $path]} {
             error "no library at $path"
         }
         load $path Tackywebrtc
