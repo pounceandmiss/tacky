@@ -941,14 +941,17 @@ startup and not switchable afterwards. Signaling (Jingle, JMI, call state)
 is tacky's either way, so `calls`, `audio` and `video` work the same on all
 of them.
 
-    rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always present.
+    rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always
+            present, and Opus and VP8 only.
     webrtc  libwebrtc, in libtacky_webrtc.so. Only where that ships.
 
 Chosen with the backend options `-media-backend` (`auto`, or a name from
 `list`) and `-webrtc-lib` (where to load `libtacky_webrtc.so` from; defaults
 to next to the executable). `auto` is the default and currently means `rtc`.
 A backend that isn't in this build, or won't start, falls back to `rtc` with
-a `<Warning>` - calls still work, on the other backend.
+a `<Warning>` - calls still work, on the other backend. What each one is,
+and the frontend-driven alternative to both, are in
+[Voice and video calls](#voice-and-video-calls).
 
 `capabilities` is what the active backend can do. A frontend only needs these
 to grey out a control it would otherwise offer:
@@ -1478,10 +1481,42 @@ Initiation (XEP-0353). Video rides the same PeerConnection as a second
 track, offered by naming `video: true` on `start`, or answered symmetrically
 when the peer offered it.
 
-Everything in this section is tacky's own and does not change with the
-[media](#media) backend: the backend owns ICE/DTLS/RTP and the devices, and
-tacky owns Jingle, JMI and call state. What a backend can vary is whether it
-enumerates devices at all - see `media capabilities`.
+There are two ways to run the media half of a call. Signaling is tacky's in
+both: Jingle, JMI, call state and the Jingle<->SDP translation stay here, so
+`calls` reads the same either way.
+
+**Tacky runs the media.** What every build does today. A [media](#media)
+backend, one for the whole process and chosen at startup, owns ICE/DTLS/RTP
+and the mic, speaker and camera:
+
+- **rtc** - libdatachannel for the transport, rtc-ma (miniaudio) for the
+  audio devices and Opus, rtc-mv for the camera and VP8. Linked into every
+  build, so it is the one backend that cannot go missing, and what `auto`
+  selects. Opus and VP8 are all it speaks, and it has no camera on Windows:
+  there it receives video but sends none.
+- **webrtc** - libwebrtc, whole, in `libtacky_webrtc.so` (`.dll` on
+  Windows), loaded at startup and only present in builds that ship that
+  library. Brings libwebrtc's codecs, echo cancellation and ICE.
+
+Which one is a startup option, not a request: `-media-backend <name>`, plus
+`-webrtc-lib <path>` if the library is not beside the executable. `media
+list` is what the build has, `media backend` what it settled on, `media
+capabilities` what it can do. A backend that is missing or will not load
+falls back to `rtc` with a `media <Warning>`, so a wrong flag degrades
+instead of breaking calls. Both produce the same events and the same frame
+rings; a frontend needs no per-backend code beyond `capabilities`.
+
+**The frontend runs the media.** Tacky hands out SDP and candidates and the
+frontend feeds them to a PeerConnection it owns - a browser's
+`RTCPeerConnection`, `WebRTC.xcframework`, Android's `org.webrtc` - for
+platforms whose WebRTC stack belongs to the host and cannot be linked in.
+Designed, not built: no build offers it yet. What the media API already does
+for it is stay carriable - string handles, asynchronous throughout, data
+only, video as an opaque channel descriptor rather than a mapped region.
+
+The rest of this section is tacky's own and does not change with the
+backend. What a backend can vary is whether it enumerates devices at all -
+see `media capabilities`.
 
 Caller: `calls start` sends a JMI `propose` to the bare JID and emits
 `<Outgoing>`. A peer device answering `ringing` gives you `<Ringing>`.
