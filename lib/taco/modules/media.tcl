@@ -10,10 +10,12 @@
 # tacky listen media <Warning>     $cmd  ;# -name $requested -reason $text
 # tacky listen media <HostCommand> $cmd  ;# -op $verb -pc $pc ...
 #
-# Selected by taco_type's -media-backend (auto, or a name from `list`) and
-# -webrtc-lib (where to load libtacky_webrtc.so from). A requested backend
-# that is not in this build, or will not start, falls back to rtc with a
-# <Warning>; calls still work, on the other backend.
+# Which one runs is the `media_backend` setting, read here at startup; unset
+# means rtc. taco_type's -media-backend (auto, or a name from `list`) overrides
+# it for the run without storing anything, and -webrtc-lib says where to load
+# libtacky_webrtc.so from. A backend that is not in this build, or will not
+# start, falls back to rtc with a <Warning>; calls still work, on the other
+# backend.
 #
 # On the `host` backend the media half is the frontend's: every command
 # leaves as a <HostCommand> event and every answer comes back through
@@ -28,9 +30,11 @@ snit::type taco_media {
     option -backend    -default auto
     option -webrtc-lib -default ""
 
-    # What `auto` tries, in order. Only rtc for now: the webrtc backend is
-    # opt-in until Phase 5 has it at parity, so asking for it is deliberate.
+    # What an unset preference tries, in order. Only rtc for now: the webrtc
+    # backend is opt-in until Phase 5 has it at parity, so asking for it is
+    # deliberate.
     typevariable AUTO_ORDER {rtc}
+    typevariable SETTING_KEY media_backend
 
     constructor args {
         $self configurelist $args
@@ -67,7 +71,8 @@ snit::type taco_media {
     # so it is the one fallback that cannot go missing.
     method Select {} {
         set requested $options(-backend)
-        set order [expr {$requested eq "auto" ? $AUTO_ORDER : [list $requested]}]
+        if {$requested eq "auto"} { set requested [$self Stored] }
+        set order [expr {$requested in {auto ""} ? $AUTO_ORDER : [list $requested]}]
         if {"rtc" ni $order} { lappend order rtc }
         foreach name $order {
             if {[$self TryOpen $name]} return
@@ -87,6 +92,16 @@ snit::type taco_media {
         jlog warn "media backend $name unavailable ($reason); using rtc"
         if {$options(-taco) eq ""} return
         catch {$options(-taco) emit media <Warning> -name $name -reason $reason}
+    }
+
+    # Read, not passed in: media is installed right after setting, on the same
+    # db. A preference naming a backend that will not open is left as it is -
+    # the fallback below is this run's answer, not a new preference.
+    method Stored {} {
+        if {$options(-taco) eq ""} { return "" }
+        set name ""
+        catch {set name [$options(-taco) setting get -key $SETTING_KEY]}
+        return $name
     }
 
     # A backend that is not registered yet may still be loadable: webrtc

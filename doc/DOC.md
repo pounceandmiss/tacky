@@ -936,28 +936,27 @@ video half down on its own. See
     media capabilities {}                                  -> {string: bool}
     media hostEvent    {pc: string, type: string, ...}     host backend only
 
-Which backend runs the media half of a call - ICE/DTLS/RTP and the
-mic/speaker/camera path. One backend serves every account, picked once at
-startup and not switchable afterwards. Signaling (Jingle, JMI, call state)
-is tacky's either way, so `calls`, `audio` and `video` work the same on all
-of them.
+A media backend owns the media half of a call: ICE/DTLS/RTP and the mic,
+speaker and camera. One backend serves every account, and signaling (Jingle,
+JMI, call state) is tacky's either way, so `calls`, `audio` and `video` work
+the same on all of them. [Voice and video calls](#voice-and-video-calls) has
+the whole picture.
 
     rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always
             present, and Opus and VP8 only.
     webrtc  libwebrtc, in libtacky_webrtc.so. Only where that ships.
-    host    none of tacky's own: the frontend drives its own peer
-            connection. Always there, and inert unless the frontend
-            answers the messages below.
+    host    the frontend's own peer connection, driven through the messages
+            below. Always present, and inert until the frontend answers.
 
-Chosen with the backend options `-media-backend` (`auto`, or a name from
-`list`) and `-webrtc-lib` (where to load `libtacky_webrtc.so` from; defaults
-to next to the executable). `auto` is the default and currently means `rtc`.
-A backend that isn't in this build, or won't start, falls back to `rtc` with
-a `<Warning>` - calls still work, on the other backend. What each one is,
-and the frontend-driven alternative to both, are in
-[Voice and video calls](#voice-and-video-calls).
+The `media_backend` setting picks one, written with `setting set` like any
+other; unset means `rtc`. It is read once at startup, so a change applies at
+the next one. `-media-backend` overrides it for a single run without storing
+anything, and `-webrtc-lib` says where `libtacky_webrtc.so` is (default:
+beside the executable). If the chosen backend is missing or won't start,
+tacky runs `rtc` instead and says so with a `<Warning>`, leaving the setting
+as it was.
 
-`capabilities` is what the active backend can do. A frontend only needs these
+`capabilities` is what the active backend can do. A frontend needs them only
 to grey out a control it would otherwise offer:
 
     audioDevices  `audio enumerateDevices` / `setPreferredDevice` do anything
@@ -966,23 +965,22 @@ to grey out a control it would otherwise offer:
     videoDevice   `video setPreferredCamera` does anything
     videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
 
-Where a capability is absent the matching call is accepted and does nothing,
-and enumeration returns an empty list, so a frontend that ignores this still
-works - it just shows an empty picker.
+An absent capability breaks nothing: the matching call is accepted and does
+nothing, enumeration comes back empty, and a frontend that ignores all this
+shows an empty picker.
 
 Events:
 
     media <Warning>     {name: string, reason: string}   requested backend unavailable
     media <HostCommand> {op: string, pc: string, ...}    host backend only
 
-`<Warning>` fires at startup only, when `-media-backend` asked for something
-that isn't there; `name` is what was asked for. There is no event for the
-ordinary case - ask `media backend` whenever you want to know.
+`<Warning>` fires at startup only; `name` is the backend that was asked for
+and did not run. Nothing announces the ordinary case - ask `media backend`.
 
 ### The host backend
 
-On `host`, tacky has no peer connection: every step it would have taken on
-one leaves as a `<HostCommand>` event, and everything the frontend's own peer
+On `host`, tacky has no peer connection: every step it would have taken
+leaves as a `<HostCommand>` event, and everything the frontend's own peer
 connection reports comes back as a `hostEvent` request. Both carry flat
 dicts of strings and numbers, so the same conversation works over the JSON
 channel, JNI or JS.
@@ -1003,9 +1001,9 @@ channel, JNI or JS.
     setVideoDevice         id
     close                  -   (no pc: the backend is shutting down)
 
-`pc` is tacky's name for a peer connection and `track` its name for one it
-added, so keep a map from each to your own object. A command is not a
-question: none of them is answered, and nothing waits for one.
+`pc` is tacky's name for a peer connection, `track` its name for a track it
+added; keep a map from both to your own objects. Commands are not questions:
+none is answered, and nothing waits.
 
     type              keys besides pc
     localDescription  sdp, sdpType
@@ -1016,20 +1014,18 @@ question: none of them is answered, and nothing waits for one.
     deviceFallback    kind: capture|playback|camera, id, reason
     error             op, reason, fatal
 
-Report every track the peer adds: that is what makes tacky attach it, and
-the `attachAudio` or `attachVideoReceiver` that follows says what the track
-is for. The two video ones also produce `calls <VideoTrack>` /
-`<VideoPreview>`, carrying `id` - the track handle - instead of a frame ring,
-since the frames never leave the frontend.
+Report every track the peer adds: that is what makes tacky attach it, and the
+`attachAudio` or `attachVideoReceiver` that follows says what it is for.
+Those two also produce `calls <VideoTrack>` / `<VideoPreview>`, carrying the
+track handle as `id` in place of a frame ring.
 
-An event for a call that has ended is dropped. One tacky cannot place - an
-unknown `type`, a missing key - comes back as a `calls <Warning>` on that
-call rather than as a failed request; one with no `pc` or no `type` is an
-error reply.
+An event for a call that has ended is dropped; one with an unknown `type` or
+a missing key comes back as a `calls <Warning>` on that call; one with no
+`pc` or no `type` is an error reply.
 
-Devices stay yours: `audio` and `video` enumerate empty and their setters do
-nothing. An offer is answered by the `setLocalDescription` that follows it,
-and the SDP you hand over goes on the wire as it stands.
+Devices stay yours, so `audio` and `video` enumerate empty. An offer is
+answered by the `setLocalDescription` that follows it, and your SDP goes on
+the wire as it stands.
 
 ## audio
 
@@ -1545,31 +1541,33 @@ camera:
 
 - **rtc** - libdatachannel for the transport, rtc-ma (miniaudio) for the
   audio devices and Opus, rtc-mv for the camera and VP8. Linked into every
-  build, so it is the one backend that cannot go missing, and what `auto`
-  selects. Opus and VP8 are all it speaks, and it has no camera on Windows:
+  build, so it is the one backend that cannot go missing, and what runs when
+  nothing is stored. Opus and VP8 are all it speaks, and it has no camera on
+  Windows:
   there it receives video but sends none.
 - **webrtc** - libwebrtc, whole, in `libtacky_webrtc.so` (`.dll` on
   Windows), loaded at startup and only present in builds that ship that
   library. Brings libwebrtc's codecs, echo cancellation and ICE.
 
-Which one is a startup option, not a request: `-media-backend <name>`, plus
-`-webrtc-lib <path>` if the library is not beside the executable. `media
-list` is what the build has, `media backend` what it settled on, `media
-capabilities` what it can do. A backend that is missing or will not load
-falls back to `rtc` with a `media <Warning>`, so a wrong flag degrades
-instead of breaking calls. Both produce the same events and the same frame
-rings; a frontend needs no per-backend code beyond `capabilities`.
+Which one runs is the `media_backend` setting, read at startup, so a change
+applies at the next one; `-media-backend <name>` overrides it for a single
+run, and `-webrtc-lib <path>` says where the library is if it is not beside
+the executable. `media list` is what the build has, `media backend` what it
+settled on, `media capabilities` what it can do. One that is missing or will
+not load falls back to `rtc` with a `media <Warning>`, so a wrong choice
+degrades instead of breaking calls. Both produce the same events and the same
+frame rings; a frontend needs no per-backend code beyond `capabilities`.
 
-**The frontend runs the media.** `-media-backend host`, for platforms whose
+**The frontend runs the media.** The `host` backend, for platforms whose
 WebRTC stack belongs to the host and cannot be linked in - a browser's
 `RTCPeerConnection`, `WebRTC.xcframework`, Android's `org.webrtc`. Tacky
-creates no peer connection of its own. Every step it would have taken on one
-leaves as a `media <HostCommand>` event, and the frontend answers with
+creates no peer connection of its own. Every step it would have taken leaves
+as a `media <HostCommand>` event, and the frontend answers with
 `media hostEvent` as its own stack produces a description, a candidate, a
 state or a track. Tacky turns those into Jingle and back exactly as it does
 for its own backends, so call state and every `calls` event are unchanged.
-The devices and the rendering are the frontend's there: enumeration comes
-back empty and video arrives as its own track id rather than a frame ring.
+There the devices and the rendering are the frontend's: enumeration comes
+back empty, and video arrives as its own track id rather than a frame ring.
 The two message shapes are in [media](#media).
 
 The rest of this section is tacky's own and does not change with the

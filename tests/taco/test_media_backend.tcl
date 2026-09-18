@@ -64,3 +64,60 @@ test media-backend-selection-is-before-clients \
         expr {[::tacky::media backend] ne ""}
     } -result 1
 
+
+# The choice is tacky's to keep, the way the audio and camera preferences are:
+# a frontend stores nothing of its own. These need a real config dir, since a
+# preference is only worth anything across two starts.
+proc media_pref_env {} {
+    return [tacky_env -stub-emit 1 -extra-setup {
+        set ::media_pref_dir [makeDirectory media-pref]
+        set ::media_pref_was [::tacky::media backend]
+    } -extra-cleanup {
+        removeDirectory media-pref
+        ::tacky::media close
+        ::tacky::media open $::media_pref_was
+    }]
+}
+
+proc media_pref_start {args} {
+    taco_type create ::taco_mb -transient 1 -config-dir $::media_pref_dir {*}$args
+}
+
+test media-backend-setting-is-remembered {the stored preference picks the backend next start} \
+    {*}[media_pref_env] -body {
+        media_pref_start
+        ::taco_mb setting set -key media_backend -value host
+        ::taco_mb destroy
+        media_pref_start
+        set got [::taco_mb media backend]
+        ::taco_mb destroy
+        set got
+    } -result host
+
+test media-backend-flag-overrides-the-setting \
+    {-media-backend is this run's answer and leaves the preference alone} \
+    {*}[media_pref_env] -body {
+        media_pref_start
+        ::taco_mb setting set -key media_backend -value host
+        ::taco_mb destroy
+        media_pref_start -media-backend rtc
+        set got [list [::taco_mb media backend] \
+            [::taco_mb setting get -key media_backend]]
+        ::taco_mb destroy
+        set got
+    } -result {rtc host}
+
+# A preference this build cannot open is still the user's answer: the run
+# falls back, the setting stays.
+test media-backend-unopenable-setting-falls-back \
+    {a stored backend that will not open leaves rtc running and the setting set} \
+    {*}[media_pref_env] -body {
+        media_pref_start
+        ::taco_mb setting set -key media_backend -value nosuchbackend
+        ::taco_mb destroy
+        media_pref_start
+        set got [list [::taco_mb media backend] \
+            [::taco_mb setting get -key media_backend]]
+        ::taco_mb destroy
+        set got
+    } -result {rtc nosuchbackend}
