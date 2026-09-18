@@ -219,6 +219,8 @@ snit::type baseconn {
         }
         ::jab::cancelRead $socket
         if {$socket ne ""} {
+            # Closing mid-STARTTLS strands whatever it had buffered.
+            xmpp_starttls_abort $socket
             catch {close $socket}
             set socket ""
         }
