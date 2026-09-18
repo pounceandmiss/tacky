@@ -267,6 +267,7 @@ jsonify_type jsonify \
         omemo/<DecryptFailed>      {dict {device int}}
 
         audio/<Volume>          {dict {volume double}}
+        media/<HostCommand>     {dict {iceServers list on bool volume double inputVolume double outputVolume double}}
         debugtap/<Stanza>       {dict {tap int}}
     } \
     -argschemas {
