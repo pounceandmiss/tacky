@@ -137,8 +137,16 @@ proc make_sm_resumed {previd h} {
     j resumed -ns urn:xmpp:sm:3 -previd $previd -h $h
 }
 
-proc make_sm_failed {} {
-    j failed -ns urn:xmpp:sm:3
+# <failed/> optionally reports how far the abandoned stream got.
+proc make_sm_failed {{h ""}} {
+    if {$h eq ""} {
+        return [j failed -ns urn:xmpp:sm:3]
+    }
+    j failed -ns urn:xmpp:sm:3 -h $h
+}
+
+proc make_sm_ack {h} {
+    j a -ns urn:xmpp:sm:3 -h $h
 }
 
 # Drive conn through SASL + bind.  Leaves it in sm-negotiating (or ready
@@ -687,6 +695,133 @@ test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked 
         list [c isReady] $hasMessage
     } -result {1 1}
 
+# -- SM delivery confirmation across a broken stream -------------------------
+
+# Reconnect after a drop and drive as far as the resume request: conn is left
+# in sm-negotiating, waiting for the server's <resumed/> or <failed/>.
+proc drive_to_resume_attempt {jid} {
+    c.base inject_error "connection lost"
+    c connect
+    c.base inject [make_features]
+    c.base inject [make_success]
+    c.base inject [make_bind_features_with_sm]
+    c.base inject [make_bind_result $jid]
+}
+
+# The ids of the stanzas the connection has reported as delivered so far.
+proc sm_acked_ids {} {
+    set ids {}
+    foreach e $::_temitted {
+        if {[lrange $e 0 1] ne {sm <Ack>}} continue
+        foreach stanza [dict get [lrange $e 2 end] -stanzas] {
+            lappend ids [dict get $stanza attrs id]
+        }
+    }
+    return $ids
+}
+
+# The ids of the <message/>s written to the transport since the last clear.
+proc sent_message_ids {} {
+    set ids {}
+    foreach stanza [c.base get_written] {
+        if {[dict get $stanza tag] eq "message"} {
+            lappend ids [dict get $stanza attrs id]
+        }
+    }
+    return $ids
+}
+
+# The h on <failed/> is the server's last word on the abandoned stream: those
+# stanzas arrived, so they must be confirmed rather than just dropped.
+test conn-sm-resume-failed-confirms-what-arrived {<failed h=N/> acks the stanzas the server did receive} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-failed-h"
+        c write [j message -to "friend@example.com" -id m1 {j body -body "arrived"}]
+        c write [j message -to "friend@example.com" -id m2 {j body -body "did not"}]
+        drive_to_resume_attempt "user@test.example.com/r"
+        set ::_temitted {}
+        c.base clear
+        c.base inject [make_sm_failed 1]
+        c.base inject [make_sm_enabled "sm-failed-h-new"]
+        # m1 confirmed, only m2 replayed onto the fresh stream
+        list [sm_acked_ids] [sent_message_ids] [c isReady]
+    } -result {m1 m2 1}
+
+# A <resumed/> naming someone else's stream falls back to a fresh one rather
+# than parking in 'disconnected' with the queue thrown away.
+test conn-sm-resumed-previd-mismatch-enables-fresh {a <resumed/> for another stream negotiates a fresh one} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-mismatch"
+        drive_to_resume_attempt "user@test.example.com/r"
+        c.base clear
+        c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        set enable [lindex [c.base get_written] end]
+        list [dict get $enable tag] [dict get $enable ns] [c isReady]
+    } -result {enable urn:xmpp:sm:3 0}
+
+test conn-sm-resumed-previd-mismatch-keeps-queue {a mismatched <resumed/> keeps unacked stanzas for the fresh stream} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-mismatch2"
+        c write [j message -to "friend@example.com" -id m1 {j body -body "unacked"}]
+        drive_to_resume_attempt "user@test.example.com/r"
+        c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        c.base clear
+        c.base inject [make_sm_enabled "sm-mismatch2-new"]
+        list [c isReady] [sent_message_ids]
+    } -result {1 m1}
+
+# <failed/> to the fresh <enable/> must drop to passthrough and flush the
+# queue rather than strand it.
+test conn-sm-resumed-previd-mismatch-then-refused {mismatch then a refused enable falls through to passthrough} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-mismatch3"
+        c write [j message -to "friend@example.com" -id m1 {j body -body "unacked"}]
+        drive_to_resume_attempt "user@test.example.com/r"
+        c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        c.base clear
+        c.base inject [make_sm_failed]
+        list [c isReady] [sent_message_ids]
+    } -result {1 m1}
+
+# <failed/>, <resumed/> and <a/> share one confirm path; an ordinary ack must
+# still name exactly the prefix the server counted.
+test conn-sm-ack-confirms-a-prefix {<a h=N/> confirms the first N stanzas and no more} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-ack"
+        c write [j message -to "friend@example.com" -id m1 {j body -body "one"}]
+        c write [j message -to "friend@example.com" -id m2 {j body -body "two"}]
+        set ::_temitted {}
+        c.base inject [make_sm_ack 1]
+        set first [sm_acked_ids]
+        c.base inject [make_sm_ack 2]
+        list $first [sm_acked_ids]
+    } -result {m1 {m1 m2}}
+
+test conn-sm-resumed-confirms-what-arrived {<resumed h=N/> acks the stanzas the old stream delivered} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-resumed-h"
+        c write [j message -to "friend@example.com" -id m1 {j body -body "arrived"}]
+        c write [j message -to "friend@example.com" -id m2 {j body -body "did not"}]
+        drive_to_resume_attempt "user@test.example.com/r"
+        set ::_temitted {}
+        c.base clear
+        c.base inject [make_sm_resumed "sm-resumed-h" 1]
+        # m1 confirmed, m2 resent on the resumed stream
+        list [sm_acked_ids] [sent_message_ids] $_tready_resumed
+    } -result {m1 m2 1}
+
 test conn-write-buffer-flushed-after-ready {write buffer flushed when conn reaches ready} \
     {*}$common \
     -body {
@@ -817,7 +952,7 @@ test conn-sm-queue-overflow-during-flush {SM overflow during FlushWriteBuffer pr
         for {set i 0} {$i < 5} {incr i} {
             c write [j message -to "friend@example.com" {j body -body "buf$i"}]
         }
-        # Drive to ready — FlushWriteBuffer will overflow at stanza 4
+        # Drive to ready: FlushWriteBuffer will overflow at stanza 4
         drive_to_bind "user@test.example.com/r"
         c.base inject [make_sm_enabled "sm-flush-overflow"]
         # Should NOT have fired onready (overflow interrupted it)

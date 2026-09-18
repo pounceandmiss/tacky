@@ -171,29 +171,18 @@ snit::type sm {
             "resumed" {
                 set previd [xsearch $stanza -get @previd]
                 if {$previd ne $streamId} {
-                    jlog error "Resume failed: previd mismatch (ours: $streamId, server: $previd)"
-                    set streamId ""
-                    set queue {}
-                    set in 0
-                    set out 0
-                    set serverh 0
-                    set state disconnected
+                    # Someone else's stream: fall back to a fresh one, as
+                    # <failed/> does. Parking in 'disconnected' would strand
+                    # the queue with conn stuck in sm-negotiating.
+                    jlog error "Resume rejected: previd mismatch (ours: $streamId, server: $previd)"
+                    $self StartFresh
                     return
                 }
 
                 set h [xsearch $stanza -get @h]
                 jlog inform "Stream resumed: server received up to h=$h (we sent $out)"
 
-                set ackedCount [$self Acked $h]
-                if {$ackedCount > 0} {
-                    if {$options(-ack-command) ne ""} {
-                        set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
-                        {*}$options(-ack-command) $ackedStanzas
-                    }
-                    set queue [lrange $queue $ackedCount end]
-                    set serverh $h
-                    jlog debug "Removed $ackedCount acked stanzas, queue size now: [llength $queue]"
-                }
+                $self TakeAcked $h
 
                 set resumed 1
                 set state running
@@ -211,28 +200,19 @@ snit::type sm {
 
             "failed" {
                 set resumed 0
-                set h ""
-                if {[dict exists $stanza attrs h]} {
-                    set h [dict get $stanza attrs h]
-                    set ackedCount [$self Acked $h]
-                    if {$ackedCount > 0} {
-                        set queue [lrange $queue $ackedCount end]
-                    }
+                # <failed/> may report how far the old stream got.
+                set h [xsearch $stanza -get @h]
+                if {$h ne ""} {
+                    $self TakeAcked $h
                 }
 
                 if {$streamId ne ""} {
-                    # Resume failed — try fresh enable instead
+                    # Resume failed, try a fresh enable instead.
+                    # Keep queue: replayed after <enabled/>
                     jlog inform "Resume failed (h=$h), attempting fresh SM enable"
-                    set streamId ""
-                    set in 0
-                    set out 0
-                    set serverh 0
-                    # Keep queue — replayed after <enabled/>
-                    {*}$options(-write) [j enable \
-                        -ns "urn:xmpp:sm:3" \
-                        -resume true]
+                    $self StartFresh
                 } else {
-                    # Enable failed — genuinely can't do SM
+                    # Enable failed, genuinely can't do SM
                     jlog warn "SM enable failed (h=$h), falling back to passthrough"
                     set streamId ""
                     set mode passthrough
@@ -272,19 +252,7 @@ snit::type sm {
             }
 
             "a" {
-                set h [xsearch $stanza -get @h]
-
-                set ackedCount [$self Acked $h]
-                if {$ackedCount > 0} {
-                    if {$options(-ack-command) ne ""} {
-                        set ackedStanzas [lrange $queue 0 [expr {$ackedCount - 1}]]
-                        {*}$options(-ack-command) $ackedStanzas
-                    }
-                    set queue [lrange $queue $ackedCount end]
-                    jlog debug "Server acked $ackedCount stanzas (was $serverh, now $h), queue: [llength $queue]"
-                    set serverh $h
-                }
-
+                $self TakeAcked [xsearch $stanza -get @h]
                 set unackedCount 0
             }
 
@@ -380,6 +348,36 @@ snit::type sm {
             return 0
         }
         return $diff
+    }
+
+    # The one path every server h goes through: trimming the queue anywhere
+    # else drops stanzas without confirming them, leaving a durable send
+    # 'pending' for the reconnect retry to deliver twice. -ack-command runs
+    # before the trim so anything it writes back lands behind the removals.
+    method TakeAcked {h} {
+        set ackedCount [$self Acked $h]
+        if {$ackedCount == 0} {
+            return 0
+        }
+        if {$options(-ack-command) ne ""} {
+            {*}$options(-ack-command) [lrange $queue 0 [expr {$ackedCount - 1}]]
+        }
+        set queue [lrange $queue $ackedCount end]
+        set serverh $h
+        jlog debug "Server acked $ackedCount stanzas (h=$h), queue: [llength $queue]"
+        return $ackedCount
+    }
+
+    # Counters restart with the new stream; the queue stays and is replayed
+    # after <enabled/>.
+    method StartFresh {} {
+        set streamId ""
+        set in 0
+        set out 0
+        set serverh 0
+        {*}$options(-write) [j enable \
+            -ns "urn:xmpp:sm:3" \
+            -resume true]
     }
 
     method getInfo {} {
