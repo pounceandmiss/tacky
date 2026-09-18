@@ -11,10 +11,11 @@
 # tacky listen media <HostCommand> $cmd  ;# -op $verb -pc $pc ...
 #
 # Which one runs is the `media_backend` setting, read here at startup; unset
-# means rtc. taco_type's -media-backend (auto, or a name from `list`) overrides
-# it for the run without storing anything, and -webrtc-lib says where to load
-# libtacky_webrtc.so from. A backend that is not in this build, or will not
-# start, falls back to rtc with a <Warning>; calls still work, on the other
+# means webrtc where the build carries its library and rtc everywhere else.
+# taco_type's -media-backend (auto, or a name from `list`) overrides it for the
+# run without storing anything, and -webrtc-lib says where to load
+# libtacky_webrtc.so from. A named backend that is not in this build, or will
+# not start, falls back to rtc with a <Warning>; calls still work, on the other
 # backend.
 #
 # On the `host` backend the media half is the frontend's: every command
@@ -30,10 +31,10 @@ snit::type taco_media {
     option -backend    -default auto
     option -webrtc-lib -default ""
 
-    # What an unset preference tries, in order. Only rtc for now: the webrtc
-    # backend is opt-in until Phase 5 has it at parity, so asking for it is
-    # deliberate.
-    typevariable AUTO_ORDER {rtc}
+    # What an unset preference tries, in order: the webrtc library when the
+    # build carries one, rtc otherwise. Not finding it is the ordinary case,
+    # not a fault, so that fallback is quiet.
+    typevariable AUTO_ORDER {webrtc rtc}
     typevariable SETTING_KEY media_backend
 
     constructor args {
@@ -72,10 +73,11 @@ snit::type taco_media {
     method Select {} {
         set requested $options(-backend)
         if {$requested eq "auto"} { set requested [$self Stored] }
-        set order [expr {$requested in {auto ""} ? $AUTO_ORDER : [list $requested]}]
+        set asked [expr {$requested ni {auto ""}}]
+        set order [expr {$asked ? [list $requested] : $AUTO_ORDER}]
         if {"rtc" ni $order} { lappend order rtc }
         foreach name $order {
-            if {[$self TryOpen $name]} return
+            if {[$self TryOpen $name $asked]} return
         }
         error "no media backend could be opened"
     }
@@ -107,10 +109,13 @@ snit::type taco_media {
     # A backend that is not registered yet may still be loadable: webrtc
     # lives in libtacky_webrtc.so next to the executable and registers
     # itself on load.
-    method TryOpen {name} {
+    # $asked is whether a name was given rather than reached for: a build
+    # without the webrtc library is the ordinary case and says so in the log,
+    # while a backend someone named and did not get is a <Warning>.
+    method TryOpen {name asked} {
         if {$name ni [::tacky::media available]} {
             if {[catch {$self LoadBackend $name} err]} {
-                $self Warn $name $err
+                $self Missed $name $err $asked
                 return 0
             }
         }
@@ -122,17 +127,25 @@ snit::type taco_media {
         # through there is nobody on the other end, so rtc is the answer.
         if {$name eq "host"} {
             if {$options(-taco) eq ""} {
-                $self Warn $name "no event channel"
+                $self Missed $name "no event channel" $asked
                 return 0
             }
             lappend openArgs -emit \
                 [list $options(-taco) emit media <HostCommand>]
         }
         if {[catch {::tacky::media open $name {*}$openArgs} err]} {
-            $self Warn $name $err
+            $self Missed $name $err $asked
             return 0
         }
         return 1
+    }
+
+    method Missed {name reason asked} {
+        if {!$asked} {
+            jlog inform "media backend $name unavailable ($reason); trying the next"
+            return
+        }
+        $self Warn $name $reason
     }
 
     method LoadBackend {name} {

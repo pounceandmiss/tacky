@@ -9,10 +9,25 @@ set media_backend_env [tacky_env -capture-emit 1]
 
 # `list` is not compared exactly: a test file loaded earlier in the same
 # interpreter may have registered a mock backend alongside the real one.
-test media-backend-default-is-rtc {auto picks rtc, the one backend always linked in} \
+# This build has no webrtc library, so auto lands on rtc.
+test media-backend-default-is-rtc {auto falls through to the backend always linked in} \
     {*}$media_backend_env -body {
         list [tacky media backend] [expr {"rtc" in [tacky media list]}]
     } -result {rtc 1}
+
+# Auto reaches for webrtc first, and most builds do not carry it. That is the
+# ordinary case, so it stays in the log rather than becoming an event every
+# frontend has to learn to ignore.
+test media-backend-auto-fallback-is-quiet {reaching for webrtc and missing says nothing} \
+    {*}[tacky_env -capture-emit 1 -extra-setup {
+        taco_type create ::taco_mb -transient 1
+    } -extra-cleanup {::taco_mb destroy}] -body {
+        set out {}
+        foreach e $::_emitted {
+            if {[lindex $e 0] eq "media"} { lappend out $e }
+        }
+        list [::taco_mb media backend] $out
+    } -result {rtc {}}
 
 test media-backend-capabilities {rtc reports what it can do} \
     {*}$media_backend_env -body {
