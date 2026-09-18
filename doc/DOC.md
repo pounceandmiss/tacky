@@ -949,12 +949,14 @@ the whole picture.
             below. Always present, and inert until the frontend answers.
 
 The `media_backend` setting picks one, written with `setting set` like any
-other; unset means `rtc`. It is read once at startup, so a change applies at
+other. Unset, tacky takes `webrtc` where the build carries its library and
+`rtc` everywhere else, quietly - a build without the library is the ordinary
+case, not a fault. The setting is read once at startup, so a change applies at
 the next one. `-media-backend` overrides it for a single run without storing
 anything, and `-webrtc-lib` says where `libtacky_webrtc.so` is (default:
-beside the executable). If the chosen backend is missing or won't start,
-tacky runs `rtc` instead and says so with a `<Warning>`, leaving the setting
-as it was.
+beside the executable). A backend that was named and is missing or won't start
+is the case that warrants a `<Warning>`: tacky runs `rtc` instead and leaves
+the setting as it was.
 
 `capabilities` is what the active backend can do. A frontend needs them only
 to grey out a control it would otherwise offer:
@@ -1541,21 +1543,21 @@ camera:
 
 - **rtc** - libdatachannel for the transport, rtc-ma (miniaudio) for the
   audio devices and Opus, rtc-mv for the camera and VP8. Linked into every
-  build, so it is the one backend that cannot go missing, and what runs when
-  nothing is stored. Opus and VP8 are all it speaks, and it has no camera on
-  Windows:
+  build, so it is the one backend that cannot go missing. Opus and VP8 are all
+  it speaks, and it has no camera on Windows:
   there it receives video but sends none.
 - **webrtc** - libwebrtc, whole, in `libtacky_webrtc.so` (`.dll` on
   Windows), loaded at startup and only present in builds that ship that
   library. Brings libwebrtc's codecs, echo cancellation and ICE.
 
 Which one runs is the `media_backend` setting, read at startup, so a change
-applies at the next one; `-media-backend <name>` overrides it for a single
-run, and `-webrtc-lib <path>` says where the library is if it is not beside
-the executable. `media list` is what the build has, `media backend` what it
-settled on, `media capabilities` what it can do. One that is missing or will
-not load falls back to `rtc` with a `media <Warning>`, so a wrong choice
-degrades instead of breaking calls. Both produce the same events and the same
+applies at the next one. Unset, it is `webrtc` where the build ships that
+library and `rtc` everywhere else. `-media-backend <name>` overrides it for a
+single run, and `-webrtc-lib <path>` says where the library is if it is not
+beside the executable. `media list` is what the build has, `media backend` what
+it settled on, `media capabilities` what it can do. A named backend that is
+missing or will not load falls back to `rtc` with a `media <Warning>`, so a
+wrong choice degrades instead of breaking calls. Both produce the same events and the same
 frame rings; a frontend needs no per-backend code beyond `capabilities`.
 
 **The frontend runs the media.** The `host` backend, for platforms whose
