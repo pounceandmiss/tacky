@@ -8,6 +8,7 @@ package require tcltest
 namespace import ::tcltest::*
 package require tacky::media
 package require tacky::media::rtc
+package require tacky::media::host
 package require tacky::mockmedia
 package require tacky::mockrtc
 package require tacky::mediaconformance
@@ -47,6 +48,43 @@ proc conform_drive_rtc {what pc args} {
     return
 }
 
+# The host backend's driver is the embedding app: every event it produces is
+# one the app sends back through the same entry point taco's `media hostEvent`
+# uses.
+proc conform_drive_host {what pc args} {
+    switch -- $what {
+        localDescription {
+            lassign $args sdp type
+            conform_host_send $pc localDescription sdp $sdp sdpType $type
+        }
+        iceCandidate {
+            lassign $args cand mid
+            conform_host_send $pc iceCandidate candidate $cand mid $mid
+        }
+        connectionState { conform_host_send $pc connectionState state [lindex $args 0] }
+        gatheringState  { conform_host_send $pc gatheringState state [lindex $args 0] }
+        remoteTrack {
+            set kind [lindex $args 0]
+            set tr ht[incr ::conform_host_seq]
+            conform_host_send $pc track track $tr kind $kind \
+                mid [incr ::conform_host_seq]
+            return $tr
+        }
+        default { error "conform_drive_host: cannot drive $what" }
+    }
+    return
+}
+
+proc conform_host_send {pc type args} {
+    ::tacky::media::host::event [dict create pc $pc type $type {*}$args]
+}
+
+# Where the commands for the app go. Nothing reads them here; the conformance
+# script checks the events coming back, not the ones going out.
+proc conform_host_sink {args} {}
+
+set ::conform_host_seq 0
+
 test media-conformance-mock {the mock backend conforms to tacky::media} -setup {
     mockmedia::reset
 } -body {
@@ -59,6 +97,11 @@ test media-conformance-rtc {the rtc backend conforms to tacky::media} -setup {
     mockrtc::uninstall
 } -body {
     mediaconform::run rtc -drive conform_drive_rtc
+} -result {}
+
+test media-conformance-host {the host backend conforms to tacky::media} -body {
+    mediaconform::run host -drive conform_drive_host \
+        -open {-emit conform_host_sink}
 } -result {}
 
 # A backend that owns less than rtc does must still conform: the script asks

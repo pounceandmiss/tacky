@@ -934,6 +934,7 @@ video half down on its own. See
     media backend      {}                                  -> string   active backend
     media list         {}                                  -> [string] backends this build has
     media capabilities {}                                  -> {string: bool}
+    media hostEvent    {pc: string, type: string, ...}     host backend only
 
 Which backend runs the media half of a call - ICE/DTLS/RTP and the
 mic/speaker/camera path. One backend serves every account, picked once at
@@ -944,6 +945,9 @@ of them.
     rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always
             present, and Opus and VP8 only.
     webrtc  libwebrtc, in libtacky_webrtc.so. Only where that ships.
+    host    none of tacky's own: the frontend drives its own peer
+            connection. Always there, and inert unless the frontend
+            answers the messages below.
 
 Chosen with the backend options `-media-backend` (`auto`, or a name from
 `list`) and `-webrtc-lib` (where to load `libtacky_webrtc.so` from; defaults
@@ -966,16 +970,66 @@ Where a capability is absent the matching call is accepted and does nothing,
 and enumeration returns an empty list, so a frontend that ignores this still
 works - it just shows an empty picker.
 
-The rest of the flags (`autoAnswer`, `sdpSanitize`, `trickleIce`) are internal
-to signaling and of no use to a frontend.
-
 Events:
 
-    media <Warning> {name: string, reason: string}   requested backend unavailable
+    media <Warning>     {name: string, reason: string}   requested backend unavailable
+    media <HostCommand> {op: string, pc: string, ...}    host backend only
 
 `<Warning>` fires at startup only, when `-media-backend` asked for something
 that isn't there; `name` is what was asked for. There is no event for the
 ordinary case - ask `media backend` whenever you want to know.
+
+### The host backend
+
+On `host`, tacky has no peer connection: every step it would have taken on
+one leaves as a `<HostCommand>` event, and everything the frontend's own peer
+connection reports comes back as a `hostEvent` request. Both carry flat
+dicts of strings and numbers, so the same conversation works over the JSON
+channel, JNI or JS.
+
+    op                     keys besides pc
+    createPeer             iceServers: [string]
+    closePeer              -
+    addTrack               track, kind: audio|video, direction
+    setLocalDescription    sdp, sdpType: offer|answer ("" = your stack decides)
+    setRemoteDescription   sdp, sdpType
+    addRemoteCandidate     candidate, mid
+    attachAudio            track, input, output, inputVolume, outputVolume
+    setAudioDevice         kind: capture|playback, id
+    setAudioVolume         kind, volume
+    attachVideoSender      track, deviceId
+    attachVideoReceiver    track
+    setVideoEnabled        on: bool
+    setVideoDevice         id
+    close                  -   (no pc: the backend is shutting down)
+
+`pc` is tacky's name for a peer connection and `track` its name for one it
+added, so keep a map from each to your own object. A command is not a
+question: none of them is answered, and nothing waits for one.
+
+    type              keys besides pc
+    localDescription  sdp, sdpType
+    iceCandidate      candidate, mid (an empty one means the audio m-line)
+    gatheringState    state: new|inprogress|complete
+    connectionState   state: new|connecting|connected|disconnected|failed|closed
+    track             track, kind, mid   your name for a track the peer added
+    deviceFallback    kind: capture|playback|camera, id, reason
+    error             op, reason, fatal
+
+Report every track the peer adds: that is what makes tacky attach it, and
+the `attachAudio` or `attachVideoReceiver` that follows says what the track
+is for. The two video ones also produce `calls <VideoTrack>` /
+`<VideoPreview>`, carrying `id` - the track handle - instead of a frame ring,
+since the frames never leave the frontend.
+
+An event for a call that has ended is dropped. One tacky cannot place - an
+unknown `type`, a missing key - comes back as a `calls <Warning>` on that
+call rather than as a failed request; one with no `pc` or no `type` is an
+error reply.
+
+Devices stay yours: `audio` and `video` enumerate empty and their setters do
+nothing. An offer is answered by the `setLocalDescription` that follows it,
+and the SDP you hand over goes on the wire as it stands.
 
 ## audio
 
@@ -1482,12 +1536,12 @@ track, offered by naming `video: true` on `start`, or answered symmetrically
 when the peer offered it.
 
 There are two ways to run the media half of a call. Signaling is tacky's in
-both: Jingle, JMI, call state and the Jingle<->SDP translation stay here, so
-`calls` reads the same either way.
+both: Jingle, JMI, call state and the SDP translation stay here, so `calls`
+reads the same either way.
 
-**Tacky runs the media.** What every build does today. A [media](#media)
-backend, one for the whole process and chosen at startup, owns ICE/DTLS/RTP
-and the mic, speaker and camera:
+**Tacky runs the media.** A [media](#media) backend, one for the whole
+process and chosen at startup, owns ICE/DTLS/RTP and the mic, speaker and
+camera:
 
 - **rtc** - libdatachannel for the transport, rtc-ma (miniaudio) for the
   audio devices and Opus, rtc-mv for the camera and VP8. Linked into every
@@ -1506,13 +1560,17 @@ falls back to `rtc` with a `media <Warning>`, so a wrong flag degrades
 instead of breaking calls. Both produce the same events and the same frame
 rings; a frontend needs no per-backend code beyond `capabilities`.
 
-**The frontend runs the media.** Tacky hands out SDP and candidates and the
-frontend feeds them to a PeerConnection it owns - a browser's
-`RTCPeerConnection`, `WebRTC.xcframework`, Android's `org.webrtc` - for
-platforms whose WebRTC stack belongs to the host and cannot be linked in.
-Designed, not built: no build offers it yet. What the media API already does
-for it is stay carriable - string handles, asynchronous throughout, data
-only, video as an opaque channel descriptor rather than a mapped region.
+**The frontend runs the media.** `-media-backend host`, for platforms whose
+WebRTC stack belongs to the host and cannot be linked in - a browser's
+`RTCPeerConnection`, `WebRTC.xcframework`, Android's `org.webrtc`. Tacky
+creates no peer connection of its own. Every step it would have taken on one
+leaves as a `media <HostCommand>` event, and the frontend answers with
+`media hostEvent` as its own stack produces a description, a candidate, a
+state or a track. Tacky turns those into Jingle and back exactly as it does
+for its own backends, so call state and every `calls` event are unchanged.
+The devices and the rendering are the frontend's there: enumeration comes
+back empty and video arrives as its own track id rather than a frame ring.
+The two message shapes are in [media](#media).
 
 The rest of this section is tacky's own and does not change with the
 backend. What a backend can vary is whether it enumerates devices at all -

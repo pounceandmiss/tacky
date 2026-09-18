@@ -163,64 +163,40 @@ routed to `-onerror` or to an `error <MethodError>` event instead of escaping
 into a background handler.
 
 A method that genuinely cannot answer in the same frame is a plain `method`
-that handles `-command` itself — `taco_muc join` and `taco_audio
+that handles `-command` itself: `taco_muc join` and `taco_audio
 enumerateDevices` are the pattern. `tackymethod` always completes on return,
 so it cannot defer.
 
 ## Media backends
 
-Calls are split in two. Signaling — Jingle, JMI, Jingle↔SDP, call state,
-settings — is `taco_calls` and stays the same everywhere. The media —
-ICE/DTLS/RTP, mic, speaker, camera — is behind one boundary, `tacky::media`,
-with a backend on the other side.
+Calls are split in two. Signaling - Jingle, JMI, SDP translation, call state,
+settings - is `taco_calls`, the same everywhere. The media - ICE/DTLS/RTP, mic,
+speaker, camera - sits behind one boundary, `tacky::media`, with a backend on
+the other side: `rtc` in this process, `webrtc` in a shared library, `host` in
+the frontend.
 
-```
-taco_calls / taco_audio / taco_video
-        |
-   tacky::media                     lib/media/media.tcl   — the API
-        |
-   +----+--------+--------+
-   rtc         webrtc     host
-   in process  .so        the embedding app
-```
-
-**`lib/media/media.tcl` is the spec.** Its header defines every command, every
+`lib/media/media.tcl` is the spec. Its header defines every command, every
 event, the capability flags and the video channel descriptor; read it before
-touching either side. The shape is RTCPeerConnection's, and four rules keep it
-portable to a backend that isn't in this process:
+touching either side. The shape is RTCPeerConnection's. What keeps it
+portable to a backend outside this process: no command returns a result, only
+events on the pc's `-command`; the caller names its pcs and its own tracks, the
+backend names the peer's; only strings and dicts cross; capabilities are
+checked, not assumed. An event can arrive before the command that caused it
+returns, so re-check state after every media call, as `taco_calls` does.
 
-1. Every command is asynchronous — none returns a value the caller needs.
-   Results arrive as events on the pc's `-command`.
-2. The caller names its own peer connections and the tracks it adds; the
-   backend names the tracks the peer adds. All handles are opaque strings.
-3. Only strings and dicts cross, so the same conversation carries over JSON,
-   JNI, JS and Objective-C. No shared memory, no same-thread assumptions.
-4. Backends declare capabilities, and callers check them rather than assuming.
-   Device enumeration, volume and camera control can all be absent or owned by
-   the host.
-
-An event may be delivered before the command that caused it returns — the
-in-process backends do exactly that — so re-check your own state after every
-media call. `taco_calls` does.
-
-Anything codec-, m-line- or device-specific belongs in the backend, not in
-`taco_calls`. Where the module does need to vary, it asks: `capability
-sdpSanitize` for the SDP strip, `capability autoAnswer` for whether the callee
-generates its own answer, `codecs` for which payload types survive
-`FilterCodecs`.
-
-`lib/media/media_rtc.tcl` is the reference backend (libdatachannel + rtc-ma +
-rtc-mv). `lib/taco/modules/media.tcl` picks which one runs, from
-`-media-backend` / `-webrtc-lib`, and falls back to rtc.
+Codec, m-line and device specifics belong in the backend. Where `taco_calls`
+has to vary it asks: `capability sdpSanitize` for the SDP strip, `capability
+autoAnswer` for who generates the callee's answer, `codecs` for which payload
+types survive `FilterCodecs`. `media_rtc.tcl` is the reference backend;
+`lib/taco/modules/media.tcl` picks which one runs and falls back to rtc.
 
 ### Testing a backend
 
-`tests/taco/media_conformance.tcl` is one scripted conversation — caller and
-callee, audio and video, devices, teardown — that every backend must pass. It
+`tests/taco/media_conformance.tcl` is one scripted conversation - caller and
+callee, audio and video, devices, teardown - that every backend must pass. It
 cannot invent a peer, so it takes a `-drive` command prefix that makes the
-backend produce one event at a time; `tests/taco/test_media_conformance.tcl`
-supplies one for the mock and one for rtc over `mock_rtc.tcl`. A new backend
-earns its place by being added there.
+backend produce one event at a time, and `test_media_conformance.tcl` supplies
+one per backend. A new backend earns its place by being added there.
 
 Two mocks, at two levels: `mock_rtc.tcl` swaps out the three extensions, so a
 test can watch what the rtc backend does to them; `mock_media.tcl` is a whole

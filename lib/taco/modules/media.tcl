@@ -5,16 +5,23 @@
 # tacky media backend      ?-command $cb?  ;# active backend's name
 # tacky media list         ?-command $cb?  ;# backends this build offers
 # tacky media capabilities ?-command $cb?  ;# flag -> bool, see lib/media/media.tcl
+# tacky media hostEvent    -pc $pc -type $t ...  ;# host backend only
 #
-# tacky listen media <Warning> $cmd  ;# -name $requested -reason $text
+# tacky listen media <Warning>     $cmd  ;# -name $requested -reason $text
+# tacky listen media <HostCommand> $cmd  ;# -op $verb -pc $pc ...
 #
 # Selected by taco_type's -media-backend (auto, or a name from `list`) and
 # -webrtc-lib (where to load libtacky_webrtc.so from). A requested backend
 # that is not in this build, or will not start, falls back to rtc with a
 # <Warning>; calls still work, on the other backend.
+#
+# On the `host` backend the media half is the frontend's: every command
+# leaves as a <HostCommand> event and every answer comes back through
+# `hostEvent`. See lib/media/media_host.tcl.
 
 package require tacky::media
 package require tacky::media::rtc
+package require tacky::media::host
 
 snit::type taco_media {
     option -taco       -default ""
@@ -40,6 +47,20 @@ snit::type taco_media {
 
     tackymethod capabilities {args} {
         return [::tacky::media capabilities]
+    }
+
+    # The frontend's half of the host backend. On any other backend this is
+    # a mistake worth an error: nothing asked the frontend for it.
+    tackymethod hostEvent {args} {
+        if {[::tacky::media backend] ne "host"} {
+            error "media hostEvent: the host backend is not open"
+        }
+        set ev {}
+        foreach {key value} $args {
+            dict set ev [string trimleft $key -] $value
+        }
+        ::tacky::media::host::event $ev
+        return
     }
 
     # rtc goes last whatever was asked for: it is linked into every build,
@@ -81,6 +102,16 @@ snit::type taco_media {
         set openArgs {}
         if {$name eq "webrtc" && $options(-webrtc-lib) ne ""} {
             lappend openArgs -lib $options(-webrtc-lib)
+        }
+        # host is a conversation with the frontend: with no taco to emit
+        # through there is nobody on the other end, so rtc is the answer.
+        if {$name eq "host"} {
+            if {$options(-taco) eq ""} {
+                $self Warn $name "no event channel"
+                return 0
+            }
+            lappend openArgs -emit \
+                [list $options(-taco) emit media <HostCommand>]
         }
         if {[catch {::tacky::media open $name {*}$openArgs} err]} {
             $self Warn $name $err
