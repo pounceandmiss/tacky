@@ -12,11 +12,13 @@
 #
 # Each entry also carries `unread`: how many of the other side's messages
 # sit past our own read watermark (see message markOwnRead), and
-# `unread_mentions`: how many of those named us.
+# `unread_mentions`: how many of those named us. A chat with history carries
+# its newest message as `last_message` (a `history` dict), and `last_activity`
+# is that message's timestamp. Rendering a preview from it is the frontend's job.
 #
-# The module is the sole funnel: it consumes roster/bookmarks/chats/room-state
-# and read-watermark signals and normalizes them into three protocol-agnostic
-# events over the flat collection:
+# The module is the sole funnel: it consumes roster/bookmarks/chats/room-state,
+# read-watermark and tail-message signals and normalizes them into three
+# protocol-agnostic events over the flat collection:
 #   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
 #   chatlist <Remove> -jid $jid                delete
 #   chatlist <Changed>                         reset (refetch via `get`)
@@ -26,18 +28,22 @@ snit::type taco_chatlist {
     option -client -readonly yes
 
     variable client
-    variable db
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        set db [$client cget -db]
 
         $client bus subscribe $self roster:<Changed> [mymethod OnRosterChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnBookmarkChanged]
         $client bus subscribe $self bookmarks:<RoomState> [mymethod OnRoomState]
         $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
         $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
+        # chats:<Updated> covers a new tail; these cover changes to the
+        # existing one.
+        $client bus subscribe $self message:<Edited> [mymethod OnTailChanged]
+        $client bus subscribe $self message:<Retracted> [mymethod OnTailChanged]
+        $client bus subscribe $self message:<Status> [mymethod OnTailChanged]
+        $client bus subscribe $self message:<Confirmed> [mymethod OnTailConfirmed]
     }
 
     destructor {
@@ -47,7 +53,7 @@ snit::type taco_chatlist {
     # -- the whole list -------------------------------------------------
 
     tackymethod get {args} {
-        set activity [$self ActivityMap]
+        set tails [$client message messagestore lastMessages]
         set tallies [$client message messagestore unreadTallies]
 
         set entries {}
@@ -56,18 +62,18 @@ snit::type taco_chatlist {
         foreach item [$client roster get] {
             set bare [dict get $item jid]
             lappend entries [$self MakeEntry $bare roster $item \
-                [$self Lookup $activity $bare] [$self Tally $tallies $bare]]
+                [$self Lookup $tails $bare] [$self Tally $tallies $bare]]
             dict set seen $bare 1
         }
         foreach item [$client bookmarks get] {
             set chatJid [dict get $item jid]?join
             lappend entries [$self MakeEntry $chatJid bookmarks $item \
-                [$self Lookup $activity $chatJid] [$self Tally $tallies $chatJid]]
+                [$self Lookup $tails $chatJid] [$self Tally $tallies $chatJid]]
             dict set seen $chatJid 1
         }
-        dict for {chatJid ts} $activity {
+        dict for {chatJid tail} $tails {
             if {[dict exists $seen $chatJid]} continue
-            lappend entries [$self MakeEntry $chatJid free {} $ts \
+            lappend entries [$self MakeEntry $chatJid free {} $tail \
                 [$self Tally $tallies $chatJid]]
         }
         return $entries
@@ -81,27 +87,26 @@ snit::type taco_chatlist {
         set bare [regsub {\?join$} $chatJid {}]
         set isRoom [expr {$bare ne $chatJid}]
         set tally [$client message messagestore unreadTally $chatJid]
+        set tail [$client message messagestore lastMessage $chatJid]
         if {$isRoom} {
             set bm [$self BookmarkEntry $bare]
             if {$bm ne ""} {
-                return [$self MakeEntry $chatJid bookmarks $bm \
-                    [$self Activity $chatJid] $tally]
+                return [$self MakeEntry $chatJid bookmarks $bm $tail $tally]
             }
         } else {
             set r [$self RosterEntry $bare]
             if {$r ne ""} {
-                return [$self MakeEntry $chatJid roster $r \
-                    [$self Activity $chatJid] $tally]
+                return [$self MakeEntry $chatJid roster $r $tail $tally]
             }
         }
-        set ts [$self Activity $chatJid]
-        if {$ts > 0} {
-            return [$self MakeEntry $chatJid free {} $ts $tally]
+        if {$tail ne ""} {
+            return [$self MakeEntry $chatJid free {} $tail $tally]
         }
         return ""
     }
 
-    method MakeEntry {chatJid source base ts tally} {
+    # tail is the chat's newest message dict, or "" for a chat with no history.
+    method MakeEntry {chatJid source base tail tally} {
         set unread [dict get $tally unread]
         set mentions [dict get $tally mentions]
         set policy [$client message messagestore notifyPolicy $chatJid]
@@ -109,7 +114,12 @@ snit::type taco_chatlist {
         dict set entry jid $chatJid
         dict set entry source $source
         dict set entry groupchat [expr {[string match {*\?join} $chatJid] ? 1 : 0}]
-        dict set entry last_activity $ts
+        if {$tail ne ""} {
+            dict set entry last_message $tail
+            dict set entry last_activity [dict get $tail timestamp]
+        } else {
+            dict set entry last_activity 0
+        }
         dict set entry unread $unread
         dict set entry unread_mentions $mentions
         dict set entry muted [dict get $policy muted]
@@ -135,27 +145,10 @@ snit::type taco_chatlist {
         return ""
     }
 
-    method ActivityMap {} {
-        set activity {}
-        $db eval {
-            SELECT chat_jid, MAX(timestamp) AS ts FROM chat_message
-            WHERE kind='message' GROUP BY chat_jid
-        } row {
-            dict set activity $row(chat_jid) $row(ts)
-        }
-        return $activity
-    }
-
-    method Activity {chatJid} {
-        set ts [$client message maxTimestamp -chat $chatJid]
-        if {$ts eq ""} { return 0 }
-        return $ts
-    }
-
-    # A per-chat map's value for one chat, 0 when it has no entry.
+    # A per-chat map's value for one chat, "" when it has no entry.
     method Lookup {map key} {
         if {[dict exists $map $key]} { return [dict get $map $key] }
-        return 0
+        return ""
     }
 
     method Tally {tallies chatJid} {
@@ -206,6 +199,29 @@ snit::type taco_chatlist {
         array set opts $args
         if {$opts(-jid) eq ""} return
         $self EmitEntry $opts(-jid)
+    }
+
+    # Only a change to the tail row is a chat-list change.
+    method OnTailChanged {args} {
+        array set opts {-jid "" -timestamp "" -message ""}
+        array set opts $args
+        if {$opts(-timestamp) eq "" && $opts(-message) ne ""} {
+            set opts(-timestamp) [dict get $opts(-message) timestamp]
+        }
+        $self EmitIfTail $opts(-jid) $opts(-timestamp)
+    }
+
+    # A confirmation may relocate the row: test where it landed.
+    method OnTailConfirmed {args} {
+        array set opts {-jid "" -newtimestamp ""}
+        array set opts $args
+        $self EmitIfTail $opts(-jid) $opts(-newtimestamp)
+    }
+
+    method EmitIfTail {chatJid ts} {
+        if {$chatJid eq "" || $ts eq ""} return
+        if {$ts != [$client message maxTimestamp -chat $chatJid]} return
+        $self EmitEntry $chatJid
     }
 
     method EmitEntry {chatJid} {

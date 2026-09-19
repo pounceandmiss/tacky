@@ -157,7 +157,7 @@ jsonify_type jsonify \
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        chat_entry  {groupchat bool autojoin bool last_activity int unread int unread_mentions int approved bool groups list muted bool mentions bool}
+        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}

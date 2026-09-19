@@ -3,7 +3,10 @@ if 0 {
         chatlistview .clv -acc juliet@capulet.li
 }
 
-ttk::style configure Chatlistview.Treeview -rowheight 32
+# Two lines per row (name, then a preview of the newest message). The
+# treeview draws embedded newlines but never grows a row, so size it here.
+ttk::style configure Chatlistview.Treeview \
+    -rowheight [expr {2 * [font metrics TkDefaultFont -linespace] + 4}]
 
 snit::widget chatlistview {
     hulltype ttk::frame
@@ -423,8 +426,8 @@ snit::widget chatlistview {
     method OnRenameContact {} {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
-        set item [$treeview selection]
-        set currentName [$treeview item $item -text]
+        # The row text also carries the unread count and preview.
+        set currentName [dict getdef [$self ModelItem $jid] name ""]
 
         set new [input_dialog .rename_dlg -parent $win \
             -title "Rename $jid" \
@@ -474,8 +477,7 @@ snit::widget chatlistview {
     method OnEditBookmark {} {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
-        set item [$treeview selection]
-        set currentName [$treeview item $item -text]
+        set currentName [dict getdef [$self ModelItem $jid] name ""]
 
         set new [input_dialog .bm_edit_dlg -parent $win \
             -title "Edit $jid" \
@@ -528,13 +530,22 @@ snit::widget chatlistview {
 
     # -- item id helpers -------------------------------------------------
 
+    # Name (with the unread count) over the preview; one line with no history.
     method DisplayText {item} {
         set name [dict get $item name]
         if {$name eq ""} { set name [dict get $item jid] }
         if {[dict exists $item unread] && [dict get $item unread] > 0} {
             append name " ([dict get $item unread])"
         }
-        return $name
+        set preview [$self PreviewText $item]
+        if {$preview eq ""} { return $name }
+        return "$name\n$preview"
+    }
+
+    method PreviewText {item} {
+        if {![dict exists $item last_message]} { return "" }
+        return [message_preview [dict get $item last_message] \
+            [dict getdef $item groupchat 0]]
     }
 
     method IsRow {item} {

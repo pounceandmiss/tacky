@@ -124,3 +124,50 @@ test clv-search-filters {the search box filters the held list client-side} -setu
     wait
     clv_rows
 } -cleanup { clv_cleanup } -result {bob@example.com}
+
+test clv-row-previews-last-message {a row is the name over a preview of the newest message} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    clv_roster bob@example.com Bob
+    clv_chat alice@example.com
+} -body {
+    clv_create
+    list [.clv.tree item alice@example.com -text] \
+        [.clv.tree item bob@example.com -text]
+} -cleanup { clv_cleanup } -result [list "Alice (1)\nhi" Bob]
+
+test clv-item-updates-preview {a chatlist <Item> carrying a new last_message repaints the preview} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+} -body {
+    clv_create
+    $::_client emit chatlist <Item> -jid alice@example.com \
+        -item {jid alice@example.com name Alice source roster \
+            groupchat 0 autojoin 0 last_activity 5 unread 0 \
+            last_message {timestamp 5 from_jid alice@example.com \
+                is_outgoing 1 retracted 0 \
+                content {type text body "see you"}}}
+    wait
+    .clv.tree item alice@example.com -text
+} -cleanup { clv_cleanup } -result "Alice\nYou: see you"
+
+test clv-rename-starts-from-the-name {the rename dialog seeds the name, not the row text} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    clv_chat alice@example.com
+} -body {
+    clv_create
+    .clv.tree selection set alice@example.com
+    set seed ""
+    rename input_dialog _real_input_dialog
+    proc input_dialog {w args} {
+        set ::seed [dict get $args -value]
+        return ""
+    }
+    .clv OnRenameContact
+    set seed
+} -cleanup {
+    rename input_dialog ""
+    rename _real_input_dialog input_dialog
+    clv_cleanup
+} -result Alice

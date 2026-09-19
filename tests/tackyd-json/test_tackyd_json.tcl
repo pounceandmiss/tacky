@@ -260,6 +260,22 @@ test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
     jsonify convert message/gotoReply [dict create messages {} anchor ""]
 } -result [json::write object messages [json::write array] anchor null]
 
+# -- chatlist tests ----------------------------------------------------------
+
+test json-type-chat-entry-last-message {a chat entry's last_message is typed as a message, nested} -body {
+    jsonify convert chatlist/<Item> [dict create jid a@b item [dict create \
+        jid a@b unread 2 last_activity 1700 \
+        last_message [dict create timestamp 1700 is_outgoing 1 retracted 0 \
+            content {type text body hi}]]]
+} -result [json::write object jid {"a@b"} item [json::write object \
+    jid {"a@b"} unread 2 last_activity 1700 \
+    last_message [json::write object timestamp 1700 is_outgoing true \
+        retracted false content [json::write object type {"text"} body {"hi"}]]]]
+
+test json-type-chat-entry-no-last-message {a chat with no history has no last_message key, not a null} -body {
+    jsonify convert chatlist/get [list [dict create jid a@b last_activity 0 unread 0]]
+} -result [json::write array [json::write object jid {"a@b"} last_activity 0 unread 0]]
+
 test json-type-base64 {binary results encode as a base64 string} -body {
     jsonify to_json "a\x00b" base64
 } -result {"YQBi"}

@@ -709,6 +709,36 @@ snit::type taco_messagestore {
         return $rows
     }
 
+    # The newest message of one chat, or "" when it has none.
+    method lastMessage {chatJid} {
+        set result ""
+        $options(-db) eval [$self MsgSql {
+            SELECT @cols@ FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
+            ORDER BY timestamp DESC LIMIT 1
+        }] row {
+            set result [$self RowToDict [array get row]]
+        }
+        return $result
+    }
+
+    # chat_jid -> newest message, for every chat with history, in one pass.
+    # timestamp is unique within a chat, so the join picks one row per chat.
+    method lastMessages {} {
+        set out {}
+        $options(-db) eval [$self MsgSql {
+            SELECT @cols@ FROM chat_message
+            JOIN (SELECT chat_jid AS tail_jid, MAX(timestamp) AS tail_ts
+                  FROM chat_message WHERE kind='message'
+                  GROUP BY chat_jid) tail
+              ON chat_jid=tail_jid AND timestamp=tail_ts
+            WHERE kind='message'
+        }] row {
+            dict set out $row(chat_jid) [$self RowToDict [array get row]]
+        }
+        return $out
+    }
+
     # Resolve an XEP-0461 reply target to its stored timestamp, or "".
     #   server_id match  : authoritative (stanza-id is unique in the archive).
     #   origin_id/own_id : client-generated ids aren't unique *across*
