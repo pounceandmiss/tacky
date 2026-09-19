@@ -277,3 +277,121 @@ test chatlist-roomstate-funnel {a room_state change funnels as a single <Item> c
             -error registration-required -stanza {}
         lindex $states end
     } -result {error}
+
+test chatlist-last-message {an entry carries its newest message whole; a quiet contact has none} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body first
+        chatlist_chat_insert alice@example.com timestamp 200 body latest
+        roster_insert alice@example.com name Alice
+        roster_insert quiet@example.com name Quiet
+        set entries [by_jid [c chatlist get]]
+        set alice [dict get $entries alice@example.com]
+        set tail [dict get $alice last_message]
+        list [dict get $tail timestamp] [dict get $tail content] \
+            [dict get $tail is_outgoing] [dict get $alice last_activity] \
+            [dict exists [dict get $entries quiet@example.com] last_message]
+    } -result {200 {type text body latest} 0 200 0}
+
+test chatlist-last-message-per-chat {get picks each chat's own tail in one pass} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 300 body a-new
+        chatlist_chat_insert alice@example.com timestamp 100 body a-old
+        chatlist_chat_insert bob@example.com timestamp 200 body b-only
+        set out {}
+        dict for {jid e} [by_jid [c chatlist get]] {
+            lappend out $jid [dict get [dict get $e last_message] content body]
+        }
+        set out
+    } -result {alice@example.com a-new bob@example.com b-only}
+
+test chatlist-last-message-skips-hole {a tail hole is not a message and never previews} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body real
+        c db eval {
+            INSERT INTO chat_message(timestamp, chat_jid, kind)
+            VALUES (101, 'alice@example.com', 'hole')
+        }
+        set e [lindex [c chatlist get] 0]
+        list [dict get $e last_activity] \
+            [dict get [dict get $e last_message] content body]
+    } -result {100 real}
+
+test chatlist-item-carries-last-message {the event path resolves the tail the same way} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body old
+        chatlist_chat_insert alice@example.com timestamp 200 body new
+        set ev {}
+        tacky listen chatlist <Item> \
+            {apply {{e} { set ::ev $e }}}
+        c bus publish chats:<Updated> -jid alice@example.com
+        dict get [dict get [dict get $ev -item] last_message] content body
+    } -result {new}
+
+test chatlist-edit-of-tail-reemits {editing the tail message re-emits the entry with the new body} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1
+        c message messagestore applyEdit alice@example.com sid1 fixed "<xml/>" 150 \
+            {encryption "" sender_fp ""}
+        set bodies {}
+        tacky listen chatlist <Item> \
+            {apply {{e} {
+                lappend ::bodies [dict get [dict get [dict get $e -item] last_message] content body]
+            }}}
+        set msg [c message messagestore lastMessage alice@example.com]
+        c bus publish message:<Edited> -jid alice@example.com -message $msg
+        set bodies
+    } -result {fixed}
+
+test chatlist-edit-of-older-is-silent {a change behind the tail changes nothing a list shows} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1
+        chatlist_chat_insert alice@example.com timestamp 200 body tail
+        set n 0
+        tacky listen chatlist <Item> \
+            {apply {{e} { incr ::n }}}
+        set msg [lindex [c message messagestore get ids alice@example.com 100] 0]
+        c bus publish message:<Edited> -jid alice@example.com -message $msg
+        c bus publish message:<Retracted> -jid alice@example.com -timestamp 100
+        c bus publish message:<Status> -jid alice@example.com -timestamp 100 \
+            -remote_status read
+        set n
+    } -result {0}
+
+test chatlist-retract-of-tail-reemits {retracting the tail re-emits a tombstone entry} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body gone server_id sid1
+        c message messagestore applyRetract alice@example.com sid1
+        set got {}
+        tacky listen chatlist <Item> \
+            {apply {{e} {
+                set m [dict get [dict get $e -item] last_message]
+                lappend ::got [dict get $m retracted] [dict exists $m content]
+            }}}
+        c bus publish message:<Retracted> -jid alice@example.com -timestamp 100
+        set got
+    } -result {1 0}
+
+test chatlist-confirm-reemits-at-new-slot {a confirmation that moved the tail row is judged where it landed} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 100 body mine own_id oid1 \
+            server_status pending
+        c db eval {UPDATE chat_message SET timestamp=150, server_status=''
+                   WHERE chat_jid='alice@example.com' AND timestamp=100}
+        set got {}
+        tacky listen chatlist <Item> \
+            {apply {{e} {
+                set m [dict get [dict get $e -item] last_message]
+                lappend ::got [dict get $m timestamp] [dict get $m server_status]
+            }}}
+        c bus publish message:<Confirmed> -jid alice@example.com \
+            -timestamp 100 -newtimestamp 150 -server_status ""
+        set got
+    } -result {150 {}}

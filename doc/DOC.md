@@ -352,6 +352,7 @@ sorting.
 
     chat_entry = {jid: string, name: string, source: string,
                   groupchat: bool, autojoin: bool, last_activity: int,
+                  last_message?: message,
                   unread: int, unread_mentions: int}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
@@ -359,11 +360,18 @@ sorting.
 message. `groupchat` is `true` when the jid has `?join`. `source` is
 `roster` (a roster contact, bare JID), `bookmarks` (a bookmarked room), or
 `free` (came from chat history, with no roster or bookmark entry). `name`
-can be `""` (always is for `free`). `last_activity` is the last message
-time in microseconds, or `0`. `unread` counts the other side's messages past
+can be `""` (always is for `free`). `last_message` is the chat's newest
+message, whole, in the shape [message](#message) `history` returns; absent
+when the chat has no history. `last_activity` is that message's time in
+microseconds, or `0`. `unread` counts the other side's messages past
 your read watermark (see [Read state](#read-state)); your own messages and
 retracted tombstones never count. `unread_mentions` is how many of those
 named you (see [notify](#notify)), and is always `0` outside group chats.
+
+`last_message` lets a chat list preview each chat without a `history` call
+per row. Rendering it is the frontend's job: switch on `content.type`, show
+a `retracted` tombstone as deleted, prefix `is_outgoing` with "You:" and a
+group chat's sender with their nick (the resource of `from_jid`).
 
 Per source, an entry carries extra fields:
 
@@ -383,7 +391,8 @@ Events:
     chatlist <Changed> {}
 
 `<Item>` upserts (an add, rename, new message, read-watermark move, source
-change, or room_state change). `<Remove>` deletes - except a removed roster contact
+change, room_state change, or an edit, retraction, status move or
+confirmation of the newest message - not of an older one). `<Remove>` deletes - except a removed roster contact
 that still has history, which comes back as an `<Item>` with
 `source: "free"`. `<Changed>` means a whole source was swapped out (first
 fetch, reconnect); refetch with `get`. The module funnels the roster,

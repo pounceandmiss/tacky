@@ -1,4 +1,4 @@
-# Store-dict helpers shared by chatview and searchwindow.
+# Store-dict helpers shared by chatview, searchwindow and chatlistview.
 
 # The user-visible text of a stored message dict: a text message's body or a
 # media message's caption; "" for a tombstone or a caption-less attachment.
@@ -10,6 +10,50 @@ proc message_text {storeDict} {
         text  { return [dict get $content body] }
     }
     return ""
+}
+
+# One line for a chat-list row: who said the newest message, then what.
+# Own messages are prefixed "You:", a room-mate's with their nick; a 1:1
+# peer gets none, since the row is already named after them. Whitespace
+# collapses and anything past `limit` is cut with an ellipsis.
+proc message_preview {storeDict groupchat {limit 60}} {
+    if {[dict exists $storeDict retracted] && [dict get $storeDict retracted]} {
+        set text "Message deleted"
+    } else {
+        set text [message_text $storeDict]
+        if {$text eq "" && [dict exists $storeDict content]} {
+            set content [dict get $storeDict content]
+            if {[dict get $content type] eq "media"} {
+                set text [attachment_preview [dict get $content attachments]]
+            }
+        }
+    }
+    set text [string trim [regsub -all {\s+} $text " "]]
+    if {[string length $text] > $limit} {
+        set text "[string range $text 0 [expr {$limit - 2}]]…"
+    }
+    set who ""
+    if {[dict exists $storeDict is_outgoing] && [dict get $storeDict is_outgoing]} {
+        set who "You"
+    } elseif {$groupchat} {
+        jid explode [dict get $storeDict from_jid] e
+        set who $e(resource)
+    }
+    if {$who ne "" && $text ne ""} { return "$who: $text" }
+    return $text
+}
+
+# A caption-less attachment list: "Photo", the file's name, or a count.
+proc attachment_preview {attachments} {
+    if {[llength $attachments] == 0} { return "" }
+    if {[llength $attachments] > 1} {
+        return "[llength $attachments] attachments"
+    }
+    set att [lindex $attachments 0]
+    if {[dict getdef $att type file] eq "image"} { return "Photo" }
+    set name [dict getdef $att name ""]
+    if {$name eq ""} { return "File" }
+    return $name
 }
 
 # Shared enrichment: converts a store dict (from_jid, server_status,
