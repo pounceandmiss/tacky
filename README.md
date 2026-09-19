@@ -18,6 +18,7 @@ Because the backend is fully decoupled from the GUI and reachable over JSON, the
 
 - [tacky_android](https://github.com/pounceandmiss/tacky_android) - an Android port
 - [gacky](https://github.com/pounceandmiss/gacky) - a GTK frontend
+- [wacky](https://github.com/pounceandmiss/wacky) - a web client, over the [wasm build](#browser)
 
 ## Key features support
 - Modern calls compatible with Conversations and Dino
@@ -93,7 +94,9 @@ make DOCKER=1 wasm     # needs only docker    -> dist/wasm/
 
 `dist/wasm/` is the whole deliverable: copy it onto a site and import from it.
 Every file locates the others relative to its own URL, so it can live anywhere
-on the origin, and nothing in it needs a bundler.
+on the origin, and nothing in it needs a bundler. It is also an npm package as
+it stands - `package.json` names the version, `index.d.ts` declares the
+surface - though it is not published; `npm pack dist/wasm` makes the tarball.
 
 ```js
 import { createClient } from './tacky/index.js';
@@ -113,7 +116,15 @@ them: the transport is XMPP over WebSocket (RFC 7395), since there are no
 sockets; file transfers go through the browser's own HTTP stack; SQLite runs
 on a VFS over the Origin Private File System, with IndexedDB and memory behind
 it; and WebRTC is the page's, driven by `createMediaHost` in
-`wasm/src/media-host.js`. TLS and image decoding are the platform's too.
+`wasm/src/media-host.js`, which reports the peer's media by call `sid`. TLS
+and image decoding are the platform's too.
+
+### The client
+
+[wacky](https://github.com/pounceandmiss/wacky) is a web client over this
+package: TypeScript and lit, speaking the same JSON protocol through
+`index.js`. It takes `tacky-wasm` from `../tacky_t/dist/wasm` and stages it
+beside its page, so `make wasm` here is the first step of its build.
 
 ## Tests
 

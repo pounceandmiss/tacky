@@ -997,7 +997,7 @@ dicts of strings and numbers, so the same conversation works over the JSON
 channel, JNI or JS.
 
     op                     keys besides pc
-    createPeer             iceServers: [string]
+    createPeer             iceServers: [string], sid: string
     closePeer              -
     addTrack               track, kind: audio|video, direction
     setLocalDescription    sdp, sdpType: offer|answer ("" = your stack decides)
@@ -1013,13 +1013,15 @@ channel, JNI or JS.
     close                  -   (no pc: the backend is shutting down)
 
 `pc` is tacky's name for a peer connection, `track` its name for a track it
-added; keep a map from both to your own objects. Commands are not questions:
+added; keep a map from both to your own objects. `sid` on `createPeer` is the
+call the pc serves, so that what the peer sends can be put on the right
+screen; every later command names only the pc. Commands are not questions:
 none is answered, and nothing waits.
 
     type              keys besides pc
     localDescription  sdp, sdpType
     iceCandidate      candidate, mid (an empty one means the audio m-line)
-    gatheringState    state: new|inprogress|complete
+    gatheringState    state: new|gathering|complete
     connectionState   state: new|connecting|connected|disconnected|failed|closed
     track             track, kind, mid   your name for a track the peer added
     deviceFallback    kind: capture|playback|camera, id, reason

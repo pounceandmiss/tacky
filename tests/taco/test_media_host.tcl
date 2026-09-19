@@ -62,7 +62,14 @@ test media-host-createPeer-carries-ice-servers \
         ::tacky::media createPeer p2 -command host_pc_sink \
             -ice-servers {stun:stun.example.com:3478}
         set ::host_cmds
-    } -result {{-op createPeer -pc p2 -iceServers stun:stun.example.com:3478}}
+    } -result {{-op createPeer -pc p2 -iceServers stun:stun.example.com:3478 -sid {}}}
+
+test media-host-createPeer-carries-sid \
+    {the call a pc serves goes with createPeer, so the app can render per call} \
+    {*}$host_env -body {
+        ::tacky::media createPeer p2 -command host_pc_sink -sid sid-42
+        set ::host_cmds
+    } -result {{-op createPeer -pc p2 -iceServers {} -sid sid-42}}
 
 test media-host-sdp-goes-out-typed {an SDP command names its own type} \
     {*}$host_env -body {
@@ -168,7 +175,7 @@ test media-host-commands-are-events {a command for the app leaves as media <Host
             if {[lindex $e 0] eq "media"} { lappend out [lrange $e 1 end] }
         }
         set out
-    } -result {{<HostCommand> -op createPeer -pc p3 -iceServers {}}}
+    } -result {{<HostCommand> -op createPeer -pc p3 -iceServers {} -sid {}}}
 
 test media-host-event-needs-the-host-backend \
     {hostEvent on another backend is a mistake worth reporting} -constraints !wasm \

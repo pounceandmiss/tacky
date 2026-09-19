@@ -15,7 +15,7 @@
 #
 #   localDescription  sdp <s> sdpType offer|answer
 #   iceCandidate      candidate <c> mid <m>
-#   gatheringState    state new|inprogress|complete
+#   gatheringState    state new|gathering|complete
 #   connectionState   state new|connecting|connected|disconnected|failed|closed
 #   track             track <handle> kind audio|video mid <m>
 #   videoChannel      track <h> direction incoming|preview mid <m> channel <desc>
@@ -60,7 +60,7 @@
 #   tacky::media codecs                        -> {audio {...} video {...}}
 #   tacky::media close                         ;# drop everything
 #
-#   tacky::media createPeer <pc> -command <cb> ?-ice-servers <list>?
+#   tacky::media createPeer <pc> -command <cb> ?-ice-servers <list>? ?-sid <sid>?
 #   tacky::media closePeer  <pc>
 #   tacky::media addTrack   <pc> <track> -kind audio|video ?-direction <d>?
 #   tacky::media setLocalDescription  <pc> ?-sdp <s>? ?-type offer|answer?
@@ -215,15 +215,17 @@ proc ::tacky::media::emit {pc type args} {
 # Peer connections
 # ==========================================================================
 
+# -sid: the call the pc serves, for a host backend whose app renders per call.
 proc ::tacky::media::createPeer {pc args} {
     variable PcCb
-    set opts [dict merge {-command "" -ice-servers {}} $args]
+    set opts [dict merge {-command "" -ice-servers {} -sid ""} $args]
     if {[dict get $opts -command] eq ""} {
         error "createPeer: -command required"
     }
     set PcCb($pc) [dict get $opts -command]
     if {[catch {Dispatch CreatePeer $pc \
-            -ice-servers [dict get $opts -ice-servers]} err]} {
+            -ice-servers [dict get $opts -ice-servers] \
+            -sid [dict get $opts -sid]} err]} {
         unset -nocomplain PcCb($pc)
         error $err
     }

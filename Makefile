@@ -132,6 +132,12 @@ lib: dist-dir
 #   worker.js               the Web Worker it runs in
 #   opfs-pool.js            the storage pool, opened before the interpreter
 #   client.js, media-host.js, index.js   what a page imports
+#   index.d.ts, package.json             the contract: its types and version
+#
+# The directory is an npm package as it stands (`npm pack dist/wasm`), though
+# it is not published; the manifest is there so the surface has a version and
+# a consumer has types. wasm/src/index.d.ts is that surface: a change to it is
+# a change to the version in wasm/src/package.json.
 #
 # The build itself is the same shape as libtacky.a - zippy's `lib` target with
 # the emscripten overlay, then one emcc link here - in its own tree, like every
@@ -199,7 +205,7 @@ wasm: dist-dir
 	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
 	    lib
 	mkdir -p $(WASM_DIST)
-	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js $(WASM_DIST)/
+	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
 	$(WASM_EMCC) -O2 -o $(WASM_DIST)/tacky.mjs $(WASM_BUILD)/libtacky.a $(ZIPPY_EM_LDFLAGS) \
 	    -sEXPORT_NAME=createTacky \
 	    -sEXPORTED_FUNCTIONS=_tacky_boot,_tacky_start,_tacky_persist,_tacky_run,_opfsvfs_register
