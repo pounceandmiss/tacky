@@ -11,7 +11,7 @@
  * setRemoteDescription must not overtake the createPeer before it.
  */
 
-export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {} }) {
+export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream = () => {}, log = () => {} }) {
     /** pc name -> { conn, sid, queue, senders: Map, remotes: Map, nextRemote } */
     const peers = new Map();
     /** sid -> pc name, for the page-facing calls */
@@ -134,12 +134,15 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
             });
             return;
 
+        // Queued so the transceiver from addTrack exists, but the device
+        // prompt is not awaited there: the offer must not wait on it, and
+        // replaceTrack works without renegotiation whenever the media comes.
         case 'attachAudio':
-            serialize(state, op, pc, () => attach(state, pc, args.track, args.input, 'audio'));
+            serialize(state, op, pc, () => void attach(state, pc, op, args.track, args.input, 'audio'));
             return;
 
         case 'attachVideoSender':
-            serialize(state, op, pc, () => attach(state, pc, args.track, args.deviceId, 'video'));
+            serialize(state, op, pc, () => void attach(state, pc, op, args.track, args.deviceId, 'video'));
             return;
 
         case 'attachVideoReceiver':
@@ -167,8 +170,9 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
     }
 
     // Put real media behind a track tacky added. A peer-added track name
-    // means the receiving side, which already has its stream.
-    async function attach(state, pc, trackName, deviceId, kind) {
+    // means the receiving side, which already has its stream. No mic is
+    // fatal to the call; no camera leaves it audio-only.
+    async function attach(state, pc, op, trackName, deviceId, kind) {
         const transceiver = state.senders.get(trackName);
         if (!transceiver) return;
         if (transceiver.direction === 'recvonly') return;
@@ -176,19 +180,29 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
         const wanted = deviceId ? { deviceId: { exact: deviceId } } : true;
         let stream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({ [kind]: wanted });
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ [kind]: wanted });
+            } catch (err) {
+                if (!deviceId) throw err;
+                // Device gone or refused: fall back to the default and say so.
+                stream = await navigator.mediaDevices.getUserMedia({ [kind]: true });
+                emit(pc, 'deviceFallback', {
+                    kind: kind === 'video' ? 'camera' : 'capture',
+                    id: '',
+                    reason: String(err?.name ?? err),
+                });
+            }
         } catch (err) {
-            if (!deviceId) throw err;
-            // Device gone or refused: fall back to the default and say so.
-            stream = await navigator.mediaDevices.getUserMedia({ [kind]: true });
-            emit(pc, 'deviceFallback', {
-                kind: kind === 'video' ? 'camera' : 'capture',
-                id: '',
-                reason: String(err?.name ?? err),
-            });
+            fail(pc, op, String(err?.message ?? err), kind === 'audio' ? 1 : 0);
+            return;
+        }
+        if (!peers.has(pc)) {
+            for (const t of stream.getTracks()) t.stop();
+            return;
         }
         const track = stream.getTracks().find((t) => t.kind === kind);
         if (track) await transceiver.sender.replaceTrack(track);
+        onLocalStream(state.sid, stream, kind);
     }
 
     function closePeer(pc) {
@@ -224,8 +238,22 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
 }
 
 // iceServers arrives as an array or as an unschema'd Tcl list; URLs have no spaces.
+// turn:user:pass@host:port, percent-encoded, as extdisco.tcl builds it and
+// libdatachannel takes it. The browser wants the credentials as fields, as
+// libwebrtc does; this is rtc-webrtc's ParseIceServer.
 function toIceServers(value) {
     if (!value) return [];
     const urls = Array.isArray(value) ? value : String(value).split(/\s+/);
-    return urls.filter(Boolean).map((url) => ({ urls: url }));
+    return urls.filter(Boolean).map((url) => {
+        const colon = url.indexOf(':');
+        const at = url.lastIndexOf('@');
+        if (colon < 0 || at < colon) return { urls: url };
+        const userinfo = url.slice(colon + 1, at);
+        const split = userinfo.indexOf(':');
+        return {
+            urls: url.slice(0, colon + 1) + url.slice(at + 1),
+            username: decodeURIComponent(split < 0 ? userinfo : userinfo.slice(0, split)),
+            credential: split < 0 ? '' : decodeURIComponent(userinfo.slice(split + 1)),
+        };
+    });
 }

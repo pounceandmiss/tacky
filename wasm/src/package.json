@@ -1,6 +1,6 @@
 {
   "name": "tacky-wasm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tacky's XMPP backend for a browser: taco under Emscripten in a Web Worker, and the page's side of it",
   "license": "GPL-3.0-or-later",
   "type": "module",
