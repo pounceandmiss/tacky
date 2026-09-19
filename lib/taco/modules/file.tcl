@@ -682,7 +682,12 @@ snit::type taco_file {
     }
 
     method OnDiscoItems {stanza} {
-        set items {}
+        # The server itself is a candidate, and the first one tried: XEP-0363
+        # does not require the service to be a separate component, and a
+        # server that runs it on the host advertises the feature there (a
+        # Prosody with mod_http_file_share on the VirtualHost, say). Its items
+        # follow, which is where a component-based deployment answers.
+        set items [list [jid domain [$client cget -jid]]]
         xsearch $stanza query item -script it {
             set ij [xsearch $it -get @jid]
             if {$ij ne ""} { lappend items $ij }
