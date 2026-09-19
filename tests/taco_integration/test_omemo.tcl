@@ -155,10 +155,10 @@ namespace eval ::test::omemo_int {
 
     variable BURST_N 50
 
-    set common [concat {-constraints withServer} \
+    set common [concat {-constraints {withServer && omemoBot}} \
         [tacky_env -extra-setup { ::test::omemo_int::extraSetup }]]
 
-    set coldCommon [concat {-constraints withServer} \
+    set coldCommon [concat {-constraints {withServer && omemoBot}} \
         [tacky_env -extra-setup { ::test::omemo_int::coldSetup }]]
 
     # 1. Basic roundtrip.

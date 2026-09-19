@@ -18,6 +18,12 @@ if {![info exists ::tacky_test_taco_args]} {
 # The build, as tcltest states a platform: see tests/taco/helpers.tcl. Set
 # here too, because an integration test need not load that fixture.
 ::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+
+# The dockerized OMEMO peer. bot@example.local is registered by
+# tests/servers/omemo-bot/with_bot.sh rather than by the harness USERS list,
+# so a plain with_prosody.sh run has a server but no one to talk OMEMO to.
+::tcltest::testConstraint omemoBot \
+    [expr {[info exists ::env(OMEMO_BOT_JID)] && $::env(OMEMO_BOT_JID) ne ""}]
 if {[llength [info commands ::tacky_init_plain]] == 0} {
     rename ::tacky_init ::tacky_init_plain
     proc ::tacky_init {args} {
