@@ -23,7 +23,13 @@
 # `hostEvent`. See lib/media/media_host.tcl.
 
 package require tacky::media
-package require tacky::media::rtc
+# rtc is the libdatachannel backend, and only a build that carries the
+# extension has one to register. Without it (the browser, where the page owns
+# WebRTC through the host backend) rtc is simply not among `available`, and
+# TryOpen already answers "not built in" for a backend that is not.
+if {![catch {package require rtc}]} {
+    package require tacky::media::rtc
+}
 package require tacky::media::host
 
 snit::type taco_media {
@@ -76,6 +82,14 @@ snit::type taco_media {
         set asked [expr {$requested ni {auto ""}}]
         set order [expr {$asked ? [list $requested] : $AUTO_ORDER}]
         if {"rtc" ni $order} { lappend order rtc }
+        # host last, and never a failure: it is pure Tcl, always registered,
+        # and asks nothing of the build. A build that carries no media stack
+        # at all - a browser's, where WebRTC belongs to the page - would
+        # otherwise not construct taco, and everything that is not a call
+        # would be lost along with calls. A frontend that drives the host
+        # protocol gets calls too; one that ignores it gets what it would
+        # have got from a backend that could not open.
+        if {"host" ni $order} { lappend order host }
         foreach name $order {
             if {[$self TryOpen $name $asked]} return
         }
@@ -91,7 +105,7 @@ snit::type taco_media {
     # entry point may not have defined `tacky` yet, so the emit is
     # best-effort - the log line records it either way.
     method Warn {name reason} {
-        jlog warn "media backend $name unavailable ($reason); using rtc"
+        jlog warn "media backend $name unavailable ($reason); falling back"
         if {$options(-taco) eq ""} return
         catch {$options(-taco) emit media <Warning> -name $name -reason $reason}
     }

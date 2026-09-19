@@ -238,7 +238,7 @@ snit::type taco_storage {
         set byAccount [dict create]
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set jidDbFile [file join $options(-data-dir) $jid.db]
-            if {![file isfile $jidDbFile]} continue
+            if {![taco_dbfile exists $jidDbFile]} continue
             sqlite3 migrateattachscan $jidDbFile
             set urls [dict create]
             migrateattachscan eval \
@@ -263,7 +263,7 @@ snit::type taco_storage {
         set keys [dict create]
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set jidDbFile [file join $options(-data-dir) $jid.db]
-            if {![file isfile $jidDbFile]} continue
+            if {![taco_dbfile exists $jidDbFile]} continue
             sqlite3 migrateattachscan $jidDbFile
             taco_pragma_key migrateattachscan $Passphrase
             migrateattachscan eval {SELECT hash, iv, key FROM attachment_key} row {
@@ -333,6 +333,10 @@ snit::type taco_storage {
 
     method Migrate {direction passphrase} {
         set stageDir [file join $options(-config-dir) .storage-migrate]
+        # An abandoned attempt's staged files. Where the databases are pooled
+        # rather than on disk (see taco_dbfile) removing the directory does not
+        # remove them, and they would hold pool slots for good.
+        taco_dbfile delete {*}[taco_dbfile list $stageDir/]
         file delete -force -- $stageDir
         file mkdir $stageDir
 
@@ -393,7 +397,7 @@ snit::type taco_storage {
         # swap below commits it along with everything else.
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set stagedJidDb [file join $stageDir $jid.db]
-            if {![file isfile $stagedJidDb]} continue
+            if {![taco_dbfile exists $stagedJidDb]} continue
             sqlite3 migratekeydb $stagedJidDb
             if {$direction eq "encrypt"} {
                 taco_pragma_key migratekeydb $passphrase

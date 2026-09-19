@@ -168,7 +168,7 @@ namespace eval ::test::calls_int {
     }
 
     set common {
-        -constraints withServer
+        -constraints {withServer && !wasm}
         -setup    { ::test::calls_int::setup }
         -cleanup  { ::test::calls_int::cleanup }
     }
@@ -215,7 +215,7 @@ namespace eval ::test::calls_int {
 
     test calls-int-accept-active-hangup \
         {Romeo calls Juliet, Juliet accepts, both reach active, Romeo hangs up} \
-        {*}$common -constraints {withServer notMongoose notEjabberd} -body {
+        {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
             set sid [tacky calls start -acc $ROMEO -to $JULIET]
 
             waitUntil {[set ::test::calls_int::IncomingSid] eq $sid}

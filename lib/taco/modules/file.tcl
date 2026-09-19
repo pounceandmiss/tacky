@@ -1,6 +1,4 @@
-package require http
 package require sha1
-package require tclwuffs
 
 # File transfers (XEP-0363 upload + download). Every transfer has an id and
 # reports progress/completion through one event, both directions:
@@ -54,7 +52,6 @@ snit::type taco_file {
     typevariable TIMEOUT_MS 60000
     typevariable THUMB_MAX  320
     typevariable THUMB_LIMIT 2048
-    typevariable HttpRegistered 0
     typevariable AUTOFETCH_DEFAULT contacts
     typevariable AUTOFETCH_MAX_DEFAULT 5242880
 
@@ -86,7 +83,7 @@ snit::type taco_file {
         catch {$client bus unsubscribe $self}
         foreach id [array names Transfers] {
             catch {after cancel [dict get $Transfers($id) timer]}
-            catch {::http::reset [dict get $Transfers($id) httptoken]}
+            catch {taco_http reset [dict get $Transfers($id) httptoken]}
         }
         if {$ScratchDir ne ""} {
             catch {file delete -force -- $ScratchDir}
@@ -102,15 +99,6 @@ snit::type taco_file {
         set MaxFileSize 0
         set Discovered 0
         set ServiceWaiters {}
-    }
-
-    # Register the https transport once per interp. mtls::socket mirrors the
-    # core `socket` signature, so the tcllib http client can drive TLS through
-    # it directly.
-    method EnsureHttps {} {
-        if {$HttpRegistered} return
-        catch {http::register https 443 ::mtls::socket}
-        set HttpRegistered 1
     }
 
     # --- Transfer registry ----------------------------------------------
@@ -159,14 +147,16 @@ snit::type taco_file {
         return [expr {$total > $max || $current > $max}]
     }
 
-    # ::http::reset runs the request's -command callback before it returns, so
-    # OnDownloaded/OnPutDone reach Terminal first with their generic failure;
-    # the recorded state and reason are what Terminal reports instead.
+    # The recorded state and reason are what Terminal reports: cancelling runs
+    # the request's -command - before `reset` returns natively, on the next
+    # turn of the loop in a browser - and OnDownloaded/OnPutDone would
+    # otherwise give their generic failure. Terminal is idempotent, so
+    # whichever arrives second does nothing.
     method Abort {id state reason} {
         set t $Transfers($id)
         dict set Transfers($id) abortstate $state
         dict set Transfers($id) abortreason $reason
-        catch {::http::reset [dict get $t httptoken]}
+        catch {taco_http reset [dict get $t httptoken]}
         catch {close [dict get $t fh]}
         $self Terminal $id $state $reason
     }
@@ -337,37 +327,29 @@ snit::type taco_file {
             dict set Transfers($id) mediakey $key
             dict set Transfers($id) mediaiv  $iv
         }
-        $self EnsureHttps
         file mkdir [file dirname $full]
-        if {[catch {open $full.part wb} fh]} {
-            $self Terminal $id failed "open: $fh"
-            return
-        }
-        dict set Transfers($id) fh $fh
         # Terminal drops tmpfile, covering every failure path including an
         # abort from inside ProgressCb.
         dict set Transfers($id) tmpfile $full.part
         $self EmitUpdate $id
         if {[catch {
-            set tok [http::geturl $fetchUrl -channel $fh -binary 1 \
-                -timeout $TIMEOUT_MS -blocksize 65536 \
+            set tok [taco_http get $fetchUrl -outfile $full.part \
+                -timeout $TIMEOUT_MS \
                 -progress [mymethod ProgressCb $id] \
-                -command [mymethod OnDownloaded $id $fh $full]]
+                -command [mymethod OnDownloaded $id $full]]
             dict set Transfers($id) httptoken $tok
         } err]} {
-            catch {close $fh}
             $self Terminal $id failed "download: $err"
         }
     }
 
-    method OnDownloaded {id fh full token} {
-        catch {close $fh}
+    method OnDownloaded {id full token} {
         set ok 0
-        if {[http::status $token] eq "ok"} {
-            set nc [http::ncode $token]
+        if {[taco_http status $token] eq "ok"} {
+            set nc [taco_http ncode $token]
             if {$nc >= 200 && $nc < 300} { set ok 1 }
         }
-        catch {http::cleanup $token}
+        catch {taco_http cleanup $token}
         if {!$ok} {
             $self Terminal $id failed "http error"
             return
@@ -592,30 +574,21 @@ snit::type taco_file {
             $self Terminal $id failed "server returned no slot"
             return
         }
-        $self EnsureHttps
-        if {[catch {open $path rb} fh]} {
-            $self Terminal $id failed "open: $fh"
-            return
-        }
-        dict set Transfers($id) fh $fh
         if {[catch {
-            set tok [http::geturl $putUrl -method PUT -querychannel $fh \
+            set tok [taco_http put $putUrl -infile $path \
                 -type $mime -headers $headers -timeout $TIMEOUT_MS \
-                -queryblocksize 65536 \
-                -queryprogress [mymethod ProgressCb $id] \
-                -command [mymethod OnPutDone $id $fh $getUrl]]
+                -progress [mymethod ProgressCb $id] \
+                -command [mymethod OnPutDone $id $getUrl]]
             dict set Transfers($id) httptoken $tok
         } err]} {
-            catch {close $fh}
             $self Terminal $id failed "PUT: $err"
         }
     }
 
-    method OnPutDone {id fh getUrl token} {
-        catch {close $fh}
-        set st [http::status $token]
-        set nc [http::ncode $token]
-        catch {http::cleanup $token}
+    method OnPutDone {id getUrl token} {
+        set st [taco_http status $token]
+        set nc [taco_http ncode $token]
+        catch {taco_http cleanup $token}
         if {![info exists Transfers($id)]} return
         if {$st eq "ok" && $nc >= 200 && $nc < 300} {
             set key [dict get $Transfers($id) mediakey]
@@ -682,7 +655,12 @@ snit::type taco_file {
     }
 
     method OnDiscoItems {stanza} {
-        set items {}
+        # The server itself is a candidate, and the first one tried: XEP-0363
+        # does not require the service to be a separate component, and a
+        # server that runs it on the host advertises the feature there (a
+        # Prosody with mod_http_file_share on the VirtualHost, say). Its items
+        # follow, which is where a component-based deployment answers.
+        set items [list [jid domain [$client cget -jid]]]
         xsearch $stanza query item -script it {
             set ij [xsearch $it -get @jid]
             if {$ij ne ""} { lappend items $ij }
@@ -741,6 +719,10 @@ snit::type taco_file {
     # emits PNG, so the result is renderable by core Tk regardless of source
     # format). Throws on a non-image / undecodable file.
     method RenderThumb {src thumb max} {
+        # Required here, not at the top: a build without tclwuffs (the
+        # browser) has attachments and no thumbnails, and SafeThumb already
+        # treats a failure here as "no thumbnail" rather than an error.
+        package require tclwuffs
         set fh [open $src rb]
         try { set raw [read $fh] } finally { close $fh }
         # dims reads the header only; resize_bytes decodes the source itself.

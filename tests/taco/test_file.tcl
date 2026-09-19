@@ -2,7 +2,11 @@
 package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers
-package require tclwuffs
+# tclwuffs decodes and encodes the images these tests make thumbnails of.
+# Optional: a build without it - the browser's, where decoding is the page's -
+# still runs every transfer test, and the handful that need a real PNG are
+# marked !wasm.
+catch {package require tclwuffs}
 
 set acc user@test.example.com
 set file_env [tacky_env -mock conn -account $acc]
@@ -509,6 +513,7 @@ test file-progress-throttle {ProgressCb emits a <Update> on ~1% steps and at com
     } -result 2
 
 test file-download-local-thumbnail {download of a local image emits a sized PNG thumbnail} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache big.png]
         file mkdir [file dirname $src]
@@ -542,6 +547,7 @@ test file-thumbmax-range {an unusable or absurd -thumbmax falls back to the defa
     } -result {320 320 320 320 2048 320 200 2048 2048 640}
 
 test file-download-thumbmax {-thumbmax picks the size, and sizes coexist} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache sized.png]
         file mkdir [file dirname $src]
@@ -561,6 +567,7 @@ test file-download-thumbmax {-thumbmax picks the size, and sizes coexist} \
     } -result {w=200 h=120 both=1 default=0}
 
 test file-download-thumbmax-no-upscale {a small image is not upscaled to -thumbmax} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache tiny.png]
         file mkdir [file dirname $src]
@@ -605,7 +612,8 @@ test file-uncache {uncache deletes the downloaded original and every thumbnail s
 
 # An outgoing attachment still uploading carries its local source path as the
 # url. uncache must drop the derived thumbnail but never the original file.
-test file-uncache-keeps-local-source {uncache leaves a local source file untouched} {*}$file_env -body {
+test file-uncache-keeps-local-source {uncache leaves a local source file untouched} \
+    -constraints !wasm {*}$file_env -body {
     set src [file join $::_upcache mine.png]
     set w 8; set h 8
     set px [string repeat [binary format cccc 1 2 3 255] [expr {$w * $h}]]
@@ -707,6 +715,7 @@ test file-autofetch-blocked-download {a gated autofetch goes idle without touchi
 # The gate sits below the on-disk lookups, so a tightened policy must not
 # blank an image that is already local.
 test file-autofetch-local-still-resolves {a local source resolves even under never} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy never
         set src [file join $::_upcache already.png]
@@ -722,6 +731,7 @@ test file-autofetch-local-still-resolves {a local source resolves even under nev
     } -result {{done {}} local=1}
 
 test file-autofetch-manual-not-gated {a download without -auto ignores the policy} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy never
         set src [file join $::_upcache manual.png]
@@ -773,10 +783,11 @@ test file-autofetch-max-unset-means-unlimited {maxbytes 0 never aborts} \
     } -result {active {}}
 
 # A 200 whose bytes never make it into place: reporting done would hand the
-# caller a localpath with no file behind it. http::status and ncode read the
-# token as a plain array, so a stand-in one needs no request.
+# caller a localpath with no file behind it. Natively taco_http is Tcl's http,
+# whose status and ncode read the token as a plain array, so a stand-in one
+# needs no request.
 test file-download-rename-failure-reports-failed \
-    {a completed download that cannot be moved into place fails, not done} \
+    {a completed download that cannot be moved into place fails, not done} -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1 \
             -extra-cleanup {unset -nocomplain ::_ft}] -body {
         array set ::_ft {status ok http {HTTP/1.1 200 OK}}
@@ -784,7 +795,7 @@ test file-download-rename-failure-reports-failed \
         set id [$::_client file NewTransfer download $url]
         set full [$::_client file AttachPath $url]
         # No .part on disk, so the rename into place cannot succeed.
-        $::_client file OnDownloaded $id nochan $full ::_ft
+        $::_client file OnDownloaded $id $full ::_ft
         list [lindex [af_last] 0] \
              [string match {rename: *} [lindex [af_last] 1]] \
              [file exists $full]
@@ -869,6 +880,7 @@ proc cx_settle {} {
 }
 
 test file-cancel-in-flight-download {cancelling a live download ends idle, not on the transport error} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         lassign [cx_start silent] srv port
         set url http://127.0.0.1:$port/slow.png
@@ -900,6 +912,7 @@ test file-cancel-in-flight-upload {cancelling an upload stalled at discovery end
 # One transfer serves every caller that asked for the url, so cancelling has to
 # resolve them all.
 test file-cancel-coalesced-download {cancelling a shared download resolves every caller} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         lassign [cx_start silent] srv port
         set url http://127.0.0.1:$port/shared.png
@@ -926,6 +939,7 @@ test file-cancel-unknown-transfer {cancelling something that isn't running does 
 # The size cap aborts the same way cancel does, so its state has to survive
 # the http callback too.
 test file-autofetch-max-live-request {an over-cap fetch on the wire ends idle, not failed} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy everyone
         tacky setting set -key attachment_autofetch_max -value 4096
@@ -952,6 +966,7 @@ proc up_last_url {} {
 # The hole the url/path split closes: a peer's url that happens to name a
 # readable local file used to be served off disk and rendered inline.
 test file-download-url-is-never-a-path {a local file named by -url is refused, not served} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache elsewhere.png]
         set px [string repeat [binary format cccc 1 2 3 255] 64]
@@ -975,6 +990,7 @@ test file-download-path-gone-no-url {a -path whose file is gone fails under its 
 
 # A send carries both, and the file is only the better source while it lasts.
 test file-download-path-gone-falls-back-to-url {a send whose local file is gone fetches its url} \
+    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         lassign [cx_start serve] srv port
         set url http://127.0.0.1:$port/mine.png

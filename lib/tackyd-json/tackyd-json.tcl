@@ -308,6 +308,19 @@ proc add_dashes {d} {
 # serialise the result with the right schema.
 variable _token_schemas [dict create]
 
+# A token goes back to the caller as it came in, and it is a JSON *value*, not
+# a Tcl word: a number can be written bare, anything else has to be quoted or
+# the reply is not JSON at all and the caller's parser stops at it. Callers
+# send numbers, but a request that fails to parse can still leave a word here
+# (json2dict of a non-JSON line yields its words), and one bad request must not
+# corrupt the stream for every request after it.
+proc json_token {token} {
+    if {[string is entier -strict $token] || [string is double -strict $token]} {
+        return $token
+    }
+    return [json::write string $token]
+}
+
 # $sink is a command prefix taking one complete JSON message. Install before
 # creating taco_type: the constructor emits for already-known accounts.
 proc tackyd_json_install_emit {sink} {
@@ -330,12 +343,12 @@ proc tackyd_json_install_emit {sink} {
                 if {$event eq "<Error>"} {
                     {*}$sink [json::write array \
                         [json::write string error] \
-                        $token \
+                        [json_token $token] \
                         [json::write string $result]]
                 } else {
                     {*}$sink [json::write array \
                         [json::write string result] \
-                        $token \
+                        [json_token $token] \
                         [jsonify convert $schema $result string]]
                 }
                 return
