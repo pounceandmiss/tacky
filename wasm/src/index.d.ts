@@ -74,6 +74,8 @@ export interface MediaHostOptions {
     send: (frame: OutboundFrame) => void;
     /** A peer's media arrived on call `sid`; `kind` is `audio` or `video`. */
     onRemoteStream?: (sid: string, stream: MediaStream, kind: string) => void;
+    /** This side's mic or camera is on the call `sid`, for a self-view. */
+    onLocalStream?: (sid: string, stream: MediaStream, kind: string) => void;
     /** Where to say what went wrong; the same is reported to the backend. */
     log?: (line: string) => void;
 }
