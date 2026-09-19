@@ -38,6 +38,20 @@ proc host_event {type} {
     return ""
 }
 
+# Put the process-wide backend back the way this file found it. Naming rtc
+# outright would tie these tests to a build that has it - a browser build does
+# not - and what matters is only that the next test starts from the same
+# place as this one did.
+proc host_restore {} {
+    ::tacky::media close
+    foreach name {rtc host} {
+        if {$name in [::tacky::media available]} {
+            ::tacky::media open $name
+            return
+        }
+    }
+}
+
 set host_env [list -setup host_setup -cleanup host_cleanup]
 
 # -- commands out -----------------------------------------------------------
@@ -137,18 +151,16 @@ test media-host-selected-by-name {-media-backend host opens it} -body {
     taco_type create ::taco_mh -transient 1 -media-backend host
     set got [::taco_mh media backend]
     ::taco_mh destroy
-    ::tacky::media close
-    ::tacky::media open rtc
+    host_restore
     set got
 } -result host
 
-test media-host-commands-are-events {a command for the app leaves as media <HostCommand>} \
+test media-host-commands-are-events {a command for the app leaves as media <HostCommand>} -constraints !wasm \
     {*}[tacky_env -capture-emit 1 -extra-setup {
         taco_type create ::taco_mh -transient 1 -media-backend host
     } -extra-cleanup {
         ::taco_mh destroy
-        ::tacky::media close
-        ::tacky::media open rtc
+        host_restore
     }] -body {
         ::tacky::media createPeer p3 -command host_pc_sink
         set out {}
@@ -159,7 +171,7 @@ test media-host-commands-are-events {a command for the app leaves as media <Host
     } -result {{<HostCommand> -op createPeer -pc p3 -iceServers {}}}
 
 test media-host-event-needs-the-host-backend \
-    {hostEvent on another backend is a mistake worth reporting} \
+    {hostEvent on another backend is a mistake worth reporting} -constraints !wasm \
     {*}[tacky_env] -body {
         catch {tacky media hostEvent -pc p1 -type connectionState -state failed} err
         set err

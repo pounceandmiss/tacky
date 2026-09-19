@@ -6,6 +6,18 @@
 # there is no taco here to have opened one.
 package require tcltest
 namespace import ::tcltest::*
+
+# rtc is the libdatachannel backend, and half of what this conformance run
+# covers. A build without it - the browser's, where WebRTC belongs to the
+# page and reaches tacky through the host backend - has nothing here to run.
+# No tacky fixture here, so the build constraint is set locally; see
+# tests/taco/helpers.tcl for what it stands for.
+::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+if {[::tcltest::testConstraint wasm]} {
+    puts "skipping [file tail [info script]]: no rtc in this build"
+    return
+}
+
 package require tacky::media
 package require tacky::media::rtc
 package require tacky::media::host

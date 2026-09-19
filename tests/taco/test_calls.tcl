@@ -335,7 +335,7 @@ test calls-list-two-calls {nothing caps this at one, and each call keeps its own
 
 # -- Codec filtering --
 
-test calls-filter-codecs-audio {non-opus payload-types are stripped from audio, other children kept} \
+test calls-filter-codecs-audio {non-opus payload-types are stripped from audio, other children kept} -constraints !wasm \
     {*}$calls_env -body {
         set jingle [j jingle -ns urn:xmpp:jingle:1 {
             j content -creator initiator -name audio {
@@ -355,7 +355,7 @@ test calls-filter-codecs-audio {non-opus payload-types are stripped from audio, 
             [llength [xsearch $desc rtcp-mux -gather node]]
     } -result {opus 1}
 
-test calls-filter-codecs-video {video keeps VP8, drops H264/VP9/rtx} \
+test calls-filter-codecs-video {video keeps VP8, drops H264/VP9/rtx} -constraints !wasm \
     {*}$calls_env -body {
         set jingle [j jingle -ns urn:xmpp:jingle:1 {
             j content -creator initiator -name video {

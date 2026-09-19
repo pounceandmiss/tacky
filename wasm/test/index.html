@@ -1,0 +1,211 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tacky wasm smoke</title>
+<!--
+  The smoke page: a test fixture, not a UI. Scenarios, chosen with ?scenario=:
+
+    storage  (default)  the store survives a reload
+    tcl      ?dir=&file=&match=   tacky's Tcl test suite, in the browser
+    call     ?ws=&jid=&pass=&jid2=&pass2=   two accounts, one call
+
+  Served by wasm/test/serve.mjs; browser.mjs reads the result out over CDP.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin: 2rem auto; max-width: 52rem; padding: 0 1rem;
+  }
+  h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
+  .sub { opacity: .65; margin: 0 0 1.5rem; }
+  li { list-style: none; margin: .15rem 0; }
+  .ok::before  { content: " ok  "; color: #17795e; white-space: pre; }
+  .bad::before { content: "FAIL "; color: #b3261e; white-space: pre; }
+  .detail { opacity: .6; }
+  @media (prefers-color-scheme: dark) {
+    .ok::before { color: #4ec9a0; } .bad::before { color: #f2836b; }
+  }
+</style>
+<h1>Tacky wasm smoke</h1>
+<p class="sub" id="status">starting...</p>
+<ul id="checks"></ul>
+
+<script type="module">
+// Through the published entry point, as a page would.
+import { createClient, connect, createMediaHost } from './index.js';
+import { runSuite } from './tcl-suite.js';
+
+const params = new URLSearchParams(location.search);
+const scenario = params.get('scenario') ?? 'storage';
+const WS = params.get('ws') ?? '';
+
+const checks = [];
+const list = document.getElementById('checks');
+const status = document.getElementById('status');
+
+function check(name, ok, detail = '') {
+    checks.push({ name, ok: !!ok, detail: String(detail) });
+    const li = document.createElement('li');
+    li.className = ok ? 'ok' : 'bad';
+    li.textContent = name;
+    if (detail) {
+        const span = document.createElement('span');
+        span.className = 'detail';
+        span.textContent = ` - ${detail}`;
+        li.append(span);
+    }
+    list.append(li);
+    return ok;
+}
+
+// -- tcl: the native suite, in the interpreter `make wasm-tcltest` builds ----
+
+async function tclScenario() {
+    status.textContent = 'running tacky\u2019s Tcl suite\u2026';
+    const lines = [];
+    const { default: createInterp } = await import('./tacky-tcltest.mjs');
+    const M = await createInterp({
+        print: (line) => lines.push(line),
+        printErr: (line) => lines.push(line),
+    });
+    const result = await runSuite(M, lines, {
+        dir: params.get('dir') ?? 'taco',
+        file: params.get('file') ?? '',
+        match: params.get('match') ?? '*',
+    });
+    globalThis.__smokeSuite = result;
+
+    if (result.driverError) {
+        check('the suite runs at all', false, result.driverError);
+        return;
+    }
+    check(`${result.total} tests ran`, result.total > 0,
+        `${result.passed} passed, ${result.skipped} skipped, ${result.failed} failed`);
+    check('none of them failed', result.failed === 0,
+        result.failures.slice(0, 30).join(' '));
+    check('every test file loaded', !result.broken, result.broken ?? '');
+}
+
+// -- storage: a setting written on the first visit is there on the second ---
+
+const KEY = 'smoke-visit';
+
+async function storageScenario() {
+    const client = createClient({ ws: WS });
+    const up = await Promise.race([client.ready,
+        new Promise((r) => setTimeout(() => r('timeout'), 60_000))]);
+    if (!check('the worker chose a store', up === true,
+            client.fatal ?? `storage: ${client.storage}`)) return;
+    status.textContent = `store: ${client.storage}`;
+    check('it is OPFS, not a fallback', client.storage === 'opfs', client.storage);
+
+    let r = await client.request(['account', 'list', {}]);
+    check('the backend answers', r?.[0] === 'result', JSON.stringify(r));
+    r = await client.request(['media', 'backend', {}]);
+    check('the media backend is the page', r?.[0] === 'result' && r[2] === 'host',
+        JSON.stringify(r));
+
+    r = await client.request(['setting', 'get', { key: KEY }]);
+    const previous = r?.[2] ?? '';
+    if (previous === '') {
+        const stamp = new Date().toISOString();
+        client.send(['setting', 'set', { key: KEY, value: stamp }]);
+        const ev = await client.event('setting', 'Changed', (a) => a.key === KEY);
+        check('first visit: a setting is stored', ev?.[3]?.value === stamp, stamp);
+        r = await client.request(['setting', 'get', { key: KEY }]);
+        check('... and reads back within the session', r?.[2] === stamp, JSON.stringify(r));
+    } else {
+        check('second visit: the setting survived a reload', true, previous);
+    }
+    globalThis.__smokeVisit = previous === '' ? 'first' : 'second';
+    check('the backend stops cleanly', await client.stop());
+}
+
+// -- call: two accounts, two workers, one page, media-host.js on each side --
+
+// One direction of the subscription handshake.
+async function subscribe(from, to) {
+    from.client.send(['roster', 'add', { acc: from.jid, jid: to.jid }]);
+    const asked = await to.client.event('roster', 'Subscribe',
+        (arg) => arg.jid === from.jid, 20_000);
+    if (!asked) return false;
+    to.client.send(['roster', 'approve', { acc: to.jid, jid: from.jid }]);
+    return true;
+}
+
+async function callScenario() {
+    const a = { jid: params.get('jid'), pass: params.get('pass') };
+    const b = { jid: params.get('jid2'), pass: params.get('pass2') };
+
+    for (const side of [a, b]) {
+        side.client = createClient({ ws: WS, transient: true });
+        side.media = createMediaHost({
+            send: (frame) => side.client.send(frame),
+            onRemoteStream: (pc, stream, kind) => { side.remote = { pc, stream, kind }; },
+            log: (line) => console.debug(side.jid, line),
+        });
+        side.client.worker.addEventListener('message', (ev) => {
+            const m = ev.data;
+            if (m.type !== 'message') return;
+            const frame = JSON.parse(m.json);
+            if (frame[0] === 'event' && frame[1] === 'media' && frame[2] === 'HostCommand') {
+                side.media.command(frame[3]);
+            }
+        });
+    }
+    if (!check('both workers are up',
+            (await a.client.ready) === true && (await b.client.ready) === true,
+            a.client.fatal ?? b.client.fatal ?? '')) return;
+    status.textContent = `call: ${a.jid} -> ${b.jid}`;
+
+    check('the caller connects', (await connect(a.client, a.jid, a.pass)) !== null, a.jid);
+    check('the callee connects', (await connect(b.client, b.jid, b.pass)) !== null, b.jid);
+
+    // A call is routed to a resource, which each side learns through presence.
+    check('they become contacts', await subscribe(a, b) && await subscribe(b, a));
+
+    const started = await a.client.request(['calls', 'start', { acc: a.jid, to: b.jid }], 20_000);
+    check('the call is placed', started?.[0] === 'result', JSON.stringify(started));
+
+    const incoming = await b.client.event('calls', 'Incoming', () => true, 30_000);
+    check('the callee is rung', incoming !== null, JSON.stringify(incoming?.[3] ?? ''));
+    if (!incoming) return;
+
+    b.client.send(['calls', 'accept', { acc: b.jid, sid: incoming[3].sid }]);
+
+    const activeA = await a.client.event('calls', 'Active', () => true, 45_000);
+    const activeB = await b.client.event('calls', 'Active', () => true, 45_000);
+    check('the caller sees the call go active', activeA !== null);
+    check('the callee sees the call go active', activeB !== null);
+
+    const states = [...a.media.peers.values(), ...b.media.peers.values()]
+        .map((p) => p.conn.connectionState);
+    check('both peer connections are connected',
+        states.length === 2 && states.every((s) => s === 'connected' || s === 'connecting'),
+        states.join(' '));
+    check('media arrived on both sides',
+        a.remote?.kind === 'audio' && b.remote?.kind === 'audio',
+        `${a.remote?.kind ?? 'none'} / ${b.remote?.kind ?? 'none'}`);
+
+    a.client.send(['calls', 'hangup', { acc: a.jid, sid: incoming[3].sid }]);
+    check('the call ends', (await b.client.event('calls', 'Ended', () => true, 20_000)) !== null);
+
+    for (const side of [a, b]) side.media.closeAll();
+    check('both backends stop', (await a.client.stop()) && (await b.client.stop()));
+}
+
+const scenarios = {
+    tcl: tclScenario,
+    storage: storageScenario,
+    call: callScenario,
+};
+
+(scenarios[scenario] ?? storageScenario)()
+    .catch((err) => check('the page itself ran', false, err?.message ?? String(err)))
+    .finally(() => {
+        const failed = checks.filter((c) => !c.ok).length;
+        status.textContent = `${scenario}: ${checks.length - failed}/${checks.length} checks passed`;
+        // What wasm/test/browser.mjs reads back over CDP.
+        globalThis.__smoke = { done: true, scenario, checks };
+    });
+</script>

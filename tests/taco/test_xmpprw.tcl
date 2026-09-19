@@ -2,6 +2,13 @@ package require tcltest
 namespace import ::tcltest::*
 package require xmpprw
 
+# This file deliberately depends on nothing but xmpprw, so it sets the build
+# constraint itself rather than pulling in the tacky fixture that defines it
+# (tests/taco/helpers.tcl, which says what `wasm` stands for). The tests
+# marked !wasm below feed the reader through a `chan pipe`, and a wasm build
+# has no fileevent to deliver anything with.
+::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+
 # Tag and attribute names are written raw, so jwrite has to refuse a name
 # that would break out of the markup rather than emit it.
 
@@ -54,7 +61,7 @@ test xmpprw-jwrite-rejects-injected-prefixed-attr \
         string match "Invalid XML name:*" $err
     } -result 1
 
-test xmpprw-jwrite-roundtrips-parsed-stanza {a parsed stanza still serialises} \
+test xmpprw-jwrite-roundtrips-parsed-stanza {a parsed stanza still serialises} -constraints !wasm \
     -body {
         set node [xmppreader string {<message from='a@b/c' type='chat'><body>hi &amp; bye</body></message>}]
         jwrite $node
@@ -92,7 +99,7 @@ proc _xrwDrain {} {
 }
 
 test xmpprw-handler-error-keeps-reader-alive \
-    {a throwing stanza handler costs one stanza, not the stream} \
+    {a throwing stanza handler costs one stanza, not the stream} -constraints !wasm \
     -setup _xrwSetup -body {
         ::jab::readChannel $::_xrwRd -command {apply {n {
             set id [dict get [dict get $n attrs] id]
@@ -110,7 +117,7 @@ test xmpprw-handler-error-keeps-reader-alive \
 # A stranded half-built stanza would swallow every later one as a child,
 # so a malformed stream has to surface as a transport error.
 test xmpprw-parse-error-reports-to-error-command \
-    {a malformed stanza tears the stream down} \
+    {a malformed stanza tears the stream down} -constraints !wasm \
     -setup _xrwSetup -body {
         ::jab::readChannel $::_xrwRd \
             -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
@@ -126,7 +133,7 @@ test xmpprw-parse-error-reports-to-error-command \
 # Without the root on the stack, every following stanza sits at the
 # wrong depth and is never dispatched.
 test xmpprw-header-error-keeps-stream-root \
-    {a throwing header handler still dispatches later stanzas} \
+    {a throwing header handler still dispatches later stanzas} -constraints !wasm \
     -setup _xrwSetup -body {
         xmppreader ::_xrwR \
             -header-command {apply {n {error "hdr boom"}}} \
@@ -138,7 +145,7 @@ test xmpprw-header-error-keeps-stream-root \
     -result {iq {hdr boom}}
 
 test xmpprw-oversize-stanza-tears-stream-down \
-    {a stanza past -max-stanza-size reports to error-command} \
+    {a stanza past -max-stanza-size reports to error-command} -constraints !wasm \
     -setup _xrwSetup -body {
         ::jab::readChannel $::_xrwRd -max-stanza-size 50 \
             -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
@@ -152,7 +159,7 @@ test xmpprw-oversize-stanza-tears-stream-down \
     -result {{} 1 1}
 
 test xmpprw-deep-nesting-tears-stream-down \
-    {a stanza past -max-depth reports to error-command} \
+    {a stanza past -max-depth reports to error-command} -constraints !wasm \
     -setup _xrwSetup -body {
         ::jab::readChannel $::_xrwRd -max-depth 4 \
             -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \
@@ -166,7 +173,7 @@ test xmpprw-deep-nesting-tears-stream-down \
     -result {{} 1 1}
 
 test xmpprw-normal-stanza-under-caps-still-parses \
-    {default caps do not disturb an ordinary stanza} \
+    {default caps do not disturb an ordinary stanza} -constraints !wasm \
     -setup _xrwSetup -body {
         ::jab::readChannel $::_xrwRd \
             -command {apply {n {lappend ::_xrwGot [dict get $n tag]}}} \

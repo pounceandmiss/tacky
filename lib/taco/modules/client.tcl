@@ -21,6 +21,8 @@ snit::type taco_client {
     # Connection options (delegated to conn)
     delegate option -host to conn
     delegate option -port to conn
+    delegate option -transport to conn
+    delegate option -ws-url to conn
     delegate option -username to conn
     delegate option -password to conn
     delegate option -resource to conn

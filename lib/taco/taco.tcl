@@ -19,7 +19,6 @@ foreach _pkg {tcllibc sha1c md5c cryptkit Trf} {
 unset -nocomplain _pkg
 
 package require sqlite3
-package require mtls
 package require base64
 package require snit
 package require control
@@ -49,6 +48,50 @@ proc taco_pragma_key {db passphrase} {
     $db eval "PRAGMA key = '[taco_sql_quote $passphrase]'"
 }
 
+# A database file is not always a file: in the browser build SQLite reaches its
+# storage through a VFS (zippy's emscripten/opfsvfs.c), so a db lives in a pool
+# of opaque OPFS handles and `file exists`, `file rename` and `glob` cannot see
+# it. Each op below is answered by whichever of the two holds the path; with no
+# such VFS - every native build - this is `file`. Callers are account removal
+# and the passphrase migration, which stages a rekeyed copy of every db and
+# renames it over the live one.
+proc taco_dbfile {op args} {
+    set pooled [expr {[info exists ::opfsvfs::available] && $::opfsvfs::available}]
+    switch -exact -- $op {
+        exists {
+            lassign $args path
+            return [expr {($pooled && [::opfsvfs::file exists $path])
+                          || [file isfile $path]}]
+        }
+        delete {
+            foreach path $args {
+                if {$pooled && [::opfsvfs::file exists $path]} {
+                    ::opfsvfs::file delete $path
+                } else {
+                    file delete -force -- $path
+                }
+            }
+            return
+        }
+        rename {
+            lassign $args from to
+            if {$pooled && [::opfsvfs::file exists $from]} {
+                ::opfsvfs::file rename $from $to
+            } else {
+                file rename -force -- $from $to
+            }
+            return
+        }
+        list {
+            lassign $args prefix
+            set out [glob -nocomplain -- $prefix*]
+            if {$pooled} { lappend out {*}[::opfsvfs::file list $prefix] }
+            return $out
+        }
+    }
+    error "unknown taco_dbfile operation \"$op\": must be exists, delete, rename or list"
+}
+
 # Finish, or on a fresh launch resume, a storage encrypt/decrypt migration:
 # staged files under $configDir/.storage-migrate get renamed over their live
 # counterparts (see taco_storage's Migrate). Call before accounts.db is ever
@@ -60,14 +103,14 @@ proc taco_storage_resume {configDir} {
     set manifest [read $fh]
     close $fh
     foreach {staged live} $manifest {
-        file rename -force -- $staged $live
+        taco_dbfile rename $staged $live
         # A per-account db may have -wal/-shm sidecars left from a session
         # that didn't get a clean checkpoint (crash, force-quit). They're
         # tied to the pre-migration page contents; left in place they'd
         # confuse the next open of the just-swapped-in file. A freshly
         # migrated db starts clean - WAL mode gets re-enabled fresh by
         # client.tcl's next open anyway.
-        file delete -force -- $live-wal $live-shm
+        taco_dbfile delete $live-wal $live-shm
     }
     file delete -force -- [file dirname $manifestFile]
 }
@@ -212,6 +255,15 @@ snit::type taco_type {
     option -cache-dir -readonly yes -default ""
     # Which media backend calls run on; see lib/taco/modules/media.tcl.
     option -media-backend -readonly yes -default auto
+
+    # How a client reaches its server: tcp (default), or websocket for
+    # RFC 7395 - which is what a browser build has, a page having no sockets.
+    # See connection.tcl and modules/wsframing.tcl.
+    option -transport -readonly yes -default tcp
+    # An explicit websocket endpoint, for a deployment that does not follow
+    # the wss://$host/xmpp-websocket convention (and for a test server). It
+    # applies to every account, so it suits one server rather than many.
+    option -ws-url -readonly yes -default ""
     option -webrtc-lib -readonly yes -default ""
 
     variable TransientRoot ""
@@ -360,7 +412,9 @@ snit::type taco_type {
                 username password domain
             set resource [$account resource -acc $jid]
             set extra [list -data-dir $options(-data-dir) \
-                            -cache-dir $options(-cache-dir)]
+                            -cache-dir $options(-cache-dir) \
+                            -transport $options(-transport) \
+                            -ws-url $options(-ws-url)]
             if {!$options(-transient)} {
                 lappend extra -db-path [file join $options(-data-dir) $jid.db] \
                     -passphrase [$storage passphrase]

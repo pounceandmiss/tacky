@@ -8,6 +8,10 @@
 # environment variable to the path to that certificate
 
 proc xmpp_starttls {chan host cb} {
+    # The one place the backend needs TLS of its own; a transport that
+    # arrives encrypted (a wss:// WebSocket) never comes here, so a build
+    # without mtls is not an error until this is actually asked for.
+    package require mtls
     # Channel names are reused, so anything buffered under this one is a
     # dead connection's.
     xmpp_starttls_abort $chan

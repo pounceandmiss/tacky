@@ -82,10 +82,57 @@ merged in. The ABI is `embed/tacky.h` - three functions and a callback - and
 the API it carries is the backend's JSON contract: see
 [doc/DOC.md](doc/DOC.md#ways-to-run-it).
 
+## Browser
+
+The same backend builds to WebAssembly and runs in a Web Worker.
+
+```sh
+make wasm              # needs emcc on PATH   -> dist/wasm/
+make DOCKER=1 wasm     # needs only docker    -> dist/wasm/
+```
+
+`dist/wasm/` is the whole deliverable: copy it onto a site and import from it.
+Every file locates the others relative to its own URL, so it can live anywhere
+on the origin, and nothing in it needs a bundler.
+
+```js
+import { createClient } from './tacky/index.js';
+
+const client = createClient({ ws: 'wss://example.com/xmpp-websocket' });
+await client.ready;
+
+client.send(['account', 'add', { acc: 'me@example.com', password }]);
+await client.event('conn', 'State', (a) => a.state === 'connected');
+```
+
+That is the same JSON protocol the C library carries; [doc/DOC.md](doc/DOC.md)
+is its reference.
+
+Four things come from the page rather than the backend, because a page owns
+them: the transport is XMPP over WebSocket (RFC 7395), since there are no
+sockets; file transfers go through the browser's own HTTP stack; SQLite runs
+on a VFS over the Origin Private File System, with IndexedDB and memory behind
+it; and WebRTC is the page's, driven by `createMediaHost` in
+`wasm/src/media-host.js`. TLS and image decoding are the platform's too.
+
 ## Tests
 
 ```
-make test
+make test              # the suite, natively
+make wasm-test         # the wasm backend under node, tacky's suite included
+make wasm-test-browser # the same in headless Chromium: a Worker, OPFS, a reload
+```
+
+The wasm targets bundle `tests/` into a wasm interpreter and run the suite
+there, so the browser build answers to the same tests as the native one. A
+test needing something a page lacks - a thread, a process, a listening socket
+- carries the `!wasm` constraint rather than being deleted.
+
+Either target picks up its networked half when a server is up, the way `make
+test` picks up `tests/taco_integration`. Needs docker:
+
+```
+tests/servers/with_prosody.sh make wasm-test
 ```
 
 ## Architecture
