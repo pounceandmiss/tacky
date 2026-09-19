@@ -18,7 +18,7 @@ Because the backend is fully decoupled from the GUI and reachable over JSON, the
 
 - [tacky_android](https://github.com/pounceandmiss/tacky_android) - an Android port
 - [gacky](https://github.com/pounceandmiss/gacky) - a GTK frontend
-- [wacky](https://github.com/pounceandmiss/wacky) - a web client, over the [wasm build](#browser)
+- [wacky](https://codeberg.org/another-im/wacky) - a web client, over the [wasm build](#browser)
 
 ## Key features support
 - Modern calls compatible with Conversations and Dino
@@ -121,7 +121,7 @@ and image decoding are the platform's too.
 
 ### The client
 
-[wacky](https://github.com/pounceandmiss/wacky) is a web client over this
+[wacky](https://codeberg.org/another-im/wacky) is a web client over this
 package: TypeScript and lit, speaking the same JSON protocol through
 `index.js`. It takes `tacky-wasm` from `../tacky_t/dist/wasm` and stages it
 beside its page, so `make wasm` here is the first step of its build.
