@@ -1,4 +1,7 @@
 # ==== Shared config ====
+# The build system, a submodule by default; a checkout elsewhere (a worktree
+# of zippy under development, say) is named with ZIPPY=path.
+ZIPPY ?= zippy
 
 # dist/ is what CMake and the other consumers import, so an archive that comes
 # out byte-identical has to keep its mtime: a fresh one makes every dependent
@@ -48,6 +51,12 @@ tackyd-json_DEPS  := $(COMMON_DEPS)
 tackyd-json_SRC   := lib bin
 tackyd-json_ENT   := bin/tackyd-json.tcl
 
+# The browser backend (see `wasm` below). The same sources as libtacky.a, and
+# a shorter dep list: no mtls, rtc*, tclwuffs - a page's TLS, WebRTC and
+# image decoding are the browser's, and the modules that used them require
+# them only where they are used.
+wasm_DEPS := tdom tcllib omemo
+
 # ==== Targets ====
 
 .PHONY: all \
@@ -55,6 +64,7 @@ tackyd-json_ENT   := bin/tackyd-json.tcl
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
+	wasm wasm-tcltest wasm-test wasm-test-browser wasm-serve \
 	linux webrtc-so android-webrtc-so win-webrtc-dll flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
@@ -82,7 +92,7 @@ MAC_BUILD   := $(LINUX_BUILD)
 DEPS_DIR := $(CURDIR)/build/deps
 
 tacky tackyd tackyd-json: %: dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
 	    DEPS="$(call native-deps,$($*_DEPS))" \
@@ -99,7 +109,7 @@ tacky tackyd tackyd-json: %: dist-dir
 # tackyd-json daemon, but with no entry script - the shim, not a main.tcl, runs
 # the show. Shares the native build tree so it reuses the already-built deps.
 lib: dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(tackyd-json_DEPS)" \
 	    SOURCES="$(tackyd-json_SRC)" \
@@ -111,6 +121,172 @@ lib: dist-dir
 	    DEPSDIR=$(DEPS_DIR) \
 	    lib
 	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
+
+# dist/wasm/: the taco backend for a browser, and everything a page needs to
+# use it, in one directory to copy onto a site. embed/tacky_wasm.c drives the
+# interpreter; wasm/src/ is the page's side of it, and the files locate each
+# other relative to their own URLs so the directory can live anywhere on the
+# origin.
+#
+#   tacky.mjs, tacky.wasm   the backend
+#   worker.js               the Web Worker it runs in
+#   opfs-pool.js            the storage pool, opened before the interpreter
+#   client.js, media-host.js, index.js   what a page imports
+#
+# The build itself is the same shape as libtacky.a - zippy's `lib` target with
+# the emscripten overlay, then one emcc link here - in its own tree, like every
+# other platform. EXPORTED_FUNCTIONS is what pulls the shim out of the archive:
+# the linker roots on them, and EMSCRIPTEN_KEEPALIVE alone does not make an
+# archive member a root.
+#
+#   make wasm            emcc on PATH                -> build/wasm/
+#   make DOCKER=1 wasm   zippy's pinned emsdk image  -> build/wasm-docker/
+#
+# A tree belongs to one toolchain, so the two never share one: emcc's output
+# moves between releases, and a distro package moves under you. Separate
+# BASEDIRs do it rather than a docker cache mount (IN_DOCKER_BUILD_SUBDIR=
+# turns that off), so the container tree stays under build/ for `make clean`.
+# Under DOCKER=1 the inner make and the final link both run in the container at
+# /src, so BASEDIR, the shim path and HOST_TCLSH (the image's tcl9.0) are
+# container paths - and ZIPPY has to be inside the project, since only the
+# project is mounted. That is the submodule's own path, so only a zippy
+# checked out elsewhere (ZIPPY=../zippy-wasm) has to build without docker.
+ifdef DOCKER
+  WASM_BUILD := build/wasm-docker
+  WASM_MAKE  := IN_DOCKER_BUILD_SUBDIR= \
+                IN_DOCKER_CCACHE_DIR=/src/$(WASM_BUILD)/.ccache \
+                $(ZIPPY)/in_docker.sh emsdk make
+  WASM_EMCC  := IN_DOCKER_BUILD_SUBDIR= $(ZIPPY)/in_docker.sh emsdk emcc
+  WASM_ROOT  := /src
+  WASM_TCLSH := /usr/local/bin/tclsh9.0
+else
+  WASM_BUILD := build/wasm
+  WASM_MAKE  := $(MAKE)
+  WASM_EMCC  := emcc
+  WASM_ROOT  := $(CURDIR)
+  # Reuse the native tree's when it is there; otherwise say nothing and let
+  # zippy build its own (emscripten.mk's NATIVE_TCLSH).
+  WASM_TCLSH := $(wildcard $(LINUX_BUILD)/_build/local/bin/tclsh9.0)
+endif
+WASM_DIST  := dist/wasm
+# The shared dep cache from whichever root the inner make sees: under DOCKER=1
+# that is the container's /src, not the host's $(CURDIR).
+WASM_DEPS_DIR := $(WASM_ROOT)/build/deps
+
+# `wasm` and `wasm-tcltest` share one build tree, so Tcl and the deps are built
+# once - but they also share its scripts.zip, and the two want different
+# contents: one excludes tests/, the other carries it. zippy.mk derives the zip
+# from the source files alone, so make cannot see that the excludes changed and
+# would hand whichever target runs second the other one's zip. Dropping it
+# costs the seconds it takes to rebuild, and is the difference between shipping
+# the whole test suite inside dist/wasm/tacky.wasm and not.
+WASM_DROP_ZIP = rm -f $(WASM_BUILD)/_build-emscripten/scripts.zip \
+	               $(WASM_BUILD)/_build-emscripten/scripts.o
+-include $(ZIPPY)/emscripten/link.mk
+wasm: dist-dir
+	mkdir -p $(WASM_BUILD)
+	$(WASM_DROP_ZIP)
+	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(wasm_DEPS)" \
+	    SOURCES="$(tackyd-json_SRC)" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(COMMON_EXCL)" \
+	    LIB_SHIM_SRC=$(WASM_ROOT)/embed/tacky_wasm.c \
+	    LIB_NAME=tacky \
+	    BASEDIR=$(WASM_ROOT)/$(WASM_BUILD) \
+	    DEPSDIR=$(WASM_DEPS_DIR) \
+	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
+	    lib
+	mkdir -p $(WASM_DIST)
+	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js $(WASM_DIST)/
+	$(WASM_EMCC) -O2 -o $(WASM_DIST)/tacky.mjs $(WASM_BUILD)/libtacky.a $(ZIPPY_EM_LDFLAGS) \
+	    -sEXPORT_NAME=createTacky \
+	    -sEXPORTED_FUNCTIONS=_tacky_boot,_tacky_start,_tacky_persist,_tacky_run,_opfsvfs_register
+
+# build/wasm/tacky-tcltest.mjs: the same interpreter with tacky's own Tcl test
+# suite bundled beside lib/, driven through zippy_eval. Tacky has hundreds of
+# tests; running those in wasm says far more about the port than anything
+# written again in JavaScript, and says it about the code that ships.
+#
+# Same build tree as `wasm`, so the deps are shared; the script zip differs
+# (it carries tests/), so switching between the two targets rebuilds it - see
+# WASM_DROP_ZIP.
+WASM_TEST_EXCL := $(filter-out tests test_all.tcl,$(COMMON_EXCL))
+wasm-tcltest: $(WASM_BUILD)/tacky-tcltest.mjs
+
+.PHONY: $(WASM_BUILD)/tacky-tcltest.mjs
+$(WASM_BUILD)/tacky-tcltest.mjs:
+	mkdir -p $(WASM_BUILD)
+	$(WASM_DROP_ZIP)
+	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
+	    SHELL_TYPE=tclsh \
+	    DEPS="$(wasm_DEPS)" \
+	    SOURCES="lib bin tests" \
+	    ENTRY_SCRIPT="" \
+	    APP_EXCLUDE="$(WASM_TEST_EXCL)" \
+	    BIN_NAME=tacky-tcltest \
+	    BASEDIR=$(WASM_ROOT)/$(WASM_BUILD) \
+	    DEPSDIR=$(WASM_DEPS_DIR) \
+	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
+	    app
+
+# The two builds must not run at once - one build tree, one scripts.zip.
+.NOTPARALLEL: wasm wasm-tcltest
+
+XMPP_WS_URL ?= ws://127.0.0.1:5280/xmpp-websocket
+
+# The wasm suite under node: the JSON protocol in and out of the backend, the
+# same backend on the OPFS pool a browser gives it across a simulated reload
+# (that one needs zippy's mock OPFS directory, hence $(ZIPPY)), then tacky's
+# own Tcl tests inside the wasm interpreter.
+#
+# The networked half joins in when a server is up, the way test_all.tcl picks
+# up tests/taco_integration - so run it the same way:
+#
+#   tests/servers/with_prosody.sh make wasm-test
+#
+# which adds an XMPP session over RFC 7395, XEP-0363 up and down over the
+# browser's own HTTP stack, and the integration suite over the WebSocket.
+#
+# Each check runs even if an earlier one failed, and the target fails at the
+# end if any did - a suite that stops at the first failure tells you least
+# when you most want the rest of it.
+WASM_NET_CHECKS :=
+WASM_NET_BROWSER_CHECKS :=
+ifdef XMPP_SERVER
+WASM_NET_CHECKS := \
+	node wasm/test/xmpp.mjs || rc=1; \
+	node wasm/test/http.mjs || rc=1; \
+	XMPP_WS_URL=$(XMPP_WS_URL) node wasm/test/tcl.mjs \
+	    $(WASM_BUILD)/tacky-tcltest.mjs --dir taco_integration || rc=1;
+WASM_NET_BROWSER_CHECKS := \
+	node wasm/test/browser.mjs --scenario session || rc=1; \
+	node wasm/test/browser.mjs --scenario call || rc=1;
+endif
+
+wasm-test: wasm wasm-tcltest
+	@rc=0; \
+	node wasm/test/host.mjs $(WASM_DIST)/tacky.mjs || rc=1; \
+	node wasm/test/opfs.mjs $(WASM_DIST)/tacky.mjs $(ZIPPY) || rc=1; \
+	node wasm/test/tcl.mjs $(WASM_BUILD)/tacky-tcltest.mjs --dir taco || rc=1; \
+	$(WASM_NET_CHECKS) \
+	exit $$rc
+
+# The same thing where none of it is simulated: a module Worker, postMessage,
+# and the browser's own OPFS, visited twice so the second page finds what the
+# first stored. Needs chromium on PATH (CHROMIUM=... to name another). Under
+# with_prosody.sh it also places a call, with the media half in the page.
+wasm-test-browser: wasm wasm-tcltest
+	@rc=0; \
+	node wasm/test/browser.mjs || rc=1; \
+	node wasm/test/browser.mjs --scenario tcl || rc=1; \
+	$(WASM_NET_BROWSER_CHECKS) \
+	exit $$rc
+
+# The same smoke page, to open in your own browser.
+wasm-serve: wasm
+	node wasm/test/serve.mjs 8099 $(WASM_DIST) wasm/test
 
 # zippy has no mac-app/.dmg target - TARGET_OS=macos just retargets `app`.
 # It is also not a cross target: it leaves CROSS_OVERLAY unset and builds with
@@ -125,7 +301,7 @@ mac-guard:
 mac: mac-tacky mac-tackyd mac-tackyd-json
 
 mac-tacky mac-tackyd mac-tackyd-json: mac-%: mac-guard dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=macos \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
@@ -139,7 +315,7 @@ mac-tacky mac-tackyd mac-tackyd-json: mac-%: mac-guard dist-dir
 	$(call copy-if-changed,$(MAC_BUILD)/$*,dist/$*-macos)
 
 mac-lib: mac-guard dist-dir
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=macos \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(tackyd-json_DEPS)" \
@@ -181,7 +357,7 @@ ifdef DOCKER
   WIN_BUILD := build/windows-docker
   WIN_MAKE  := IN_DOCKER_BUILD_SUBDIR= \
                IN_DOCKER_CCACHE_DIR=/src/$(WIN_BUILD)/.ccache \
-               zippy/in_docker.sh mingw make
+               $(ZIPPY)/in_docker.sh mingw make
   WIN_ROOT  := /src
   WIN_TCLSH := /usr/local/bin/tclsh9.0
 else
@@ -200,7 +376,7 @@ win: win-tacky win-tackyd win-tackyd-json
 
 win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 	mkdir -p $(WIN_BUILD)
-	$(WIN_MAKE) -f zippy/zippy.mk \
+	$(WIN_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=windows \
 	    BIN_NAME=$* \
 	    SHELL_TYPE=$($*_SHELL) \
@@ -219,7 +395,7 @@ win-tacky win-tackyd win-tackyd-json: win-%: dist-dir
 # a MinGW PE archive. Ships alongside the native one as dist/libtacky-win.a.
 win-lib: dist-dir
 	mkdir -p $(WIN_BUILD)
-	$(WIN_MAKE) -f zippy/zippy.mk \
+	$(WIN_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=windows \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(call win-deps,$(tackyd-json_DEPS))" \
@@ -262,13 +438,13 @@ ifeq ($(ANDROID_DOCKER),0)
 else
   ANDROID_MAKE := IN_DOCKER_BUILD_SUBDIR= \
                   IN_DOCKER_CCACHE_DIR=/src/$(ANDROID_BUILD)/.ccache \
-                  zippy/in_docker.sh ndk make
+                  $(ZIPPY)/in_docker.sh ndk make
   ANDROID_ROOT := /src
 endif
 
 android: dist-dir
 	mkdir -p $(ANDROID_BUILD)
-	$(ANDROID_MAKE) -f zippy/zippy.mk \
+	$(ANDROID_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=android \
 	    BIN_NAME=tackyd-json \
 	    SHELL_TYPE=$(tackyd-json_SHELL) \
@@ -287,7 +463,7 @@ android: dist-dir
 # native and MinGW ones as dist/libtacky-android.a.
 android-lib: dist-dir
 	mkdir -p $(ANDROID_BUILD)
-	$(ANDROID_MAKE) -f zippy/zippy.mk \
+	$(ANDROID_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=android \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(call android-deps,$(tackyd-json_DEPS))" \
@@ -323,7 +499,7 @@ WEBRTC_TCL_PREFIX ?= $(LINUX_BUILD)/_build/local
 
 # The .so compiles in rtc-mv's frame ring at zippy's pinned commit.
 WEBRTC_RTCMV_COMMIT := $(shell sed -n 's/^RTCMV_COMMIT[[:space:]]*:=[[:space:]]*//p' \
-                          $(CURDIR)/zippy/zippy.mk)
+                          $(ZIPPY)/zippy.mk)
 WEBRTC_RTCMV_SRC ?= $(DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
 
 webrtc-so: dist-dir
@@ -371,7 +547,7 @@ android-webrtc-so: dist-dir
 # The same backend for Windows x64, built with clang-cl. Needs win-lib.
 WIN_WEBRTC_BUILD := $(WIN_ROOT)/$(WIN_BUILD)/webrtc
 WIN_WEBRTC_SDK ?= $(WEBRTC_SRC)/third_party/xwin
-WIN_WEBRTC_TCL_VER := $(shell sed -n 's/^TCL_VER[[:space:]]*:=[[:space:]]*//p' $(CURDIR)/zippy/zippy.mk)
+WIN_WEBRTC_TCL_VER := $(shell sed -n 's/^TCL_VER[[:space:]]*:=[[:space:]]*//p' $(CURDIR)/$(ZIPPY)/zippy.mk)
 
 win-webrtc-dll: dist-dir
 	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc-windows/lib/webrtc.lib" ] && \
@@ -461,7 +637,7 @@ test-lib: lib
 	$(LINUX_BUILD)/lib_driver
 
 $(LINUX_BUILD)/tclsh: Makefile
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(COMMON_DEPS)" \
 	    BASEDIR=$(LINUX_BUILD) \
@@ -472,7 +648,7 @@ $(LINUX_BUILD)/tclsh: Makefile
 # included, so this dev shell needs rtcmv_tk too - it's not just a
 # release-binary concern.
 $(LINUX_BUILD)/wish: Makefile
-	$(MAKE) -f zippy/zippy.mk \
+	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    SHELL_TYPE=wish \
 	    DEPS="$(call native-deps,$(COMMON_DEPS) tkwuffs tkdnd rtcmv_tk)" \
 	    BASEDIR=$(LINUX_BUILD) \

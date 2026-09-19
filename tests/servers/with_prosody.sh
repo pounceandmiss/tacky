@@ -69,7 +69,34 @@ modules_enabled = {
   "roster"; "saslauth"; "tls"; "dialback"; "disco"; "private";
   "vcard"; "version"; "uptime"; "time"; "ping"; "posix"; "pep";
   "register"; "mam";
+  "http"; "websocket"; "http_file_share";
   ${SM_MODULE}
+}
+
+-- XMPP over WebSocket (RFC 7395), at ws://127.0.0.1:5280/xmpp-websocket, for
+-- the wasm build: a browser page has no sockets, so this is the only way in.
+-- Two settings make that endpoint usable from a test rather than from a
+-- deployment behind a TLS-terminating proxy:
+--   the connection is plain ws://, and Prosody will not do SASL PLAIN on a
+--   stream it considers unencrypted;
+--   the page under test is served from a static server on another port, so
+--   mod_websocket sees a cross-origin Origin header and checks it.
+consider_websocket_secure = true
+
+-- XEP-0363 file upload, on the VirtualHost rather than on a component of its
+-- own: a component's HTTP lives under the component's own hostname, which
+-- would be a second name to resolve. The slots it hands out are addressed by
+-- the host's name rather than by 127.0.0.1, because Prosody routes HTTP by
+-- the Host header and only ${DOMAIN} has /file_share on it - the harness
+-- puts ${DOMAIN} in /etc/hosts for exactly this kind of reason.
+http_file_share_size_limit = 10485760
+http_external_url = "http://${DOMAIN}:5280/"
+
+-- A page under test is served from a static server on a port of its own, so
+-- every one of these endpoints is cross-origin to it.
+http_cors_override = {
+  websocket = { enabled = true };
+  file_share = { enabled = true };
 }
 allow_registration = true
 daemonize = false

@@ -22,7 +22,7 @@
 #include <tcl.h>
 
 #include "tacky.h"
-#include "static_pkgs.h"
+#include "tacky_interp.h"
 
 /* The bundled script tree, parked in .rodata by the `lib` build target
  * (ld -r -b binary scripts.zip + objcopy). Mounted read-only, no copy. */
@@ -147,52 +147,20 @@ static void emit_dead(tacky *c) {
     free(buf);
 }
 
-/* Process-global guard for the shared //zipfs:/app mount (see BackendInit).
- * A static Tcl_Mutex is self-initialising on first Tcl_MutexLock. */
-static Tcl_Mutex g_mount_lock;
-static int       g_mounted = 0;
-
 /* Bring up the interpreter and construct taco. Returns TCL_OK on success. */
 static int BackendInit(tacky *c) {
     Tcl_Interp *interp = Tcl_CreateInterp();
     size_t ziplen = (size_t)(_binary_scripts_zip_end - _binary_scripts_zip_start);
+    const char *stage = "";
     Tcl_Obj **objv;
     Tcl_Size n, i, rc;
 
     c->interp = interp;
-    /* NULL, not `interp`: a non-NULL interp makes Tcl_StaticLibrary run every
-     * init proc immediately (before Tcl_Init/mount). NULL registers them
-     * process-globally and lazily, so `load {} <Name>` resolves on demand -
-     * matching how the kitsh launcher registers them. */
-    Zippy_RegisterStaticPackages(NULL);
-
-    /* Mount the script tree before Tcl_Init so init.tcl loads from the zip.
-     * The zipfs mount is process-global (shared across interps), not per-interp,
-     * so mount exactly once: a second tacky_create in the same process (restart,
-     * or more than one instance) would otherwise fail with "already mounted". The
-     * guard is under a global mutex; the mount outlives any single interp. */
-    Tcl_MutexLock(&g_mount_lock);
-    if (!g_mounted) {
-        if (TclZipfs_MountBuffer(interp, _binary_scripts_zip_start, ziplen,
-                                 "//zipfs:/app", 0) != TCL_OK) {
-            Tcl_MutexUnlock(&g_mount_lock);
-            return fail(c, "TclZipfs_MountBuffer");
-        }
-        g_mounted = 1;
-    }
-    Tcl_MutexUnlock(&g_mount_lock);
-    Tcl_SetVar2Ex(interp, "tcl_library", NULL,
-                  Tcl_NewStringObj("//zipfs:/app/tcl_library", -1), TCL_GLOBAL_ONLY);
-    if (Tcl_Init(interp) != TCL_OK) {
-        return fail(c, "Tcl_Init");
-    }
-
-    /* Must exist before taco is constructed: the constructor may emit for
-     * already-known accounts, and `tacky emit` funnels through this command. */
-    Tcl_CreateObjCommand(interp, "tacky_native_emit", EmitCmd, c, NULL);
-
-    if (Tcl_EvalFile(interp, "//zipfs:/app/bin/tackyd-embed.tcl") != TCL_OK) {
-        return fail(c, "source tackyd-embed.tcl");
+    /* Static packages, the zip mount, Tcl_Init, tacky_native_emit and the
+     * embed script - shared with the wasm shim; see tacky_interp.h. */
+    if (TackyInterpInit(interp, _binary_scripts_zip_start, ziplen,
+                        EmitCmd, c, &stage) != TCL_OK) {
+        return fail(c, stage);
     }
 
     /* tackyd_embed_init {*}$args  -> taco_type create taco {*}$args */

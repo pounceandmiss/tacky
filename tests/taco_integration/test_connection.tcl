@@ -4,6 +4,16 @@ package require tacky::testhelpers::integration
 package require libtacky
 package require taco
 
+# Both of these drive the transport itself - a socket, a STARTTLS handshake,
+# a TCP proxy with a kill switch between client and server - and a wasm build
+# has none of it: its transport is a WebSocket the browser owns end to end,
+# and the session over it is covered by wasm/test/xmpp.mjs and by every other
+# file here, which reach the server the same way.
+if {[::tcltest::testConstraint wasm]} {
+    puts "skipping [file tail [info script]]: no TCP in a wasm build"
+    return
+}
+
 namespace eval ::test::bareconn {
 
     # Test configuration - matches with_prosody.sh

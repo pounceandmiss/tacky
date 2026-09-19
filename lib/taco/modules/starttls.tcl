@@ -8,6 +8,10 @@
 # environment variable to the path to that certificate
 
 proc xmpp_starttls {chan host cb} {
+    # The one place the backend needs TLS of its own; a transport that
+    # arrives encrypted (a wss:// WebSocket) never comes here, so a build
+    # without mtls is not an error until this is actually asked for.
+    package require mtls
     puts -nonewline $chan "<?xml version='1.0'?><stream:stream to='[xesc $host]' xml:lang='en' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xmlns='jabber:client'><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
     if {[catch {flush $chan}]} {
         {*}$cb error $::errorCode

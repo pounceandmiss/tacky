@@ -244,7 +244,7 @@ test jlog-setnativelevel-none-turns-off {none reads back as off} \
         jprobe getnativelevel -source rtcma
     } -result none
 
-test jlog-setnativelevel-stops-jlog-refiltering {the library's own filter is the only one} \
+test jlog-setnativelevel-stops-jlog-refiltering {the library's own filter is the only one} -constraints !wasm \
     {*}$native -body {
         jprobe setnativelevel -source rtcma -level debug
         jprobe getLevel ::rtcma
