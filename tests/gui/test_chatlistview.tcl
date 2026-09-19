@@ -53,9 +53,15 @@ proc clv_create {} {
     wait
 }
 
-# Row ids in the tree are the chat JIDs verbatim.
+# Row keys are the chat JIDs verbatim.
 proc clv_rows {} {
-    lsort [.clv.tree children {}]
+    lsort [.clv.rows keys]
+}
+
+# What a row draws: its name, preview and unread count.
+proc clv_row {jid} {
+    set row [.clv.rows row $jid]
+    list [dict get $row name] [dict get $row preview] [dict get $row unread]
 }
 
 # -- tests ----------------------------------------------------------------------
@@ -87,7 +93,7 @@ test clv-recent-sort {default sort puts most-recently-active first} -setup {
     clv_chat bob@example.com [expr {$ts + 1000}]
 } -body {
     clv_create
-    .clv.tree children {}
+    .clv.rows keys
 } -cleanup { clv_cleanup } -result {bob@example.com alice@example.com}
 
 test clv-item-inserts {a chatlist <Item> upsert adds a row live} -setup {
@@ -125,16 +131,15 @@ test clv-search-filters {the search box filters the held list client-side} -setu
     clv_rows
 } -cleanup { clv_cleanup } -result {bob@example.com}
 
-test clv-row-previews-last-message {a row is the name over a preview of the newest message} -setup {
+test clv-row-previews-last-message {a row is the name, a preview of the newest message, and the unread count} -setup {
     clv_setup
     clv_roster alice@example.com Alice
     clv_roster bob@example.com Bob
     clv_chat alice@example.com
 } -body {
     clv_create
-    list [.clv.tree item alice@example.com -text] \
-        [.clv.tree item bob@example.com -text]
-} -cleanup { clv_cleanup } -result [list "Alice (1)\nhi" Bob]
+    list [clv_row alice@example.com] [clv_row bob@example.com]
+} -cleanup { clv_cleanup } -result {{Alice hi 1} {Bob {} 0}}
 
 test clv-item-updates-preview {a chatlist <Item> carrying a new last_message repaints the preview} -setup {
     clv_setup
@@ -148,8 +153,8 @@ test clv-item-updates-preview {a chatlist <Item> carrying a new last_message rep
                 is_outgoing 1 retracted 0 \
                 content {type text body "see you"}}}
     wait
-    .clv.tree item alice@example.com -text
-} -cleanup { clv_cleanup } -result "Alice\nYou: see you"
+    clv_row alice@example.com
+} -cleanup { clv_cleanup } -result {Alice {You: see you} 0}
 
 test clv-rename-starts-from-the-name {the rename dialog seeds the name, not the row text} -setup {
     clv_setup
@@ -157,7 +162,7 @@ test clv-rename-starts-from-the-name {the rename dialog seeds the name, not the 
     clv_chat alice@example.com
 } -body {
     clv_create
-    .clv.tree selection set alice@example.com
+    .clv.rows select alice@example.com
     set seed ""
     rename input_dialog _real_input_dialog
     proc input_dialog {w args} {
