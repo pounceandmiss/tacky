@@ -89,8 +89,9 @@ proc ::tacky::media::host::Codecs {} {
 # Peer connections
 
 proc ::tacky::media::host::CreatePeer {h args} {
-    set opts [dict merge {-ice-servers {}} $args]
-    Command createPeer -pc $h -iceServers [dict get $opts -ice-servers]
+    set opts [dict merge {-ice-servers {} -sid ""} $args]
+    Command createPeer -pc $h -iceServers [dict get $opts -ice-servers] \
+        -sid [dict get $opts -sid]
     return
 }
 

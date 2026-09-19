@@ -360,7 +360,7 @@ snit::type taco_calls {
     method CreatePc {sid iceServers} {
         set pc $self/$sid
         dict set Calls $sid pc $pc
-        ::tacky::media createPeer $pc \
+        ::tacky::media createPeer $pc -sid $sid \
             -command [mymethod OnMediaEvent $sid] -ice-servers $iceServers
         return $pc
     }

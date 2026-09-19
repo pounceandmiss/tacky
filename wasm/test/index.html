@@ -141,7 +141,7 @@ async function callScenario() {
         side.client = createClient({ ws: WS, transient: true });
         side.media = createMediaHost({
             send: (frame) => side.client.send(frame),
-            onRemoteStream: (pc, stream, kind) => { side.remote = { pc, stream, kind }; },
+            onRemoteStream: (sid, stream, kind) => { side.remote = { sid, stream, kind }; },
             log: (line) => console.debug(side.jid, line),
         });
         side.client.worker.addEventListener('message', (ev) => {
@@ -186,6 +186,9 @@ async function callScenario() {
     check('media arrived on both sides',
         a.remote?.kind === 'audio' && b.remote?.kind === 'audio',
         `${a.remote?.kind ?? 'none'} / ${b.remote?.kind ?? 'none'}`);
+    check('and each side knows which call it belongs to',
+        a.remote?.sid === incoming[3].sid && b.remote?.sid === incoming[3].sid,
+        `${a.remote?.sid} / ${b.remote?.sid}`);
 
     a.client.send(['calls', 'hangup', { acc: a.jid, sid: incoming[3].sid }]);
     check('the call ends', (await b.client.event('calls', 'Ended', () => true, 20_000)) !== null);

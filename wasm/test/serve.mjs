@@ -16,6 +16,8 @@ const TYPES = {
     '.mjs': 'text/javascript; charset=utf-8',
     '.wasm': 'application/wasm',
     '.json': 'application/json',
+    '.css': 'text/css; charset=utf-8',
+    '.map': 'application/json',
 };
 
 /** Listen on `port` (0 for any) and resolve to the node server. */

@@ -261,9 +261,11 @@ proc ::tacky::media::rtc::OnLocalCandidate {pc cand mid} {
     return
 }
 
+# libdatachannel (and the webrtc wrapper) say `inprogress`; the API says `gathering`.
 proc ::tacky::media::rtc::OnGatheringState {pc state} {
     variable PcOf
     if {![info exists PcOf($pc)]} return
+    if {$state eq "inprogress"} { set state gathering }
     ::tacky::media::emit $PcOf($pc) gatheringState state $state
     return
 }

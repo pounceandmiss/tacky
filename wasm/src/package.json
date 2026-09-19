@@ -1,0 +1,27 @@
+{
+  "name": "tacky-wasm",
+  "version": "0.1.0",
+  "description": "Tacky's XMPP backend for a browser: taco under Emscripten in a Web Worker, and the page's side of it",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./worker.js": "./worker.js",
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "client.js",
+    "media-host.js",
+    "worker.js",
+    "opfs-pool.js",
+    "tacky.mjs",
+    "tacky.wasm"
+  ],
+  "sideEffects": false
+}

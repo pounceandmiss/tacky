@@ -2,21 +2,20 @@
  * The page's end of the `host` media backend (lib/media/media_host.tcl,
  * DOC.md "The host backend"): an RTCPeerConnection per pc, driven by
  * `media <HostCommand>` events, answering with `media hostEvent`.
- * `onRemoteStream(pc, stream, kind)` hands the page a peer's media.
  *
- * Names are pcs and track handles, tacky's; tracks the peer adds are named
- * here and reported with a `track` event.
+ * Backend-facing names are pcs and track handles; page-facing ones
+ * (onRemoteStream, setAudioEnabled) are call sids, from createPeer. Tracks
+ * the peer adds are named here and reported with a `track` event.
  *
  * Commands are serialized per pc: some await a promise, and a
  * setRemoteDescription must not overtake the createPeer before it.
  */
 
-// The browser's ICE gathering states are not quite tacky's vocabulary.
-const GATHERING = { new: 'new', gathering: 'inprogress', complete: 'complete' };
-
 export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {} }) {
-    /** pc name -> { conn, queue, senders: Map, remotes: Map, nextRemote } */
+    /** pc name -> { conn, sid, queue, senders: Map, remotes: Map, nextRemote } */
     const peers = new Map();
+    /** sid -> pc name, for the page-facing calls */
+    const pcOf = new Map();
 
     const emit = (pc, type, fields = {}) =>
         send(['media', 'hostEvent', { pc, type, ...fields }]);
@@ -33,13 +32,14 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
             .catch((err) => fail(pc, op, String(err?.message ?? err)));
     };
 
-    function createPeer(pc, iceServers) {
+    function createPeer(pc, iceServers, sid) {
         const conn = new RTCPeerConnection({ iceServers: toIceServers(iceServers) });
         const state = {
-            conn, queue: Promise.resolve(),
+            conn, sid, queue: Promise.resolve(),
             senders: new Map(), remotes: new Map(), nextRemote: 0,
         };
         peers.set(pc, state);
+        if (sid) pcOf.set(sid, pc);
 
         conn.onicecandidate = (ev) => {
             // null = end of gathering; onicegatheringstatechange reports that
@@ -50,7 +50,7 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
             });
         };
         conn.onicegatheringstatechange = () =>
-            emit(pc, 'gatheringState', { state: GATHERING[conn.iceGatheringState] ?? 'new' });
+            emit(pc, 'gatheringState', { state: conn.iceGatheringState });
         conn.onconnectionstatechange = () =>
             emit(pc, 'connectionState', { state: conn.connectionState });
         conn.ontrack = (ev) => {
@@ -62,7 +62,7 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
                 kind: ev.track.kind,
                 mid: ev.transceiver?.mid ?? '',
             });
-            onRemoteStream(pc, ev.streams[0] ?? new MediaStream([ev.track]), ev.track.kind);
+            onRemoteStream(sid, ev.streams[0] ?? new MediaStream([ev.track]), ev.track.kind);
         };
         return state;
     }
@@ -78,7 +78,7 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
         if (op === 'createPeer') {
             // No queue exists yet, so its failure is caught here.
             try {
-                if (!peers.has(pc)) createPeer(pc, args.iceServers);
+                if (!peers.has(pc)) createPeer(pc, args.iceServers, args.sid ?? '');
             } catch (err) {
                 fail(pc, op, String(err?.message ?? err), 1);
             }
@@ -195,15 +195,29 @@ export function createMediaHost({ send, onRemoteStream = () => {}, log = () => {
         const state = peers.get(pc);
         if (!state) return;
         peers.delete(pc);
+        if (state.sid && pcOf.get(state.sid) === pc) pcOf.delete(state.sid);
         for (const sender of state.conn.getSenders()) {
             sender.track?.stop();
         }
         try { state.conn.close(); } catch { /* already closed */ }
     }
 
+    // Mute: the mic track is the page's, so no backend command is involved.
+    // Returns whether the call has a pc.
+    function setAudioEnabled(sid, on) {
+        const state = peers.get(pcOf.get(sid));
+        if (!state) return false;
+        for (const transceiver of state.senders.values()) {
+            const track = transceiver.sender?.track;
+            if (track?.kind === 'audio') track.enabled = !!on;
+        }
+        return true;
+    }
+
     return {
         command,
-        /** For a page that wants to look: the live RTCPeerConnections. */
+        setAudioEnabled,
+        /** By pc: `{ conn, sid, ... }`. Not contract. */
         peers,
         closeAll() { for (const [name] of peers) closePeer(name); },
     };
