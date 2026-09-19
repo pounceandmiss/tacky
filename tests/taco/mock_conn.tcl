@@ -11,6 +11,8 @@ snit::type mock_conn {
     # Connection options (stored, not used)
     option -host -default ""
     option -port -default 5222
+    option -transport -default tcp
+    option -ws-url -default ""
     option -username -default ""
     option -password -default ""
     option -resource -default ""

@@ -165,7 +165,7 @@ snit::type taco_account {
         # Attachments are hash-keyed and shared across accounts, so they stay.
         if {$options(-data-dir) ne ""} {
             set base [file join $options(-data-dir) $jid.db]
-            file delete -- $base $base-wal $base-shm
+            taco_dbfile delete $base $base-wal $base-shm
         }
     }
 

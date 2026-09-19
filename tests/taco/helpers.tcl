@@ -8,14 +8,40 @@ package require taco
 package require tacky::mockconn
 package require tacky::testwait
 
+# The build, as a constraint, in the shape tcltest's own use - `win`, `unix`,
+# and here `wasm`. A test marked `!wasm` is one a browser build cannot run:
+#
+#   no threads or processes, though `package require Thread` succeeds against
+#     Emscripten's single-thread stubs and `exec` exists and returns ENOSYS
+#   no sockets, and under node the attempt does not even fail cleanly:
+#     Emscripten's socket layer reaches for an npm package that is not there
+#   no `fileevent`. The notifier cannot wait on a descriptor, so it accepts a
+#     file handler and never calls it; nothing that ships wants one, the wasm
+#     transport feeding the XML reader directly rather than through a channel
+#   none of the extensions that need a native library (rtc, tclwuffs), and no
+#     native log source to hand a level to
+#   taco_http is the page's own HTTP stack, so its tokens are not the http
+#     package's
+::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+
 ::tcltest::testConstraint hasThread [expr {
-    ![catch {package require Thread}]
+    ![::tcltest::testConstraint wasm]
+    && ![catch {package require Thread}]
     && !([info exists ::env(NO_THREADED)] && $::env(NO_THREADED))
 }]
 
 ::tcltest::testConstraint hasProcess [expr {
-    !([info exists ::env(NO_PROCESS)] && $::env(NO_PROCESS))
+    ![::tcltest::testConstraint wasm]
+    && !([info exists ::env(NO_PROCESS)] && $::env(NO_PROCESS))
 }]
+
+# Extra taco_type options for every environment this fixture builds. The
+# wasm suite sets it to `-transport websocket -ws-url ...`, because a page has
+# no socket and that is the only way it reaches a server; natively it stays
+# empty and nothing changes. Set it before the first test runs.
+if {![info exists ::tacky_test_taco_args]} {
+    set ::tacky_test_taco_args {}
+}
 
 # The three interchangeable tacky front ends: the type that creates one, and
 # the constraint gating it. tacky_env builds a single mode; tacky_test fans a
@@ -166,7 +192,9 @@ proc tacky_env {args} {
     # namespace (e.g. ::test::omemo_int), oo creates the instance there
     # and downstream snit code that hard-references "tacky" fails.
     lassign [dict get [tacky_modes] $opts(-mode)] modeType
-    lappend layers [list [list $modeType create ::tacky] {tacky destroy}]
+    lappend layers [list \
+        [list $modeType create ::tacky {*}$::tacky_test_taco_args] \
+        {tacky destroy}]
 
     if {$opts(-stub-emit)} {
         lappend layers [list \

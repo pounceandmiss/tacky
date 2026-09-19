@@ -5,6 +5,13 @@ package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers
 package require tacky::callshelpers
+# rtc is the libdatachannel backend, and these tests are about it. A build
+# without it - the browser's, where WebRTC belongs to the page and reaches
+# tacky through the host backend instead - has nothing here to run.
+if {[::tcltest::testConstraint wasm]} {
+    puts "skipping [file tail [info script]]: no rtc in this build"
+    return
+}
 package require tacky::mockrtc
 
 set media_env [tacky_env -mock conn -capture-emit 1 -taco-client {

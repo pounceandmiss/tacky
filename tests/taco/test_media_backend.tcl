@@ -9,25 +9,25 @@ set media_backend_env [tacky_env -capture-emit 1]
 
 # `list` is not compared exactly: a test file loaded earlier in the same
 # interpreter may have registered a mock backend alongside the real one.
-test media-backend-default-is-rtc {auto picks rtc, the one backend always linked in} \
+test media-backend-default-is-rtc {auto picks rtc, the one backend always linked in} -constraints !wasm \
     {*}$media_backend_env -body {
         list [tacky media backend] [expr {"rtc" in [tacky media list]}]
     } -result {rtc 1}
 
-test media-backend-capabilities {rtc reports what it can do} \
+test media-backend-capabilities {rtc reports what it can do} -constraints !wasm \
     {*}$media_backend_env -body {
         dict get [tacky media capabilities] audioDevices
     } -result 1
 
 # tacky_env always builds the default taco_type, so these construct their own.
-test media-backend-explicit-rtc {naming rtc selects it} -body {
+test media-backend-explicit-rtc {naming rtc selects it} -constraints !wasm -body {
     taco_type create ::taco_mb -transient 1 -media-backend rtc
     set got [::taco_mb media backend]
     ::taco_mb destroy
     set got
 } -result rtc
 
-test media-backend-unknown-falls-back {an unknown backend falls back to rtc} -body {
+test media-backend-unknown-falls-back {an unknown backend falls back to rtc} -constraints !wasm -body {
     taco_type create ::taco_mb -transient 1 -media-backend nosuchbackend
     set got [::taco_mb media backend]
     ::taco_mb destroy
@@ -35,7 +35,7 @@ test media-backend-unknown-falls-back {an unknown backend falls back to rtc} -bo
 } -result rtc
 
 test media-backend-missing-webrtc-falls-back \
-    {webrtc with no library falls back to rtc rather than failing to start} -body {
+    {webrtc with no library falls back to rtc rather than failing to start} -constraints !wasm -body {
     taco_type create ::taco_mb -transient 1 \
         -media-backend webrtc -webrtc-lib /nonexistent/libtacky_webrtc.so
     set got [::taco_mb media backend]
@@ -45,7 +45,7 @@ test media-backend-missing-webrtc-falls-back \
 
 # The fallback is the one thing worth telling a frontend about: it asked for
 # something and got something else.
-test media-backend-fallback-warns {falling back emits media <Warning>} \
+test media-backend-fallback-warns {falling back emits media <Warning>} -constraints !wasm \
     {*}[tacky_env -capture-emit 1 -extra-setup {
         taco_type create ::taco_mb -transient 1 -media-backend nosuchbackend
     } -extra-cleanup {::taco_mb destroy}] -body {
@@ -95,7 +95,7 @@ test media-backend-setting-is-remembered {the stored preference picks the backen
     } -result host
 
 test media-backend-flag-overrides-the-setting \
-    {-media-backend is this run's answer and leaves the preference alone} \
+    {-media-backend is this run's answer and leaves the preference alone} -constraints !wasm \
     {*}[media_pref_env] -body {
         media_pref_start
         ::taco_mb setting set -key media_backend -value host
@@ -110,7 +110,7 @@ test media-backend-flag-overrides-the-setting \
 # A preference this build cannot open is still the user's answer: the run
 # falls back, the setting stays.
 test media-backend-unopenable-setting-falls-back \
-    {a stored backend that will not open leaves rtc running and the setting set} \
+    {a stored backend that will not open leaves rtc running and the setting set} -constraints !wasm \
     {*}[media_pref_env] -body {
         media_pref_start
         ::taco_mb setting set -key media_backend -value nosuchbackend

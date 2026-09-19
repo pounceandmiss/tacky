@@ -13,6 +13,8 @@ snit::type mockbaseconn {
     option -header-command -default ""
     option -footer-command -default ""
     option -starttls -default true
+    option -transport -default tcp
+    option -ws-url -default ""
 
     constructor {args} {
         $self configurelist $args
