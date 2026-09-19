@@ -3,11 +3,6 @@ if 0 {
         chatlistview .clv -acc juliet@capulet.li
 }
 
-# Two lines per row (name, then a preview of the newest message). The
-# treeview draws embedded newlines but never grows a row, so size it here.
-ttk::style configure Chatlistview.Treeview \
-    -rowheight [expr {2 * [font metrics TkDefaultFont -linespace] + 4}]
-
 snit::widget chatlistview {
     hulltype ttk::frame
 
@@ -16,7 +11,7 @@ snit::widget chatlistview {
     option -open-chat-command -default ""
     option -new-chat-command -default ""
 
-    component treeview
+    component rows
     component searchentry
     component contactmenu
     component bookmarkmenu
@@ -30,7 +25,7 @@ snit::widget chatlistview {
     # jid -> chat entry (chatlist get shape), patched by <Item>/<Remove>
     variable model {}
 
-    # Row style per backend room_state enum (taco_bookmarks RoomState).  Tags
+    # Name style per backend room_state enum (taco_bookmarks RoomState).  Tags
     # are named muc_<state>, so the state name IS the tag - no translation.
     #   joined = normal; idle = dimmed grey (not a member / unattempted);
     #   joining = grey italic (transient); disconnected = amber (a member
@@ -62,28 +57,16 @@ snit::widget chatlistview {
         pack $searchentry -side left -expand yes -fill x
         bind $searchentry <KeyRelease> [mymethod Render]
 
-        # Treeview
-        install treeview using ttk::treeview $win.tree \
-            -show tree \
-            -selectmode browse \
-            -style Chatlistview.Treeview
-        $treeview column #0 -stretch yes
+        install rows using chatrows $win.rows \
+            -activate-command [mymethod ActivateItem] \
+            -menu-command [mymethod OnRowMenu]
 
-        # Scrollbar
-        ttk::scrollbar $win.scroll -orient vertical \
-            -command [list $treeview yview]
-        $treeview configure -yscrollcommand [list $win.scroll set]
-
-        # Layout
-        grid $win.header -row 0 -column 0 -columnspan 2 -sticky ew \
-            -padx 2 -pady 2
-        grid $treeview    -row 1 -column 0 -sticky nsew
-        grid $win.scroll  -row 1 -column 1 -sticky ns
+        grid $win.header -row 0 -column 0 -sticky ew -padx 2 -pady 2
+        grid $rows       -row 1 -column 0 -sticky nsew
         grid rowconfigure    $win 1 -weight 1
         grid columnconfigure $win 0 -weight 1
 
         $self ConfigureMucTags
-        $self ConfigureMentionTag
 
         # --- Context menus ---
 
@@ -148,10 +131,6 @@ snit::widget chatlistview {
         $settingsmenu add command -label "Refresh" \
             -command [mymethod OnRefresh]
 
-        # --- Bindings ---
-        bind $treeview <Double-1> [mymethod OnDoubleClick %x %y]
-        bind $treeview <Return>   [mymethod OnOpenChat]
-        bind $treeview <Button-3> [mymethod OnRightClick %x %y %X %Y]
         bind $searchentry <Button-3> [mymethod OnSettingsRightClick %X %Y]
 
         # Listen for data changes: one collection, three verbs
@@ -210,31 +189,34 @@ snit::widget chatlistview {
 
     # -- rendering -------------------------------------------------------
 
-    # Repaint the whole flat list: filter by the search box, sort, insert.
-    # Row ids are the chat JID verbatim.
+    # Repaint the whole flat list: filter by the search box, sort, draw.
+    # Row keys are the chat JID verbatim.
     method Render {} {
-        set sel [$treeview selection]
-        $treeview delete [$treeview children {}]
         set displayed {}
+        set drawn {}
         foreach entry [$self VisibleEntries] {
             set jid [dict get $entry jid]
-            set tags {}
-            if {[dict exists $entry unread_mentions]
-                && [dict get $entry unread_mentions] > 0} {
-                lappend tags mention
-            }
-            if {[dict exists $entry room_state]} {
-                lappend tags muc_[dict get $entry room_state]
-            }
-            $treeview insert {} end -id $jid \
-                -text [$self DisplayText $entry] \
-                -image [$self TrackAvatar $jid] -tags $tags
+            lappend drawn [$self RowFor $entry]
             dict set displayed $jid 1
         }
+        $rows set $drawn
         $self UntrackAvatars $displayed
-        if {[llength $sel] && [$treeview exists [lindex $sel 0]]} {
-            $treeview selection set [lindex $sel 0]
+    }
+
+    method RowFor {entry} {
+        set jid [dict get $entry jid]
+        set name [dict get $entry name]
+        if {$name eq ""} { set name $jid }
+        set tags {}
+        if {[dict exists $entry room_state]} {
+            lappend tags muc_[dict get $entry room_state]
         }
+        return [dict create key $jid name $name \
+            preview [$self PreviewText $entry] \
+            unread [dict getdef $entry unread 0] \
+            mention [expr {[dict getdef $entry unread_mentions 0] > 0}] \
+            time [dict getdef $entry last_activity 0] \
+            image [$self TrackAvatar $jid] tags $tags]
     }
 
     method VisibleEntries {} {
@@ -284,38 +266,20 @@ snit::widget chatlistview {
 
     method ConfigureMucTags {} {
         if {[lsearch -exact [font names] ChatlistMucItalic] < 0} {
-            font create ChatlistMucItalic {*}[font actual TkDefaultFont]
+            # Slanted from the row's name font, so it stays bold.
+            font create ChatlistMucItalic {*}[font actual ChatrowsName]
             font configure ChatlistMucItalic -slant italic
         }
         foreach {state opts} $mucStateStyle {
-            $treeview tag configure muc_$state {*}$opts
+            $rows tag configure muc_$state {*}$opts
         }
-    }
-
-    # A chat holding an unread mention. Listed before the muc_<state> tag so
-    # its font wins over the room-state styling.
-    method ConfigureMentionTag {} {
-        if {[lsearch -exact [font names] ChatlistMention] < 0} {
-            font create ChatlistMention {*}[font actual TkDefaultFont]
-            font configure ChatlistMention -weight bold
-        }
-        $treeview tag configure mention -font ChatlistMention
     }
 
     # -- interaction -----------------------------------------------------
 
-    method OnDoubleClick {x y} {
-        set item [$treeview identify item $x $y]
-        if {[$self IsRow $item]} {
-            $self ActivateItem $item
-        }
-    }
-
     method OnOpenChat {} {
-        set item [$treeview selection]
-        if {$item ne "" && [$self IsRow $item]} {
-            $self ActivateItem $item
-        }
+        set jid [$self SelectedLeafJid]
+        if {$jid ne ""} { $self ActivateItem $jid }
     }
 
     method OnNewChat {} {
@@ -331,12 +295,7 @@ snit::widget chatlistview {
             -to [jid bare $jid]
     }
 
-    method OnRightClick {x y X Y} {
-        set item [$treeview identify item $x $y]
-        if {![$self IsRow $item]} return
-        $treeview selection set $item
-        set jid [$self ItemJid $item]
-
+    method OnRowMenu {jid X Y} {
         # groupchat selects the menu: rooms get the bookmark menu, 1:1 and
         # free chats get the contact menu.
         if {[dict get [$self ModelItem $jid] groupchat]} {
@@ -416,11 +375,9 @@ snit::widget chatlistview {
         $options(-tacky) bookmarks request -acc $options(-acc)
     }
 
-    # Returns the JID of the selected leaf item, or "" if none.
+    # The selected chat JID, or "" if none.
     method SelectedLeafJid {} {
-        set item [$treeview selection]
-        if {$item eq "" || ![$self IsRow $item]} { return "" }
-        return [$self ItemJid $item]
+        return [$rows selected]
     }
 
     method OnRenameContact {} {
@@ -522,25 +479,10 @@ snit::widget chatlistview {
         # a real avatar arrives, so the handle in trackedAvatars would be
         # stale.
         dict set trackedAvatars $jid $img
-        # Row ids are the chat JID verbatim.
-        if {[$treeview exists $jid]} {
-            $treeview item $jid -image $img
-        }
+        $rows image $jid $img
     }
 
-    # -- item id helpers -------------------------------------------------
-
-    # Name (with the unread count) over the preview; one line with no history.
-    method DisplayText {item} {
-        set name [dict get $item name]
-        if {$name eq ""} { set name [dict get $item jid] }
-        if {[dict exists $item unread] && [dict get $item unread] > 0} {
-            append name " ([dict get $item unread])"
-        }
-        set preview [$self PreviewText $item]
-        if {$preview eq ""} { return $name }
-        return "$name\n$preview"
-    }
+    # -- rows ------------------------------------------------------------
 
     method PreviewText {item} {
         if {![dict exists $item last_message]} { return "" }
@@ -548,19 +490,9 @@ snit::widget chatlistview {
             [dict getdef $item groupchat 0]]
     }
 
-    method IsRow {item} {
-        expr {$item ne "" && [$treeview exists $item]}
-    }
-
-    # Row ids are the chat JID verbatim.
-    method ItemJid {item} {
-        return $item
-    }
-
-    method ActivateItem {item} {
+    method ActivateItem {jid} {
         # jid is an opaque chat identity; pass it back verbatim to open the chat.
         if {$options(-open-chat-command) ne ""} {
-            set jid [$self ItemJid $item]
             set gc [dict getdef [$self ModelItem $jid] groupchat 0]
             {*}$options(-open-chat-command) \
                 -acc $options(-acc) -jid $jid -groupchat $gc
