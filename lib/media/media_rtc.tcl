@@ -22,6 +22,7 @@ namespace eval ::tacky::media::rtc {
     variable Audio       ;# handle -> {capturer <h> player <h>}
     variable Vsend       ;# handle -> rtc-mv sender handle
     variable Vrecv       ;# handle -> rtc-mv receiver handle
+    variable FrameDir "" ;# where video frame streams listen
     array set Pc {}
     array set PcOf {}
     array set TrackId {}
@@ -66,6 +67,10 @@ namespace eval ::tacky::media::rtc {
 # The three extensions are linked in, so there is nothing to load or probe:
 # reaching this proc at all means `package require rtc` already succeeded.
 proc ::tacky::media::rtc::Open {args} {
+    variable FrameDir
+    if {[dict exists $args -frame-dir]} {
+        set FrameDir [dict get $args -frame-dir]
+    }
     return
 }
 
@@ -385,12 +390,13 @@ proc ::tacky::media::rtc::SetAudioVolume {h args} {
 # Video
 # ==========================================================================
 
-# Camera -> VP8 -> RTP, with the local camera also going to a preview ring so
-# a GUI can show a self-view.
+# Camera -> VP8 -> RTP, with the local camera also going to a preview stream
+# so a GUI can show a self-view.
 proc ::tacky::media::rtc::AttachVideoSender {h track args} {
     variable TrackId
     variable Vsend
     variable VIDEO_MID
+    variable FrameDir
     set opts [dict merge {-device-id ""} $args]
     if {[info exists Vsend($h)]} return
     if {![info exists TrackId($h,$track)]} {
@@ -398,7 +404,8 @@ proc ::tacky::media::rtc::AttachVideoSender {h track args} {
             reason "no such track: $track" fatal 0
         return
     }
-    set snd [::rtcmv::sender::new -device-id [dict get $opts -device-id] -preview 1]
+    set snd [::rtcmv::sender::new -device-id [dict get $opts -device-id] -preview 1 \
+        -stream-dir $FrameDir]
     if {[catch {::rtcmv::sender::attach $snd $TrackId($h,$track)} err]} {
         catch {::rtcmv::sender::destroy $snd}
         ::tacky::media::emit $h error op attachVideoSender reason $err fatal 0
@@ -406,25 +413,26 @@ proc ::tacky::media::rtc::AttachVideoSender {h track args} {
     }
     ::rtcmv::sender::start $snd
     set Vsend($h) $snd
-    if {![catch {::rtcmv::sender::preview-shm $snd} pv]} {
+    if {![catch {::rtcmv::sender::preview-stream $snd} pv]} {
         ::tacky::media::emit $h videoChannel track $track direction preview \
-            mid $VIDEO_MID channel [ShmDescriptor $pv]
+            mid $VIDEO_MID channel [StreamDescriptor $pv]
     }
     return
 }
 
-# RTP -> VP8 -> I420 into a named shm ring the frontend maps.
+# RTP -> VP8 -> I420 into a named frame stream the frontend connects to.
 proc ::tacky::media::rtc::AttachVideoReceiver {h track args} {
     variable TrackId
     variable Vrecv
     variable VIDEO_MID
+    variable FrameDir
     if {[info exists Vrecv($h)]} return
     if {![info exists TrackId($h,$track)]} {
         ::tacky::media::emit $h error op attachVideoReceiver \
             reason "no such track: $track" fatal 0
         return
     }
-    set rcv [::rtcmv::receiver::new]
+    set rcv [::rtcmv::receiver::new -stream-dir $FrameDir]
     if {[catch {::rtcmv::receiver::attach $rcv $TrackId($h,$track)} err]} {
         catch {::rtcmv::receiver::destroy $rcv}
         ::tacky::media::emit $h error op attachVideoReceiver reason $err fatal 0
@@ -433,21 +441,12 @@ proc ::tacky::media::rtc::AttachVideoReceiver {h track args} {
     ::rtcmv::receiver::start $rcv
     set Vrecv($h) $rcv
     ::tacky::media::emit $h videoChannel track $track direction incoming \
-        mid $VIDEO_MID channel [ShmDescriptor [::rtcmv::receiver::shm $rcv]]
+        mid $VIDEO_MID channel [StreamDescriptor [::rtcmv::receiver::stream $rcv]]
     return
 }
 
-# The fd stays out of the descriptor: POSIX frontends open by name, and
-# Android takes the fd over JNI rather than off this dict.
-proc ::tacky::media::rtc::ShmDescriptor {sh} {
-    return [dict create kind shm \
-        channel   [dict get $sh channel] \
-        name      [dict get $sh name] \
-        slots     [dict get $sh slots] \
-        slotBytes [dict get $sh slotBytes] \
-        maxWidth  [dict get $sh maxWidth] \
-        maxHeight [dict get $sh maxHeight] \
-        format    [dict get $sh format]]
+proc ::tacky::media::rtc::StreamDescriptor {st} {
+    return [dict create kind stream name [dict get $st name]]
 }
 
 proc ::tacky::media::rtc::SetVideoEnabled {h args} {

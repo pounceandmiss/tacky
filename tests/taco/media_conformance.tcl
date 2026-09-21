@@ -284,14 +284,12 @@ proc mediaconform::VideoChannel {events direction track} {
             "descriptor has no kind: $ch"]} {
         return
     }
-    # The shm form is the one a frontend maps by name; a host-rendered
-    # channel only owes an id.
+    # The stream form is the one a frontend connects to by name; a
+    # host-rendered channel only owes an id.
     switch -- [dict get $ch kind] {
-        shm {
-            foreach k {name channel slots slotBytes maxWidth maxHeight format} {
-                expect "videoChannel $direction" [dict exists $ch $k] \
-                    "shm descriptor has no $k: $ch"
-            }
+        stream {
+            expect "videoChannel $direction" [dict exists $ch name] \
+                "stream descriptor has no name: $ch"
         }
         host {
             expect "videoChannel $direction" [dict exists $ch id] \

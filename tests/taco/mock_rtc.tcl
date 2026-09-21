@@ -47,13 +47,13 @@ namespace eval mockrtc {
         ::rtcmv::sender::set-enabled
         ::rtcmv::sender::set-bitrate
         ::rtcmv::sender::request-keyframe
-        ::rtcmv::sender::preview-shm
+        ::rtcmv::sender::preview-stream
         ::rtcmv::sender::detach
         ::rtcmv::sender::destroy
         ::rtcmv::receiver::new
         ::rtcmv::receiver::attach
         ::rtcmv::receiver::start
-        ::rtcmv::receiver::shm
+        ::rtcmv::receiver::stream
         ::rtcmv::receiver::detach
         ::rtcmv::receiver::destroy
     }
@@ -197,11 +197,10 @@ proc mockrtc::Dispatch {cmd args} {
         }
         ::rtcmv::sender::new -
         ::rtcmv::receiver::new { return [incr Seq(vhandle)] }
-        ::rtcmv::sender::preview-shm -
-        ::rtcmv::receiver::shm {
+        ::rtcmv::sender::preview-stream -
+        ::rtcmv::receiver::stream {
             set h [lindex $args 0]
-            return [dict create name "/tv-mock$h" channel "vc-mock$h" fd -1 \
-                slots 6 slotBytes 1400000 maxWidth 1280 maxHeight 720 format I420]
+            return [dict create name "/tmp/tv-mock$h.sock"]
         }
     }
     return

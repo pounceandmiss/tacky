@@ -159,11 +159,10 @@ proc mockmedia::Op {op args} {
     return
 }
 
-# The shm form, so a caller that maps rings by name works against the mock
-# exactly as it does against rtc.
+# The stream form, so a caller that connects to streams by name works against
+# the mock exactly as it does against rtc.
 proc mockmedia::Channel {pc track} {
     variable Seq
     set n [incr Seq]
-    return [dict create kind shm name "/tv-mock$n" channel "vc-mock$n" \
-        slots 6 slotBytes 1400000 maxWidth 1280 maxHeight 720 format I420]
+    return [dict create kind stream name "/tmp/tv-mock$n.sock"]
 }

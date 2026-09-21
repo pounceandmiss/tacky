@@ -919,24 +919,21 @@ Events:
     calls <Ended>        {sid: string}
     calls <Failed>       {sid: string, reason: string}
     calls <Warning>      {sid: string, reason: string}
-    calls <VideoTrack>   {sid: string, mid: string, direction: string} & shm_ring
-    calls <VideoPreview> {sid: string, direction: string}            & shm_ring
+    calls <VideoTrack>   {sid: string, mid: string, direction: string} & frame_stream
+    calls <VideoPreview> {sid: string, direction: string}            & frame_stream
     calls <VideoEnded>   {sid: string, mid: string}
 
-    shm_ring = {channel: string, name: string, slots: int, slotBytes: int,
-                maxWidth: int, maxHeight: int, format: string}
+    frame_stream = {name: string}
 
 A call ends on exactly one of `<Ended>` or `<Failed>`. `<Warning>` is just
 informational and doesn't end anything.
 
 `<VideoTrack>` (`direction: "incoming"`) and `<VideoPreview>`
-(`direction: "preview"`, the local camera) each point at an I420 frame ring
-the frontend maps by `name`; `channel` is an opaque token carried alongside
-for platforms (Android) with no shared filesystem namespace to open a name
-from. `<VideoEnded>` fires alongside `<Ended>`/`<Failed>` for any call
-that had video up - `setVideo` only mutes the camera, it doesn't tear the
-video half down on its own. See
-[Voice and video calls](#voice-and-video-calls) for the ring's layout.
+(`direction: "preview"`, the local camera) each name a stream of I420 frames
+the frontend connects to. `<VideoEnded>` fires alongside `<Ended>`/`<Failed>`
+for any call that had video up - `setVideo` only mutes the camera, it doesn't
+tear the video half down on its own. See
+[Voice and video calls](#voice-and-video-calls) for the stream's format.
 
 ## media
 
@@ -1030,7 +1027,7 @@ none is answered, and nothing waits.
 Report every track the peer adds: that is what makes tacky attach it, and the
 `attachAudio` or `attachVideoReceiver` that follows says what it is for.
 Those two also produce `calls <VideoTrack>` / `<VideoPreview>`, carrying the
-track handle as `id` in place of a frame ring.
+track handle as `id` in place of a frame stream name.
 
 An event for a call that has ended is dropped; one with an unknown `type` or
 a missing key comes back as a `calls <Warning>` on that call; one with no
@@ -1569,7 +1566,7 @@ beside the executable. `media list` is what the build has, `media backend` what
 it settled on, `media capabilities` what it can do. A named backend that is
 missing or will not load falls back to `rtc` with a `media <Warning>`, so a
 wrong choice degrades instead of breaking calls. Both produce the same events and the same
-frame rings; a frontend needs no per-backend code beyond `capabilities`.
+frame streams; a frontend needs no per-backend code beyond `capabilities`.
 
 **The frontend runs the media.** The `host` backend, for platforms whose
 WebRTC stack belongs to the host and cannot be linked in - a browser's
@@ -1580,7 +1577,7 @@ as a `media <HostCommand>` event, and the frontend answers with
 state or a track. Tacky turns those into Jingle and back exactly as it does
 for its own backends, so call state and every `calls` event are unchanged.
 There the devices and the rendering are the frontend's: enumeration comes
-back empty, and video arrives as its own track id rather than a frame ring.
+back empty, and video arrives as its own track id rather than a frame stream.
 The two message shapes are in [media](#media).
 
 The rest of this section is tacky's own and does not change with the
@@ -1607,16 +1604,37 @@ ends with the call - there's no partial teardown of just the video half.
 Audio is decoded and played by the backend directly; the frontend never
 sees an audio sample. Video is decoded by the backend too, but frames are
 handed to the frontend rather than rendered by the backend itself: each of
-`<VideoTrack>` (remote) and `<VideoPreview>` (local camera) names a shared
-memory region holding a small ring of I420 frames - `slots` slots of
-`slotBytes` each, sized for up to `maxWidth`x`maxHeight`. The frontend opens
-it by `name` and reads the newest complete frame at its own pace; the
-producer never blocks on a slow or absent reader. This works
-the same way whether the frontend is in-process or a separate one talking
-over `--backend process`, since both just open a named region. `channel` is
-an opaque token carried alongside `name`, meant for a frontend with no
-filesystem namespace to open a name from - not currently used by any
-shipped frontend.
+`<VideoTrack>` (remote) and `<VideoPreview>` (local camera) names a stream
+the frontend connects to - a Unix socket path, or a named pipe
+(`\\.\pipe\tv-...`) on Windows, that only the user running tacky can open. It
+works the same whether the frontend is in-process or a separate one talking
+over `--backend process`.
+
+A stream serves one reader. A new connection replaces the current one, and
+first receives the last frame sent, so a frontend that reopens a view shows
+video straight away. The backend never waits for the reader: one that falls
+behind skips to the newest frame. The stream ends with the video, and the
+socket file goes with it.
+
+Each frame is a 40-byte little-endian header followed by the pixels:
+
+| offset | type | field |
+|---|---|---|
+| 0 | u32 | magic, `TVF1` |
+| 4 | u16 | version, 1 |
+| 6 | u16 | header length; skip anything past the 40 bytes listed here |
+| 8 | u32 | format, `I420` as a FourCC |
+| 12 | u32 | flags; bit 0 = keyframe |
+| 16 | u32 | width |
+| 20 | u32 | height |
+| 24 | u32 | payload length |
+| 28 | u32 | reserved, 0 |
+| 32 | i64 | presentation time, ns |
+
+The payload is the Y plane (`width` x `height`), then U, then V (each
+`(width+1)/2` x `(height+1)/2`), tightly packed. Frames can change size at
+any time. There is no resync point, so a header that doesn't parse means
+the connection is unusable: close it and reconnect.
 
 Reconnecting without stream resumption ends every live call with `<Ended>`,
 because the peer cannot route anything back to a sid from the dead session.

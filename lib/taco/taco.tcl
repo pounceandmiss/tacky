@@ -335,8 +335,11 @@ snit::type taco_type {
         install setting using taco_setting ${selfns}::setting -db $db -taco $self
         # Before audio/video/any client: they all talk to whichever backend
         # this picks, and a call can start as soon as a client connects.
+        set frameDir [expr {$options(-cache-dir) eq "" ? ""
+            : [file join $options(-cache-dir) frames]}]
         install media using taco_media ${selfns}::media -taco $self \
-            -backend $options(-media-backend) -webrtc-lib $options(-webrtc-lib)
+            -backend $options(-media-backend) -webrtc-lib $options(-webrtc-lib) \
+            -frame-dir $frameDir
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install video using taco_video ${selfns}::video -db $db -taco $self
         install register using taco_register ${selfns}::register -taco $self

@@ -27,8 +27,9 @@
 # is unusable; fatal 0 is advisory and the call goes on.
 #
 # A video channel descriptor is opaque to the caller and always carries a
-# `kind`: {kind shm name <n> channel <c> ...} for a backend writing an rtc-mv
-# ring, {kind host id <i>} for one rendering in the embedding app.
+# `kind`: {kind stream name <n>} for a backend writing an rtc-mv frame stream,
+# {kind host id <i>} for one rendering in the embedding app. Open takes
+# -frame-dir, the directory frame streams listen in.
 #
 # Device ids are opaque strings from enumerate*, and a stored preference
 # outlives the backend that produced it. A backend asked for an id it does

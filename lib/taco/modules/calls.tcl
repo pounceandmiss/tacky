@@ -403,11 +403,10 @@ snit::type taco_calls {
     }
 
     # Turn a backend video channel descriptor into calls-event -flag args.
-    # Only the shm form has a ring to name; a host-rendered channel just
-    # carries its id.
+    # A frame stream is named; a host-rendered channel just carries its id.
     method VideoEventArgs {ch} {
         set out {}
-        foreach key {channel name slots slotBytes maxWidth maxHeight format id} {
+        foreach key {name id} {
             if {[dict exists $ch $key]} {
                 lappend out -$key [dict get $ch $key]
             }
