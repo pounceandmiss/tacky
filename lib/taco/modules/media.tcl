@@ -16,7 +16,7 @@
 # run without storing anything, and -webrtc-lib says where to load
 # libtacky_webrtc.so from. A named backend that is not in this build, or will
 # not start, falls back to rtc with a <Warning>; calls still work, on the other
-# backend.
+# backend. -frame-dir is where backends open their video frame streams.
 #
 # On the `host` backend the media half is the frontend's: every command
 # leaves as a <HostCommand> event and every answer comes back through
@@ -36,6 +36,7 @@ snit::type taco_media {
     option -taco       -default ""
     option -backend    -default auto
     option -webrtc-lib -default ""
+    option -frame-dir  -default ""
 
     # What an unset preference tries, in order: the webrtc library when the
     # build carries one, rtc otherwise. Not finding it is the ordinary case,
@@ -45,7 +46,19 @@ snit::type taco_media {
 
     constructor args {
         $self configurelist $args
+        $self PrepareFrameDir
         $self Select
+    }
+
+    # Streams a crashed run left behind refuse connections; rtcmv clears
+    # those. A build without it (the browser) has no streams to clear.
+    method PrepareFrameDir {} {
+        set dir $options(-frame-dir)
+        if {$dir eq ""} return
+        appdirs_mkprivate $dir
+        if {![catch {package require rtcmv}]} {
+            ::rtcmv::stream::sweep $dir
+        }
     }
 
     tackymethod backend {args} {
@@ -134,6 +147,9 @@ snit::type taco_media {
             }
         }
         set openArgs {}
+        if {$options(-frame-dir) ne ""} {
+            lappend openArgs -frame-dir $options(-frame-dir)
+        }
         if {$name eq "webrtc" && $options(-webrtc-lib) ne ""} {
             lappend openArgs -lib $options(-webrtc-lib)
         }

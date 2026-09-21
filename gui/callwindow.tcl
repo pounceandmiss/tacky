@@ -10,9 +10,9 @@
 # self-destructs on <Ended>, and on <Failed> stays open with the hangup
 # button swapped for a green call-start "call again" button.
 #
-# Also <VideoTrack>/<VideoPreview>/<VideoEnded>: renders the named shm
-# ring via ::rtcmv::view::* on an `after` poll. -name is empty on
-# Android (no shm path here yet), so those tracks are skipped.
+# Also <VideoTrack>/<VideoPreview>/<VideoEnded>: ::rtcmv::view::* connects
+# to the frame stream named in the event and updates a photo as frames
+# arrive. A host-rendered track has no -name and is skipped.
 #
 # Usage:
 #   callwindow show -acc $acc -sid $sid -peer $jid -direction outgoing
@@ -28,9 +28,6 @@ snit::widgetadaptor callwindow {
     option -peer
     option -direction -default outgoing
 
-    # ~30fps; faster just burns idle CPU re-checking for a new frame.
-    typevariable VIDEO_POLL_MS 33
-
     component stateLabel
     variable statusVar ""
     variable warningVar ""
@@ -38,10 +35,8 @@ snit::widgetadaptor callwindow {
 
     variable remoteView  ""
     variable remotePhoto ""
-    variable remoteTimer ""
     variable previewView  ""
     variable previewPhoto ""
-    variable previewTimer ""
 
     # Single global entry point. Creates the window on first call; on
     # subsequent calls it reuses the existing toplevel via Reset (new sid,
@@ -200,32 +195,36 @@ snit::widgetadaptor callwindow {
         set warningVar [dict get $ev -reason]
     }
 
-    # -- video: ::rtcmv::view::* over the shm ring named in the event -----
+    # Video: ::rtcmv::view::* over the frame stream named in the event.
 
     method OnVideoTrack {ev} {
         if {[dict get $ev -direction] ne "incoming"} return
         $self StopRemoteVideo
-        set name [dict get $ev -name]
-        if {$name eq ""} return
-        if {[catch {::rtcmv::view::open $name} view]} return
+        if {![dict exists $ev -name]} return
+        set photo [image create photo]
+        if {[catch {::rtcmv::view::open [dict get $ev -name] $photo} view]} {
+            image delete $photo
+            return
+        }
         set remoteView $view
-        set remotePhoto [image create photo]
+        set remotePhoto $photo
         $win.body.video configure -image $remotePhoto
         pack forget $win.body.avatar
         pack $win.body.video -before $win.body.peer
-        $self PumpRemoteVideo
     }
 
     method OnVideoPreview {ev} {
         $self StopPreview
-        set name [dict get $ev -name]
-        if {$name eq ""} return
-        if {[catch {::rtcmv::view::open $name} view]} return
+        if {![dict exists $ev -name]} return
+        set photo [image create photo]
+        if {[catch {::rtcmv::view::open [dict get $ev -name] $photo} view]} {
+            image delete $photo
+            return
+        }
         set previewView $view
-        set previewPhoto [image create photo]
+        set previewPhoto $photo
         $win.body.preview configure -image $previewPhoto
         pack $win.body.preview -after $win.body.video -pady {6 0}
-        $self PumpPreview
     }
 
     method OnVideoEnded {ev} {
@@ -233,19 +232,7 @@ snit::widgetadaptor callwindow {
         $self StopPreview
     }
 
-    method PumpRemoteVideo {} {
-        catch {::rtcmv::view::update $remoteView $remotePhoto}
-        set remoteTimer [after $VIDEO_POLL_MS [mymethod PumpRemoteVideo]]
-    }
-
-    method PumpPreview {} {
-        catch {::rtcmv::view::update $previewView $previewPhoto}
-        set previewTimer [after $VIDEO_POLL_MS [mymethod PumpPreview]]
-    }
-
     method StopRemoteVideo {} {
-        after cancel $remoteTimer
-        set remoteTimer ""
         if {$remoteView ne ""} {
             catch {::rtcmv::view::close $remoteView}
             set remoteView ""
@@ -261,8 +248,6 @@ snit::widgetadaptor callwindow {
     }
 
     method StopPreview {} {
-        after cancel $previewTimer
-        set previewTimer ""
         if {$previewView ne ""} {
             catch {::rtcmv::view::close $previewView}
             set previewView ""
