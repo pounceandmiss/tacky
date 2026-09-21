@@ -498,9 +498,22 @@ linux: dist-dir
 # ==== libwebrtc media backend ====
 # dist/libtacky_webrtc.so from the rtc-webrtc repo; not part of `all`. Needs a
 # native build first. Host build: ship the one built in quack's Rocky 9 image.
+#
+# The wrapper is cloned at a pinned commit and its own fetch.sh pins its
+# third_party/ prebuilts. One WEBRTC_DEPS_DIR serves all three platforms: the
+# build is out of tree and the prebuilts are read-only. The download cache sits
+# beside the checkout, so a pin bump refetches only what moved.
+#
+# WEBRTC_SRC names a checkout to build instead; fetch.sh still runs there.
 
-WEBRTC_SRC ?= $(HOME)/dev/tacky_calls/rtc-webrtc
-WEBRTC_BUILD := $(CURDIR)/build/webrtc
+RTCWEBRTC_REPO   := https://codeberg.org/another-im/rtc-webrtc.git
+RTCWEBRTC_COMMIT := c1a0c13245b8a66efc36a779f9c18d5e8110c112
+
+WEBRTC_DEPS_DIR ?= $(DEPS_DIR)
+WEBRTC_PIN_SRC  := $(WEBRTC_DEPS_DIR)/rtc-webrtc-$(RTCWEBRTC_COMMIT)
+WEBRTC_SRC      ?= $(WEBRTC_PIN_SRC)
+WEBRTC_DL       ?= $(WEBRTC_DEPS_DIR)/rtc-webrtc-dl
+WEBRTC_BUILD    := $(CURDIR)/build/webrtc
 WEBRTC_TCL_PREFIX ?= $(LINUX_BUILD)/_build/local
 
 # The .so compiles in rtc-mv's frame ring at zippy's pinned commit.
@@ -508,20 +521,49 @@ WEBRTC_RTCMV_COMMIT := $(shell sed -n 's/^RTCMV_COMMIT[[:space:]]*:=[[:space:]]*
                           $(ZIPPY)/zippy.mk)
 WEBRTC_RTCMV_SRC ?= $(DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
 
-webrtc-so: dist-dir
-	@[ -f "$(WEBRTC_SRC)/CMakeLists.txt" ] || { \
+# Same .tmp-then-rename as zippy's git-fetch: make only asks whether the
+# directory exists, so an interrupted clone must never look finished.
+# ZIPPY_OFFLINE=1 names the missing dep instead of cloning, as zippy does.
+$(WEBRTC_PIN_SRC):
+	@[ "$(ZIPPY_OFFLINE)" != 1 ] || { \
+	    echo "make: ZIPPY_OFFLINE=1, but the rtc-webrtc checkout is not in place:" >&2; \
+	    echo "    $@" >&2; exit 1; }
+	mkdir -p $(dir $@)
+	rm -rf $@.tmp
+	git clone $(RTCWEBRTC_REPO) $@.tmp
+	git -C $@.tmp checkout $(RTCWEBRTC_COMMIT)
+	mv $@.tmp $@
+
+# The checkout and one platform's prebuilts. Cheap once fetched, so every
+# build runs it. Only the pinned clone is a prerequisite: a custom WEBRTC_SRC
+# is the caller's to provide.
+.PHONY: webrtc-fetch-linux webrtc-fetch-android webrtc-fetch-windows
+webrtc-fetch-linux webrtc-fetch-android webrtc-fetch-windows: webrtc-fetch-%: \
+		$(if $(filter $(WEBRTC_SRC),$(WEBRTC_PIN_SRC)),$(WEBRTC_PIN_SRC))
+	@[ -f "$(WEBRTC_SRC)/third_party/fetch.sh" ] || { \
 	    echo "make: no wrapper sources at $(WEBRTC_SRC);" >&2; \
-	    echo "    set WEBRTC_SRC=<path to the rtc-webrtc checkout>" >&2; exit 1; }
-	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc/lib/libwebrtc.a" ] && \
-	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang++" ]; } || { \
-	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
-	    exit 1; }
+	    echo "    set WEBRTC_SRC=<path to the rtc-webrtc checkout>, or leave it unset" >&2; \
+	    echo "    to clone the pinned commit" >&2; exit 1; }
+	WEBRTC_DL=$(WEBRTC_DL) $(if $(filter 1,$(ZIPPY_OFFLINE)),WEBRTC_OFFLINE=1) \
+	    $(WEBRTC_SRC)/third_party/fetch.sh $*
+
+# Drop a build tree configured against another checkout (a WEBRTC_SRC switch
+# or pin bump) rather than let cmake refuse it.
+# $(call webrtc-fresh,<build dir>)
+define webrtc-fresh
+if [ -f $(1)/CMakeCache.txt ] && \
+   ! grep -qx 'CMAKE_HOME_DIRECTORY:INTERNAL=$(WEBRTC_SRC)' $(1)/CMakeCache.txt; then \
+    rm -rf $(1); fi
+endef
+
+webrtc-so: dist-dir webrtc-fetch-linux
 	@[ -f "$(WEBRTC_TCL_PREFIX)/include/tcl.h" ] || { \
 	    echo "make: no Tcl headers at $(WEBRTC_TCL_PREFIX); run make tclsh first" >&2; \
 	    exit 1; }
 	@[ -f "$(WEBRTC_RTCMV_SRC)/include/rtcmv.h" ] || { \
 	    echo "make: no rtc-mv sources at $(WEBRTC_RTCMV_SRC); run make tclsh first" >&2; \
 	    exit 1; }
+	$(call webrtc-fresh,$(WEBRTC_BUILD))
 	cmake -S $(WEBRTC_SRC) -B $(WEBRTC_BUILD) -DTCL_PREFIX=$(WEBRTC_TCL_PREFIX) \
 	    -DRTCMV_SRC=$(WEBRTC_RTCMV_SRC)
 	cmake --build $(WEBRTC_BUILD)
@@ -532,18 +574,15 @@ ANDROID_WEBRTC_BUILD := $(abspath $(ANDROID_BUILD))/webrtc
 ANDROID_WEBRTC_TCL_PREFIX := $(abspath $(ANDROID_BUILD))/_build-android/local
 ANDROID_WEBRTC_RTCMV_SRC := $(abspath $(ANDROID_BUILD))/_build/deps/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
 
-android-webrtc-so: dist-dir
+android-webrtc-so: dist-dir webrtc-fetch-android
 	@[ -n "$(ANDROID_NDK)" ] || { echo "make: ANDROID_NDK is unset" >&2; exit 1; }
-	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc-android/lib/arm64-v8a/libwebrtc.a" ] && \
-	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang++" ]; } || { \
-	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
-	    exit 1; }
 	@[ -f "$(ANDROID_WEBRTC_TCL_PREFIX)/include/tcl.h" ] || { \
 	    echo "make: no Tcl headers at $(ANDROID_WEBRTC_TCL_PREFIX); run make android-lib first" >&2; \
 	    exit 1; }
 	@[ -f "$(ANDROID_WEBRTC_RTCMV_SRC)/include/rtcmv.h" ] || { \
 	    echo "make: no rtc-mv sources at $(ANDROID_WEBRTC_RTCMV_SRC); run make android-lib first" >&2; \
 	    exit 1; }
+	$(call webrtc-fresh,$(ANDROID_WEBRTC_BUILD))
 	cmake -S $(WEBRTC_SRC) -B $(ANDROID_WEBRTC_BUILD) -DWEBRTC_ANDROID_NDK=$(ANDROID_NDK) \
 	    -DTCL_PREFIX=$(ANDROID_WEBRTC_TCL_PREFIX) -DRTCMV_SRC=$(ANDROID_WEBRTC_RTCMV_SRC)
 	cmake --build $(ANDROID_WEBRTC_BUILD)
@@ -555,15 +594,11 @@ WIN_WEBRTC_BUILD := $(WIN_ROOT)/$(WIN_BUILD)/webrtc
 WIN_WEBRTC_SDK ?= $(WEBRTC_SRC)/third_party/xwin
 WIN_WEBRTC_TCL_VER := $(shell sed -n 's/^TCL_VER[[:space:]]*:=[[:space:]]*//p' $(CURDIR)/$(ZIPPY)/zippy.mk)
 
-win-webrtc-dll: dist-dir
-	@{ [ -f "$(WEBRTC_SRC)/third_party/webrtc-windows/lib/webrtc.lib" ] && \
-	   [ -x "$(WEBRTC_SRC)/third_party/clang/bin/clang-cl" ] && \
-	   [ -d "$(WIN_WEBRTC_SDK)/crt" ]; } || { \
-	    echo "make: $(WEBRTC_SRC)/third_party is incomplete; see its README.md" >&2; \
-	    exit 1; }
+win-webrtc-dll: dist-dir webrtc-fetch-windows
 	@[ -f "$(WIN_DEPS_DIR)/rtc-mv-$(WEBRTC_RTCMV_COMMIT)/include/rtcmv.h" ] || { \
 	    echo "make: no rtc-mv sources in $(WIN_DEPS_DIR); run make win-lib first" >&2; \
 	    exit 1; }
+	$(call webrtc-fresh,$(WIN_WEBRTC_BUILD))
 	cmake -S $(WEBRTC_SRC) -B $(WIN_WEBRTC_BUILD) -G Ninja \
 	    -DWEBRTC_WINDOWS_SDK=$(WIN_WEBRTC_SDK) \
 	    -DTCL_SRC=$(WIN_DEPS_DIR)/tcl$(WIN_WEBRTC_TCL_VER) \
