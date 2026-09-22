@@ -258,6 +258,8 @@ snit::type taco_bookmarks {
     # --- Room join-state tracking (muc status folded with membership) ---
 
     method OnMucJoining {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         array set opts {-jid ""}
         array set opts $args
         dict set mucStatus $opts(-jid) joining
@@ -266,6 +268,8 @@ snit::type taco_bookmarks {
     }
 
     method OnMucJoined {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         array set opts {-jid ""}
         array set opts $args
         dict set mucStatus $opts(-jid) joined
@@ -274,6 +278,8 @@ snit::type taco_bookmarks {
     }
 
     method OnMucError {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         array set opts {-jid "" -error ""}
         array set opts $args
         dict set mucStatus $opts(-jid) error
@@ -282,6 +288,8 @@ snit::type taco_bookmarks {
     }
 
     method OnMucLeft {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         array set opts {-jid "" -involuntary 0 -codes {}}
         array set opts $args
         dict set mucStatus $opts(-jid) left

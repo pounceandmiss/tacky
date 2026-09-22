@@ -20,7 +20,7 @@ namespace eval mockmedia {
 
     variable DEFAULT_CAPS {
         audioDevices 1 audioVolume 1 cameras 1 videoDevice 1 videoChannel 1
-        autoAnswer 1 sdpSanitize 1 trickleIce 1
+        preview 1 autoAnswer 1 sdpSanitize 1 trickleIce 1
     }
 }
 
@@ -121,6 +121,10 @@ proc mockmedia::Op {op args} {
     switch -- $op {
         Capabilities { return $Caps }
         Codecs       { return {audio {} video {}} }
+        PayloadTypes {
+            return {audio {{id 111 name opus clockrate 48000 channels 2}}
+                    video {{id 96 name VP8 clockrate 90000}}}
+        }
         AddTrack {
             lassign $args pc track
             set opts [lrange $args 2 end]
@@ -136,6 +140,11 @@ proc mockmedia::Op {op args} {
                 ::tacky::media::emit $pc videoChannel track $track \
                     direction preview mid video channel [Channel $pc $track]
             }
+        }
+        OpenPreview {
+            set name [lindex $args 0]
+            ::tacky::media::emit $name videoChannel track "" \
+                direction preview mid "" channel [Channel $name ""]
         }
         AttachVideoReceiver {
             if {[dict get $Caps videoChannel]} {

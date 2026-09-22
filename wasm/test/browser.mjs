@@ -6,6 +6,7 @@
  *   storage  the store survives a reload (the page is visited twice); no server
  *   session  an XMPP session over RFC 7395; needs with_prosody.sh
  *   call     two accounts, one call, media in the page; needs with_prosody.sh
+ *   groupcall  three accounts, one hosted video call, one camera; needs with_prosody.sh
  *   tcl      tacky's Tcl suite inside the wasm interpreter
  */
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -34,6 +35,8 @@ if (scenario !== 'storage') {
     query.set('pass', flag('pass', 'testpass'));
     query.set('jid2', flag('jid2', `romeo@${DOMAIN}`));
     query.set('pass2', flag('pass2', 'romeopass'));
+    query.set('jid3', flag('jid3', `juliet@${DOMAIN}`));
+    query.set('pass3', flag('pass3', 'julietpass'));
 }
 
 let failures = 0;
@@ -46,7 +49,7 @@ const check = (name, ok, detail = '') => {
 
 async function visit(cdp, sessionId, url) {
     await cdp.send('Page.navigate', { url }, sessionId);
-    const deadline = Date.now() + (scenario === 'tcl' ? 900_000 : 120_000);
+    const deadline = Date.now() + ({ tcl: 900_000, groupcall: 300_000 }[scenario] ?? 120_000);
     for (;;) {
         const { result } = await cdp.send('Runtime.evaluate', {
             expression: 'JSON.stringify(globalThis.__smoke ?? null)',

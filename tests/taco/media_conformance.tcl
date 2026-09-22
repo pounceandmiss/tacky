@@ -36,7 +36,7 @@ namespace eval mediaconform {
     variable Seen {}     ;# which pc saw what, for Isolation
 
     variable CAPABILITIES {
-        audioDevices audioVolume cameras videoDevice videoChannel
+        audioDevices audioVolume cameras videoDevice videoChannel preview
         autoAnswer sdpSanitize trickleIce
     }
     variable PC_STATES {new connecting connected disconnected failed closed}
@@ -68,6 +68,7 @@ proc mediaconform::run {backend args} {
     Caller
     Callee
     Devices
+    Preview
     Isolation
 
     ::tacky::media close
@@ -162,6 +163,18 @@ proc mediaconform::Lifecycle {backend} {
     set codecs [::tacky::media codecs]
     foreach kind {audio video} {
         expect "codecs" [dict exists $codecs $kind] "no $kind key in $codecs"
+    }
+
+    set pts [::tacky::media payloadTypes]
+    foreach kind {audio video} {
+        expect "payloadTypes" [dict exists $pts $kind] "no $kind key in $pts"
+        if {![dict exists $pts $kind]} continue
+        foreach pt [dict get $pts $kind] {
+            foreach key {id name clockrate} {
+                expect "payloadTypes $kind" [dict exists $pt $key] \
+                    "no $key in $pt"
+            }
+        }
     }
 }
 
@@ -407,6 +420,50 @@ proc mediaconform::Devices {} {
 proc mediaconform::Capture {value} {
     variable Answer
     set Answer $value
+}
+
+# ==========================================================================
+# A self-view with no pc: one videoChannel, and the camera shared with a
+# pc's sender outlives either of them closing
+# ==========================================================================
+
+proc mediaconform::Preview {} {
+    if {![::tacky::media capability preview]} {
+        expect "openPreview without the capability" \
+            [catch {::tacky::media openPreview conform-pv \
+                -command [list ::mediaconform::Sink]}] \
+            "a backend without preview must refuse it"
+        return
+    }
+    Collect
+    if {![ok openPreview {
+        ::tacky::media openPreview conform-pv -command [list ::mediaconform::Sink]
+    }]} return
+    set events [Collect]
+    VideoChannel $events preview ""
+    set ev [Take $events videoChannel]
+    if {$ev ne "" && [dict exists $ev pc]} {
+        expect openPreview [string equal [dict get $ev pc] conform-pv] \
+            "routed to [dict get $ev pc], expected conform-pv"
+    }
+
+    # A sender joining and leaving the camera leaves the preview be.
+    if {[::tacky::media capability videoChannel]} {
+        set pc conform-pv-pc
+        ok createPeer {::tacky::media createPeer $pc -command [list ::mediaconform::Sink]}
+        ok "addTrack video" {::tacky::media addTrack $pc video -kind video}
+        Collect
+        ok attachVideoSender {::tacky::media attachVideoSender $pc video}
+        VideoChannel [Collect] preview video
+        ok closePeer {::tacky::media closePeer $pc}
+    }
+
+    ok closePreview {::tacky::media closePreview conform-pv}
+    Collect
+    catch {Drive connectionState conform-pv closed}
+    expect closePreview [expr {[llength [Collect]] == 0}] \
+        "an event was delivered after closePreview"
+    ok "closePreview twice" {::tacky::media closePreview conform-pv}
 }
 
 # ==========================================================================

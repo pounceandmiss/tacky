@@ -35,6 +35,7 @@ snit::widget chatpanel {
     variable replyToTs ""
     variable editingTs ""
     variable dropBg -array {}
+    variable groupCall {active 0 count 0 joined 0 jid ""}
 
     constructor args {
         $self configurelist $args
@@ -78,6 +79,12 @@ snit::widget chatpanel {
         if {$isMuc} {
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
+            # A call belonging to the room: held in it (from the occupants'
+            # presences) or in a room of its own we are in.
+            ::tacky listen -tag $win groupcall <Changed> \
+                -acc $options(-acc) -chat $roomJid [mymethod OnGroupCallChanged]
+            ::tacky groupcall status -acc $options(-acc) -jid $roomJid \
+                -tag $win -command [mymethod OnGroupCallStatus]
         } else {
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
@@ -334,6 +341,11 @@ snit::widget chatpanel {
             -command [mymethod InviteUser]
         $mb.chat add command -label "Change Nickname..." \
             -command [mymethod ChangeNickname]
+        $mb.chat add separator
+        $mb.chat add command -label [$self GroupCallLabel] \
+            -command [mymethod JoinGroupCall]
+        $mb.chat add command -label "Group Video Call" \
+            -command [mymethod JoinGroupCall -video 1]
 
         # Always last
         $mb.chat add separator
@@ -469,6 +481,64 @@ snit::widget chatpanel {
     method StartCall {} {
         ::tacky calls start -acc $options(-acc) \
             -to [jid bare $options(-jid)]
+    }
+
+    # --- Group calls (rooms only) ---
+    #
+    # groupcall <Changed> names the menu entry and raises a banner while a
+    # call we are not in is on. app.tcl opens the window on <Joined>, and
+    # asks about a call someone starts (an invite, groupcall <Invited>).
+
+    method GroupCallLabel {} {
+        if {[dict get $groupCall active] && ![dict get $groupCall joined]} {
+            return "Join Group Call ([dict get $groupCall count])"
+        }
+        return "Start Group Call"
+    }
+
+    # Join the call on here, or start one in a room of its own.
+    method JoinGroupCall {args} {
+        if {[dict get $groupCall active]} {
+            ::tacky groupcall join -acc $options(-acc) \
+                -jid [dict get $groupCall jid] {*}$args
+        } else {
+            ::tacky groupcall start -acc $options(-acc) -chat $roomJid {*}$args
+        }
+    }
+
+    method OnGroupCallStatus {st} {
+        $self ApplyGroupCall [dict get $st active] [dict get $st count] \
+            [dict get $st joined] $roomJid
+    }
+
+    method OnGroupCallChanged {ev} {
+        $self ApplyGroupCall [dict get $ev -active] [dict get $ev -count] \
+            [dict get $ev -joined] [dict get $ev -jid]
+    }
+
+    method ApplyGroupCall {active count joined jid} {
+        set old [$self GroupCallLabel]
+        set groupCall [dict create active $active count $count joined $joined jid $jid]
+        set mb $options(-menubar)
+        if {$mb ne "" && [winfo exists $mb.chat]} {
+            catch {$mb.chat entryconfigure $old -label [$self GroupCallLabel]}
+        }
+        if {$active && !$joined} {
+            set fresh [expr {![$self HasBanner groupcall]}]
+            set slot [[$self ShowBanner groupcall \
+                -icon mate/22x22/actions/call-start.png \
+                -close-command [mymethod HideBanner groupcall]] body]
+            if {$fresh} {
+                ttk::label $slot.lbl -anchor w
+                ttk::button $slot.join -text "Join" -style Toolbutton \
+                    -command [mymethod JoinGroupCall]
+                pack $slot.lbl -side left -padx 2
+                pack $slot.join -side left -padx 2
+            }
+            $slot.lbl configure -text "Call in progress ($count)"
+        } else {
+            $self HideBanner groupcall
+        }
     }
 
     method DestroyRoom {} {

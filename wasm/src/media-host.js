@@ -7,15 +7,29 @@
  * (onRemoteStream, setAudioEnabled) are call sids, from createPeer. Tracks
  * the peer adds are named here and reported with a `track` event.
  *
+ * An answerer gets no addTrack: it sends on the offer's m-lines, attaching to
+ * the peer's track names. So those transceivers are made sendrecv before the
+ * answer, and an attach naming a peer's track adopts its transceiver.
+ *
  * Commands are serialized per pc: some await a promise, and a
  * setRemoteDescription must not overtake the createPeer before it.
+ *
+ * One camera for the page: every pc sends a clone of its track, and a preview
+ * (openPreview) holds it for a self-view that outlives any one pc. The camera
+ * stops once nobody holds it.
  */
 
-export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream = () => {}, log = () => {} }) {
-    /** pc name -> { conn, sid, queue, senders: Map, remotes: Map, nextRemote } */
+export function createMediaHost({
+    send, onRemoteStream = () => {}, onLocalStream = () => {}, onPreview = () => {}, log = () => {},
+}) {
+    /** pc name -> { conn, sid, queue, senders: Map, remotes: Map, nextRemote, camera } */
     const peers = new Map();
     /** sid -> pc name, for the page-facing calls */
     const pcOf = new Map();
+    /** preview name -> the MediaStream handed to onPreview, or a symbol while it opens */
+    const previews = new Map();
+    /** The camera: its track once open, the pending open, and who holds it. */
+    const camera = { track: null, opening: null, users: new Set() };
 
     const emit = (pc, type, fields = {}) =>
         send(['media', 'hostEvent', { pc, type, ...fields }]);
@@ -73,6 +87,15 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
 
         if (op === 'close') {
             for (const [name] of peers) closePeer(name);
+            for (const [name] of previews) closePreview(name);
+            return;
+        }
+        if (op === 'openPreview') {
+            await openPreview(pc, args.deviceId);
+            return;
+        }
+        if (op === 'closePreview') {
+            closePreview(pc);
             return;
         }
         if (op === 'createPeer') {
@@ -119,9 +142,15 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
             return;
 
         case 'setRemoteDescription':
-            serialize(state, op, pc, () => state.conn.setRemoteDescription({
-                type: args.sdpType, sdp: args.sdp,
-            }));
+            serialize(state, op, pc, async () => {
+                await state.conn.setRemoteDescription({ type: args.sdpType, sdp: args.sdp });
+                if (args.sdpType !== 'offer') return;
+                // Offered m-lines start recvonly here; the answer would say so.
+                const ours = new Set(state.senders.values());
+                for (const t of state.conn.getTransceivers()) {
+                    if (!ours.has(t) && t.direction === 'recvonly') t.direction = 'sendrecv';
+                }
+            });
             return;
 
         case 'addRemoteCandidate':
@@ -142,7 +171,7 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
             return;
 
         case 'attachVideoSender':
-            serialize(state, op, pc, () => void attach(state, pc, op, args.track, args.deviceId, 'video'));
+            serialize(state, op, pc, () => void attachCamera(state, pc, op, args.track, args.deviceId));
             return;
 
         case 'attachVideoReceiver':
@@ -169,11 +198,20 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
         }
     }
 
-    // Put real media behind a track tacky added. A peer-added track name
-    // means the receiving side, which already has its stream. No mic is
-    // fatal to the call; no camera leaves it audio-only.
+    // The transceiver to send $trackName on: ours, or the one a peer's track
+    // arrived on (the answerer's case).
+    function senderOf(state, trackName) {
+        const own = state.senders.get(trackName);
+        if (own) return own;
+        const transceiver = state.remotes.get(trackName)?.transceiver;
+        if (transceiver) state.senders.set(trackName, transceiver);
+        return transceiver;
+    }
+
+    // Put real media behind a track. No mic is fatal to the call; no camera
+    // leaves it audio-only.
     async function attach(state, pc, op, trackName, deviceId, kind) {
-        const transceiver = state.senders.get(trackName);
+        const transceiver = senderOf(state, trackName);
         if (!transceiver) return;
         if (transceiver.direction === 'recvonly') return;
 
@@ -205,13 +243,117 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
         onLocalStream(state.sid, stream, kind);
     }
 
+    // The camera's own track for `user`, opened by the first to ask; later
+    // askers share the open in progress. A device that will not open falls
+    // back to the default and tells `user` so. Throws when nothing opens.
+    async function holdCamera(user, deviceId) {
+        camera.users.add(user);
+        if (camera.track) return camera.track;
+        if (!camera.opening) {
+            camera.opening = (async () => {
+                const wanted = deviceId ? { deviceId: { exact: deviceId } } : true;
+                try {
+                    return await navigator.mediaDevices.getUserMedia({ video: wanted });
+                } catch (err) {
+                    if (!deviceId) throw err;
+                    emit(user, 'deviceFallback', { kind: 'camera', id: '', reason: String(err?.name ?? err) });
+                    return navigator.mediaDevices.getUserMedia({ video: true });
+                }
+            })();
+        }
+        try {
+            const stream = await camera.opening;
+            const track = stream.getVideoTracks()[0];
+            // Everyone left while it opened: nobody wants it now.
+            if (camera.users.size === 0) {
+                track?.stop();
+                return null;
+            }
+            camera.track = track ?? null;
+            return camera.track;
+        } catch (err) {
+            camera.users.delete(user);
+            throw err;
+        } finally {
+            camera.opening = null;
+        }
+    }
+
+    function releaseCamera(user) {
+        if (!camera.users.delete(user) || camera.users.size > 0) return;
+        camera.track?.stop();
+        camera.track = null;
+    }
+
+    // Camera -> the pc: a clone of the one camera, so this pc's closing or
+    // muting touches no other. No camera leaves the call audio-only.
+    async function attachCamera(state, pc, op, trackName, deviceId) {
+        const transceiver = senderOf(state, trackName);
+        if (!transceiver || transceiver.direction === 'recvonly' || state.camera) return;
+        let source;
+        try {
+            source = await holdCamera(pc, deviceId);
+        } catch (err) {
+            fail(pc, op, String(err?.message ?? err), 0);
+            return;
+        }
+        if (!source) return;
+        if (!peers.has(pc)) {
+            releaseCamera(pc);
+            return;
+        }
+        const clone = source.clone();
+        state.camera = clone;
+        await transceiver.sender.replaceTrack(clone);
+        onLocalStream(state.sid, new MediaStream([clone]), 'video');
+    }
+
+    // A self-view under `name` while no pc need be sending: a group call's.
+    async function openPreview(name, deviceId) {
+        if (previews.has(name)) return;
+        // Ours while it opens: a close and a fresh open meanwhile is another.
+        const opening = Symbol(name);
+        previews.set(name, opening);
+        let source;
+        try {
+            source = await holdCamera(name, deviceId);
+        } catch (err) {
+            if (previews.get(name) === opening) previews.delete(name);
+            fail(name, 'openPreview', String(err?.message ?? err), 1);
+            return;
+        }
+        if (previews.get(name) !== opening) return;
+        if (!source) {
+            previews.delete(name);
+            return;
+        }
+        const stream = new MediaStream([source.clone()]);
+        previews.set(name, stream);
+        onPreview(name, stream);
+    }
+
+    function closePreview(name) {
+        if (!previews.has(name)) return;
+        const stream = previews.get(name);
+        previews.delete(name);
+        releaseCamera(name);
+        if (!(stream instanceof MediaStream)) return;
+        for (const t of stream.getTracks()) t.stop();
+        onPreview(name, null);
+    }
+
     function closePeer(pc) {
         const state = peers.get(pc);
         if (!state) return;
         peers.delete(pc);
         if (state.sid && pcOf.get(state.sid) === pc) pcOf.delete(state.sid);
+        // Our own tracks: the mic, and this pc's clone of the camera.
         for (const sender of state.conn.getSenders()) {
             sender.track?.stop();
+        }
+        if (state.camera || camera.users.has(pc)) {
+            state.camera?.stop();
+            releaseCamera(pc);
         }
         try { state.conn.close(); } catch { /* already closed */ }
     }
@@ -233,7 +375,12 @@ export function createMediaHost({ send, onRemoteStream = () => {}, onLocalStream
         setAudioEnabled,
         /** By pc: `{ conn, sid, ... }`. Not contract. */
         peers,
-        closeAll() { for (const [name] of peers) closePeer(name); },
+        /** The camera's state. Not contract. */
+        camera,
+        closeAll() {
+            for (const [name] of peers) closePeer(name);
+            for (const [name] of previews) closePreview(name);
+        },
     };
 }
 

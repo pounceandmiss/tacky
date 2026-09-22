@@ -67,6 +67,7 @@ snit::type taco_video {
             set client [$options(-taco) account liveClient -acc $jid]
             if {$client eq ""} continue
             $client calls applyPreferredCamera -id $opts(-id)
+            $client groupcall applyPreferredCamera -id $opts(-id)
         }
         $options(-taco) emit video <PreferredCamera> -id $opts(-id)
         return

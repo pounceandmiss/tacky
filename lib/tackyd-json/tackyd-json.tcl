@@ -153,7 +153,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string inviter string reason string state string formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
+        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string id string inviter string reason string state string video bool active bool live bool formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
@@ -164,6 +164,9 @@ jsonify_type jsonify \
         audio_device {default bool}
         camera      {facing int}
         call_row    {peer_ringing bool}
+        payload     {id int clockrate int channels int}
+        groupcall_row  {count int video bool hosted bool preview {dict {name string id string}}}
+        groupcall_peer {audio bool video bool preparing bool}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
@@ -182,6 +185,9 @@ jsonify_type jsonify \
         muc/myAffiliation       string
         muc/haveVoice           bool
         muc/isJoined            bool
+        muc/isHidden            bool
+        muc/findService         string
+        muc/createRoom          string
         muc/occupant            occupant
         muc/occupants           {list occupant}
         muc/rooms               list
@@ -207,8 +213,13 @@ jsonify_type jsonify \
         video/getPreferredCamera string
         media/list              list
         media/capabilities      {map bool}
+        media/payloadTypes      {map {list payload}}
         calls/start             string
         calls/list              {list call_row}
+        groupcall/status        {dict {active bool joined bool count int}}
+        groupcall/inCall        bool
+        groupcall/list          {list groupcall_row}
+        groupcall/participants  {list groupcall_peer}
         author/get              {dict {}}
         register/media          base64
         register/form           form
@@ -258,6 +269,9 @@ jsonify_type jsonify \
         chatlist/<Item>         {dict {item chat_entry}}
         notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
+        groupcall/<Changed>     {dict {active bool count int joined bool}}
+        groupcall/<Invited>     {dict {timestamp int video bool}}
+        groupcall/<PeerJoined>  {dict {video bool}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
         omemo/<BlindTrust>         {dict {value bool}}

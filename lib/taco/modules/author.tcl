@@ -141,6 +141,8 @@ snit::type taco_author {
     # <Presence>; the old nick's entry stays so historical messages keep
     # rendering correctly.
     method OnMucPresence {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         set roomJid [dict get $args -jid]
         set nick    [dict get $args -nick]
         set fromJid $roomJid/$nick

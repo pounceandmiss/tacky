@@ -126,6 +126,12 @@ snit::type iq {
         unset -nocomplain RequestHandlers($type_,$ns)
     }
 
+    # Whether the session is up: requests made now are answered, rather than
+    # held for a stream that may be a while coming.
+    method isLive {} {
+        return $Live
+    }
+
     # Start or stop the clock on every outstanding request.
     method live {flag} {
         if {$flag == $Live} return

@@ -242,10 +242,11 @@ $(WASM_BUILD)/tacky-tcltest.mjs:
 
 XMPP_WS_URL ?= ws://127.0.0.1:5280/xmpp-websocket
 
-# The wasm suite under node: the JSON protocol in and out of the backend, the
-# same backend on the OPFS pool a browser gives it across a simulated reload
-# (that one needs zippy's mock OPFS directory, hence $(ZIPPY)), then tacky's
-# own Tcl tests inside the wasm interpreter.
+# The wasm suite under node: media-host.js against a faked browser, the JSON
+# protocol in and out of the backend, the same backend on the OPFS pool a
+# browser gives it across a simulated reload (that one needs zippy's mock OPFS
+# directory, hence $(ZIPPY)), then tacky's own Tcl tests inside the wasm
+# interpreter.
 #
 # The networked half joins in when a server is up, the way test_all.tcl picks
 # up tests/taco_integration - so run it the same way:
@@ -268,11 +269,13 @@ WASM_NET_CHECKS := \
 	    $(WASM_BUILD)/tacky-tcltest.mjs --dir taco_integration || rc=1;
 WASM_NET_BROWSER_CHECKS := \
 	node wasm/test/browser.mjs --scenario session || rc=1; \
-	node wasm/test/browser.mjs --scenario call || rc=1;
+	node wasm/test/browser.mjs --scenario call || rc=1; \
+	node wasm/test/browser.mjs --scenario groupcall || rc=1;
 endif
 
 wasm-test: wasm wasm-tcltest
 	@rc=0; \
+	node wasm/test/media-host.mjs || rc=1; \
 	node wasm/test/host.mjs $(WASM_DIST)/tacky.mjs || rc=1; \
 	node wasm/test/opfs.mjs $(WASM_DIST)/tacky.mjs $(ZIPPY) || rc=1; \
 	node wasm/test/tcl.mjs $(WASM_BUILD)/tacky-tcltest.mjs --dir taco || rc=1; \
