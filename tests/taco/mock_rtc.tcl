@@ -40,6 +40,10 @@ namespace eval mockrtc {
         ::rtcma::player::set-volume
         ::rtcma::player::reopen
         ::rtcma::player::destroy
+        ::rtcmv::capture::new
+        ::rtcmv::capture::reopen
+        ::rtcmv::capture::preview-stream
+        ::rtcmv::capture::destroy
         ::rtcmv::sender::new
         ::rtcmv::sender::attach
         ::rtcmv::sender::start
@@ -65,6 +69,8 @@ proc mockrtc::install {} {
     if {$Installed} { reset; return }
     foreach cmd $COMMANDS {
         if {[info commands $cmd] ne ""} { rename $cmd ${cmd}__real }
+        # An extension built before a command existed has no namespace for it.
+        namespace eval [namespace qualifiers $cmd] {}
         proc $cmd args [format {return [mockrtc::Dispatch %s {*}$args]} \
             [list $cmd]]
     }
@@ -195,8 +201,10 @@ proc mockrtc::Dispatch {cmd args} {
             set m [expr {[info exists TrackMid($id)] ? $TrackMid($id) : "audio"}]
             return "m=$m 9 UDP/TLS/RTP/SAVPF 96"
         }
+        ::rtcmv::capture::new -
         ::rtcmv::sender::new -
         ::rtcmv::receiver::new { return [incr Seq(vhandle)] }
+        ::rtcmv::capture::preview-stream -
         ::rtcmv::sender::preview-stream -
         ::rtcmv::receiver::stream {
             set h [lindex $args 0]

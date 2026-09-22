@@ -44,6 +44,8 @@
 #   cameras       enumerate cameras
 #   videoDevice   select and hot-swap the camera
 #   videoChannel  video arrives as a channel descriptor
+#   preview       openPreview works: the camera shows without any pc, and
+#                 every pc's sender shares that one camera and its preview
 #   autoAnswer    setRemoteDescription(offer) also generates the answer, so
 #                 the callee must not call setLocalDescription itself
 #   sdpSanitize   local SDP needs extmap / transport-cc stripped before it
@@ -59,6 +61,7 @@
 #   tacky::media capabilities                  -> dict of flag -> 0|1
 #   tacky::media capability <flag>             -> 0|1
 #   tacky::media codecs                        -> {audio {...} video {...}}
+#   tacky::media payloadTypes                  -> {audio {{id name clockrate ?channels?} ...} video {...}}
 #   tacky::media close                         ;# drop everything
 #
 #   tacky::media createPeer <pc> -command <cb> ?-ice-servers <list>? ?-sid <sid>?
@@ -75,7 +78,14 @@
 #   tacky::media attachVideoSender   <pc> <track> ?-device-id <id>?
 #   tacky::media attachVideoReceiver <pc> <track>
 #   tacky::media setVideoEnabled <pc> -on 0|1
-#   tacky::media setVideoDevice  <pc> -id <id>
+#   tacky::media setVideoDevice  <pc|preview> -id <id>
+#
+#   tacky::media openPreview  <name> -command <cb> ?-device-id <id>?
+#   tacky::media closePreview <name>
+#     A camera self-view with no pc sending it. <name> shares the pc
+#     namespace and gets pc events: videoChannel (direction preview, empty
+#     track and mid), deviceFallback, or a fatal error if no camera opens.
+#     Needs the `preview` capability.
 #
 #   tacky::media enumerateAudioDevices -command <cb>  ;# {capture {...} playback {...}}
 #   tacky::media enumerateCameras      -command <cb>  ;# list of {name id facing}
@@ -96,15 +106,16 @@ namespace eval ::tacky::media {
     # Every flag any backend may declare. An omitted one is 0; an unknown one
     # is a typo and throws at open time.
     variable CAPABILITIES {
-        audioDevices audioVolume cameras videoDevice videoChannel
+        audioDevices audioVolume cameras videoDevice videoChannel preview
         autoAnswer sdpSanitize trickleIce
     }
 
     namespace export register available open backend capabilities capability \
-        codecs close createPeer closePeer addTrack setLocalDescription \
+        codecs payloadTypes close createPeer closePeer addTrack setLocalDescription \
         setRemoteDescription addRemoteCandidate attachAudio setAudioDevice \
         setAudioVolume attachVideoSender attachVideoReceiver setVideoEnabled \
-        setVideoDevice enumerateAudioDevices enumerateCameras
+        setVideoDevice openPreview closePreview enumerateAudioDevices \
+        enumerateCameras
     namespace ensemble create -command ::tacky::media
 }
 
@@ -183,6 +194,12 @@ proc ::tacky::media::capabilities {} {
 # honest: a codec offered but not decodable arrives as noise.
 proc ::tacky::media::codecs {} {
     return [Dispatch Codecs]
+}
+
+# Per kind, the payload types the backend uses, as {id name clockrate
+# ?channels?}: a Muji conference is announced with them.
+proc ::tacky::media::payloadTypes {} {
+    return [Dispatch PayloadTypes]
 }
 
 proc ::tacky::media::capability {flag} {
@@ -300,6 +317,31 @@ proc ::tacky::media::setVideoEnabled {pc args} {
 
 proc ::tacky::media::setVideoDevice {pc args} {
     Dispatch SetVideoDevice $pc {*}[dict merge {-id ""} $args]
+    return
+}
+
+proc ::tacky::media::openPreview {name args} {
+    variable PcCb
+    set opts [dict merge {-command "" -device-id ""} $args]
+    if {[dict get $opts -command] eq ""} {
+        error "openPreview: -command required"
+    }
+    if {![capability preview]} {
+        error "openPreview: the [backend] backend has no preview"
+    }
+    set PcCb($name) [dict get $opts -command]
+    if {[catch {Dispatch OpenPreview $name \
+            -device-id [dict get $opts -device-id]} err]} {
+        unset -nocomplain PcCb($name)
+        error $err
+    }
+    return
+}
+
+proc ::tacky::media::closePreview {name} {
+    variable PcCb
+    if {[capability preview]} { catch {Dispatch ClosePreview $name} }
+    unset -nocomplain PcCb($name)
     return
 }
 

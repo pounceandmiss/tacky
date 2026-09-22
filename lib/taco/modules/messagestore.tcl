@@ -66,6 +66,10 @@ snit::type taco_messagestore {
     # {*}joinedcmd $room -> 0|1: whether we are a member, for an invite's
     # state. Unset, no room counts as joined.
     option -joinedcmd -default ""
+    # A call row's `active` and `live`: {*}incallcmd $room -> 0|1 (we are in
+    # it), {*}livecmd $chat $ts $room -> 1|0|"" (anyone is; "" unknown).
+    option -incallcmd -default ""
+    option -livecmd -default ""
 
     # Columns every message read path returns, in one place so a new column
     # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
@@ -73,7 +77,8 @@ snit::type taco_messagestore {
                           server_id, own_id, occupant_id, edited_ts, retracted,
                           reply_id, reply_to, raw_xml, server_status,
                           remote_status, encryption, sender_fp, fail_reason,
-                          attachments, invite, invite_declined}
+                          attachments, invite, invite_declined, call,
+                          call_state}
 
     constructor args {
         $self configurelist $args
@@ -164,6 +169,15 @@ snit::type taco_messagestore {
                 invite_room    TEXT NOT NULL DEFAULT '',
                 -- turned down with `muc declineInvite`.
                 invite_declined INTEGER NOT NULL DEFAULT 0,
+                -- XEP-0482 group call invite {room id inviter video}
+                -- (see ParseCallInvite); empty for anything else.
+                call           TEXT,
+                -- the call's room and invite id, to find its rows; '' else.
+                call_room      TEXT NOT NULL DEFAULT '',
+                call_id        TEXT NOT NULL DEFAULT '',
+                -- what became of it for us: '' (pending), joined, declined,
+                -- missed, elsewhere (another device of ours), ended.
+                call_state     TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(chat_jid, timestamp)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -281,6 +295,82 @@ snit::type taco_messagestore {
             CREATE INDEX IF NOT EXISTS idx_chat_message_invite_room
                 ON chat_message(invite_room) WHERE invite_room != '';
         }
+        foreach {col def} {
+            call       {TEXT}
+            call_room  {TEXT NOT NULL DEFAULT ''}
+            call_id    {TEXT NOT NULL DEFAULT ''}
+            call_state {TEXT NOT NULL DEFAULT ''}
+        } {
+            if {$col ni $columns} {
+                $db eval "ALTER TABLE chat_message ADD COLUMN $col $def"
+            }
+        }
+        $db eval {
+            CREATE INDEX IF NOT EXISTS idx_chat_message_call_room
+                ON chat_message(call_room) WHERE call_room != '';
+        }
+    }
+
+    # --- Group call invites -------------------------------------------
+
+    # One stored call invite as {call state}, or "" when the row at $ts in
+    # $jid is not one.
+    method callAt {jid ts} {
+        set found ""
+        $options(-db) eval {
+            SELECT call, call_state FROM chat_message
+            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+              AND call_room != ''
+        } r {
+            set found [dict create call $r(call) state $r(call_state)]
+        }
+        return $found
+    }
+
+    method setCallState {jid ts state} {
+        $options(-db) eval {
+            UPDATE chat_message SET call_state=$state
+            WHERE chat_jid=$jid AND timestamp=$ts AND call_room != ''
+        }
+    }
+
+    # The rows in $jid holding the invite with id $id, as {ts state room}.
+    method callsById {jid id} {
+        set found {}
+        $options(-db) eval {
+            SELECT timestamp, call_state, call_room FROM chat_message
+            WHERE chat_jid=$jid AND call_id=$id AND call_room != ''
+              AND kind='message'
+        } r {
+            lappend found [list $r(timestamp) $r(call_state) $r(call_room)]
+        }
+        return $found
+    }
+
+    # The newest call invite in $jid, as {ts room}, or "".
+    method newestCall {jid} {
+        set found ""
+        $options(-db) eval {
+            SELECT timestamp, call_room FROM chat_message
+            WHERE chat_jid=$jid AND call_room != '' AND kind='message'
+            ORDER BY timestamp DESC LIMIT 1
+        } r {
+            set found [list $r(timestamp) $r(call_room)]
+        }
+        return $found
+    }
+
+    # Every stored invite to the call in $room, wherever it sits, as
+    # {chat_jid ts}.
+    method callsToRoom {room} {
+        set found {}
+        $options(-db) eval {
+            SELECT chat_jid, timestamp FROM chat_message
+            WHERE call_room=$room AND kind='message'
+        } r {
+            lappend found [list $r(chat_jid) $r(timestamp)]
+        }
+        return $found
     }
 
     # --- Invites ----------------------------------------------------
@@ -516,17 +606,23 @@ snit::type taco_messagestore {
                 set invite [expr {[info exists m(invite)] ? $m(invite) : ""}]
                 set inviteRoom [expr {[info exists m(invite_room)] \
                     ? $m(invite_room) : ""}]
+                set call [expr {[info exists m(call)] ? $m(call) : ""}]
+                set callRoom [expr {$call eq "" ? "" : [dict get $call room]}]
+                set callId [expr {$call eq "" ? "" : [dict get $call id]}]
+                set callState [expr {[info exists m(call_state)] \
+                    ? $m(call_state) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, sender_fp, fail_reason, mentions_me,
-                        attachments, invite, invite_room)
+                        attachments, invite, invite_room, call, call_room,
+                        call_id, call_state)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $senderFp, $failReason, $mention, $attach, $invite,
-                        $inviteRoom)
+                        $inviteRoom, $call, $callRoom, $callId, $callState)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -1390,13 +1486,34 @@ snit::type taco_messagestore {
                         [expr {[dict exists $d invite_declined]
                             && [dict get $d invite_declined]}]] \
                     body [dict get $d body]]
+            } elseif {[dict exists $d call] && [dict get $d call] ne ""} {
+                set call [dict merge {room "" id "" inviter "" video 0} \
+                    [dict get $d call]]
+                set room [dict get $call room]
+                set content [dict create type call \
+                    room $room id [dict get $call id] \
+                    inviter [dict get $call inviter] \
+                    video [dict get $call video] \
+                    state [expr {[dict exists $d call_state]
+                                 && [dict get $d call_state] ne ""
+                                 ? [dict get $d call_state] : "pending"}] \
+                    active [expr {$options(-incallcmd) ne "" && $room ne ""
+                                  && [{*}$options(-incallcmd) $room] ? 1 : 0}] \
+                    body [dict get $d body]]
+                # Absent until the call's room has been asked.
+                if {$options(-livecmd) ne "" && $room ne ""} {
+                    set live [{*}$options(-livecmd) [dict get $d chat_jid] \
+                        [dict get $d timestamp] $room]
+                    if {$live ne ""} { dict set content live $live }
+                }
             } else {
                 set content [dict create type text body [dict get $d body]]
             }
             if {$fmt ne ""} { dict set content formatting $fmt }
             dict set d content $content
         }
-        foreach k {body caption attachments formatting invite invite_declined} {
+        foreach k {body caption attachments formatting invite invite_declined
+                   call call_state} {
             dict unset d $k
         }
         set reactions [$self reactionsForMessage \

@@ -63,7 +63,8 @@ snit::type taco_message {
         $self configurelist $args
         set client $options(-client)
         install messagestore using taco_messagestore $self.messagestore \
-            -db [$client cget -db] -joinedcmd [mymethod RoomJoined]
+            -db [$client cget -db] -joinedcmd [mymethod RoomJoined] \
+            -incallcmd [mymethod InCall] -livecmd [mymethod CallLive]
         array set PendingRetry {}
         array set ActiveTags {}
         set CatchupInFlight [dict create]
@@ -140,6 +141,8 @@ snit::type taco_message {
     # still leaves a gap: bracket it with a `newer` hole as a reconnect does,
     # and pagination reaches the rest. A voluntary leave has no gap to record.
     method OnMucLeft {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         array set opts {-jid "" -involuntary 0}
         array set opts $args
         if {!$opts(-involuntary)} return
@@ -397,6 +400,40 @@ snit::type taco_message {
         }
     }
 
+    # A call row's `active`: whether we are in the call held in $room.
+    method InCall {room} {
+        if {[catch {$client groupcall inCall -jid $room} in]} { return 0 }
+        return $in
+    }
+
+    # Re-send a call's rows after its `active` or state moved.
+    method PatchCallRows {room} {
+        foreach row [$messagestore callsToRoom [jid norm $room]] {
+            $self EmitMessagePatch {*}$row
+        }
+    }
+
+    # A call row's `live`: whether anyone is in the call. Only a chat's
+    # newest call is asked about; older ones read as over.
+    method CallLive {chat ts room} {
+        set newest [$messagestore newestCall $chat]
+        if {$newest eq "" || [lindex $newest 0] != $ts} { return 0 }
+        if {[catch {$client groupcall Liveness $room} live]} { return "" }
+        return $live
+    }
+
+    # Move every pending invite to the call in $room to $state (joined,
+    # ended).
+    method SettleCall {room state} {
+        foreach row [$messagestore callsToRoom [jid norm $room]] {
+            lassign $row chat ts
+            set at [$messagestore callAt $chat $ts]
+            if {$at eq "" || [dict get $at state] ne ""} continue
+            $messagestore setCallState $chat $ts $state
+            $self EmitMessagePatch $chat $ts
+        }
+    }
+
     # Membership, as an invite's state reads it: bookmarked with autojoin.
     method RoomJoined {room} {
         if {[catch {$client bookmarks autojoin -jid $room} on]} { return 0 }
@@ -548,7 +585,10 @@ snit::type taco_message {
             set idArgs [list -own_id [xsearch $stanza -get @id]]
         }
         set ids [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs]
-        $self DispatchLive $chatJid [$self Classify $chatJid $stanza $ts $ids]
+        set verdict [$self Classify $chatJid $stanza $ts $ids]
+        # History a room replays on join is not news: nothing rings for it.
+        dict set verdict delayed [expr {$stamp ne ""}]
+        $self DispatchLive $chatJid $verdict
     }
 
     # Act on one live message's verdict (from Classify):
@@ -563,6 +603,7 @@ snit::type taco_message {
             reaction { $self ApplyReactionVerdict $chatJid $r }
             edit     { $self ApplyEditVerdict $chatJid $r }
             retract  { $self ApplyRetractVerdict $chatJid $r }
+            call     { $self ApplyCallVerdict $chatJid $r }
             default  { return 0 }
         }
         return 1
@@ -576,9 +617,43 @@ snit::type taco_message {
                     [list [dict get $verdict reconciled]]
             }
             new {
-                set result [$messagestore store [list [dict get $verdict msg]]]
+                set msg [dict get $verdict msg]
+                set result [$messagestore store [list $msg]]
                 $self HandleInsertion $chatJid [dict get $result inserted]
+                # Someone else's group call invite, arriving now: a ring.
+                if {[dict exists $msg call] && [dict get $msg call] ne ""
+                        && [dict get $msg call_state] eq ""
+                        && !([dict exists $verdict delayed] && [dict get $verdict delayed])
+                        && [llength [dict get $result inserted]]} {
+                    $client groupcall OnInvited $chatJid \
+                        [lindex [dict get $result inserted] 0]
+                }
             }
+        }
+    }
+
+    # An XEP-0482 accept/reject/retract/left for a stored call invite.
+    # accept/left/retract mean someone went in or out, so liveness is asked
+    # again. A pending row moves on: a peer's retract is a missed call, our
+    # other device's accept/reject answered it for us.
+    method ApplyCallVerdict {chatJid r} {
+        set tag [dict get $r tag]
+        set own [dict get $r is_own]
+        set to [switch -- $tag {
+            retract { expr {$own ? "" : "missed"} }
+            accept  { expr {$own ? "elsewhere" : ""} }
+            reject  { expr {$own ? "declined" : ""} }
+            default { format "" }
+        }]
+        foreach row [$messagestore callsById $chatJid [dict get $r id]] {
+            lassign $row ts state room
+            set moved [expr {$tag in {accept left retract}}]
+            if {$moved} { catch {$client groupcall ForgetLiveness $room} }
+            if {$to ne "" && $state eq ""} {
+                $messagestore setCallState $chatJid $ts $to
+                set moved 1
+            }
+            if {$moved} { $self EmitMessagePatch $chatJid $ts }
         }
     }
 
@@ -1068,6 +1143,8 @@ snit::type taco_message {
     # self-presence, so the archive page races the room's own replay;
     # whichever lands second dedups.
     method OnMucJoined {args} {
+        # A hidden room (see muc join -hidden) is none of ours.
+        if {[dict exists $args -hidden]} return
         set roomJid [dict get $args -jid]
         if {[info exists PendingRetry($roomJid)]} {
             set msgs $PendingRetry($roomJid)
@@ -2181,6 +2258,15 @@ snit::type taco_message {
         if {$retract ne ""} {
             return [dict create verdict retract timestamp $ts {*}$retract]
         }
+        # XEP-0482 answers to a call invite patch that invite's row.
+        foreach tag {accept reject retract left} {
+            set node [xsearch $msgNode $tag -ns urn:xmpp:call-invites:0 -get node]
+            if {$node eq ""} continue
+            set id [xsearch $node -get @id]
+            if {$id eq ""} { return [dict create verdict drop timestamp $ts] }
+            return [dict create verdict call timestamp $ts tag $tag id $id \
+                is_own [dict get [$self resolveSender $chatJid $msgNode] is_own]]
+        }
         lassign $ids serverId ownId originId
         # Pass the echo's occupant-id so confirming our own send backfills it
         # (the original send stored occupant_id empty).
@@ -2501,6 +2587,16 @@ snit::type taco_message {
         if {$invite ne "" && $body eq ""} {
             set body [InviteBody $invite $ownId]
         }
+        # A group call invite shows as the call. Our own (room echo or
+        # carbon) is a call we are in, not one to answer.
+        set call [ParseCallInvite $msgNode]
+        set callOwn 0
+        if {$call ne ""} {
+            set callOwn [expr {$ownId ne ""
+                || [dict get [$self resolveSender $chatJid $msgNode] is_own]}]
+            dict set call inviter [$self CallInviter $chatJid $rawFrom]
+            if {$body eq ""} { set body [CallBody $call $callOwn] }
+        }
         if {[ClassifyMessage $msgNode $body] ne "message"} {
             return ""
         }
@@ -2531,13 +2627,27 @@ snit::type taco_message {
             attachments [ExtractAttachments $msgNode $body] \
             invite     $invite \
             invite_room [expr {$invite eq "" ? "" : [dict get $invite room]}] \
+            call       $call \
+            call_state [expr {$callOwn ? "joined" : ""}] \
             server_status "" \
             encryption $enc \
             sender_fp  $senderFp \
-            mentions_me [expr {$invite ne "" && $ownId eq ""
+            mentions_me [expr {($invite ne "" && $ownId eq ""
+                || $call ne "" && !$callOwn)
                 && [IsMucChatJid $chatJid] ? 1
                 : [$self MentionsMe $chatJid $body $ownId \
                     [jid resource $rawFrom]]}]
+    }
+
+    # Who sent a call invite, as a bare JID: the contact in a 1:1 chat, the
+    # occupant's real JID in a room when it shows, else "".
+    method CallInviter {chatJid rawFrom} {
+        if {![IsMucChatJid $chatJid]} {
+            return [expr {[jid valid $rawFrom] ? [jid norm [jid bare $rawFrom]] : ""}]
+        }
+        set room [jid bare [regsub {\?join$} $chatJid {}]]
+        set real [$client muc realJid $room [jid resource $rawFrom]]
+        return [expr {$real eq "" ? "" : [jid norm [jid bare $real]]}]
     }
 
     # Does this room message name our nick? Word-boundary and caseless.
@@ -2617,6 +2727,22 @@ proc ParseInvite {msgNode} {
     set inviter [expr {[jid valid $inviter] ? [jid norm [jid bare $inviter]] : ""}]
     dict create room [jid norm [jid bare $room]] inviter $inviter \
         reason $reason password $password
+}
+
+# An XEP-0482 invite to a Muji call, as {room id video}, or "". A direct
+# Jingle invite is a 1:1 call's, not ours.
+proc ParseCallInvite {msgNode} {
+    set inv [lindex [xsearch $msgNode invite -ns urn:xmpp:call-invites:0] 0]
+    if {$inv eq ""} { return "" }
+    set room [xsearch $inv muji -ns urn:xmpp:jingle:muji:0 -get @room]
+    if {$room eq "" || ![jid valid $room]} { return "" }
+    dict create room [jid norm [jid bare $room]] id [xsearch $inv -get @id] \
+        video [expr {[xsearch $inv -get @video] in {true 1}}]
+}
+
+proc CallBody {call own} {
+    set what [expr {[dict get $call video] ? "video call" : "call"}]
+    return [expr {$own ? "You started a group $what" : "Group $what"}]
 }
 
 # Stand-in body for a bodyless invite, worded like server-relayed ones.

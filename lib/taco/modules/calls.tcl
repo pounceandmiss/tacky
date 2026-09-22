@@ -93,9 +93,14 @@
 # secret: the propose goes to the bare JID, so all of the peer's
 # resources and every server on the path see it.
 #
+# Group-call legs: taco_groupcall (XEP-0272 Muji) runs one session per
+# participant here. A leg skips JMI (room presence is the ring), carries the
+# room JID as `group`, and emits no <Outgoing>/<Incoming>.
+#
 # Per-call state ([dict get $Calls $sid] dict):
 #   peer       : remote JID (bare until proceeded, then full)
 #   initiator  : 1 for caller, 0 for callee
+#   group      : room JID for a group-call leg, "" for a 1:1 call
 #   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
 #   peer_ringing : 1 once a peer device answered <ringing> (caller side);
 #     a field, not a state, because the state machine does not move for it
@@ -184,12 +189,28 @@ snit::type taco_calls {
     # vtrack       : media handle of the video track, -1 when absent
     # vsend/vrecv  : 1 once we have asked the backend for that half and it
     #                has not reported the attach failed
-    method NewCallDict {peer initiator state wantVideo} {
+    method NewCallDict {peer initiator state wantVideo {group ""}} {
         return [dict create \
             peer $peer initiator $initiator state $state peer_ringing 0 \
-            pc -1 track -1 \
+            group $group pc -1 track -1 \
             video_local $wantVideo video_remote 0 \
             vtrack -1 vsend 0 vrecv 0]
+    }
+
+    # One group-call leg to a participant's full JID, straight to media and
+    # session-initiate (no JMI). Returns the sid.
+    method StartGroupSession {args} {
+        array set opts {-room "" -peer "" -video 0}
+        array set opts $args
+        if {$opts(-room) eq "" || $opts(-peer) eq ""} {
+            error "StartGroupSession: -room and -peer required"
+        }
+        set sid [$self NewSid]
+        set wantVideo [expr {$opts(-video) ? 1 : 0}]
+        dict set Calls $sid [$self NewCallDict $opts(-peer) 1 proceeded \
+            $wantVideo [jid norm $opts(-room)]]
+        $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
+        return $sid
     }
 
     tackymethod accept {args} {
@@ -274,6 +295,7 @@ snit::type taco_calls {
                 direction    $direction \
                 state        [dict get $call state] \
                 peer_ringing [dict get $call peer_ringing] \
+                group        [dict get $call group] \
                 video_local  [dict get $call video_local] \
                 video_remote [dict get $call video_remote]]
         }
@@ -502,6 +524,11 @@ snit::type taco_calls {
             dict set jingle attrs action session-initiate
             dict set jingle attrs sid $sid
             dict set jingle attrs initiator $me
+            if {[dict get $call group] ne ""} {
+                # XEP-0272: a session belonging to a Muji conference says so.
+                dict lappend jingle children \
+                    [j muji -ns urn:xmpp:jingle:muji:0 -room [dict get $call group]]
+            }
             $client iq request -type set -to [dict get $call peer] \
                 -payload $jingle \
                 -command [mymethod OnInitiateAck $sid]
@@ -957,6 +984,11 @@ snit::type taco_calls {
         # we reject the IQ — the call never existed locally.
         # A sender that isn't our peer gets the same answer as an unknown
         # sid, so a guessed sid can't be confirmed.
+        # Except a Muji leg, whose sender taco_groupcall vouches for.
+        if {![dict exists $Calls $sid] && ![$self OpenGroupLeg $jingle $sid $from]} {
+            $self IqError $stanza item-not-found
+            return
+        }
         if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
             return
@@ -1101,6 +1133,28 @@ snit::type taco_calls {
     # =========================================================================
     # Helpers
     # =========================================================================
+
+    # A session-initiate with <muji room/> from a known participant becomes a
+    # callee leg in `proceeded`, as if JMI-accepted. Returns 1 if opened.
+    method OpenGroupLeg {jingle sid from} {
+        set room [xsearch $jingle muji -ns urn:xmpp:jingle:muji:0 -get @room]
+        if {$room eq "" || ![jid valid $room]} { return 0 }
+        set hasVideo 0
+        xsearch $jingle content -script content {
+            set d [xsearch $content description \
+                -ns urn:xmpp:jingle:apps:rtp:1 -get node]
+            if {$d ne "" && [xsearch $d -get @media] eq "video"} {
+                set hasVideo 1
+            }
+        }
+        set wantVideo [$client groupcall AcceptSession \
+            -room $room -peer $from -sid $sid -video $hasVideo]
+        if {$wantVideo eq ""} { return 0 }
+        dict set Calls $sid [$self NewCallDict $from 0 proceeded \
+            [expr {$wantVideo ? 1 : 0}] [jid norm $room]]
+        dict set Calls $sid video_remote $hasVideo
+        return 1
+    }
 
     # Walk a session-initiate's Jingle tree and drop, from each rtp
     # <description>, every <payload-type> the backend cannot decode.

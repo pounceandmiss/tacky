@@ -187,19 +187,9 @@ returns, so re-check state after every media call, as `taco_calls` does.
 Codec, m-line and device specifics belong in the backend. Where `taco_calls`
 has to vary it asks: `capability sdpSanitize` for the SDP strip, `capability
 autoAnswer` for who generates the callee's answer, `codecs` for which payload
-types survive `FilterCodecs`. `media_rtc.tcl` is the reference backend;
+types survive `FilterCodecs`, `payloadTypes` for what `taco_groupcall`
+announces a Muji conference with. `media_rtc.tcl` is the reference backend;
 `lib/taco/modules/media.tcl` picks which one runs and falls back to rtc.
-
-The webrtc backend lives in its own repository, rtc-webrtc, and is not part of
-`make`. `make webrtc-so` builds `dist/libtacky_webrtc.so` from nothing: it
-clones the wrapper at the commit pinned in the Makefile (`RTCWEBRTC_COMMIT`)
-into `build/deps`, runs its `third_party/fetch.sh` for the pinned libwebrtc,
-Chromium clang and libc++ headers - a few hundred megabytes, once - and builds.
-`make android-webrtc-so` and `make win-webrtc-dll` are the same for the other
-platforms, with their own prebuilts. `WEBRTC_SRC=<checkout>` builds a checkout
-of your own instead, for work on the wrapper itself; moving the pin is editing
-the commit. The clone, the prebuilts and their download cache share
-`WEBRTC_DEPS_DIR` (default `build/deps`) across all three platforms.
 
 ### Testing a backend
 

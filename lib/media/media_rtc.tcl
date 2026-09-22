@@ -23,6 +23,10 @@ namespace eval ::tacky::media::rtc {
     variable Vsend       ;# handle -> rtc-mv sender handle
     variable Vrecv       ;# handle -> rtc-mv receiver handle
     variable FrameDir "" ;# where video frame streams listen
+    # One rtc-mv capture shared by every sender and preview, since a device
+    # opens once. CamUsers: the pc handles and preview names holding it.
+    variable Capture ""
+    variable CamUsers {}
     array set Pc {}
     array set PcOf {}
     array set TrackId {}
@@ -53,11 +57,11 @@ proc ::tacky::media::rtc::Op {op args} {
 }
 
 namespace eval ::tacky::media::rtc {
-    namespace export Open Close Capabilities Codecs CreatePeer ClosePeer \
+    namespace export Open Close Capabilities Codecs PayloadTypes CreatePeer ClosePeer \
         AddTrack SetLocalDescription SetRemoteDescription AddRemoteCandidate \
         AttachAudio SetAudioDevice SetAudioVolume AttachVideoSender \
         AttachVideoReceiver SetVideoEnabled SetVideoDevice \
-        EnumerateAudioDevices EnumerateCameras
+        OpenPreview ClosePreview EnumerateAudioDevices EnumerateCameras
 }
 
 # ==========================================================================
@@ -76,14 +80,16 @@ proc ::tacky::media::rtc::Open {args} {
 
 proc ::tacky::media::rtc::Close {} {
     variable Pc
+    variable CamUsers
     foreach h [array names Pc] { ClosePeer $h }
+    foreach user [dict keys $CamUsers] { ReleaseCamera $user }
     return
 }
 
 proc ::tacky::media::rtc::Capabilities {} {
     return {
         audioDevices 1 audioVolume 1 cameras 1 videoDevice 1 videoChannel 1
-        autoAnswer 1 sdpSanitize 1 trickleIce 1
+        preview 1 autoAnswer 1 sdpSanitize 1 trickleIce 1
     }
 }
 
@@ -91,6 +97,18 @@ proc ::tacky::media::rtc::Capabilities {} {
 # accepted by libdatachannel's auto-generated answer and then arrive as noise.
 proc ::tacky::media::rtc::Codecs {} {
     return {audio opus video vp8}
+}
+
+# The same two, as the m-lines below carry them.
+proc ::tacky::media::rtc::PayloadTypes {} {
+    variable PAYLOAD_TYPE
+    variable AUDIO_CHANNELS
+    variable VIDEO_PT
+    variable VIDEO_CLOCK
+    return [dict create \
+        audio [list [dict create id $PAYLOAD_TYPE name opus \
+                         clockrate 48000 channels $AUDIO_CHANNELS]] \
+        video [list [dict create id $VIDEO_PT name VP8 clockrate $VIDEO_CLOCK]]]
 }
 
 # ==========================================================================
@@ -130,6 +148,7 @@ proc ::tacky::media::rtc::ClosePeer {h} {
         catch {::rtcmv::sender::destroy $Vsend($h)}
         unset Vsend($h)
     }
+    ReleaseCamera $h
     if {[info exists Vrecv($h)]} {
         catch {::rtcmv::receiver::destroy $Vrecv($h)}
         unset Vrecv($h)
@@ -505,13 +524,50 @@ proc ::tacky::media::rtc::SetAudioVolume {h args} {
 # Video
 # ==========================================================================
 
-# Camera -> VP8 -> RTP, with the local camera also going to a preview stream
-# so a GUI can show a self-view.
+# The shared camera, held for $user. A bad id falls back to the default and
+# tells $user; throws if no camera opens.
+proc ::tacky::media::rtc::Camera {user deviceId} {
+    variable Capture
+    variable CamUsers
+    variable FrameDir
+    if {$Capture eq ""} {
+        set open [list ::rtcmv::capture::new -preview 1 -stream-dir $FrameDir]
+        if {[catch {{*}$open -device-id $deviceId} cap]} {
+            if {$deviceId eq ""} { error "no camera could be opened" }
+            ::tacky::media::emit $user deviceFallback \
+                kind camera id $deviceId reason $cap
+            if {[catch {{*}$open} cap]} { error "no camera could be opened" }
+        }
+        set Capture $cap
+    }
+    dict set CamUsers $user 1
+    return $Capture
+}
+
+# The last user gone closes the camera. Senders on it must be gone first.
+proc ::tacky::media::rtc::ReleaseCamera {user} {
+    variable Capture
+    variable CamUsers
+    if {![dict exists $CamUsers $user]} return
+    dict unset CamUsers $user
+    if {[dict size $CamUsers] == 0 && $Capture ne ""} {
+        catch {::rtcmv::capture::destroy $Capture}
+        set Capture ""
+    }
+    return
+}
+
+proc ::tacky::media::rtc::PreviewChannel {} {
+    variable Capture
+    return [StreamDescriptor [::rtcmv::capture::preview-stream $Capture]]
+}
+
+# Camera -> VP8 -> RTP on the shared camera, whose preview stream goes out as
+# this pc's self-view.
 proc ::tacky::media::rtc::AttachVideoSender {h track args} {
     variable TrackId
     variable Vsend
     variable VIDEO_MID
-    variable FrameDir
     set opts [dict merge {-device-id ""} $args]
     if {[info exists Vsend($h)]} return
     if {![info exists TrackId($h,$track)]} {
@@ -519,19 +575,45 @@ proc ::tacky::media::rtc::AttachVideoSender {h track args} {
             reason "no such track: $track" fatal 0
         return
     }
-    set snd [::rtcmv::sender::new -device-id [dict get $opts -device-id] -preview 1 \
-        -stream-dir $FrameDir]
+    if {[catch {Camera $h [dict get $opts -device-id]} cap]} {
+        ::tacky::media::emit $h error op attachVideoSender reason $cap fatal 0
+        return
+    }
+    set snd [::rtcmv::sender::new -capture $cap]
     if {[catch {::rtcmv::sender::attach $snd $TrackId($h,$track)} err]} {
         catch {::rtcmv::sender::destroy $snd}
+        ReleaseCamera $h
         ::tacky::media::emit $h error op attachVideoSender reason $err fatal 0
         return
     }
     ::rtcmv::sender::start $snd
     set Vsend($h) $snd
-    if {![catch {::rtcmv::sender::preview-stream $snd} pv]} {
+    if {![catch {PreviewChannel} pv]} {
         ::tacky::media::emit $h videoChannel track $track direction preview \
-            mid $VIDEO_MID channel [StreamDescriptor $pv]
+            mid $VIDEO_MID channel $pv
     }
+    return
+}
+
+# The camera alone, for a self-view: $name acts as a pc handle for events.
+proc ::tacky::media::rtc::OpenPreview {name args} {
+    set opts [dict merge {-device-id ""} $args]
+    if {[catch {Camera $name [dict get $opts -device-id]} err]} {
+        ::tacky::media::emit $name error op openPreview reason $err fatal 1
+        return
+    }
+    if {[catch {PreviewChannel} pv]} {
+        ReleaseCamera $name
+        ::tacky::media::emit $name error op openPreview reason $pv fatal 1
+        return
+    }
+    ::tacky::media::emit $name videoChannel track "" direction preview \
+        mid "" channel $pv
+    return
+}
+
+proc ::tacky::media::rtc::ClosePreview {name} {
+    ReleaseCamera $name
     return
 }
 
@@ -573,11 +655,14 @@ proc ::tacky::media::rtc::SetVideoEnabled {h args} {
     return
 }
 
+# Switches the shared camera: every sender and preview on it moves too.
+# Any camera user switches the one capture: a sender or a preview.
 proc ::tacky::media::rtc::SetVideoDevice {h args} {
-    variable Vsend
+    variable CamUsers
+    variable Capture
     set opts [dict merge {-id ""} $args]
-    if {![info exists Vsend($h)]} return
-    if {[catch {::rtcmv::sender::reopen $Vsend($h) \
+    if {![dict exists $CamUsers $h] || $Capture eq ""} return
+    if {[catch {::rtcmv::capture::reopen $Capture \
             -device-id [dict get $opts -id]} err]} {
         ::tacky::media::emit $h deviceFallback \
             kind camera id [dict get $opts -id] reason $err

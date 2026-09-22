@@ -128,6 +128,198 @@ test muc-joined-event {<Joined> event fires on self-presence} \
         list [dict get $got -jid] [dict get $got -nick]
     } -result {room@muc.example.com me}
 
+# -- Hidden rooms (a group call's room) ----------------------------------------
+
+# A hidden room's whole life: join, an occupant, a message, leaving.
+proc muc_hidden_lifecycle {} {
+    c muc join -jid call@muc.example.com -nick abc123 -hidden 1
+    c.conn feed [muc_presence from call@muc.example.com/abc123 self 1]
+    c.conn feed [muc_presence from call@muc.example.com/other self 0 \
+        jid other@example.com/x]
+    c.conn feed [j message -type groupchat -from call@muc.example.com/other {
+        j body -body "not for the chat list"
+    }]
+}
+
+test muc-hidden-no-frontend-events {a hidden room reports nothing to the frontend} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        foreach ev {<Joining> <Joined> <Presence> <Left>} {
+            tacky listen muc $ev [list apply {{ev args} { lappend ::got $ev }} $ev]
+        }
+        tacky listen bookmarks <RoomState> {apply {{args} { lappend ::got <RoomState> }}}
+        muc_hidden_lifecycle
+        c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
+        set ::got
+    } -result {}
+
+test muc-hidden-events-stay-on-the-bus {a hidden room's events reach the modules, tagged} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        foreach ev {<Joined> <Presence> <Left>} {
+            c bus subscribe ::muc_test muc:$ev [list apply {{ev args} {
+                lappend ::got $ev [dict get $args -hidden]
+            }} $ev]
+        }
+        muc_hidden_lifecycle
+        c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
+        c bus unsubscribe ::muc_test
+        set ::got
+    } -result {<Joined> 1 <Presence> 1 <Presence> 1 <Left> 1}
+
+test muc-hidden-state {a hidden room is joined, hidden, and not among rooms} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        muc_hidden_lifecycle
+        list [c muc isJoined -jid call@muc.example.com] \
+            [c muc isHidden -jid call@muc.example.com] \
+            [c muc isHidden -jid room@muc.example.com] \
+            [c muc rooms] \
+            [dict get [c muc occupant -jid call@muc.example.com -nick other] jid]
+    } -result {1 1 0 room@muc.example.com other@example.com/x}
+
+test muc-hidden-messages-dropped {a hidden room's messages are not stored} \
+    {*}$muc_common \
+    -body {
+        muc_hidden_lifecycle
+        c db onecolumn {SELECT count(*) FROM chat_message
+                        WHERE chat_jid LIKE 'call@muc.example.com%'}
+    } -result {0}
+
+# -- Creating a room of our own ----------------------------------------------------
+
+proc muc_owner_form {} {
+    j x -ns jabber:x:data -type form {
+        j field -var FORM_TYPE -type hidden { j value -body http://jabber.org/protocol/muc#roomconfig }
+        j field -var muc#roomconfig_membersonly -type boolean { j value -body 0 }
+        j field -var muc#roomconfig_whois -type list-single {
+            j value -body moderators
+            j option { j value -body moderators }
+            j option { j value -body anyone }
+        }
+    }
+}
+
+# The last room-owner request we wrote (not always the last stanza: a join
+# also asks for the avatar).
+proc muc_owner_request {} {
+    foreach w [lreverse [c.conn get_written]] {
+        if {[xsearch $w query -ns http://jabber.org/protocol/muc#owner -get node] ne ""} {
+            return $w
+        }
+    }
+    error "no muc#owner request written"
+}
+
+proc muc_reply_last {payload} {
+    set req [muc_owner_request]
+    c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+        -from call@muc.example.com {
+            if {$payload ne ""} { j #as-is $payload }
+        }]
+}
+
+test muc-create-room-configures-then-opens {a created room is configured before the command runs} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        c muc createRoom -jid call@muc.example.com -nick me -hidden 1 \
+            -config {muc#roomconfig_membersonly 1 muc#roomconfig_whois anyone} \
+            -command {apply {{room} { set ::got [list done $room] }}} \
+            -onerror {apply {{why} { set ::got [list failed $why] }}}
+        c.conn feed [muc_presence from call@muc.example.com/me self 1 \
+            role moderator affiliation owner codes 201]
+        muc_reply_last [j query -ns http://jabber.org/protocol/muc#owner { j #as-is [muc_owner_form] }]
+        set submit [muc_owner_request]
+        set fields {}
+        xsearch $submit query x field -script f {
+            lappend fields [xsearch $f -get @var] [xsearch $f value -get body]
+        }
+        set before $::got
+        muc_reply_last ""
+        list $before [dict get $fields muc#roomconfig_membersonly] \
+            [dict get $fields muc#roomconfig_whois] $::got \
+            [c muc isHidden -jid call@muc.example.com]
+    } -result {{} 1 anyone {done call@muc.example.com} 1}
+
+test muc-create-room-existing-is-an-error {a room that was already there is left, not taken over} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        c muc createRoom -jid call@muc.example.com -nick me \
+            -command {apply {{room} { set ::got done }}} \
+            -onerror {apply {{why} { set ::got $why }}}
+        c.conn feed [muc_presence from call@muc.example.com/me self 1]
+        set left ""
+        foreach w [c.conn get_written] {
+            if {[xsearch $w -get @type] eq "unavailable"} { set left [xsearch $w -get @to] }
+        }
+        list $::got $left
+    } -result {{room already exists} call@muc.example.com/me}
+
+test muc-create-room-refused-config {a configuration the service refuses fails the creation} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        c muc createRoom -jid call@muc.example.com -nick me \
+            -command {apply {{room} { set ::got done }}} \
+            -onerror {apply {{why} { set ::got $why }}}
+        c.conn feed [muc_presence from call@muc.example.com/me self 1 \
+            role moderator affiliation owner codes 201]
+        muc_reply_last [j query -ns http://jabber.org/protocol/muc#owner { j #as-is [muc_owner_form] }]
+        set req [muc_owner_request]
+        c.conn feed [j iq -type error -id [xsearch $req -get @id] -from call@muc.example.com {
+            j error -type modify { j not-acceptable -ns urn:ietf:params:xml:ns:xmpp-stanzas }
+        }]
+        set ::got
+    } -result {configuration refused: not-acceptable}
+
+# -- Finding our server's MUC service ----------------------------------------------
+
+proc muc_reply_to {req payload} {
+    c.conn feed [j iq -type result -id [xsearch $req -get @id] \
+        -from [xsearch $req -get @to] { j #as-is $payload }]
+}
+
+test muc-find-service {the first of the server's items that is a text conference service} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
+        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
+        set asked [llength [c.conn get_written]]
+        muc_reply_to [lindex [c.conn get_written] end] \
+            [j query -ns http://jabber.org/protocol/disco#items {
+                j item -jid upload.test.example.com
+                j item -jid conference.test.example.com
+            }]
+        muc_reply_to [lindex [c.conn get_written] end] \
+            [j query -ns http://jabber.org/protocol/disco#info {
+                j identity -category store -type file
+            }]
+        muc_reply_to [lindex [c.conn get_written] end] \
+            [j query -ns http://jabber.org/protocol/disco#info {
+                j identity -category conference -type text
+            }]
+        # Cached: no more asking.
+        set n [llength [c.conn get_written]]
+        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
+        list $asked $::got [expr {[llength [c.conn get_written]] == $n}]
+    } -result {1 {conference.test.example.com conference.test.example.com conference.test.example.com} 1}
+
+test muc-find-service-none {a server with no conference service answers ""} \
+    {*}$muc_common \
+    -body {
+        set ::got unset
+        c muc findService -command {apply {{jid} { set ::got $jid }}}
+        muc_reply_to [lindex [c.conn get_written] end] \
+            [j query -ns http://jabber.org/protocol/disco#items {}]
+        set ::got
+    } -result {}
+
 test muc-leave-sends-unavailable {leave sends unavailable presence} \
     {*}$muc_common \
     -body {

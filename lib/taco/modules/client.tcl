@@ -1,7 +1,7 @@
 snit::type taco_client {
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
-        nick chats chatlist author extdisco calls omemo file notify
+        nick chats chatlist author extdisco calls groupcall omemo file notify
     }
     variable _modules $mods
     foreach mod $mods {
@@ -289,6 +289,8 @@ snit::type taco_client {
                     $roster OnSubscription $stanza
                 } else {
                     $muc OnPresence $stanza
+                    # After muc: a Muji leg needs the occupant's real JID.
+                    $groupcall OnPresence $stanza
                     $presence OnPresence $stanza
                 }
             }

@@ -48,11 +48,11 @@ proc ::tacky::media::host::Op {op args} {
 }
 
 namespace eval ::tacky::media::host {
-    namespace export Open Close Capabilities Codecs CreatePeer ClosePeer \
+    namespace export Open Close Capabilities Codecs PayloadTypes CreatePeer ClosePeer \
         AddTrack SetLocalDescription SetRemoteDescription AddRemoteCandidate \
         AttachAudio SetAudioDevice SetAudioVolume AttachVideoSender \
         AttachVideoReceiver SetVideoEnabled SetVideoDevice \
-        EnumerateAudioDevices EnumerateCameras
+        OpenPreview ClosePreview EnumerateAudioDevices EnumerateCameras
 }
 
 # Lifecycle
@@ -77,13 +77,20 @@ proc ::tacky::media::host::Close {} {
 proc ::tacky::media::host::Capabilities {} {
     return {
         audioDevices 0 audioVolume 0 cameras 0 videoDevice 0 videoChannel 1
-        autoAnswer 0 sdpSanitize 0 trickleIce 1
+        preview 1 autoAnswer 0 sdpSanitize 0 trickleIce 1
     }
 }
 
 # No opinion: what the app's stack decodes is the app's to know.
 proc ::tacky::media::host::Codecs {} {
     return {audio {} video {}}
+}
+
+# The usual browser ids, for announcing a Muji conference; the browser
+# negotiates its own per session.
+proc ::tacky::media::host::PayloadTypes {} {
+    return {audio {{id 111 name opus clockrate 48000 channels 2}}
+            video {{id 96 name VP8 clockrate 90000}}}
 }
 
 # Peer connections
@@ -175,6 +182,21 @@ proc ::tacky::media::host::AttachVideoReceiver {h track args} {
 proc ::tacky::media::host::SetVideoEnabled {h args} {
     set opts [dict merge {-on 1} $args]
     Command setVideoEnabled -pc $h -on [dict get $opts -on]
+    return
+}
+
+# A self-view with no pc, under $name; the app shares its one camera with
+# every sender.
+proc ::tacky::media::host::OpenPreview {name args} {
+    set opts [dict merge {-device-id ""} $args]
+    Command openPreview -pc $name -deviceId [dict get $opts -device-id]
+    ::tacky::media::emit $name videoChannel track "" direction preview \
+        mid "" channel [dict create kind host id $name]
+    return
+}
+
+proc ::tacky::media::host::ClosePreview {name} {
+    Command closePreview -pc $name
     return
 }
 

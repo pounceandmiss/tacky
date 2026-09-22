@@ -1,4 +1,7 @@
-# tacky muc join -acc $jid -jid $room -nick $nick ?-password $pw? ?-history {...}?
+# tacky muc join -acc $jid -jid $room -nick $nick ?-password $pw? ?-history {...}? ?-hidden 0|1?
+#   ;# -hidden: a room for tacky's own use (a group call's): not bookmarked,
+#   ;# listed or archived; events stay on the bus tagged -hidden 1, messages
+#   ;# are dropped.
 # tacky muc leave -acc $jid -jid $room ?-status $text?
 # tacky muc nick -acc $jid -jid $room -nick $newNick
 # tacky muc status -acc $jid -jid $room ?-show $val? ?-status $text?
@@ -18,10 +21,14 @@
 # tacky muc configSet -acc $jid -jid $room -form $formDict ?-command $cb?
 # tacky muc configCancel -acc $jid -jid $room ?-command $cb?
 # tacky muc createInstant -acc $jid -jid $room ?-command $cb?
+# tacky muc createRoom -acc $jid -jid $room -nick $nick ?-hidden 0|1? ?-config {var value ...}? ?-command $cb? ?-onerror $ecb?
+#   ;# a new room, configured before anyone can enter; cb gets the room JID,
+#   ;# ecb a reason. An existing room is an error.
 # tacky muc destroyRoom -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
 # tacky muc registerGet -acc $jid -jid $room ?-command $cb? ?-onerror $ecb? ;# cb gets a form dict
 # tacky muc registerSet -acc $jid -jid $room -form $formDict ?-command $cb?
 # tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb? ?-onerror $ecb?
+# tacky muc findService -acc $jid -command $cb   ;# cb gets our server's MUC service JID, "" if none
 # tacky muc reservedNick -acc $jid -jid $room ?-command $cb?
 #
 # tacky muc getSubject -acc $jid -jid $room
@@ -32,7 +39,8 @@
 # tacky muc myAffiliation -acc $jid -jid $room
 # tacky muc haveVoice -acc $jid -jid $room
 # tacky muc isJoined -acc $jid -jid $room
-# tacky muc rooms -acc $jid
+# tacky muc isHidden -acc $jid -jid $room
+# tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
 # tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes
@@ -62,6 +70,11 @@ snit::type taco_muc {
 
     # roomJid -> join -command callback (pending joins)
     variable JoinCallbacks -array {}
+    # Our server's MUC service, probed once per session; ServiceWaiters are
+    # the callers waiting on the probe.
+    variable ServiceJid ""
+    variable ServiceFound 0
+    variable ServiceWaiters {}
 
     # Cap on occupants tracked per room; new ones past it are dropped.
     typevariable MaxOccupants 10000
@@ -88,14 +101,15 @@ snit::type taco_muc {
     # =====================================================================
 
     method join {args} {
-        array set opts {-password "" -history {} -command ""}
+        array set opts {-password "" -history {} -command "" -hidden 0}
         array set opts $args
         set opts(-jid) [jid norm $opts(-jid)]
 
         # Initialize room tracking state
         set Rooms($opts(-jid)) [dict create \
             nick $opts(-nick) myOccupantId "" subject "" joined 0 \
-            leaving 0 occupants [dict create]]
+            leaving 0 occupants [dict create] \
+            hidden [expr {$opts(-hidden) ? 1 : 0}] created 0]
 
         if {$opts(-command) ne ""} {
             set JoinCallbacks($opts(-jid)) $opts(-command)
@@ -125,7 +139,7 @@ snit::type taco_muc {
             }
         }]
 
-        $client emit muc <Joining> -jid $opts(-jid)
+        $self Emit $opts(-jid) <Joining> -jid $opts(-jid)
     }
 
     method leave {args} {
@@ -170,6 +184,30 @@ snit::type taco_muc {
                 j status -body $opts(-status)
             }
         }]
+    }
+
+    # Our presence to a joined room with extra child nodes (e.g. XEP-0272
+    # Muji). Carries our caps: occupants see only the room's rebroadcast.
+    method sendPresence {roomJid nodes} {
+        set roomJid [jid norm $roomJid]
+        if {![info exists Rooms($roomJid)]} return
+        set nick [dict get $Rooms($roomJid) nick]
+        $client write [j presence -to $roomJid/$nick {
+            j #as-is [$client caps cNode]
+            foreach node $nodes {
+                j #as-is $node
+            }
+        }]
+    }
+
+    # The real JID behind an occupant, "" when the room hides it or the
+    # nick is unknown.
+    method realJid {roomJid nick} {
+        set roomJid [jid norm $roomJid]
+        if {![info exists Rooms($roomJid)]} { return "" }
+        set occs [dict get $Rooms($roomJid) occupants]
+        if {![dict exists $occs $nick]} { return "" }
+        return [dict get $occs $nick jid]
     }
 
     # =====================================================================
@@ -410,6 +448,125 @@ snit::type taco_muc {
             }]
     }
 
+    method createRoom {args} {
+        array set opts {-jid "" -nick "" -hidden 0 -config {} -command "" -onerror ""}
+        array set opts $args
+        set room [jid norm $opts(-jid)]
+        set done [list $opts(-command) $opts(-onerror)]
+        $self join -jid $room -nick $opts(-nick) -hidden $opts(-hidden) \
+            -history {maxstanzas 0} \
+            -command [mymethod OnCreateJoined $room $opts(-config) $done]
+    }
+
+    method OnCreateJoined {room config done result} {
+        if {[dict exists $result -error]} {
+            $self CreateFailed $room $done "cannot enter: [dict get $result -error]" 0
+            return
+        }
+        if {![dict get $Rooms($room) created]} {
+            $self CreateFailed $room $done "room already exists" 1
+            return
+        }
+        $self configGet -jid $room \
+            -command [mymethod OnCreateForm $room $config $done] \
+            -onerror [mymethod OnCreateNoForm $room $done]
+    }
+
+    method OnCreateNoForm {room done msg} {
+        $self CreateFailed $room $done "no configuration form: $msg" 1
+    }
+
+    method OnCreateForm {room config done form} {
+        if {$form eq ""} {
+            $self CreateFailed $room $done "no configuration form" 1
+            return
+        }
+        # Fields the service does not offer are skipped, not errors.
+        $self configSet -jid $room -form [::tacky::forms::apply $form $config] \
+            -command [mymethod OnCreateConfigured $room $done]
+    }
+
+    method OnCreateConfigured {room done stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            $self CreateFailed $room $done \
+                "configuration refused: [dict get [stanza_error $stanza] condition]" 1
+            return
+        }
+        lassign $done command
+        if {$command ne ""} { {*}$command $room }
+    }
+
+    # A room we could not set up is left, so it does not linger half made.
+    method CreateFailed {room done reason inRoom} {
+        jlog warn "muc: $room: $reason"
+        if {$inRoom} { $self leave -jid $room }
+        lassign $done command onerror
+        if {$onerror ne ""} { {*}$onerror $reason }
+    }
+
+    # =====================================================================
+    # Our server's MUC service
+    # =====================================================================
+
+    # The first of the server's disco items that is a text conference
+    # service.
+    method findService {args} {
+        array set opts {-command ""}
+        array set opts $args
+        if {$ServiceFound} {
+            {*}$opts(-command) $ServiceJid
+            return
+        }
+        lappend ServiceWaiters $opts(-command)
+        if {[llength $ServiceWaiters] > 1} return
+        $client iq request -type get -to [jid domain [$client cget -jid]] \
+            -payload [j query -ns http://jabber.org/protocol/disco#items] \
+            -command [mymethod OnServiceItems]
+    }
+
+    method OnServiceItems {stanza} {
+        set items {}
+        if {[xsearch $stanza -get @type] eq "result"} {
+            xsearch $stanza query item -script it {
+                set ij [xsearch $it -get @jid]
+                if {$ij ne ""} { lappend items $ij }
+            }
+        }
+        $self ProbeService $items
+    }
+
+    method ProbeService {items} {
+        if {![llength $items]} {
+            $self ServiceResolved ""
+            return
+        }
+        set items [lassign $items first]
+        $client iq request -type get -to $first \
+            -payload [j query -ns http://jabber.org/protocol/disco#info] \
+            -command [mymethod OnServiceInfo $first $items]
+    }
+
+    method OnServiceInfo {probed rest stanza} {
+        set isMuc 0
+        xsearch $stanza query identity -script id {
+            if {[xsearch $id -get @category] eq "conference"
+                    && [xsearch $id -get @type] eq "text"} { set isMuc 1 }
+        }
+        if {$isMuc} {
+            $self ServiceResolved $probed
+        } else {
+            $self ProbeService $rest
+        }
+    }
+
+    method ServiceResolved {jid} {
+        set ServiceJid $jid
+        set ServiceFound 1
+        set waiters $ServiceWaiters
+        set ServiceWaiters {}
+        foreach cmd $waiters { {*}$cmd $jid }
+    }
+
     # =====================================================================
     # Room destruction (muc#owner)
     # =====================================================================
@@ -549,10 +706,15 @@ snit::type taco_muc {
         return [dict get $Rooms($jid) joined]
     }
 
+    tackymethod isHidden {args} {
+        set room [jid norm [dict get $args -jid]]
+        expr {[info exists Rooms($room)] && [dict get $Rooms($room) hidden]}
+    }
+
     tackymethod rooms {args} {
         set result {}
         foreach jid [array names Rooms] {
-            if {[dict get $Rooms($jid) joined]} {
+            if {[dict get $Rooms($jid) joined] && ![dict get $Rooms($jid) hidden]} {
                 lappend result $jid
             }
         }
@@ -623,7 +785,7 @@ snit::type taco_muc {
             unset Rooms($roomJid)
         }
 
-        $client emit muc <Error> -jid $roomJid -error $errorType -stanza $stanza
+        $self Emit $roomJid <Error> -jid $roomJid -error $errorType -stanza $stanza
     }
 
     method OnSelfPresence {roomJid nick stanza mucX codes} {
@@ -643,33 +805,41 @@ snit::type taco_muc {
         if {![dict get $Rooms($roomJid) joined]} {
             # First self-presence = join complete
             dict set Rooms($roomJid) joined 1
+            # Status 201: a new room, locked until configured. Set before
+            # the join callback, which reads it.
+            dict set Rooms($roomJid) created [expr {201 in $codes}]
 
             if {[info exists JoinCallbacks($roomJid)]} {
                 set cmd $JoinCallbacks($roomJid)
                 unset JoinCallbacks($roomJid)
-                {*}$cmd [list -jid $roomJid -nick $nick]
+                {*}$cmd [list -jid $roomJid -nick $nick \
+                    -created [dict get $Rooms($roomJid) created]]
             }
 
-            $client emit muc <Joined> -jid $roomJid -nick $nick
+            $self Emit $roomJid <Joined> -jid $roomJid -nick $nick
 
             # Fetch room avatar for bookmark display
-            $client avatar ensureVCard $roomJid
+            if {![dict get $Rooms($roomJid) hidden]} {
+                $client avatar ensureVCard $roomJid
+            }
 
             # Status 201 = room was just created, needs configuration
             if {201 in $codes} {
-                $client emit muc <RoomCreated> -jid $roomJid
+                $self Emit $roomJid <RoomCreated> -jid $roomJid
             }
         }
 
-        $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
-        $client emit muc <Presence> -jid $roomJid -nick $nick \
+        if {![dict get $Rooms($roomJid) hidden]} {
+            $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
+        }
+        $self Emit $roomJid <Presence> -jid $roomJid -nick $nick \
             -occupant [$self WithCaps $roomJid $occupant]
 
         # Every occupant's caps are relative to my role/affiliation, which may
         # have just changed; refresh them all.
         dict for {onick occ} [dict get $Rooms($roomJid) occupants] {
             if {$onick eq $nick} continue
-            $client emit muc <Presence> -jid $roomJid -nick $onick \
+            $self Emit $roomJid <Presence> -jid $roomJid -nick $onick \
                 -occupant [$self WithCaps $roomJid $occ]
         }
     }
@@ -684,8 +854,10 @@ snit::type taco_muc {
         }
         set occupant [$self ParseItem $mucX $nick $stanza]
         dict set Rooms($roomJid) occupants $nick $occupant
-        $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
-        $client emit muc <Presence> -jid $roomJid -nick $nick \
+        if {![dict get $Rooms($roomJid) hidden]} {
+            $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
+        }
+        $self Emit $roomJid <Presence> -jid $roomJid -nick $nick \
             -occupant [$self WithCaps $roomJid $occupant]
     }
 
@@ -705,7 +877,7 @@ snit::type taco_muc {
             set destroyReason [xsearch $destroyNode reason -get body]
 
             $self CleanupRoom $roomJid
-            $client emit muc <Destroyed> -jid $roomJid -altRoom $altRoom -reason $destroyReason
+            $self Emit $roomJid <Destroyed> -jid $roomJid -altRoom $altRoom -reason $destroyReason
             return
         }
 
@@ -721,7 +893,7 @@ snit::type taco_muc {
                 dict set Rooms($roomJid) nick $newNick
             }
 
-            $client emit muc <NickChanged> -jid $roomJid -oldNick $nick -newNick $newNick -self $isSelf
+            $self Emit $roomJid <NickChanged> -jid $roomJid -oldNick $nick -newNick $newNick -self $isSelf
             return
         }
 
@@ -732,12 +904,12 @@ snit::type taco_muc {
 
         # Kicked (307)
         if {307 in $codes && !(333 in $codes)} {
-            $client emit muc <Kicked> -jid $roomJid -nick $nick -actor $actor -reason $reason
+            $self Emit $roomJid <Kicked> -jid $roomJid -nick $nick -actor $actor -reason $reason
         }
 
         # Banned (301)
         if {301 in $codes} {
-            $client emit muc <Banned> -jid $roomJid -nick $nick -actor $actor -reason $reason
+            $self Emit $roomJid <Banned> -jid $roomJid -nick $nick -actor $actor -reason $reason
         }
 
         if {$isSelf} {
@@ -746,7 +918,7 @@ snit::type taco_muc {
             return
         }
 
-        $client emit muc <Unavailable> \
+        $self Emit $roomJid <Unavailable> \
             -jid $roomJid -nick $nick -reason $reason -codes $codes -occupant $occupant
     }
 
@@ -821,15 +993,18 @@ snit::type taco_muc {
                 return 1
             }
 
-            # A bodyless groupchat message carrying an XEP-0444 <reactions>
-            # or an XEP-0424/0425 <retract> (moderation broadcast) is
-            # forwarded too; ingestLive/Classify handle it. Other bodyless
-            # groupchat stanzas fall through to the status-code handling below.
+            # A bodyless groupchat message carrying an XEP-0444 <reactions>,
+            # an XEP-0424/0425 <retract> (moderation broadcast) or an
+            # XEP-0482 call invite or answer is forwarded too;
+            # ingestLive/Classify handle it. Other bodyless groupchat
+            # stanzas fall through to the status-code handling below.
             set hasReactions [expr {[llength \
                 [xsearch $stanza reactions -ns urn:xmpp:reactions:0]] > 0}]
             set hasRetract [expr {[llength \
                 [xsearch $stanza retract -ns urn:xmpp:message-retract:1]] > 0}]
-            if {$bodyText ne "" || $hasReactions || $hasRetract} {
+            set hasCall [expr {[llength \
+                [xsearch $stanza * -ns urn:xmpp:call-invites:0]] > 0}]
+            if {$bodyText ne "" || $hasReactions || $hasRetract || $hasCall} {
                 $self OnGroupchatMessage $roomJid $nick $stanza
                 return 1
             }
@@ -838,7 +1013,7 @@ snit::type taco_muc {
             if {$mucX ne ""} {
                 set codes [$self ParseStatusCodes $mucX]
                 if {[llength $codes] > 0} {
-                    $client emit muc <ConfigChanged> -jid $roomJid -codes $codes
+                    $self Emit $roomJid <ConfigChanged> -jid $roomJid -codes $codes
                 }
             }
             return 1
@@ -864,7 +1039,7 @@ snit::type taco_muc {
                 set roomJid [jid norm [jid bare $from]]
                 set itemAffil [xsearch $mucX item -get @affiliation]
                 set itemJid [xsearch $mucX item -get @jid]
-                $client emit muc <AffiliationChanged> \
+                $self Emit $roomJid <AffiliationChanged> \
                     -jid $roomJid -target $itemJid -affiliation $itemAffil
                 return 1
             }
@@ -877,11 +1052,12 @@ snit::type taco_muc {
         if {[info exists Rooms($roomJid)]} {
             dict set Rooms($roomJid) subject $subjectText
         }
-        $client emit muc <Subject> -jid $roomJid -nick $nick -subject $subjectText
+        $self Emit $roomJid <Subject> -jid $roomJid -nick $nick -subject $subjectText
     }
 
     method OnGroupchatMessage {roomJid nick stanza} {
         if {![info exists Rooms($roomJid)]} { return }
+        if {[dict get $Rooms($roomJid) hidden]} return
         set myOcc [dict get $Rooms($roomJid) myOccupantId]
         set occ [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
         # Fail closed: with an occupant-id on the stanza but none captured for
@@ -896,6 +1072,7 @@ snit::type taco_muc {
     }
 
     method OnPrivateMessage {roomJid nick stanza} {
+        if {[$self isHidden -jid $roomJid]} return
         $client message ingestLive ${roomJid}/${nick} $stanza
     }
 
@@ -912,7 +1089,7 @@ snit::type taco_muc {
         set declinerJid [xsearch $declineNode -get @from]
         set reason [xsearch $declineNode reason -get body]
 
-        $client emit muc <Decline> \
+        $self Emit $roomJid <Decline> \
             -jid $roomJid -from $declinerJid -reason $reason
     }
 
@@ -921,7 +1098,7 @@ snit::type taco_muc {
         set reqJid [xsearch $xdataNode field @var muc#jid value -get body]
         set reqNick [xsearch $xdataNode field @var muc#roomnick value -get body]
 
-        $client emit muc <VoiceRequest> \
+        $self Emit $roomJid <VoiceRequest> \
             -jid $roomJid -from $reqJid -nick $reqNick \
             -form [::tacky::forms::parse $xdataNode]
     }
@@ -1192,9 +1369,24 @@ snit::type taco_muc {
         if {[info exists Rooms($roomJid)]} {
             set myNick [dict get $Rooms($roomJid) nick]
         }
+        set hidden [$self isHidden -jid $roomJid]
         $self CleanupRoom $roomJid
-        $client emit muc <Left> -jid $roomJid -nick $myNick \
+        $self EmitAs $hidden <Left> -jid $roomJid -nick $myNick \
             -involuntary $involuntary -codes $codes
+    }
+
+    # A hidden room's events go only on the bus, tagged -hidden 1 so
+    # bookmarks and the stores skip them; never to the frontend.
+    method Emit {roomJid event args} {
+        $self EmitAs [$self isHidden -jid $roomJid] $event {*}$args
+    }
+
+    method EmitAs {hidden event args} {
+        if {$hidden} {
+            $client bus publish muc:$event -hidden 1 {*}$args
+        } else {
+            $client emit muc $event {*}$args
+        }
     }
 
     method CleanupRoom {roomJid} {

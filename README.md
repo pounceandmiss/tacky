@@ -22,6 +22,7 @@ Because the backend is fully decoupled from the GUI and reachable over JSON, the
 
 ## Key features support
 - Modern calls compatible with Conversations and Dino
+- Group calls in any room (XEP-0272 Muji), compatible with Dino and Movim
 - OMEMO (only direct messages)
 - Attachments
 

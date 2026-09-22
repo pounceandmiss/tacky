@@ -7,6 +7,7 @@
     storage  (default)  the store survives a reload
     tcl      ?dir=&file=&match=   tacky's Tcl test suite, in the browser
     call     ?ws=&jid=&pass=&jid2=&pass2=   two accounts, one call
+    groupcall  ... &jid3=&pass3=   three accounts, one hosted video call
 
   Served by wasm/test/serve.mjs; browser.mjs reads the result out over CDP.
 -->
@@ -190,6 +191,19 @@ async function callScenario() {
         a.remote?.sid === incoming[3].sid && b.remote?.sid === incoming[3].sid,
         `${a.remote?.sid} / ${b.remote?.sid}`);
 
+    // The callee adds no tracks, but must still send.
+    let sentByCallee = 0;
+    for (let i = 0; i < 40 && sentByCallee === 0; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        sentByCallee = 0;
+        for (const p of b.media.peers.values()) {
+            (await p.conn.getStats()).forEach((r) => {
+                if (r.type === 'outbound-rtp' && r.kind === 'audio') sentByCallee += r.packetsSent ?? 0;
+            });
+        }
+    }
+    check('the callee sends its mic', sentByCallee > 0, `${sentByCallee} packets`);
+
     a.client.send(['calls', 'hangup', { acc: a.jid, sid: incoming[3].sid }]);
     check('the call ends', (await b.client.event('calls', 'Ended', () => true, 20_000)) !== null);
 
@@ -197,10 +211,207 @@ async function callScenario() {
     check('both backends stop', (await a.client.stop()) && (await b.client.stop()));
 }
 
+// -- groupcall: three accounts in one hosted video call, one page, one camera --
+//
+// One backend, three accounts, one media host, so one camera, as in wacky.
+// Romeo starts a call and invites the others. As people leave, the rest keep
+// their video, Romeo's self-view (the call's preview) keeps running, and the
+// camera is opened only once.
+
+// Video frames decoded and encoded so far on a peer connection.
+async function videoFrames(conn) {
+    const n = { decoded: 0, encoded: 0 };
+    (await conn.getStats()).forEach((r) => {
+        if (r.kind !== 'video') return;
+        if (r.type === 'inbound-rtp') n.decoded += r.framesDecoded ?? 0;
+        if (r.type === 'outbound-rtp') n.encoded += r.framesEncoded ?? 0;
+    });
+    return n;
+}
+
+// What a connection is doing, for a check that failed.
+async function describe(conn) {
+    const f = await videoFrames(conn);
+    const ts = conn.getTransceivers().map((t) =>
+        `${t.receiver.track.kind}:${t.mid ?? '-'}:${t.currentDirection ?? t.direction}:${t.sender.track?.readyState ?? 'none'}`);
+    return `[${ts.join(' ')} dec=${f.decoded} enc=${f.encoded}]`;
+}
+
+// '' once every connection decodes `by` more frames within `ms`, else what
+// the connections were doing.
+async function decoding(conns, by = 10, ms = 20_000) {
+    if (conns.length === 0) return 'no connections';
+    const start = await Promise.all(conns.map(videoFrames));
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+        const now = await Promise.all(conns.map(videoFrames));
+        if (now.every((n, i) => n.decoded >= start[i].decoded + by)) return '';
+    }
+    return (await Promise.all(conns.map(describe))).join(' ');
+}
+
+// Whether frames painted from `stream` keep growing.
+async function playing(stream, ms = 10_000) {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    const frames = () => video.getVideoPlaybackQuality().totalVideoFrames;
+    const start = frames();
+    const deadline = Date.now() + ms;
+    try {
+        while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250));
+            if (frames() >= start + 10) return true;
+        }
+        return false;
+    } finally {
+        video.srcObject = null;
+    }
+}
+
+async function groupcallScenario() {
+    const romeo = { jid: params.get('jid2'), pass: params.get('pass2'), nick: 'romeo' };
+    const test = { jid: params.get('jid'), pass: params.get('pass'), nick: 'test' };
+    const juliet = { jid: params.get('jid3'), pass: params.get('pass3'), nick: 'juliet' };
+    const all = [romeo, test, juliet];
+
+    // One camera for the page: count every time anyone opens it.
+    const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    let cameraOpens = 0;
+    navigator.mediaDevices.getUserMedia = (constraints) => {
+        if (constraints?.video) cameraOpens++;
+        return gum(constraints);
+    };
+
+    const previews = new Map();
+    let media = null;
+    const client = createClient({
+        ws: WS,
+        transient: true,
+        onEvent: (frame) => {
+            if (frame[0] === 'event' && frame[1] === 'media' && frame[2] === 'HostCommand') {
+                media.command(frame[3]);
+            }
+        },
+    });
+    media = createMediaHost({
+        send: (frame) => client.send(frame),
+        onPreview: (name, stream) => {
+            if (stream) previews.set(name, stream);
+            else previews.delete(name);
+        },
+        log: (line) => console.debug(line),
+    });
+    if (!check('the worker is up', (await client.ready) === true, client.fatal ?? '')) return;
+
+    // One account's events, and the next one not already in the log.
+    for (const side of all) {
+        side.event = (module, name, match = () => true, ms = 30_000) =>
+            client.event(module, name, (a) => a.acc === side.jid && match(a), ms);
+        side.next = (module, name, match = () => true, ms = 30_000) => {
+            const before = new Set(client.messages);
+            return client.until((m) => !before.has(m) && m[0] === 'event' && m[1] === module
+                && m[2] === name && m[3]?.acc === side.jid && match(m[3]), ms);
+        };
+        side.request = (module, op, args = {}, ms) => client.request([module, op, { acc: side.jid, ...args }], ms);
+        side.send = (module, op, args = {}) => client.send([module, op, { acc: side.jid, ...args }]);
+    }
+    // Both ends of a leg share a sid here; the pc name tells them apart.
+    const conns = (side) => [...media.peers].filter(([pc]) => pc.includes(`(${side.jid})`)).map(([, p]) => p.conn);
+    const connected = (sides, n) => sides.every((s) => conns(s).length === n
+        && conns(s).every((c) => c.connectionState === 'connected'));
+    const waitFor = async (cond, ms = 60_000) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline && !cond()) await new Promise((r) => setTimeout(r, 250));
+        return cond();
+    };
+
+    for (const side of all) {
+        client.send(['account', 'add', { acc: side.jid, password: side.pass }]);
+        await side.event('account', 'Added');
+        side.send('account', 'enable');
+        check(`${side.nick} connects`, (await side.event('conn', 'State', (a) => a.state === 'connected', 40_000)) !== null);
+    }
+
+    // Started from romeo's chat with juliet; test is invited. Both answer
+    // the invite message.
+    romeo.send('groupcall', 'start', { chat: juliet.jid, video: true });
+    const started = await romeo.event('groupcall', 'Started');
+    if (!check('romeo starts a hosted video call', started !== null)) return;
+    const call = started[3].jid;
+    status.textContent = `groupcall in ${call}`;
+    check('and is in it', (await romeo.event('groupcall', 'Joined', (a) => a.jid === call)) !== null);
+    const invited = await romeo.request('groupcall', 'invite', { jid: call, to: test.jid }, 30_000);
+    check('romeo invites test', invited?.[0] === 'result', JSON.stringify(invited));
+
+    for (const side of [juliet, test]) {
+        const invite = await side.event('message', 'New', (a) => a.message?.content?.type === 'call');
+        if (!check(`${side.nick} has the invite`, invite !== null)) return;
+        side.send('groupcall', 'join', { chat: invite[3].jid, timestamp: invite[3].message.timestamp, video: true });
+        check(`${side.nick} joins`, (await side.event('groupcall', 'Joined', (a) => a.jid === call)) !== null);
+    }
+
+    // The mesh: everyone a leg to each of the other two, every leg decoding.
+    check('everyone holds two connected legs', await waitFor(() => connected(all, 2)),
+        all.map((s) => `${s.nick}:${conns(s).map((c) => c.connectionState).join(',')}`).join(' '));
+    for (const side of all) {
+        const why = await decoding(conns(side));
+        check(`every leg of ${side.nick}'s is decoding video`, !why, why);
+    }
+
+    const preview = await romeo.event('groupcall', 'VideoPreview', (a) => a.jid === call, 10_000);
+    const selfView = preview ? previews.get(preview[3].id) : null;
+    check("romeo has the call's own self-view", !!selfView, JSON.stringify(preview?.[3] ?? null));
+    check('and it is playing', selfView && await playing(selfView));
+
+    // One leaves: the other two go on seeing each other.
+    test.send('groupcall', 'leave', { jid: call });
+    check('test leaves', (await test.event('groupcall', 'Left', (a) => a.jid === call)) !== null);
+    check('romeo and juliet each hold one leg now',
+        await waitFor(() => conns(romeo).length === 1 && conns(juliet).length === 1 && conns(test).length === 0, 30_000),
+        `${conns(romeo).length} / ${conns(juliet).length} / ${conns(test).length}`);
+    let why = await decoding([...conns(romeo), ...conns(juliet)]);
+    check('and still decode each other', !why, why);
+    check("romeo's self-view is still the one it was", selfView?.getVideoTracks()[0]?.readyState === 'live');
+
+    // Alone: no leg left, and the self-view goes on.
+    juliet.send('groupcall', 'leave', { jid: call });
+    check('juliet leaves', (await juliet.event('groupcall', 'Left', (a) => a.jid === call)) !== null);
+    check('romeo is alone in the call', await waitFor(() => conns(romeo).length === 0, 30_000));
+    check('his self-view track is live alone', selfView?.getVideoTracks()[0]?.readyState === 'live');
+    check('and still playing', selfView && await playing(selfView));
+    const rows = await romeo.request('groupcall', 'list');
+    check("the call's list row names it", rows?.[2]?.find?.((r) => r.jid === call)?.preview?.id === preview?.[3]?.id,
+        JSON.stringify(rows?.[2]));
+
+    // Back in: `start` in her chat with romeo rejoins the call still going.
+    const rejoined = juliet.next('groupcall', 'Joined', (a) => a.jid === call);
+    juliet.send('groupcall', 'start', { chat: romeo.jid, video: true });
+    check('juliet rejoins with start', (await rejoined) !== null);
+    check('and is connected to romeo again', await waitFor(() => connected([romeo, juliet], 1)),
+        `${conns(romeo).length} / ${conns(juliet).length}`);
+    why = await decoding([...conns(romeo), ...conns(juliet)]);
+    check('and video flows both ways again', !why, why);
+
+    check('the page opened the camera once', cameraOpens === 1, `${cameraOpens} opens`);
+
+    for (const side of [romeo, juliet]) side.send('groupcall', 'leave', { jid: call });
+    await romeo.next('groupcall', 'Left', (a) => a.jid === call);
+    await juliet.event('groupcall', 'Left', (a) => a.jid === call);
+    check('the camera is off once nobody holds it',
+        await waitFor(() => media.camera.track === null && media.camera.users.size === 0, 10_000),
+        [...media.camera.users].join(' '));
+    media.closeAll();
+    check('the backend stops', await client.stop());
+}
+
 const scenarios = {
     tcl: tclScenario,
     storage: storageScenario,
     call: callScenario,
+    groupcall: groupcallScenario,
 };
 
 (scenarios[scenario] ?? storageScenario)()

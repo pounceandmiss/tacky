@@ -76,6 +76,12 @@ export interface MediaHostOptions {
     onRemoteStream?: (sid: string, stream: MediaStream, kind: string) => void;
     /** This side's mic or camera is on the call `sid`, for a self-view. */
     onLocalStream?: (sid: string, stream: MediaStream, kind: string) => void;
+    /**
+     * A preview the backend opened (`openPreview`) is showing the camera, or
+     * with `null` has closed. `name` is the `id` of the `groupcall
+     * <VideoPreview>` it belongs to.
+     */
+    onPreview?: (name: string, stream: MediaStream | null) => void;
     /** Where to say what went wrong; the same is reported to the backend. */
     log?: (line: string) => void;
 }
@@ -88,10 +94,12 @@ export interface MediaHost {
     command(args: HostCommand): Promise<void>;
     /** Mute (`false`) or unmute the mic on a call; false if the call has no pc here. */
     setAudioEnabled(sid: string, on: boolean): boolean;
-    /** Close every peer connection. */
+    /** Close every peer connection and preview. */
     closeAll(): void;
     /** Live peer connections by pc. Not contract. */
     readonly peers: Map<string, { conn: RTCPeerConnection; sid: string }>;
+    /** The one camera every pc and preview shares: its track once open, and who holds it. Not contract. */
+    readonly camera: { track: MediaStreamTrack | null; opening: Promise<MediaStream> | null; users: Set<string> };
 }
 
 /** An RTCPeerConnection per pc the backend names; feed it every `media <HostCommand>`. */

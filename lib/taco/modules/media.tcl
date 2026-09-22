@@ -5,6 +5,7 @@
 # tacky media backend      ?-command $cb?  ;# active backend's name
 # tacky media list         ?-command $cb?  ;# backends this build offers
 # tacky media capabilities ?-command $cb?  ;# flag -> bool, see lib/media/media.tcl
+# tacky media payloadTypes ?-command $cb?  ;# kind -> payload dicts, what a group call is announced with
 # tacky media hostEvent    -pc $pc -type $t ...  ;# host backend only
 #
 # tacky listen media <Warning>     $cmd  ;# -name $requested -reason $text
@@ -71,6 +72,10 @@ snit::type taco_media {
 
     tackymethod capabilities {args} {
         return [::tacky::media capabilities]
+    }
+
+    tackymethod payloadTypes {args} {
+        return [::tacky::media payloadTypes]
     }
 
     # The frontend's half of the host backend. On any other backend this is

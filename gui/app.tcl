@@ -54,6 +54,8 @@ snit::type app_type {
         }
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
+        ::tacky listen -tag $self groupcall <Joined> [mymethod OnGroupCallJoined]
+        ::tacky listen -tag $self groupcall <Invited> [mymethod OnGroupCallInvited]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
@@ -348,5 +350,29 @@ snit::type app_type {
             -sid [dict get $ev -sid] \
             -peer [dict get $ev -to] \
             -direction outgoing
+    }
+
+    method OnGroupCallJoined {ev} {
+        groupcallwindow show \
+            -acc [dict get $ev -acc] \
+            -jid [dict get $ev -jid]
+    }
+
+    # The invite is stored in $chat; joining or declining answers that message.
+    method OnGroupCallInvited {ev} {
+        set acc [dict get $ev -acc]
+        set from [dict get $ev -from]
+        set chat [dict get $ev -chat]
+        set ts [dict get $ev -timestamp]
+        set who [expr {$from eq "" ? "Someone" : $from}]
+        set answer [tk_messageBox -type yesno -icon question \
+            -title "Group call" \
+            -message "$who is calling [regsub {\?join$} $chat {}]. Join?"]
+        if {$answer eq "yes"} {
+            ::tacky groupcall join -acc $acc -chat $chat -timestamp $ts \
+                -video [dict get $ev -video]
+        } else {
+            ::tacky groupcall decline -acc $acc -chat $chat -timestamp $ts
+        }
     }
 }

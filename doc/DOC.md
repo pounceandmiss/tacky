@@ -32,6 +32,7 @@ and get back replies and events.
   - [nick](#nick)
   - [file](#file)
   - [calls](#calls)
+  - [groupcall](#groupcall)
   - [media](#media)
   - [audio](#audio)
   - [video](#video)
@@ -43,6 +44,7 @@ and get back replies and events.
   - [Attachments](#attachments)
   - [OMEMO](#omemo-1)
   - [Voice and video calls](#voice-and-video-calls)
+  - [Group calls](#group-calls)
 
 # Using the backend
 
@@ -556,8 +558,10 @@ carries it in `client`.
     content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
             | {type: "media", attachments: [attachment], caption: string, formatting?: formatting, matches?: matches}
             | {type: "invite", room: string, inviter: string, reason: string, state: invite_state, body: string, formatting?: formatting, matches?: matches}
+            | {type: "call", room: string, id: string, inviter: string, video: bool, state: call_state, active: bool, live?: bool, body: string, formatting?: formatting, matches?: matches}
 
     invite_state = "pending" | "joined" | "declined"
+    call_state   = "pending" | "joined" | "declined" | "missed" | "elsewhere" | "ended"
 
     formatting = [{type: span_type, offset: int, length: int}]
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
@@ -619,10 +623,21 @@ becomes `caption`, and the files are listed in `attachments`.
   `type: "media"` carries an `attachments` list plus a `caption` (grouped
   attachments are just more than one entry). Each `attachment` has a `type` of
   `"image"` (render inline) or `"file"` (a download chip). `type: "invite"`
-  is an invitation to the group chat `room` (a bare JID) from `inviter` (a
-  bare JID, `""` when unknown), with their `reason` (often `""`); `body` reads
-  as the invite for anything not drawing it. See [muc](#muc) for where it
-  sits, what `state` means, and how to answer it. Deletion is a
+  invites you to the group chat `room` (bare JID) from `inviter` (bare JID,
+  `""` when unknown), with an optional `reason`; `body` is a plain-text
+  fallback. See [muc](#muc) for where it sits, `state`, and answering it.
+  `type: "call"` is an XEP-0482 invite to a group call in `room`, from
+  `inviter` (`""` when the room hides it), with `video` if it started with
+  video. `state` is `pending` until you answer, then `joined`, `declined`,
+  `elsewhere` (another device of yours answered), `missed` (retracted before
+  you answered) or `ended` (over when you tried); your own call reads
+  `joined`. `active` is whether you are in the call now, `live` whether
+  anyone is. `live` comes from a disco#info to the room (a hosted call's
+  room vanishes once empty), asked only for a chat's newest call (older ones
+  read `false`) and again on each accept, left or retract; it is absent
+  until the room answers, then the row arrives again as `message <Edited>`.
+  Answer with `groupcall join` / `groupcall decline` (see
+  [groupcall](#groupcall)); a change arrives as `message <Edited>`. Deletion is a
   message-level state rather than a content type, so future kinds like `call`
   or `system` extend this union - switch on `type` and tolerate unknown ones.
 - `formatting` (XEP-0393 styling spans) indexes into whichever of
@@ -699,18 +714,21 @@ Where an invite sits depends on who sent it:
   group chat marked `invited`.
 
 `content.state` is `joined` while you are a member of the room (bookmarked
-with `autojoin`, whether through this invite or not), else `declined` once you
-have turned it down, else `pending`. A change arrives as `message <Edited>`
-with the whole row, for every invite to the room at once when membership
-moves.
+with `autojoin`, through this invite or not), else `declined` if you turned
+it down, else `pending`. A change arrives as `message <Edited>` with the
+whole row, for every invite to the room at once when membership changes.
 
-`acceptInvite` joins: it bookmarks the room with `autojoin` and the password
-the invite carried, which never reaches the frontend. Accepting one you
-declined takes the decline back. `declineInvite` marks it `declined` and, for
-a relayed one, sends the inviter a decline through the room (a direct invite
-has no decline to send). The row stays as a record, except where that leaves
-a room's chat holding nothing but declined invites - a room you never joined -
-which is dropped whole, with a `chatlist <Remove>`.
+`acceptInvite` bookmarks the room with `autojoin` and the invite's password
+(never shown to the frontend), undoing any earlier decline. `declineInvite`
+marks it `declined` and, for a relayed invite, sends a decline through the
+room (a direct invite has none to send). The row stays as a record, unless
+the room's chat then holds only declined invites (a room you never joined):
+that chat is dropped with a `chatlist <Remove>`.
+
+A room tacky joins for its own use, such as a group call's room (see
+[groupcall](#groupcall)), is hidden from the frontend: never bookmarked or
+archived, its messages dropped, left out of `muc rooms`, and named by no
+`muc` or `bookmarks` event.
 
 ## notify
 
@@ -936,7 +954,8 @@ source: the `url` you passed, or the `path` when you passed no `url`.
     calls list {}                                                  -> [call_row]
 
     call_row = {sid: string, peer: string, direction: string, state: string,
-                peer_ringing: bool, video_local: bool, video_remote: bool}
+                peer_ringing: bool, group: string, video_local: bool,
+                video_remote: bool}
 
 `start` rings the peer; `video: true` offers a video track alongside audio.
 Take the session id from `<Outgoing>`.
@@ -953,7 +972,10 @@ is `outgoing` or `incoming`. Note that `ringing` means *you* are being rung, the
 callee side of `<Incoming>`; the caller side is `peer_ringing`, set once a peer
 device has answered `<Ringing>`. `peer` is bare, as the events report it, even
 after the session has latched a full JID. `video_local` is whether this side
-offered/is sending video; `video_remote` is whether the peer did.
+offered/is sending video; `video_remote` is whether the peer did. `group` is
+the room JID when the call is a leg of a [group call](#groupcall), else `""`.
+Legs are listed like any call, so a restarted frontend finds them, but they
+raise `groupcall <PeerJoined>` instead of `<Outgoing>`/`<Incoming>`.
 
 Events:
 
@@ -980,12 +1002,107 @@ for any call that had video up - `setVideo` only mutes the camera, it doesn't
 tear the video half down on its own. See
 [Voice and video calls](#voice-and-video-calls) for the stream's format.
 
+## groupcall
+
+    groupcall start        {chat: string, video?: bool}       a hosted call for a chat
+    groupcall join         {jid: string, video?: bool, chat?: string, id?: string}
+    groupcall join         {chat: string, timestamp: int, video?: bool}   answer a call invite
+    groupcall decline      {chat: string, timestamp: int}
+    groupcall inCall       {jid: string}                      -> bool
+    groupcall leave        {jid: string}
+    groupcall setVideo     {jid: string, on?: bool}           on default: true
+    groupcall invite       {jid: string, to: string}          XEP-0482, to a bare JID
+    groupcall status       {jid: string}                      -> {active: bool, joined: bool, count: int, mode: string}
+    groupcall participants {jid: string}                      -> [groupcall_peer]
+    groupcall list         {}                                 -> [groupcall_row]
+
+    groupcall_peer = {nick: string, jid: string, sid: string, state: string,
+                      audio: bool, video: bool, preparing: bool}
+    groupcall_row  = {jid: string, chat: string, hosted: bool, count: int,
+                      video: bool, mode: string, preview: {name?: string, id?: string}}
+
+A group call (XEP-0272 Muji) is held in a room, and `jid` is always that
+room's JID. There are two kinds:
+
+- **Hosted**: the call has a room of its own, as in Dino. `start` creates
+  one for `chat` (a group chat, bare or `?join`, or a contact): members-only,
+  showing real JIDs, with the chat's members let in, and posts an XEP-0482
+  invite to the chat. Each device enters under its own random nick, so an
+  account with several devices in the chat still works (under a shared nick
+  the room shows one device's presence for all). The room is hidden
+  elsewhere (see [muc](#muc)). To join one you were invited to, pass the
+  invite's room as `jid`, plus its `chat` and `id` so the chat hears you
+  accepted.
+- **In-room**: held in the group chat itself under your nick there, as in
+  Movim. `join` with the group chat's `jid` joins one; `start` never makes
+  one. Another device of yours in the chat under the same nick blocks
+  joining (`<Left>` says so).
+
+`join` of a room you are in joins its in-room call; any other room is
+entered as a hosted call's. `video: true` offers your camera. Each other
+participant becomes a leg: an ordinary [calls](#calls) session whose
+`<Active>`, `<Ended>`, `<Failed>`, `<Warning>`, `<VideoTrack>`,
+`<VideoPreview>` and `<VideoEnded>` carry the `sid` from `<PeerJoined>`.
+`leave` ends every leg and clears your announcement; for a hosted call it
+also posts `left` to the chat, or `retract` if you started it and nobody
+came. `setVideo` mutes the camera on all legs. `invite` sends a contact an
+invite, first letting them into a hosted call's room.
+
+`status` works for any joined room, in the call or not: `active` is whether
+anyone announces a call, `count` how many do, `joined` whether you do.
+`participants` lists everyone announcing, with `state` from your leg to
+them: `none` when you are not in the call, `expected` while waiting for
+them to connect, else the leg's `calls` state, or `ended`. `mode` is
+`mesh`.
+
+Events:
+
+    groupcall <Started>     {jid: string, chat: string}
+    groupcall <StartFailed> {chat: string, reason: string}
+    groupcall <Changed>     {jid: string, active: bool, count: int, joined: bool, chat?: string}
+    groupcall <Joined>      {jid: string, chat?: string}
+    groupcall <PeerJoined>  {jid: string, nick: string, peer: string, sid: string, video: bool}
+    groupcall <PeerLeft>    {jid: string, nick: string, peer: string, sid: string, reason: string}
+    groupcall <Left>        {jid: string, reason: string, chat?: string}
+    groupcall <Invited>     {jid: string, from: string, chat: string, timestamp: int, video: bool}
+    groupcall <Warning>     {jid: string, reason: string}
+    groupcall <VideoPreview> {jid: string, chat?: string} & frame_stream
+
+`<VideoPreview>` is your self-view while you are in a video call, alone or
+not; `groupcall list` repeats it as `preview`. It needs the backend's
+`preview` capability, which shares one camera across legs so legs coming
+and going don't touch it. Without it, each leg's `calls <VideoPreview>` is
+the self-view. A camera that fails to open raises `<Warning>` and the call
+goes on without it.
+
+`start` in a chat whose newest call's room still exists joins that call
+instead, with no `<Started>`; that is how you rejoin a call you left.
+`<Started>` gives a started call its `jid`, then `<Joined>` follows as for
+any join. Every join ends with `<Left>`, even one that never got in, whose
+`reason` then says why (`the call has ended`, `you are not on this call's
+guest list`, ...). `<Changed>`, `<Joined>` and `<Left>` carry the call's
+`chat` when it has one. `<Changed>` fires on any change to a call, for a
+"call in progress, join" banner. `<PeerLeft>` with reason `left the call`
+means the participant is gone; any other reason is a leg that ended while
+they still announce the call, and nothing redials.
+
+A call invite posted to one of your chats is kept as a message
+(`content.type` `"call"`, see [message](#message)). `join` / `decline` with
+its `chat` and `timestamp` answer it, as with `muc acceptInvite`: `join`
+enters the call and tells the chat, `decline` tells the chat no.
+`<Invited>` is the moment to ring for one arriving live; it is not raised
+for history a room replays or for an invite from another device of yours.
+See [Group calls](#group-calls).
+
 ## media
 
     media backend      {}                                  -> string   active backend
     media list         {}                                  -> [string] backends this build has
     media capabilities {}                                  -> {string: bool}
     media hostEvent    {pc: string, type: string, ...}     host backend only
+    media payloadTypes {}                                  -> {audio: [payload], video: [payload]}
+
+    payload = {id: int, name: string, clockrate: int, channels?: int}
 
 A media backend owns the media half of a call: ICE/DTLS/RTP and the mic,
 speaker and camera. One backend serves every account, and signaling (Jingle,
@@ -1017,6 +1134,8 @@ to grey out a control it would otherwise offer:
     cameras       `video enumerateCameras` returns anything
     videoDevice   `video setPreferredCamera` does anything
     videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
+    preview       a group call keeps a self-view of its own (`groupcall
+                  <VideoPreview>`), on one camera shared by every leg
 
 An absent capability breaks nothing: the matching call is accepted and does
 nothing, enumeration comes back empty, and a frontend that ignores all this
@@ -1052,6 +1171,8 @@ channel, JNI or JS.
     attachVideoReceiver    track
     setVideoEnabled        on: bool
     setVideoDevice         id
+    openPreview            deviceId   (pc names the preview, not a peer connection)
+    closePreview           -
     close                  -   (no pc: the backend is shutting down)
 
 `pc` is tacky's name for a peer connection, `track` its name for a track it
@@ -1073,6 +1194,19 @@ Report every track the peer adds: that is what makes tacky attach it, and the
 `attachAudio` or `attachVideoReceiver` that follows says what it is for.
 Those two also produce `calls <VideoTrack>` / `<VideoPreview>`, carrying the
 track handle as `id` in place of a frame stream name.
+
+An answerer gets no `addTrack`; it sends on the offer's m-lines. Make them
+sendrecv (a browser leaves them recvonly) before the answering
+`setLocalDescription`. The `attachAudio` and `attachVideoSender` that follow
+name the peer's track, by the name its `track` event gave it: put the mic or
+camera on that m-line, and treat it as yours for `setVideoEnabled` and mute.
+
+`openPreview` opens the camera with no peer connection, for a group call's
+self-view from joining to leaving; `closePreview` releases it. `groupcall
+<VideoPreview>` carries the preview's `pc` as its `id`. Share one camera
+between every sender and the preview (a track clone per sender), so a pc
+closing stops only its own clone and the preview never freezes. A camera
+that fails to open is an `error` on the preview with `op` openPreview.
 
 An event for a call that has ended is dropped; one with an unknown `type` or
 a missing key comes back as a `calls <Warning>` on that call; one with no
@@ -1692,3 +1826,58 @@ restarted has none of it. `calls list` per account rebuilds it: ask on
 comes up and when it reattaches to a backend that stayed up. On a fresh stream
 every sid has already been ended and forgotten before the backend reads the
 request, so the answer is authoritative: a call it does not name is over.
+
+## Group calls
+
+A call among a chat's members: XEP-0272 Multiparty Jingle (Muji), as Dino
+and Movim implement it, so tacky users can share a call with either. Each
+participant announces itself in its presence to the call's room, and
+`groupcall status` / `<Changed>` read the call off the occupants'
+presences. No server component is needed; any MUC service works.
+
+`groupcall start` holds the call in a room of its own, as Dino does, and
+posts an XEP-0482 invite to the chat pointing at it. Movim holds calls in
+the group chat itself; tacky joins those but never starts one. A separate
+room is what makes several devices on one account work: the chat shows one
+device's presence for all of them under the shared nick, so only that
+device could take part, while in the call's room each device has its own
+random nick. The room is members-only and shows real JIDs; the chat's
+members are let in, as is anyone who enters the chat during the call.
+
+It is a mesh: each participant holds a Jingle session with every other, so
+joining a call of *n* people opens *n* legs, each a `calls` session with
+its own media. Every leg encodes the microphone and camera separately
+(though the camera is opened once and shared), so a handful of people is
+the practical limit.
+
+The sequence, from `groupcall join`:
+
+1. Presence to the room with `<muji><preparing/></muji>`: we are about to
+   announce and want the codec map to hold still.
+2. Once the room echoes it, anyone else still preparing gets five seconds
+   to finish. Then the payload types: the intersection of what participants
+   announced, keeping their ids, cut to what our backend supports
+   (`media payloadTypes`); our own list if the call is new.
+3. Presence with the contents (`audio`, plus `video` if asked) and
+   `<Joined>`. Then a session-initiate carrying `<muji room='...'/>` to each
+   participant already announced: the joiner calls (XEP-0272 §3), so two
+   people never call each other at once. Each is a `<PeerJoined>`.
+4. Someone announcing after us calls us; their session-initiate is accepted
+   because they are announced in a room whose call we are in. Anyone else
+   sending one gets `item-not-found`, as with an unagreed 1:1 call.
+5. A participant dropping `<muji>` from their presence, or leaving the
+   room, has their leg hung up: `<PeerLeft>`. `groupcall leave` clears our
+   own presence, then terminates every leg: `<Left>`. Leaving the room, or
+   losing the stream, does the same.
+
+Sessions go to real JIDs, so the room must show them (`muc#roomconfig_whois`
+= anyone), as a hosted call's room always does. In an in-room call in a
+semi-anonymous room the announcement and banner still work, but a
+participant whose JID is hidden gets a `<Warning>` and no leg. If the room's
+codec set changes after we announced, we re-announce; legs already up keep
+what they negotiated.
+
+`groupcall invite` sends someone an XEP-0482 pointer to the call's room,
+arriving as `<Invited>`. Dino joins the room under a random nick (to Dino a
+Muji room is only for the call), so inviting a Dino user to an in-room call
+renames them in the group chat; a hosted call's room avoids this.
