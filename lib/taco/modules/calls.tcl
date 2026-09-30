@@ -128,6 +128,10 @@ snit::type taco_calls {
     # a handful, so anything past this is not worth keeping.
     typevariable MAX_PENDING_CANDIDATES 64
 
+    # How long ICE may stay disconnected before we warn: a hanging-up peer
+    # drops ICE first, and its session-terminate lands inside this.
+    typevariable DISCONNECT_GRACE_MS 2000
+
     variable client
     variable Calls           ;# sid -> dict (see file header)
     variable SdpErrors       ;# sid -> reason, see TakeSdpError
@@ -578,12 +582,16 @@ snit::type taco_calls {
     # emitted from the JMI handlers, not from here.
     method OnPcState {sid state} {
         # ICE lost consent. The backend recovers or moves on to failed by
-        # itself, so warn and leave the call running.
+        # itself, so warn if it lasts and leave the call running.
         if {$state eq "disconnected"} {
-            $client emit calls <Warning> -sid $sid \
-                -reason "media path interrupted"
+            if {[dict exists $Calls $sid]
+                    && ![dict exists $Calls $sid disconnect_timer]} {
+                dict set Calls $sid disconnect_timer \
+                    [after $DISCONNECT_GRACE_MS [mymethod WarnInterrupted $sid]]
+            }
             return
         }
+        $self CancelInterrupted $sid
         set mapped [$self MapPcState $state]
         if {$mapped eq ""} return
         dict set Calls $sid state $mapped
@@ -601,6 +609,18 @@ snit::type taco_calls {
             $self TeardownMedia $sid
             $self Cleanup $sid
         }
+    }
+
+    method WarnInterrupted {sid} {
+        if {![dict exists $Calls $sid disconnect_timer]} return
+        dict unset Calls $sid disconnect_timer
+        $client emit calls <Warning> -sid $sid -reason "media path interrupted"
+    }
+
+    method CancelInterrupted {sid} {
+        if {![dict exists $Calls $sid disconnect_timer]} return
+        after cancel [dict get $Calls $sid disconnect_timer]
+        dict unset Calls $sid disconnect_timer
     }
 
     method MapPcState {state} {
@@ -1199,6 +1219,7 @@ snit::type taco_calls {
     method Cleanup {sid} {
         dict unset SdpErrors $sid
         if {![dict exists $Calls $sid]} return
+        $self CancelInterrupted $sid
         dict unset Calls $sid
     }
 
