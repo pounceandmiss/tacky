@@ -63,6 +63,9 @@
 
 snit::type taco_messagestore {
     option -db -default ""
+    # {*}joinedcmd $room -> 0|1: whether we are a member, for an invite's
+    # state. Unset, no room counts as joined.
+    option -joinedcmd -default ""
 
     # Columns every message read path returns, in one place so a new column
     # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
@@ -70,7 +73,7 @@ snit::type taco_messagestore {
                           server_id, own_id, occupant_id, edited_ts, retracted,
                           reply_id, reply_to, raw_xml, server_status,
                           remote_status, encryption, sender_fp, fail_reason,
-                          attachments, invite}
+                          attachments, invite, invite_declined}
 
     constructor args {
         $self configurelist $args
@@ -154,9 +157,13 @@ snit::type taco_messagestore {
                 -- derived from XEP-0066 OOB / URL bodies on store. Empty
                 -- for plain text messages.
                 attachments    TEXT,
-                -- room invitation dict {room reason password} (see
-                -- ParseInvite); empty for anything else.
+                -- room invitation dict {room inviter reason password}
+                -- (see ParseInvite); empty for anything else.
                 invite         TEXT,
+                -- the invite's room, to find a room's invites; '' else.
+                invite_room    TEXT NOT NULL DEFAULT '',
+                -- turned down with `muc declineInvite`.
+                invite_declined INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(chat_jid, timestamp)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -236,16 +243,107 @@ snit::type taco_messagestore {
                 mentions  INTEGER NOT NULL DEFAULT 1
             );
         }
-        set columns [$options(-db) eval {
+        set db $options(-db)
+        set columns [$db eval {
             SELECT name FROM pragma_table_info('chat_message')
         }]
         if {"invite" ni $columns} {
-            $options(-db) transaction {
-                $options(-db) eval {
-                    ALTER TABLE chat_message ADD COLUMN invite TEXT
-                }
+            $db transaction {
+                $db eval {ALTER TABLE chat_message ADD COLUMN invite TEXT}
                 $self DropRoomPhantoms
             }
+        }
+        if {"invite_room" ni $columns} {
+            $db transaction {
+                $db eval {
+                    ALTER TABLE chat_message
+                    ADD COLUMN invite_room TEXT NOT NULL DEFAULT ''
+                }
+                $db eval {
+                    SELECT chat_jid, timestamp, invite FROM chat_message
+                    WHERE kind='message' AND invite != ''
+                } r {
+                    if {[catch {dict get $r(invite) room} room]} continue
+                    $db eval {
+                        UPDATE chat_message SET invite_room=$room
+                        WHERE chat_jid=$r(chat_jid) AND timestamp=$r(timestamp)
+                    }
+                }
+            }
+        }
+        if {"invite_declined" ni $columns} {
+            $db eval {
+                ALTER TABLE chat_message
+                ADD COLUMN invite_declined INTEGER NOT NULL DEFAULT 0
+            }
+        }
+        $db eval {
+            CREATE INDEX IF NOT EXISTS idx_chat_message_invite_room
+                ON chat_message(invite_room) WHERE invite_room != '';
+        }
+    }
+
+    # --- Invites ----------------------------------------------------
+
+    # One stored invitation as {invite declined}, or "" when the row at $ts
+    # in $jid is not one.
+    method inviteAt {jid ts} {
+        set found ""
+        $options(-db) eval {
+            SELECT invite, invite_declined FROM chat_message
+            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+              AND invite_room != ''
+        } r {
+            set found [dict create invite $r(invite) declined $r(invite_declined)]
+        }
+        return $found
+    }
+
+    method setInviteDeclined {jid ts declined} {
+        $options(-db) eval {
+            UPDATE chat_message SET invite_declined=$declined
+            WHERE chat_jid=$jid AND timestamp=$ts AND invite_room != ''
+        }
+    }
+
+    # Every stored invitation to $room, wherever it sits, as {chat_jid ts}.
+    method invitesToRoom {room} {
+        set found {}
+        $options(-db) eval {
+            SELECT chat_jid, timestamp FROM chat_message
+            WHERE invite_room=$room AND kind='message'
+        } r {
+            lappend found [list $r(chat_jid) $r(timestamp)]
+        }
+        return $found
+    }
+
+    # Whether $jid holds an invitation not yet turned down.
+    method pendingInvite {jid} {
+        $options(-db) exists {
+            SELECT 1 FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND invite_room != '' AND invite_declined=0
+        }
+    }
+
+    # Whether $jid holds only declined invitations.
+    method onlyDeclinedInvites {jid} {
+        set db $options(-db)
+        expr {[$db exists {
+                  SELECT 1 FROM chat_message
+                  WHERE chat_jid=$jid AND kind='message'}]
+              && ![$db exists {
+                  SELECT 1 FROM chat_message
+                  WHERE chat_jid=$jid AND kind='message'
+                    AND (invite_room = '' OR invite_declined=0)}]}
+    }
+
+    # Drop a chat's whole history, its holes and read mark with it.
+    method forgetChat {jid} {
+        $options(-db) eval {
+            DELETE FROM chat_message WHERE chat_jid=$jid;
+            DELETE FROM chat_own_read WHERE chat_jid=$jid;
         }
     }
 
@@ -268,10 +366,7 @@ snit::type taco_messagestore {
                 SELECT 1 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
             }]} continue
-            $db eval {
-                DELETE FROM chat_message WHERE chat_jid=$jid;
-                DELETE FROM chat_own_read WHERE chat_jid=$jid;
-            }
+            $self forgetChat $jid
         }
     }
 
@@ -419,16 +514,19 @@ snit::type taco_messagestore {
                 set mention [expr {[info exists m(mentions_me)] \
                     ? $m(mentions_me) : 0}]
                 set invite [expr {[info exists m(invite)] ? $m(invite) : ""}]
+                set inviteRoom [expr {[info exists m(invite_room)] \
+                    ? $m(invite_room) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, sender_fp, fail_reason, mentions_me,
-                        attachments, invite)
+                        attachments, invite, invite_room)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $senderFp, $failReason, $mention, $attach, $invite)
+                        $senderFp, $failReason, $mention, $attach, $invite,
+                        $inviteRoom)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -1283,27 +1381,39 @@ snit::type taco_messagestore {
                     attachments $atts \
                     caption [attachment_caption [dict get $d body] $atts]]
             } elseif {[dict exists $d invite] && [dict get $d invite] ne ""} {
-                set inv [dict merge {room "" reason "" password ""} \
+                set inv [dict merge {room "" inviter "" reason ""} \
                     [dict get $d invite]]
                 set content [dict create type invite \
-                    room [dict get $inv room] reason [dict get $inv reason] \
+                    room [dict get $inv room] inviter [dict get $inv inviter] \
+                    reason [dict get $inv reason] \
+                    state [$self InviteState [dict get $inv room] \
+                        [expr {[dict exists $d invite_declined]
+                            && [dict get $d invite_declined]}]] \
                     body [dict get $d body]]
-                if {[dict get $inv password] ne ""} {
-                    dict set content password [dict get $inv password]
-                }
             } else {
                 set content [dict create type text body [dict get $d body]]
             }
             if {$fmt ne ""} { dict set content formatting $fmt }
             dict set d content $content
         }
-        foreach k {body caption attachments formatting invite} { dict unset d $k }
+        foreach k {body caption attachments formatting invite invite_declined} {
+            dict unset d $k
+        }
         set reactions [$self reactionsForMessage \
             [dict get $d chat_jid] [dict get $d timestamp]]
         if {[dict size $reactions] > 0} {
             dict set d reactions $reactions
         }
         return $d
+    }
+
+    # joined outranks declined: declining and joining later is joining.
+    method InviteState {room declined} {
+        if {$options(-joinedcmd) ne "" && $room ne ""
+                && [{*}$options(-joinedcmd) $room]} {
+            return joined
+        }
+        return [expr {$declined ? "declined" : "pending"}]
     }
 
     method IsDuplicate {jid msg} {

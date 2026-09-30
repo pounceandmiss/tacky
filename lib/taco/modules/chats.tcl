@@ -62,6 +62,11 @@ snit::type taco_chats {
         catch {after cancel $AfterToken}
     }
 
+    # After a chat's history is dropped, any later message counts as new.
+    method forget {chatJid} {
+        dict unset MaxTimestamps $chatJid
+    }
+
     method OnMessage {chat_jid timestamp} {
         # Skip backfill: only emit for genuinely new messages
         if {[dict exists $MaxTimestamps $chat_jid] &&

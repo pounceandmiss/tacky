@@ -595,34 +595,36 @@ proc muc_latest {chat} {
     lindex [dict get [c message messagestore get latest $chat] messages] end
 }
 
-test muc-invite-stored-in-inviter-chat {a relayed invite lands in the inviter's chat} \
+test muc-invite-stored-in-room-chat {a relayed invite lands in the room's own chat} \
     {*}$muc_common \
     -body {
         c.conn feed [muc_invite sid inv-1]
-        set m [muc_latest alice@example.com]
+        set m [muc_latest room@muc.example.com?join]
         list [dict get $m from_jid] [dict get $m content] \
              [c db onecolumn {
                   SELECT count(*) FROM chat_message
-                  WHERE chat_jid='room@muc.example.com'}]
-    } -result {alice@example.com {type invite room room@muc.example.com reason {come join} body {alice invites you} password roompass} 0}
+                  WHERE chat_jid IN ('room@muc.example.com', 'alice@example.com')}] \
+             [c db onecolumn {
+                  SELECT mentions_me FROM chat_message
+                  WHERE chat_jid='room@muc.example.com?join'}]
+    } -result {room@muc.example.com {type invite room room@muc.example.com inviter alice@example.com reason {come join} state pending body {alice invites you}} 0 1}
 
-test muc-invite-without-inviter {a relayed invite naming nobody goes to the room's chat} \
+test muc-invite-without-inviter {a relayed invite naming nobody still goes to the room} \
     {*}$muc_common \
     -body {
         c.conn feed [muc_invite inviter "" password ""]
-        list [dict get [muc_latest room@muc.example.com?join] content type] \
-             [c db onecolumn {
-                  SELECT count(*) FROM chat_message
-                  WHERE chat_jid='room@muc.example.com'}]
-    } -result {invite 0}
+        set c [dict get [muc_latest room@muc.example.com?join] content]
+        list [dict get $c type] [dict get $c inviter]
+    } -result {invite {}}
 
 test muc-invite-bodyless {a relayed invite without a body still gets one} \
     {*}$muc_common \
     -body {
         c.conn feed [muc_invite body ""]
-        dict get [muc_latest alice@example.com] content body
+        dict get [muc_latest room@muc.example.com?join] content body
     } -result {alice@example.com invites you to the room room@muc.example.com}
 
+# The invite's stanza-id is our archive's, so it dedups the repeat.
 test muc-invite-redelivered-once {the same invite relayed twice is stored once} \
     {*}$muc_common \
     -body {
@@ -630,8 +632,140 @@ test muc-invite-redelivered-once {the same invite relayed twice is stored once} 
         c.conn feed [muc_invite sid inv-2]
         c db onecolumn {
             SELECT count(*) FROM chat_message
-            WHERE chat_jid='alice@example.com' AND kind='message'}
+            WHERE chat_jid='room@muc.example.com?join' AND kind='message'}
     } -result 1
+
+# The timestamp of the newest invite stored in $chat.
+proc muc_invite_ts {chat} {
+    dict get [muc_latest $chat] timestamp
+}
+
+# Every <Edited> the test sees, as {jid state}.
+proc muc_watch_edits {} {
+    set ::edits {}
+    tacky listen message <Edited> {apply {{ev} {
+        lappend ::edits [list [dict get $ev -jid] \
+            [dict get $ev -message content state]]
+    }}}
+}
+
+test muc-accept-invite-joins {accepting bookmarks the room with the invite's password} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite sid inv-5]
+        muc_watch_edits
+        c muc acceptInvite -chat room@muc.example.com?join \
+            -timestamp [muc_invite_ts room@muc.example.com?join]
+        list [c db eval {SELECT autojoin, password FROM bookmark
+                         WHERE jid='room@muc.example.com'}] \
+             $::edits \
+             [dict get [muc_latest room@muc.example.com?join] content state]
+    } -result {{1 roompass} {{room@muc.example.com?join joined}} joined}
+
+# Every invite to the room, in a 1:1 or the room's chat, follows its bookmark.
+test muc-invite-state-follows-membership {an invite's state tracks the room's bookmark} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite sid inv-6]
+        c.conn feed [j message -from bob@example.com/laptop -to user@test.example.com {
+            j x -ns jabber:x:conference -jid room@muc.example.com
+        }]
+        muc_watch_edits
+        c bookmarks item -jid room@muc.example.com -autojoin 1
+        set joined [lsort $::edits]
+        set ::edits {}
+        c bookmarks leave -jid room@muc.example.com
+        list $joined [lsort $::edits]
+    } -result {{{bob@example.com joined} {room@muc.example.com?join joined}} {{bob@example.com pending} {room@muc.example.com?join pending}}}
+
+test muc-decline-invite-forgets-room {declining tells the inviter and drops the unjoined room} \
+    {*}$muc_common \
+    -body {
+        set ::gone {}
+        tacky listen chatlist <Remove> {apply {{ev} { lappend ::gone [dict get $ev -jid] }}}
+        c.conn feed [muc_invite sid inv-3]
+        c muc declineInvite -chat room@muc.example.com?join \
+            -timestamp [muc_invite_ts room@muc.example.com?join] -reason "not now"
+        set m [lindex [c.conn get_written] end]
+        list [xsearch $m -get @to] \
+             [xsearch $m x -ns http://jabber.org/protocol/muc#user decline -get @to] \
+             [xsearch $m x -ns http://jabber.org/protocol/muc#user decline reason -get body] \
+             [c db onecolumn {
+                  SELECT count(*) FROM chat_message
+                  WHERE chat_jid='room@muc.example.com?join'}] \
+             $::gone
+    } -result {room@muc.example.com alice@example.com {not now} 0 room@muc.example.com?join}
+
+test muc-decline-invite-keeps-history {declining in a room with history keeps the invite as a record} \
+    {*}$muc_common \
+    -body {
+        c message messagestore store [list [dict create timestamp 1000000 \
+            chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
+            body earlier server_id r-1 own_id "" raw_xml ""]]
+        c.conn feed [muc_invite sid inv-4]
+        muc_watch_edits
+        c muc declineInvite -chat room@muc.example.com?join \
+            -timestamp [muc_invite_ts room@muc.example.com?join]
+        list $::edits \
+             [c db eval {SELECT count(*) FROM chat_message
+                         WHERE chat_jid='room@muc.example.com?join'
+                           AND kind='message'}] \
+             [dict get [lindex [c chatlist get] \
+                 [lsearch -index 1 [c chatlist get] room@muc.example.com?join]] invited]
+    } -result {{{room@muc.example.com?join declined}} 2 0}
+
+test muc-accept-takes-back-a-decline {accepting a declined invite joins and clears the no} \
+    {*}$muc_common \
+    -body {
+        c message messagestore store [list [dict create timestamp 1000000 \
+            chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
+            body earlier server_id r-1 own_id "" raw_xml ""]]
+        c.conn feed [muc_invite sid inv-7]
+        set ts [muc_invite_ts room@muc.example.com?join]
+        c muc declineInvite -chat room@muc.example.com?join -timestamp $ts
+        c muc acceptInvite -chat room@muc.example.com?join -timestamp $ts
+        c bookmarks leave -jid room@muc.example.com
+        dict get [muc_latest room@muc.example.com?join] content state
+    } -result pending
+
+# XEP-0249 has no decline: nothing is sent, the message is only marked.
+test muc-decline-direct-invite {declining a direct invite sends nothing and keeps the message} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [j message -from bob@example.com/laptop -to user@test.example.com {
+            j x -ns jabber:x:conference -jid room@muc.example.com
+        }]
+        set before [llength [c.conn get_written]]
+        c muc declineInvite -chat bob@example.com \
+            -timestamp [muc_invite_ts bob@example.com]
+        list [expr {[llength [c.conn get_written]] - $before}] \
+             [dict get [muc_latest bob@example.com] content state]
+    } -result {0 declined}
+
+test muc-invited-room-listed {an unjoined room with a waiting invite is marked invited} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite sid inv-8]
+        set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
+        set before [list [dict get $entry source] [dict get $entry invited]]
+        c muc acceptInvite -chat room@muc.example.com?join \
+            -timestamp [muc_invite_ts room@muc.example.com?join]
+        set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
+        list $before [list [dict get $entry source] [dict get $entry invited]]
+    } -result {{free 1} {bookmarks 0}}
+
+test muc-answer-ignores-other-rows {accept and decline leave a row that is no invite alone} \
+    {*}$muc_common \
+    -body {
+        c message messagestore store [list [dict create timestamp 1000000 \
+            chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
+            body earlier server_id r-1 own_id "" raw_xml ""]]
+        set before [llength [c.conn get_written]]
+        c muc acceptInvite -chat room@muc.example.com?join -timestamp 1000000
+        c muc declineInvite -chat room@muc.example.com?join -timestamp 1000000
+        list [expr {[llength [c.conn get_written]] - $before}] \
+             [c db onecolumn {SELECT count(*) FROM bookmark}]
+    } -result {0 0}
 
 test muc-decline-event {<Decline> event fires on incoming decline} \
     {*}$muc_common \

@@ -153,11 +153,11 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string reason string password string formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
+        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string inviter string reason string state string formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool}
+        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}

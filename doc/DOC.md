@@ -24,6 +24,7 @@ and get back replies and events.
   - [presence](#presence)
   - [caps](#caps)
   - [message](#message)
+  - [muc](#muc)
   - [notify](#notify)
   - [mam](#mam)
   - [omemo](#omemo)
@@ -353,7 +354,7 @@ sorting.
     chat_entry = {jid: string, name: string, source: string,
                   groupchat: bool, autojoin: bool, last_activity: int,
                   last_message?: message,
-                  unread: int, unread_mentions: int}
+                  unread: int, unread_mentions: int, invited: bool}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -367,6 +368,9 @@ microseconds, or `0`. `unread` counts the other side's messages past
 your read watermark (see [Read state](#read-state)); your own messages and
 retracted tombstones never count. `unread_mentions` is how many of those
 named you (see [notify](#notify)), and is always `0` outside group chats.
+`invited` is `true` on a group chat you are not in (no `autojoin`) that holds
+an invite still `pending` - usually the reason an unjoined room is listed at
+all (see [muc](#muc)).
 
 `last_message` lets a chat list preview each chat without a `history` call
 per row. Rendering it is the frontend's job: switch on `content.type`, show
@@ -551,7 +555,9 @@ carries it in `client`.
 
     content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
             | {type: "media", attachments: [attachment], caption: string, formatting?: formatting, matches?: matches}
-            | {type: "invite", room: string, reason: string, password?: string, body: string, formatting?: formatting, matches?: matches}
+            | {type: "invite", room: string, inviter: string, reason: string, state: invite_state, body: string, formatting?: formatting, matches?: matches}
+
+    invite_state = "pending" | "joined" | "declined"
 
     formatting = [{type: span_type, offset: int, length: int}]
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
@@ -613,14 +619,10 @@ becomes `caption`, and the files are listed in `attachments`.
   `type: "media"` carries an `attachments` list plus a `caption` (grouped
   attachments are just more than one entry). Each `attachment` has a `type` of
   `"image"` (render inline) or `"file"` (a download chip). `type: "invite"`
-  is an invitation to the group chat `room` (a bare JID; its chat is
-  `room?join`), with the inviter's `reason` (often `""`), the room `password`
-  when one was given, and a `body` that reads as the invite for anything not
-  rendering it as one. It sits in the inviter's 1:1 chat with `from_jid` the
-  inviter, whether they sent it themselves (XEP-0249) or the room relayed it
-  (XEP-0045), and in `room?join` when a relayed one doesn't say who asked.
-  Being invited doesn't put you in the room: `bookmarks item` with `autojoin`
-  set (and the `password`) is what accepts it. Deletion is a
+  is an invitation to the group chat `room` (a bare JID) from `inviter` (a
+  bare JID, `""` when unknown), with their `reason` (often `""`); `body` reads
+  as the invite for anything not drawing it. See [muc](#muc) for where it
+  sits, what `state` means, and how to answer it. Deletion is a
   message-level state rather than a content type, so future kinds like `call`
   or `system` extend this union - switch on `type` and tolerate unknown ones.
 - `formatting` (XEP-0393 styling spans) indexes into whichever of
@@ -675,6 +677,40 @@ device's `<displayed>` marker reaches this one.
 chat's watermark and unread count; each `chatlist` entry carries its own
 `unread`, so a chat list needs no extra call. Which of those are worth
 interrupting the user over is [notify](#notify)'s job.
+
+## muc
+
+    muc acceptInvite  {chat: string, timestamp: int}
+    muc declineInvite {chat: string, timestamp: int, reason?: string}
+
+Group chat invitations arrive as messages with `content.type` `"invite"`
+(see [message](#message)). These two answer one, named by that message's
+chat and timestamp as for `edit` and `react`. Neither replies, and both
+ignore a row that isn't an invite.
+
+Where an invite sits depends on who sent it:
+
+- **Direct** (XEP-0249): from the inviter, in your 1:1 chat with them, with
+  them as `from_jid`.
+- **Relayed** (XEP-0045): passed on by the room, in `room?join` with the room
+  as `from_jid`; `inviter` is the room's claim of who asked. It counts as a
+  mention (`unread_mentions`, and a `notify` alert although rooms default to
+  muted). If nothing else is stored there, the room is listed as a `free`
+  group chat marked `invited`.
+
+`content.state` is `joined` while you are a member of the room (bookmarked
+with `autojoin`, whether through this invite or not), else `declined` once you
+have turned it down, else `pending`. A change arrives as `message <Edited>`
+with the whole row, for every invite to the room at once when membership
+moves.
+
+`acceptInvite` joins: it bookmarks the room with `autojoin` and the password
+the invite carried, which never reaches the frontend. Accepting one you
+declined takes the decline back. `declineInvite` marks it `declined` and, for
+a relayed one, sends the inviter a decline through the room (a direct invite
+has no decline to send). The row stays as a record, except where that leaves
+a room's chat holding nothing but declined invites - a room you never joined -
+which is dropped whole, with a `chatlist <Remove>`.
 
 ## notify
 

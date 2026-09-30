@@ -122,6 +122,19 @@ test notify-room-mention-alerts {a room message naming our nick alerts} \
         list [notify_jids] [lindex [lindex $::alerts 0] 1]
     } -result {room@conf.example.com?join 1}
 
+# An invite sits in an unjoined room, muted by default, but alerts as a
+# mention would.
+test notify-room-invite-alerts {an invite relayed by a room alerts} \
+    {*}$notify_common -body {
+        $::_client conn feed [j message -from room@conf.example.com -to $::acc {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j invite -from bob@example.com/phone
+            }
+            j body -body "bob invites you"
+        }]
+        list [notify_jids] [lindex [lindex $::alerts 0] 1]
+    } -result {room@conf.example.com?join 1}
+
 test notify-carries-room-nick {a room notification names the occupant who spoke} \
     {*}$notify_common -body {
         notify_join room@conf.example.com me
