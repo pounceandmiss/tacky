@@ -169,21 +169,35 @@ proc ::tacky::media::rtc::AddTrack {h track args} {
     return
 }
 
-# libdatachannel media-description fragment for one Opus audio m-line:
-# "<media> <port> <proto> <pt>\r\na=...\r\n..." - the bytes after the m=
-# prefix. The payload type and channel count are fixed so a responder
-# mirroring this via on-track gets matching codec config from the offer.
+# libdatachannel media-description fragment for one m-line: the bytes after
+# "m=". It names the SSRC our sender uses; see PreAddTracks.
+proc ::tacky::media::rtc::MediaDesc {kind mid direction pt codecLines} {
+    return [join [list \
+        "$kind 9 UDP/TLS/RTP/SAVPF $pt" \
+        "a=mid:$mid" \
+        "a=$direction" \
+        {*}$codecLines \
+        "a=ssrc:[NewSsrc] cname:tacky"] \
+        \r\n]
+}
+
+proc ::tacky::media::rtc::NewSsrc {} {
+    return [expr {int(rand() * 2147483646) + 1}]
+}
+
+# Fixed payload type and channel count, so a peer mirroring the offer gets
+# the same codec config.
 proc ::tacky::media::rtc::AudioMediaDesc {direction} {
     variable MID
     variable PAYLOAD_TYPE
+    return [MediaDesc audio $MID $direction $PAYLOAD_TYPE [AudioCodecLines $PAYLOAD_TYPE]]
+}
+
+proc ::tacky::media::rtc::AudioCodecLines {pt} {
     variable AUDIO_CHANNELS
-    return [join [list \
-        "audio 9 UDP/TLS/RTP/SAVPF $PAYLOAD_TYPE" \
-        "a=mid:$MID" \
-        "a=$direction" \
-        "a=rtpmap:$PAYLOAD_TYPE opus/48000/$AUDIO_CHANNELS" \
-        "a=fmtp:$PAYLOAD_TYPE minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"] \
-        \r\n]
+    return [list \
+        "a=rtpmap:$pt opus/48000/$AUDIO_CHANNELS" \
+        "a=fmtp:$pt minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"]
 }
 
 # nack/pli/ccm feedback is advertised so libwebrtc peers send us PLIs, which
@@ -191,17 +205,107 @@ proc ::tacky::media::rtc::AudioMediaDesc {direction} {
 proc ::tacky::media::rtc::VideoMediaDesc {direction} {
     variable VIDEO_MID
     variable VIDEO_PT
+    return [MediaDesc video $VIDEO_MID $direction $VIDEO_PT [VideoCodecLines $VIDEO_PT]]
+}
+
+proc ::tacky::media::rtc::VideoCodecLines {pt} {
     variable VIDEO_CLOCK
-    return [join [list \
-        "video 9 UDP/TLS/RTP/SAVPF $VIDEO_PT" \
-        "a=mid:$VIDEO_MID" \
-        "a=$direction" \
-        "a=rtpmap:$VIDEO_PT VP8/$VIDEO_CLOCK" \
-        "a=rtcp-fb:$VIDEO_PT nack" \
-        "a=rtcp-fb:$VIDEO_PT nack pli" \
-        "a=rtcp-fb:$VIDEO_PT ccm fir" \
-        "a=rtcp-fb:$VIDEO_PT goog-remb"] \
-        \r\n]
+    return [list \
+        "a=rtpmap:$pt VP8/$VIDEO_CLOCK" \
+        "a=rtcp-fb:$pt nack" \
+        "a=rtcp-fb:$pt nack pli" \
+        "a=rtcp-fb:$pt ccm fir" \
+        "a=rtcp-fb:$pt goog-remb"]
+}
+
+# With several m-lines, libdatachannel routes RTP by the SSRCs the SDP names,
+# and its own answer names none. So before applying such an offer, add a track
+# per line we decode: the peer's line cut to our codec, direction mirrored,
+# our SSRC. libdatachannel fires no track event for these; we report them.
+proc ::tacky::media::rtc::PreAddTracks {h sdp} {
+    variable Pc
+    variable TrackId
+    set sections [OfferSections $sdp]
+    if {[llength $sections] < 2} { return {} }
+    set added {}
+    foreach sec $sections {
+        lassign $sec kind mid direction pt codecLines
+        if {$pt eq "" || [HaveMid $h $mid]} continue
+        set desc [MediaDesc $kind $mid [Reciprocal $direction] $pt $codecLines]
+        if {[catch {::rtc::pc::add-track $Pc($h) $desc} id]} {
+            ::tacky::media::emit $h error op setRemoteDescription \
+                reason "track for $mid: $id" fatal 0
+            continue
+        }
+        set TrackId($h,$id) $id
+        lappend added [list $id $kind $mid]
+    }
+    return $added
+}
+
+# Audio/video m-sections as {kind mid direction pt codecLines}: pt is the
+# peer's payload type for our codec ("" if none), codecLines its a= lines.
+proc ::tacky::media::rtc::OfferSections {sdp} {
+    set out {}
+    set cur {}
+    foreach line [split [string map [list "\r\n" "\n" "\r" "\n"] $sdp] "\n"] {
+        if {[string match "m=*" $line]} {
+            if {[llength $cur]} { lappend out [FinishSection $cur] }
+            set cur {}
+            if {[regexp {^m=(audio|video) } $line -> kind]} {
+                set cur [list $kind]
+            }
+            continue
+        }
+        if {[llength $cur]} { lappend cur $line }
+    }
+    if {[llength $cur]} { lappend out [FinishSection $cur] }
+    return $out
+}
+
+proc ::tacky::media::rtc::FinishSection {lines} {
+    set kind [lindex $lines 0]
+    set mid ""
+    set direction sendrecv
+    set pt ""
+    set codec [expr {$kind eq "audio" ? {opus/48000} : {VP8/90000}}]
+    foreach line [lrange $lines 1 end] {
+        if {[regexp {^a=mid:(.+)$} $line -> m]} { set mid [string trim $m] }
+        if {[regexp {^a=(sendrecv|sendonly|recvonly|inactive)$} $line -> d]} {
+            set direction $d
+        }
+        if {$pt eq "" && [regexp -nocase "^a=rtpmap:(\\d+) $codec" $line -> p]} {
+            set pt $p
+        }
+    }
+    set codecLines {}
+    if {$pt ne ""} {
+        foreach line [lrange $lines 1 end] {
+            if {[regexp "^a=(rtpmap|fmtp|rtcp-fb):$pt\\M" $line]} {
+                lappend codecLines $line
+            }
+        }
+    }
+    return [list $kind $mid $direction $pt $codecLines]
+}
+
+proc ::tacky::media::rtc::Reciprocal {direction} {
+    switch -- $direction {
+        sendonly { return recvonly }
+        recvonly { return sendonly }
+        default  { return $direction }
+    }
+}
+
+# Does a track on this pc already have this mid?
+proc ::tacky::media::rtc::HaveMid {h mid} {
+    variable TrackId
+    foreach key [array names TrackId $h,*] {
+        if {![catch {::rtc::track::get-mid $TrackId($key)} m] && $m eq $mid} {
+            return 1
+        }
+    }
+    return 0
 }
 
 # An empty type lets libdatachannel infer offer or answer from its signaling
@@ -221,12 +325,23 @@ proc ::tacky::media::rtc::SetRemoteDescription {h args} {
     variable Pc
     set opts [dict merge {-sdp "" -type ""} $args]
     if {![info exists Pc($h)]} return
+    set added {}
+    if {[dict get $opts -type] eq "offer"} {
+        set added [PreAddTracks $h [dict get $opts -sdp]]
+    }
     if {[catch {::rtc::pc::set-remote-description $Pc($h) \
             [dict get $opts -sdp] [dict get $opts -type]} err]} {
         # The type goes back with it: rejecting an offer and rejecting an
         # answer mean very different things to a caller.
         ::tacky::media::emit $h error op setRemoteDescription reason $err \
             fatal 1 sdpType [dict get $opts -type]
+        return
+    }
+    # libdatachannel fires no track event for tracks it did not create.
+    foreach a $added {
+        if {![info exists Pc($h)]} break
+        lassign $a id kind mid
+        ::tacky::media::emit $h track track $id kind $kind mid $mid
     }
     return
 }
