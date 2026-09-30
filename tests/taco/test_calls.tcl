@@ -253,15 +253,46 @@ test calls-transport-info-buffer-capped {a peer cannot buffer candidates without
 
 # -- Peer connection state --
 
-test calls-pc-disconnected-warns {a faltering media path warns without ending the call} \
-    {*}$calls_env -body {
+# Past the grace period, so the timer has fired.
+proc calls_wait_grace {} {
+    after [expr {$::taco_calls::DISCONNECT_GRACE_MS + 30}] {set ::calls_grace 1}
+    vwait ::calls_grace
+}
+
+set calls_grace_env $calls_env
+dict append calls_grace_env -setup "\nset ::taco_calls::DISCONNECT_GRACE_MS 20"
+dict append calls_grace_env -cleanup "\nset ::taco_calls::DISCONNECT_GRACE_MS 2000"
+
+test calls-pc-disconnected-warns {a media path that stays down warns without ending the call} \
+    {*}$calls_grace_env -body {
         c.conn feed [calls_jmi_in propose tk-in11 $::PEER]
         c.calls accept -sid tk-in11
         c.calls OnPcState tk-in11 disconnected
+        calls_wait_grace
         list \
             [lindex [calls_events] end] \
             [dict get [dict get [calls_state] tk-in11] state]
     } -result {{<Warning> -sid tk-in11 -reason {media path interrupted}} proceeded}
+
+test calls-pc-disconnected-then-hangup-is-quiet {a hangup inside the grace period warns nothing} \
+    {*}$calls_grace_env -body {
+        c.conn feed [calls_jmi_in propose tk-in12 $::PEER]
+        c.calls accept -sid tk-in12
+        c.calls OnPcState tk-in12 disconnected
+        c.calls hangup -sid tk-in12
+        calls_wait_grace
+        lsearch -all -inline [calls_events] <Warning>*
+    } -result {}
+
+test calls-pc-disconnected-then-recovers-is-quiet {a path that comes back inside the grace period warns nothing} \
+    {*}$calls_grace_env -body {
+        c.conn feed [calls_jmi_in propose tk-in13 $::PEER]
+        c.calls accept -sid tk-in13
+        c.calls OnPcState tk-in13 disconnected
+        c.calls OnPcState tk-in13 connected
+        calls_wait_grace
+        lsearch -all -inline [calls_events] <Warning>*
+    } -result {}
 
 # -- Stream reset --
 
