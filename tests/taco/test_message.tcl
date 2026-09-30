@@ -1615,7 +1615,7 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [dict get $m2 content body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 
-test message-history-mam-before-timestamp {-before with no local citizen sends a cursorless MAM page (no time fallback)} \
+test message-history-mam-before-timestamp {-before with no local citizen pages by time: -end plus an empty <before/>} \
     {*}$msg_common \
     -body {
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
@@ -1624,14 +1624,13 @@ test message-history-mam-before-timestamp {-before with no local citizen sends a
             -command [list apply {{r} { set ::result $r }}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
-        # No citizen to anchor on -> bare newest page: no time bounds, no cursor
-        set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
-        set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
-        set hasBefore [expr {[xsearch $qnode set before] ne ""}]
-        list $hasEnd $hasStart $hasBefore
-    } -result {0 0 0}
+        list [xsearch $qnode x field @var end value -get body] \
+             [expr {[xsearch $qnode x field @var start] ne ""}] \
+             [llength [xsearch $qnode set before]] \
+             [xsearch $qnode set before -get body]
+    } -result {2024-06-15T12:00:00Z 0 1 {}}
 
-test message-history-mam-after-timestamp {-after with no at-or-before citizen sends a cursorless MAM page (no time fallback)} \
+test message-history-mam-after-timestamp {-after with no at-or-before citizen pages by time: -start} \
     {*}$msg_common \
     -body {
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
@@ -1645,15 +1644,13 @@ test message-history-mam-after-timestamp {-after with no at-or-before citizen se
             -command [list apply {{r} { set ::result $r }}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
-        # The only citizen is newer than the cursor, so none anchors -after:
-        # bare newest page with no time bounds and no cursor.
-        set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
-        set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
-        set hasAfter [expr {[xsearch $qnode set after] ne ""}]
-        list $hasStart $hasEnd $hasAfter
-    } -result {0 0 0}
+        # The only citizen is newer than the cursor, so none anchors -after.
+        list [xsearch $qnode x field @var start value -get body] \
+             [expr {[xsearch $qnode x field @var end] ne ""}] \
+             [expr {[xsearch $qnode set after] ne ""}]
+    } -result {2024-06-15T12:00:00Z 0 0}
 
-test message-history-mam-default-cursor {default (no timestamp) uses cursor-based -before} \
+test message-history-mam-default-cursor {default (no timestamp) with empty local asks for the newest page} \
     {*}$msg_common \
     -body {
         # Pre-store a message so there's a cursor server_id
@@ -1664,14 +1661,15 @@ test message-history-mam-default-cursor {default (no timestamp) uses cursor-base
             -command [list apply {{r} { set ::result $r }}]
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
-        # Should NOT have start or end fields
-        set hasStart [expr {[xsearch $qnode x field @var start] ne ""}]
-        set hasEnd [expr {[xsearch $qnode x field @var end] ne ""}]
-        list $hasStart $hasEnd
-    } -result {0 0}
+        # No time bounds; an empty <before/> selects the last (newest) page
+        list [expr {[xsearch $qnode x field @var start] ne ""}] \
+             [expr {[xsearch $qnode x field @var end] ne ""}] \
+             [llength [xsearch $qnode set before]] \
+             [xsearch $qnode set before -get body]
+    } -result {0 0 1 {}}
 
 # =============================================================================
-# History: poisoned-cursor recovery (demote on item-not-found + retry)
+# History: dead-cursor recovery (item-not-found -> retry by time)
 # =============================================================================
 
 test message-history-nearest-citizen-skips-noncitizen \
@@ -1692,16 +1690,15 @@ test message-history-nearest-citizen-skips-noncitizen \
         xsearch $q1 set before -get body
     } -result {Cgood}
 
-test message-history-demote-retry-recovers-older \
-    {item-not-found on a poisoned cursor demotes it and retries from the next citizen} \
+test message-history-dead-cursor-retries-by-time \
+    {item-not-found on the cursor retries once by time and keeps the row's server_id} \
     {*}$msg_common \
     -body {
         set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
         set tsQ [ParseTimestamp 2024-03-01T11:00:00Z]
-        # Two citizens at/after the boundary; the nearer one carries a poisoned
-        # server_id (a live stanza-id the server never archived).
+        # The nearer citizen's id has since left the archive (expired).
         msg_store [list \
-            [msg_msg timestamp $tsP server_id Pbad body p] \
+            [msg_msg timestamp $tsP server_id Pgone body p] \
             [msg_msg timestamp $tsQ server_id Qgood body q]]
 
         set ::result {}
@@ -1709,36 +1706,55 @@ test message-history-demote-retry-recovers-older \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
 
-        # First page must carry the nearest citizen, Pbad.
         set iq1 [lindex [$::_client conn get_written] end]
         set firstCursor [xsearch [lindex [xsearch $iq1 query -ns urn:xmpp:mam:2] 0] \
             set before -get body]
 
-        # Server rejects it: not present in the archive.
         $::_client iq feed [j iq -type error -id [dict get $iq1 attrs id] {
             j error -type cancel {
                 j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
 
-        # Retry must reselect the next citizen, Qgood.
-        set iq2 [lindex [$::_client conn get_written] end]
-        set retryCursor [xsearch [lindex [xsearch $iq2 query -ns urn:xmpp:mam:2] 0] \
-            set before -get body]
+        # The retry pages by time from the same bound, with no cursor.
+        set q2 [lindex [xsearch [lindex [$::_client conn get_written] end] \
+            query -ns urn:xmpp:mam:2] 0]
+        set retry [list [xsearch $q2 x field @var end value -get body] \
+            [xsearch $q2 set before -get body]]
 
-        # That page succeeds with an older archived message.
         msg_mam_respond {{id arcA from bob@example.com body {older one} stamp 2024-01-01T09:00:00Z}} -complete true
 
         set db [$::_client message messagestore cget -db]
         set pSid [$db onecolumn {SELECT server_id FROM chat_message
             WHERE chat_jid='alice@example.com' AND body='p'}]
 
-        list $firstCursor $retryCursor $pSid [llength $::result] \
+        list $firstCursor $retry $pSid [llength $::result] \
             [dict get [lindex $::result 0] content body]
-    } -result {Pbad Qgood {} 1 {older one}}
+    } -result {Pgone {2024-03-01T10:00:00Z {}} Pgone 1 {older one}}
 
-test message-history-transient-error-no-demote \
-    {a transient MAM error does not demote the cursor or retry} \
+test message-history-time-retry-not-found-falls-back \
+    {item-not-found on the time retry is not retried again} \
+    {*}$msg_common \
+    -body {
+        set tsP [ParseTimestamp 2024-03-01T10:00:00Z]
+        msg_store [list [msg_msg timestamp $tsP server_id Pgone body p]]
+        set ::result none
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsP -limit 50 \
+            -command [list apply {{r} { set ::result $r }}]
+        foreach _ {1 2} {
+            set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
+            $::_client iq feed [j iq -type error -id $iqId {
+                j error -type cancel {
+                    j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+        }
+        list [mam_iq_count] $::result
+    } -result {2 {}}
+
+test message-history-transient-error-no-retry \
+    {a transient MAM error does not retry or touch the cursor} \
     {*}$msg_common \
     -body {
         set tsP [ParseTimestamp 2024-03-01T10:00:00Z]

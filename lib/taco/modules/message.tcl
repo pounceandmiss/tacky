@@ -589,10 +589,6 @@ snit::type taco_message {
     method ClearWired {oid} { dict unset WiredNow $oid }
     method IsWired {oid} { return [dict exists $WiredNow $oid] }
 
-    # Per-call cap on demote-and-retry steps; demotion makes progress durable
-    # across calls, so the cap only bounds one history call's blast radius.
-    typevariable MaxCursorRetries 5
-
     # Pages one history fill will walk while nothing displayable turns up.
     typevariable MaxFillPages 20
 
@@ -1566,34 +1562,24 @@ snit::type taco_message {
 
     # Fire one MAM page anchored on the nearest citizen in the queried
     # direction (oldest at-or-after $before, newest at-or-before $after), or
-    # cursorless when none exists. `attempt` bounds the OnFetch retry loop.
-    #
-    # A citizen missing a `server_id` (no <stanza-id> ever seen for it --
-    # e.g. a gateway-bridged chat whose live delivery isn't archive-stamped)
-    # can't anchor an RSM cursor at all; falling through to a fully
-    # cursorless query would silently answer with the archive's newest page
-    # instead of paging backward, which reads as "this chat has no more
-    # history" forever after. -start/-end (XEP-0082 time bounds, no
-    # stanza-id required) page by time instead: -end plus RSM's `-before {}`
-    # ("last page of the result set") asks for the newest $limit messages
-    # at-or-before that time, symmetric to -start for the "newer" direction.
+    # cursorless when none exists. With no anchor, or `byTime` set, page by
+    # time: -end plus an empty <before/> is the newest page at-or-before the
+    # bound, -start the oldest at-or-after it. A bare query (no <before/>)
+    # would return the archive's oldest page.
     method QueryServer {chatJid before after limit callback onerror tag \
-                        wasBounded attempt} {
+                        wasBounded byTime} {
         set direction [expr {$after ne "" ? "newer" : "older"}]
         set mamArgs [list -max $limit]
         set cursorId ""
-        if {$before ne ""} {
+        if {$byTime} {
+            # No cursor: page by time below.
+        } elseif {$before ne ""} {
             set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
                   AND timestamp >= $before
                 ORDER BY timestamp ASC LIMIT 1
             }]
-            if {$cursorId ne ""} {
-                lappend mamArgs -before $cursorId
-            } else {
-                lappend mamArgs -end [FormatTimestampISO $before] -before ""
-            }
         } elseif {$after ne ""} {
             set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
@@ -1601,41 +1587,41 @@ snit::type taco_message {
                   AND timestamp <= $after
                 ORDER BY timestamp DESC LIMIT 1
             }]
-            if {$cursorId ne ""} {
-                lappend mamArgs -after $cursorId
-            } else {
-                lappend mamArgs -start [FormatTimestampISO $after]
-            }
         } else {
             set cursorId [$client db onecolumn {
                 SELECT server_id FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
                 ORDER BY timestamp ASC LIMIT 1
             }]
-            if {$cursorId ne ""} { lappend mamArgs -before $cursorId }
+        }
+
+        if {$cursorId ne ""} {
+            lappend mamArgs [expr {$after ne "" ? "-after" : "-before"}] $cursorId
+        } elseif {$before ne ""} {
+            lappend mamArgs -end [FormatTimestampISO $before] -before ""
+        } elseif {$after ne ""} {
+            lappend mamArgs -start [FormatTimestampISO $after]
+        } else {
+            lappend mamArgs -before ""
         }
 
         lappend mamArgs -command [mymethod OnFetch $chatJid $before $after \
-            $limit $callback $onerror $tag $direction $wasBounded $cursorId \
-            $attempt 1]
+            $limit $callback $onerror $tag $direction $wasBounded $cursorId 1]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
     method OnFetch {chatJid before after limit callback onerror tag direction \
-                    wasBounded cursorId attempt page mamResult} {
+                    wasBounded cursorId page mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-            # item-not-found means the cursor id was never archived (a poisoned
-            # live stanza-id, or a wrong `by`): demote the row and retry from
-            # the next citizen. Other errors just fall back to local.
+            # item-not-found: the cursor left the archive; retry once by
+            # time. Other errors fall back to local.
             set cond [expr {[dict exists $mamResult error_condition]
                 ? [dict get $mamResult error_condition] : ""}]
-            if {$cond eq "item-not-found" && $cursorId ne ""
-                && $attempt < $MaxCursorRetries} {
-                $messagestore demote $chatJid $cursorId
+            if {$cond eq "item-not-found" && $cursorId ne ""} {
                 $self QueryServer $chatJid $before $after $limit $callback \
-                    $onerror $tag $wasBounded [expr {$attempt + 1}]
+                    $onerror $tag $wasBounded 1
                 return
             }
             set local [$self GetLocal $chatJid $before $after $limit]
@@ -1684,7 +1670,7 @@ snit::type taco_message {
                 $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
                     -command [mymethod OnFetch $chatJid $before $after $limit \
                         $callback $onerror $tag $direction $wasBounded "" \
-                        $attempt [expr {$page + 1}]]
+                        [expr {$page + 1}]]
                 return
             }
         }
