@@ -37,10 +37,10 @@ proc media_pc {sid} {
         [dict get [dict get [calls_state] $sid] pc]]
 }
 
-proc media_session_initiate {sid from} {
+proc media_session_initiate {sid from {senders both}} {
     j iq -type set -from $from -to user@test.example.com -id si1 {
         j jingle -ns urn:xmpp:jingle:1 -action session-initiate -sid $sid {
-            j content -creator initiator -name audio -senders both {
+            j content -creator initiator -name audio -senders $senders {
                 j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio {
                     j payload-type -id 111 -name opus -clockrate 48000 -channels 2
                     j payload-type -id 0 -name PCMU -clockrate 8000
@@ -68,10 +68,10 @@ proc media_transport_info {sid from} {
     }
 }
 
-proc media_session_accept {sid from} {
+proc media_session_accept {sid from {senders both}} {
     j iq -type set -from $from -to user@test.example.com -id sa1 {
         j jingle -ns urn:xmpp:jingle:1 -action session-accept -sid $sid {
-            j content -creator initiator -name audio {
+            j content -creator initiator -name audio -senders $senders {
                 j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio {
                     j payload-type -id 111 -name opus -clockrate 48000 -channels 2
                 }
@@ -378,6 +378,37 @@ test media-setdevices-warns-on-failure {a mic that will not reopen warns and kee
             [lindex [calls_events] end] \
             [dict exists [calls_state] $sid]]
     } -result {{<Warning> -sid SID -reason {input device unavailable: busy}} 1}
+
+# -- Direction --
+
+# The direction in the SDP a remote description becomes, from its author's side.
+proc media_remote_direction {type} {
+    foreach c [mockrtc::calls ::rtc::pc::set-remote-description] {
+        lassign $c - sdp t
+        if {$t eq $type && [regexp -line {^a=(sendrecv|sendonly|recvonly|inactive)} $sdp -> d]} {
+            return $d
+        }
+    }
+    return ""
+}
+
+test media-accept-senders-initiator-is-recvonly \
+    {an answer where only we send reaches the backend as recvonly} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        c.conn feed [media_session_accept $sid $::MEDIA_PEER initiator]
+        media_remote_direction answer
+    } -result recvonly
+
+test media-offer-senders-initiator-is-sendonly \
+    {an offer where only the peer sends reaches the backend as sendonly} \
+    {*}$media_env -body {
+        c.conn feed [calls_jmi_in propose tk-d1 $::MEDIA_PEER]
+        c.calls accept -sid tk-d1
+        c.conn feed [media_session_initiate tk-d1 $::MEDIA_PEER initiator]
+        media_answer_extdisco
+        media_remote_direction offer
+    } -result sendonly
 
 # -- Rejected signaling --
 

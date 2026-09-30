@@ -950,7 +950,8 @@ snit::type taco_calls {
         # Strip payload-types the backend cannot decode before to_sdp, so
         # the answer only offers what we can actually play back.
         set jingle [$self FilterCodecs $jingle]
-        set sdp [::jinglesdp::to_sdp $jingle -initiator 0]
+        # -initiator names the SDP's author: the peer, who initiated.
+        set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
         jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
         dict set Calls $sid peer $from
         dict set Calls $sid state new
@@ -1011,7 +1012,8 @@ snit::type taco_calls {
             $self IqError $stanza out-of-order
             return
         }
-        set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
+        # The peer wrote this answer, as the responder.
+        set sdp [::jinglesdp::to_sdp $jingle -initiator 0]
         # A duplicate/retransmitted accept applies fine once but is
         # rejected the second time — not fatal to the call already
         # running, so OnMediaError warns rather than failing it, and we
