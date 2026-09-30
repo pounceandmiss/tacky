@@ -905,17 +905,17 @@ proc mam_invite_result {id {kind invite}} {
 }
 
 # Filed by sender, a relayed invite would make a 1:1 chat with the room.
-test message-catchup-invite-to-inviter \
-    {catchup files a relayed invite in the inviter's chat, not the room's} \
+test message-catchup-invite-to-room \
+    {catchup files a relayed invite in the room's ?join chat} \
     {*}$msg_common \
     -body {
         msg_catchup [dict create messages [list [mam_invite_result arch-inv]] \
             complete 1]
-        set m [lindex [msg_store_latest alice@example.com] end]
-        list [dict get $m from_jid] [dict get $m content type] \
-             [dict get $m content room] \
-             [llength [msg_store_latest room@muc.example.com]]
-    } -result {alice@example.com invite room@muc.example.com 0}
+        set m [lindex [msg_store_latest room@muc.example.com?join] end]
+        list [dict get $m content type] [dict get $m content inviter] \
+             [llength [msg_store_latest room@muc.example.com]] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {invite alice@example.com 0 0}
 
 test message-invite-live-then-catchup {an invite seen live and in catchup is one row} \
     {*}$msg_common \
@@ -929,7 +929,7 @@ test message-invite-live-then-catchup {an invite seen live and in catchup is one
         }]
         msg_catchup [dict create messages [list [mam_invite_result arch-inv]] \
             complete 1]
-        llength [msg_store_latest alice@example.com]
+        llength [msg_store_latest room@muc.example.com?join]
     } -result 1
 
 test message-catchup-decline-dropped {catchup drops a relayed decline} \
@@ -949,7 +949,7 @@ test message-direct-invite {a bodyless direct invite is shown in the inviter's c
                 -reason "we're talking about you" -password 1234
         }]
         dict get [lindex [msg_store_latest bob@example.com] end] content
-    } -result {type invite room room@muc.example.com reason {we're talking about you} body {bob@example.com invites you to the room room@muc.example.com} password 1234}
+    } -result {type invite room room@muc.example.com inviter bob@example.com reason {we're talking about you} state pending body {bob@example.com invites you to the room room@muc.example.com}}
 
 # notify alerts off <CatchupDone>, so a run that emitted per page would alert
 # on page one and alert again on page two for the same chat.

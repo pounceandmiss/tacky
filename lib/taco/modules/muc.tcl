@@ -7,6 +7,8 @@
 # tacky muc subject -acc $jid -jid $room -body $text
 # tacky muc invite -acc $jid -jid $room -to $jid ?-reason $text?
 # tacky muc decline -acc $jid -jid $room -to $inviterJid ?-reason $text?
+# tacky muc acceptInvite -acc $jid -chat $chatJid -timestamp $ts
+# tacky muc declineInvite -acc $jid -chat $chatJid -timestamp $ts ?-reason $text?
 # tacky muc requestVoice -acc $jid -jid $room
 # tacky muc kick -acc $jid -jid $room -nick $nick ?-reason $text? ?-command $cb?
 # tacky muc role -acc $jid -jid $room -nick $nick -role $role ?-reason $text? ?-command $cb?
@@ -226,6 +228,56 @@ snit::type taco_muc {
                 }
             }
         }]
+    }
+
+    # Accept and decline name the invite row by chat and timestamp, so a
+    # frontend never handles the password. A non-invite row is a no-op; the
+    # new `state` follows on <Edited>.
+
+    # Bookmark the room with autojoin and the invite's password, undoing an
+    # earlier decline.
+    method acceptInvite {args} {
+        set chatJid [dict get $args -chat]
+        set ts [dict get $args -timestamp]
+        set row [$client message messagestore inviteAt $chatJid $ts]
+        if {$row eq ""} return
+        set invite [dict merge {room "" password ""} [dict get $row invite]]
+        if {[dict get $row declined]} {
+            $client message messagestore setInviteDeclined $chatJid $ts 0
+        }
+        set bm [list -jid [dict get $invite room] -autojoin 1]
+        if {[dict get $invite password] ne ""} {
+            lappend bm -password [dict get $invite password]
+        }
+        # Its <Changed> redraws every invite to the room, this one included.
+        $client bookmarks item {*}$bm
+    }
+
+    # A relayed invite's decline goes to the inviter through the room; a
+    # direct one (XEP-0249 has no decline) is only marked. A room chat left
+    # holding only declined invites is dropped, and leaves the chat list.
+    method declineInvite {args} {
+        array set opts {-reason ""}
+        array set opts $args
+        set chatJid $opts(-chat)
+        set ts $opts(-timestamp)
+        set store [list $client message messagestore]
+        set row [{*}$store inviteAt $chatJid $ts]
+        if {$row eq ""} return
+        set invite [dict merge {room "" inviter ""} [dict get $row invite]]
+        set relayed [string match {*\?join} $chatJid]
+        if {$relayed && [dict get $invite inviter] ne ""} {
+            $self decline -jid [dict get $invite room] \
+                -to [dict get $invite inviter] -reason $opts(-reason)
+        }
+        {*}$store setInviteDeclined $chatJid $ts 1
+        if {$relayed && [{*}$store onlyDeclinedInvites $chatJid]} {
+            {*}$store forgetChat $chatJid
+            $client chats forget $chatJid
+        } else {
+            $client message EmitMessagePatch $chatJid $ts
+        }
+        $client chatlist EmitEntry $chatJid
     }
 
     # =====================================================================

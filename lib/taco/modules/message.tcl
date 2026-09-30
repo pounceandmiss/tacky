@@ -63,13 +63,15 @@ snit::type taco_message {
         $self configurelist $args
         set client $options(-client)
         install messagestore using taco_messagestore $self.messagestore \
-            -db [$client cget -db]
+            -db [$client cget -db] -joinedcmd [mymethod RoomJoined]
         array set PendingRetry {}
         array set ActiveTags {}
         set CatchupInFlight [dict create]
         $client bus subscribe $self sm:<Ack>     [mymethod OnSmAck]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
         $client bus subscribe $self muc:<Left>   [mymethod OnMucLeft]
+        $client bus subscribe $self bookmarks:<Changed> \
+            [mymethod OnBookmarkChanged]
         $client bus subscribe $self omemo:<SessionReady> \
             [mymethod OnOmemoSessionReady]
         # A peer's devicelist resolving (to devices or empty) also wakes
@@ -395,13 +397,35 @@ snit::type taco_message {
         }
     }
 
-    # The chat a room-relayed (mediated) invite belongs in, or "" for any
-    # other stanza. It comes from the room's bare JID, so filing it by sender
-    # makes a 1:1 chat with the room itself; it goes to the person who asked
-    # instead, or to the room's own chat when the room doesn't say who. The
-    # live path (muc OnInvite) and the account catchup both route through
-    # here: the store dedups per chat, so the two must agree for an invite
-    # seen live and again in the archive to stay one row.
+    # Membership, as an invite's state reads it: bookmarked with autojoin.
+    method RoomJoined {room} {
+        if {[catch {$client bookmarks autojoin -jid $room} on]} { return 0 }
+        return [expr {$on in {1 true}}]
+    }
+
+    # Membership moved: re-send every invite to that room. A cleared list
+    # touches every room.
+    method OnBookmarkChanged {args} {
+        array set opts {-action "" -jid ""}
+        array set opts $args
+        if {$opts(-jid) ne ""} {
+            set rows [$messagestore invitesToRoom [jid norm $opts(-jid)]]
+        } else {
+            set rows [$client db eval {
+                SELECT chat_jid, timestamp FROM chat_message
+                WHERE invite_room != '' AND kind='message'
+            }]
+            set rows [lmap {c t} $rows {list $c $t}]
+        }
+        foreach row $rows {
+            $self EmitMessagePatch {*}$row
+        }
+    }
+
+    # The chat a room-relayed (mediated) invite is filed in: the room's own,
+    # since who asked is only the room's word. "" for any other stanza. Live
+    # (muc OnInvite) and catchup both use this so the per-chat dedup keeps
+    # one row.
     method inviteChat {msgNode} {
         if {[llength [xsearch $msgNode x \
                 -ns http://jabber.org/protocol/muc#user invite]] == 0} {
@@ -409,9 +433,6 @@ snit::type taco_message {
         }
         set invite [ParseInvite $msgNode]
         if {$invite eq ""} { return "" }
-        if {[dict get $invite inviter] ne ""} {
-            return [dict get $invite inviter]
-        }
         return "[dict get $invite room]?join"
     }
 
@@ -2393,9 +2414,9 @@ snit::type taco_message {
     }
 
     # <Edited> carries a message's whole enriched row so the GUI redraws it
-    # in place (edited body, the "(edited)" marker). Reserved for genuine
-    # content changes; send-status and upload transitions go through <Status>,
-    # retractions through <Retracted>.
+    # in place (edited body, the "(edited)" marker, an invite's state).
+    # Reserved for content changes; send-status and upload transitions go
+    # through <Status>, retractions through <Retracted>.
     method EmitMessagePatch {chatJid targetTs} {
         set dbMsg [lindex [$messagestore get ids $chatJid [list $targetTs]] 0]
         if {$dbMsg eq ""} return
@@ -2438,13 +2459,15 @@ snit::type taco_message {
         return [list $serverId $ownId $originId]
     }
 
-    # The <stanza-id> of the archive this chat is paged against: the room for
-    # groupchat, our own account otherwise (MUC PMs are queried -with). A
-    # server only strips stanza-ids claiming to be itself (XEP-0359 3), so a
-    # foreign `by` is peer-supplied: honouring one lets a peer replay a past
-    # archive id and have the genuine message dropped as a duplicate.
+    # The <stanza-id> of the archive this message lives in: the room's for
+    # groupchat, our own account's otherwise (MUC PMs, and invites a room
+    # relays to us). A server only strips stanza-ids claiming to be
+    # itself (XEP-0359 3), so a foreign `by` is peer-supplied: honouring one
+    # lets a peer replay a past archive id and have the genuine message
+    # dropped as a duplicate.
     method ArchiveStanzaId {msgNode chatJid} {
-        if {[regexp {(.*)\?join$} $chatJid -> roomJid]} {
+        if {[regexp {(.*)\?join$} $chatJid -> roomJid]
+                && [xsearch $msgNode -get @type] eq "groupchat"} {
             set owner $roomJid
         } else {
             set owner [$client cget -jid]
@@ -2473,15 +2496,10 @@ snit::type taco_message {
             ? [dict get $args -own_id] : ""}]
         set rawFrom [xsearch $msgNode -get @from]
         set invite [ParseInvite $msgNode]
-        if {$invite ne ""} {
-            # A direct invite may come bodyless; it is still something to show.
-            if {$body eq ""} { set body [InviteBody $invite $ownId] }
-            # Relayed by the room: the person who asked is the author, which
-            # is what inviteChat filed it under.
-            set asker [xsearch $msgNode x \
-                -ns http://jabber.org/protocol/muc#user invite -get @from]
-            if {$asker ne "" && ![IsMucChatJid $chatJid]} { set rawFrom $asker }
-            dict unset invite inviter
+        # A bodyless invite still gets shown. (A relayed one also counts as
+        # a mention below: rooms only alert on mentions.)
+        if {$invite ne "" && $body eq ""} {
+            set body [InviteBody $invite $ownId]
         }
         if {[ClassifyMessage $msgNode $body] ne "message"} {
             return ""
@@ -2512,11 +2530,14 @@ snit::type taco_message {
             raw_xml    [jwrite $msgNode] \
             attachments [ExtractAttachments $msgNode $body] \
             invite     $invite \
+            invite_room [expr {$invite eq "" ? "" : [dict get $invite room]}] \
             server_status "" \
             encryption $enc \
             sender_fp  $senderFp \
-            mentions_me [$self MentionsMe $chatJid $body $ownId \
-                [jid resource $rawFrom]]
+            mentions_me [expr {$invite ne "" && $ownId eq ""
+                && [IsMucChatJid $chatJid] ? 1
+                : [$self MentionsMe $chatJid $body $ownId \
+                    [jid resource $rawFrom]]}]
     }
 
     # Does this room message name our nick? Word-boundary and caseless.

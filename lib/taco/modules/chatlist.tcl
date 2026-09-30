@@ -7,6 +7,9 @@
 #   bookmarks  - a bookmarked room (room@muc?join)
 #   free       - has chat history but is in neither roster nor bookmarks
 #
+# `invited` marks an unjoined room with a pending invite (usually why it is
+# listed at all).
+#
 # Every jid is a chat JID, opened verbatim: bare = 1:1, room@muc?join = group
 # chat, room@muc/nick = MUC PM. The ?join suffix is the tell for group vs 1:1.
 #
@@ -126,6 +129,9 @@ snit::type taco_chatlist {
         dict set entry mentions [dict get $policy mentions]
         if {![dict exists $entry name]} { dict set entry name "" }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
+        dict set entry invited [expr {[dict get $entry groupchat]
+            && ![dict get $entry autojoin]
+            && [$client message messagestore pendingInvite $chatJid]}]
         return $entry
     }
 

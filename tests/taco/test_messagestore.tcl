@@ -1577,3 +1577,30 @@ test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phant
         store destroy
         testdb close
     } -result {1 alice@example.com 0}
+
+# A store with the invite column but no invite_room or invite_declined.
+test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invite dict} \
+    -setup {
+        sqlite3 testdb :memory:
+        taco_messagestore create store -db testdb
+        store destroy
+        testdb eval {
+            DROP INDEX idx_chat_message_invite_room;
+            ALTER TABLE chat_message DROP COLUMN invite_room;
+            ALTER TABLE chat_message DROP COLUMN invite_declined;
+            INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
+                server_id, own_id, raw_xml, invite)
+            VALUES(10, 'room@muc.example.com?join', 'room@muc.example.com',
+                   'hi', 's1', '', '',
+                   'room room@muc.example.com inviter a@example.com reason {} password {}');
+        }
+    } \
+    -body {
+        taco_messagestore create store -db testdb
+        list [store invitesToRoom room@muc.example.com] \
+             [store pendingInvite room@muc.example.com?join]
+    } \
+    -cleanup {
+        store destroy
+        testdb close
+    } -result {{{room@muc.example.com?join 10}} 1}
