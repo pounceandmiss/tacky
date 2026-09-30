@@ -329,6 +329,8 @@ snit::type taco_message {
                 } else {
                     set chatJid $fromBare
                 }
+                set inviteChat [$self inviteChat $msgNode]
+                if {$inviteChat ne ""} { set chatJid $inviteChat }
             }
 
             set r [$self ParseResultNode $resultNode $chatJid]
@@ -391,6 +393,26 @@ snit::type taco_message {
         dict for {jid _} $open {
             $self CatchupSettled $jid 0
         }
+    }
+
+    # The chat a room-relayed (mediated) invite belongs in, or "" for any
+    # other stanza. It comes from the room's bare JID, so filing it by sender
+    # makes a 1:1 chat with the room itself; it goes to the person who asked
+    # instead, or to the room's own chat when the room doesn't say who. The
+    # live path (muc OnInvite) and the account catchup both route through
+    # here: the store dedups per chat, so the two must agree for an invite
+    # seen live and again in the archive to stay one row.
+    method inviteChat {msgNode} {
+        if {[llength [xsearch $msgNode x \
+                -ns http://jabber.org/protocol/muc#user invite]] == 0} {
+            return ""
+        }
+        set invite [ParseInvite $msgNode]
+        if {$invite eq ""} { return "" }
+        if {[dict get $invite inviter] ne ""} {
+            return [dict get $invite inviter]
+        }
+        return "[dict get $invite room]?join"
     }
 
     # Called on message stanzas that haven't been intercepted by other
@@ -2120,6 +2142,12 @@ snit::type taco_message {
         if {[xsearch $msgNode -get @type] eq "error"} {
             return [dict create verdict drop timestamp $ts]
         }
+        # A room relaying a decline of our invite (live, muc claims it first;
+        # from the archive it would become a 1:1 chat with the room).
+        if {[llength [xsearch $msgNode x \
+                -ns http://jabber.org/protocol/muc#user decline]] > 0} {
+            return [dict create verdict drop timestamp $ts]
+        }
         set reaction [$self ParseReaction $chatJid $msgNode]
         if {$reaction ne ""} {
             # `timestamp` keeps the reaction verdict uniform with the
@@ -2448,10 +2476,23 @@ snit::type taco_message {
         if {$replyId ne ""} {
             set body [reply::strip_fallback $msgNode $body]
         }
+        set ownId [expr {[dict exists $args -own_id] \
+            ? [dict get $args -own_id] : ""}]
+        set rawFrom [xsearch $msgNode -get @from]
+        set invite [ParseInvite $msgNode]
+        if {$invite ne ""} {
+            # A direct invite may come bodyless; it is still something to show.
+            if {$body eq ""} { set body [InviteBody $invite $ownId] }
+            # Relayed by the room: the person who asked is the author, which
+            # is what inviteChat filed it under.
+            set asker [xsearch $msgNode x \
+                -ns http://jabber.org/protocol/muc#user invite -get @from]
+            if {$asker ne "" && ![IsMucChatJid $chatJid]} { set rawFrom $asker }
+            dict unset invite inviter
+        }
         if {[ClassifyMessage $msgNode $body] ne "message"} {
             return ""
         }
-        set rawFrom [xsearch $msgNode -get @from]
         set fromJid [NormalizeAuthorJid $chatJid $rawFrom]
         set fromRes [SplitFromResource $chatJid $rawFrom]
         # Drives the lock on peer messages, so it tracks what we actually
@@ -2460,8 +2501,6 @@ snit::type taco_message {
         set enc [expr {[dict exists $msgNode decrypted] ? "omemo" : ""}]
         set senderFp [expr {[dict exists $msgNode sender_fp] \
             ? [dict get $msgNode sender_fp] : ""}]
-        set ownId [expr {[dict exists $args -own_id] \
-            ? [dict get $args -own_id] : ""}]
         set originId [expr {[dict exists $args -origin_id] \
             ? [dict get $args -origin_id] : ""}]
         dict create \
@@ -2479,6 +2518,7 @@ snit::type taco_message {
             reply_to   $replyTo \
             raw_xml    [jwrite $msgNode] \
             attachments [ExtractAttachments $msgNode $body] \
+            invite     $invite \
             server_status "" \
             encryption $enc \
             sender_fp  $senderFp \
@@ -2536,6 +2576,43 @@ proc ExtractAttachments {msgNode body} {
         lappend atts [attachment_dict [string trim $body]]
     }
     return $atts
+}
+
+# A room invitation in a <message>, as {room inviter reason password}, or "".
+#   mediated - relayed by the room: <x muc#user><invite from=.../>
+#   direct   - XEP-0249 <x jabber:x:conference jid=.../> from the inviter
+# A relayed invite often carries both; mediated wins, as the direct one's
+# sender is the room. `inviter` is a bare JID, or "".
+proc ParseInvite {msgNode} {
+    set mucX [lindex [xsearch $msgNode x -ns http://jabber.org/protocol/muc#user] 0]
+    set inviteNode [expr {$mucX eq "" ? "" : [lindex [xsearch $mucX invite] 0]}]
+    if {$inviteNode ne ""} {
+        set room [xsearch $msgNode -get @from]
+        set inviter [xsearch $inviteNode -get @from]
+        set reason [xsearch $inviteNode reason -get body]
+        set password [xsearch $mucX password -get body]
+    } else {
+        set confX [lindex [xsearch $msgNode x -ns jabber:x:conference] 0]
+        if {$confX eq ""} { return "" }
+        set room [xsearch $confX -get @jid]
+        set inviter [xsearch $msgNode -get @from]
+        set reason [xsearch $confX -get @reason]
+        set password [xsearch $confX -get @password]
+    }
+    if {![jid valid $room]} { return "" }
+    set inviter [expr {[jid valid $inviter] ? [jid norm [jid bare $inviter]] : ""}]
+    dict create room [jid norm [jid bare $room]] inviter $inviter \
+        reason $reason password $password
+}
+
+# Stand-in body for a bodyless invite, worded like server-relayed ones.
+proc InviteBody {invite ownId} {
+    set room [dict get $invite room]
+    set inviter [dict get $invite inviter]
+    if {$ownId ne "" || $inviter eq ""} {
+        return "Invitation to the room $room"
+    }
+    return "$inviter invites you to the room $room"
 }
 
 # A received attachment has no `path`: only our own send sets one.
