@@ -559,22 +559,79 @@ test muc-invite-sends {invite sends mediated invitation} \
              [xsearch $m x -ns http://jabber.org/protocol/muc#user invite reason -get body]
     } -result {room@muc.example.com bob@example.com {join us}}
 
-test muc-invite-event {<Invite> event fires on incoming invitation} \
+# A relayed invite, as a room sends it: from the room's bare JID, naming who
+# asked. $body "" leaves the <body> out.
+proc muc_invite {args} {
+    set o [dict merge {from room@muc.example.com inviter alice@example.com/phone
+                       reason "come join" password roompass
+                       body "alice invites you" sid ""} $args]
+    j message -from [dict get $o from] -to user@test.example.com {
+        if {[dict get $o sid] ne ""} {
+            j stanza-id -ns urn:xmpp:sid:0 -by user@test.example.com \
+                -id [dict get $o sid]
+        }
+        j x -ns http://jabber.org/protocol/muc#user {
+            set invAttrs {}
+            if {[dict get $o inviter] ne ""} {
+                lappend invAttrs -from [dict get $o inviter]
+            }
+            j invite {*}$invAttrs {
+                if {[dict get $o reason] ne ""} {
+                    j reason -body [dict get $o reason]
+                }
+            }
+            if {[dict get $o password] ne ""} {
+                j password -body [dict get $o password]
+            }
+        }
+        if {[dict get $o body] ne ""} {
+            j body -body [dict get $o body]
+        }
+    }
+}
+
+# The newest stored message of $chat as the frontend gets it, or {}.
+proc muc_latest {chat} {
+    lindex [dict get [c message messagestore get latest $chat] messages] end
+}
+
+test muc-invite-stored-in-inviter-chat {a relayed invite lands in the inviter's chat} \
     {*}$muc_common \
     -body {
-        set got {}
-        tacky listen muc <Invite> {apply {{ev} { set ::got $ev }}}
-        c.conn feed [j message -from room@muc.example.com {
-            j x -ns http://jabber.org/protocol/muc#user {
-                j invite -from alice@example.com {
-                    j reason -body "come join"
-                }
-                j password -body roompass
-            }
-        }]
-        list [dict get $got -jid] [dict get $got -from] \
-             [dict get $got -reason] [dict get $got -password]
-    } -result {room@muc.example.com alice@example.com {come join} roompass}
+        c.conn feed [muc_invite sid inv-1]
+        set m [muc_latest alice@example.com]
+        list [dict get $m from_jid] [dict get $m content] \
+             [c db onecolumn {
+                  SELECT count(*) FROM chat_message
+                  WHERE chat_jid='room@muc.example.com'}]
+    } -result {alice@example.com {type invite room room@muc.example.com reason {come join} body {alice invites you} password roompass} 0}
+
+test muc-invite-without-inviter {a relayed invite naming nobody goes to the room's chat} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite inviter "" password ""]
+        list [dict get [muc_latest room@muc.example.com?join] content type] \
+             [c db onecolumn {
+                  SELECT count(*) FROM chat_message
+                  WHERE chat_jid='room@muc.example.com'}]
+    } -result {invite 0}
+
+test muc-invite-bodyless {a relayed invite without a body still gets one} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite body ""]
+        dict get [muc_latest alice@example.com] content body
+    } -result {alice@example.com invites you to the room room@muc.example.com}
+
+test muc-invite-redelivered-once {the same invite relayed twice is stored once} \
+    {*}$muc_common \
+    -body {
+        c.conn feed [muc_invite sid inv-2]
+        c.conn feed [muc_invite sid inv-2]
+        c db onecolumn {
+            SELECT count(*) FROM chat_message
+            WHERE chat_jid='alice@example.com' AND kind='message'}
+    } -result 1
 
 test muc-decline-event {<Decline> event fires on incoming decline} \
     {*}$muc_common \

@@ -70,7 +70,7 @@ snit::type taco_messagestore {
                           server_id, own_id, occupant_id, edited_ts, retracted,
                           reply_id, reply_to, raw_xml, server_status,
                           remote_status, encryption, sender_fp, fail_reason,
-                          attachments}
+                          attachments, invite}
 
     constructor args {
         $self configurelist $args
@@ -154,6 +154,9 @@ snit::type taco_messagestore {
                 -- derived from XEP-0066 OOB / URL bodies on store. Empty
                 -- for plain text messages.
                 attachments    TEXT,
+                -- room invitation dict {room reason password} (see
+                -- ParseInvite); empty for anything else.
+                invite         TEXT,
                 PRIMARY KEY(chat_jid, timestamp)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_message_server_id
@@ -232,6 +235,43 @@ snit::type taco_messagestore {
                 muted     INTEGER NOT NULL DEFAULT 0,
                 mentions  INTEGER NOT NULL DEFAULT 1
             );
+        }
+        set columns [$options(-db) eval {
+            SELECT name FROM pragma_table_info('chat_message')
+        }]
+        if {"invite" ni $columns} {
+            $options(-db) transaction {
+                $options(-db) eval {
+                    ALTER TABLE chat_message ADD COLUMN invite TEXT
+                }
+                $self DropRoomPhantoms
+            }
+        }
+    }
+
+    # Migration, run once with the invite column: drop room-relayed invites
+    # and declines an older store filed as a 1:1 chat with the room, and that
+    # chat if nothing else is left.
+    method DropRoomPhantoms {} {
+        set db $options(-db)
+        set phantom {
+            kind='message' AND instr(chat_jid, '?') = 0
+            AND instr(chat_jid, '/') = 0 AND from_jid = chat_jid
+            AND raw_xml LIKE '%http://jabber.org/protocol/muc#user%'
+            AND (raw_xml LIKE '%<invite%' OR raw_xml LIKE '%<decline%')
+        }
+        set jids [$db eval "SELECT DISTINCT chat_jid FROM chat_message
+                            WHERE $phantom"]
+        $db eval "DELETE FROM chat_message WHERE $phantom"
+        foreach jid $jids {
+            if {[$db exists {
+                SELECT 1 FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
+            }]} continue
+            $db eval {
+                DELETE FROM chat_message WHERE chat_jid=$jid;
+                DELETE FROM chat_own_read WHERE chat_jid=$jid;
+            }
         }
     }
 
@@ -437,16 +477,17 @@ snit::type taco_messagestore {
                     ? $m(attachments) : ""}]
                 set mention [expr {[info exists m(mentions_me)] \
                     ? $m(mentions_me) : 0}]
+                set invite [expr {[info exists m(invite)] ? $m(invite) : ""}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, sender_fp, fail_reason, mentions_me,
-                        attachments)
+                        attachments, invite)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
-                        $senderFp, $failReason, $mention, $attach)
+                        $senderFp, $failReason, $mention, $attach, $invite)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -1302,13 +1343,22 @@ snit::type taco_messagestore {
                 set content [dict create type media \
                     attachments $atts \
                     caption [attachment_caption [dict get $d body] $atts]]
+            } elseif {[dict exists $d invite] && [dict get $d invite] ne ""} {
+                set inv [dict merge {room "" reason "" password ""} \
+                    [dict get $d invite]]
+                set content [dict create type invite \
+                    room [dict get $inv room] reason [dict get $inv reason] \
+                    body [dict get $d body]]
+                if {[dict get $inv password] ne ""} {
+                    dict set content password [dict get $inv password]
+                }
             } else {
                 set content [dict create type text body [dict get $d body]]
             }
             if {$fmt ne ""} { dict set content formatting $fmt }
             dict set d content $content
         }
-        foreach k {body caption attachments formatting} { dict unset d $k }
+        foreach k {body caption attachments formatting invite} { dict unset d $k }
         set reactions [$self reactionsForMessage \
             [dict get $d chat_jid] [dict get $d timestamp]]
         if {[dict size $reactions] > 0} {

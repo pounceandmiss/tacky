@@ -39,7 +39,8 @@
 # tacky listen muc <Unavailable> $cmd        ;# -jid $room -nick $nick -reason $r -codes $codes -occupant $dict
 # tacky listen muc <Subject> $cmd            ;# -jid $room -nick $nick -subject $text
 # NOTE: MUC messages are delivered via message <New>, not muc events.
-# tacky listen muc <Invite> $cmd             ;# -jid $room -from $inviterJid -reason $t -password $pw -continue $thread
+# NOTE: invitations are stored as messages (content type "invite"), not muc
+# events: a room-relayed one in the room's chat, a direct one in the inviter's.
 # tacky listen muc <Decline> $cmd            ;# -jid $room -from $declinerJid -reason $text
 # tacky listen muc <NickChanged> $cmd        ;# -jid $room -oldNick $old -newNick $new -self $bool
 # tacky listen muc <Kicked> $cmd             ;# -jid $room -nick $nick -actor $actorNick -reason $text
@@ -846,18 +847,11 @@ snit::type taco_muc {
         $client message ingestLive ${roomJid}/${nick} $stanza
     }
 
+    # Kept as a message, not an event, since it waits on the user.
     method OnInvite {stanza mucX} {
-        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
-        set inviteNode [lindex [xsearch $mucX invite] 0]
-        set inviterJid [xsearch $inviteNode -get @from]
-        set reason [xsearch $inviteNode reason -get body]
-        set password [xsearch $mucX password -get body]
-
-        set continueThread [xsearch $inviteNode continue -get @thread]
-
-        $client emit muc <Invite> \
-            -jid $roomJid -from $inviterJid -reason $reason \
-            -password $password -continue $continueThread
+        set chatJid [$client message inviteChat $stanza]
+        if {$chatJid eq ""} return
+        $client message ingestLive $chatJid $stanza
     }
 
     method OnDecline {stanza mucX} {

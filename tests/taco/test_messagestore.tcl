@@ -1584,3 +1584,36 @@ test messagestore-reconcile-backfills-occupant-id \
         store reconcile alice@example.com sidA o1 o1 100 occ-me
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
     } -result {occ-me}
+
+# A pre-invite store with a relayed invite filed as a 1:1 chat with the room:
+# upgrading drops that chat and leaves real ones alone.
+test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phantoms} \
+    -setup {
+        sqlite3 testdb :memory:
+        taco_messagestore create store -db testdb
+        store destroy
+        testdb eval {ALTER TABLE chat_message DROP COLUMN invite}
+        set inviteXml "<message from='room@muc.example.com'><x xmlns='http://jabber.org/protocol/muc#user'><invite from='alice@example.com/phone'/></x><body>hi</body></message>"
+        testdb eval {
+            INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
+                server_id, own_id, raw_xml)
+            VALUES(10, 'room@muc.example.com', 'room@muc.example.com', 'hi',
+                   's1', '', $inviteXml),
+                  (20, 'alice@example.com', 'alice@example.com', 'hello',
+                   's2', '', '<message/>');
+            INSERT INTO chat_message(timestamp, chat_jid, kind)
+            VALUES(11, 'room@muc.example.com', 'hole');
+            INSERT INTO chat_own_read VALUES('room@muc.example.com', 10, 's1');
+        }
+    } \
+    -body {
+        taco_messagestore create store -db testdb
+        list [expr {"invite" in [testdb eval {
+                  SELECT name FROM pragma_table_info('chat_message')}]}] \
+             [testdb eval {SELECT DISTINCT chat_jid FROM chat_message}] \
+             [testdb eval {SELECT count(*) FROM chat_own_read}]
+    } \
+    -cleanup {
+        store destroy
+        testdb close
+    } -result {1 alice@example.com 0}

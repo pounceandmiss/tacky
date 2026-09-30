@@ -1,13 +1,14 @@
 # Store-dict helpers shared by chatview, searchwindow and chatlistview.
 
-# The user-visible text of a stored message dict: a text message's body or a
-# media message's caption; "" for a tombstone or a caption-less attachment.
+# The user-visible text of a stored message dict: a text or invite message's
+# body or a media message's caption; "" for a tombstone or a caption-less
+# attachment.
 proc message_text {storeDict} {
     if {![dict exists $storeDict content]} { return "" }
     set content [dict get $storeDict content]
     switch -- [dict get $content type] {
         media { return [dict get $content caption] }
-        text  { return [dict get $content body] }
+        text - invite { return [dict get $content body] }
     }
     return ""
 }

@@ -894,6 +894,69 @@ test message-catchup-floor-sweeps-undeduped-chat \
                 bob@example.com]]
     } -result {alice 0 bob 1}
 
+# A room-relayed invite as our archive holds it: from the room's bare JID.
+proc mam_invite_result {id {kind invite}} {
+    j result -ns urn:xmpp:mam:2 -id $id -queryid "" {
+        j forwarded -ns urn:xmpp:forward:0 {
+            j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+            j message -from room@muc.example.com -to $::acc {
+                j x -ns http://jabber.org/protocol/muc#user {
+                    j $kind -from alice@example.com/phone
+                }
+                j x -ns jabber:x:conference -jid room@muc.example.com
+                j body -body "alice invites you to the room room@muc.example.com"
+            }
+        }
+    }
+}
+
+# Filed by sender, a relayed invite would make a 1:1 chat with the room.
+test message-catchup-invite-to-inviter \
+    {catchup files a relayed invite in the inviter's chat, not the room's} \
+    {*}$msg_common \
+    -body {
+        msg_catchup [dict create messages [list [mam_invite_result arch-inv]] \
+            complete 1]
+        set m [lindex [msg_store_latest alice@example.com] end]
+        list [dict get $m from_jid] [dict get $m content type] \
+             [dict get $m content room] \
+             [llength [msg_store_latest room@muc.example.com]]
+    } -result {alice@example.com invite room@muc.example.com 0}
+
+test message-invite-live-then-catchup {an invite seen live and in catchup is one row} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -from room@muc.example.com -to $acc {
+            j stanza-id -ns urn:xmpp:sid:0 -by $::acc -id arch-inv
+            j x -ns http://jabber.org/protocol/muc#user {
+                j invite -from alice@example.com/phone
+            }
+            j body -body "alice invites you to the room room@muc.example.com"
+        }]
+        msg_catchup [dict create messages [list [mam_invite_result arch-inv]] \
+            complete 1]
+        llength [msg_store_latest alice@example.com]
+    } -result 1
+
+test message-catchup-decline-dropped {catchup drops a relayed decline} \
+    {*}$msg_common \
+    -body {
+        msg_catchup [dict create messages \
+            [list [mam_invite_result arch-dec decline]] complete 1]
+        $::_client db onecolumn {SELECT count(*) FROM chat_message
+                                 WHERE kind='message'}
+    } -result 0
+
+test message-direct-invite {a bodyless direct invite is shown in the inviter's chat} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -from bob@example.com/laptop -to $acc {
+            j x -ns jabber:x:conference -jid Room@muc.example.com \
+                -reason "we're talking about you" -password 1234
+        }]
+        dict get [lindex [msg_store_latest bob@example.com] end] content
+    } -result {type invite room room@muc.example.com reason {we're talking about you} body {bob@example.com invites you to the room room@muc.example.com} password 1234}
+
 # notify alerts off <CatchupDone>, so a run that emitted per page would alert
 # on page one and alert again on page two for the same chat.
 test message-catchup-pages-settle-once \

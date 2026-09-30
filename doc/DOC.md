@@ -551,6 +551,7 @@ carries it in `client`.
 
     content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
             | {type: "media", attachments: [attachment], caption: string, formatting?: formatting, matches?: matches}
+            | {type: "invite", room: string, reason: string, password?: string, body: string, formatting?: formatting, matches?: matches}
 
     formatting = [{type: span_type, offset: int, length: int}]
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
@@ -611,7 +612,15 @@ becomes `caption`, and the files are listed in `attachments`.
 - `content` is the typed payload: `type: "text"` carries a `body`,
   `type: "media"` carries an `attachments` list plus a `caption` (grouped
   attachments are just more than one entry). Each `attachment` has a `type` of
-  `"image"` (render inline) or `"file"` (a download chip). Deletion is a
+  `"image"` (render inline) or `"file"` (a download chip). `type: "invite"`
+  is an invitation to the group chat `room` (a bare JID; its chat is
+  `room?join`), with the inviter's `reason` (often `""`), the room `password`
+  when one was given, and a `body` that reads as the invite for anything not
+  rendering it as one. It sits in the inviter's 1:1 chat with `from_jid` the
+  inviter, whether they sent it themselves (XEP-0249) or the room relayed it
+  (XEP-0045), and in `room?join` when a relayed one doesn't say who asked.
+  Being invited doesn't put you in the room: `bookmarks item` with `autojoin`
+  set (and the `password`) is what accepts it. Deletion is a
   message-level state rather than a content type, so future kinds like `call`
   or `system` extend this union - switch on `type` and tolerate unknown ones.
 - `formatting` (XEP-0393 styling spans) indexes into whichever of
