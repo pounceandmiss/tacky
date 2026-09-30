@@ -683,18 +683,12 @@ test message-self-echo-dedups-not-duplicate \
             j body -body "hello"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-99 -by user@test.example.com
         }]
-        lassign [$::_client message ExtractEnvelopeIds $echo bob@example.com] \
-            sid ownId originId
-        set m [$::_client message ParseMessage $echo \
-            -chat_jid bob@example.com -timestamp 2000 \
-            -server_id $sid -own_id $ownId -origin_id $originId]
-        set res [$::_client message messagestore store [list $m]]
+        $::_client message ingestLive bob@example.com $echo
         set rows [msg_store_latest bob@example.com]
         list nrows [llength $rows] \
-            inserted [llength [dict get $res inserted]] \
-            confirmed [llength [dict get $res confirmed]] \
-            status [dict get [lindex $rows 0] server_status]
-    } -result {nrows 1 inserted 0 confirmed 1 status {}}
+            status [dict get [lindex $rows 0] server_status] \
+            sid [dict get [lindex $rows 0] server_id]
+    } -result {nrows 1 status {} sid srv-99}
 
 # resend: user-driven retry. Default honors the row's stamped
 # encryption; -plaintext downgrades (the only path that may).
@@ -1227,6 +1221,55 @@ test message-reconcile-new-when-idless \
         dict get [$::_client message messagestore reconcile \
             alice@example.com "" "" "" 5000000] verdict
     } -result {new}
+
+# A send an SM ack flipped to '' is still confirmed by its archived copy,
+# becoming a citizen at server time.
+test message-reconcile-adopts-id-after-sm-ack \
+    {reconcile adopts the archive id onto an acked own send that lacks one} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-a1 server_status "" timestamp 1000000]]
+        set v [$::_client message messagestore reconcile \
+            alice@example.com srv-a1 oid-a1 oid-a1 5000000]
+        set rows [msg_store_latest alice@example.com]
+        list verdict [dict get $v verdict] \
+            nrows [llength $rows] \
+            sid [dict get [lindex $rows 0] server_id] \
+            ts [dict get [lindex $rows 0] timestamp]
+    } -result {verdict confirmed nrows 1 sid srv-a1 ts 5000000}
+
+test message-reconcile-failed-not-adopted \
+    {a failed send is left alone by an archived copy} \
+    {*}$msg_common -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-f1 server_status failed timestamp 1000000]]
+        set v [$::_client message messagestore reconcile \
+            alice@example.com srv-f1 oid-f1 oid-f1 5000000]
+        set stored [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $v verdict] [dict get $stored server_status] \
+            [dict get $stored server_id]
+    } -result {duplicate failed {}}
+
+test message-history-acked-send-becomes-cursor \
+    {an acked own send adopts its archive id from MAM and anchors the next page} \
+    {*}$msg_common -body {
+        set tsR [ParseTimestamp 2024-03-01T10:00:00Z]
+        msg_store [list [msg_msg chat_jid alice@example.com body mine \
+            from_jid $acc own_id oid-c1 server_status "" timestamp $tsR]]
+        # No citizen yet: this page goes by time and returns our send's copy.
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $tsR -limit 50 -command [list apply {{r} {}}]
+        msg_mam_respond [list [list id arc-c1 from $acc/res to alice@example.com \
+            body mine origin_id oid-c1 stamp 2024-03-01T10:00:05Z]] -complete false
+        set rows [msg_store_latest alice@example.com]
+        set newTs [dict get [lindex $rows 0] timestamp]
+        tacky message history -acc $acc -chat alice@example.com \
+            -before $newTs -limit 50 -command [list apply {{r} {}}]
+        set q [lindex [xsearch [lindex [$::_client conn get_written] end] \
+            query -ns urn:xmpp:mam:2] 0]
+        list [llength $rows] [dict get [lindex $rows 0] server_id] \
+            [xsearch $q set before -get body]
+    } -result {1 arc-c1 arc-c1}
 
 # A duplicate own re-delivery in catchup is dropped on its envelope without
 # being re-decrypted (the case that used to produce EKEYGONE noise): the
@@ -3635,8 +3678,7 @@ test message-maxts-after-confirm-move \
         # Room echoes it back with a later stamp; the pending row's timestamp
         # is moved in place via UPDATE (which the insert trigger misses).
         set echoTs [expr {$oid + 5000}]
-        msg_store [list [msg_msg chat_jid $room timestamp $echoTs \
-            from_jid $room/someone own_id $oid server_id sid-echo]]
+        $::_client message messagestore reconcile $room sid-echo $oid $oid $echoTs
         expr {[$::_client message maxTimestamp -chat $room] == $echoTs}
     } -result 1
 
