@@ -48,36 +48,25 @@ test ds-ms-store-null-status {messages without server_status default to empty} \
         dict get [lindex $msgs 0] server_status
     } -result {}
 
-test ds-ms-confirm-on-echo {duplicate with pending status is confirmed to ''} \
+test ds-ms-confirm-on-echo {an echo matching a pending send by own_id confirms it to ''} \
     {*}$ds_ms_common \
     -body {
-        # Store outgoing message as pending
         ds_batch [list \
             [ds_msg timestamp 100 own_id oid1 body sent server_status pending]]
-        # Incoming echo with same own_id — triggers confirmation
-        set result [ds_batch [list \
-            [ds_msg timestamp 200 own_id oid1 body sent]]]
-        set confirmed [dict get $result confirmed]
-        # Check DB status changed
+        set v [store reconcile alice@example.com "" oid1 oid1 200]
         set status [testdb onecolumn {
             SELECT server_status FROM chat_message WHERE own_id='oid1'
         }]
-        list $status [llength $confirmed] \
-             [dict get [lindex $confirmed 0] own_id] \
-             [dict get [lindex $confirmed 0] timestamp]
-    } -result {{} 1 oid1 100}
+        list $status [dict get $v verdict] [dict get $v timestamp]
+    } -result {{} confirmed 100}
 
-test ds-ms-no-confirm-non-pending {duplicate without pending status is not confirmed} \
+test ds-ms-no-confirm-non-pending {a non-pending match with no archive id to adopt is a duplicate} \
     {*}$ds_ms_common \
     -body {
-        # Store a received message (empty status)
         ds_batch [list \
             [ds_msg timestamp 100 own_id oid1 body hello]]
-        # Feed same own_id again
-        set result [ds_batch [list \
-            [ds_msg timestamp 200 own_id oid1 body hello]]]
-        llength [dict get $result confirmed]
-    } -result {0}
+        dict get [store reconcile alice@example.com "" oid1 oid1 200] verdict
+    } -result {duplicate}
 
 test ds-ms-confirm-by-own-ids {confirmByOwnIds updates pending to ''} \
     {*}$ds_ms_common \

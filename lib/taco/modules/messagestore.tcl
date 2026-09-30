@@ -375,82 +375,23 @@ snit::type taco_messagestore {
 
     # --- Store ----------------------------------------------------------
 
-    # Insert messages. Deduplicates by server_id/own_id (or content
-    # fallback). Pending outgoings matched by own_id are confirmed
-    # (server_id captured, timestamp adjusted to server's value).
-    # When the batch contains at least one real-overlap dup hit (a
-    # row that already had a server_id), the entire batch's bracket
-    # is swept of holes — RSM guarantees the batch is server-
-    # contiguous, so any hole inside the bracket marked a gap
-    # we've now proven empty.
-    # Returns dict with `confirmed` (list of {own_id, timestamp,
-    # newtimestamp}) and `inserted` (list of stored timestamps).
+    # Insert messages, skipping any already stored (by server_id/own_id, or
+    # content for id-less ones), e.g. one repeated within a MAM page.
+    # Confirming our own sends is `reconcile`'s job. Returns dict with
+    # `inserted` (list of stored timestamps).
     method store {messages} {
         if {[llength $messages] == 0} { return {} }
 
         set jid [dict get [lindex $messages 0] chat_jid]
-
-        # Bracket: input timestamps from the server tell us the
-        # contiguous range. BumpTs may shift stored ts by a microsecond
-        # on collision, but the input range is what RSM guarantees.
-        set batchMinTs ""
-        set batchMaxTs ""
-        foreach msg $messages {
-            set t [dict get $msg timestamp]
-            if {$batchMinTs eq "" || $t < $batchMinTs} { set batchMinTs $t }
-            if {$batchMaxTs eq "" || $t > $batchMaxTs} { set batchMaxTs $t }
-        }
-
-        set hadRealOverlap 0
-        set confirmed {}
         set insertedTimestamps {}
         set prevTs -1
 
         $options(-db) transaction {
             foreach msg $messages {
+                if {[$self IsDuplicate $jid $msg]} continue
                 array unset m
                 array set m $msg
 
-                set dup [$self IsDuplicate $jid $msg]
-                if {$dup ne ""} {
-                    if {[dict get $dup server_status] eq "pending"} {
-                        # Pending outgoing confirmed by server echo or
-                        # MAM result. Move timestamp to server's value
-                        # and set server_id. Not an overlap proof —
-                        # the pending row was server-invisible until
-                        # now, so it didn't bound any hole.
-                        set dupTs [dict get $dup timestamp]
-                        set sid $m(server_id)
-                        # Backfill our own occupant-id from the echo/MAM copy;
-                        # the original send inserted it empty.
-                        set occ [expr {[info exists m(occupant_id)] \
-                            ? $m(occupant_id) : ""}]
-                        if {$m(timestamp) == $dupTs} {
-                            set newTs $dupTs
-                        } else {
-                            set newTs [$self BumpTs $jid $m(timestamp) 1]
-                        }
-                        $options(-db) eval {
-                            UPDATE chat_message
-                            SET timestamp=$newTs,
-                                server_status='',
-                                server_id = CASE WHEN $sid != ''
-                                    THEN $sid ELSE server_id END,
-                                occupant_id = CASE WHEN $occ != ''
-                                    THEN $occ ELSE occupant_id END
-                            WHERE chat_jid=$jid AND timestamp=$dupTs
-                        }
-                        lappend confirmed [dict create \
-                            own_id $m(own_id) timestamp $dupTs \
-                            newtimestamp $newTs]
-                    } else {
-                        # Real overlap: matched row already has a
-                        # server_id. The bracket sweep below proves
-                        # the gap empty.
-                        set hadRealOverlap 1
-                    }
-                    continue
-                }
                 set ts $m(timestamp)
                 if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }
                 set ts [$self BumpTs $jid $ts 1]
@@ -494,14 +435,8 @@ snit::type taco_messagestore {
                 set prevTs $ts
                 lappend insertedTimestamps $ts
             }
-
-            if {$hadRealOverlap} {
-                $self hole removeBetween $jid \
-                    $batchMinTs $batchMaxTs
-            }
         }
-        return [dict create confirmed $confirmed \
-            inserted $insertedTimestamps]
+        return [dict create inserted $insertedTimestamps]
     }
 
     # --- Get ------------------------------------------------------------
@@ -1243,10 +1178,11 @@ snit::type taco_messagestore {
     # Dedup by server_id/own_id only, for the caller to act on before any
     # decrypt. An id-less stanza returns `new` and is content-deduped later
     # by `store`. Verdicts:
-    #   confirmed - matched a pending send: flip to '' (server has it),
-    #               capture server_id, relocate to the server ts (as `store`
-    #               does); returns old/new ts for the <Confirmed>.
-    #   duplicate - matched a non-pending row; returns its `stored_ts`.
+    #   confirmed - matched a pending send (or an SM-acked one still lacking
+    #               a server_id this copy carries): flip to '', capture
+    #               server_id, relocate to the server ts; returns old/new ts
+    #               for the <Confirmed>.
+    #   duplicate - matched any other row; returns its `stored_ts`.
     #   new       - no id match.
     method reconcile {jid serverId ownId originId timestamp {occupantId ""}} {
         if {$serverId eq "" && $ownId eq ""} {
@@ -1254,19 +1190,22 @@ snit::type taco_messagestore {
         }
         set row ""
         $options(-db) eval {
-            SELECT timestamp, server_status FROM chat_message
+            SELECT timestamp, server_status, server_id FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND ( ($serverId != '' AND server_id=$serverId)
                  OR ($ownId != '' AND own_id=$ownId) )
             LIMIT 1
         } r {
             set row [dict create timestamp $r(timestamp) \
-                server_status $r(server_status)]
+                server_status $r(server_status) server_id $r(server_id)]
         }
         if {$row eq ""} {
             return [dict create verdict new]
         }
-        if {[dict get $row server_status] ne "pending"} {
+        set status [dict get $row server_status]
+        if {!($status eq "pending"
+              || ($status eq "" && [dict get $row server_id] eq ""
+                  && $serverId ne ""))} {
             return [dict create verdict duplicate \
                 stored_ts [dict get $row timestamp]]
         }
@@ -1370,18 +1309,13 @@ snit::type taco_messagestore {
     method IsDuplicate {jid msg} {
         set sid [dict get $msg server_id]
         set oid [dict get $msg own_id]
-        set result ""
         if {$sid ne "" || $oid ne ""} {
-            $options(-db) eval {
-                SELECT timestamp, server_status FROM chat_message
+            return [$options(-db) exists {
+                SELECT 1 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND ( ($sid != '' AND server_id=$sid)
                      OR ($oid != '' AND own_id=$oid) )
-                LIMIT 1
-            } row {
-                set result [dict create timestamp $row(timestamp) \
-                    server_status $row(server_status)]
-            }
+            }]
         } else {
             # Content-based fallback for messages without server_id/own_id
             # (e.g. IRC bridge messages). Match within the same second —
@@ -1396,18 +1330,13 @@ snit::type taco_messagestore {
             set body [dict get $msg body]
             set tsBase [expr {$ts / 1000000 * 1000000}]
             set tsEnd  [expr {$tsBase + 999999}]
-            $options(-db) eval {
-                SELECT timestamp, server_status FROM chat_message
+            return [$options(-db) exists {
+                SELECT 1 FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND timestamp BETWEEN $tsBase AND $tsEnd
                   AND from_jid=$from AND body=$body
-                LIMIT 1
-            } row {
-                set result [dict create timestamp $row(timestamp) \
-                    server_status $row(server_status)]
-            }
+            }]
         }
-        return $result
     }
 
     method BumpTs {jid ts step} {

@@ -532,9 +532,7 @@ snit::type taco_message {
 
     # Act on one live message's verdict (from Classify):
     #   confirmed → echo of one of our own pending sends → <Confirmed>
-    #   new       → store, then surface. store may still confirm it by the
-    #               content fallback (id-less re-delivery of a pending send)
-    #               or drop it as a real overlap with an existing citizen.
+    #   new       → store, then surface (store skips a copy already held).
     #   duplicate → already a citizen; nothing to show.
     #   drop      → displayless (control type / keytransport); nothing.
     # reaction/edit/retract patch a message already stored rather than adding
@@ -558,12 +556,7 @@ snit::type taco_message {
             }
             new {
                 set result [$messagestore store [list [dict get $verdict msg]]]
-                set confirmed [dict get $result confirmed]
-                if {[llength $confirmed] > 0} {
-                    $self HandleConfirmation $chatJid $confirmed
-                } else {
-                    $self HandleInsertion $chatJid [dict get $result inserted]
-                }
+                $self HandleInsertion $chatJid [dict get $result inserted]
             }
         }
     }

@@ -476,9 +476,7 @@ test messagestore-pending-confirm-same-ts {echo with same timestamp confirms in 
     {*}$ms_common \
     -body {
         ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
-        set result [store store [list \
-            [ms_msg timestamp 100 server_id srv1 own_id oid1 body sent]]]
-        set c [lindex [dict get $result confirmed] 0]
+        set c [store reconcile alice@example.com srv1 oid1 oid1 100]
         set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list [dict get $c timestamp] [dict get $c newtimestamp] \
              [dict get $msg server_id] [dict get $msg server_status]
@@ -489,9 +487,7 @@ test messagestore-pending-confirm-ts-change {echo with different timestamp moves
     -body {
         ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
         # Echo arrives with server timestamp 200
-        set result [store store [list \
-            [ms_msg timestamp 200 server_id srv1 own_id oid1 body sent]]]
-        set c [lindex [dict get $result confirmed] 0]
+        set c [store reconcile alice@example.com srv1 oid1 oid1 200]
         set oldExists [testdb exists {
             SELECT 1 FROM chat_message
             WHERE chat_jid='alice@example.com' AND timestamp=100
@@ -538,8 +534,7 @@ test messagestore-pending-confirm-reorders {confirmed pending moves to its new s
         foreach m $before { lappend beforeBodies [dict get $m content body] }
 
         # Server confirms X at timestamp 400 (between B and C)
-        store store [list \
-            [ms_msg timestamp 400 server_id srv1 own_id oid1 body x]]
+        store reconcile alice@example.com srv1 oid1 oid1 400
 
         # After confirmation: order should be a, b, x, c
         set after [ms_msgs [store get latest alice@example.com]]
@@ -674,41 +669,6 @@ test messagestore-hole-chat-isolation {holes are scoped per chat} \
         list [llength [store hole list alice@example.com]] \
              [llength [store hole list bob@example.com]]
     } -result {1 0}
-
-# =============================================================================
-# Hole: store-time sweep
-# =============================================================================
-
-test messagestore-store-overlap-sweeps-hole {store with real overlap sweeps holes in the batch bracket} \
-    {*}$ms_common \
-    -body {
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id s1 body a]]
-        store hole add alice@example.com newer 100
-        # A batch that overlaps the existing citizen via server_id
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id s1 body dup] \
-            [ms_msg timestamp 500 server_id s5 body e]]
-        llength [store hole list alice@example.com]
-    } -result {0}
-
-test messagestore-store-pending-confirm-does-not-sweep {pending->confirmed dedup does not sweep holes} \
-    {*}$ms_common \
-    -body {
-        # Pre-existing citizen + hole
-        ms_batch [list \
-            [ms_msg timestamp 50 server_id s_old body anchor]]
-        store hole add alice@example.com newer 50
-        # Pending outgoing
-        ms_batch [list \
-            [ms_msg timestamp 100 own_id oid1 body sent server_status pending]]
-        # Echo: dedup hits via own_id, but the matched row is pending —
-        # this is confirmation, not server overlap. Hole must stay
-        # (the gap between 50 and 100 is still uncertain).
-        ms_batch [list \
-            [ms_msg timestamp 100 server_id s_echo own_id oid1 body sent]]
-        llength [store hole list alice@example.com]
-    } -result {1}
 
 # =============================================================================
 # Hole: get truncation
