@@ -150,8 +150,9 @@ snit::widgetadaptor callwindow {
 
     method Hangup {} {
         ::tacky calls hangup -acc $options(-acc) -sid $options(-sid)
-        # <Ended> closes us; this only fires if the backend never sends one.
-        if {[winfo exists $win]} { $self CloseAfter 3000 }
+        # Close now: a forgotten call never emits <Ended>. Running OnEnded
+        # twice only re-arms the same close.
+        if {[winfo exists $win]} { $self OnEnded {} }
     }
 
     # One pending close at a time: a stale timer would outlive the window and
