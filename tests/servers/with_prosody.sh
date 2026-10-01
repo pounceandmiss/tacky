@@ -68,7 +68,7 @@ admins = { }
 modules_enabled = {
   "roster"; "saslauth"; "tls"; "dialback"; "disco"; "private";
   "vcard"; "version"; "uptime"; "time"; "ping"; "posix"; "pep";
-  "register"; "mam";
+  "register"; "mam"; "blocklist";
   "http"; "websocket"; "http_file_share";
   ${SM_MODULE}
 }

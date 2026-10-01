@@ -157,7 +157,7 @@ jsonify_type jsonify \
         occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool}
+        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool blocked bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
@@ -195,6 +195,8 @@ jsonify_type jsonify \
         muc/registerGet         form
         roster/get              {list roster_item}
         roster/subscription     string
+        blocking/supported      bool
+        blocking/list           list
         bookmarks/get           {list bookmark}
         bookmarks/autojoin      bool
         bookmarks/defaultNick   string
@@ -267,6 +269,7 @@ jsonify_type jsonify \
         muc/<ConfigChanged>     {dict {codes {list int}}}
         muc/<VoiceRequest>      {dict {form form}}
         chatlist/<Item>         {dict {item chat_entry}}
+        blocking/<Changed>      {dict {list list}}
         notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
         groupcall/<Changed>     {dict {active bool count int joined bool}}

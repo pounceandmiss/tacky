@@ -47,7 +47,11 @@ snit::type taco_chatlist {
         $client bus subscribe $self message:<Retracted> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Status> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Confirmed> [mymethod OnTailConfirmed]
+        $client bus subscribe $self blocking:<Changed> [mymethod OnBlockingChanged]
     }
+
+    # The last blocking:<Changed> list, to diff the next one against.
+    variable Blocked {}
 
     destructor {
         catch {$client bus unsubscribe $self}
@@ -129,6 +133,7 @@ snit::type taco_chatlist {
         dict set entry mentions [dict get $policy mentions]
         if {![dict exists $entry name]} { dict set entry name "" }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
+        dict set entry blocked [expr {$chatJid in [$client blocking list]}]
         dict set entry invited [expr {[dict get $entry groupchat]
             && ![dict get $entry autojoin]
             && [$client message messagestore pendingInvite $chatJid]}]
@@ -222,6 +227,19 @@ snit::type taco_chatlist {
         array set opts {-jid "" -newtimestamp ""}
         array set opts $args
         $self EmitIfTail $opts(-jid) $opts(-newtimestamp)
+    }
+
+    # Re-emit the existing entries whose blocked flag flipped.
+    method OnBlockingChanged {args} {
+        array set opts {-list ""}
+        array set opts $args
+        set flipped {}
+        foreach j $opts(-list) { if {$j ni $Blocked} { lappend flipped $j } }
+        foreach j $Blocked { if {$j ni $opts(-list)} { lappend flipped $j } }
+        set Blocked $opts(-list)
+        foreach j $flipped {
+            if {[$self EntryFor $j] ne ""} { $self EmitEntry $j }
+        }
     }
 
     method EmitIfTail {chatJid ts} {

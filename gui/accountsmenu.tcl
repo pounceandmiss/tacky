@@ -82,6 +82,8 @@ snit::type accountsmenu {
                 -command [list profilesettings open $jid]
 
             if {$enabled} {
+                $sub add command -label "Blocked Contacts..." \
+                    -command [list blocklistwindow open $jid]
                 $sub add command -label "Disable" \
                     -command [list $options(-tacky) account disable -acc $jid]
             } else {

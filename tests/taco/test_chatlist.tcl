@@ -395,3 +395,46 @@ test chatlist-confirm-reemits-at-new-slot {a confirmation that moved the tail ro
             -timestamp 100 -newtimestamp 150 -server_status ""
         set got
     } -result {150 {}}
+
+# -- blocked -------------------------------------------------------------
+
+test chatlist-blocked-flag-follows-pushes \
+    {a block push flags exactly the 1:1 chat it names, and re-emits only that row} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert alice@example.com name Alice
+        roster_insert bob@example.com name Bob
+        bookmark_insert room@muc.example.com name Room
+        set ::items {}
+        tacky listen chatlist <Item> {apply {{ev} { lappend ::items [dict get $ev -jid] }}}
+        c configure -jid user@test.example.com/res
+        c.conn feed [j iq -type set -id b1 -from user@test.example.com {
+            j block -ns urn:xmpp:blocking {
+                j item -jid alice@example.com
+                j item -jid room@muc.example.com
+            }
+        }]
+        update idletasks
+        list $::items [by_jid [c chatlist get] blocked]
+    } -result {alice@example.com {alice@example.com 1 bob@example.com 0 room@muc.example.com?join 0}}
+
+test chatlist-blocked-flag-cleared-on-unblock \
+    {an unblock push clears the flag and re-emits the row} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert alice@example.com name Alice
+        c configure -jid user@test.example.com/res
+        c.conn feed [j iq -type set -id b1 -from user@test.example.com {
+            j block -ns urn:xmpp:blocking { j item -jid alice@example.com }
+        }]
+        update idletasks
+        set ::items {}
+        tacky listen chatlist <Item> {apply {{ev} {
+            lappend ::items [dict get $ev -item blocked]
+        }}}
+        c.conn feed [j iq -type set -id u1 -from user@test.example.com {
+            j unblock -ns urn:xmpp:blocking { j item -jid alice@example.com }
+        }]
+        update idletasks
+        set ::items
+    } -result {0}

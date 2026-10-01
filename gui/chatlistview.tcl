@@ -22,6 +22,7 @@ snit::widget chatlistview {
     variable showAvatars 1
     variable bookmarkMember 0
     variable trackedAvatars {}
+    variable blockEntry
     # jid -> chat entry (chatlist get shape), patched by <Item>/<Remove>
     variable model {}
 
@@ -83,6 +84,10 @@ snit::widget chatlistview {
             -command [mymethod OnRenameContact]
         $contactmenu add command -label "Remove" \
             -command [mymethod OnRemoveContact]
+        # Relabelled per row by OnContactMenu.
+        $contactmenu add command -label "Block" \
+            -command [mymethod OnToggleBlock]
+        set blockEntry [$contactmenu index end]
         $contactmenu add separator
         $contactmenu add command -label "Refresh avatar" \
             -command [mymethod OnRefreshAvatar]
@@ -211,6 +216,7 @@ snit::widget chatlistview {
         if {[dict exists $entry room_state]} {
             lappend tags muc_[dict get $entry room_state]
         }
+        if {[dict getdef $entry blocked 0]} { lappend tags blocked }
         return [dict create key $jid name $name \
             preview [$self PreviewText $entry] \
             unread [dict getdef $entry unread 0] \
@@ -273,6 +279,11 @@ snit::widget chatlistview {
         foreach {state opts} $mucStateStyle {
             $rows tag configure muc_$state {*}$opts
         }
+        if {[lsearch -exact [font names] ChatlistBlocked] < 0} {
+            font create ChatlistBlocked {*}[font actual ChatrowsName]
+            font configure ChatlistBlocked -overstrike 1
+        }
+        $rows tag configure blocked -foreground gray60 -font ChatlistBlocked
     }
 
     # -- interaction -----------------------------------------------------
@@ -303,9 +314,25 @@ snit::widget chatlistview {
                 -acc $options(-acc) -jid $jid \
                 -tag $win -command [mymethod OnAutojoinResult $X $Y]
         } else {
-            $contactmenu entryconfigure 0 -label [string range $jid 0 39]
-            tk_popup $contactmenu $X $Y
+            $options(-tacky) blocking supported -acc $options(-acc) \
+                -tag $win -command [mymethod OnContactMenu $jid $X $Y]
         }
+    }
+
+    method OnContactMenu {jid X Y supported} {
+        $contactmenu entryconfigure 0 -label [string range $jid 0 39]
+        set blocked [dict getdef [$self ModelItem $jid] blocked 0]
+        $contactmenu entryconfigure $blockEntry \
+            -label [expr {$blocked ? "Unblock" : "Block"}] \
+            -state [expr {$supported ? "normal" : "disabled"}]
+        tk_popup $contactmenu $X $Y
+    }
+
+    method OnToggleBlock {} {
+        set jid [$self SelectedLeafJid]
+        if {$jid eq ""} return
+        blocking_toggle $win $options(-tacky) $options(-acc) $jid \
+            [dict getdef [$self ModelItem $jid] blocked 0]
     }
 
     method OnAutojoinResult {X Y value} {

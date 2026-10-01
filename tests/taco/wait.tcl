@@ -111,6 +111,36 @@ proc wait_events {specs {timeout 10000}} {
     }
 }
 
+# Arm now, block later, for an event that may fire before the code that
+# causes it returns. One flag per spec.
+#   set seen [expect_events {{blocking <Changed> -acc a} ...}]
+#   ... reconnect ...
+#   wait_expected $seen
+proc testwait::Seen {flag args} { set $flag 1 }
+
+proc expect_events {specs} {
+    set tag [namespace tail [testwait::Flag]]
+    set flags {}
+    foreach spec $specs {
+        set flag [testwait::Flag]
+        lappend flags $flag
+        tacky listen -tag $tag {*}$spec [list ::testwait::Seen $flag]
+    }
+    return [dict create tag $tag flags $flags specs $specs]
+}
+
+proc wait_expected {expectation {timeout 10000}} {
+    set flags [dict get $expectation flags]
+    try {
+        foreach flag $flags spec [dict get $expectation specs] {
+            testwait::Block $flag $timeout "event: $spec"
+        }
+    } finally {
+        tacky unlisten [dict get $expectation tag]
+        foreach flag $flags { unset -nocomplain $flag }
+    }
+}
+
 # -- waiting on a tacky command's callback ---------------------------------
 
 # Run a tacky command with -command, block for the result, return it. Works
