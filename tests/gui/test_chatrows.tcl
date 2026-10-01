@@ -58,6 +58,16 @@ test chatrows-select-highlights-and-reports {selecting a row tags it and fires t
     list [.cr selected] [llength [.cr.canvas find withtag selected]] $got
 } -cleanup cr_cleanup -result {b 1 {}}
 
+test chatrows-reselect-restores-colours {moving the selection gives the old row its own text colours back} -body {
+    cr_create [list [cr_row a preview hi time [clock seconds]] [cr_row b preview yo]]
+    set c .cr.canvas
+    set before [lmap part {name preview time} { $c itemcget "row.0 && $part" -fill }]
+    .cr select a
+    .cr select b
+    set after [lmap part {name preview time} { $c itemcget "row.0 && $part" -fill }]
+    expr {$before eq $after}
+} -cleanup cr_cleanup -result 1
+
 test chatrows-select-unknown-clears {selecting a key that is not there clears the selection} -body {
     cr_create [list [cr_row a]]
     .cr select a
