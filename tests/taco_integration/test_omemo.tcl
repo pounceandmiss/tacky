@@ -53,7 +53,7 @@ namespace eval ::test::omemo_int {
     proc coldSetup {} {
         variable HOST
         variable TESTER
-        tacky account add -acc $TESTER -password testpass \
+        tacky account add {*}$::tacky_test_account_args -acc $TESTER -password testpass \
             -domain $HOST -username test
         tacky account enable -acc $TESTER
         wait_events {

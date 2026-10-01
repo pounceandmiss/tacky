@@ -86,6 +86,15 @@ snit::type baseconn {
     # creation by an idle cycle (see DestroyReader), so the name cannot be
     # reused.
     variable readerSeq
+    # The host-meta lookup in flight (see Discover): taco_http token and body file.
+    variable lookup
+    variable lookupFile
+
+    # Host -> endpoint its host-meta named ("" for none), shared by every
+    # connection. Failed lookups are not kept, so they are retried.
+    typevariable Discovered {}
+    # How long a host gets before the convention is tried.
+    typevariable DISCOVERY_TIMEOUT 5000
 
     # Callback when the transport (TCP + optional TLS) is ready for use
     option -ontransportready -default ""
@@ -96,8 +105,8 @@ snit::type baseconn {
     # to be had and the browser has already done TLS - so -starttls plays no
     # part in it.
     option -transport -default tcp
-    # Where that transport connects. Empty takes the convention every server
-    # that publishes a websocket endpoint follows; see ::wsframing::url.
+    # Where that transport connects. Empty asks the host (Discover), then
+    # takes ::wsframing::url.
     option -ws-url -default ""
     # Callback for each top-level XMPP stanza received (node dict)
     option -command -default control::no-op
@@ -119,6 +128,8 @@ snit::type baseconn {
         set ws ""
         set reader ""
         set readerSeq 0
+        set lookup ""
+        set lookupFile ""
     }
 
     destructor {
@@ -248,8 +259,84 @@ snit::type baseconn {
         }
         set url $options(-ws-url)
         if {$url eq ""} {
-            set url [::wsframing::url $host]
+            if {![dict exists $Discovered $host]} {
+                $self Discover
+                return
+            }
+            set url [dict get $Discovered $host]
+            if {$url eq ""} {
+                set url [::wsframing::url $host]
+            }
         }
+        $self OpenWebsocket $url
+    }
+
+    # XEP-0156: ask the host where its websocket is. Any failure (no
+    # host-meta, timeout, CORS) falls back to the convention.
+    method Discover {} {
+        set url [::wsframing::hostMetaUrl $host]
+        if {[catch {
+            close [file tempfile lookupFile tacky-host-meta]
+            set lookup [taco_http get $url -outfile $lookupFile \
+                -timeout $DISCOVERY_TIMEOUT -command [mymethod OnDiscovered]]
+        } err]} {
+            jlog warn "host-meta for $host: $err"
+            $self DropLookup
+            $self OpenWebsocket [::wsframing::url $host]
+        }
+    }
+
+    method OnDiscovered {token} {
+        # Superseded by a close or a new connect.
+        if {$token ne $lookup} {
+            catch {taco_http cleanup $token}
+            return
+        }
+        set status [taco_http status $token]
+        set code [taco_http ncode $token]
+        set doc ""
+        if {$status eq "ok" && $code == 200} {
+            catch {
+                set f [open $lookupFile r]
+                fconfigure $f -encoding utf-8
+                set doc [read $f]
+                close $f
+            }
+        }
+        $self DropLookup
+        # A 4xx is an answer too: nothing published.
+        if {$status eq "ok" && $code >= 200 && $code < 500} {
+            dict set Discovered $host [::wsframing::fromHostMeta $doc]
+        }
+        set url ""
+        if {[dict exists $Discovered $host]} {
+            set url [dict get $Discovered $host]
+        }
+        if {$url eq ""} {
+            jlog inform "host-meta for $host: $status $code, none named;\
+                trying the conventional endpoint"
+            set url [::wsframing::url $host]
+        } else {
+            jlog inform "host-meta for $host names $url"
+        }
+        $self OpenWebsocket $url
+    }
+
+    method DropLookup {} {
+        if {$lookup ne ""} {
+            # Cleared first: a reset may run -command synchronously.
+            set token $lookup
+            set lookup ""
+            catch {taco_http reset $token}
+            catch {taco_http cleanup $token}
+        }
+        if {$lookupFile ne ""} {
+            catch {file delete $lookupFile}
+            set lookupFile ""
+        }
+    }
+
+    method OpenWebsocket {url} {
         if {[catch {::wschan::open $url \
                 -protocols [list $::wsframing::SUBPROTOCOL] \
                 -command [mymethod OnWsEvent]} result]} {
@@ -342,6 +429,7 @@ snit::type baseconn {
             set flushPending 0
         }
         $self DestroyReader
+        $self DropLookup
         if {$ws ne ""} {
             # 1000 "normal closure": whatever the stream did, the socket ends
             # cleanly. conn has already sent </stream:stream> - <close/> on

@@ -15,8 +15,6 @@ export type InboundFrame =
 export type StorageMode = 'opfs' | 'idbfs' | 'memory';
 
 export interface ClientOptions {
-    /** The XMPP endpoint, when the server does not follow `wss://$host/xmpp-websocket`. */
-    ws?: string;
     /** Keep the store in memory whatever the browser offers. */
     transient?: boolean;
     /** Where the store lives in the backend's filesystem. Default `/store`. */
@@ -66,8 +64,15 @@ export interface Client {
 /** Start a backend in a Web Worker. */
 export function createClient(options?: ClientOptions): Client;
 
-/** Add an account and wait for its session to be up: the `conn <State>` frame, or null. */
-export function connect(client: Client, jid: string, password: string, ms?: number): Promise<InboundFrame | null>;
+/**
+ * Add an account and wait for its session to be up: the `conn <State>` frame,
+ * or null. `websocketUrl` becomes the account's `websocket_url`; without it
+ * the endpoint is discovered (XEP-0156, then `wss://$domain/xmpp-websocket`).
+ */
+export function connect(
+    client: Client, jid: string, password: string,
+    options?: { websocketUrl?: string; ms?: number },
+): Promise<InboundFrame | null>;
 
 export interface MediaHostOptions {
     /** Post one frame to the backend: the `media hostEvent` requests this makes. */

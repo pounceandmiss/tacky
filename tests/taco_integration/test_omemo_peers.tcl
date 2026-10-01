@@ -30,9 +30,9 @@ namespace eval ::test::omemo_peer_int {
         variable HOST
         variable OWNER
         variable PEER
-        tacky account add -acc $PEER  -password omemoapass \
+        tacky account add {*}$::tacky_test_account_args -acc $PEER  -password omemoapass \
             -domain $HOST -username omemoa
-        tacky account add -acc $OWNER -password omemobpass \
+        tacky account add {*}$::tacky_test_account_args -acc $OWNER -password omemobpass \
             -domain $HOST -username omemob
         tacky account enable -acc $PEER
         tacky account enable -acc $OWNER

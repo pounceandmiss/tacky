@@ -85,9 +85,14 @@ export function createClient(options = {}) {
     return client;
 }
 
-/** Add an account and wait for its session to be up. */
-export async function connect(client, jid, password, ms = 40_000) {
-    client.send(['account', 'add', { acc: jid, password }]);
+/**
+ * Add an account and wait for its session to be up. Without `websocketUrl`
+ * the backend discovers the endpoint.
+ */
+export async function connect(client, jid, password, { websocketUrl = '', ms = 40_000 } = {}) {
+    client.send(['account', 'add', {
+        acc: jid, password, ...(websocketUrl ? { websocket_url: websocketUrl } : {}),
+    }]);
     if (!await client.event('account', 'Added', () => true, ms)) return null;
     client.send(['account', 'enable', { acc: jid }]);
     return client.event('conn', 'State', (a) => a.state === 'connected', ms);

@@ -80,6 +80,8 @@ snit::type mock_bareconn {
     option -footer-command -default ""
     option -starttls -default true
     option -ondebugstanza -default ""
+    option -transport -default tcp
+    option -ws-url -default ""
 
     constructor {args} {
         $self configurelist $args
@@ -215,6 +217,21 @@ set common {
 }
 
 # -- Connection & features -------------------------------------------------
+
+test reg-connect-transport-and-url {the session dials over the backend's transport, where it is told} \
+    {*}$common \
+    -body {
+        tacky register connect -host example.com -websocket_url wss://ws.example.com/x
+        list [$::_mock_conn cget -transport] [string equal [$::_mock_conn cget -transport] \
+                [tacky cget -transport]] [$::_mock_conn cget -ws-url]
+    } -result {tcp 1 wss://ws.example.com/x}
+
+test reg-connect-no-url {without one, the session leaves its endpoint to discovery} \
+    {*}$common \
+    -body {
+        tacky register connect -host example.com
+        $::_mock_conn cget -ws-url
+    } -result {}
 
 test reg-connect-writes-header {connect writes stream header} \
     {*}$common \

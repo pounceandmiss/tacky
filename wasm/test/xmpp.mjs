@@ -65,15 +65,15 @@ const M = await createTacky();
 
 check('tacky_boot', M.ccall('tacky_boot', 'number', [], []) === 0, notes.at(-1));
 
-// The test server is plain ws on its own port, so -ws-url is needed.
-const args = `-transient 1 -media-backend host -transport websocket -ws-url ${WS_URL}`
+const args = '-transient 1 -media-backend host -transport websocket'
     + (process.env.XMPP_DEBUG ? ' -debug-level debug' : '');
 check('tacky_start on the websocket transport',
     M.ccall('tacky_start', 'number', ['string'], [args]) === 0, notes.at(-1));
 
 const running = M.ccall('tacky_run', 'number', [], [], { async: true });
 
-send(['account', 'add', { acc: JID, password: PASS }]);
+// The test server is plain ws on its own port, so name it.
+send(['account', 'add', { acc: JID, password: PASS, websocket_url: WS_URL }]);
 check('the account is added', (await event('account', 'Added')) !== null);
 
 send(['account', 'enable', { acc: JID }]);

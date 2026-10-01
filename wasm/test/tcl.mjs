@@ -20,9 +20,10 @@ const launcher = (argv[0]?.startsWith('--') ? null : argv[0])
 const dir = flag('dir', 'taco');
 const file = flag('file', '');
 const match = flag('match', '*');
-// For the integration suite: the server's endpoint and name.
-const tacoArgs = flag('taco-args', process.env.XMPP_WS_URL
-    ? `-transport websocket -ws-url ${process.env.XMPP_WS_URL}` : '');
+// For the integration suite: transport, account endpoint, server name.
+const tacoArgs = flag('taco-args', process.env.XMPP_WS_URL ? '-transport websocket' : '');
+const accountArgs = flag('account-args', process.env.XMPP_WS_URL
+    ? `-websocket_url ${process.env.XMPP_WS_URL}` : '');
 const server = flag('server', process.env.XMPP_SERVER ?? '');
 
 /*
@@ -43,7 +44,7 @@ const evaluate = async (script) => {
     return [rc, M.ccall('zippy_result', 'string', [], [])];
 };
 
-const result = await runSuite(M, lines, { dir, file, match, tacoArgs, server });
+const result = await runSuite(M, lines, { dir, file, match, tacoArgs, accountArgs, server });
 if (result.driverError) {
     console.error(`the driver itself failed: ${result.driverError}`);
     process.exit(2);

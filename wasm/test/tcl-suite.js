@@ -6,7 +6,7 @@
 
 // The driver, in the shape of test_all.tcl. Returns the files that would not load.
 export function driverScript({ dir = 'taco', file = '', match = '*',
-        tacoArgs = '', server = '' } = {}) {
+        tacoArgs = '', accountArgs = '', server = '' } = {}) {
     return `
 # Emscripten's stdout translates to CRLF, and a transcript with a stray CR at
 # the end of every line is one nothing can match against.
@@ -38,9 +38,10 @@ proc ::tcltest::cleanupTests {args} {
 
 namespace import -force ::tcltest::*
 
-# Extra taco_type options for every environment the fixture builds. A page has
-# no socket, so the integration tests reach a server the only way a page can.
+# Extra taco_type options, and extra fields for each account a test adds:
+# the websocket transport, and the test server's plain-ws endpoint.
 set ::tacky_test_taco_args {${tacoArgs}}
+set ::tacky_test_account_args {${accountArgs}}
 
 # The integration suite is gated on a live server, and on which one it is.
 set server {${server}}

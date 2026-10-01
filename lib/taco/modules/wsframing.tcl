@@ -42,12 +42,29 @@ namespace eval ::wsframing {
     variable OPEN_ATTRS {from to id version xml:lang}
 }
 
-# The conventional endpoint for a host that publishes no other. The real
-# answer is XEP-0156 (a host-meta lookup for a urn:xmpp:alt-connections
-# link), which needs an HTTP fetch this does not do; a server that follows
-# the convention is reachable without one, and -ws-url covers the rest.
+# The conventional endpoint, used when host-meta names none.
 proc ::wsframing::url {host {scheme wss}} {
     return "$scheme://$host/xmpp-websocket"
+}
+
+# XEP-0156 host-meta (RFC 6415 XRD). host-meta.json is an optional copy, so
+# it is not asked for.
+proc ::wsframing::hostMetaUrl {host} {
+    return "https://$host/.well-known/host-meta"
+}
+
+# The first wss urn:xmpp:alt-connections:websocket link in a host-meta
+# document, or "" (none, or not an XRD). ws: links are skipped: an https
+# page cannot open them.
+proc ::wsframing::fromHostMeta {doc} {
+    # xmppreader wraps its input in a root, so a declaration would be misplaced.
+    regsub {^﻿?\s*<\?xml[^>]*\?>} $doc {} doc
+    if {[catch {xmppreader string $doc} root]} { return "" }
+    if {[catch {dict get $root tag} tag] || $tag ne "XRD"} { return "" }
+    foreach href [xsearch $root Link @rel urn:xmpp:alt-connections:websocket -gather @href] {
+        if {[string match -nocase wss://* $href]} { return $href }
+    }
+    return ""
 }
 
 # -- outgoing ---------------------------------------------------------------

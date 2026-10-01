@@ -35,12 +35,15 @@ package require tacky::testwait
     && !([info exists ::env(NO_PROCESS)] && $::env(NO_PROCESS))
 }]
 
-# Extra taco_type options for every environment this fixture builds. The
-# wasm suite sets it to `-transport websocket -ws-url ...`, because a page has
-# no socket and that is the only way it reaches a server; natively it stays
-# empty and nothing changes. Set it before the first test runs.
+# Extra taco_type options, and extra fields for each account a test adds.
+# The wasm suite sets `-transport websocket` and `-websocket_url ...` (the
+# test server is plain ws, which discovery won't find); natively both are
+# empty. Set them before the first test runs.
 if {![info exists ::tacky_test_taco_args]} {
     set ::tacky_test_taco_args {}
+}
+if {![info exists ::tacky_test_account_args]} {
+    set ::tacky_test_account_args {}
 }
 
 # The three interchangeable tacky front ends: the type that creates one, and

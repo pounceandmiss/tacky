@@ -80,9 +80,14 @@ export async function startBackend(launcher, args) {
     };
 }
 
-/** Connect an account and wait for the session to be up. */
-export async function connect(be, jid, password, ms = 30_000) {
-    be.send(['account', 'add', { acc: jid, password }]);
+/**
+ * Connect an account and wait for the session to be up. A test server
+ * needs `websocketUrl`: it is plain ws on its own port.
+ */
+export async function connect(be, jid, password, websocketUrl = '', ms = 30_000) {
+    be.send(['account', 'add', {
+        acc: jid, password, ...(websocketUrl ? { websocket_url: websocketUrl } : {}),
+    }]);
     if (!await be.event('account', 'Added')) return null;
     be.send(['account', 'enable', { acc: jid }]);
     return be.event('conn', 'State', (a) => a.state === 'connected', ms);

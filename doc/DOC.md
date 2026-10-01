@@ -225,15 +225,17 @@ every event name is bare, both in an `["event", ...]` message and as a
     account list {enabled?: bool}                   -> [string]   account bare JIDs
     account exists {acc: string}                    -> bool
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
-    account add {acc: string, password?: string, username?: string, domain?: string}
-    account set {acc: string, password?: string, username?: string, domain?: string, enabled?: bool}
+    account add {acc: string, password?: string, username?: string, domain?: string,
+                 websocket_url?: string}
+    account set {acc: string, password?: string, username?: string, domain?: string,
+                 websocket_url?: string, enabled?: bool}
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
     account_fields = {username: string, domain: string, password: string,
-                      resource: string, enabled: bool}
+                      resource: string, enabled: bool, websocket_url: string}
 
 `add` creates or updates. On create, `username` and `domain` default to
 the pieces of the JID. `enable` saves the flag and connects; `disable`
@@ -243,6 +245,12 @@ accounts and are left alone. `changePassword` changes the password
 on the server (XEP-0077) and, if that works, updates the stored one - the
 reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
+
+`websocket_url` (`ws://` or `wss://`) is where the account dials on the
+websocket transport. Empty, it is discovered: the
+`urn:xmpp:alt-connections:websocket` link in
+`https://<domain>/.well-known/host-meta` (XEP-0156), else
+`wss://<domain>/xmpp-websocket`. Changes apply on the next connect.
 
 Events:
 
@@ -261,7 +269,7 @@ In-band registration (XEP-0077) over a throwaway connection, kept separate
 from the account store. Each session is identified by a `token` (any unique
 string).
 
-    register connect {host: string, port?: int, token: string}
+    register connect {host: string, port?: int, websocket_url?: string, token: string}
     register form {token: string}                 -> form
     register media {token: string, var: string}   -> base64
     register submit {token: string, values: {*: string}}
@@ -279,7 +287,9 @@ Events:
     register <Success>    {token: string}
     register <Error>      {token: string, message: string}
 
-See [Accounts and sign-in](#accounts-and-sign-in) for the flow.
+`websocket_url` works as an account's does; pass the same one to the
+`account add` that follows. See [Accounts and sign-in](#accounts-and-sign-in)
+for the flow.
 
 ## conn
 
