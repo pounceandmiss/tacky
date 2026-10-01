@@ -144,3 +144,13 @@ test groupcallwindow-leave-asks-backend {the leave button leaves the room's call
     # stays up for its own timer rather than failing.
     list $out [winfo exists $::_gcw]
 } -cleanup {gcw_down} -result {{} 1}
+
+# A call the backend has no record of sends no <Left>; leaving still closes
+# on <Left>'s beat rather than waiting on one.
+test groupcallwindow-leave-closes-promptly {leaving closes the window within a beat} \
+    -setup {gcw_up} -body {
+    $::_gcw.controls.leave invoke
+    after 800 {set ::gcw_flag 1}
+    vwait ::gcw_flag
+    winfo exists $::_gcw
+} -cleanup {gcw_down} -result 0

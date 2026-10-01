@@ -290,8 +290,9 @@ snit::widgetadaptor groupcallwindow {
 
     method Leave {} {
         ::tacky groupcall leave -acc $options(-acc) -jid $options(-jid)
-        # <Left> closes us; this only fires if the backend never sends one.
-        if {[winfo exists $win]} { $self CloseAfter 3000 }
+        # <Left> may already have run (direct mode) or never come. Running
+        # OnLeft twice only re-arms the same close.
+        if {[winfo exists $win]} { $self OnLeft {} }
     }
 
     method CloseAfter {ms} {

@@ -41,3 +41,19 @@ test callwindow-video-follows-stream \
     ::rtcmv::stream::publish $h 2560 1440
     list $small [cw_reaches 2560 1440]
 } -result {1 1}
+
+# Direct mode emits <Ended> inside `calls hangup`, before Hangup returns; the
+# window must still close on <Ended>'s beat, not on a slower fallback.
+test callwindow-hangup-closes-promptly {hanging up closes the window within a beat} \
+    -setup {mock_backend_up} -body {
+    set sid [::tacky calls start -acc $::cw_acc -to bob@test.example.com]
+    callwindow show -acc $::cw_acc -sid $sid -peer bob@test.example.com
+    update
+    .callwindow Hangup
+    after 800 {set ::cw_flag 1}
+    vwait ::cw_flag
+    winfo exists .callwindow
+} -cleanup {
+    catch {destroy .callwindow}
+    mock_backend_down
+} -result 0
