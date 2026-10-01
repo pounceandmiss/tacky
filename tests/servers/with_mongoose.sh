@@ -129,6 +129,7 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
 [modules.mod_vcard]
   host = "vjud.@HOST@"
 [modules.mod_carboncopy]
+[modules.mod_blocking]
 [modules.mod_roster]
   versioning = true
   store_current_id = true

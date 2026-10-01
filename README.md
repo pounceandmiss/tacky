@@ -25,6 +25,7 @@ Because the backend is fully decoupled from the GUI and reachable over JSON, the
 - Group calls in any room (XEP-0272 Muji), compatible with Dino and Movim
 - OMEMO (only direct messages)
 - Attachments
+- Blocking (XEP-0191)
 
 ## Running
 

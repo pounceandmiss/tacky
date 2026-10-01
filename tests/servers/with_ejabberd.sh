@@ -133,6 +133,10 @@ shaper_rules:
 modules:
   mod_adhoc: {}
   mod_admin_extra: {}
+  # mod_blocking stores its list as a privacy list; ejabberd refuses to
+  # start with the one and not the other.
+  mod_blocking: {}
+  mod_privacy: {}
   mod_bosh: {}
   mod_caps: {}
   mod_carboncopy: {}

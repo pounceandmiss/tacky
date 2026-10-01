@@ -36,6 +36,9 @@ snit::widget chatpanel {
     variable editingTs ""
     variable dropBg -array {}
     variable groupCall {active 0 count 0 joined 0 jid ""}
+    # blockEntry is "" when the Chat menu has no Block entry.
+    variable blocked 0
+    variable blockEntry ""
 
     constructor args {
         $self configurelist $args
@@ -89,6 +92,10 @@ snit::widget chatpanel {
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
                 [mymethod OnOmemoEnabled]
+            ::tacky listen -tag $win blocking <Changed> -acc $options(-acc) \
+                [mymethod OnBlockingChanged]
+            ::tacky blocking list -acc $options(-acc) \
+                -tag $win -command [mymethod OnBlocklist]
         }
     }
 
@@ -310,6 +317,13 @@ snit::widget chatpanel {
                 -var [myvar sendReceipts] -key send_chat_markers -tag $win
             $mb.chat add command -label "Start Call" \
                 -command [mymethod StartCall]
+            # Not in MUC PMs, whose peer is an occupant, not a contact.
+            if {[jid bare $options(-jid)] eq $options(-jid)} {
+                $mb.chat add separator
+                $mb.chat add command -label "Block Contact" \
+                    -command [mymethod ToggleBlock]
+                set blockEntry [$mb.chat index end]
+            }
         }
         $mb add cascade -label "Chat" -menu $mb.chat
     }
@@ -481,6 +495,25 @@ snit::widget chatpanel {
     method StartCall {} {
         ::tacky calls start -acc $options(-acc) \
             -to [jid bare $options(-jid)]
+    }
+
+    # --- Blocking (1:1 only) ---
+
+    method OnBlockingChanged {ev} {
+        $self OnBlocklist [dict get $ev -list]
+    }
+
+    method OnBlocklist {jids} {
+        set blocked [expr {[jid norm $options(-jid)] in $jids}]
+        if {$blockEntry ne "" && $options(-menubar) ne ""} {
+            $options(-menubar).chat entryconfigure $blockEntry \
+                -label [expr {$blocked ? "Unblock Contact" : "Block Contact"}]
+        }
+    }
+
+    method ToggleBlock {} {
+        blocking_toggle $win ::tacky $options(-acc) \
+            [jid norm $options(-jid)] $blocked
     }
 
     # --- Group calls (rooms only) ---

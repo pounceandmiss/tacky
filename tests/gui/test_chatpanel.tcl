@@ -110,3 +110,52 @@ test chatpanel-close-button {The banner's × runs its close command} \
     update
     list [cp_banners] [$::_cp HasBanner reply]
 } -cleanup {chatpanel_down} -result {{} 0}
+
+# -- blocking: the Chat menu's Block/Unblock Contact entry --------------------
+
+proc cpb_up {jid} {
+    mock_backend_up
+    toplevel .cpbtop
+    menu .cpbtop.mb
+    set ::_cpb [chatpanel .cpbtop.cp -acc user@test.example.com \
+        -jid $jid -menubar .cpbtop.mb]
+    pack $::_cpb -expand yes -fill both
+    update
+}
+
+proc cpb_down {} {
+    destroy .cpbtop
+    unset -nocomplain ::_cpb
+    mock_backend_down
+}
+
+proc cpb_block_label {} {
+    set m .cpbtop.mb.chat
+    foreach label {"Block Contact" "Unblock Contact"} {
+        if {![catch {$m index $label} idx]} {
+            return [$m entrycget $idx -label]
+        }
+    }
+    return ""
+}
+
+test chatpanel-block-entry-follows-blocklist {the entry turns to Unblock when a push blocks the peer, and back} \
+    -setup {cpb_up peer@test.example.com} -body {
+    set before [cpb_block_label]
+    $::_client.conn feed [j iq -type set -id b1 -from user@test.example.com {
+        j block -ns urn:xmpp:blocking { j item -jid peer@test.example.com }
+    }]
+    update
+    set during [cpb_block_label]
+    $::_client.conn feed [j iq -type set -id u1 -from user@test.example.com {
+        j unblock -ns urn:xmpp:blocking
+    }]
+    update
+    list $before $during [cpb_block_label]
+} -cleanup {cpb_down} \
+  -result {{Block Contact} {Unblock Contact} {Block Contact}}
+
+test chatpanel-block-entry-absent-for-muc-pm {a MUC PM has no Block Contact entry: its peer is a room occupant} \
+    -setup {cpb_up room@muc.test.example.com/nick} -body {
+    cpb_block_label
+} -cleanup {cpb_down} -result {}

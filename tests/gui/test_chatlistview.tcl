@@ -176,3 +176,107 @@ test clv-rename-starts-from-the-name {the rename dialog seeds the name, not the 
     rename _real_input_dialog input_dialog
     clv_cleanup
 } -result Alice
+
+# -- blocking -------------------------------------------------------------------
+
+# Answer tk_messageBox with $answer, recording each -message in ::asked.
+proc clv_stub_messagebox {answer} {
+    set ::asked {}
+    set ::answer $answer
+    rename tk_messageBox _real_tk_messageBox
+    proc tk_messageBox {args} {
+        lappend ::asked [dict get $args -message]
+        return $::answer
+    }
+}
+
+proc clv_unstub_messagebox {} {
+    rename tk_messageBox ""
+    rename _real_tk_messageBox tk_messageBox
+}
+
+# The jids of every <$tag xmlns=urn:xmpp:blocking> item written so far.
+proc clv_written_items {tag} {
+    set out {}
+    foreach s [$::_client.conn get_written] {
+        lappend out {*}[xsearch $s $tag -ns urn:xmpp:blocking item -gather @jid]
+    }
+    return $out
+}
+
+proc clv_block_push {tag jid} {
+    $::_client.conn feed [j iq -type set -id push[incr ::clvPush] \
+        -from user@test.example.com [list j $tag -ns urn:xmpp:blocking \
+            [list j item -jid $jid]]]
+    wait
+}
+
+test clv-block-asks-then-sends {Block confirms first, then sends <block/> for the row} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    clv_stub_messagebox yes
+} -body {
+    clv_create
+    .clv.rows select alice@example.com
+    .clv OnToggleBlock
+    wait
+    list [llength $::asked] [clv_written_items block]
+} -cleanup {
+    clv_unstub_messagebox
+    clv_cleanup
+} -result {1 alice@example.com}
+
+test clv-block-declined-sends-nothing {saying no to the confirmation sends nothing} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    clv_stub_messagebox no
+} -body {
+    clv_create
+    .clv.rows select alice@example.com
+    .clv OnToggleBlock
+    wait
+    clv_written_items block
+} -cleanup {
+    clv_unstub_messagebox
+    clv_cleanup
+} -result {}
+
+test clv-blocked-row-styled-and-unblock-offered {a blocked contact's row is styled, and its menu offers Unblock without asking} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    clv_stub_messagebox yes
+    rename tk_popup _real_tk_popup
+    proc tk_popup {args} {}
+} -body {
+    clv_create
+    clv_block_push block alice@example.com
+    set tags [dict get [.clv.rows row alice@example.com] tags]
+    .clv.rows select alice@example.com
+    .clv OnContactMenu alice@example.com 0 0 1
+    set m .clv.contactmenu
+    set idx [$m index Unblock]
+    set state [$m entrycget $idx -state]
+    .clv OnToggleBlock
+    wait
+    list $tags $state [llength $::asked] [clv_written_items unblock]
+} -cleanup {
+    rename tk_popup ""
+    rename _real_tk_popup tk_popup
+    clv_unstub_messagebox
+    clv_cleanup
+} -result {blocked normal 0 alice@example.com}
+
+test clv-block-disabled-without-server-support {the Block entry is greyed out when the server lacks the feature} -setup {
+    clv_setup
+    clv_roster alice@example.com Alice
+    rename tk_popup _real_tk_popup
+    proc tk_popup {args} {}
+} -body {
+    clv_create
+    .clv OnContactMenu alice@example.com 0 0 0
+    .clv.contactmenu entrycget [.clv.contactmenu index Block] -state
+} -cleanup {
+    rename tk_popup ""
+    rename _real_tk_popup tk_popup
+    clv_cleanup
+} -result disabled

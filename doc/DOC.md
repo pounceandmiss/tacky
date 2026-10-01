@@ -21,6 +21,7 @@ and get back replies and events.
   - [chatlist](#chatlist)
   - [bookmarks](#bookmarks)
   - [roster](#roster)
+  - [blocking](#blocking)
   - [presence](#presence)
   - [caps](#caps)
   - [message](#message)
@@ -366,7 +367,8 @@ sorting.
     chat_entry = {jid: string, name: string, source: string,
                   groupchat: bool, autojoin: bool, last_activity: int,
                   last_message?: message,
-                  unread: int, unread_mentions: int, invited: bool}
+                  unread: int, unread_mentions: int, invited: bool,
+                  blocked: bool}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -380,9 +382,10 @@ microseconds, or `0`. `unread` counts the other side's messages past
 your read watermark (see [Read state](#read-state)); your own messages and
 retracted tombstones never count. `unread_mentions` is how many of those
 named you (see [notify](#notify)), and is always `0` outside group chats.
-`invited` is `true` on a group chat you are not in (no `autojoin`) that holds
-an invite still `pending` - usually the reason an unjoined room is listed at
-all (see [muc](#muc)).
+`invited` is `true` on a group chat you are not in (no `autojoin`) holding a
+`pending` invite, usually why an unjoined room is listed at all (see
+[muc](#muc)). `blocked` is `true` when the chat JID is on the
+[blocking](#blocking) list; a change arrives as `<Item>`.
 
 `last_message` lets a chat list preview each chat without a `history` call
 per row. Rendering it is the frontend's job: switch on `content.type`, show
@@ -485,6 +488,31 @@ Events:
 `action` is `add`, `update`, `remove` (each with a `jid`), or `clear` - the
 whole roster was replaced, so refetch. `type` is `subscribe`, `subscribed`,
 `unsubscribe`, or `unsubscribed`.
+
+## blocking
+
+    blocking supported {}               -> bool
+    blocking list {}                    -> [string]
+    blocking block {jid: [string]}
+    blocking unblock {jid?: [string]}
+    blocking unblockAll {}
+
+XEP-0191: the server drops everything from a blocked JID. The list is
+per account and kept on its server.
+
+`supported` is checked on every connect and is `false` while offline.
+`list` is sorted, fetched on connect and kept while offline. Items may be
+bare JIDs, full JIDs or domains, stored case-folded.
+
+`block` and `unblock` call `-command` with `""` once the server accepts, or
+`-onerror` with its error text. `unblock` with no `jid` empties the list.
+
+Events:
+
+    blocking <Changed> {acc: string, list: [string]}
+
+The whole list after any change, including ones made by the account's other
+clients.
 
 ## presence
 
