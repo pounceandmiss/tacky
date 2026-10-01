@@ -248,6 +248,9 @@ snit::widget chatrows {
 
     method select {key} {
         $canvas delete selected
+        if {$Selected ne "" && [dict exists $Rows $Selected]} {
+            $self Unhighlight $Selected
+        }
         set Selected ""
         if {$key eq "" || ![dict exists $Rows $key]} return
         set Selected $key
@@ -267,6 +270,18 @@ snit::widget chatrows {
             -fill $bg -outline "" -tags selected]
         foreach item [$canvas find withtag "row.$idx && (name || preview || time)"] {
             $canvas itemconfigure $item -fill $fg
+        }
+    }
+
+    # Give a row its own text colours back, as Draw coloured them.
+    method Unhighlight {key} {
+        set idx [lsearch -exact $Order $key]
+        set fill [dict get [$self NameStyle [dict getdef [dict get $Rows $key] tags {}]] fill]
+        foreach item [$canvas find withtag "row.$idx && name"] {
+            $canvas itemconfigure $item -fill $fill
+        }
+        foreach item [$canvas find withtag "row.$idx && (preview || time)"] {
+            $canvas itemconfigure $item -fill [palette dim]
         }
     }
 
