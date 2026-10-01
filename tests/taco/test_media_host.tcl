@@ -183,5 +183,3 @@ test media-host-event-needs-the-host-backend \
         catch {tacky media hostEvent -pc p1 -type connectionState -state failed} err
         set err
     } -result {media hostEvent: the host backend is not open}
-
-cleanupTests

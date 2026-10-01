@@ -123,5 +123,3 @@ test wsframing-roundtrip {what we send is what the other side would read back} -
     list [dict get $back tag] [dict get $back ns] \
          [xsearch $back bind resource -get body]
 } -result {iq jabber:client laptop}
-
-cleanupTests
