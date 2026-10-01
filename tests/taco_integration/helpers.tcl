@@ -5,14 +5,14 @@ package provide tacky::testhelpers::integration 0.1
 package require tacky::testwait
 package require libtacky
 
-# The integration tests build their environment with tacky_init rather than
-# with tacky_env, so the extra taco_type options the fixture carries have to
-# reach it here too. The wasm suite sets them to
-# `-transport websocket -ws-url ...`, because a page has no socket and that is
-# the only way it reaches a server; natively they are empty and this changes
-# nothing.
+# tacky_init doesn't go through tacky_env, so the fixture's extra taco
+# options are applied here, and every `tacky account add` passes the extra
+# account fields. Both are set by the wasm suite and empty natively.
 if {![info exists ::tacky_test_taco_args]} {
     set ::tacky_test_taco_args {}
+}
+if {![info exists ::tacky_test_account_args]} {
+    set ::tacky_test_account_args {}
 }
 
 # The build, as tcltest states a platform: see tests/taco/helpers.tcl. Set

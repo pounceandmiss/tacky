@@ -102,7 +102,7 @@ surface - though it is not published; `npm pack dist/wasm` makes the tarball.
 ```js
 import { createClient } from './tacky/index.js';
 
-const client = createClient({ ws: 'wss://example.com/xmpp-websocket' });
+const client = createClient();
 await client.ready;
 
 client.send(['account', 'add', { acc: 'me@example.com', password }]);
@@ -119,6 +119,11 @@ on a VFS over the Origin Private File System, with IndexedDB and memory behind
 it; and WebRTC is the page's, driven by `createMediaHost` in
 `wasm/src/media-host.js`, which reports the peer's media by call `sid`. TLS
 and image decoding are the platform's too.
+
+The websocket endpoint is per account: its `websocket_url` if set, else the
+`urn:xmpp:alt-connections:websocket` link in
+`https://<domain>/.well-known/host-meta` (XEP-0156), else
+`wss://<domain>/xmpp-websocket`.
 
 ### The client
 

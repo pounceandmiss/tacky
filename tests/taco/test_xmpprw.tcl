@@ -67,6 +67,12 @@ test xmpprw-jwrite-roundtrips-parsed-stanza {a parsed stanza still serialises} -
         jwrite $node
     } -result {<message from='a@b/c' type='chat'><body>hi &amp; bye</body></message>}
 
+test xmpprw-string-survives-bad-input {a string that will not parse leaves the next parse working} \
+    -body {
+        set bad [catch {xmppreader string {<?xml version='1.0'?><a/>}}]
+        list $bad [dict get [xmppreader string {<b/>}] tag]
+    } -result {1 b}
+
 # One read takes the whole buffer, so a stanza behind a bad one is only
 # delivered if the throw never reaches expat.
 

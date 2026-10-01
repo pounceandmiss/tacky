@@ -258,12 +258,9 @@ snit::type taco_type {
 
     # How a client reaches its server: tcp (default), or websocket for
     # RFC 7395 - which is what a browser build has, a page having no sockets.
-    # See connection.tcl and modules/wsframing.tcl.
+    # See connection.tcl and modules/wsframing.tcl. The endpoint is per
+    # account (websocket_url).
     option -transport -readonly yes -default tcp
-    # An explicit websocket endpoint, for a deployment that does not follow
-    # the wss://$host/xmpp-websocket convention (and for a test server). It
-    # applies to every account, so it suits one server rather than many.
-    option -ws-url -readonly yes -default ""
     option -webrtc-lib -readonly yes -default ""
 
     variable TransientRoot ""
@@ -411,13 +408,14 @@ snit::type taco_type {
 
         set client $self.client($jid)
         if {[info commands $client] eq ""} {
-            lassign [$db eval {SELECT username, password, domain FROM account WHERE jid=$jid}] \
-                username password domain
+            lassign [$db eval {
+                SELECT username, password, domain, websocket_url FROM account WHERE jid=$jid
+            }] username password domain wsUrl
             set resource [$account resource -acc $jid]
             set extra [list -data-dir $options(-data-dir) \
                             -cache-dir $options(-cache-dir) \
                             -transport $options(-transport) \
-                            -ws-url $options(-ws-url)]
+                            -ws-url $wsUrl]
             if {!$options(-transient)} {
                 lappend extra -db-path [file join $options(-data-dir) $jid.db] \
                     -passphrase [$storage passphrase]

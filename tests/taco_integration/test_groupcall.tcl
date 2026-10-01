@@ -230,7 +230,7 @@ namespace eval ::test::groupcall_int {
         tacky_init
         # No mod_external_services on the rig: ICE runs on host candidates.
         foreach {acc pass} $PASS {
-            tacky account add -acc $acc -password $pass \
+            tacky account add {*}$::tacky_test_account_args -acc $acc -password $pass \
                 -domain $HOST -username [lindex [split $acc @] 0]
             tacky account enable -acc $acc
         }

@@ -12,7 +12,7 @@
  *                   {type: 'fatal', message}       nothing follows
  *                   {type: 'stopped'}
  *
- * Options: ws, transient, store, debug (see index.d.ts).
+ * Options: transient, store, debug (see index.d.ts).
  */
 
 import createTacky from './tacky.mjs';
@@ -165,7 +165,6 @@ async function main() {
                '-cache-dir', `${STORE}/cache`]),
         '-media-backend', 'host',
         '-transport', 'websocket',
-        ...(OPTIONS.ws ? ['-ws-url', OPTIONS.ws] : []),
         ...(OPTIONS.debug ? ['-debug-level', OPTIONS.debug] : []),
     ].map(tclWord).join(' ');
     if (Module.ccall('tacky_start', 'number', ['string'], [args]) !== 0) {

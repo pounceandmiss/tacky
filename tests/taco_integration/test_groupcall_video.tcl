@@ -214,7 +214,7 @@ namespace eval ::test::groupcall_video {
         set ::env(TACKY_WEBRTC_DUMMY_AUDIO) 1
         tacky_init -media-backend webrtc -webrtc-lib $LIB
         foreach {acc pass} $PASS {
-            tacky account add -acc $acc -password $pass \
+            tacky account add {*}$::tacky_test_account_args -acc $acc -password $pass \
                 -domain $HOST -username [lindex [split $acc @] 0]
             tacky account enable -acc $acc
         }

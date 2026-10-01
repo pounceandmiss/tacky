@@ -186,3 +186,72 @@ tacky_test account-add-error-methoderror {with -command alone the error becomes 
         list [dict get $ev -module] [dict get $ev -method] \
             [string match {Invalid JID:*} [dict get $ev -message]]
     } -result {account add 1}
+
+# -- websocket_url ---------------------------------------------------------
+
+tacky_test account-websocket-url-default {a new account has none} \
+    {*}$common \
+    -body {
+        set d [wait_call tacky account get -acc user@example.com]
+        list [dict exists $d websocket_url] [dict get $d websocket_url]
+    } -result {1 {}}
+
+tacky_test account-websocket-url-on-add {it is taken on add, as the password is} \
+    -body {
+        tacky account add -acc a@example.com -password pw \
+            -websocket_url ws://127.0.0.1:5280/xmpp-websocket
+        wait_call tacky account get -acc a@example.com -field websocket_url
+    } -result {ws://127.0.0.1:5280/xmpp-websocket}
+
+tacky_test account-websocket-url-set {set changes it, and "" clears it} \
+    {*}$common \
+    -body {
+        tacky account set -acc user@example.com -websocket_url wss://ws.example.com/x
+        set a [wait_call tacky account get -acc user@example.com -field websocket_url]
+        tacky account set -acc user@example.com -websocket_url ""
+        list $a [wait_call tacky account get -acc user@example.com -field websocket_url]
+    } -result {wss://ws.example.com/x {}}
+
+tacky_test account-websocket-url-bad {anything but ws:// or wss:// is refused} \
+    {*}$common \
+    -body {
+        list [wait_call_error tacky account set -acc user@example.com \
+                  -websocket_url https://example.com/ws] \
+             [wait_call_error tacky account set -acc user@example.com -websocket_url wss://] \
+             [wait_call tacky account get -acc user@example.com -field websocket_url]
+    } -result {{Invalid websocket_url: https://example.com/ws} {Invalid websocket_url: wss://} {}}
+
+tacky_test account-websocket-url-reaches-client {the client dials the account's own endpoint} \
+    -modes direct -mock conn \
+    -body {
+        tacky account add -acc a@example.com -websocket_url wss://ws.example.com/x
+        tacky account add -acc b@example.com
+        list [[tacky client a@example.com] cget -ws-url] [[tacky client b@example.com] cget -ws-url]
+    } -result {wss://ws.example.com/x {}}
+
+tacky_test account-websocket-url-enable-updates {enable carries a changed one to a client already made} \
+    -modes direct -mock conn \
+    -body {
+        tacky account add -acc a@example.com
+        set before [[tacky client a@example.com] cget -ws-url]
+        tacky account set -acc a@example.com -websocket_url wss://ws.example.com/x
+        tacky account enable -acc a@example.com
+        list $before [[tacky client a@example.com] cget -ws-url]
+    } -result {{} wss://ws.example.com/x}
+
+test account-websocket-url-upgrade {an accounts.db from before the column gains it, rows intact} \
+    -setup {
+        sqlite3 ::_olddb :memory:
+        ::_olddb eval {
+            CREATE TABLE account(jid PRIMARY KEY, username, domain, password,
+                                 resource, enabled INTEGER DEFAULT 0);
+            INSERT INTO account(jid, username, domain, password, enabled)
+                VALUES('old@example.com', 'old', 'example.com', 'secret', 1);
+        }
+    } -cleanup {
+        catch {::_oldaccount destroy}
+        ::_olddb close
+    } -body {
+        taco_account ::_oldaccount -db ::_olddb
+        ::_olddb eval {SELECT password, enabled, websocket_url FROM account WHERE jid='old@example.com'}
+    } -result {secret 1 {}}

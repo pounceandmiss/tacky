@@ -298,11 +298,14 @@ snit::type xmppreader {
         set xmlString [lindex $args end]
         set args [lrange $args 0 end-1]
         $type $type.tmp {*}$args -command [list set [mytypevar String]]
-        $type.tmp feed <dummy>$xmlString</dummy>
-        $type.tmp destroy
-        set tmp $String
-        unset String
-        set tmp
+        # Always destroyed: a leftover parser would hold the name.
+        try {
+            $type.tmp feed <dummy>$xmlString</dummy>
+            return $String
+        } finally {
+            $type.tmp destroy
+            unset -nocomplain String
+        }
     }
 }
 

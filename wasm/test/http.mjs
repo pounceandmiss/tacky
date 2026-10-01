@@ -18,10 +18,10 @@ const PASS = process.env.XMPP_PASS ?? 'testpass';
 const r = reporter();
 
 const be = await startBackend(launcher,
-    `-transient 1 -media-backend host -transport websocket -ws-url ${WS_URL}`
+    '-transient 1 -media-backend host -transport websocket'
     + (process.env.XMPP_DEBUG ? ' -debug-level debug' : ''));
 
-r.check('the session comes up', (await connect(be, JID, PASS)) !== null);
+r.check('the session comes up', (await connect(be, JID, PASS, WS_URL)) !== null);
 
 // A file in the interpreter's own filesystem.
 const CONTENT = Buffer.from(

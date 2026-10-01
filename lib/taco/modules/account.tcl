@@ -1,13 +1,18 @@
 # taco account list ?-command $cmd?
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
+#                  ?-websocket_url ...?
 #   creates account if new; updates fields if it already exists
 # taco account remove -acc $jid
 #   error: account doesn't exist
 # taco account get -acc $jid ?-field $name? ?-command $cmd?
 #   error: account doesn't exist, invalid field
 # taco account set -acc $jid ?-password ...? ?-domain ...? ?-username ...?
+#                  ?-websocket_url ...?
 #   error: account doesn't exist, invalid field
+#
+# websocket_url: where the websocket transport dials; "" means discover it
+# (baseconn's ConnectWebsocket). Ignored over tcp.
 # taco account enable -acc $jid
 # taco account disable -acc $jid
 
@@ -16,7 +21,7 @@ snit::type taco_account {
     option -taco -default ""
     option -data-dir -default ""
 
-    variable valid_columns {username domain password resource enabled}
+    variable valid_columns {username domain password resource enabled websocket_url}
     # Added by the transport when a request carries a token, not fields.
     variable transport_opts {-command -onerror -tag}
 
@@ -31,6 +36,13 @@ snit::type taco_account {
                 resource,
                 enabled INTEGER DEFAULT 0
             );
+        }
+        # Older accounts.db files lack it.
+        if {"websocket_url" ni [$options(-db) eval {
+                SELECT name FROM pragma_table_info('account')}]} {
+            $options(-db) eval {
+                ALTER TABLE account ADD COLUMN websocket_url TEXT NOT NULL DEFAULT ''
+            }
         }
     }
 
@@ -109,6 +121,10 @@ snit::type taco_account {
             if {$field ni $valid_columns} {
                 error "Invalid field: $field"
             }
+            if {$field eq "websocket_url" && $value ne ""
+                    && ![regexp -nocase {^wss?://[^/\s]} $value]} {
+                error "Invalid websocket_url: $value"
+            }
             if {$field eq "enabled"} {
                 if {$value} { $self enable -acc $jid } else { $self disable -acc $jid }
             } else {
@@ -174,8 +190,10 @@ snit::type taco_account {
         set client [$options(-taco) client $jid]
 
         # Always propagate latest credentials from DB to client/conn
-        set pw [$options(-db) onecolumn {SELECT password FROM account WHERE jid=$jid}]
-        $client configure -password $pw
+        lassign [$options(-db) eval {
+            SELECT password, websocket_url FROM account WHERE jid=$jid
+        }] pw url
+        $client configure -password $pw -ws-url $url
 
         $client connect
 

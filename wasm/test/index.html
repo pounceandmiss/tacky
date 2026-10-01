@@ -92,7 +92,7 @@ async function tclScenario() {
 const KEY = 'smoke-visit';
 
 async function storageScenario() {
-    const client = createClient({ ws: WS });
+    const client = createClient();
     const up = await Promise.race([client.ready,
         new Promise((r) => setTimeout(() => r('timeout'), 60_000))]);
     if (!check('the worker chose a store', up === true,
@@ -139,7 +139,7 @@ async function callScenario() {
     const b = { jid: params.get('jid2'), pass: params.get('pass2') };
 
     for (const side of [a, b]) {
-        side.client = createClient({ ws: WS, transient: true });
+        side.client = createClient({ transient: true });
         side.media = createMediaHost({
             send: (frame) => side.client.send(frame),
             onRemoteStream: (sid, stream, kind) => { side.remote = { sid, stream, kind }; },
@@ -159,8 +159,8 @@ async function callScenario() {
             a.client.fatal ?? b.client.fatal ?? '')) return;
     status.textContent = `call: ${a.jid} -> ${b.jid}`;
 
-    check('the caller connects', (await connect(a.client, a.jid, a.pass)) !== null, a.jid);
-    check('the callee connects', (await connect(b.client, b.jid, b.pass)) !== null, b.jid);
+    check('the caller connects', (await connect(a.client, a.jid, a.pass, { websocketUrl: WS })) !== null, a.jid);
+    check('the callee connects', (await connect(b.client, b.jid, b.pass, { websocketUrl: WS })) !== null, b.jid);
 
     // A call is routed to a resource, which each side learns through presence.
     check('they become contacts', await subscribe(a, b) && await subscribe(b, a));
@@ -288,7 +288,6 @@ async function groupcallScenario() {
     const previews = new Map();
     let media = null;
     const client = createClient({
-        ws: WS,
         transient: true,
         onEvent: (frame) => {
             if (frame[0] === 'event' && frame[1] === 'media' && frame[2] === 'HostCommand') {
@@ -329,7 +328,7 @@ async function groupcallScenario() {
     };
 
     for (const side of all) {
-        client.send(['account', 'add', { acc: side.jid, password: side.pass }]);
+        client.send(['account', 'add', { acc: side.jid, password: side.pass, websocket_url: WS }]);
         await side.event('account', 'Added');
         side.send('account', 'enable');
         check(`${side.nick} connects`, (await side.event('conn', 'State', (a) => a.state === 'connected', 40_000)) !== null);

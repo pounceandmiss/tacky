@@ -105,9 +105,9 @@ namespace eval ::test::muc_edit_int {
         variable JULIET
 
         tacky_init
-        tacky account add -acc $ROMEO -password romeopass \
+        tacky account add {*}$::tacky_test_account_args -acc $ROMEO -password romeopass \
             -domain $HOST -username romeo
-        tacky account add -acc $JULIET -password julietpass \
+        tacky account add {*}$::tacky_test_account_args -acc $JULIET -password julietpass \
             -domain $HOST -username juliet
 
         tacky account enable -acc $ROMEO

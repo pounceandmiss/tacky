@@ -19,8 +19,9 @@ if 0 {
 
     == Methods ==
 
-    tacky register connect -host $h ?-port $p? ?-token $tok?
+    tacky register connect -host $h ?-port $p? ?-websocket_url $u? ?-token $tok?
         → Start registration handshake. Fires <Form> on success.
+          -websocket_url works as an account's does.
 
     tacky register form ?-token $tok?
         → Returns the form as a dict (see lib/taco/modules/form.tcl).
@@ -59,8 +60,10 @@ snit::type taco_register {
     }
 
     method connect {args} {
-        array set opts {-port 5222 -token ""}
+        array set opts {-port 5222 -token "" -websocket_url ""}
         array set opts $args
+        set transport tcp
+        catch {set transport [$options(-taco) cget -transport]}
 
         if {[info exists Sessions($opts(-token))]} {
             catch {$Sessions($opts(-token)) destroy}
@@ -68,6 +71,7 @@ snit::type taco_register {
 
         set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
             -host $opts(-host) -port $opts(-port) \
+            -transport $transport -ws-url $opts(-websocket_url) \
             -callback [mymethod OnSessionEvent $opts(-token)]]
         $Sessions($opts(-token)) connect
     }
@@ -130,6 +134,9 @@ snit::type taco_register_session {
 
     option -host -default ""
     option -port -default 5222
+    # Passed to the bareconn; see baseconn.
+    option -transport -default tcp
+    option -ws-url -default ""
     option -callback -default ""
 
     variable idCounter 0
@@ -159,6 +166,8 @@ snit::type taco_register_session {
     method connect {} {
         set headerSent 0
         install conn using bareconn $self.conn \
+            -transport $options(-transport) \
+            -ws-url $options(-ws-url) \
             -onready [mymethod OnReady] \
             -header-command [mymethod OnHeader] \
             -onstanza [mymethod OnStanza] \
