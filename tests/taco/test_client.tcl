@@ -323,3 +323,39 @@ test client-password-rejected-no-text {a rejected change with no text falls back
         }
         set ::pw_err
     } -result {not-allowed}
+
+# -- stored password (account set -password) -------------------------------
+
+test client-setpassword-reaches-client {a stored password goes to the running client} \
+    {*}$pw_common \
+    -body {
+        tacky account set -acc user@test.example.com -password fresh
+        $::_client cget -password
+    } -result fresh
+
+test client-setpassword-reconnects-offline {an enabled account that is offline logs in again with it} \
+    {*}$pw_common \
+    -body {
+        tacky account enable -acc user@test.example.com
+        set before [$::_client.conn get_connects]
+        tacky account set -acc user@test.example.com -password fresh
+        expr {[$::_client.conn get_connects] - $before}
+    } -result 1
+
+test client-setpassword-keeps-online-session {an online account keeps its session} \
+    {*}$pw_common \
+    -body {
+        tacky account enable -acc user@test.example.com
+        $::_client.conn fire_state connected
+        set before [$::_client.conn get_connects]
+        tacky account set -acc user@test.example.com -password fresh
+        expr {[$::_client.conn get_connects] - $before}
+    } -result 0
+
+test client-setpassword-leaves-disabled-alone {a disabled account stays offline} \
+    {*}$pw_common \
+    -body {
+        set before [$::_client.conn get_connects]
+        tacky account set -acc user@test.example.com -password fresh
+        expr {[$::_client.conn get_connects] - $before}
+    } -result 0

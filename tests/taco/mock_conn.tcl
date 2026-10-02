@@ -47,7 +47,7 @@ snit::type mock_conn {
     }
 
     method connect {} {
-        set connected 1
+        incr connected
     }
 
     method close {} {
@@ -134,6 +134,11 @@ snit::type mock_conn {
 
     method get_written {} {
         return $written
+    }
+
+    # How many times connect was called.
+    method get_connects {} {
+        return $connected
     }
 
     method get_closed {} {

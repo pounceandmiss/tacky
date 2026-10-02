@@ -80,7 +80,7 @@ snit::type taco_account {
             }
         }
         if {[dict size $fields] > 0} {
-            $self set -acc $jid {*}$fields
+            $self SetFields $jid $fields
         }
 
         if {!$exists} {
@@ -114,8 +114,16 @@ snit::type taco_account {
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
         }
+        $self SetFields $jid $args
+        if {[dict exists $args -password]} {
+            $self PushPassword $jid
+        }
+    }
 
-        dict for {key value} $args {
+    # add writes through here, skipping set's PushPassword: enabling the new
+    # account connects anyway.
+    method SetFields {jid fields} {
+        dict for {key value} $fields {
             if {$key eq "-acc" || $key in $transport_opts} continue
             set field [string range $key 1 end]
             if {$field ni $valid_columns} {
@@ -130,6 +138,20 @@ snit::type taco_account {
             } else {
                 $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
             }
+        }
+    }
+
+    # Hand a running client the stored password. An enabled account that is
+    # offline (e.g. after an auth error) reconnects with it; an online one
+    # keeps its session.
+    method PushPassword {jid} {
+        set client [$self liveClient -acc $jid]
+        if {$client eq ""} return
+        set pw [$options(-db) onecolumn {SELECT password FROM account WHERE jid=$jid}]
+        $client configure -password $pw
+        set enabled [$options(-db) onecolumn {SELECT enabled FROM account WHERE jid=$jid}]
+        if {$enabled && [$client conn state] in {disconnected waiting}} {
+            $client connect
         }
     }
 
