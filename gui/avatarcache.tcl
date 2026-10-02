@@ -36,7 +36,7 @@ oo::class create tk_avatarcache {
     # Undecodable data falls back to the placeholder.
     method CreateImage {data size} {
         set img [square_photo $data $size]
-        if {$img eq ""} { return [my CreateDefault] }
+        if {$img eq ""} { return [my CreateDefault $size] }
         return $img
     }
 
@@ -44,9 +44,14 @@ oo::class create tk_avatarcache {
         image delete $img
     }
 
-    method CreateDefault {} {
+    # The bundled PNG at its own size, the SVG rendered at $size otherwise.
+    method CreateDefault {size} {
         set img [image create photo]
-        $img copy avatarcache::defaultAvatar
+        if {$size == [image width avatarcache::defaultAvatar]
+                || [catch {$img configure -file $::avatarcache::defaultSvg \
+                               -format "svg -scaletoheight $size"}]} {
+            $img copy avatarcache::defaultAvatar
+        }
         return $img
     }
 }

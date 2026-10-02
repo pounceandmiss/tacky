@@ -495,7 +495,8 @@ if 0 {
         CreateImage $data $size - decode master bytes, crop/scale to a
                                   $size square, return an image handle
         DeleteImage $img        - destroy image handle
-        CreateDefault           - create a default/placeholder image handle
+        CreateDefault $size     - create a $size square default/placeholder
+                                  image handle
 
     tk_avatarcache (gui/avatarcache.tcl) provides the Tk implementation.
 
@@ -528,7 +529,7 @@ oo::class create avatarcache_base {
         set Refcounts [dict create]
         set JidRefs [dict create]
         set Tags [dict create]
-        set DefaultImage [my CreateDefault]
+        set DefaultImage [my CreateDefault 32]
         ::tacky listen -tag [self] avatar <Update> \
             [namespace code {my OnUpdate}]
     }
@@ -543,7 +544,7 @@ oo::class create avatarcache_base {
 
     method CreateImage {data size} { error "abstract: subclass must override" }
     method DeleteImage {img}       { error "abstract: subclass must override" }
-    method CreateDefault {}        { error "abstract: subclass must override" }
+    method CreateDefault {size}    { error "abstract: subclass must override" }
 
     method default {} {
         return $DefaultImage
@@ -575,7 +576,7 @@ oo::class create avatarcache_base {
             return [dict get $Images $key]
         }
 
-        set img [my CreateDefault]
+        set img [my CreateDefault $size]
 
         dict set Images $key $img
         dict set Refcounts $key 1
@@ -658,7 +659,7 @@ oo::class create avatarcache_base {
             foreach size $sizes {
                 set key "$acc\n$jid\n$size"
                 set oldImg [dict get $Images $key]
-                set newImg [my CreateDefault]
+                set newImg [my CreateDefault $size]
                 dict set Images $key $newImg
                 catch {my DeleteImage $oldImg}
                 my Notify $key $newImg
