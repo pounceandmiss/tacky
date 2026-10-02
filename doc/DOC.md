@@ -242,7 +242,10 @@ every event name is bare, both in an `["event", ...]` message and as a
 the pieces of the JID. `enable` saves the flag and connects; `disable`
 disconnects and saves. `remove` disconnects, then deletes the account row
 and its per-account database. Downloaded attachments are shared across
-accounts and are left alone. `changePassword` changes the password
+accounts and are left alone. `set` with `password` changes only the stored
+password Tacky logs in with: a running client takes it at once, and an enabled
+account that is offline (after an auth error, say) connects again with it; an
+online one keeps its session. `changePassword` changes the password
 on the server (XEP-0077) and, if that works, updates the stored one - the
 reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).

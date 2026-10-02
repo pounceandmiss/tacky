@@ -1,5 +1,6 @@
 if 0 {
-    profilesettings - form for editing profile name, avatar, and password.
+    profilesettings - form for editing profile name, avatar, and the password
+    Tacky logs in with, with a way into changepassworddialog.
 
     Usage:
         profilesettings open romeo@montague.lit
@@ -24,6 +25,13 @@ snit::widget profilesettings {
     variable hasAvatar 0
 
     variable statusAfter ""
+
+    # The display name as last loaded or saved; the entry is only saved when
+    # it differs.
+    variable savedNick ""
+
+    # Likewise for the stored login password.
+    variable savedPass ""
 
     typemethod open {account} {
         set top .profile_[path_safe $account]
@@ -63,45 +71,48 @@ snit::widget profilesettings {
         $win.avatarmenu add command -label "Remove avatar" \
             -command [mymethod RemoveAvatar]
 
-        grid $win.avatar -row 0 -column 0 -rowspan 3 -sticky n \
+        grid $win.avatar -row 0 -column 0 -rowspan 4 -sticky n \
             -padx {4 12} -pady 4
 
         # --- Account JID ---
         ttk::label $win.jid -text $acc -font {Helvetica 12 bold}
-        grid $win.jid -row 0 -column 1 -columnspan 3 -sticky w -padx 4 -pady 4
+        grid $win.jid -row 0 -column 1 -columnspan 2 -sticky w -padx 4 -pady 4
 
-        # --- Name row ---
+        # --- Name row: saved on Return or focus-out, Escape reverts ---
         ttk::label $win.namelbl -text "Display Name"
         ttk::entry $win.nameentry -width 30
-        ttk::button $win.namesave -text "Save" \
-            -command [mymethod SaveName]
+        bind $win.nameentry <Return> [mymethod SaveName]
+        bind $win.nameentry <FocusOut> [mymethod SaveName]
+        bind $win.nameentry <Escape> [mymethod RevertName]
 
         grid $win.namelbl    -row 1 -column 1 -sticky w -padx 4 -pady 4
         grid $win.nameentry  -row 1 -column 2 -sticky ew -padx 4 -pady 4
-        grid $win.namesave   -row 1 -column 3 -sticky ew -padx 4 -pady 4
 
-        # --- Password row ---
-        ttk::label $win.passlbl -text "Password"
+        # --- Login password: the stored one, saved like the name ---
+        ttk::label $win.passlbl -text "Login Password"
         showableentry $win.passentry -width 30
-        ttk::button $win.passsave -text "Change Password" \
-            -command [mymethod SavePassword]
+        bind $win.passentry.entry <Return> [mymethod SavePass]
+        bind $win.passentry.entry <FocusOut> [mymethod SavePass]
+        bind $win.passentry.entry <Escape> [mymethod RevertPass]
+        ttk::button $win.passchange -text "Change password on server\u2026" \
+            -command [mymethod ChangePassword]
 
-        grid $win.passlbl    -row 2 -column 1 -sticky w -padx 4 -pady 4
+        grid $win.passlbl    -row 2 -column 1 -sticky nw -padx 4 -pady 4
         grid $win.passentry  -row 2 -column 2 -sticky ew -padx 4 -pady 4
-        grid $win.passsave   -row 2 -column 3 -sticky ew -padx 4 -pady 4
+        grid $win.passchange -row 3 -column 2 -sticky w -padx 4 -pady 4
 
         # --- Status label ---
         ttk::label $win.status -text ""
-        grid $win.status -row 3 -column 0 -columnspan 4 -sticky nsew -padx 4 -pady 4
+        grid $win.status -row 4 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
 
         # --- OMEMO own keys ---
         ttk::separator $win.omemosep -orient horizontal
-        grid $win.omemosep -row 5 -column 0 -columnspan 4 -sticky ew -pady {8 4}
+        grid $win.omemosep -row 5 -column 0 -columnspan 3 -sticky ew -pady {8 4}
         ttk::label $win.omemolbl -text "My OMEMO keys" \
             -font {Helvetica 12 bold}
-        grid $win.omemolbl -row 6 -column 0 -columnspan 4 -sticky w -padx 4
+        grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
         omemoownkeys $win.omemokeys -acc $acc
-        grid $win.omemokeys -row 7 -column 0 -columnspan 4 -sticky nsew \
+        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
             -padx 4 -pady 4
 
         grid columnconfigure $win 2 -weight 1
@@ -112,6 +123,8 @@ snit::widget profilesettings {
             -tag $win -command [mymethod OnNick]
         $t listen -tag $win nick <Changed> -acc $acc -jid $acc \
             [mymethod OnNickChanged]
+
+        $self LoadPass
 
         # Avatar: load + stay live
         set img [avatarcache track \
@@ -137,17 +150,27 @@ snit::widget profilesettings {
 
     # --- Data loading callbacks ---
 
+    # A name arriving mid-edit leaves the edit alone.
     method OnNick {name} {
-        $win.nameentry delete 0 end
-        if {$name ne ""} {
-            $win.nameentry insert 0 $name
-        }
+        set editing [expr {[$win.nameentry get] ne $savedNick}]
+        set savedNick $name
+        if {!$editing} { $self RevertName }
     }
 
     method OnNickChanged {ev} {
         $options(-tacky) nick get \
             -acc $options(-acc) -jid $options(-acc) \
             -tag $win -command [mymethod OnNick]
+    }
+
+    method LoadPass {} {
+        $options(-tacky) account get -acc $options(-acc) -field password \
+            -tag $win -command [mymethod OnPass]
+    }
+
+    method OnPass {pass} {
+        set savedPass $pass
+        $self RevertPass
     }
 
     method OnAvatar {img} {
@@ -173,10 +196,17 @@ snit::widget profilesettings {
 
     method SaveName {} {
         set name [$win.nameentry get]
+        if {$name eq $savedNick} return
+        set savedNick $name
         $options(-tacky) nick set \
             -acc $options(-acc) -nick $name -tag $win \
             -command [mymethod OnNameSaved] \
             -onerror [mymethod OnNameError]
+    }
+
+    method RevertName {} {
+        $win.nameentry delete 0 end
+        $win.nameentry insert 0 $savedNick
     }
 
     method OnNameSaved {args} {
@@ -185,6 +215,28 @@ snit::widget profilesettings {
 
     method OnNameError {message} {
         $self OnResult Name [list error $message]
+    }
+
+    method SavePass {} {
+        set pass [$win.passentry get]
+        if {$pass eq $savedPass} return
+        set savedPass $pass
+        $options(-tacky) account set -acc $options(-acc) -password $pass \
+            -tag $win -command [mymethod OnPassSaved] \
+            -onerror [mymethod OnPassError]
+    }
+
+    method RevertPass {} {
+        $win.passentry delete 0 end
+        $win.passentry insert 0 $savedPass
+    }
+
+    method OnPassSaved {args} {
+        $self OnResult "Login password" [list ok ""]
+    }
+
+    method OnPassError {message} {
+        $self OnResult "Login password" [list error $message]
     }
 
     method ChangeAvatar {} {
@@ -229,21 +281,14 @@ snit::widget profilesettings {
         $self OnResult Avatar [list error $message]
     }
 
-    method SavePassword {} {
-        set pass [$win.passentry get]
-        if {$pass eq ""} return
-        $options(-tacky) account changePassword \
-            -acc $options(-acc) -password $pass \
-            -tag $win -command [mymethod OnPasswordSaved] \
-            -onerror [mymethod OnPasswordError]
+    method ChangePassword {} {
+        changepassworddialog open $options(-acc) -parent $win \
+            -command [mymethod OnPasswordChanged]
     }
 
-    method OnPasswordSaved {args} {
-        $self OnResult Password [list ok ""]
-    }
-
-    method OnPasswordError {message} {
-        $self OnResult Password [list error $message]
+    method OnPasswordChanged {} {
+        $self LoadPass
+        $self Status "Password changed on server." ""
     }
 
     # --- Feedback ---
@@ -258,14 +303,18 @@ snit::widget profilesettings {
 
     method OnResult {what result} {
         lassign $result status msg
+        if {$status eq "ok"} {
+            $self Status "$what saved." ""
+        } else {
+            $self Status "$what error: $msg" red
+        }
+    }
+
+    method Status {text color} {
         if {$statusAfter ne ""} {
             after cancel $statusAfter
         }
-        if {$status eq "ok"} {
-            $win.status configure -text "$what saved." -foreground ""
-        } else {
-            $win.status configure -text "$what error: $msg" -foreground red
-        }
+        $win.status configure -text $text -foreground $color
         set statusAfter [after 3000 [mymethod ClearStatus]]
     }
 
