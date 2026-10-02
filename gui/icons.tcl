@@ -30,6 +30,9 @@ foreach {_name _file} {
 }
 unset _name _file
 
+# Avatar placeholder for sizes other than the PNG's; see tk_avatarcache.
+set avatarcache::defaultSvg [file join $_icondir avatar-default.svg]
+
 # Window icon: rasterize the bundled SVG at several sizes and publish them all
 # so the WM picks the right one per context (titlebar, taskbar, alt-tab, dock).
 # -default applies to every toplevel created after this point.

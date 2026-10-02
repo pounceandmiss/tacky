@@ -17,6 +17,12 @@ snit::widget profilesettings {
     # base64, comfortable on typical servers.
     typevariable PublishEdge 128
 
+    # Edge (px) of the avatar shown in this dialog.
+    typevariable ShowEdge 96
+
+    # Whether the account has an avatar; "Remove avatar" is disabled without one.
+    variable hasAvatar 0
+
     variable statusAfter ""
 
     typemethod open {account} {
@@ -39,28 +45,40 @@ snit::widget profilesettings {
         set acc $options(-acc)
         set t $options(-tacky)
 
+        # --- Avatar: either click opens the Change/Remove menu ---
+        ttk::frame $win.avatar
+        ttk::label $win.avatar.img -image [avatarcache default] \
+            -cursor hand2 -padding 0
+        ttk::label $win.avatar.hint -text "Click to change" \
+            -foreground gray50 -font TkSmallCaptionFont -cursor hand2
+        pack $win.avatar.img -side top
+        pack $win.avatar.hint -side top -pady {2 0}
+        foreach w [list $win.avatar.img $win.avatar.hint] {
+            bind $w <Button-1> [mymethod AvatarMenu %X %Y]
+            bind $w <Button-3> [mymethod AvatarMenu %X %Y]
+        }
+        menu $win.avatarmenu -tearoff 0
+        $win.avatarmenu add command -label "Change avatar\u2026" \
+            -command [mymethod ChangeAvatar]
+        $win.avatarmenu add command -label "Remove avatar" \
+            -command [mymethod RemoveAvatar]
+
+        grid $win.avatar -row 0 -column 0 -rowspan 3 -sticky n \
+            -padx {4 12} -pady 4
+
+        # --- Account JID ---
+        ttk::label $win.jid -text $acc -font {Helvetica 12 bold}
+        grid $win.jid -row 0 -column 1 -columnspan 3 -sticky w -padx 4 -pady 4
+
         # --- Name row ---
         ttk::label $win.namelbl -text "Display Name"
         ttk::entry $win.nameentry -width 30
         ttk::button $win.namesave -text "Save" \
             -command [mymethod SaveName]
 
-        grid $win.namelbl    -row 0 -column 0 -sticky nsew -padx 4 -pady 4
-        grid $win.nameentry  -row 0 -column 1 -sticky nsew -padx 4 -pady 4
-        grid $win.namesave   -row 0 -column 2 -sticky nsew -padx 4 -pady 4
-
-        # --- Avatar row ---
-        ttk::label $win.avatarlbl -text "Avatar"
-        ttk::label $win.avatarimg -image {} -padding 2
-        ttk::button $win.avatarchange -text "Change..." \
-            -command [mymethod ChangeAvatar]
-        ttk::button $win.avatarremove -text "Remove" \
-            -command [mymethod RemoveAvatar]
-
-        grid $win.avatarlbl     -row 1 -column 0 -sticky nsew -padx 4 -pady 4
-        grid $win.avatarimg     -row 1 -column 1 -sticky nsew -padx 4 -pady 4
-        grid $win.avatarchange  -row 2 -column 1 -sticky nsew -padx 4 -pady 4
-        grid $win.avatarremove  -row 2 -column 2 -sticky nsew -padx 4 -pady 4
+        grid $win.namelbl    -row 1 -column 1 -sticky w -padx 4 -pady 4
+        grid $win.nameentry  -row 1 -column 2 -sticky ew -padx 4 -pady 4
+        grid $win.namesave   -row 1 -column 3 -sticky ew -padx 4 -pady 4
 
         # --- Password row ---
         ttk::label $win.passlbl -text "Password"
@@ -68,25 +86,25 @@ snit::widget profilesettings {
         ttk::button $win.passsave -text "Change Password" \
             -command [mymethod SavePassword]
 
-        grid $win.passlbl    -row 3 -column 0 -sticky nsew -padx 4 -pady 4
-        grid $win.passentry  -row 3 -column 1 -sticky nsew -padx 4 -pady 4
-        grid $win.passsave   -row 3 -column 2 -sticky nsew -padx 4 -pady 4
+        grid $win.passlbl    -row 2 -column 1 -sticky w -padx 4 -pady 4
+        grid $win.passentry  -row 2 -column 2 -sticky ew -padx 4 -pady 4
+        grid $win.passsave   -row 2 -column 3 -sticky ew -padx 4 -pady 4
 
         # --- Status label ---
         ttk::label $win.status -text ""
-        grid $win.status -row 4 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
+        grid $win.status -row 3 -column 0 -columnspan 4 -sticky nsew -padx 4 -pady 4
 
         # --- OMEMO own keys ---
         ttk::separator $win.omemosep -orient horizontal
-        grid $win.omemosep -row 5 -column 0 -columnspan 3 -sticky ew -pady {8 4}
+        grid $win.omemosep -row 5 -column 0 -columnspan 4 -sticky ew -pady {8 4}
         ttk::label $win.omemolbl -text "My OMEMO keys" \
             -font {Helvetica 12 bold}
-        grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
+        grid $win.omemolbl -row 6 -column 0 -columnspan 4 -sticky w -padx 4
         omemoownkeys $win.omemokeys -acc $acc
-        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
+        grid $win.omemokeys -row 7 -column 0 -columnspan 4 -sticky nsew \
             -padx 4 -pady 4
 
-        grid columnconfigure $win 1 -weight 1
+        grid columnconfigure $win 2 -weight 1
         grid rowconfigure $win 7 -weight 1
 
         # Nick: load + stay live
@@ -97,9 +115,13 @@ snit::widget profilesettings {
 
         # Avatar: load + stay live
         set img [avatarcache track \
-            -acc $acc -jid $acc -tag $win.avatar \
+            -acc $acc -jid $acc -tag $win.avatar -size $ShowEdge \
             -command [mymethod OnAvatar]]
-        $win.avatarimg configure -image $img
+        $win.avatar.img configure -image $img
+        $t avatar metadata -acc $acc -jid $acc \
+            -tag $win -command [mymethod OnMeta]
+        $t listen -tag $win avatar <Update> -acc $acc -jid $acc \
+            [mymethod OnAvatarUpdate]
         $t listen -tag $win avatar <Progress> -acc $acc \
             [mymethod OnProgress]
     }
@@ -129,7 +151,22 @@ snit::widget profilesettings {
     }
 
     method OnAvatar {img} {
-        $win.avatarimg configure -image $img
+        $win.avatar.img configure -image $img
+    }
+
+    method OnMeta {meta} {
+        set hasAvatar [expr {[dict exists $meta hash]
+                             && [dict get $meta hash] ne ""}]
+    }
+
+    method OnAvatarUpdate {ev} {
+        set hasAvatar [expr {[dict get $ev -hash] ne ""}]
+    }
+
+    method AvatarMenu {X Y} {
+        $win.avatarmenu entryconfigure "Remove avatar" \
+            -state [expr {$hasAvatar ? "normal" : "disabled"}]
+        tk_popup $win.avatarmenu $X $Y
     }
 
     # --- Actions ---

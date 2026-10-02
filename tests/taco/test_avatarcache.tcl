@@ -20,7 +20,7 @@ oo::class create test_avatarcache {
         lappend ::deleted_images $img
     }
 
-    method CreateDefault {} {
+    method CreateDefault {size} {
         return "default[incr Counter]"
     }
 }
