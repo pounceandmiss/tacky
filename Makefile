@@ -23,6 +23,12 @@ macos-deps = $(filter-out $(MACOS_DEPS_EXCL),$(1))
 ifeq ($(shell uname -s),Darwin)
   NATIVE_DEPS_EXCL := $(MACOS_DEPS_EXCL)
 endif
+# No WebRTC stack on Haiku yet (libdatachannel, miniaudio and the camera code
+# are unported), and no X11 for tkdnd. media.tcl requires rtc under catch, so
+# the backend runs without calls.
+ifeq ($(shell uname -s),Haiku)
+  NATIVE_DEPS_EXCL := rtc rtcma rtcmv rtcmv_tk tkdnd
+endif
 native-deps = $(filter-out $(NATIVE_DEPS_EXCL),$(1))
 
 # No Tk video view on Windows. rtcmv builds without a camera there: receive-only.
@@ -111,7 +117,7 @@ tacky tackyd tackyd-json: %: dist-dir
 lib: dist-dir
 	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    SHELL_TYPE=tclsh \
-	    DEPS="$(tackyd-json_DEPS)" \
+	    DEPS="$(call native-deps,$(tackyd-json_DEPS))" \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -674,10 +680,16 @@ test-gui-headless: $(LINUX_BUILD)/wish
 # the create -> request -> destroy cycle. Exercises the static-archive link
 # boundary that test_embed.tcl (Tcl-level) can't. Opt-in - not part of `test`,
 # which builds no C. Extend the link line if a bundled dep needs more system libs.
+# Haiku has dl/libm in libroot, its sockets in libnetwork, and no static
+# libstdc++ (nothing C++ is in its archive without the rtc deps).
+TEST_LIB_SYSLIBS := -ldl -lz -lm -static-libstdc++
+ifeq ($(shell uname -s),Haiku)
+  TEST_LIB_SYSLIBS := -lnetwork -lz
+endif
 test-lib: lib
 	$(CXX) -pthread -I embed -o $(LINUX_BUILD)/lib_driver tests/lib_driver.c \
 	    -Wl,--start-group dist/libtacky.a -Wl,--end-group \
-	    -ldl -lz -lm -static-libstdc++
+	    $(TEST_LIB_SYSLIBS)
 	$(LINUX_BUILD)/lib_driver
 
 $(LINUX_BUILD)/tclsh: Makefile
