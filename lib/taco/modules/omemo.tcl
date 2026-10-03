@@ -313,10 +313,14 @@ snit::type taco_omemo {
         # Before PublishBundle: a rotation changes spk/spk_id/spks, which
         # is the field-level mismatch that makes the publish below carry it.
         $self MaybeRotateSignedPreKey
-        # Republish our devicelist (no-op if already on-list) and our
-        # bundle. Both go through pubsub with publish-options.
-        $self PublishDevicelist
+        # Republish our bundle and our devicelist (no-op if already
+        # on-list). Both go through pubsub with publish-options. The bundle
+        # first: each publish follows a fetch, and replies come in order,
+        # so this puts the bundle on the server before the list that tells
+        # peers to fetch it (asked the other way round, a peer finds no
+        # bundle and leaves this device out for its whole connection).
         $self PublishBundle
+        $self PublishDevicelist
     }
 
     method OnDisconnect {args} {
