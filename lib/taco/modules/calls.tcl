@@ -107,8 +107,10 @@
 #   pc         : tacky::media pc handle (-1 = not created)
 #   track      : media handle of the audio track (-1 = not added/received)
 #   pending_remote_candidates : list of [list mid candidate], present
-#     only while inbound trickle has outpaced our pc creation; drained
-#     and unset by HandleSessionInitiate
+#     only while inbound trickle has outpaced the remote description (no
+#     pc yet, or the caller's pc before session-accept); drained and unset
+#     once it is set (DrainPendingCandidates)
+#   remote_set : present once the peer's description is applied
 #
 # The pc handle is this instance plus the sid, so two accounts in one
 # process that end up on either side of the same call do not collide.
@@ -1050,6 +1052,7 @@ snit::type taco_calls {
         ::tacky::media setRemoteDescription $pc -sdp $sdp -type offer
         if {![dict exists $Calls $sid]} return
         $self TakeSdpError $sid
+        dict set Calls $sid remote_set 1
         # An `autoAnswer` backend has applied its own answer as part of
         # setRemoteDescription(offer) and calling setLocalDescription now
         # would run in signaling state Stable, where an unspecified type
@@ -1061,17 +1064,20 @@ snit::type taco_calls {
             ::tacky::media setLocalDescription $pc -type answer
             if {![dict exists $Calls $sid]} return
         }
-        # Drain any candidates that arrived (and were buffered) while this
-        # side's pc was still -1. A rejected one isn't fatal to an offer
-        # that just applied cleanly; OnMediaError logs and skips it.
-        if {[dict exists $Calls $sid pending_remote_candidates]} {
-            foreach entry [dict get $Calls $sid pending_remote_candidates] {
-                lassign $entry name full
-                ::tacky::media addRemoteCandidate $pc \
-                    -candidate $full -mid $name
-            }
-            dict unset Calls $sid pending_remote_candidates
+        $self DrainPendingCandidates $sid $pc
+    }
+
+    # Apply the candidates that arrived (and were buffered) before the
+    # remote description. A rejected one isn't fatal to a description that
+    # just applied cleanly; OnMediaError logs and skips it.
+    method DrainPendingCandidates {sid pc} {
+        if {![dict exists $Calls $sid pending_remote_candidates]} return
+        foreach entry [dict get $Calls $sid pending_remote_candidates] {
+            lassign $entry name full
+            ::tacky::media addRemoteCandidate $pc \
+                -candidate $full -mid $name
         }
+        dict unset Calls $sid pending_remote_candidates
     }
 
     method HandleSessionAccept {stanza jingle sid from} {
@@ -1099,7 +1105,9 @@ snit::type taco_calls {
             $self IqError $stanza not-acceptable
             return
         }
+        dict set Calls $sid remote_set 1
         $self AckIq $stanza
+        $self DrainPendingCandidates $sid $pc
     }
 
     method HandleTransportInfo {stanza jingle sid from} {
@@ -1108,9 +1116,11 @@ snit::type taco_calls {
             return
         }
         set pc [dict get $Calls $sid pc]
-        # pc==-1 happens during the JMI window: peer may speculatively
-        # trickle before we've finished CreatePc + set-remote-description.
-        # Buffer in arrival order; HandleSessionInitiate drains.
+        # Until the peer's description is applied a candidate has nothing
+        # to attach to: on the callee's side the pc may not exist yet (the
+        # JMI window), on the caller's the answer may not have come. Buffer
+        # in arrival order; DrainPendingCandidates applies them.
+        set early [expr {$pc eq -1 || ![dict exists $Calls $sid remote_set]}]
         xsearch $jingle content -script content {
             set name [xsearch $content -get @name]
             set transport [xsearch $content transport \
@@ -1122,7 +1132,7 @@ snit::type taco_calls {
                     continue
                 }
                 set full "candidate:$value"
-                if {$pc eq -1} {
+                if {$early} {
                     set buffered {}
                     if {[dict exists $Calls $sid pending_remote_candidates]} {
                         set buffered [dict get $Calls $sid pending_remote_candidates]

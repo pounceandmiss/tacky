@@ -558,4 +558,20 @@ test media-live-candidate-rejected-still-acks \
             [dict exists [calls_state] $sid]
     } -result {result 1}
 
+test media-caller-holds-candidates-until-accept \
+    {a candidate reaching the caller before session-accept waits for the answer} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+        c.conn feed [media_transport_info $sid $::MEDIA_PEER]
+        set before [llength [mockrtc::calls ::rtc::pc::add-remote-candidate]]
+        c.conn feed [media_session_accept $sid $::MEDIA_PEER]
+        set order [lmap e [mockrtc::log] {
+            set cmd [lindex $e 0]
+            if {$cmd ni {::rtc::pc::set-remote-description ::rtc::pc::add-remote-candidate}} continue
+            set cmd
+        }]
+        list $before [lrange $order end-1 end]
+    } -result {0 {::rtc::pc::set-remote-description ::rtc::pc::add-remote-candidate}}
+
 mockrtc::uninstall
