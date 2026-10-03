@@ -47,6 +47,7 @@ snit::type taco_caps {
             http://jabber.org/protocol/caps
             http://jabber.org/protocol/disco#info
             urn:xmpp:receipts
+            urn:xmpp:ping
             urn:xmpp:chat-markers:0
             urn:xmpp:reactions:0
         }]

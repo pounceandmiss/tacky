@@ -69,6 +69,19 @@ test iq-feed-unknown-request-no-from "feed sends error without to when no from" 
     list [xsearch $sent -get @type] [xsearch $sent -get @to]
 } -result {error {}}
 
+test iq-feed-unknown-request-service-unavailable "an unknown request gets service-unavailable" {*}$common -body {
+    .iq feed [j iq -type get -id 7 -from user@example.org {j query -ns urn:unknown}]
+    xsearch [lindex $iq_test_sent 0] error * -get tag
+} -result service-unavailable
+
+test iq-ping-answered "a ping gets an empty result" {*}$common -body {
+    .iq feed [j iq -type get -id p1 -from server.example.org {
+        j ping -ns urn:xmpp:ping
+    }]
+    set sent [lindex $iq_test_sent 0]
+    list [xsearch $sent -get {@type @id @to}] [llength [dict get $sent children]]
+} -result {{result p1 server.example.org} 0}
+
 # --- feed response tests ---
 
 test iq-feed-response-result "feed calls response handler for result" {*}$common -body {
