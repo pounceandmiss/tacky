@@ -28,8 +28,8 @@
 #                          ignored on the websocket transport, where the
 #                          browser has already done TLS)
 #   -transport t           tcp (default) or websocket: XMPP over a WebSocket,
-#                          RFC 7395. Only where ::wschan exists, which is a
-#                          wasm build - a page has no sockets.
+#                          RFC 7395, over ::websocket (tcllib's API); for
+#                          now only in a wasm build (modules/browserws.tcl).
 #   -ws-url url            Where the websocket transport connects; empty means
 #                          the conventional wss://$host/xmpp-websocket
 #   -header-command cmd    Called with the opening <stream:stream> element
@@ -76,7 +76,7 @@ snit::type baseconn {
     variable host
     # Whether an "after idle" flush is already scheduled
     variable flushPending
-    # The ::wschan socket id on the websocket transport, "" otherwise
+    # The ::websocket socket on the websocket transport, "" otherwise
     variable ws
     # That transport's XML reader. The socket transport lets ::jab::readChannel
     # own one per channel; a websocket has no channel, so the reader is fed by
@@ -100,10 +100,10 @@ snit::type baseconn {
     option -ontransportready -default ""
     # Whether to negotiate STARTTLS before declaring transport ready
     option -starttls -default true
-    # tcp | websocket. The websocket transport is RFC 7395 over ::wschan (see
-    # wsframing.tcl); it exists only in a wasm build, where there is no socket
-    # to be had and the browser has already done TLS - so -starttls plays no
-    # part in it.
+    # tcp | websocket. The websocket transport is RFC 7395 over ::websocket (see
+    # wsframing.tcl); for now it exists only in a wasm build, where there is no
+    # socket to be had and the browser has already done TLS - so -starttls
+    # plays no part in it.
     option -transport -default tcp
     # Where that transport connects. Empty asks the host (Discover), then
     # takes ::wsframing::url.
@@ -158,9 +158,11 @@ snit::type baseconn {
         if {$ws ne ""} {
             # One call, one message: baseconn writes a whole stanza at a time,
             # and RFC 7395 carries exactly one element per frame.
-            if {[catch {::wschan::send $ws [::wsframing::out $data]} err]} {
+            if {[catch {::websocket::send $ws text [::wsframing::out $data]} n]
+                    || $n < 0} {
+                if {$n < 0} { set n "websocket not open" }
                 $self close
-                {*}$options(-error-command) "Write error: $err"
+                {*}$options(-error-command) "Write error: $n"
             }
             return
         }
@@ -251,7 +253,7 @@ snit::type baseconn {
     # sequence here: the browser does all three before the socket opens, and
     # what arrives is an open socket or an error.
     method ConnectWebsocket {} {
-        if {![info exists ::wschan::available]} {
+        if {![llength [info commands ::websocket::open]]} {
             set state disconnected
             after idle [list {*}$options(-error-command) \
                 "no websocket transport in this build"]
@@ -337,9 +339,8 @@ snit::type baseconn {
     }
 
     method OpenWebsocket {url} {
-        if {[catch {::wschan::open $url \
-                -protocols [list $::wsframing::SUBPROTOCOL] \
-                -command [mymethod OnWsEvent]} result]} {
+        if {[catch {::websocket::open $url [mymethod OnWsEvent] \
+                -protocol [list $::wsframing::SUBPROTOCOL]} result]} {
             set state disconnected
             after idle [list {*}$options(-error-command) "Connect failed: $result"]
             return
@@ -347,37 +348,46 @@ snit::type baseconn {
         set ws $result
     }
 
-    # One event from ::wschan. A message is fed to the reader as the stream
-    # bytes it stands for, so everything above this point - conn's stream
-    # restart after SASL, sm, the stanza dispatcher - sees what it would see
-    # over TCP.
-    method OnWsEvent {event args} {
-        switch -- $event {
-            open {
+    # One event from ::websocket (tcllib's handler shape). A message is fed to
+    # the reader as the stream bytes it stands for, so everything above this
+    # point - conn's stream restart after SASL, sm, the stanza dispatcher -
+    # sees what it would see over TCP. Events for a socket we no longer hold
+    # are ignored.
+    method OnWsEvent {sock kind msg} {
+        if {$sock ne $ws} return
+        switch -- $kind {
+            connect {
+                # RFC 7395 3.1: the server must select the xmpp subprotocol.
+                if {$msg ne $::wsframing::SUBPROTOCOL} {
+                    $self close
+                    {*}$options(-error-command) \
+                        "server did not agree to the xmpp subprotocol"
+                    return
+                }
                 $self CreateReader
                 set state connected
                 if {$options(-ontransportready) ne ""} {
                     {*}$options(-ontransportready)
                 }
             }
-            message {
-                if {[catch {$reader feed [::wsframing::in [lindex $args 0]]} err]} {
+            text {
+                if {[catch {$reader feed [::wsframing::in $msg]} err]} {
                     $self close
                     {*}$options(-error-command) "Read error: $err"
                 }
             }
             close {
-                lassign $args code reason
+                lassign $msg code reason
                 $self close
-                set msg "websocket closed ($code)"
+                set text "websocket closed ($code)"
                 if {$reason ne ""} {
-                    append msg ": $reason"
+                    append text ": $reason"
                 }
-                {*}$options(-error-command) $msg
+                {*}$options(-error-command) $text
             }
-            error {
+            disconnect - error - timeout {
                 $self close
-                {*}$options(-error-command) [lindex $args 0]
+                {*}$options(-error-command) $msg
             }
         }
     }
@@ -434,9 +444,11 @@ snit::type baseconn {
             # 1000 "normal closure": whatever the stream did, the socket ends
             # cleanly. conn has already sent </stream:stream> - <close/> on
             # this transport - by the time it gets here.
-            catch {::wschan::close $ws}
-            catch {::wschan::destroy $ws}
+            # Clear ws first, so OnWsEvent ignores the close events
+            # ::websocket::close reports.
+            set old $ws
             set ws ""
+            catch {::websocket::close $old}
         }
         ::jab::cancelRead $socket
         if {$socket ne ""} {
