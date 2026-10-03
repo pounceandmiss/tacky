@@ -77,6 +77,11 @@ namespace eval ::jab {}
 # where script will add children by also simply calling j.
 
 proc xesc {content} {
+    # Characters XML 1.0 has no place for (C0 controls other than tab, LF
+    # and CR, lone surrogates, U+FFFE and U+FFFF) are dropped: one of them
+    # in a body makes the server close the stream as not well-formed, and
+    # stream management would send it again at every reconnect.
+    regsub -all {[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]} $content {} content
     string map {
         < &lt;
         > &gt;

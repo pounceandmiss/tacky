@@ -231,3 +231,7 @@ test xmpprw-j-error-clears-accumulator \
         catch {j x -id 1 {j inner bogus v}}
         dict get [j y -body ok] body
     } -result ok
+
+test xesc-drops-what-xml-cannot-carry {characters XML 1.0 forbids are dropped, the rest kept} -body {
+    list [xesc "a\x1bb\x00c\x0bd"] [xesc "tab\there\nnl\rcr"] [xesc "x￾y￿z"] [xesc "ä€😀<"]
+} -result [list abcd "tab\there\nnl\rcr" xyz "ä€😀&lt;"]
