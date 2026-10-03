@@ -411,7 +411,7 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
     -body {
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body -body "offline msg"
-            j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp 2024-06-15T12:00:00Z
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
         set expected [ParseTimestamp 2024-06-15T12:00:00Z]
@@ -425,7 +425,7 @@ test message-live-unparseable-stamp-uses-arrival \
         set before [clock microseconds]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body -body "bad stamp"
-            j delay -ns urn:xmpp:delay -stamp 9999999999999-13-45T99:99:99Z
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp 9999999999999-13-45T99:99:99Z
         }]
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg content body] \
@@ -461,7 +461,7 @@ test message-live-server-id-not-timestamp {server_id in DB is the stanza-id, not
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srv42 -by user@test.example.com
-            j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp 2024-06-15T12:00:00Z
         }]
         set r [msg_row "chat_jid='alice@example.com' AND kind='message'"]
         set sid [dict get $r server_id]
@@ -1509,7 +1509,7 @@ test message-send-then-receive-earlier-ts {incoming with earlier timestamp inser
         set earlyStamp [FormatTimestampISO $earlyTs]
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body -body "earlier"
-            j delay -ns urn:xmpp:delay -stamp $earlyStamp
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp $earlyStamp
         }]
         # Both messages should be in DB
         set all [msg_store_latest alice@example.com]
@@ -2811,7 +2811,7 @@ test message-muc-catchup-dedups-join-replay {a replayed message already stored i
             -from room@muc.example.com/alice {
             j body -body "room msg"
             j stanza-id -ns urn:xmpp:sid:0 -id r1 -by room@muc.example.com
-            j delay -ns urn:xmpp:delay -stamp 2024-01-01T10:00:00Z
+            j delay -ns urn:xmpp:delay -from room@muc.example.com -stamp 2024-01-01T10:00:00Z
         }]
         set iq [mam_iq_to room@muc.example.com]
         set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
@@ -4353,3 +4353,37 @@ test message-bounce-fails-the-send {a bounce marks the sent message failed} \
         list status [dict get $r server_status] reason [dict get $r fail_reason] \
             rows [$::_client db onecolumn {SELECT COUNT(*) FROM chat_message}]
     } -result {status failed reason delivery rows 1}
+
+# A <delay> counts only from our server, our account or the room: a sender's
+# own would let it date a message as it likes.
+test message-live-sender-stamp-ignored {a delay stamp the sender set is not trusted} \
+    {*}$msg_common \
+    -body {
+        set before [clock microseconds]
+        foreach from {alice@example.com ""} {
+            $::_client conn feed [j message -type chat -from alice@example.com/phone {
+                j body -body "from the future ($from)"
+                if {$from eq ""} {
+                    j delay -ns urn:xmpp:delay -stamp 2099-01-01T00:00:00Z
+                } else {
+                    j delay -ns urn:xmpp:delay -from $from -stamp 2099-01-01T00:00:00Z
+                }
+            }]
+        }
+        set after [clock microseconds]
+        lmap m [msg_store_latest alice@example.com] {
+            set ts [dict get $m timestamp]
+            expr {$ts >= $before && $ts <= $after}
+        }
+    } -result {1 1}
+
+test message-live-future-stamp-capped {even a trusted stamp is not later than now} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "late"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp 2099-01-01T00:00:00Z
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+              <= [clock microseconds]}
+    } -result 1
