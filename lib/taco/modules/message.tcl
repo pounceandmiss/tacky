@@ -477,6 +477,12 @@ snit::type taco_message {
     # modules. These are supposed to be 1-1 messages.
     method OnMessage {stanza} {
         set fromBare [jid norm [jid bare [xsearch $stanza -get @from]]]
+        if {[xsearch $stanza -get @type] eq "error"} {
+            # A bounce of something we sent to $fromBare: its id is our
+            # own_id. Never content (see Classify), and no receipt.
+            $self MarkBounced $fromBare [xsearch $stanza -get @id]
+            return
+        }
         set myBare [jid bare [$client cget -jid]]
         set isOwn [expr {$fromBare eq $myBare}]
         if {$isOwn} {
@@ -1298,6 +1304,27 @@ snit::type taco_message {
         $self ClearWired $oid
         $client emit message <Status> -jid $chatJid \
             -timestamp $ts -server_status failed -fail_reason $reason
+    }
+
+    # The peer's side refused a message we sent. Unlike MarkOutgoingFailed
+    # this also turns a message the server already acked: the ack was our
+    # server's, the refusal comes after it.
+    method MarkBounced {chatJid oid} {
+        if {$oid eq ""} return
+        set ts [$client db onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$chatJid AND own_id=$oid
+              AND server_status IN ('pending', '')
+        }]
+        if {$ts eq ""} return
+        $client db eval {
+            UPDATE chat_message
+            SET server_status='failed', fail_reason='delivery'
+            WHERE chat_jid=$chatJid AND own_id=$oid
+        }
+        $self ClearWired $oid
+        $client emit message <Status> -jid $chatJid \
+            -timestamp $ts -server_status failed -fail_reason delivery
     }
 
     # rawxml -chat $chatJid -timestamp $ts -command $cb

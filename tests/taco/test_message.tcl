@@ -4333,3 +4333,23 @@ test message-carbon-reply-resolves \
             [dict get $reply reply_body] \
             [expr {[dict get $reply reply_to_ts] ne ""}]
     } -result {1788479977524793 {original text} 1}
+
+# A bounce (type='error') from the peer's side fails the message it echoes,
+# acked by our server or not, and stores nothing of its own.
+test message-bounce-fails-the-send {a bounce marks the sent message failed} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-b server_status "" \
+            encryption "" timestamp 2000000]]
+        $::_client message OnMessage [j message -type error \
+                -from alice@example.com -to $acc -id oid-b {
+            j body -body "hi"
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set r [msg_row "own_id='oid-b'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason] \
+            rows [$::_client db onecolumn {SELECT COUNT(*) FROM chat_message}]
+    } -result {status failed reason delivery rows 1}
