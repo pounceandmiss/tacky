@@ -2,6 +2,10 @@ package require tcltest
 namespace import ::tcltest::*
 package require taco
 
+# The handshake needs mtls and the close test a listening socket; the wasm
+# build has neither.
+::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+
 # xmpp_starttls accumulates the pre-TLS reply in ::_xmpp_starttls_data($chan)
 # until it sees <proceed/>. Tcl names socket channels after the fd, so a name
 # comes back around on a later connection and an uncleared buffer becomes its
@@ -20,7 +24,7 @@ test starttls-abort-tolerates-an-unknown-channel {abort on a channel with nothin
     } -result {}
 
 test starttls-starts-from-an-empty-buffer {a new handshake ignores a previous one's leftovers} \
-    -setup {
+    -constraints !wasm -setup {
         set tmp [file join [temporaryDirectory] starttls-reuse.txt]
         set chan [open $tmp w+]
     } \
@@ -66,7 +70,7 @@ proc st_wait_buffered {chan {timeout 5000}} {
 }
 
 test starttls-close-mid-handshake-forgets-the-buffer {a socket closed mid-STARTTLS strands nothing} \
-    -setup {
+    -constraints !wasm -setup {
         jlog configure -logproc {apply {{msg} {}}}
         set ::_st_peer ""
         set listener [socket -server st_accept -myaddr 127.0.0.1 0]
