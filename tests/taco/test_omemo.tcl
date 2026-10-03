@@ -786,6 +786,94 @@ test omemo-unit-devicelist-fetch-coalesced \
         list iqs $iqs fired $::_dlFired
     } -result {iqs 1 fired 2}
 
+# Our own devicelist is republished only from what the server said. A
+# transient fetch error (a timeout included) is not "no list": publishing
+# this device alone would drop every other device of the account.
+proc ::test::omemo_unit::ownListPublishes {written} {
+    set out {}
+    foreach s $written {
+        foreach item [xsearch $s pubsub publish \
+                -get @node] {
+            if {$item ne "eu.siacs.conversations.axolotl.devicelist"} continue
+            set ids {}
+            xsearch $s pubsub publish item list device -script d {
+                lappend ids [xsearch $d -get @id]
+            }
+            lappend out $ids
+        }
+    }
+    return $out
+}
+
+proc ::test::omemo_unit::ownListFetches {written} {
+    set n 0
+    foreach s $written {
+        if {[xsearch $s pubsub items -get @node]
+                eq "eu.siacs.conversations.axolotl.devicelist"
+                && [xsearch $s -get @to] eq ""} { incr n }
+    }
+    return $n
+}
+
+test omemo-unit-own-devicelist-timeout-keeps-other-devices \
+    {a timed-out own devicelist fetch publishes nothing and asks again} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        set before [llength [c conn get_written]]
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        c omemo OnFetchedDevicelist $::test::omemo_unit::JULIET_BARE \
+            [j iq -type error {
+                j error -type wait {
+                    j remote-server-timeout \
+                        -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+        set afterError [::test::omemo_unit::ownListPublishes \
+            [lrange [c conn get_written] $before end]]
+        set fetches [::test::omemo_unit::ownListFetches \
+            [lrange [c conn get_written] $before end]]
+        c omemo RetryOwnDevicelist
+        set refetches [::test::omemo_unit::ownListFetches \
+            [lrange [c conn get_written] $before end]]
+        c omemo OnFetchedDevicelist $::test::omemo_unit::JULIET_BARE \
+            [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist {
+                        j item -id current {
+                            j list -ns eu.siacs.conversations.axolotl {
+                                j device -id 7
+                            }
+                        }
+                    }
+                }
+            }]
+        set published [::test::omemo_unit::ownListPublishes \
+            [lrange [c conn get_written] $before end]]
+        list afterError $afterError fetches $fetches refetches $refetches \
+            published [expr {$published eq [list [list 7 $dev]]}]
+    } -result {afterError {} fetches 1 refetches 2 published 1}
+
+test omemo-unit-own-devicelist-not-found-publishes-self \
+    {item-not-found on our own devicelist publishes this device alone} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        set before [llength [c conn get_written]]
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        c omemo OnFetchedDevicelist $::test::omemo_unit::JULIET_BARE \
+            [j iq -type error {
+                j error -type cancel {
+                    j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+        set published [::test::omemo_unit::ownListPublishes \
+            [lrange [c conn get_written] $before end]]
+        expr {$published eq [list [list $dev]]}
+    } -result 1
+
 # Eager warm: on learning a devicelist we fetch a bundle for every
 # announced device we have no session with (own + peer) and build the
 # session from it, so the trust UI shows fingerprints and encrypt() finds

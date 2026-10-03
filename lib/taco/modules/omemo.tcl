@@ -190,6 +190,14 @@ snit::type taco_omemo {
     # `after idle` token for the coalesced live bundle republish.
     variable RepublishToken ""
 
+    # Retry of our own devicelist fetch after a transient error: the
+    # `after` token and the next delay. Only item-not-found means "no
+    # list"; anything else (a timeout included) must not be read as an
+    # empty list, or we would republish it with this device alone and
+    # drop every other device of the account.
+    variable OwnListRetry ""
+    variable OwnListRetryMs 5000
+
     constructor args {
         $self configurelist $args
         set client $options(-client)
@@ -238,6 +246,7 @@ snit::type taco_omemo {
         catch {$client bus unsubscribe $self}
         catch {$client pubsub unhandler $::taco::omemo::NS_DEVICELIST}
         catch {after cancel $RepublishToken}
+        catch {after cancel $OwnListRetry}
         $self CancelBundleTimers
         dict for {key sess} $Sessions {
             catch {$sess destroy}
@@ -319,6 +328,9 @@ snit::type taco_omemo {
         $self CancelBundleTimers
         catch {after cancel $RepublishToken}
         set RepublishToken ""
+        catch {after cancel $OwnListRetry}
+        set OwnListRetry ""
+        set OwnListRetryMs 5000
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
@@ -673,6 +685,10 @@ snit::type taco_omemo {
             return
         }
         dict set DevicelistFetchWaiters $peerJid [list $command]
+        $self SendDevicelistFetch $peerJid
+    }
+
+    method SendDevicelistFetch {peerJid} {
         set node $::taco::omemo::NS_DEVICELIST
         set ns $::taco::omemo::NS_PUBSUB
         set toArgs [list]
@@ -682,6 +698,14 @@ snit::type taco_omemo {
                 j items -node $node
             }] \
             -command [mymethod OnFetchedDevicelist $peerJid]
+    }
+
+    method RetryOwnDevicelist {} {
+        catch {after cancel $OwnListRetry}
+        set OwnListRetry ""
+        if {[dict exists $DevicelistFetchWaiters $accountJid]} {
+            $self SendDevicelistFetch $accountJid
+        }
     }
 
     # Waiters for $peerJid, removing them. Empty when OnDisconnect already
@@ -714,6 +738,17 @@ snit::type taco_omemo {
             if {$peerJid ne $accountJid && $noNode} {
                 $self UpdatePeerDevicelist $peerJid {}
             }
+            if {$peerJid eq $accountJid && !$noNode} {
+                # Keep the waiters and ask again: see OwnListRetry.
+                if {[llength $waiters] > 0} {
+                    dict set DevicelistFetchWaiters $peerJid $waiters
+                    catch {after cancel $OwnListRetry}
+                    set OwnListRetry [after $OwnListRetryMs \
+                        [mymethod RetryOwnDevicelist]]
+                    set OwnListRetryMs [expr {min($OwnListRetryMs * 2, 300000)}]
+                }
+                return
+            }
             foreach cb $waiters {
                 {*}$cb $peerJid {}
             }
@@ -721,6 +756,7 @@ snit::type taco_omemo {
         }
         set devices [$self ParseDevicelist $stanza]
         jlog debug "devicelist fetch for $peerJid: [llength $devices] device(s) = $devices"
+        if {$peerJid eq $accountJid} { set OwnListRetryMs 5000 }
         # Populate the DeviceLists cache (and reconcile trust-active
         # rows) for peers, so encrypt() sees the result without depending
         # on a separate PEP +notify push. OWN jid takes its own
