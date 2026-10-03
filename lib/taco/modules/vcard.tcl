@@ -52,7 +52,8 @@ snit::type taco_vcard {
         array set opts {-command ""}
         array set opts $args
         if {$CachedVCard eq ""} {
-            $self Fetch [mymethod DoSetNick $opts(-nick) $opts(-command)]
+            $self Fetch [mymethod DoSetNick $opts(-nick) $opts(-command)] \
+                [mymethod FetchFailed $opts(-command)]
         } else {
             $self DoSetNick $opts(-nick) $opts(-command)
         }
@@ -80,15 +81,33 @@ snit::type taco_vcard {
             -command [mymethod OnPublishResult $command]
     }
 
-    method Fetch {{command ""}} {
+    method Fetch {{command ""} {onerror ""}} {
         $client iq request \
             -to [jid bare [$client cget -jid]] \
             -payload [j vCard -ns vcard-temp] \
-            -command [mymethod OnFetchResult $command]
+            -command [mymethod OnFetchResult $command $onerror]
     }
 
-    method OnFetchResult {command stanza} {
+    method FetchFailed {command message} {
+        if {$command ne ""} {
+            {*}$command error $message
+        }
+    }
+
+    method OnFetchResult {command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
+            # Only item-not-found means there is no vCard. Anything else (a
+            # timeout included) leaves it unknown: an empty one cached here
+            # would be published by the next setNick, wiping the photo and
+            # every other field.
+            set condition [dict get [stanza_error $stanza] condition]
+            if {$condition ne "item-not-found"} {
+                jlog warn "own vCard fetch failed: $condition"
+                if {$onerror ne ""} {
+                    {*}$onerror "Couldn't read your profile ($condition)"
+                }
+                return
+            }
             set CachedVCard [j vCard -ns vcard-temp]
         } else {
             set vcards [xsearch $stanza vCard]
