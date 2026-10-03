@@ -456,6 +456,9 @@ snit::type taco_avatar {
 
         lassign [$self CachedRow $jid] existing source
 
+        # No <photo/> at all: the sender is not ready to say (XEP-0153 3.2),
+        # which leaves the avatar as it is. An empty one means none.
+        if {![llength [xsearch $stanza x -ns vcard-temp:x:update photo]]} return
         set hash [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
         if {$hash eq ""} {
             if {$existing ne "" && $source ne "pubsub"} {
