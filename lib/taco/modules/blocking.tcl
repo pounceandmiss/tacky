@@ -151,7 +151,7 @@ snit::type taco_blocking {
         set ownBare [jid norm [jid bare [$client cget -jid]]]
         set fromOk [expr {
             $from eq "" ||
-            [jid norm [jid bare $from]] eq $ownBare ||
+            [jid norm $from] eq $ownBare ||
             [jid norm $from] eq [jid domain $ownBare]
         }]
         if {!$fromOk} {
