@@ -558,6 +558,12 @@ snit::type taco_avatar {
         # Strip whitespace from base64 data and decode to raw bytes
         set base64Data [string map {\n "" \r "" " " "" \t ""} $base64Data]
         set rawData [::base64::decode $base64Data]
+        # The cache is keyed by hash and shared by every contact: bytes that
+        # are not what the hash names would replace whoever else uses it.
+        if {[::sha1::sha1 -hex $rawData] ne [string tolower $hash]} {
+            jlog warn "avatar data from $jid does not match its hash $hash"
+            return
+        }
 
         $client db eval {
             INSERT OR REPLACE INTO avatar_data(hash, data)

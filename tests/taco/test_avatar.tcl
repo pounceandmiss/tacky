@@ -456,3 +456,27 @@ test avatar-vcard-writes-when-no-pubsub {vCard still stores an avatar for a JID 
         list [avatar_row room@muc.example.com/nick] \
              [expr {$::avatar_updates eq [list [list room@muc.example.com/nick $hash]]}]
     } -result [list [list [::sha1::sha1 "occupantbytes"] 0 vcard] 1]
+
+# The data cache is keyed by hash and shared, so bytes that are not what the
+# hash names are refused.
+test avatar-data-must-match-its-hash {avatar bytes under the wrong hash are not stored} \
+    {*}$avatar_common \
+    -body {
+        set good [::sha1::sha1 -hex "realbytes"]
+        foreach {hash bytes} [list $good "realbytes" $good "otherbytes"] {
+            c db eval {DELETE FROM avatar_data}
+            c avatar OnDataResult alice@example.com $hash [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node urn:xmpp:avatar:data {
+                        j item -id $hash {
+                            j data -ns urn:xmpp:avatar:data \
+                                -body [::base64::encode $bytes]
+                        }
+                    }
+                }
+            }]
+            lappend stored [c db onecolumn {SELECT COUNT(*) FROM avatar_data}]
+        }
+        set stored
+    } -result {1 0}
+
