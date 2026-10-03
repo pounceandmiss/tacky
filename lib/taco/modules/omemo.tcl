@@ -1343,6 +1343,10 @@ snit::type taco_omemo {
         set encNodes [xsearch $stanza encrypted \
             -ns $::taco::omemo::NS_AXOLOTL]
         if {[llength $encNodes] == 0} { return 0 }
+        # A bounce is our own message coming back, keyed for the peer and
+        # for us under our sid: not something to open. The message module
+        # deals with it.
+        if {[xsearch $stanza -get @type] eq "error"} { return 0 }
         set encNode [lindex $encNodes 0]
 
         # Reflected-message guard: a server echo of OUR sent stanza
@@ -1819,6 +1823,8 @@ snit::type taco_omemo {
         set encNodes [xsearch $msgNode encrypted \
             -ns $::taco::omemo::NS_AXOLOTL]
         if {[llength $encNodes] == 0} { return $msgNode }
+        # An archived bounce stays unopened, as a live one does.
+        if {[xsearch $msgNode -get @type] eq "error"} { return $msgNode }
         set encNode [lindex $encNodes 0]
         set fromBare [jid bare [xsearch $msgNode -get @from]]
         set headerNode [lindex [xsearch $encNode header] 0]

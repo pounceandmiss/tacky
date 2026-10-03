@@ -1936,3 +1936,26 @@ test omemo-unit-devicelist-takes-current-item {the item `current` wins over anot
             }
         }]
     } -result 5
+
+test omemo-unit-bounce-is-not-opened {a bounced OMEMO message is left to the message module} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        set claimed [c omemo OnMessage [j message -type error \
+                -from $::test::omemo_unit::ROMEO -id m1 {
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid [c omemo device_id] {
+                    j key -rid 4242 -body AAAA
+                    j iv -body AAAAAAAAAAAAAAAA
+                }
+                j payload -body AAAA
+            }
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]]
+        list claimed $claimed written [llength [lrange [c conn get_written] $before end]]
+    } -result {claimed 0 written 0}
+
