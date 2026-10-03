@@ -198,6 +198,12 @@ snit::type taco_omemo {
     variable OwnListRetry ""
     variable OwnListRetryMs 5000
 
+    # Stepped at every disconnect. The IQ layer keeps a request pending
+    # across a reconnect, so a fetch's reply can land in the next
+    # connection's state; fetches carry the generation they were made in
+    # (Current) and a reply from an earlier one is dropped.
+    variable FetchGen 0
+
     constructor args {
         $self configurelist $args
         set client $options(-client)
@@ -308,6 +314,10 @@ snit::type taco_omemo {
     # =====================================================================
 
     method OnReady {args} {
+        # A fresh stream (<Ready> is not fired on resumption). A reconnect
+        # skips <Disconnect>, so the old connection's state goes here too:
+        # replies to what we asked on it are stale (see FetchGen).
+        $self OnDisconnect
         set accountJid [jid bare [$client cget -jid]]
         $self EnsureStore
         # Before PublishBundle: a rotation changes spk/spk_id/spks, which
@@ -335,6 +345,7 @@ snit::type taco_omemo {
         catch {after cancel $OwnListRetry}
         set OwnListRetry ""
         set OwnListRetryMs 5000
+        incr FetchGen
         set DeviceLists [dict create]
         set Bundles [dict create]
         set BundleFetchWaiters [dict create]
@@ -701,7 +712,7 @@ snit::type taco_omemo {
             -payload [j pubsub -ns $ns {
                 j items -node $node
             }] \
-            -command [mymethod OnFetchedDevicelist $peerJid]
+            -command [mymethod Current $FetchGen OnFetchedDevicelist $peerJid]
     }
 
     method RetryOwnDevicelist {} {
@@ -710,6 +721,16 @@ snit::type taco_omemo {
         if {[dict exists $DevicelistFetchWaiters $accountJid]} {
             $self SendDevicelistFetch $accountJid
         }
+    }
+
+    # Run a fetch's reply handler, unless the fetch was made before the
+    # last disconnect (see FetchGen).
+    method Current {gen method args} {
+        if {$gen != $FetchGen} {
+            jlog debug "dropping a $method reply from before a reconnect"
+            return
+        }
+        $self $method {*}$args
     }
 
     # Waiters for $peerJid, removing them. Empty when OnDisconnect already
@@ -1130,7 +1151,7 @@ snit::type taco_omemo {
             -payload [j pubsub -ns $ns {
                 j items -node $node
             }] \
-            -command [mymethod OnFetchedBundle $peerJid $peerDev]
+            -command [mymethod Current $FetchGen OnFetchedBundle $peerJid $peerDev]
     }
 
     # Well inside the IQ layer's own timeout: a device left `pending` blocks

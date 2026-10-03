@@ -1987,3 +1987,26 @@ test omemo-unit-bundle-published-before-list {a new device's bundle goes out bef
         set order
     } -result {bundle list}
 
+test omemo-unit-stale-bundle-reply-ignored {a bundle reply from before a reconnect leaves the new state alone} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 5 [list apply {args {}}]
+        set id ""
+        foreach st [lrange [c conn get_written] $before end] {
+            if {[string match *bundles:5 [xsearch $st pubsub items -get @node]]} {
+                set id [xsearch $st -get @id]
+            }
+        }
+        # A reconnect: a fresh <Ready>, with no <Disconnect> before it.
+        c omemo OnReady
+        c conn feed [j iq -type error -id $id -from $::test::omemo_unit::ROMEO {
+            j error -type cancel {
+                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        c omemo BundleGaveUp $::test::omemo_unit::ROMEO 5
+    } -result 0
+
