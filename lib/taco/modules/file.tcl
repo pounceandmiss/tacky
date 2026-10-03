@@ -799,7 +799,10 @@ proc aesgcm_parse {url} {
     if {$hash < 0} { return "" }
     set base [string range $url 0 [expr {$hash - 1}]]
     set frag [string range $url [expr {$hash + 1}] end]
-    if {[string length $frag] < 64 || [string length $frag] % 2 != 0} {
+    # A 12- or 16-byte IV and a 32-byte key, in hex (XEP-0454). binary
+    # decode hex skips what is not hex, so a bad fragment has to be refused
+    # here or it decodes to a short key without a word.
+    if {[string length $frag] ni {88 96} || ![string is xdigit -strict $frag]} {
         return ""
     }
     regsub {^aesgcm://} $base {https://} httpsUrl
