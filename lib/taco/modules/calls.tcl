@@ -515,6 +515,15 @@ snit::type taco_calls {
 
         jlog debug "SDP $sdpType to [dict get $call peer] (sid=$sid)\n$sdp"
 
+        # Kept for the candidates that trickle after it: XEP-0176 5.3 has
+        # every transport-info carry them.
+        if {[regexp -line {^a=ice-ufrag:(\S+)} $sdp -> ufrag]} {
+            dict set Calls $sid ufrag $ufrag
+        }
+        if {[regexp -line {^a=ice-pwd:(\S+)} $sdp -> pwd]} {
+            dict set Calls $sid pwd $pwd
+        }
+
         # SDP->Jingle (creator stays "initiator" on both sides — the
         # responder echoes the initiator's content names verbatim).
         set jingle [::jinglesdp::from_sdp $sdp \
@@ -561,9 +570,13 @@ snit::type taco_calls {
         set candNode [::jinglesdp::BuildCandidate $value]
         if {$candNode eq ""} return
 
+        set iceAttrs {}
+        foreach key {ufrag pwd} {
+            if {[dict exists $call $key]} { lappend iceAttrs -$key [dict get $call $key] }
+        }
         set jingle [j jingle -ns urn:xmpp:jingle:1 {
             j content -creator initiator -name $mid {
-                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 {
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 {*}$iceAttrs {
                     j #as-is $candNode
                 }
             }
