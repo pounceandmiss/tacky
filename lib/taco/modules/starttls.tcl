@@ -40,7 +40,23 @@ proc _xmpp_starttls_readable_cb {chan host cb} {
     }
 
     append ::_xmpp_starttls_data($chan) $chunk
-    if {[regexp {<proceed.*>} $::_xmpp_starttls_data($chan)]} {
+    set data $::_xmpp_starttls_data($chan)
+    # A refusal ends it now rather than at the connect watchdog, and a
+    # server that keeps talking without ever saying <proceed/> is not
+    # buffered without end.
+    if {[regexp {<failure[\s/>]} $data] || [regexp {<stream:error[\s>]} $data]} {
+        fileevent $chan readable {}
+        xmpp_starttls_abort $chan
+        {*}$cb error "server refused STARTTLS"
+        return
+    }
+    if {[string length $data] > 65536} {
+        fileevent $chan readable {}
+        xmpp_starttls_abort $chan
+        {*}$cb error "no STARTTLS answer in the first 64 KiB"
+        return
+    }
+    if {[regexp {<proceed.*>} $data]} {
         xmpp_starttls_abort $chan
         fileevent $chan readable {}
 
