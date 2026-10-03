@@ -354,7 +354,6 @@ test conn-sm-resumed-fires-onready-with-1 {SM resumed fires -onready with resume
         c.base inject [make_features]
         c.base inject [make_success]
         c.base inject [make_bind_features_with_sm]
-        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base inject [make_sm_resumed "sm-456" 0]
         set _tready_resumed
     } -result {1}
@@ -644,15 +643,15 @@ test conn-sm-resume-failed-retries-enable {resume failed sends enable instead of
         c.base inject [make_features]
         c.base inject [make_success]
         c.base inject [make_bind_features_with_sm]
-        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base clear
-        # Resume fails
+        # Resume fails: nothing is bound yet, so bind, then <enable/>
         c.base inject [make_sm_failed]
-        # Should have sent <enable/> not fallen back to passthrough
-        set written [c.base get_written]
-        set enableStanza [lindex $written end]
-        list [dict get $enableStanza tag] [dict get $enableStanza ns] [c isReady]
-    } -result {enable urn:xmpp:sm:3 0}
+        set bind [lindex [c.base get_written] end]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        set enableStanza [lindex [c.base get_written] end]
+        list [dict get $bind tag] [dict get $enableStanza tag] \
+            [dict get $enableStanza ns] [c isReady]
+    } -result {iq enable urn:xmpp:sm:3 0}
 
 test conn-sm-resume-failed-enable-reaches-ready {resume fail -> enable -> enabled reaches ready} \
     {*}$common \
@@ -665,8 +664,8 @@ test conn-sm-resume-failed-enable-reaches-ready {resume fail -> enable -> enable
         c.base inject [make_features]
         c.base inject [make_success]
         c.base inject [make_bind_features_with_sm]
-        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base inject [make_sm_failed]
+        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base inject [make_sm_enabled "sm-retry2-new"]
         list $_tready_resumed [c isReady]
     } -result {0 1}
@@ -684,8 +683,8 @@ test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked 
         c.base inject [make_features]
         c.base inject [make_success]
         c.base inject [make_bind_features_with_sm]
-        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base inject [make_sm_failed]
+        c.base inject [make_bind_result "user@test.example.com/r"]
         c.base clear
         c.base inject [make_sm_enabled "sm-retry3-new"]
         # The unacked message should have been replayed
@@ -699,14 +698,19 @@ test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked 
 
 # -- SM delivery confirmation across a broken stream -------------------------
 
-# Reconnect after a drop and drive as far as the resume request: conn is left
-# in sm-negotiating, waiting for the server's <resumed/> or <failed/>.
+# Reconnect after a drop and drive as far as the resume request, which takes
+# the place of binding: conn is left in sm-negotiating, waiting for the
+# server's <resumed/> or <failed/>. After a <failed/> it binds; answer that
+# with bind_after_failed.
 proc drive_to_resume_attempt {jid} {
     c.base inject_error "connection lost"
     c connect
     c.base inject [make_features]
     c.base inject [make_success]
     c.base inject [make_bind_features_with_sm]
+}
+
+proc bind_after_failed {jid} {
     c.base inject [make_bind_result $jid]
 }
 
@@ -746,6 +750,7 @@ test conn-sm-resume-failed-confirms-what-arrived {<failed h=N/> acks the stanzas
         set ::_temitted {}
         c.base clear
         c.base inject [make_sm_failed 1]
+        bind_after_failed "user@test.example.com/r"
         c.base inject [make_sm_enabled "sm-failed-h-new"]
         # m1 confirmed, only m2 replayed onto the fresh stream
         list [sm_acked_ids] [sent_message_ids] [c isReady]
@@ -761,6 +766,7 @@ test conn-sm-resumed-previd-mismatch-enables-fresh {a <resumed/> for another str
         drive_to_resume_attempt "user@test.example.com/r"
         c.base clear
         c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        bind_after_failed "user@test.example.com/r"
         set enable [lindex [c.base get_written] end]
         list [dict get $enable tag] [dict get $enable ns] [c isReady]
     } -result {enable urn:xmpp:sm:3 0}
@@ -773,6 +779,7 @@ test conn-sm-resumed-previd-mismatch-keeps-queue {a mismatched <resumed/> keeps 
         c write [j message -to "friend@example.com" -id m1 {j body -body "unacked"}]
         drive_to_resume_attempt "user@test.example.com/r"
         c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        bind_after_failed "user@test.example.com/r"
         c.base clear
         c.base inject [make_sm_enabled "sm-mismatch2-new"]
         list [c isReady] [sent_message_ids]
@@ -788,6 +795,7 @@ test conn-sm-resumed-previd-mismatch-then-refused {mismatch then a refused enabl
         c write [j message -to "friend@example.com" -id m1 {j body -body "unacked"}]
         drive_to_resume_attempt "user@test.example.com/r"
         c.base inject [make_sm_resumed "someone-elses-stream" 0]
+        bind_after_failed "user@test.example.com/r"
         c.base clear
         c.base inject [make_sm_failed]
         list [c isReady] [sent_message_ids]
@@ -961,3 +969,16 @@ test conn-sm-queue-overflow-during-flush {SM overflow during FlushWriteBuffer pr
         # and conn should be in waiting state (autoreconnect)
         list $_tready_resumed [c state]
     } -result {{} waiting}
+
+# XEP-0198 5: a resume takes the place of binding. Bound first, a server
+# refuses it (Prosody: "Tried to resume after resource binding").
+test conn-sm-resume-replaces-bind {a reconnect with a stream to resume sends <resume/>, not a bind} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-order"
+        drive_to_resume_attempt "user@test.example.com/r"
+        set tags [lmap st [c.base get_written] {dict get $st tag}]
+        list [lindex $tags end] [expr {"iq" in [lrange $tags end-1 end]}]
+    } -result {resume 0}
+

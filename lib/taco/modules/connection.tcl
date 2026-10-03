@@ -893,8 +893,9 @@ snit::type conn {
         }
     }
 
-    # Process stanzas during resource binding: on <features>, send bind
-    # request (and let SM inspect features). On bind result, store the
+    # Process stanzas during resource binding: on <features>, resume the
+    # previous stream if there is one (XEP-0198 §5: a resume takes the place
+    # of binding), else send the bind request. On bind result, store the
     # bound JID once its bare part checks out and hand off to SM negotiation.
     method HandleBindStanza {stanza} {
         set tag [dict get $stanza tag]
@@ -903,17 +904,12 @@ snit::type conn {
             features {
                 # Let sm check for SM support
                 $sm onFeatures $stanza
-
-                # Send bind request
-                set bindStanza [j iq -id bind -type set {
-                    j bind -ns urn:ietf:params:xml:ns:xmpp-bind {
-                        if {$options(-resource) ne ""} {
-                            j resource -body $options(-resource)
-                        }
-                    }
-                }]
-                jlog debug "stanza out" -stanza $bindStanza
-                $base writeStanza $bindStanza
+                if {[$sm resumable]} {
+                    set authState sm-negotiating
+                    $sm onConnect
+                    return
+                }
+                $self SendBind
             }
             iq {
                 set type [dict get $stanza attrs type]
@@ -956,6 +952,18 @@ snit::type conn {
         }
     }
 
+    method SendBind {} {
+        set bindStanza [j iq -id bind -type set {
+            j bind -ns urn:ietf:params:xml:ns:xmpp-bind {
+                if {$options(-resource) ne ""} {
+                    j resource -body $options(-resource)
+                }
+            }
+        }]
+        jlog debug "stanza out" -stanza $bindStanza
+        $base writeStanza $bindStanza
+    }
+
     # Feed stanzas to SM during enable/resume negotiation. Non-SM
     # stanzas are also forwarded via -onstanza (server may send stanzas
     # before SM finishes). Checks if SM has reached "running" after each.
@@ -965,6 +973,13 @@ snit::type conn {
             if {$options(-onstanza) ne ""} {
                 {*}$options(-onstanza) $stanza
             }
+        }
+        if {[dict get [$sm getInfo] state] eq "resume-failed"} {
+            # Nothing is bound yet: bind now, and SM enables a fresh stream
+            # once the bind result is in.
+            set authState binding
+            $self SendBind
+            return
         }
         $self CheckSmReady
     }

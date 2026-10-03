@@ -175,7 +175,7 @@ snit::type sm {
                     # <failed/> does. Parking in 'disconnected' would strand
                     # the queue with conn stuck in sm-negotiating.
                     jlog error "Resume rejected: previd mismatch (ours: $streamId, server: $previd)"
-                    $self StartFresh
+                    $self ResumeFailed
                     return
                 }
 
@@ -207,10 +207,10 @@ snit::type sm {
                 }
 
                 if {$streamId ne ""} {
-                    # Resume failed, try a fresh enable instead.
-                    # Keep queue: replayed after <enabled/>
-                    jlog inform "Resume failed (h=$h), attempting fresh SM enable"
-                    $self StartFresh
+                    # Resume failed: conn binds a resource and asks for a
+                    # fresh stream. The queue stays, replayed after <enabled/>.
+                    jlog inform "Resume failed (h=$h), binding for a fresh stream"
+                    $self ResumeFailed
                 } else {
                     # Enable failed, genuinely can't do SM
                     jlog warn "SM enable failed (h=$h), falling back to passthrough"
@@ -368,16 +368,22 @@ snit::type sm {
         return $ackedCount
     }
 
-    # Counters restart with the new stream; the queue stays and is replayed
-    # after <enabled/>.
-    method StartFresh {} {
+    # A resume is tried instead of binding (XEP-0198 §5), so when it fails
+    # nothing is bound yet: conn sees state resume-failed, binds, and calls
+    # onConnect again, which enables a fresh stream. Counters restart with
+    # it; the queue stays and is replayed after <enabled/>.
+    method ResumeFailed {} {
         set streamId ""
         set in 0
         set out 0
         set serverh 0
-        {*}$options(-write) [j enable \
-            -ns "urn:xmpp:sm:3" \
-            -resume true]
+        set state resume-failed
+    }
+
+    # Whether onConnect would resume rather than enable: the server offers
+    # SM and we hold a stream to resume.
+    method resumable {} {
+        expr {$mode eq "active" && $streamId ne ""}
     }
 
     method getInfo {} {

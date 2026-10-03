@@ -8,6 +8,9 @@ package require taco
 # whom, Jingle legs going live, leaving, and join failures only a real server
 # shows (a nick shared with another session of the same account). Audio is
 # stubbed as in test_calls.tcl; DTLS and ICE run for real.
+
+::tcltest::testConstraint smServer [info exists ::env(XMPP_SM)]
+
 namespace eval ::test::groupcall_int {
 
     variable HOST "example.local"
@@ -500,6 +503,10 @@ namespace eval ::test::groupcall_int {
             variable ROMEO
             variable JULIET
             liveCall
+            # A drop the session does not survive (past the server's resume
+            # window): without a stream to resume, the reconnect is a fresh
+            # stream, and the server takes the old session out of the room.
+            [[tacky client $JULIET] conn sm] ResumeFailed
             # The path a real network drop takes, not a deliberate close.
             [tacky client $JULIET] conn OnTransportError "simulated drop"
             # Juliet learns on the fresh stream after the reconnect backoff.
@@ -508,6 +515,23 @@ namespace eval ::test::groupcall_int {
                 [dict get [lindex [events $JULIET <Left>] 0] -reason] \
                 [joined $ROMEO] [joined $JULIET]
         } -result {juliet disconnected 1 0}
+
+    # With stream management the same drop is resumed (XEP-0198 5): the
+    # server kept the session, so nobody left the room or the call.
+    test groupcall-int-peer-connection-resumes \
+        {a participant whose dropped connection resumes stays in the call} \
+        {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm && smServer} -body {
+            variable ROMEO
+            variable JULIET
+            liveCall
+            set c [tacky client $JULIET]
+            $c conn OnTransportError "simulated drop"
+            waitUntil {[dict get [[$c conn sm] getInfo] resumed]
+                       && [$c conn isReady]} 30000
+            settle 1000
+            list [has $ROMEO <PeerLeft>] [has $JULIET <Left>] \
+                [joined $ROMEO] [joined $JULIET]
+        } -result {0 0 1 1}
 
     # == Failing ==============================================================
 
