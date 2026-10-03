@@ -962,6 +962,7 @@ test muc-answer-ignores-other-rows {accept and decline leave a row that is no in
 test muc-decline-event {<Decline> event fires on incoming decline} \
     {*}$muc_common \
     -body {
+        muc_join room@muc.example.com me
         set got {}
         tacky listen muc <Decline> {apply {{ev} { set ::got $ev }}}
         c.conn feed [j message -from room@muc.example.com {
@@ -2024,3 +2025,31 @@ test muc-join-room-destroyed-answers {a room destroyed while we join fails the j
         }]
         set ::_join
     } -result 1
+
+# Declines and voice requests are relayed by the room: from anyone else
+# (an occupant, a stranger, a room we are not in) they are not believed.
+test muc-decline-and-voice-request-only-from-the-room {a decline or voice request not from a room of ours is ignored} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -role moderator
+        set ::got {}
+        tacky listen muc <Decline> {apply {{ev} { lappend ::got decline }}}
+        tacky listen muc <VoiceRequest> {apply {{ev} { lappend ::got voice }}}
+        foreach from {room@muc.example.com/mallory other@muc.example.com stranger@example.com} {
+            c.conn feed [j message -from $from {
+                j x -ns http://jabber.org/protocol/muc#user {
+                    j decline -from bob@example.com
+                }
+            }]
+            c.conn feed [j message -from $from {
+                j x -ns jabber:x:data -type submit {
+                    j field -var FORM_TYPE {
+                        j value -body http://jabber.org/protocol/muc#request
+                    }
+                    j field -var muc#roomnick { j value -body newbie }
+                }
+            }]
+        }
+        set ::got
+    } -result {}
+
