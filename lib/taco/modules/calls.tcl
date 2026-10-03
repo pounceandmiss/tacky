@@ -998,8 +998,59 @@ snit::type taco_calls {
             session-accept    { $self HandleSessionAccept   $stanza $jingle $sid $from }
             session-terminate { $self HandleSessionTerminate $stanza $jingle $sid $from }
             transport-info    { $self HandleTransportInfo   $stanza $jingle $sid $from }
-            default           { $self AckIq $stanza }
+            default           { $self HandleOtherAction $stanza $jingle $action $sid $from }
         }
+    }
+
+    # Any other action. One for a session that is not this peer's is
+    # refused like the rest. session-info (ringing, mute, hold) and the
+    # other informational actions are acknowledged. content-add and
+    # transport-replace are acknowledged and then turned down with
+    # content-reject / transport-reject, as XEP-0166 7.2 has it: an IQ
+    # error there would read as the session failing, and Conversations
+    # ends the call (its video button sends content-add mid-call).
+    # Anything else gets feature-not-implemented.
+    method HandleOtherAction {stanza jingle action sid from} {
+        if {![$self PeerMatches $sid $from]} {
+            $self IqError $stanza item-not-found
+            return
+        }
+        switch -- $action {
+            session-info - content-modify - content-remove -
+            description-info - security-info {
+                $self AckIq $stanza
+            }
+            content-add {
+                $self AckIq $stanza
+                $self SendReject $sid $from content-reject $jingle 0
+            }
+            transport-replace {
+                $self AckIq $stanza
+                $self SendReject $sid $from transport-reject $jingle 1
+            }
+            default {
+                $self IqError $stanza feature-not-implemented
+            }
+        }
+    }
+
+    # Turn down the contents of an incoming $jingle with $action, naming
+    # each content (and, for a transport-reject, the transport refused).
+    method SendReject {sid peer action jingle withTransport} {
+        set contents {}
+        foreach c [xsearch $jingle content -gather node] {
+            lassign [xsearch $c -get {@creator @name}] creator name
+            set content [j content -creator $creator -name $name]
+            if {$withTransport} {
+                dict set content children [xsearch $c transport -gather node]
+            }
+            lappend contents $content
+        }
+        set out [j jingle -ns urn:xmpp:jingle:1]
+        dict set out attrs action $action
+        dict set out attrs sid $sid
+        dict set out children $contents
+        $client iq request -type set -to $peer -payload $out
     }
 
     method HandleSessionInitiate {stanza jingle sid from} {
