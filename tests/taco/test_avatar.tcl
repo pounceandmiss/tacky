@@ -55,10 +55,11 @@ proc vcard_result {jid data} {
 }
 
 # Helper: presence with <x xmlns='vcard-temp:x:update'>; empty hash = no <photo>
+# An empty hash is an empty <photo/>: no avatar (XEP-0153 3.2).
 proc vcard_presence {from hash} {
     if {$hash eq ""} {
         return [j presence -from $from {
-            j x -ns vcard-temp:x:update
+            j x -ns vcard-temp:x:update { j photo }
         }]
     }
     j presence -from $from {
@@ -479,4 +480,18 @@ test avatar-data-must-match-its-hash {avatar bytes under the wrong hash are not 
         }
         set stored
     } -result {1 0}
+
+test avatar-xep0153-not-ready-keeps-avatar {an update with no <photo/> is not "no avatar"} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed bob@example.com oldhash -source vcard
+        c avatar OnVCardPresence bob@example.com [j presence -from bob@example.com/r {
+            j x -ns vcard-temp:x:update
+        }]
+        set kept [lindex [avatar_row bob@example.com] 0]
+        c avatar OnVCardPresence bob@example.com [j presence -from bob@example.com/r {
+            j x -ns vcard-temp:x:update { j photo }
+        }]
+        list $kept [avatar_row bob@example.com]
+    } -result {oldhash {}}
 
