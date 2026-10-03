@@ -94,3 +94,26 @@ test starttls-close-mid-handshake-forgets-the-buffer {a socket closed mid-STARTT
         jlog configure -logproc ""
         unset -nocomplain ::_st_err ::_st_tick ::_st_peer
     } -result {1 0}
+
+# What the server says before <proceed/>, read from a file standing in for
+# the socket.
+proc st_reply {text} {
+    set tmp [file join [temporaryDirectory] starttls-reply.txt]
+    set fh [open $tmp w]; puts -nonewline $fh $text; close $fh
+    set chan [open $tmp r]
+    set ::_st_result {}
+    _xmpp_starttls_readable_cb $chan example.com {apply {{args} {
+        set ::_st_result $args
+    }}}
+    close $chan
+    file delete $tmp
+    return $::_st_result
+}
+
+test starttls-failure-ends-at-once {a <failure/> answer fails the handshake right away} -body {
+    st_reply "<stream:stream id='x'><stream:features/><failure xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+} -result {error {server refused STARTTLS}}
+
+test starttls-buffer-is-bounded {a server that never says <proceed/> is not buffered forever} -body {
+    st_reply "<stream:stream id='x'>[string repeat x 70000]"
+} -result {error {no STARTTLS answer in the first 64 KiB}}
