@@ -195,6 +195,8 @@ WASM_DEPS_DIR := $(WASM_ROOT)/build/deps
 WASM_DROP_ZIP = rm -f $(WASM_BUILD)/_build-emscripten/scripts.zip \
 	               $(WASM_BUILD)/_build-emscripten/scripts.o
 -include $(ZIPPY)/emscripten/link.mk
+# JS linked into every wasm module: taco_http's browser backend.
+WASM_PRE_JS := $(WASM_ROOT)/wasm/em/http.js
 wasm: dist-dir
 	mkdir -p $(WASM_BUILD)
 	$(WASM_DROP_ZIP)
@@ -213,7 +215,7 @@ wasm: dist-dir
 	mkdir -p $(WASM_DIST)
 	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
 	$(WASM_EMCC) -O2 -o $(WASM_DIST)/tacky.mjs $(WASM_BUILD)/libtacky.a $(ZIPPY_EM_LDFLAGS) \
-	    -sEXPORT_NAME=createTacky \
+	    -sEXPORT_NAME=createTacky --pre-js $(WASM_PRE_JS) \
 	    -sEXPORTED_FUNCTIONS=_tacky_boot,_tacky_start,_tacky_persist,_tacky_run,_opfsvfs_register
 
 # build/wasm/tacky-tcltest.mjs: the same interpreter with tacky's own Tcl test
@@ -231,9 +233,11 @@ wasm-tcltest: $(WASM_BUILD)/tacky-tcltest.mjs
 $(WASM_BUILD)/tacky-tcltest.mjs:
 	mkdir -p $(WASM_BUILD)
 	$(WASM_DROP_ZIP)
+	[ ! wasm/em/http.js -nt $@ ] || rm -f $@
 	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(wasm_DEPS)" \
+	    EM_APP_LDFLAGS="--pre-js $(WASM_PRE_JS)" \
 	    SOURCES="lib bin tests" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(WASM_TEST_EXCL)" \

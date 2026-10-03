@@ -24,7 +24,7 @@
 #include "tclemnotify.h"
 #include "opfsvfs.h"
 #include "wschan.h"
-#include "httpx.h"
+#include "emcall.h"
 
 /* The bundled script tree, a C array in .rodata (zippy/emscripten/blob2c.tcl:
  * no _end symbol on this target, a length instead). */
@@ -235,9 +235,9 @@ tacky_boot(void)
         report("FAIL wschan: %s", Tcl_GetStringResult(interp));
         return 1;
     }
-    /* ::httpx: file transfers over the browser's HTTP stack (taco_http). */
-    if (Httpx_Init(interp) != TCL_OK) {
-        report("FAIL httpx: %s", Tcl_GetStringResult(interp));
+    /* ::em::call: taco_http reaches wasm/em/http.js through it. */
+    if (Emcall_Init(interp) != TCL_OK) {
+        report("FAIL emcall: %s", Tcl_GetStringResult(interp));
         return 1;
     }
     TclEm_SetPump(Pump, NULL);

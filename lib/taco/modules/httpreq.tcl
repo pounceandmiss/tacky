@@ -1,7 +1,7 @@
 # taco_http - the HTTP a file transfer needs, from whichever client this build
 # has: Tcl's http package over a socket natively, with mtls registered for
-# https, and the page's own stack in a browser, bound by zippy's
-# emscripten/httpx.c (::httpx). This chooses between the two.
+# https, and the page's own stack in a browser, reached through zippy's
+# ::em::call and wasm/em/http.js. This chooses between the two.
 #
 #   taco_http get URL -outfile PATH ?-timeout MS? ?-headers DICT?
 #                     ?-progress CMD? ?-command CMD?          -> token
@@ -19,13 +19,18 @@
 # that omits -command has to watch `status` for the answer.
 #
 # Bodies are named by path rather than handed over as channels, which is what
-# the browser forces (httpx.c says why). The native backend opens and closes
+# the browser forces: JavaScript reads and writes Emscripten's filesystem, not
+# Tcl channels. The native backend opens and closes
 # the channel itself, so a caller sees the same contract either way: the bytes
 # are at the path when -command fires.
 
 namespace eval ::taco_http {
     # Whether the native backend has registered its https transport yet.
     variable Registered 0
+    # Browser requests: token -> {call id, status, ncode, error, command}.
+    variable Requests
+    array set Requests {}
+    variable Next 0
 }
 
 proc taco_http {op args} {
@@ -42,9 +47,9 @@ proc taco_http {op args} {
         get, put, status, ncode, error, reset or cleanup"
 }
 
-# The browser's client exists only where zippy built httpx in.
+# ::em::call exists only in a wasm build.
 proc ::taco_http::Browser {} {
-    return [expr {[info exists ::httpx::available] && $::httpx::available}]
+    return [expr {[llength [info commands ::em::call]] > 0}]
 }
 
 proc ::taco_http::Request {method url args} {
@@ -61,12 +66,7 @@ proc ::taco_http::Request {method url args} {
 
 proc ::taco_http::Query {op token} {
     if {[Browser]} {
-        # taco_http keeps the http package's vocabulary; httpx keeps the
-        # browser's. `reset` is the one word where the two differ, and both
-        # callers wrap this in a catch - so getting it wrong cancels nothing
-        # and says nothing.
-        if {$op eq "reset"} { set op abort }
-        return [::httpx::$op $token]
+        return [BrowserQuery $op $token]
     }
     NativeInit
     return [::http::$op $token]
@@ -91,19 +91,81 @@ proc ::taco_http::NativeInit {} {
 
 proc ::taco_http::BrowserRequest {method url optsVar} {
     upvar 1 $optsVar o
+    variable Requests
+    variable Next
 
     set headers $o(-headers)
     if {$o(-type) ne ""} {
         dict set headers Content-Type $o(-type)
     }
-    # These four have the same names on both sides; the rest do not.
-    set opts {}
-    foreach opt {-outfile -infile -progress -command} {
-        if {$o($opt) ne ""} { lappend opts $opt $o($opt) }
+    set token ::taco_http::b[incr Next]
+    set progress {}
+    if {$o(-progress) ne ""} {
+        set progress [list ::taco_http::BrowserProgress $token $o(-progress)]
     }
-    if {[llength $headers]} { lappend opts -headers $headers }
-    if {$o(-timeout) > 0}   { lappend opts -timeout $o(-timeout) }
-    return [::httpx::request $method $url {*}$opts]
+    set id [::em::call -progress $progress \
+        -command [list ::taco_http::BrowserDone $token] \
+        tackyHttp $method $url $o(-outfile) $o(-infile) $o(-timeout) {*}$headers]
+    set Requests($token) [dict create id $id status "" ncode 0 error "" \
+        command $o(-command)]
+    return $token
+}
+
+# tackyHttp resolves with {status code message}; `error` means the call
+# itself failed.
+proc ::taco_http::BrowserDone {token result value} {
+    variable Requests
+    if {![info exists Requests($token)]} return
+    if {$result eq "ok"} {
+        lassign $value status ncode message
+    } else {
+        lassign [list error 0 $value] status ncode message
+    }
+    dict set Requests($token) status $status
+    dict set Requests($token) ncode $ncode
+    dict set Requests($token) error $message
+    BrowserNotify $token
+}
+
+proc ::taco_http::BrowserNotify {token} {
+    variable Requests
+    if {![info exists Requests($token)]} return
+    set cmd [dict get $Requests($token) command]
+    if {$cmd ne ""} {
+        {*}$cmd $token
+    }
+}
+
+proc ::taco_http::BrowserProgress {token cmd total current} {
+    {*}$cmd $token $total $current
+}
+
+proc ::taco_http::BrowserQuery {op token} {
+    variable Requests
+    if {![info exists Requests($token)]} {
+        error "no such request: $token"
+    }
+    switch -exact -- $op {
+        status - ncode - error {
+            return [dict get $Requests($token) $op]
+        }
+        reset {
+            # Like the http package, a reset request still calls -command,
+            # here from the event loop.
+            if {[dict get $Requests($token) status] eq ""} {
+                ::em::cancel [dict get $Requests($token) id]
+                dict set Requests($token) status reset
+                dict set Requests($token) error aborted
+                after 0 [list ::taco_http::BrowserNotify $token]
+            }
+        }
+        cleanup {
+            if {[dict get $Requests($token) status] eq ""} {
+                ::em::cancel [dict get $Requests($token) id]
+            }
+            unset Requests($token)
+        }
+    }
 }
 
 # -- Tcl's http -------------------------------------------------------------
