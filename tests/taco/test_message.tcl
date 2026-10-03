@@ -4471,3 +4471,39 @@ test message-pm-author-may-retract {the PM partner's own retraction is honoured,
             [expr {[$::_client message ParseRetraction room@muc.example.com/alice \
                 [apply $retract room@muc.example.com/alice]] ne ""}]
     } -result {0 1}
+
+# Room messages still pending after catchup: retried when the room is
+# joined, from what is pending then.
+proc msg_room_sends {} {
+    set n 0
+    foreach st [$::_client conn get_written] {
+        if {[dict get $st tag] eq "message"
+                && [xsearch $st -get @type] eq "groupchat"} { incr n }
+    }
+    return $n
+}
+
+test message-room-retry-when-already-joined {a room joined before catchup gets its pending messages now} \
+    {*}$msg_common \
+    -body {
+        msg_muc_join room@muc.example.com me
+        msg_store [list [msg_msg chat_jid room@muc.example.com?join body "late" \
+            from_jid room@muc.example.com/me own_id r1 server_status pending \
+            encryption "" timestamp 6000000]]
+        $::_client conn clear
+        $::_client message RetryPending
+        msg_room_sends
+    } -result 1
+
+test message-room-retry-skips-confirmed {a message the room confirmed before the join is not sent again} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid room@muc.example.com?join body "late" \
+            from_jid room@muc.example.com/me own_id r2 server_status pending \
+            encryption "" timestamp 6100000]]
+        $::_client message RetryPending
+        $::_client db eval {UPDATE chat_message SET server_status='' WHERE own_id='r2'}
+        $::_client conn clear
+        msg_muc_join room@muc.example.com me
+        msg_room_sends
+    } -result 0
