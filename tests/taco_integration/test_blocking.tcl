@@ -29,6 +29,29 @@ namespace eval ::test::blocking_int {
         }
     }
 
+    # The messages are OMEMO: a send asks for the peer's device list, and
+    # one asked for before the peer has published it comes back as "no
+    # OMEMO", failing the send. Wait until the server holds $acc's list.
+    proc waitDevicelistPublished {acc} {
+        variable TIMEOUT
+        set deadline [expr {[clock milliseconds] + $TIMEOUT}]
+        while {[clock milliseconds] < $deadline} {
+            set flag [namespace current]::_dl
+            unset -nocomplain $flag
+            [tacky client $acc] iq request -type get \
+                -payload [j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist
+                }] \
+                -command [list apply {{flag st} {
+                    set $flag [xsearch $st -get @type]
+                }} $flag]
+            vwait $flag
+            if {[set $flag] eq "result"} return
+            after 100
+        }
+        error "the device list of $acc never reached the server"
+    }
+
     proc bringUp {} {
         variable HOST
         variable ROMEO
@@ -50,6 +73,8 @@ namespace eval ::test::blocking_int {
             {message <CatchupDone> -acc juliet@example.local}
         }
         waitBlockingReady $ROMEO
+        waitDevicelistPublished $ROMEO
+        waitDevicelistPublished $JULIET
         clearBlocklist
     }
 

@@ -1959,3 +1959,31 @@ test omemo-unit-bounce-is-not-opened {a bounced OMEMO message is left to the mes
         list claimed $claimed written [llength [lrange [c conn get_written] $before end]]
     } -result {claimed 0 written 0}
 
+test omemo-unit-bundle-published-before-list {a new device's bundle goes out before its list} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        set ::_before [llength [c conn get_written]]
+        c omemo OnReady
+    }] -body {
+        set notFound [list apply {{id} {
+            j iq -type error -id $id {
+                j error -type cancel {
+                    j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }
+        }}]
+        # Answer the two fetches, in the order they went out.
+        foreach st [lrange [c conn get_written] $::_before end] {
+            if {[xsearch $st -get @type] eq "get"} {
+                c conn feed [{*}$notFound [xsearch $st -get @id]]
+            }
+        }
+        set order {}
+        foreach st [lrange [c conn get_written] $::_before end] {
+            set node [xsearch $st pubsub publish -get @node]
+            if {[string match *devicelist $node]} { lappend order list }
+            if {[string match *bundles:* $node]} { lappend order bundle }
+        }
+        set order
+    } -result {bundle list}
+
