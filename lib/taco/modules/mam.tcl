@@ -534,12 +534,19 @@ proc ParseTimestamp {stamp} {
         set fracUs [scan $frac %d]
         regsub {\.\d+} $stamp {} stamp
     }
+    # XEP-0082 also allows a numeric zone (+02:00, -0530); it is applied
+    # here rather than by clock's %z, which wants it without the colon.
+    set offset 0
+    if {[regexp {^(.*)([+-])(\d\d):?(\d\d)$} $stamp -> base sign hh mm]} {
+        set stamp $base
+        set offset [expr {($sign eq "-" ? -1 : 1) * ([scan $hh %d] * 3600 + [scan $mm %d] * 60)}]
+    }
     if {[catch {clock scan $stamp -format "%Y-%m-%dT%H:%M:%SZ" -gmt 1} result]} {
         if {[catch {clock scan $stamp -format "%Y-%m-%dT%H:%M:%S" -gmt 1} result]} {
             return ""
         }
     }
-    return [expr {$result * 1000000 + $fracUs}]
+    return [expr {($result - $offset) * 1000000 + $fracUs}]
 }
 
 # Inverse of ParseTimestamp: epoch microseconds → ISO 8601 string
