@@ -1,11 +1,11 @@
 /*
- * XEP-0363 up and down over the platform HTTP stack (zippy's httpx.c, chosen
+ * XEP-0363 up and down over the platform HTTP stack (wasm/em/http.js, chosen
  * by httpreq.tcl), against Prosody's mod_http_file_share; the bytes are
  * compared at the end.
  *
  *   tests/servers/with_prosody.sh node wasm/test/http.mjs
  *
- * node has no XMLHttpRequest, so httpx.c takes its fetch path here.
+ * node has no XMLHttpRequest, so http.js takes its fetch path here.
  */
 import { reporter, startBackend, connect } from './harness.mjs';
 
