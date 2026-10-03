@@ -407,3 +407,23 @@ tacky_test log-write-takes-a-level-from-getlevel {writing at a level the API ret
             "goes nowhere" -obj gui.testcase
         return reached
     } -result reached
+
+# -- what a logged stanza may show -------------------------------------------
+
+test jlog-redacts-secrets {passwords, SASL bodies and secret form fields never reach a log} -body {
+    set line [jlog FormatLine [list -text out -stanza [j iq -type set {
+        j query -ns jabber:iq:register {
+            j username -body juliet
+            j password -body hunter2
+            j x -ns jabber:x:data -type submit {
+                j field -var muc#roomconfig_roomsecret { j value -body roompw }
+                j field -var muc#roomconfig_roomname { j value -body Balcony }
+            }
+        }
+    }]]]
+    set auth [jlog FormatLine [list -text out -stanza [j auth \
+        -ns urn:ietf:params:xml:ns:xmpp-sasl -mechanism PLAIN -body AGp1bGlldABodW50ZXIy]]]
+    list [string match *hunter2* $line] [string match *roompw* $line] \
+         [string match *juliet* $line] [string match *Balcony* $line] \
+         [string match *AGp1bGlldABodW50ZXIy* $auth]
+} -result {0 0 1 1 0}
