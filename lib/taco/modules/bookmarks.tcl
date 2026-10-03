@@ -131,7 +131,13 @@ snit::type taco_bookmarks {
             $client emit bookmarks <Changed> -action add -jid $bm(jid)
         }
         $self AutojoinOne $bm(jid)
+        $self Publish bm
+    }
 
+    # Publish one bookmark, the array named by $bmVar, as its own item with
+    # the node's publish-options (XEP-0402: one item per publish).
+    method Publish {bmVar} {
+        upvar 1 $bmVar bm
         $client iq request -type set -command [mymethod OnPublishResult $bm(jid)] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node urn:xmpp:bookmarks:1 {
@@ -522,18 +528,14 @@ snit::type taco_bookmarks {
             }
         }
 
-        # Single IQ with all items
-        $client iq request -type set -payload \
-            [j pubsub -ns http://jabber.org/protocol/pubsub {
-                j publish -node urn:xmpp:bookmarks:1 {
-                    $client db eval {
-                        SELECT jid, name, autojoin, nick, password, extensions_xml
-                        FROM bookmark
-                    } bm {
-                        j #as-is [$self BookmarkItemNode bm]
-                    }
-                }
-            }]
+        # One publish per bookmark: a publish carries a single item, and
+        # each needs the node's options (a private node, whitelist access).
+        $client db eval {
+            SELECT jid, name, autojoin, nick, password, extensions_xml
+            FROM bookmark
+        } bm {
+            $self Publish bm
+        }
     }
 
     method AutojoinAll {} {

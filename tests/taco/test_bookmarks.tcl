@@ -248,3 +248,19 @@ test bookmarks-wire-foreign-notification-dropped {bookmark events from other sen
         }]
         list [bm_state trap@muc.evil.example] [llength [c.conn get_written]]
     } -result {missing 0}
+
+test bookmarks-set-nick-all-one-item-per-publish \
+    {setNickAll publishes each bookmark on its own, with the node's options} \
+    {*}$bookmarks_common \
+    -body {
+        bm_insert a@muc.example.com nick old
+        bm_insert b@muc.example.com nick old
+        c.conn clear
+        c bookmarks setNickAll -nick new
+        lmap st [c.conn get_written] {
+            if {[xsearch $st pubsub publish -get @node] ne "urn:xmpp:bookmarks:1"} continue
+            list [llength [xsearch $st pubsub publish item]] \
+                [llength [xsearch $st pubsub publish-options]] \
+                [xsearch $st pubsub publish item conference nick -get body]
+        }
+    } -result {{1 1 new} {1 1 new}}
