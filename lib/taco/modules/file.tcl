@@ -364,7 +364,13 @@ snit::type taco_file {
             # Plaintext-storage mode leaves nothing OMEMO to keep as
             # ciphertext; encrypted-storage mode keeps it exactly as
             # downloaded and records its key, instead of decrypting to
-            # plaintext at rest.
+            # plaintext at rest - once its tag checks out, or a tampered
+            # file would be "done" and only fail when opened.
+            if {$mediakey ne "" && [catch {$self VerifyPart $id $full} err]} {
+                catch {file delete -- $full.part}
+                $self Terminal $id failed "decrypt: $err"
+                return
+            }
             if {[catch {file rename -force -- $full.part $full} err]} {
                 $self Terminal $id failed "rename: $err"
                 return
@@ -463,6 +469,15 @@ snit::type taco_file {
 
     # Decrypt the downloaded ciphertext (.part) to $full. Reads the whole
     # file in: GCM verifies the tag over the complete buffer.
+    # Check a downloaded ciphertext's GCM tag without keeping the plaintext.
+    method VerifyPart {id full} {
+        set inh [open $full.part rb]
+        try { set ct [read $inh] } finally { close $inh }
+        ::omemo::media_decrypt [dict get $Transfers($id) mediakey] \
+            [dict get $Transfers($id) mediaiv] $ct
+        return
+    }
+
     method DecryptPart {id full} {
         set inh [open $full.part rb]
         try { set ct [read $inh] } finally { close $inh }
