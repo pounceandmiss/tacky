@@ -72,6 +72,8 @@ lib_generate_certs "$TEST_DIR"
 SM_MODULE=""
 if [ "$ENABLE_SM" = true ]; then
   SM_MODULE='"smacks";'
+  # Tests that need stream management check for it.
+  export XMPP_SM=1
 fi
 
 cat > "${TEST_DIR}/conf/prosody.cfg.lua" <<EOF

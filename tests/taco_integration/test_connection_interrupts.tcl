@@ -20,6 +20,8 @@ if {[::tcltest::testConstraint wasm]} {
     return
 }
 
+::tcltest::testConstraint smServer [info exists ::env(XMPP_SM)]
+
 snit::type TcpProxy {
     variable listenSock ""
     variable clientSock ""
@@ -284,9 +286,12 @@ namespace eval ::test::AutoReconnect {
         variable done 0
     }
 
+    variable lastResumed ""
+
     proc onReady {resumed} {
-        variable readyCount; variable done
+        variable readyCount; variable done; variable lastResumed
         incr readyCount
+        set lastResumed $resumed
         set done 1
     }
 
@@ -352,6 +357,19 @@ namespace eval ::test::AutoReconnect {
         wait_var [namespace current]::done 6000
         set stateLog
     } -result {connecting authenticating binding connected waiting connecting authenticating binding connected}
+
+    # With stream management (with_prosody.sh --sm) the reconnect resumes the
+    # session: <resume/> in place of binding, as XEP-0198 5 has it. A resume
+    # sent after binding is refused and every reconnect starts over.
+    test reconnect-resumes {a reconnect resumes the stream} \
+        {*}$common -constraints {withServer smServer} -body {
+        c connect
+        wait_var [namespace current]::done 6000
+        set done 0
+        proxy kill
+        wait_var [namespace current]::done 6000
+        list $readyCount $lastResumed [c isReady]
+    } -result {2 1 1}
 
     test reconnect-003 {state reaches waiting before reconnect} \
         {*}$common -body {
