@@ -862,8 +862,17 @@ proc gc_call_invite {from type args} {
         j invite -ns urn:xmpp:call-invites:0 -id $opts(-id) -video $opts(-video) -multi true {
             j muji -ns urn:xmpp:jingle:muji:0 -room $opts(-room)
         }
-        if {$opts(-delay) ne ""} { j delay -ns urn:xmpp:delay -stamp $opts(-delay) }
+        if {$opts(-delay) ne ""} {
+            j delay -ns urn:xmpp:delay -from [gc_delay_from $from $type] -stamp $opts(-delay)
+        }
     }
+}
+
+# Who stamps a delayed message: the room for its history, our server for
+# what it kept while we were offline.
+proc gc_delay_from {from type} {
+    if {$type eq "groupchat"} { return [jid bare $from] }
+    return test.example.com
 }
 
 # -delay stamps it, so tests can say which answer happened first.
@@ -872,7 +881,9 @@ proc gc_call_answer {from type tag id args} {
     array set opts $args
     j message -from $from -to user@test.example.com/res -type $type {
         j $tag -ns urn:xmpp:call-invites:0 -id $id
-        if {$opts(-delay) ne ""} { j delay -ns urn:xmpp:delay -stamp $opts(-delay) }
+        if {$opts(-delay) ne ""} {
+            j delay -ns urn:xmpp:delay -from [gc_delay_from $from $type] -stamp $opts(-delay)
+        }
     }
 }
 

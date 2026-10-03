@@ -581,11 +581,12 @@ snit::type taco_message {
     # messages carry their own stanza-id; an own echo's @id is passed
     # explicitly via isOwn) then funnels into the shared Classify core.
     method ingestLive {chatJid stanza {isOwn 0}} {
-        set stamp [xsearch $stanza delay -ns urn:xmpp:delay -get @stamp]
+        set stamp [$self TrustedStamp $chatJid $stanza]
         # A stamp we cannot parse is no stamp: the store does arithmetic
         # on what it gets, so hand it now rather than ParseTimestamp's "".
         set ts [ParseTimestamp $stamp]
-        if {$ts eq ""} { set ts [clock microseconds] }
+        set now [clock microseconds]
+        if {$ts eq "" || $ts > $now} { set ts $now }
         set idArgs {}
         if {$isOwn} {
             set idArgs [list -own_id [xsearch $stanza -get @id]]
@@ -595,6 +596,28 @@ snit::type taco_message {
         # History a room replays on join is not news: nothing rings for it.
         dict set verdict delayed [expr {$stamp ne ""}]
         $self DispatchLive $chatJid $verdict
+    }
+
+    # The <delay> stamp of a live message, if one comes from who may set it:
+    # our server (offline storage), our own account, or the room for its
+    # history. Anyone else's would let a sender date a message as it likes
+    # (2099 pins it as the chat's newest and moves the read point past
+    # everything after it). "" when there is none.
+    method TrustedStamp {chatJid stanza} {
+        set me [jid bare [$client cget -jid]]
+        jid explode $me e
+        set trusted [list [jid norm $e(domain)] [jid norm $me]]
+        if {[string match *?join $chatJid]} {
+            lappend trusted [jid norm [string range $chatJid 0 end-5]]
+        }
+        foreach d [xsearch $stanza delay -ns urn:xmpp:delay] {
+            set from [xsearch $d -get @from]
+            if {$from eq "" || [catch {jid norm $from} from]} continue
+            if {$from in $trusted} {
+                return [xsearch $d -get @stamp]
+            }
+        }
+        return ""
     }
 
     # Act on one live message's verdict (from Classify):

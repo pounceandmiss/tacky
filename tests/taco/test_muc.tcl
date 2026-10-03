@@ -1445,7 +1445,7 @@ test muc-store-delayed-uses-stamp {stored MUC message uses delay timestamp} \
         muc_join room@muc.example.com me
         c.conn feed [j message -type groupchat -from room@muc.example.com/someone {
             j body -body "old msg"
-            j delay -ns urn:xmpp:delay -stamp 2024-06-15T12:00:00Z
+            j delay -ns urn:xmpp:delay -from room@muc.example.com -stamp 2024-06-15T12:00:00Z
         }]
         set msg [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0]
         set expected [ParseTimestamp 2024-06-15T12:00:00Z]
