@@ -3,8 +3,9 @@ namespace import ::tcltest::*
 package require taco
 package require xmpprw
 
-# XEP-0156 lookup before a websocket dial. ::wschan and taco_http are faked
-# and restored after each test (the wasm suite has the real ::wschan).
+# XEP-0156 lookup before a websocket dial, and the transport's handling of
+# ::websocket events. ::websocket (tcllib's API) and taco_http are faked and
+# restored after each test (the wasm suite has the browser's).
 
 namespace eval ::test::wsdisc {
     variable Opened {}
@@ -14,6 +15,9 @@ namespace eval ::test::wsdisc {
     variable Seq 0
     variable Saved {}
     variable Hosts 0
+    variable Handlers
+    variable Sent {}
+    variable Errors {}
 
     # A fresh host name: answers are cached per host.
     proc host {} {
@@ -27,40 +31,58 @@ namespace eval ::test::wsdisc {
         variable Reset {}
         variable Pending
         variable Saved {}
+        variable Handlers
+        variable Sent {}
+        variable Errors {}
         array unset Pending
-        if {![namespace exists ::wschan]} {
-            namespace eval ::wschan {}
+        array unset Handlers
+        if {![namespace exists ::websocket]} {
+            namespace eval ::websocket {}
             lappend Saved namespace
         }
-        foreach cmd {::wschan::open ::wschan::close ::wschan::destroy ::taco_http} {
+        foreach cmd {::websocket::open ::websocket::send ::websocket::close ::taco_http} {
             if {[llength [info commands $cmd]]} {
                 rename $cmd ${cmd}.real
                 lappend Saved $cmd
             }
         }
-        if {![info exists ::wschan::available]} {
-            set ::wschan::available 1
-            lappend Saved available
-        }
-        proc ::wschan::open {url args} {
+        proc ::websocket::open {url handler args} {
             lappend ::test::wsdisc::Opened $url
-            return ws[incr ::test::wsdisc::Seq]
+            set sock ws[incr ::test::wsdisc::Seq]
+            set ::test::wsdisc::Handlers($sock) $handler
+            return $sock
         }
-        proc ::wschan::close {args} {}
-        proc ::wschan::destroy {args} {}
+        proc ::websocket::send {sock type msg} {
+            lappend ::test::wsdisc::Sent $type $msg
+            return [string length $msg]
+        }
+        # As tcllib does: a local close reports close and disconnect at once.
+        proc ::websocket::close {sock {code 1000} {reason ""}} {
+            ::test::wsdisc::event $sock close [list $code $reason]
+            ::test::wsdisc::event $sock disconnect "Disconnected from remote end"
+        }
         proc ::taco_http {op args} { ::test::wsdisc::Http $op {*}$args }
+    }
+
+    # Deliver a ::websocket event to whoever opened $sock.
+    proc event {sock type msg} {
+        variable Handlers
+        {*}$Handlers($sock) $sock $type $msg
+    }
+
+    proc lastSock {} {
+        variable Seq
+        return ws$Seq
     }
 
     proc restore {} {
         variable Saved
-        foreach cmd {::wschan::open ::wschan::close ::wschan::destroy ::taco_http} {
+        foreach cmd {::websocket::open ::websocket::send ::websocket::close ::taco_http} {
             catch {rename $cmd {}}
         }
         foreach cmd [lreverse $Saved] {
-            if {$cmd eq "available"} {
-                unset ::wschan::available
-            } elseif {$cmd eq "namespace"} {
-                namespace delete ::wschan
+            if {$cmd eq "namespace"} {
+                namespace delete ::websocket
             } else {
                 rename ${cmd}.real $cmd
             }
@@ -111,11 +133,15 @@ namespace eval ::test::wsdisc {
     }
 
     proc conn {args} {
-        baseconn create ::test::wsdisc::bc -transport websocket {*}$args
+        baseconn create ::test::wsdisc::bc -transport websocket \
+            -error-command {lappend ::test::wsdisc::Errors} {*}$args
     }
 
     proc done {} {
         catch {::test::wsdisc::bc destroy}
+        # A reader is destroyed on the next idle (DestroyReader); the next
+        # test's connection reuses the name.
+        update idletasks
         restore
     }
 
@@ -281,3 +307,62 @@ test ws-discovery-cleans-up {the file the answer landed in is removed} \
         ::test::wsdisc::answer $token ok 200 $::test::wsdisc::DRAUGR
         file exists $file
     } -result 0
+
+# -- the socket's events ------------------------------------------------------
+
+test ws-event-needs-xmpp-subprotocol {a server that did not agree to xmpp is refused} \
+    -constraints !wasm \
+    -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
+        ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
+        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::event [::test::wsdisc::lastSock] connect ""
+        list [::test::wsdisc::bc state] $::test::wsdisc::Errors
+    } -result {disconnected {{server did not agree to the xmpp subprotocol}}}
+
+test ws-event-text-reaches-the-reader {a framed message comes out as a stanza} \
+    -constraints !wasm \
+    -setup { ::test::wsdisc::fake; set ::_wsin {} } \
+    -cleanup { unset -nocomplain ::_wsin; ::test::wsdisc::done } -body {
+        ::test::wsdisc::conn -ws-url ws://127.0.0.1/x \
+            -command {apply {{st} {lappend ::_wsin [dict get $st tag]}}}
+        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        set sock [::test::wsdisc::lastSock]
+        ::test::wsdisc::event $sock connect xmpp
+        ::test::wsdisc::event $sock text \
+            "<open xmlns='urn:ietf:params:xml:ns:xmpp-framing' from='x' version='1.0'/>"
+        ::test::wsdisc::event $sock text \
+            "<message xmlns='jabber:client'><body>hi</body></message>"
+        list [::test::wsdisc::bc state] $::_wsin $::test::wsdisc::Errors
+    } -result {connected message {}}
+
+test ws-event-write-is-one-text-message {a write goes out as one text message} \
+    -constraints !wasm \
+    -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
+        ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
+        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::event [::test::wsdisc::lastSock] connect xmpp
+        ::test::wsdisc::bc writeNow "<presence/>"
+        set ::test::wsdisc::Sent
+    } -result {text {<presence xmlns='jabber:client'/>}}
+
+test ws-event-remote-close-reported-once {the server closing is one error, with its code} \
+    -constraints !wasm \
+    -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
+        ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
+        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        set sock [::test::wsdisc::lastSock]
+        ::test::wsdisc::event $sock connect xmpp
+        ::test::wsdisc::event $sock close {1001 {going away}}
+        ::test::wsdisc::event $sock disconnect "Disconnected from remote end"
+        list [::test::wsdisc::bc state] $::test::wsdisc::Errors
+    } -result {disconnected {{websocket closed (1001): going away}}}
+
+test ws-event-local-close-is-quiet {closing it ourselves reports nothing} \
+    -constraints !wasm \
+    -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
+        ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
+        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::event [::test::wsdisc::lastSock] connect xmpp
+        ::test::wsdisc::bc close
+        list [::test::wsdisc::bc state] $::test::wsdisc::Errors
+    } -result {disconnected {}}

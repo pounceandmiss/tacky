@@ -23,7 +23,6 @@
 #include "tacky_interp.h"
 #include "tclemnotify.h"
 #include "opfsvfs.h"
-#include "wschan.h"
 #include "emcall.h"
 
 /* The bundled script tree, a C array in .rodata (zippy/emscripten/blob2c.tcl:
@@ -220,6 +219,12 @@ tacky_boot(void)
         return 1;
     }
     Tcl_CreateObjCommand(interp, "tacky_sync", SyncCmd, NULL, NULL);
+    /* ::em::call, for taco_http and ::websocket. Registered before
+     * TackyInterpInit loads taco, whose browser shims check for it. */
+    if (Emcall_Init(interp) != TCL_OK) {
+        report("FAIL emcall: %s", Tcl_GetStringResult(interp));
+        return 1;
+    }
     if (TackyInterpInit(interp, _binary_scripts_zip_start, _binary_scripts_zip_len,
                         EmitCmd, NULL, &stage) != TCL_OK) {
         report("FAIL %s: %s", stage, Tcl_GetStringResult(interp));
@@ -228,16 +233,6 @@ tacky_boot(void)
     /* The Tcl side of opfsvfs; the VFS itself is registered from the worker. */
     if (Opfsvfs_Init(interp) != TCL_OK) {
         report("FAIL opfsvfs: %s", Tcl_GetStringResult(interp));
-        return 1;
-    }
-    /* ::wschan: -transport websocket. */
-    if (Wschan_Init(interp) != TCL_OK) {
-        report("FAIL wschan: %s", Tcl_GetStringResult(interp));
-        return 1;
-    }
-    /* ::em::call: taco_http reaches wasm/em/http.js through it. */
-    if (Emcall_Init(interp) != TCL_OK) {
-        report("FAIL emcall: %s", Tcl_GetStringResult(interp));
         return 1;
     }
     TclEm_SetPump(Pump, NULL);

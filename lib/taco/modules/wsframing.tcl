@@ -26,7 +26,7 @@
 # carry the declaration itself. `out` adds it to any element that has none.
 #
 # Nothing here does I/O. The transport is baseconn's -transport websocket
-# branch, over ::wschan (zippy's emscripten/wschan.c) in a browser.
+# branch, over ::websocket (modules/browserws.tcl) in a browser.
 
 namespace eval ::wsframing {
     # RFC 7395 §3.1: the WebSocket subprotocol a server must agree to, and

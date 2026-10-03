@@ -1,5 +1,5 @@
 /*
- * An XMPP session over RFC 7395 (wsframing.tcl + zippy's wschan.c) against
+ * An XMPP session over RFC 7395 (wsframing.tcl + wasm/em/ws.js) against
  * Prosody's mod_websocket, under node; browser.mjs runs the same in Chromium.
  *
  *   tests/servers/with_prosody.sh node wasm/test/xmpp.mjs
