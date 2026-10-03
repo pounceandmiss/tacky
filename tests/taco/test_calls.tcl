@@ -404,3 +404,43 @@ test calls-filter-codecs-video {video keeps VP8, drops H264/VP9/rtx} -constraint
             -ns urn:xmpp:jingle:apps:rtp:1 -get node]
         xsearch $desc payload-type -gather @name
     } -result {VP8}
+
+# -- other actions --
+
+test calls-other-actions-checked {other jingle actions: unknown session refused, informational ones acked, unknown ones not implemented} \
+    {*}$calls_env -body {
+        calls_accepted tk-oa1 $::PEER
+        set out {}
+        foreach {action sid from} [list \
+                content-add nosuch $::PEER \
+                session-info tk-oa1 mallory@example.com/x \
+                session-info tk-oa1 $::PEER \
+                content-modify tk-oa1 $::PEER \
+                bogus-action tk-oa1 $::PEER] {
+            c.conn feed [calls_session_iq $action $sid $from]
+            set w [calls_last_written]
+            lappend out [expr {[xsearch $w -get @type] eq "result" ? "result"
+                               : [calls_error_condition $w]}]
+        }
+        set out
+    } -result {item-not-found item-not-found result result feature-not-implemented}
+
+# XEP-0166 7.2: acked, then turned down, so the call goes on (an IQ error
+# here ends a Conversations call when its user taps video).
+test calls-content-add-rejected {content-add and transport-replace are acked, then rejected naming the content} \
+    {*}$calls_env -body {
+        calls_accepted tk-oa2 $::PEER
+        set out {}
+        foreach action {content-add transport-replace} {
+            c.conn clear
+            c.conn feed [calls_session_iq $action tk-oa2 $::PEER]
+            set w [c.conn get_written]
+            set jn [xsearch [lindex $w 1] jingle -ns urn:xmpp:jingle:1 -get node]
+            lappend out [llength $w] [xsearch [lindex $w 0] -get @type] \
+                [xsearch [lindex $w 1] -get {@type @to}] \
+                [xsearch $jn -get {@action @sid}] \
+                [xsearch $jn content -get {@creator @name}]
+        }
+        set out
+    } -result [list 2 result [list set $::PEER] {content-reject tk-oa2} {initiator audio} \
+                    2 result [list set $::PEER] {transport-reject tk-oa2} {initiator audio}]
