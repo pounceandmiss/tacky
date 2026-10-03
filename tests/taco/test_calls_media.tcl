@@ -204,6 +204,16 @@ test media-candidate-trickles-as-transport-info {a local candidate goes out as t
             [xsearch $cand -get @type]]
     } -result {transport-info SID user@test.example.com/res audio 192.0.2.1 54321 host}
 
+test media-candidate-carries-ufrag-pwd {a trickled candidate names our ufrag and pwd (XEP-0176 5.3)} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+        mockrtc::fire [media_pc $sid] local-candidate \
+            "candidate:1 1 udp 2122260223 192.0.2.1 54321 typ host" ""
+        set transport [xsearch [media_jingle_sent] content transport -get node]
+        list [xsearch $transport -get @ufrag] [xsearch $transport -get @pwd]
+    } -result {abc xyzxyzxyzxyz}
+
 test media-candidate-uses-responder-attr {the callee stamps responder, not initiator} \
     {*}$media_env -body {
         media_callee tk-m2
