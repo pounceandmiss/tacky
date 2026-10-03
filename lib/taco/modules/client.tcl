@@ -1,4 +1,6 @@
 snit::type taco_client {
+    # Set while a message that arrived as a carbon is dispatched.
+    variable InCarbon 0
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
         nick chats chatlist author extdisco calls groupcall omemo file notify blocking
@@ -226,6 +228,9 @@ snit::type taco_client {
     # $stanza is a <sent> or <received> carbon from our own bare JID;
     # empty string otherwise (not a carbon, or a forged one from a
     # foreign JID we must ignore per §11).
+    # Whether the message being dispatched arrived as a carbon.
+    method inCarbon {} { return $InCarbon }
+
     method UnwrapCarbon {stanza} {
         set ns urn:xmpp:carbons:2
         foreach kind {sent received} {
@@ -263,6 +268,9 @@ snit::type taco_client {
                 # message so the rest of the chain sees one shape.
                 set unwrapped [$self UnwrapCarbon $stanza]
                 if {$unwrapped ne ""} { set stanza $unwrapped }
+                # For the handlers below (inCarbon): a carbon is a copy, and
+                # what it asks for (a receipt) is the original's to answer.
+                set InCarbon [expr {$unwrapped ne ""}]
 
                 # Handler chain — first claimer wins:
                 #   mam:     MAM result stanzas → message.tcl backfill path
@@ -275,12 +283,16 @@ snit::type taco_client {
                 #            a synthesised plaintext <message> back into
                 #            the chain (claims the encrypted original).
                 #   message: DM        → store under user@domain
-                if {[$mam onResultMessage $stanza]} return
-                if {[$muc OnMessage $stanza]} return
-                if {[$pubsub OnMessage $stanza]} return
-                if {[$calls OnMessage $stanza]} return
-                if {[$omemo OnMessage $stanza]} return
-                $message OnMessage $stanza
+                try {
+                    if {[$mam onResultMessage $stanza]} return
+                    if {[$muc OnMessage $stanza]} return
+                    if {[$pubsub OnMessage $stanza]} return
+                    if {[$calls OnMessage $stanza]} return
+                    if {[$omemo OnMessage $stanza]} return
+                    $message OnMessage $stanza
+                } finally {
+                    set InCarbon 0
+                }
             }
             presence {
                 $caps OnPresence $stanza
