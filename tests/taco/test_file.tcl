@@ -811,6 +811,35 @@ test file-download-rename-failure-reports-failed \
              [file exists $full]
     } -result {failed 1 0}
 
+# With encrypted storage the ciphertext is kept as downloaded, but only once
+# its GCM tag checks out.
+test file-download-encrypted-storage-checks-tag \
+    {a tampered OMEMO download is refused, not kept, when storage is encrypted} -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1 \
+            -extra-cleanup {
+                unset -nocomplain ::_ft
+                rename ::taco_file::Snit_methodStorageUnlocked {}
+                rename ::_real_StorageUnlocked ::taco_file::Snit_methodStorageUnlocked
+            }] -body {
+        rename ::taco_file::Snit_methodStorageUnlocked ::_real_StorageUnlocked
+        proc ::taco_file::Snit_methodStorageUnlocked {type selfns win self} { return 1 }
+        array set ::_ft {status ok http {HTTP/1.1 200 OK}}
+        set enc [::omemo::media_encrypt "secret picture"]
+        set url https://h/tampered.png
+        set id [$::_client file NewTransfer download $url]
+        set tv [$::_client file info vars Transfers]
+        dict set ${tv}($id) mediakey [dict get $enc key]
+        dict set ${tv}($id) mediaiv [dict get $enc iv]
+        set full [$::_client file AttachPath $url]
+        file mkdir [file dirname $full]
+        set ct [dict get $enc ct]
+        set ct [string replace $ct 0 0 [binary format c [expr {([scan [string index $ct 0] %c] ^ 1) & 255}]]]
+        set fh [open $full.part wb]; puts -nonewline $fh $ct; close $fh
+        $::_client file OnDownloaded $id $full ::_ft
+        list [lindex [af_last] 0] [string match {decrypt: *} [lindex [af_last] 1]] \
+            [file exists $full]
+    } -result {failed 1 0}
+
 # --- at-rest decryption (PlainPath) -----------------------------------
 
 test file-plainpath-decrypts-recorded-key \
