@@ -521,6 +521,13 @@ snit::type taco_message {
     # (XEP-0184 <request> / XEP-0333 <markable>). Read is GUI-driven.
     method AutoReceipt {chatJid stanza} {
         if {![$self MarkersEnabled]} return
+        # A carbon is a copy: the device it was addressed to answers it,
+        # not every one of ours.
+        if {[$client inCarbon]} return
+        # A receipt says we are online and reading, so it goes only to who
+        # may see our presence anyway.
+        if {[catch {$client roster subscription -jid $chatJid} sub]
+                || $sub ni {from both}} return
         set refId [xsearch $stanza -get @id]
         if {$refId eq ""} return
         if {[llength [xsearch $stanza request -ns urn:xmpp:receipts]] > 0} {
@@ -1401,9 +1408,11 @@ snit::type taco_message {
         array set opts $args
         if {![$self MarkersEnabled]} return
         if {[string match {*\?join} $opts(-chat)]} return
+        # Theirs only: a marker for a message of our own means nothing.
         set originId [$client db onecolumn {
             SELECT origin_id FROM chat_message
             WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
+              AND (own_id IS NULL OR own_id = '')
         }]
         if {$originId eq ""} return
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId

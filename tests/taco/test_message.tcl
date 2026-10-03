@@ -3760,10 +3760,19 @@ proc msg_written_marker_count {element ns} {
     return $n
 }
 
+# Receipts go to who may see our presence (subscription from or both).
+proc msg_contact {jid {sub both}} {
+    $::_client db eval {
+        INSERT OR REPLACE INTO roster_item(jid, name, subscription, ask, approved)
+        VALUES ($jid, '', $sub, '', 0)
+    }
+}
+
 test message-autoreceipt-request \
     {incoming <request> triggers a XEP-0184 received echoing the message id} \
     {*}$msg_common \
     -body {
+        msg_contact alice@example.com
         $::_client conn feed [j message -type chat -id m1 -from alice@example.com/phone {
             j body -body hi
             j request -ns urn:xmpp:receipts
@@ -3775,12 +3784,46 @@ test message-autoreceipt-markable \
     {incoming <markable> triggers a XEP-0333 received echoing the message id} \
     {*}$msg_common \
     -body {
+        msg_contact alice@example.com
         $::_client conn feed [j message -type chat -id m2 -from alice@example.com/phone {
             j body -body hi
             j markable -ns urn:xmpp:chat-markers:0
         }]
         msg_written_marker received urn:xmpp:chat-markers:0
     } -result m2
+
+test message-autoreceipt-not-to-strangers \
+    {no receipt to someone who may not see our presence} \
+    {*}$msg_common \
+    -body {
+        msg_contact bob@example.com to
+        foreach from {stranger@example.com bob@example.com} {
+            $::_client conn feed [j message -type chat -id s1 -from $from/phone {
+                j body -body hi
+                j request -ns urn:xmpp:receipts
+            }]
+        }
+        msg_written_marker_count received urn:xmpp:receipts
+    } -result 0
+
+test message-autoreceipt-not-for-carbons \
+    {a carbon of a message to another of our devices gets no receipt from us} \
+    {*}$msg_common \
+    -body {
+        msg_contact alice@example.com
+        $::_client conn feed [j message -from $acc -to $acc/res {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id c1 -from alice@example.com/phone \
+                            -to $acc/other {
+                        j body -body hi
+                        j request -ns urn:xmpp:receipts
+                    }
+                }
+            }
+        }]
+        msg_written_marker_count received urn:xmpp:receipts
+    } -result 0
 
 test message-autoreceipt-none \
     {a plain message triggers no receipt} \
@@ -3814,6 +3857,17 @@ test message-markdisplayed-sends \
             -chat alice@example.com -timestamp 5000000
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
+
+test message-markdisplayed-own-message-noop \
+    {markDisplayed sends nothing for a message of our own} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
+            from_jid $acc]]
+        tacky message markDisplayed -acc $acc \
+            -chat alice@example.com -timestamp 5100000
+        msg_written_marker_count displayed urn:xmpp:chat-markers:0
+    } -result 0
 
 test message-markdisplayed-muc-noop \
     {markDisplayed is a no-op for MUC chats} \
