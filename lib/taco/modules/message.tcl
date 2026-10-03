@@ -1124,13 +1124,20 @@ snit::type taco_message {
     #   complete archive   - nothing is outside the evidence; never fail.
     #   no floor at all    - no evidence; retry as before, fail nothing.
     method RetryPending {{archiveFloor ""} {complete 0}} {
+        set joinedNow {}
         foreach msg [$self PendingSends all] {
             set chatJid [dict get $msg chat_jid]
             # MUC messages must wait for room join. The account archive
-            # holds no room traffic, so the floor can't speak to them.
+            # holds no room traffic, so the floor can't speak to them. A
+            # room already joined (it can be, before catchup settles) has
+            # no <Joined> coming, so its turn is now.
             if {[string match {*\?join} $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
-                lappend PendingRetry($roomJid) $msg
+                if {[$client muc isJoined -jid $roomJid]} {
+                    lappend joinedNow $roomJid
+                } else {
+                    set PendingRetry($roomJid) 1
+                }
                 continue
             }
             # Written to the current stream: SM owns it for ack or replay,
@@ -1144,6 +1151,20 @@ snit::type taco_message {
                 $self MarkOutgoingFailed $chatJid [dict get $msg own_id] delivery
                 continue
             }
+            $self RetrySend $msg
+        }
+        foreach roomJid [lsort -unique $joinedNow] {
+            $self RetryRoom $roomJid
+        }
+    }
+
+    # Re-send what is still pending for a joined room, read now rather than
+    # when the retry was decided: a message the room confirmed meanwhile is
+    # no longer pending, and one on the current stream is SM's to replay.
+    method RetryRoom {roomJid} {
+        foreach msg [$self PendingSends all] {
+            if {[dict get $msg chat_jid] ne "${roomJid}?join"} continue
+            if {[$self IsWired [dict get $msg own_id]]} continue
             $self RetrySend $msg
         }
     }
@@ -1183,11 +1204,8 @@ snit::type taco_message {
         if {[dict exists $args -hidden]} return
         set roomJid [dict get $args -jid]
         if {[info exists PendingRetry($roomJid)]} {
-            set msgs $PendingRetry($roomJid)
             unset PendingRetry($roomJid)
-            foreach msg $msgs {
-                $self RetrySend $msg
-            }
+            $self RetryRoom $roomJid
         }
         $self DoMucCatchup ${roomJid}?join
     }
