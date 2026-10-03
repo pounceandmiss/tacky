@@ -1855,3 +1855,84 @@ test omemo-unit-tackymethod-command-callback \
         expr {$wanted eq $::cbResult && $wanted ne ""}
     } -result {1}
 
+# An event with no list in it (a retraction, a payload-less notification) is
+# not an empty list: the node is read again instead.
+test omemo-unit-own-devicelist-retraction-publishes-nothing \
+    {a retraction of our own list republishes nothing and asks the server} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        # Settle the fetch OnReady made, so the retraction's is a new one.
+        set dev [c omemo device_id]
+        c omemo OnFetchedDevicelist $::test::omemo_unit::JULIET_BARE \
+            [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist {
+                        j item -id current {
+                            j list -ns eu.siacs.conversations.axolotl {
+                                j device -id 7
+                                j device -id $dev
+                            }
+                        }
+                    }
+                }
+            }]
+        set before [llength [c conn get_written]]
+        c omemo OnDevicelist [j message -from $::test::omemo_unit::JULIET_BARE {
+            j event -ns http://jabber.org/protocol/pubsub#event {
+                j items -node eu.siacs.conversations.axolotl.devicelist {
+                    j retract -id current
+                }
+            }
+        }]
+        set written [lrange [c conn get_written] $before end]
+        list publishes [::test::omemo_unit::ownListPublishes $written] \
+            fetches [::test::omemo_unit::ownListFetches $written] \
+            still [expr {7 in [c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE]}]
+    } -result {publishes {} fetches 1 still 1}
+
+test omemo-unit-peer-devicelist-without-payload-keeps-devices \
+    {a peer's payload-less notification keeps its devices and asks again} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        ::test::omemo_unit::injectDevicelist $::test::omemo_unit::ROMEO {1 2}
+        set before [llength [c conn get_written]]
+        c omemo OnDevicelist [j message -from $::test::omemo_unit::ROMEO {
+            j event -ns http://jabber.org/protocol/pubsub#event {
+                j items -node eu.siacs.conversations.axolotl.devicelist {
+                    j item -id current
+                }
+            }
+        }]
+        set asked 0
+        foreach st [lrange [c conn get_written] $before end] {
+            if {[xsearch $st pubsub items -get @node]
+                    eq "eu.siacs.conversations.axolotl.devicelist"
+                    && [xsearch $st -get @to] eq $::test::omemo_unit::ROMEO} {
+                incr asked
+            }
+        }
+        list devices [c omemo devicelist -jid $::test::omemo_unit::ROMEO] asked $asked
+    } -result {devices {1 2} asked 1}
+
+test omemo-unit-devicelist-takes-current-item {the item `current` wins over another} \
+    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        c omemo ParseDevicelist [j iq -type result {
+            j pubsub -ns http://jabber.org/protocol/pubsub {
+                j items -node eu.siacs.conversations.axolotl.devicelist {
+                    j item -id old {
+                        j list -ns eu.siacs.conversations.axolotl { j device -id 9 }
+                    }
+                    j item -id current {
+                        j list -ns eu.siacs.conversations.axolotl { j device -id 5 }
+                    }
+                }
+            }
+        }]
+    } -result 5

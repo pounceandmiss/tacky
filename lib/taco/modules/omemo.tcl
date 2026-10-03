@@ -770,17 +770,30 @@ snit::type taco_omemo {
         }
     }
 
-    method ParseDevicelist {stanza} {
+    # The device ids in a fetched (pubsub/items) or pushed (event/items)
+    # list. $foundVar, if given, is set to whether there was a list at all.
+    # The list is the item `current` (XEP-0384); a node can hold others, so
+    # that one is taken when present, else the first item with a list.
+    method ParseDevicelist {stanza {foundVar ""}} {
+        if {$foundVar ne ""} { upvar 1 $foundVar found }
+        set found 0
         set devices [list]
-        set listNodes [xsearch $stanza pubsub items item list \
-            -ns $::taco::omemo::NS_AXOLOTL]
-        if {[llength $listNodes] == 0} {
+        set items [xsearch $stanza pubsub items item]
+        if {[llength $items] == 0} {
             # PEP notification shape: <event><items><item><list>...
-            set listNodes [xsearch $stanza event items item list \
-                -ns $::taco::omemo::NS_AXOLOTL]
+            set items [xsearch $stanza event items item]
         }
-        if {[llength $listNodes] == 0} { return $devices }
-        xsearch [lindex $listNodes 0] device -script dn {
+        set listNode ""
+        foreach item $items {
+            set lists [xsearch $item list -ns $::taco::omemo::NS_AXOLOTL]
+            if {[llength $lists] == 0} continue
+            if {$listNode eq "" || [xsearch $item -get @id] eq "current"} {
+                set listNode [lindex $lists 0]
+            }
+        }
+        if {$listNode eq ""} { return $devices }
+        set found 1
+        xsearch $listNode device -script dn {
             set id [xsearch $dn -get @id]
             if {$id ne ""} { lappend devices $id }
         }
@@ -790,7 +803,22 @@ snit::type taco_omemo {
     method OnDevicelist {stanza} {
         set from [xsearch $stanza -get @from]
         set peerJid [expr {$from eq "" ? $accountJid : [jid bare $from]}]
-        set devices [$self ParseDevicelist $stanza]
+        set devices [$self ParseDevicelist $stanza found]
+        if {!$found} {
+            # A retraction, a purge, a deleted node or an item without its
+            # payload carries no list, which is not an empty one: taken as
+            # one it would mark a peer's every device inactive, and for our
+            # own account republish the list with this device alone. Ask the
+            # server what it holds instead.
+            if {[llength [xsearch $stanza event configuration]]} return
+            jlog debug "devicelist +notify from $peerJid carries no list; fetching it"
+            if {$peerJid eq $accountJid} {
+                $self FetchDevicelist $accountJid [mymethod AfterOwnDevicelistFetch]
+            } else {
+                $self FetchDevicelist $peerJid [list apply {args {}}]
+            }
+            return
+        }
         jlog debug "devicelist +notify from $peerJid: [llength $devices] device(s) = $devices"
         if {$peerJid eq $accountJid} {
             dict set DeviceLists $accountJid $devices
