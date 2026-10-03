@@ -944,7 +944,7 @@ snit::type taco_message {
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return [list "" "" ""] }
-        set replyId [reply::pick_id [IsMucChatJid $chatJid] \
+        set replyId [reply::pick_id [IsRoomChatJid $chatJid] \
             $row(server_id) $row(origin_id) $row(own_id)]
         return [list $replyId $row(from_jid) $row(body)]
     }
@@ -1495,7 +1495,7 @@ snit::type taco_message {
     tackymethod retract {args} {
         array set opts $args
         set chatJid $opts(-chat)
-        if {[IsMucChatJid $chatJid]} return
+        if {[IsRoomChatJid $chatJid]} return
         set targetId [$self CorrectionAnchorId $chatJid $opts(-timestamp)]
         if {$targetId eq ""} return
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -1608,7 +1608,7 @@ snit::type taco_message {
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return "" }
-        return [reply::pick_id [IsMucChatJid $chatJid] \
+        return [reply::pick_id [IsRoomChatJid $chatJid] \
             $row(server_id) $row(origin_id) $row(own_id)]
     }
 
@@ -2504,10 +2504,14 @@ snit::type taco_message {
         if {$auth eq ""} { return "" }
         lassign $auth targetOcc targetFrom
         set rawFrom [xsearch $msgNode -get @from]
-        if {[IsMucChatJid $chatJid]} {
+        if {[IsRoomChatJid $chatJid]} {
             # Moderation: the room broadcasts from its bare jid. A <retract>
             # from an occupant (room/nick) is not honored.
             if {[jid resource $rawFrom] ne ""} { return "" }
+        } elseif {[IsMucChatJid $chatJid]} {
+            # A private chat in a room: only its author, the occupant it
+            # came from, may take a message back.
+            if {[jid norm $rawFrom] ne [jid norm $targetFrom]} { return "" }
         } else {
             if {[jid bare $rawFrom] ne [jid bare $targetFrom]} { return "" }
         }
@@ -2882,4 +2886,11 @@ proc SplitFromResource {chatJid fromJid} {
 
 proc IsMucChatJid {chatJid} {
     expr {[string match {*\?join} $chatJid] || [string match */* $chatJid]}
+}
+
+# The room's own chat, not a private one with an occupant (room@muc/nick).
+# Ids, moderation and retraction go by this: in a private chat the partner
+# never saw the room's stanza-id, and its author may retract.
+proc IsRoomChatJid {chatJid} {
+    string match {*\?join} $chatJid
 }

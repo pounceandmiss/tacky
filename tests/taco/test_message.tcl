@@ -4387,3 +4387,33 @@ test message-live-future-stamp-capped {even a trusted stamp is not later than no
         expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
               <= [clock microseconds]}
     } -result 1
+
+# A private chat with a room occupant (room@muc/nick) is one-to-one for ids
+# and retraction: the partner never saw the room's stanza-id, and may take
+# back its own messages.
+test message-pm-reference-is-origin-id {a reply in a room PM cites the origin-id} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid room@muc.example.com/alice \
+            from_jid room@muc.example.com/alice body "hi" \
+            server_id our-archive-id origin_id alices-id timestamp 3000000]]
+        $::_client message ReferenceId room@muc.example.com/alice 3000000
+    } -result alices-id
+
+test message-pm-author-may-retract {the PM partner's own retraction is honoured, another's is not} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid room@muc.example.com/alice \
+            from_jid room@muc.example.com/alice body "oops" \
+            origin_id a1 timestamp 4000000]]
+        set retract {{from} {
+            j message -type chat -from $from {
+                j retract -ns urn:xmpp:message-retract:1 -id a1
+            }
+        }}
+        list \
+            [expr {[$::_client message ParseRetraction room@muc.example.com/alice \
+                [apply $retract room@muc.example.com/mallory]] ne ""}] \
+            [expr {[$::_client message ParseRetraction room@muc.example.com/alice \
+                [apply $retract room@muc.example.com/alice]] ne ""}]
+    } -result {0 1}
