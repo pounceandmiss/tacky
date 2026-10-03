@@ -495,3 +495,26 @@ test json-backend-process-roundtrip {spawn json backend, send request, get respo
     catch {close $fd}
     catch {unset ::_timeout ::_readable}
 } -result {result 1}
+
+# -- what a frame may reach ----------------------------------------------------
+
+test json-dispatch-refuses-script-options {a frame cannot pass -onerror or -command} -setup {
+    # The real taco_call: it runs -onerror on a synchronous failure, which is
+    # how a frame's own -onerror would get evaluated.
+    package require taco
+} -body {
+    unset -nocomplain ::_pwned
+    list [catch {tackyd_dispatch {["setting","get",{"onerror":"apply {args {set ::_pwned 1}}"}]}} err] \
+        $err [info exists ::_pwned] \
+        [catch {tackyd_dispatch {["setting","get",{"command":"apply {args {set ::_pwned 1}}"}]}}] \
+        [info exists ::_pwned]
+} -result {1 {"onerror" cannot be passed in a request} 0 1 0}
+
+test json-dispatch-refuses-internal-methods {snit builtins and capitalised methods are not callable} -body {
+    lmap frame {
+        {["setting","Migrate",{}]}
+        {["setting","configure",{}]}
+        {["destroy","x",{}]}
+        {["setting","cget",{}]}
+    } { catch {tackyd_dispatch $frame} err; set err }
+} -result {{not callable: setting Migrate} {not callable: setting configure} {not callable: destroy x} {not callable: setting cget}}
