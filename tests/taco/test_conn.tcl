@@ -982,3 +982,45 @@ test conn-sm-resume-replaces-bind {a reconnect with a stream to resume sends <re
         list [lindex $tags end] [expr {"iq" in [lrange $tags end-1 end]}]
     } -result {resume 0}
 
+
+# -- liveness -------------------------------------------------------------------
+
+proc conn_wait {ms} {
+    after $ms {set ::_conn_waited 1}
+    vwait ::_conn_waited
+}
+
+test conn-keepalive-drops-a-silent-link {a link that answers nothing after a probe is dropped} \
+    {*}$common \
+    -body {
+        c configure -keepalive 30 -keepalive-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-ka1"
+        c.base clear
+        conn_wait 120
+        list [lmap st [c.base get_written] {dict get $st tag}] $_tdisconnect [c isReady]
+    } -result {r {{no answer from the server}} 0}
+
+test conn-keepalive-answer-keeps-the-link {an answer to the probe keeps the link up} \
+    {*}$common \
+    -body {
+        c configure -keepalive 30 -keepalive-timeout 60
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-ka2"
+        conn_wait 45
+        c.base inject [make_sm_ack 0]
+        conn_wait 40
+        list $_tdisconnect [c isReady]
+    } -result {{} 1}
+
+test conn-keepalive-pings-without-sm {without stream management the probe is a ping} \
+    {*}$common \
+    -body {
+        c configure -keepalive 30 -keepalive-timeout 1000
+        c connect
+        drive_to_bind_no_sm "user@test.example.com/r"
+        c.base clear
+        conn_wait 50
+        set st [lindex [c.base get_written] 0]
+        list [dict get $st tag] [xsearch $st ping -get ns]
+    } -result {iq urn:xmpp:ping}

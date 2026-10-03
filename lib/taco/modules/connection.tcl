@@ -619,6 +619,16 @@ snit::type conn {
     # no error to react to). 0 disables the watchdog.
     option -connect-timeout -default 20000
 
+    # Liveness. A connection that is up but carries nothing for -keepalive
+    # ms is asked for a sign of life (<r/> with stream management, a
+    # XEP-0199 ping without); if nothing at all arrives within
+    # -keepalive-timeout ms after that, it is taken as dead and dropped,
+    # which -autoreconnect turns into a reconnect (and a resume). Without
+    # it a half-open TCP connection is never noticed by a client that
+    # mostly listens. 0 disables.
+    option -keepalive -default 60000
+    option -keepalive-timeout -default 30000
+
     # Event callback: {*}$cmd conn <Event> ...
     option -emit -default ""
 
@@ -651,6 +661,13 @@ snit::type conn {
     # Backoff schedule in ms; last value repeats indefinitely
     variable reconnectIntervals {1000 2000 5000 15000 30000 60000}
 
+    # Keepalive: the timer, when anything last arrived, and when the
+    # outstanding probe went out (0 when none is).
+    variable keepaliveAfterId ""
+    variable lastRx 0
+    variable probeAt 0
+    variable probeSeq 0
+
     constructor {args} {
         install base using baseconn $self.base \
             -ontransportready [mymethod OnTransportReady] \
@@ -664,6 +681,7 @@ snit::type conn {
     destructor {
         $self CancelReconnect
         $self CancelConnectTimeout
+        $self StopKeepalive
         catch {$sm destroy}
         catch {$base destroy}
     }
@@ -689,11 +707,61 @@ snit::type conn {
         if {$connState eq "disconnected"} return
         $self CancelReconnect
         $self CancelConnectTimeout
+        $self StopKeepalive
         set authState disconnected
         $sm onDisconnect
         catch {$base writeNow "</stream:stream>"}
         $base close
         $self SetConnState disconnected
+    }
+
+    method StartKeepalive {} {
+        $self StopKeepalive
+        if {$options(-keepalive) <= 0} return
+        set lastRx [clock milliseconds]
+        set probeAt 0
+        $self ArmKeepalive $options(-keepalive)
+    }
+
+    method StopKeepalive {} {
+        if {$keepaliveAfterId ne ""} {
+            after cancel $keepaliveAfterId
+            set keepaliveAfterId ""
+        }
+        set probeAt 0
+    }
+
+    method ArmKeepalive {ms} {
+        set keepaliveAfterId [after [expr {max($ms, 1)}] [mymethod KeepaliveTick]]
+    }
+
+    method KeepaliveTick {} {
+        set keepaliveAfterId ""
+        if {$authState ne "ready"} return
+        set now [clock milliseconds]
+        if {$probeAt > 0} {
+            if {$lastRx < $probeAt} {
+                $self OnTransportError "no answer from the server"
+                return
+            }
+            set probeAt 0
+        }
+        set idle [expr {$now - $lastRx}]
+        if {$idle < $options(-keepalive)} {
+            $self ArmKeepalive [expr {$options(-keepalive) - $idle}]
+            return
+        }
+        # Anything that comes back will do: an <a/>, the ping's result, or
+        # any other stanza.
+        if {[dict get [$sm getInfo] mode] eq "active"} {
+            catch {$sm RequestAck}
+        } else {
+            catch {$base writeStanza [j iq -type get -id keepalive[incr probeSeq] {
+                j ping -ns urn:xmpp:ping
+            }]}
+        }
+        set probeAt $now
+        $self ArmKeepalive $options(-keepalive-timeout)
     }
 
     # Give up the in-progress connect attempt if it neither succeeds nor
@@ -844,6 +912,7 @@ snit::type conn {
     # authState phase, or to SM + callback once the session is ready.
     method OnStanza {stanza} {
         jlog debug "stanza in" -stanza $stanza
+        set lastRx [clock milliseconds]
 
         switch -- $authState {
             authenticating {
@@ -996,6 +1065,7 @@ snit::type conn {
             # OnTransportError → authState back to disconnected.
             if {$authState ne "ready"} return
             $self SetConnState connected
+            $self StartKeepalive
 
             if {$options(-onready) ne ""} {
                 {*}$options(-onready) [dict get $info resumed]
@@ -1007,6 +1077,7 @@ snit::type conn {
     # and either schedules a silent reconnect or fires -ondisconnect.
     method OnTransportError {msg} {
         $self CancelConnectTimeout
+        $self StopKeepalive
         set authState disconnected
         set lastError $msg
         # Every transport failure arrives here - connect, TLS, read, write - so
