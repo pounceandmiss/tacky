@@ -44,6 +44,17 @@ snit::type iq {
 
     constructor args {
         $self configurelist $args
+        # XEP-0199: a ping is answered with an empty result.
+        set RequestHandlers(get,urn:xmpp:ping) [mymethod Pong]
+    }
+
+    method Pong {stanza} {
+        lassign [xsearch $stanza -get {@from @id}] from id
+        set reply [j iq -type result -id $id]
+        if {$from ne ""} {
+            dict set reply attrs to $from
+        }
+        {*}$options(-send-command) $reply
     }
 
     destructor {
@@ -64,9 +75,10 @@ snit::type iq {
                     {*}$RequestHandlers($type_,$ns) $stanza
                 } else {
                     jlog debug "Unknown stanza" -stanza $stanza
+                    # RFC 6120 8.4: a payload nobody here understands.
                     set errorResponse [j iq -type error -id $id {
                         j error -type cancel {
-                            j feature-not-implemented -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                            j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
                         }
                     }]
                     if {$from ne ""} {
