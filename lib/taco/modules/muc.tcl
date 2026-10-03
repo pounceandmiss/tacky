@@ -1084,7 +1084,9 @@ snit::type taco_muc {
         if {$mucX ne ""} {
             set codes [$self ParseStatusCodes $mucX]
             if {101 in $codes} {
-                set roomJid [jid norm [jid bare $from]]
+                # From the room itself, never one of its occupants.
+                if {![jid valid $from] || [jid resource $from] ne ""} { return 1 }
+                set roomJid [jid norm $from]
                 set itemAffil [xsearch $mucX item -get @affiliation]
                 set itemJid [xsearch $mucX item -get @jid]
                 $self Emit $roomJid <AffiliationChanged> \
@@ -1131,8 +1133,19 @@ snit::type taco_muc {
         $client message ingestLive $chatJid $stanza
     }
 
+    # Relayed by the room, so from its bare JID, about a room of ours: anyone
+    # else could otherwise announce declines for any room.
+    method FromKnownRoom {stanza} {
+        set from [xsearch $stanza -get @from]
+        if {![jid valid $from] || [jid resource $from] ne ""} { return "" }
+        set roomJid [jid norm $from]
+        if {![info exists Rooms($roomJid)]} { return "" }
+        return $roomJid
+    }
+
     method OnDecline {stanza mucX} {
-        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
+        set roomJid [$self FromKnownRoom $stanza]
+        if {$roomJid eq ""} return
         set declineNode [lindex [xsearch $mucX decline] 0]
         set declinerJid [xsearch $declineNode -get @from]
         set reason [xsearch $declineNode reason -get body]
@@ -1142,7 +1155,8 @@ snit::type taco_muc {
     }
 
     method OnVoiceRequest {stanza xdataNode} {
-        set roomJid [jid norm [jid bare [xsearch $stanza -get @from]]]
+        set roomJid [$self FromKnownRoom $stanza]
+        if {$roomJid eq ""} return
         set reqJid [xsearch $xdataNode field @var muc#jid value -get body]
         set reqNick [xsearch $xdataNode field @var muc#roomnick value -get body]
 
