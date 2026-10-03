@@ -1993,3 +1993,34 @@ test muc-error-after-leave-not-rejoined {a room answering our leave with an erro
         c.conn feed [muc_error]
         list [dict get $::got -involuntary] [llength [c.conn get_written]]
     } -result {0 0}
+
+# A join ends with exactly one answer to its -command, whatever ends it.
+test muc-join-times-out {a room that never answers fails the join} \
+    {*}$muc_common \
+    -body {
+        set saved $::taco_muc::JoinTimeoutMs
+        set ::taco_muc::JoinTimeoutMs 30
+        set ::_join {}
+        c muc join -jid quiet@muc.example.com -nick me \
+            -command {apply {{r} {lappend ::_join [dict get $r -error]}}}
+        set ::taco_muc::JoinTimeoutMs $saved
+        after 80 {set ::_muc_waited 1}
+        vwait ::_muc_waited
+        list $::_join [c muc isJoined -jid quiet@muc.example.com]
+    } -result {remote-server-timeout 0}
+
+test muc-join-room-destroyed-answers {a room destroyed while we join fails the join} \
+    {*}$muc_common \
+    -body {
+        set ::_join {}
+        c muc join -jid gone@muc.example.com -nick me \
+            -command {apply {{r} {lappend ::_join [dict exists $r -error]}}}
+        c.conn feed [j presence -from gone@muc.example.com/me -type unavailable {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -affiliation none -role none
+                j destroy -jid "" { j reason -body "closing" }
+                j status -code 110
+            }
+        }]
+        set ::_join
+    } -result 1

@@ -70,6 +70,10 @@ snit::type taco_muc {
 
     # roomJid -> join -command callback (pending joins)
     variable JoinCallbacks -array {}
+    # roomJid -> the after token giving up on a join the room never answers
+    variable JoinTimers -array {}
+    # How long a room has to answer a join.
+    typevariable JoinTimeoutMs 30000
     # Our server's MUC service, probed once per session; ServiceWaiters are
     # the callers waiting on the probe.
     variable ServiceJid ""
@@ -89,11 +93,42 @@ snit::type taco_muc {
 
     destructor {
         catch {$client bus unsubscribe $self}
+        foreach roomJid [array names JoinTimers] {
+            after cancel $JoinTimers($roomJid)
+        }
     }
 
     method OnDisconnect {args} {
+        foreach roomJid [array names JoinCallbacks] {
+            $self FailJoin $roomJid disconnected
+        }
+        foreach roomJid [array names JoinTimers] {
+            after cancel $JoinTimers($roomJid)
+        }
+        array unset JoinTimers *
         array unset Rooms *
-        array unset JoinCallbacks *
+    }
+
+    # A join that ends without our self-presence: its -command hears it,
+    # once, whatever ended it.
+    method FailJoin {roomJid error} {
+        if {[info exists JoinTimers($roomJid)]} {
+            after cancel $JoinTimers($roomJid)
+            unset JoinTimers($roomJid)
+        }
+        if {![info exists JoinCallbacks($roomJid)]} return
+        set cmd $JoinCallbacks($roomJid)
+        unset JoinCallbacks($roomJid)
+        {*}$cmd [list -jid $roomJid -error $error]
+    }
+
+    method JoinTimedOut {roomJid} {
+        unset -nocomplain JoinTimers($roomJid)
+        if {![info exists Rooms($roomJid)] || [dict get $Rooms($roomJid) joined]} return
+        jlog warn "$roomJid did not answer the join"
+        $self FailJoin $roomJid remote-server-timeout
+        unset Rooms($roomJid)
+        $self Emit $roomJid <Error> -jid $roomJid -error remote-server-timeout -stanza {}
     }
 
     # =====================================================================
@@ -114,6 +149,11 @@ snit::type taco_muc {
         if {$opts(-command) ne ""} {
             set JoinCallbacks($opts(-jid)) $opts(-command)
         }
+        if {[info exists JoinTimers($opts(-jid))]} {
+            after cancel $JoinTimers($opts(-jid))
+        }
+        set JoinTimers($opts(-jid)) \
+            [after $JoinTimeoutMs [mymethod JoinTimedOut $opts(-jid)]]
 
         # Build <x xmlns='muc'> with optional children
         set mucChildren {}
@@ -774,6 +814,10 @@ snit::type taco_muc {
         }
 
         # Fire join callback if pending
+        if {[info exists JoinTimers($roomJid)]} {
+            after cancel $JoinTimers($roomJid)
+            unset JoinTimers($roomJid)
+        }
         if {[info exists JoinCallbacks($roomJid)]} {
             set cmd $JoinCallbacks($roomJid)
             unset JoinCallbacks($roomJid)
@@ -805,6 +849,10 @@ snit::type taco_muc {
         if {![dict get $Rooms($roomJid) joined]} {
             # First self-presence = join complete
             dict set Rooms($roomJid) joined 1
+            if {[info exists JoinTimers($roomJid)]} {
+                after cancel $JoinTimers($roomJid)
+                unset JoinTimers($roomJid)
+            }
             # Status 201: a new room, locked until configured. Set before
             # the join callback, which reads it.
             dict set Rooms($roomJid) created [expr {201 in $codes}]
@@ -1391,6 +1439,7 @@ snit::type taco_muc {
 
     method CleanupRoom {roomJid} {
         unset -nocomplain Rooms($roomJid)
-        unset -nocomplain JoinCallbacks($roomJid)
+        # A join still waiting is over: say so rather than drop it.
+        $self FailJoin $roomJid item-not-found
     }
 }
