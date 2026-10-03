@@ -407,6 +407,18 @@ proc tackyd_json_install_emit {sink} {
 
 # Dispatch one JSON request array.
 #   ["chatlist","search",{"acc":"a@b"},5] -> taco chatlist search -acc a@b (token 5)
+# What a frame may call: a module and method of taco's public API. snit's own
+# (configure, cget, destroy, info) and taco's internal methods, which are
+# capitalised, are not reachable from the wire.
+proc tackyd_check_call {module method} {
+    foreach name [list $module $method] {
+        if {$name eq "" || [string match {[A-Z_]*} $name]
+                || $name in {configure configurelist cget destroy info}} {
+            error "not callable: $module $method"
+        }
+    }
+}
+
 proc tackyd_dispatch {msg} {
     set parts [::json::json2dict $msg]
     set module [lindex $parts 0]
@@ -417,7 +429,16 @@ proc tackyd_dispatch {msg} {
     # token here. Nothing times out a request, so an escaping throw would hang
     # the caller.
     if {[catch {
-        add_dashes [jsonify decode_args $module/$method [lindex $parts 2]]
+        tackyd_check_call $module $method
+        set args [add_dashes [jsonify decode_args $module/$method [lindex $parts 2]]]
+        # -command and -onerror are evaluated as scripts; only the token
+        # above sets them, never the frame.
+        foreach key {-command -onerror} {
+            if {[dict exists $args $key]} {
+                error "\"[string trimleft $key -]\" cannot be passed in a request"
+            }
+        }
+        set args
     } args]} {
         if {$token eq ""} {
             return -code error $args
