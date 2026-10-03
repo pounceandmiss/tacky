@@ -288,3 +288,18 @@ test blocking-command-through-front-end \
         update idletasks
         set ::done
     } -result {ok {}}
+
+test blocking-push-from-own-full-jid-rejected \
+    {a push from another of our own clients (a full JID) is not the server's} \
+    {*}$blocking_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        c.conn feed [j iq -type set -id evil2 -from user@test.example.com/other {
+            j block -ns urn:xmpp:blocking {
+                j item -jid alice@example.com
+            }
+        }]
+        update idletasks
+        set ack [lindex [c.conn get_written] end]
+        list [xsearch $ack error * -get tag] [c blocking list]
+    } -result {service-unavailable {}}

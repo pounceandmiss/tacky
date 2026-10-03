@@ -68,17 +68,19 @@ proc jid {cmd args} {
 
         fromMe {lassign $args from myjid
             # True when from is empty (our server acting for our account)
-            # or bare-matches our own JID (resource ignored). The bare
-            # server domain does NOT match: that is the server speaking as
-            # itself, which only IQ response routing accepts (separately).
-            # False for malformed JIDs and when myjid is "" (pre-bind).
+            # or is our own bare JID. A full JID of ours is another of our
+            # clients, which must not pass for the server (roster and
+            # blocking pushes, carbons, own PEP events). The bare server
+            # domain does NOT match: that is the server speaking as itself,
+            # which only IQ response routing accepts (separately). False
+            # for malformed JIDs and when myjid is "" (pre-bind).
             if {$from eq ""} {
                 return 1
             }
             if {$myjid eq "" || ![jid valid $from]} {
                 return 0
             }
-            jid matches-bare $from $myjid
+            expr {[jid bare $from] eq $from && [jid matches-bare $from $myjid]}
         }
 
         valid {lassign $args jid
