@@ -277,7 +277,7 @@ snit::type jlog_type {
         }
         set line "\[$ts $opts(-level)\] $who: $opts(-text)"
         if {[info exists opts(-stanza)]} {
-            append line \n [jwrite -pretty $opts(-stanza)]
+            append line \n [jwrite -pretty [jlog_redact $opts(-stanza)]]
         }
         return $line
     }
@@ -390,3 +390,42 @@ snit::type taco_log {
     }
     tackymethod getfile {args} { jlog getfile {*}$args }
 }
+
+# A stanza as it may be written to a log: secrets replaced. Covers what a
+# stanza can carry in the clear - SASL exchanges, a <password/> (account
+# registration and password change, a room's join), and data form fields
+# named for a password or secret (room configuration, registration forms).
+proc jlog_redact {node} {
+    set tag [dict get $node tag]
+    set ns [expr {[dict exists $node ns] ? [dict get $node ns] : ""}]
+    if {$tag eq "password"
+            || $ns eq "urn:ietf:params:xml:ns:xmpp-sasl"
+            && $tag in {auth response success challenge}} {
+        if {[dict get $node body] ne ""} {
+            dict set node body "\[redacted\]"
+        }
+        dict set node children {}
+        return $node
+    }
+    if {$tag eq "field"} {
+        set var ""
+        if {[dict exists $node attrs var]} { set var [dict get $node attrs var] }
+        if {[string match -nocase *password* $var]
+                || [string match -nocase *secret* $var]} {
+            set kids {}
+            foreach c [dict get $node children] {
+                if {[dict get $c tag] eq "value"} { dict set c body "\[redacted\]" }
+                lappend kids $c
+            }
+            dict set node children $kids
+            return $node
+        }
+    }
+    set kids {}
+    foreach c [dict get $node children] {
+        lappend kids [jlog_redact $c]
+    }
+    dict set node children $kids
+    return $node
+}
+
