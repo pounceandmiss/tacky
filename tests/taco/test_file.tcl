@@ -41,6 +41,16 @@ test file-aesgcm-url-roundtrip {aesgcm_url builds a fragment that aesgcm_parse r
          http=$http iv=[expr {$riv eq $iv}] key=[expr {$rkey eq $key}]
 } -result {scheme=1 frag=1 http=https://up.example/abc/pic.png iv=1 key=1}
 
+test file-aesgcm-parse-rejects-bad-fragments {a fragment that is not a 12/16-byte IV and a 32-byte key in hex is refused} -body {
+    set iv [string repeat ab 12]
+    set key [string repeat cd 32]
+    lmap frag [list $iv$key [string repeat ab 16]$key \
+                    [string repeat ab 8]$key ${iv}zz[string range $key 2 end] \
+                    $iv[string range $key 0 61]] {
+        expr {[aesgcm_parse aesgcm://example.com/f.png#$frag] ne ""}
+    }
+} -result {1 1 0 0 0}
+
 test file-aesgcm-parse-rejects-plain {aesgcm_parse yields "" for a non-aesgcm URL} -body {
     list [is_aesgcm_url https://h/x.png] [aesgcm_parse https://h/x.png]
 } -result {0 {}}
