@@ -732,13 +732,13 @@ snit::widget chatarea {
         return $text.att_${slot}_${idx}
     }
 
-    # Forward a backend-produced thumbnail (already downscaled) to the widget.
-    method {attachment image} {key idx path} {
+    # Forward a thumbnail (PNG data, already downscaled) to the widget.
+    method {attachment image} {key idx png} {
         set slot [$rows slot $key]
         if {$slot eq ""} return
         set f $text.att_${slot}_${idx}
         if {![winfo exists $f]} return
-        $f setImage $path
+        $f setImage $png
     }
 
     # Forward a transfer-progress update to the widget: a progress bar while

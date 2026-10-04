@@ -66,10 +66,10 @@ snit::widget attachment {
     method hasImage {} { winfo exists $win.img }
     method dropImage {} { catch {destroy $win.img} }
 
-    # Add the backend-produced thumbnail (already downscaled) above the caption.
-    method setImage {path} {
+    # Add the thumbnail (PNG data, already downscaled) above the caption.
+    method setImage {png} {
         if {[winfo exists $win.img]} return
-        if {[catch {image create photo -file $path} photo]} return
+        if {[catch {image create photo -data $png -format png} photo]} return
         ttk::label $win.img -image $photo -cursor hand2
         # Tk photos aren't auto-freed when their last referencing widget dies,
         # so tie this one's lifetime to the label so cull/clear/uncache release it.

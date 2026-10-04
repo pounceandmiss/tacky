@@ -270,7 +270,7 @@ jsonify_type jsonify \
         message/<OwnRead>       {dict {timestamp int}}
         message/<CatchupDone>   {dict {count int}}
         message/<Tail>          {dict {timestamp int}}
-        file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string thumbpath string error string}}
+        file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string error string}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<Left>              {dict {involuntary bool codes {list int}}}
