@@ -187,6 +187,29 @@ tacky_test account-add-error-methoderror {with -command alone the error becomes 
             [string match {Invalid JID:*} [dict get $ev -message]]
     } -result {account add 1}
 
+# -- port ------------------------------------------------------------------
+
+tacky_test account-port-bad {only 1-65535 is taken} \
+    {*}$common \
+    -body {
+        list [wait_call_error tacky account set -acc user@example.com -port 0] \
+             [wait_call_error tacky account set -acc user@example.com -port 70000] \
+             [wait_call_error tacky account set -acc user@example.com -port abc] \
+             [wait_call tacky account get -acc user@example.com -field port]
+    } -result {{Invalid port: 0} {Invalid port: 70000} {Invalid port: abc} 5222}
+
+tacky_test account-port-reaches-client {the client dials the account's port, and enable carries a change} \
+    -modes direct -mock conn \
+    -body {
+        tacky account add -acc a@example.com -port 5223
+        tacky account add -acc b@example.com
+        set before [list [[tacky client a@example.com] cget -port] \
+                        [[tacky client b@example.com] cget -port]]
+        tacky account set -acc b@example.com -port 15222
+        tacky account enable -acc b@example.com
+        list {*}$before [[tacky client b@example.com] cget -port]
+    } -result {5223 5222 15222}
+
 # -- websocket_url ---------------------------------------------------------
 
 tacky_test account-websocket-url-default {a new account has none} \

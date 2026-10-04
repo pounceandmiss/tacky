@@ -409,8 +409,8 @@ snit::type taco_type {
         set client $self.client($jid)
         if {[info commands $client] eq ""} {
             lassign [$db eval {
-                SELECT username, password, domain, websocket_url FROM account WHERE jid=$jid
-            }] username password domain wsUrl
+                SELECT username, password, domain, port, websocket_url FROM account WHERE jid=$jid
+            }] username password domain port wsUrl
             set resource [$account resource -acc $jid]
             set extra [list -data-dir $options(-data-dir) \
                             -cache-dir $options(-cache-dir) \
@@ -424,6 +424,7 @@ snit::type taco_type {
                 -username $username \
                 -password $password \
                 -host $domain \
+                -port $port \
                 -resource $resource \
                 -taco $self \
                 {*}$extra

@@ -35,6 +35,7 @@ namespace eval ::test::helpers {
     # The server's c2s port: with_prosody.sh picks a free one per run.
     variable xmppPort [expr {[info exists ::env(XMPP_PORT)] ? $::env(XMPP_PORT) : 5222}]
 }
+lappend ::tacky_test_account_args -port $::test::helpers::xmppPort
 
 # Displayed text of a derived message dict: the text body or a media caption.
 # "" for a retracted tombstone, which carries no content.
