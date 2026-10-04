@@ -5,6 +5,11 @@
  *
  * Roots overlay as one directory. http, not file://: a module Worker and
  * OPFS need a real origin, and 127.0.0.1 is a secure context.
+ *
+ * Under /_t/, endpoints for tests/taco/test_httpreq.tcl:
+ *   PUT /_t/echo/<name>     keep the body;  GET /_t/echo/<name>  return it
+ *   GET /_t/status/<code>   answer with that status
+ *   GET /_t/slow            answer after 3 s
  */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -20,10 +25,34 @@ const TYPES = {
     '.map': 'application/json',
 };
 
+const echoed = new Map();
+
+async function testRoute(req, res, path) {
+    const [, , route, arg] = path.split('/');
+    if (route === 'echo' && req.method === 'PUT') {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        echoed.set(arg, Buffer.concat(chunks));
+        res.writeHead(201).end();
+    } else if (route === 'echo' && echoed.has(arg)) {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' }).end(echoed.get(arg));
+    } else if (route === 'status') {
+        res.writeHead(Number(arg) || 500).end(`status ${arg}`);
+    } else if (route === 'slow') {
+        setTimeout(() => res.writeHead(200).end('slow'), 3000);
+    } else {
+        res.writeHead(404).end(`no ${path}`);
+    }
+}
+
 /** Listen on `port` (0 for any) and resolve to the node server. */
 export function serve(roots, port = 0, host = '127.0.0.1') {
     const server = createServer(async (req, res) => {
         const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname));
+        if (path.startsWith('/_t/')) {
+            await testRoute(req, res, path);
+            return;
+        }
         const name = path === '/' ? '/index.html' : path;
         if (name.includes('..')) {
             res.writeHead(403).end();

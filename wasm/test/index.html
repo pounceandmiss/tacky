@@ -73,6 +73,7 @@ async function tclScenario() {
         dir: params.get('dir') ?? 'taco',
         file: params.get('file') ?? '',
         match: params.get('match') ?? '*',
+        httpBase: location.origin,
     });
     globalThis.__smokeSuite = result;
 

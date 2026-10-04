@@ -6,7 +6,7 @@
 
 // The driver, in the shape of test_all.tcl. Returns the files that would not load.
 export function driverScript({ dir = 'taco', file = '', match = '*',
-        tacoArgs = '', accountArgs = '', server = '' } = {}) {
+        tacoArgs = '', accountArgs = '', server = '', httpBase = '' } = {}) {
     return `
 # Emscripten's stdout translates to CRLF, and a transcript with a stray CR at
 # the end of every line is one nothing can match against.
@@ -42,6 +42,8 @@ namespace import -force ::tcltest::*
 # the websocket transport, and the test server's plain-ws endpoint.
 set ::tacky_test_taco_args {${tacoArgs}}
 set ::tacky_test_account_args {${accountArgs}}
+# Where test_httpreq.tcl finds serve.mjs's /_t/ endpoints.
+set ::tacky_test_http_base {${httpBase}}
 
 # The integration suite is gated on a live server, and on which one it is.
 set server {${server}}
