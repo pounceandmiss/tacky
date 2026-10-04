@@ -186,25 +186,25 @@ WASM_DIST  := dist/wasm
 WASM_DEPS_DIR := $(WASM_ROOT)/build/deps
 
 # `wasm` and `wasm-tcltest` share one build tree, so Tcl and the deps are built
-# once - but they also share its scripts.zip, and the two want different
-# contents: one excludes tests/, the other carries it. zippy.mk derives the zip
-# from the source files alone, so make cannot see that the excludes changed and
-# would hand whichever target runs second the other one's zip. Dropping it
-# costs the seconds it takes to rebuild, and is the difference between shipping
-# the whole test suite inside dist/wasm/tacky.wasm and not.
-WASM_DROP_ZIP = rm -f $(WASM_BUILD)/_build-emscripten/scripts.zip \
-	               $(WASM_BUILD)/_build-emscripten/scripts.o
+# once. Their script zips differ (one leaves tests/ out), so each has its own.
+WASM_EM_BUILD := $(WASM_ROOT)/$(WASM_BUILD)/_build-emscripten
 -include $(ZIPPY)/emscripten/link.mk
 # JS linked into every wasm module: the browser backends of taco_http and
 # ::websocket.
 WASM_PRE_JS_SRC := wasm/em/http.js wasm/em/ws.js
 WASM_PRE_JS := $(addprefix --pre-js $(WASM_ROOT)/,$(WASM_PRE_JS_SRC))
-wasm: dist-dir
+wasm: dist-dir $(WASM_DIST)/tacky.mjs
+	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
+
+# zippy's make runs every time and rebuilds what changed; tacky.mjs is linked
+# again only if that changed libtacky.a.
+$(WASM_BUILD)/libtacky.a: FORCE
 	mkdir -p $(WASM_BUILD)
-	$(WASM_DROP_ZIP)
 	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(wasm_DEPS)" \
+	    SCRIPTS_ZIP=$(WASM_EM_BUILD)/scripts-lib.zip \
+	    SCRIPTS_OBJ=$(WASM_EM_BUILD)/scripts-lib.o \
 	    SOURCES="$(tackyd-json_SRC)" \
 	    ENTRY_SCRIPT="" \
 	    APP_EXCLUDE="$(COMMON_EXCL)" \
@@ -214,8 +214,9 @@ wasm: dist-dir
 	    DEPSDIR=$(WASM_DEPS_DIR) \
 	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
 	    lib
+
+$(WASM_DIST)/tacky.mjs: $(WASM_BUILD)/libtacky.a $(WASM_PRE_JS_SRC)
 	mkdir -p $(WASM_DIST)
-	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
 	$(WASM_EMCC) -O2 -o $(WASM_DIST)/tacky.mjs $(WASM_BUILD)/libtacky.a $(ZIPPY_EM_LDFLAGS) \
 	    -sEXPORT_NAME=createTacky $(WASM_PRE_JS) \
 	    -sEXPORTED_FUNCTIONS=_tacky_boot,_tacky_start,_tacky_persist,_tacky_run,_opfsvfs_register
@@ -225,20 +226,20 @@ wasm: dist-dir
 # tests; running those in wasm says far more about the port than anything
 # written again in JavaScript, and says it about the code that ships.
 #
-# Same build tree as `wasm`, so the deps are shared; the script zip differs
-# (it carries tests/), so switching between the two targets rebuilds it - see
-# WASM_DROP_ZIP.
+# Same build tree as `wasm`, so the deps are shared; its script zip is its own.
 WASM_TEST_EXCL := $(filter-out tests test_all.tcl,$(COMMON_EXCL))
 wasm-tcltest: $(WASM_BUILD)/tacky-tcltest.mjs
 
-.PHONY: $(WASM_BUILD)/tacky-tcltest.mjs
+.PHONY: $(WASM_BUILD)/tacky-tcltest.mjs FORCE
+FORCE:
 $(WASM_BUILD)/tacky-tcltest.mjs:
 	mkdir -p $(WASM_BUILD)
-	$(WASM_DROP_ZIP)
 	for f in $(WASM_PRE_JS_SRC); do [ ! $$f -nt $@ ] || rm -f $@; done
 	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(wasm_DEPS)" \
+	    SCRIPTS_ZIP=$(WASM_EM_BUILD)/scripts-test.zip \
+	    SCRIPTS_OBJ=$(WASM_EM_BUILD)/scripts-test.o \
 	    EM_APP_LDFLAGS="$(WASM_PRE_JS)" \
 	    SOURCES="lib bin tests" \
 	    ENTRY_SCRIPT="" \
