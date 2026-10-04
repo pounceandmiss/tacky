@@ -5,13 +5,12 @@
 //   tackyHttp(method, url, outfile, infile, timeoutMs, name, value, ..., ctx)
 //
 // The request body is read from infile and the response written to outfile
-// (Emscripten paths; either may be ""). Always resolves with a Tcl list
-// "status code message": status is ok, error, timeout or reset, code is the
-// HTTP status or 0 when there was none. ctx.signal cancels, ctx.progress
-// reports (total, loaded) in either direction.
+// (Emscripten paths; either may be ""). Resolves with the HTTP status code of
+// a completed request; rejects with "timed out", "aborted" or what went
+// wrong. ctx.signal cancels, ctx.progress reports (total, loaded).
 //
 // XMLHttpRequest where there is one, for upload progress; fetch elsewhere
-// (node, where the tests run), which reports download progress only.
+// (node), which reports download progress only.
 
 Module.zippyCalls = Module.zippyCalls || {};
 
@@ -19,15 +18,13 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
     const ctx = rest.pop();
     const headers = rest;
     const ms = Number(timeout) || 0;
-    const quote = (s) => '{' + String(s).replace(/[{}\\]/g, '') + '}';
-    const result = (status, code, message) => `${status} ${code} ${quote(message)}`;
 
     let body = null;
     if (infile) {
         try {
             body = FS.readFile(infile);
         } catch (err) {
-            return result('error', 0, `cannot read ${infile}: ${err}`);
+            return Promise.reject(new Error(`cannot read ${infile}: ${err}`));
         }
     }
     const save = (bytes) => {
@@ -35,13 +32,13 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
     };
 
     if (typeof XMLHttpRequest !== 'undefined') {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            const done = (...r) => resolve(result(...r));
+            const fail = (message) => reject(new Error(message));
             try {
                 xhr.open(method, url, true);
             } catch (err) {
-                done('error', 0, String(err));
+                fail(String(err));
                 return;
             }
             xhr.responseType = 'arraybuffer';
@@ -55,20 +52,20 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
                 try {
                     save(new Uint8Array(xhr.response ?? new ArrayBuffer(0)));
                 } catch (err) {
-                    done('error', xhr.status, `cannot write ${outfile}: ${err}`);
+                    fail(`cannot write ${outfile}: ${err}`);
                     return;
                 }
-                done('ok', xhr.status, '');
+                resolve(String(xhr.status));
             };
             // A page is not told why a cross-origin request failed.
-            xhr.onerror = () => done('error', xhr.status, 'network error');
-            xhr.ontimeout = () => done('timeout', 0, 'timed out');
-            xhr.onabort = () => done('reset', 0, 'aborted');
+            xhr.onerror = () => fail('network error');
+            xhr.ontimeout = () => fail('timed out');
+            xhr.onabort = () => fail('aborted');
             ctx.signal.addEventListener('abort', () => xhr.abort());
             try {
                 xhr.send(body);
             } catch (err) {
-                done('error', 0, String(err));
+                fail(String(err));
             }
         });
     }
@@ -99,11 +96,11 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
             let at = 0;
             for (const chunk of chunks) { all.set(chunk, at); at += chunk.length; }
             save(all);
-            return result('ok', res.status, '');
+            return String(res.status);
         } catch (err) {
-            if (expired) return result('timeout', 0, 'timed out');
-            if (err && err.name === 'AbortError') return result('reset', 0, 'aborted');
-            return result('error', 0, (err && err.message) || String(err));
+            if (expired) throw new Error('timed out');
+            if (err && err.name === 'AbortError') throw new Error('aborted');
+            throw err;
         } finally {
             clearTimeout(timer);
         }

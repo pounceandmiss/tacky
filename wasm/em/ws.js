@@ -1,24 +1,25 @@
 // The browser's WebSocket for lib/taco/modules/browserws.tcl, reached through
 // zippy's ::em::call. Linked with --pre-js, like http.js.
 //
-//   tackyWsOpen(name, url, protocol..., ctx)   resolves "code {reason}" on close
+//   tackyWsOpen(name, url, protocol..., ctx)   resolves with the close code
 //   tackyWsSend(name, text)                    throws unless the socket is open
 //   tackyWsClose(name, code, reason)
 //
 // While open, events come as ctx.progress: connect <subprotocol>,
-// text <message>, error <message>. Cancelling the open call closes the socket.
+// text <message>, error <message>, and close <reason> just before the call
+// resolves. Cancelling the open call closes the socket.
 
 Module.zippyCalls = Module.zippyCalls || {};
 const tackyWs = {};
 
 Module.zippyCalls.tackyWsOpen = (name, url, ...rest) => {
     const ctx = rest.pop();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         let ws;
         try {
             ws = new WebSocket(url, rest);
         } catch (err) {
-            resolve(`1006 {${String(err).replace(/[{}\\]/g, '')}}`);
+            reject(err);
             return;
         }
         ws.binaryType = 'arraybuffer';
@@ -29,7 +30,8 @@ Module.zippyCalls.tackyWsOpen = (name, url, ...rest) => {
         ws.onerror = () => ctx.progress('error', 'websocket error');
         ws.onclose = (ev) => {
             delete tackyWs[name];
-            resolve(`${ev.code} {${String(ev.reason).replace(/[{}\\]/g, '')}}`);
+            ctx.progress('close', ev.reason);
+            resolve(String(ev.code));
         };
         ctx.signal.addEventListener('abort', () => {
             delete tackyWs[name];
