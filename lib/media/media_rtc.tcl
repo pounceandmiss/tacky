@@ -19,7 +19,8 @@ namespace eval ::tacky::media::rtc {
     variable Pc          ;# handle -> libdatachannel pc id
     variable PcOf        ;# libdatachannel pc id -> handle
     variable TrackId     ;# handle,track -> libdatachannel track id
-    variable Audio       ;# handle -> {capturer <h> player <h>}
+    variable Audio       ;# handle -> {track <id> capturer <h|""> player <h|"">
+                         ;#   volume {capture <v> playback <v>}}
     variable Vsend       ;# handle -> rtc-mv sender handle
     variable Vrecv       ;# handle -> rtc-mv receiver handle
     variable FrameDir "" ;# where video frame streams listen
@@ -139,7 +140,6 @@ proc ::tacky::media::rtc::ClosePeer {h} {
     variable Pc
     variable PcOf
     variable TrackId
-    variable Audio
     variable Vsend
     variable Vrecv
     if {![info exists Pc($h)]} return
@@ -153,11 +153,7 @@ proc ::tacky::media::rtc::ClosePeer {h} {
         catch {::rtcmv::receiver::destroy $Vrecv($h)}
         unset Vrecv($h)
     }
-    if {[info exists Audio($h)]} {
-        catch {::rtcma::capturer::destroy [dict get $Audio($h) capturer]}
-        catch {::rtcma::player::destroy   [dict get $Audio($h) player]}
-        unset Audio($h)
-    }
+    DropAudio $h
     catch {::rtc::pc::on-local-description      $pc ""}
     catch {::rtc::pc::on-local-candidate        $pc ""}
     catch {::rtc::pc::on-gathering-state-change $pc ""}
@@ -446,6 +442,8 @@ proc ::tacky::media::rtc::OnTrack {pc tr} {
 # / RTP recv side, the capturer only ever calls rtcSendMessage. A device id
 # this backend cannot open - a preference stored against another backend, a
 # mic that went away - falls back to the default rather than failing the call.
+# A side not even the default opens is left empty and reported as advisory;
+# setAudioDevice opens it later, so the user can pick a device that works.
 proc ::tacky::media::rtc::AttachAudio {h track args} {
     variable TrackId
     variable Audio
@@ -457,50 +455,84 @@ proc ::tacky::media::rtc::AttachAudio {h track args} {
         return
     }
     if {[info exists Audio($h)]} return
-    set id $TrackId($h,$track)
+    set Audio($h) [dict create track $TrackId($h,$track) \
+        capturer "" player "" volume [dict create \
+            capture [dict get $opts -input-volume] \
+            playback [dict get $opts -output-volume]]]
 
-    set capturer [OpenDevice $h capturer capture [dict get $opts -input]]
-    if {[catch {::rtcma::capturer::attach $capturer $id} err]} {
-        catch {::rtcma::capturer::destroy $capturer}
-        ::tacky::media::emit $h error op attachAudio \
-            reason "capturer attach failed: $err" fatal 1
-        return
+    set unopened {}
+    foreach {which kind opt} {capturer capture -input player playback -output} {
+        try {
+            OpenSide $h $which $kind [dict get $opts $opt]
+        } trap {TACKY MEDIA ATTACH} err {
+            DropAudio $h
+            ::tacky::media::emit $h error op attachAudio reason $err fatal 1
+            return
+        } on error err {
+            lappend unopened $kind $err
+        }
     }
-    ::rtcma::capturer::start $capturer
-    catch {::rtcma::capturer::set-volume $capturer [dict get $opts -input-volume]}
-
-    set player [OpenDevice $h player playback [dict get $opts -output]]
-    if {[catch {::rtcma::player::attach $player $id} err]} {
-        catch {::rtcma::player::destroy $player}
-        catch {::rtcma::capturer::destroy $capturer}
+    foreach {kind err} $unopened {
         ::tacky::media::emit $h error op attachAudio \
-            reason "player attach failed: $err" fatal 1
-        return
+            kind $kind reason $err fatal 0
     }
-    ::rtcma::player::start $player
-    catch {::rtcma::player::set-volume $player [dict get $opts -output-volume]}
-
-    set Audio($h) [dict create capturer $capturer player $player]
     return
 }
 
+# Open, attach, start and level one side of Audio($h). A failed attach throws
+# with errorcode {TACKY MEDIA ATTACH}: the track is broken, not the device.
+proc ::tacky::media::rtc::OpenSide {h which kind id} {
+    variable Audio
+    set dev [OpenDevice $h $which $kind $id]
+    if {[catch {::rtcma::${which}::attach $dev [dict get $Audio($h) track]} err]} {
+        catch {::rtcma::${which}::destroy $dev}
+        return -code error -errorcode {TACKY MEDIA ATTACH} \
+            "$which attach failed: $err"
+    }
+    ::rtcma::${which}::start $dev
+    catch {::rtcma::${which}::set-volume $dev [dict get $Audio($h) volume $kind]}
+    dict set Audio($h) $which $dev
+    return
+}
+
+# Throws when not even the default device opens.
 proc ::tacky::media::rtc::OpenDevice {h which kind id} {
     if {![catch {::rtcma::${which}::new -device-id $id} handle]} {
         return $handle
     }
-    ::tacky::media::emit $h deviceFallback kind $kind id $id reason $handle
-    return [::rtcma::${which}::new]
+    if {$id eq ""} { return -code error $handle }
+    set reason $handle
+    set handle [::rtcma::${which}::new]
+    ::tacky::media::emit $h deviceFallback kind $kind id $id reason $reason
+    return $handle
+}
+
+proc ::tacky::media::rtc::DropAudio {h} {
+    variable Audio
+    if {![info exists Audio($h)]} return
+    foreach which {capturer player} {
+        set dev [dict get $Audio($h) $which]
+        if {$dev ne ""} { catch {::rtcma::${which}::destroy $dev} }
+    }
+    unset Audio($h)
 }
 
 proc ::tacky::media::rtc::SetAudioDevice {h args} {
     variable Audio
     set opts [dict merge {-kind "" -id ""} $args]
     if {![info exists Audio($h)]} return
-    set which [expr {[dict get $opts -kind] eq "capture" ? "capturer" : "player"}]
-    if {[catch {::rtcma::${which}::reopen [dict get $Audio($h) $which] \
-            -device-id [dict get $opts -id]} err]} {
+    set kind [dict get $opts -kind]
+    set which [expr {$kind eq "capture" ? "capturer" : "player"}]
+    set dev [dict get $Audio($h) $which]
+    if {$dev eq ""} {
+        set rc [catch {OpenSide $h $which $kind [dict get $opts -id]} err]
+    } else {
+        set rc [catch {::rtcma::${which}::reopen $dev \
+            -device-id [dict get $opts -id]} err]
+    }
+    if {$rc} {
         ::tacky::media::emit $h error op setAudioDevice \
-            reason $err fatal 0 kind [dict get $opts -kind]
+            reason $err fatal 0 kind $kind
     }
     return
 }
@@ -511,8 +543,12 @@ proc ::tacky::media::rtc::SetAudioVolume {h args} {
     variable Audio
     set opts [dict merge {-kind "" -volume 1.0} $args]
     if {![info exists Audio($h)]} return
-    set which [expr {[dict get $opts -kind] eq "capture" ? "capturer" : "player"}]
-    if {[catch {::rtcma::${which}::set-volume [dict get $Audio($h) $which] \
+    set kind [dict get $opts -kind]
+    set which [expr {$kind eq "capture" ? "capturer" : "player"}]
+    dict set Audio($h) volume $kind [dict get $opts -volume]
+    set dev [dict get $Audio($h) $which]
+    if {$dev eq ""} return
+    if {[catch {::rtcma::${which}::set-volume $dev \
             [dict get $opts -volume]} err]} {
         ::tacky::media::emit $h error op setAudioVolume \
             reason $err fatal 0 kind [dict get $opts -kind]
