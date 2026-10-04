@@ -402,7 +402,8 @@ test message-live-fields {stored live message has correct fields} \
              [dict get $msg server_id] \
              [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
-             [expr {[dict get $msg raw_xml] ne ""}]
+             [expr {[$::_client message rawxml -chat alice@example.com \
+                 -timestamp [dict get $msg timestamp]] ne ""}]
     } -result {alice@example.com alice@example.com hi srv42 {} 1 1}
 
 test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
@@ -1717,7 +1718,8 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [dict get $m1 server_id] [dict get $m1 own_id] \
              [dict get $m1 chat_jid] \
              [expr {[dict get $m1 timestamp] > 0}] \
-             [expr {[dict get $m1 raw_xml] ne ""}] \
+             [expr {[$::_client message rawxml -chat alice@example.com \
+                 -timestamp [dict get $m1 timestamp]] ne ""}] \
              [dict get $m2 content body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 

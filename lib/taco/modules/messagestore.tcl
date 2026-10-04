@@ -75,10 +75,9 @@ snit::type taco_messagestore {
     # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
     typevariable MsgCols {timestamp, chat_jid, from_jid, from_resource, body,
                           server_id, own_id, occupant_id, edited_ts, retracted,
-                          reply_id, reply_to, raw_xml, server_status,
-                          remote_status, encryption, sender_fp, fail_reason,
-                          attachments, invite, invite_declined, call,
-                          call_state}
+                          reply_id, reply_to, server_status, remote_status,
+                          encryption, sender_fp, fail_reason, attachments,
+                          invite, invite_declined, call, call_state}
 
     constructor args {
         $self configurelist $args
