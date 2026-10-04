@@ -9,7 +9,7 @@ ZIPPY ?= zippy
 # milliseconds against the tens of megabytes the copy would move.
 copy-if-changed = cmp -s $(1) $(2) || cp $(1) $(2)
 
-COMMON_DEPS := tdom mtls tcllib rtc rtcma rtcmv omemo tclwuffs
+COMMON_DEPS := tdom mtls tcllib rtc rtcma rtcmv omemo
 COMMON_EXCL := build dist tests doc test_all.tcl test_gui.tcl \
                README.md LICENSE cleanup.resume zippy Makefile .git .gitignore
 
@@ -42,7 +42,7 @@ android-deps = $(filter-out $(ANDROID_DEPS_EXCL),$(1))
 # ==== Per-binary config ====
 
 tacky_SHELL := wish
-tacky_DEPS  := $(COMMON_DEPS) tkwuffs tkdnd rtcmv_tk
+tacky_DEPS  := $(COMMON_DEPS) tclwuffs tkwuffs tkdnd rtcmv_tk
 tacky_SRC   := lib bin gui
 tacky_ENT   := bin/tacky.tcl
 tacky_ICON  := gui/icons/tacky.ico
@@ -58,9 +58,9 @@ tackyd-json_SRC   := lib bin
 tackyd-json_ENT   := bin/tackyd-json.tcl
 
 # The browser backend (see `wasm` below). The same sources as libtacky.a, and
-# a shorter dep list: no mtls, rtc*, tclwuffs - a page's TLS, WebRTC and
-# image decoding are the browser's, and the modules that used them require
-# them only where they are used.
+# a shorter dep list: no mtls, rtc* - a page's TLS and WebRTC are the
+# browser's, and the modules that use them require them only where they are
+# used.
 wasm_DEPS := tdom tcllib omemo
 
 # ==== Targets ====
@@ -92,8 +92,8 @@ MAC_BUILD   := $(LINUX_BUILD)
 # copy of every dep; the sources are platform-neutral and compiled output still
 # isolates by BASEDIR.
 #
-# Android is excluded: omemo and tclwuffs have no out-of-tree build and zippy
-# only redirects them to an isolated copy under WIN, so an android build would
+# Android is excluded: omemo has no out-of-tree build and zippy only
+# redirects it to an isolated copy under WIN, so an android build would
 # leave its objects in the shared checkout.
 DEPS_DIR := $(CURDIR)/build/deps
 
@@ -674,7 +674,7 @@ $(LINUX_BUILD)/tclsh: Makefile
 $(LINUX_BUILD)/wish: Makefile
 	$(MAKE) -f $(ZIPPY)/zippy.mk \
 	    SHELL_TYPE=wish \
-	    DEPS="$(call native-deps,$(COMMON_DEPS) tkwuffs tkdnd rtcmv_tk)" \
+	    DEPS="$(call native-deps,$(COMMON_DEPS) tclwuffs tkwuffs tkdnd rtcmv_tk)" \
 	    BASEDIR=$(LINUX_BUILD) \
 	    DEPSDIR=$(DEPS_DIR) \
 	    wish

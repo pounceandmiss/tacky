@@ -18,10 +18,10 @@ snit::type attachmentxfer {
     option -parent -readonly yes
 
     # Fires for every transfer update that concerns a drawn attachment, as
-    # {*}$cmd $key $idx $direction $state $loaded $total $thumbpath.
+    # {*}$cmd $key $idx $direction $state $loaded $total $localpath.
     option -update-command -default control::no-op
 
-    # source -> list of "key,idx" awaiting a thumbnail. One download can serve
+    # source -> list of "key,idx" awaiting a download. One download can serve
     # several messages quoting the same URL, so each update fans out.
     variable Pending
 
@@ -47,8 +47,8 @@ snit::type attachmentxfer {
     method Key {url path} { expr {$url ne "" ? $url : $path} }
 
     # Kick off the inline-thumbnail fetch for each image attachment of a
-    # message. The file module downloads (remote) or reads in place (local),
-    # derives the thumbnail, and reports back through `file <Update>`.
+    # message. The file module downloads (remote) or reads in place (local)
+    # and reports back through `file <Update>`.
     # -auto subjects the fetch to the autofetch policy and size cap. Our own
     # sends are exempt: theirs is the file on disk, or the URL it was uploaded
     # to.
@@ -120,7 +120,7 @@ snit::type attachmentxfer {
         if {$state eq "idle" && $direction eq "upload"} { set state failed }
         {*}$options(-update-command) $key $idx $direction \
             $state [dict get $ev -loaded] [dict get $ev -total] \
-            [dict get $ev -thumbpath]
+            [dict get $ev -localpath]
     }
 
     method retry {key} {

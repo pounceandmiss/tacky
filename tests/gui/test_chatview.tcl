@@ -10,6 +10,15 @@ set acc user@test.example.com
 
 # -- helpers --------------------------------------------------------------------
 
+# Thumbnails decode on a worker thread; pump events until $script holds.
+proc cv_wait_until {script {ms 3000}} {
+    set end [expr {[clock milliseconds] + $ms}]
+    while {![uplevel 1 $script] && [clock milliseconds] < $end} {
+        after 10 {set ::cv_tick 1}
+        vwait ::cv_tick
+    }
+}
+
 # Feed a chat message stanza through the mock client.
 proc cv_feed {body sid args} {
     $::_client conn feed [j message -type chat \
@@ -251,7 +260,7 @@ test chatview-sendfile-optimistic {sendFile shows the message immediately in an 
     } -result {n=1 bar=1}
 
 test chatview-sendfile-image-thumbnail \
-    {an outgoing image is thumbnailed by the backend and rendered inline} \
+    {an outgoing image is thumbnailed and rendered inline} \
     {*}$cv_common \
     -body {
         set tmp /tmp/cv_img_[pid].png
@@ -263,6 +272,7 @@ test chatview-sendfile-image-thumbnail \
         tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
+        cv_wait_until {winfo exists [.cv attachment path $id 0].img}
         set res [winfo exists [.cv attachment path $id 0].img]
         file delete $tmp
         set res
@@ -739,6 +749,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
         tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
+        cv_wait_until {winfo exists [.cv attachment path $id 0].img}
         set hasImg [winfo exists [.cv attachment path $id 0].img]
         set hiddenAfter [expr {![.cv scrollbtn visible]}]
         file delete $tmp
@@ -1356,10 +1367,9 @@ test chatarea-attachment-action-carries-both-sources {an attachment action passe
 test chatarea-image-load-above-keeps-viewport \
     {a thumbnail loading above the viewport must not move the view} \
     -setup {
-        set ::ca_png /tmp/ca_relay_[pid].png
         set im [image create photo -width 400 -height 300]
         $im put #336699 -to 0 0 400 300
-        $im write $::ca_png -format png
+        set ::ca_png [$im data -format png]
         image delete $im
         chatarea .ca
         pack .ca -fill both -expand yes
@@ -1368,7 +1378,6 @@ test chatarea-image-load-above-keeps-viewport \
     } \
     -cleanup {
         destroy .ca
-        file delete -- $::ca_png
         unset -nocomplain ::ca_png
     } \
     -body {
@@ -1378,7 +1387,7 @@ test chatarea-image-load-above-keeps-viewport \
             set id [expr {100 + $i * 10}]
             if {$id == 200} {
                 lappend msgs [ca_msg_att $id "" [list [dict create \
-                    url "" path $::ca_png type image name p.png size "" mime ""]]]
+                    url "" path /tmp/p.png type image name p.png size "" mime ""]]]
             } else {
                 lappend msgs [ca_msg $id "line $i\nbody $i\ntail $i"]
             }
@@ -1497,31 +1506,30 @@ test chatarea-attachment-caption-rendered {a non-empty caption is shown as the b
 test chatarea-attachment-image-missing-frame {attachment image on an unknown id is a no-op} \
     {*}$ca_common \
     -body {
-        .ca attachment image 999 0 /nonexistent/path.png
+        .ca attachment image 999 0 "not a png"
         winfo exists [.ca attachment path 999 0]
     } -result 0
 
-test chatarea-attachment-image-bad-path {attachment image with an undecodable file leaves no image} \
+test chatarea-attachment-image-bad-data {attachment image with undecodable data leaves no image} \
     {*}$ca_common \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]
-        .ca attachment image 100 0 /nonexistent/path.png
+        .ca attachment image 100 0 "not a png"
         winfo exists [.ca attachment path 100 0].img
     } -result 0
 
 test chatarea-attachment-image-frees-photo {destroying the thumbnail label frees its Tk photo} \
     -setup {
-        set ::cap_png /tmp/ca_leak_[pid].png
         set im [image create photo -width 20 -height 20]
         $im put #abcdef -to 0 0 20 20
-        $im write $::cap_png -format png
+        set ::cap_png [$im data -format png]
         image delete $im
         chatarea .ca
         pack .ca
         update
     } \
-    -cleanup { destroy .ca; file delete -- $::cap_png; unset -nocomplain ::cap_png } \
+    -cleanup { destroy .ca; unset -nocomplain ::cap_png } \
     -body {
         .ca apply [list [ca_msg_att 100 "https://h/p.png" \
             [list [dict create url https://h/p.png path "" type image name p.png size "" mime ""]]]]

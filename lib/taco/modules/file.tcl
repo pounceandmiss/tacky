@@ -4,7 +4,7 @@ package require sha1
 # reports progress/completion through one event, both directions:
 #
 #   file <Update> -id ID -direction up|down -state active|done|failed|idle \
-#       -loaded L -total T -url U -localpath P -thumbpath TP -error MSG
+#       -loaded L -total T -url U -localpath P -error MSG
 #
 # `idle` is the neutral end: nothing transferring, nothing on disk, a fetch
 # will start it. That covers a declined autofetch, a size-capped abort and a
@@ -14,12 +14,10 @@ package require sha1
 # exists. A download has two possible sources: -url is wire data, fetched or
 # refused, and -path is one of our own files, served where it lies. Pass both
 # and the file is used while it is there, the url once it is not. Transfers are
-# keyed and coalesced by the url, or by the path when there is no url yet; for
-# images a PNG thumbnail is derived (wuffs) and surfaced as -thumbpath, at the
-# -thumbmax the caller asks for: only the client knows what its display needs.
+# keyed and coalesced by the url, or by the path when there is no url yet.
 #
-# Downloaded originals live under the data dir; thumbnails and upload staging
-# under the cache dir, since a purge can regenerate both.
+# Downloaded originals live under the data dir; upload staging under the cache
+# dir, since a purge can regenerate it.
 #
 # XEP-0454 (OMEMO media): `upload -encrypt 1` AES-256-GCMs the file, PUTs the
 # ciphertext, and returns an aesgcm:// URL carrying the key/iv in its fragment;
@@ -37,7 +35,7 @@ package require sha1
 #
 # Public API:
 #   $client file download [-url U] [-path P] [-command {cb $localPath}] \
-#       [-auto 0|1] [-from JID] [-thumbmax PX]                 ;# "" on failure
+#       [-auto 0|1] [-from JID]                                ;# "" on failure
 #   $client file upload   -id ID -path P [-encrypt 0|1] \
 #       -command {cb $getUrl}                                  ;# "" on failure
 #   $client file cancel   -id ID | -url U | -path P
@@ -50,8 +48,6 @@ snit::type taco_file {
     typevariable DISCO_ITEMS http://jabber.org/protocol/disco#items
     typevariable DISCO_INFO  http://jabber.org/protocol/disco#info
     typevariable TIMEOUT_MS 60000
-    typevariable THUMB_MAX  320
-    typevariable THUMB_LIMIT 2048
     typevariable AUTOFETCH_DEFAULT contacts
     typevariable AUTOFETCH_MAX_DEFAULT 5242880
 
@@ -100,10 +96,10 @@ snit::type taco_file {
         if {$id eq ""} { set id [incr Counter] }
         set Transfers($id) [dict create \
             direction $direction state active loaded 0 total 0 \
-            url $url localpath "" thumbpath "" error "" \
+            url $url localpath "" error "" \
             cmds {} done 0 lastfrac -1 timer "" fh "" httptoken "" \
             mediakey "" mediaiv "" tmpfile "" maxbytes $maxbytes \
-            thumbmax $THUMB_MAX abortstate "" abortreason ""]
+            abortstate "" abortreason ""]
         return $id
     }
 
@@ -113,7 +109,7 @@ snit::type taco_file {
             -direction [dict get $t direction] -state [dict get $t state] \
             -loaded [dict get $t loaded] -total [dict get $t total] \
             -url [dict get $t url] -localpath [dict get $t localpath] \
-            -thumbpath [dict get $t thumbpath] -error [dict get $t error]
+            -error [dict get $t error]
     }
 
     # Throttled to whole-percent steps so large transfers don't flood the bus.
@@ -203,7 +199,7 @@ snit::type taco_file {
         $self Abort $id idle cancelled
     }
 
-    # --- Download (derives image thumbnails) ----------------------------
+    # --- Download ---------------------------------------------------------
 
     # The autofetch settings are global: taco-level store, not the client's.
     method AutofetchMax {} {
@@ -229,16 +225,6 @@ snit::type taco_file {
         }
     }
 
-    # The thumbnail's long side in pixels. It names a cache file, so an unusable
-    # value falls back to the default and an absurd one is capped rather than
-    # filling the cache with second copies of the originals. Taken as a double,
-    # since a JSON client does not choose how its number is written.
-    method ThumbMax {want} {
-        if {![string is double -strict $want] || !($want > 0)} { return $THUMB_MAX }
-        if {$want >= $THUMB_LIMIT} { return $THUMB_LIMIT }
-        return [expr {int(round($want))}]
-    }
-
     # What a transfer is keyed by, and the url its <Update> echoes: the wire
     # url, or the local file when there is no url yet. Fixed by the pair, so a
     # caller can match an update without knowing which one we served.
@@ -247,25 +233,21 @@ snit::type taco_file {
     }
 
     # Resolve a download from a file already on disk.
-    method ServeLocal {srcKey src cmd tmax} {
+    method ServeLocal {srcKey src cmd} {
         set id [$self NewTransfer download $srcKey]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
         dict set Transfers($id) localpath $src
-        dict set Transfers($id) thumbpath [$self SafeThumb $srcKey $src $tmax]
         $self Terminal $id done
     }
 
     method download {args} {
-        array set opts {-url "" -path "" -command "" -auto 0 -from "" -thumbmax 0}
+        array set opts {-url "" -path "" -command "" -auto 0 -from ""}
         array set opts $args
         set url $opts(-url)
         set cmd $opts(-command)
-        set tmax [$self ThumbMax $opts(-thumbmax)]
         set srcKey [$self SourceKey $opts(-url) $opts(-path)]
 
-        # Join an in-flight download of the same source. <Update> carries one
-        # thumbpath, so a joiner gets the size that fetch already asked for;
-        # another size comes off disk on the next request.
+        # Join an in-flight download of the same source.
         if {[info exists DownloadByUrl($srcKey)]} {
             if {$cmd ne ""} {
                 dict lappend Transfers($DownloadByUrl($srcKey)) cmds $cmd
@@ -275,7 +257,7 @@ snit::type taco_file {
 
         # Our own file, while we still have it, is served where it lies.
         if {$opts(-path) ne "" && [file isfile $opts(-path)]} {
-            $self ServeLocal $srcKey $opts(-path) $cmd $tmax
+            $self ServeLocal $srcKey $opts(-path) $cmd
             return
         }
 
@@ -293,7 +275,7 @@ snit::type taco_file {
         # opened where it points.
         set full [$self AttachPath $url]
         if {[file isfile $full]} {
-            $self ServeLocal $srcKey [$self PlainPath $full] $cmd $tmax
+            $self ServeLocal $srcKey [$self PlainPath $full] $cmd
             return
         }
 
@@ -311,7 +293,6 @@ snit::type taco_file {
         set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
         set id [$self NewTransfer download $srcKey "" $max]
         if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
-        dict set Transfers($id) thumbmax $tmax
         set DownloadByUrl($srcKey) $id
         set fetchUrl $url
         set parsed [aesgcm_parse $url]
@@ -374,11 +355,7 @@ snit::type taco_file {
             }
         }
         if {![info exists Transfers($id)]} return
-        set url [dict get $Transfers($id) url]
-        set plain [$self PlainPath $full]
-        dict set Transfers($id) localpath $plain
-        dict set Transfers($id) thumbpath \
-            [$self SafeThumb $url $plain [dict get $Transfers($id) thumbmax]]
+        dict set Transfers($id) localpath [$self PlainPath $full]
         $self Terminal $id done
     }
 
@@ -437,7 +414,7 @@ snit::type taco_file {
     }
 
     # $full decrypted into a scratch copy (see ScratchRoot) for the
-    # GUI/thumbnailer to read directly - a no-op returning $full unchanged
+    # client to read directly - a no-op returning $full unchanged
     # for a file with no recorded key (plaintext, whether that's because
     # storage is plaintext or it was never OMEMO to begin with). Attachments
     # are immutable, so an existing scratch copy is reused.
@@ -709,48 +686,8 @@ snit::type taco_file {
         return $size
     }
 
-    # --- Thumbnails -----------------------------------------------------
-
-    # Thumbnail path for an image, or "" for a non-image / undecodable file.
-    method SafeThumb {url full max} {
-        if {[attachment_kind $url] ne "image"} { return "" }
-        set thumb [$self ThumbPath $url $max]
-        if {[file exists $thumb]} { return $thumb }
-        if {[catch {$self RenderThumb $full $thumb $max} err]} {
-            jlog inform "thumbnail failed: $err"
-            return ""
-        }
-        return $thumb
-    }
-
-    # Decode the source, downscale to fit $max, re-encode (wuffs resize always
-    # emits PNG, so the result is renderable by core Tk regardless of source
-    # format). Throws on a non-image / undecodable file.
-    method RenderThumb {src thumb max} {
-        # Required here, not at the top: a build without tclwuffs (the
-        # browser) has attachments and no thumbnails, and SafeThumb already
-        # treats a failure here as "no thumbnail" rather than an error.
-        package require tclwuffs
-        set fh [open $src rb]
-        try { set raw [read $fh] } finally { close $fh }
-        # dims reads the header only; resize_bytes decodes the source itself.
-        set d [::tclwuffs::dims $raw]
-        lassign [fit_within [dict get $d width] [dict get $d height] $max] tw th
-        set png [::tclwuffs::resize_bytes $raw $tw $th]
-        file mkdir [file dirname $thumb]
-        set out [open $thumb.part wb]
-        try { puts -nonewline $out $png } finally { close $out }
-        file rename -force -- $thumb.part $thumb
-    }
-
-    method ThumbPath {url max} {
-        set hash [$self UrlHash $url]
-        return [file join [$self Root -cache-dir] attachments thumb ${hash}_${max}.png]
-    }
-
-    # Drop the downloaded original and every thumbnail size for a source. Only
-    # ever touches hash-derived paths under our own roots, so the file behind a
-    # -path is never at risk.
+    # Drop the downloaded original for a source. Only ever touches hash-derived
+    # paths under our own roots, so the file behind a -path is never at risk.
     method uncache {args} {
         array set opts {-url "" -path ""}
         array set opts $args
@@ -760,16 +697,12 @@ snit::type taco_file {
         catch {file delete -- [file join [$self ScratchRoot] [file tail $full]]}
         catch {file delete -- $full}
         $self DropAttachKey $hash
-        foreach t [glob -nocomplain \
-                [file join [$self Root -cache-dir] attachments thumb ${hash}_*.png]] {
-            catch {file delete -- $t}
-        }
     }
 }
 
 # --- Shared attachment helpers (also used by message.tcl and storage.tcl) --
 
-# Names the on-disk file for a download url (AttachPath/ThumbPath), and the
+# Names the on-disk file for a download url (AttachPath), and the
 # attachment_key row for an OMEMO one - both taco_file and the storage
 # migration engine need to land on the same hash for the same url.
 proc attachment_url_hash {url} {

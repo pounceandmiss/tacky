@@ -14,6 +14,9 @@ snit::widget chatview {
     # Which avatar belongs to each author on screen.
     component avatars
 
+    # Inline image thumbnails' long side, in pixels.
+    typevariable THUMB_MAX 320
+
     delegate method messages to area
     delegate method attachment to area
     delegate method textwidget to area
@@ -584,16 +587,29 @@ snit::widget chatview {
         return $emsg
     }
 
+    # A finished image download is thumbnailed off-thread.
+    method OnAttachmentUpdate {key idx direction state loaded total localpath} {
+        if {![$area messages has $key]} return
+        set atEnd [$area atEnd]
+        if {$state eq "done" && $direction eq "download" && $localpath ne ""} {
+            thumbnailer request $localpath $THUMB_MAX $win \
+                [mymethod OnThumb $key $idx]
+        }
+        $area attachment state $key $idx $direction $state $loaded $total
+        $self RepinTail $atEnd
+    }
+
+    method OnThumb {key idx png} {
+        if {$png eq "" || ![$area messages has $key]} return
+        set atEnd [$area atEnd]
+        $area attachment image $key $idx $png
+        $self RepinTail $atEnd
+    }
+
     # A thumbnail or progress row arriving after the message was drawn grows it
     # below the last line, so re-pin the tail if we were riding it - otherwise
     # the scroll-to-bottom button appears (and sticks).
-    method OnAttachmentUpdate {key idx direction state loaded total thumb} {
-        if {![$area messages has $key]} return
-        set atEnd [$area atEnd]
-        if {$state eq "done" && $thumb ne ""} {
-            $area attachment image $key $idx $thumb
-        }
-        $area attachment state $key $idx $direction $state $loaded $total
+    method RepinTail {atEnd} {
         if {$atEnd} {
             # Packing the thumbnail into the embedded frame defers the frame's
             # geometry recalc to idle, so flush it before `see end` measures

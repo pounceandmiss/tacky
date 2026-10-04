@@ -18,7 +18,7 @@ package require tacky::testwait
 #   no `fileevent`. The notifier cannot wait on a descriptor, so it accepts a
 #     file handler and never calls it; nothing that ships wants one, the wasm
 #     transport feeding the XML reader directly rather than through a channel
-#   none of the extensions that need a native library (rtc, tclwuffs), and no
+#   none of the extensions that need a native library (rtc), and no
 #     native log source to hand a level to
 #   taco_http is the page's own HTTP stack, so its tokens are not the http
 #     package's

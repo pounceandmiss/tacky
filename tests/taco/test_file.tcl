@@ -2,11 +2,6 @@
 package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers
-# tclwuffs decodes and encodes the images these tests make thumbnails of.
-# Optional: a build without it - the browser's, where decoding is the page's -
-# still runs every transfer test, and the handful that need a real PNG are
-# marked !wasm.
-catch {package require tclwuffs}
 
 set acc user@test.example.com
 set file_env [tacky_env -mock conn -account $acc]
@@ -74,23 +69,16 @@ test file-aesgcm-kind {attachment kind/basename see through the aesgcm scheme} -
     list [attachment_kind $u] [attachment_basename $u]
 } -result {image pic.png}
 
-test file-fitwithin {fit_within shrinks within max, preserves aspect, no upscale} -body {
-    list [fit_within 200 100 50] [fit_within 100 200 50] \
-         [fit_within 40 30 100] [fit_within 50 50 50]
-} -result {{50 25} {25 50} {40 30} {50 50}}
-
 # sha1 needs a byte string, so URLs with non-ASCII characters (like a Cyrillic
 # filename) must be UTF-8 encoded before hashing for the storage path.
-test file-unicode-url-hashable {non-ASCII URL can be used for attach/thumb paths} \
+test file-unicode-url-hashable {non-ASCII URL can be used for attach paths} \
     {*}[tacky_env -mock conn -account user@test.example.com] -body {
         set url "https://h/изображение.png"
         set full  [$::_client file AttachPath $url]
-        set thumb [$::_client file ThumbPath $url 320]
         set uncacheRc [catch {$::_client file uncache -url $url}]
         list full=[string match *attachments/*.png $full] \
-             thumb=[string match *attachments/thumb/*_320.png $thumb] \
              uncache=$uncacheRc
-    } -result {full=1 thumb=1 uncache=0}
+    } -result {full=1 uncache=0}
 
 # --- ExtractAttachments ---------------------------------------------------
 
@@ -480,7 +468,7 @@ test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping t
     set res
 } -result uploading
 
-# --- transfer events / download / thumbnails -------------------------------
+# --- transfer events / download --------------------------------------------
 #
 # Sandbox the cache so generated files land in /tmp, not the real ~/.cache.
 # Restored at the end of the file.
@@ -522,130 +510,50 @@ test file-progress-throttle {ProgressCb emits a <Update> on ~1% steps and at com
         set n
     } -result 2
 
-test file-download-local-thumbnail {download of a local image emits a sized PNG thumbnail} \
-    -constraints !wasm \
+test file-download-local {a local file is served where it lies} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
-        set src [file join $::_upcache big.png]
-        file mkdir [file dirname $src]
-        set w 600; set h 360
-        set px [string repeat [binary format cccc 10 120 200 255] [expr {$w * $h}]]
-        set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
-        close $f
-        set ::_local ""
-        $::_client file download -path $src \
-            -command [list apply {{p} {set ::_local $p}}]
-        set tp ""; set st ""
-        foreach e $::_emitted {
-            if {[lindex $e 0] ne "file" || [lindex $e 1] ne "<Update>"} continue
-            set ev2 [lrange $e 2 end]
-            set st [dict get $ev2 -state]; set tp [dict get $ev2 -thumbpath]
-        }
-        set d [::tclwuffs::decode [up_readb $tp]]
-        list local=[expr {$::_local eq $src}] state=$st \
-             sniff=[::tclwuffs::sniff [up_readb $tp]] \
-             w=[dict get $d width] h=[dict get $d height]
-    } -result {local=1 state=done sniff=png w=320 h=192}
-
-test file-thumbmax-range {an unusable or absurd -thumbmax falls back to the default} \
-    {*}$file_env -body {
-        set r {}
-        foreach want {0 -5 banana {} inf nan 200 2048 99999 640.0} {
-            lappend r [$::_client file ThumbMax $want]
-        }
-        set r
-    } -result {320 320 320 320 2048 320 200 2048 2048 640}
-
-test file-download-thumbmax {-thumbmax picks the size, and sizes coexist} \
-    -constraints !wasm \
-    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
-        set src [file join $::_upcache sized.png]
-        file mkdir [file dirname $src]
-        set w 600; set h 360
-        set px [string repeat [binary format cccc 10 120 200 255] [expr {$w * $h}]]
-        set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
-        close $f
-        $::_client file download -path $src -thumbmax 200
-        $::_client file download -path $src -thumbmax 100
-        set small [$::_client file ThumbPath $src 100]
-        set big   [$::_client file ThumbPath $src 200]
-        set d [::tclwuffs::decode [up_readb $big]]
-        list w=[dict get $d width] h=[dict get $d height] \
-             both=[expr {[file exists $small] && [file exists $big]}] \
-             default=[file exists [$::_client file ThumbPath $src 320]]
-    } -result {w=200 h=120 both=1 default=0}
-
-test file-download-thumbmax-no-upscale {a small image is not upscaled to -thumbmax} \
-    -constraints !wasm \
-    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
-        set src [file join $::_upcache tiny.png]
-        file mkdir [file dirname $src]
-        set w 32; set h 16
-        set px [string repeat [binary format cccc 9 9 9 255] [expr {$w * $h}]]
-        set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
-        close $f
-        $::_client file download -path $src -thumbmax 960
-        set d [::tclwuffs::decode [up_readb [$::_client file ThumbPath $src 960]]]
-        list w=[dict get $d width] h=[dict get $d height]
-    } -result {w=32 h=16}
-
-test file-download-non-image-no-thumb {a non-image (undecodable) file downloads with no thumbnail} \
-    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
-        set src [file join $::_upcache notimg.png]
+        set src [file join $::_upcache local.png]
         set f [open $src wb]
         puts -nonewline $f "not an image"
         close $f
         set ::_local ""
         $::_client file download -path $src \
             -command [list apply {{p} {set ::_local $p}}]
-        set tp NONE
+        set ev {}
         foreach e $::_emitted {
             if {[lindex $e 0] ne "file" || [lindex $e 1] ne "<Update>"} continue
-            set tp [dict get [lrange $e 2 end] -thumbpath]
+            set ev [lrange $e 2 end]
         }
-        list local=[expr {$::_local eq $src}] thumb=$tp
-    } -result {local=1 thumb=}
+        list local=[expr {$::_local eq $src}] state=[dict get $ev -state] \
+             localpath=[expr {[dict get $ev -localpath] eq $src}]
+    } -result {local=1 state=done localpath=1}
 
-test file-uncache {uncache deletes the downloaded original and every thumbnail size} {*}$file_env -body {
+test file-uncache {uncache deletes the downloaded original} {*}$file_env -body {
     set url https://h/uncache.png
     set full  [$::_client file AttachPath $url]
-    set thumb [$::_client file ThumbPath $url 320]
     file mkdir [file dirname $full]
-    file mkdir [file dirname $thumb]
     close [open $full w]
-    close [open $thumb w]
     $::_client file uncache -url $url
-    list [file exists $full] [file exists $thumb]
-} -result {0 0}
+    file exists $full
+} -result 0
 
 # An outgoing attachment still uploading carries its local source path as the
-# url. uncache must drop the derived thumbnail but never the original file.
+# url. uncache must never touch the original file.
 test file-uncache-keeps-local-source {uncache leaves a local source file untouched} \
-    -constraints !wasm {*}$file_env -body {
+    {*}$file_env -body {
     set src [file join $::_upcache mine.png]
-    set w 8; set h 8
-    set px [string repeat [binary format cccc 1 2 3 255] [expr {$w * $h}]]
     set f [open $src wb]
-    puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
+    puts -nonewline $f "mine"
     close $f
     $::_client file download -path $src
-    set thumb [$::_client file ThumbPath $src 320]
-    set thumbWas [file exists $thumb]
     $::_client file uncache -path $src
-    list srcKept=[file exists $src] thumbWas=$thumbWas \
-        thumbGone=[expr {![file exists $thumb]}]
-} -result {srcKept=1 thumbWas=1 thumbGone=1}
+    file exists $src
+} -result 1
 
-test file-paths-split {originals go to the data dir, thumbnails to the cache dir} {*}$file_env -body {
-    set url https://h/split.png
-    set data  [$::_client cget -data-dir]
-    set cache [$::_client cget -cache-dir]
-    list data=[string match $data/* [$::_client file AttachPath $url]] \
-         thumb=[string match $cache/* [$::_client file ThumbPath $url 320]] \
-         distinct=[expr {$data ne $cache}]
-} -result {data=1 thumb=1 distinct=1}
+test file-paths-data-dir {originals go to the data dir} {*}$file_env -body {
+    set data [$::_client cget -data-dir]
+    string match $data/* [$::_client file AttachPath https://h/split.png]
+} -result 1
 
 # A transient tacky must never put ratchet state or history on disk.
 test file-transient-db-in-memory {transient accounts get an in-memory database} \
@@ -725,13 +633,11 @@ test file-autofetch-blocked-download {a gated autofetch goes idle without touchi
 # The gate sits below the on-disk lookups, so a tightened policy must not
 # blank an image that is already local.
 test file-autofetch-local-still-resolves {a local source resolves even under never} \
-    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy never
         set src [file join $::_upcache already.png]
-        set px [string repeat [binary format cccc 1 2 3 255] 64]
         set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        puts -nonewline $f "bytes"
         close $f
         set ::_local NONE
         $::_client file download -path $src -auto 1 \
@@ -741,13 +647,11 @@ test file-autofetch-local-still-resolves {a local source resolves even under nev
     } -result {{done {}} local=1}
 
 test file-autofetch-manual-not-gated {a download without -auto ignores the policy} \
-    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         af_policy never
         set src [file join $::_upcache manual.png]
-        set px [string repeat [binary format cccc 4 5 6 255] 64]
         set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        puts -nonewline $f "bytes"
         close $f
         set ::_local NONE
         $::_client file download -path $src \
@@ -1005,12 +909,10 @@ proc up_last_url {} {
 # The hole the url/path split closes: a peer's url that happens to name a
 # readable local file used to be served off disk and rendered inline.
 test file-download-url-is-never-a-path {a local file named by -url is refused, not served} \
-    -constraints !wasm \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set src [file join $::_upcache elsewhere.png]
-        set px [string repeat [binary format cccc 1 2 3 255] 64]
         set f [open $src wb]
-        puts -nonewline $f [::tclwuffs::encode_png 8 8 $px]
+        puts -nonewline $f "bytes"
         close $f
         set ::_local NONE
         $::_client file download -url $src \
