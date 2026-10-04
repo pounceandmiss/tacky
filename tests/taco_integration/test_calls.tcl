@@ -111,11 +111,10 @@ namespace eval ::test::calls_int {
             if {$remaining <= 0} {
                 error "waitUntil timeout: $body"
             }
-            set done 0
-            set afterId [after $remaining [list set [namespace current]::_wakeup 1]]
+            set afterId [after [expr {min($remaining, 50)}] \
+                [list set [namespace current]::_wakeup 1]]
             vwait [namespace current]::_wakeup
             after cancel $afterId
-            set [namespace current]::_wakeup 0
         }
     }
 
