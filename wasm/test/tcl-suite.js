@@ -1,10 +1,11 @@
 /*
  * Runs tacky's Tcl test suite inside the interpreter `make wasm-tcltest`
- * builds (tests/ bundled beside lib/), from node (tcl.mjs) or a page
- * (index.html). tcltest reports by printing, so the transcript is the score.
+ * builds (tests/ bundled beside lib/), from a page (index.html), through
+ * tcltest's own runAllTests.
  */
 
-// The driver, in the shape of test_all.tcl. Returns the files that would not load.
+// The driver: tcltest's runAllTests over one directory, in this interpreter.
+// Its result is 1 if any test or file failed.
 export function driverScript({ dir = 'taco', file = '', match = '*',
         tacoArgs = '', accountArgs = '', server = '', httpBase = '' } = {}) {
     return `
@@ -17,25 +18,6 @@ set root //zipfs:/app
 lappend auto_path [file join $root lib] [file join $root tests taco] \\
     [file join $root tests taco_integration]
 package require tcltest
-# tcltest's counters are reset by every cleanupTests, and its per-file
-# summary lines are running totals that stop counting a file which never
-# calls one - so neither is the score. Accumulate it here instead, where
-# nothing resets it.
-namespace eval ::suite {
-    variable n
-    array set n {Total 0 Passed 0 Skipped 0 Failed 0}
-}
-# The replacement stays inside ::tcltest: the original resolves its own
-# helpers unqualified, and a copy living anywhere else cannot find them.
-rename ::tcltest::cleanupTests ::tcltest::cleanupTestsInner
-proc ::tcltest::cleanupTests {args} {
-    variable numTests
-    foreach key {Total Passed Skipped Failed} {
-        incr ::suite::n($key) $numTests($key)
-    }
-    uplevel 1 [list ::tcltest::cleanupTestsInner {*}$args]
-}
-
 namespace import -force ::tcltest::*
 
 # Extra taco_type options, and extra fields for each account a test adds:
@@ -57,23 +39,10 @@ file mkdir /tmp/tcltest
 # relatively - tcltest's own viewFile does - is looking in the working
 # directory, which natively is where the suite was started.
 cd /tmp/tcltest
-::tcltest::configure -tmpdir /tmp/tcltest -testdir /tmp/tcltest \\
-    -match {${match}} -verbose {body error}
-
-set files [lsort [glob -nocomplain [file join $root tests ${dir} ${file || 'test_*.tcl'}]]]
-if {[llength $files] == 0} { error "no test files under $root/tests/${dir}" }
-set broken {}
-foreach f $files {
-    if {[catch {source $f} err]} {
-        lappend broken "[file tail $f]: $err"
-    }
-}
-# Not every file ends with one, and what it counts is only what has run
-# since the last: one here takes in whatever the final files left.
-catch {::tcltest::cleanupTests}
-list total $::suite::n(Total) passed $::suite::n(Passed) \
-     skipped $::suite::n(Skipped) failed $::suite::n(Failed) \
-     broken [join $broken " | "]
+::tcltest::configure -testdir [file join $root tests ${dir}] \\
+    -file {${file || 'test_*.tcl'}} -match {${match}} \\
+    -singleproc 1 -tmpdir /tmp/tcltest -verbose {body error}
+::tcltest::runAllTests
 `;
 }
 
@@ -90,23 +59,24 @@ export function failedNames(lines) {
 }
 
 // `M` is an interpreter module whose print output is collected into `lines`.
+// Returns whether everything passed, tcltest's summary line and the failed
+// tests' names, or the error if the driver itself failed.
 export async function runSuite(M, lines, options = {}) {
+    const from = lines.length;
     const rc = await M.ccall('zippy_eval', 'number', ['string'],
         [driverScript(options)], { async: true });
     const result = M.ccall('zippy_result', 'string', [], []);
-    if (rc !== 0) {
-        return { total: 0, passed: 0, skipped: 0, failed: 0,
-            failures: [], driverError: result };
-    }
-    // A flat Tcl list of key/value; `broken` is last and may be braced.
-    const words = result.match(/^total (\d+) passed (\d+) skipped (\d+) failed (\d+) broken (.*)$/s);
-    const broken = words ? words[5].replace(/^\{|\}$/g, '') : '';
+    if (rc !== 0) return { ok: false, summary: '', failures: [], driverError: result };
+    const mine = lines.slice(from);
     return {
-        total: Number(words?.[1] ?? 0),
-        passed: Number(words?.[2] ?? 0),
-        skipped: Number(words?.[3] ?? 0),
-        failed: Number(words?.[4] ?? 0),
-        failures: failedNames(lines),
-        broken,
+        ok: result === '0',
+        summary: mine.find((l) => /\tTotal\t/.test(l)) ?? '',
+        failures: failedNames(mine),
+        // tcltest's own report of each failure, for the console: from
+        // "==== name ... FAILED" to "==== name FAILED".
+        report: mine.filter((l, i) => {
+            const open = mine.slice(0, i + 1).filter((m) => /^====.*FAILED$/.test(m)).length;
+            return open % 2 === 1 || /^====.*FAILED$/.test(l);
+        }),
     };
 }

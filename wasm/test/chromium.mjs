@@ -18,6 +18,9 @@ export async function launch(profile) {
         '--use-fake-device-for-media-stream',
         '--use-fake-ui-for-media-stream',
         '--autoplay-policy=no-user-gesture-required',
+        // The test server's domain: Chromium resolves .local over mDNS, not
+        // /etc/hosts, and XEP-0363 URLs name it.
+        `--host-resolver-rules=MAP ${process.env.XMPP_DOMAIN ?? 'example.local'} 127.0.0.1`,
         'about:blank',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 

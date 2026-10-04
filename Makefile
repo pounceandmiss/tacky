@@ -70,7 +70,7 @@ wasm_DEPS := tdom tcllib omemo
 	win win-tacky win-tackyd win-tackyd-json win-lib win-clean \
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
-	wasm wasm-tcltest wasm-test wasm-test-browser wasm-serve \
+	wasm wasm-tcltest wasm-test wasm-serve \
 	linux webrtc-so android-webrtc-so win-webrtc-dll flatpak flatpak-bundle flatpak-install \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
@@ -260,55 +260,33 @@ $(WASM_BUILD)/tacky-tcltest.mjs:
 
 XMPP_WS_URL ?= ws://127.0.0.1:5280/xmpp-websocket
 
-# The wasm suite under node: media-host.js against a faked browser, the JSON
-# protocol in and out of the backend, the same backend on the OPFS pool a
-# browser gives it across a simulated reload (that one needs zippy's mock OPFS
-# directory, hence $(ZIPPY)), then tacky's own Tcl tests inside the wasm
-# interpreter.
+# The wasm backend in headless Chromium: a module Worker, postMessage and the
+# browser's own OPFS, visited twice so the second page finds what the first
+# stored; then tacky's own Tcl tests inside the wasm interpreter, on a page.
+# Needs chromium on PATH (CHROMIUM=... to name another).
 #
 # The networked half joins in when a server is up, the way test_all.tcl picks
 # up tests/taco_integration - so run it the same way:
 #
 #   tests/servers/with_prosody.sh make wasm-test
 #
-# which adds an XMPP session over RFC 7395, XEP-0363 up and down over the
-# browser's own HTTP stack, and the integration suite over the WebSocket.
+# which adds the integration suite over the WebSocket, a call and a group call
+# with the media half in the page.
 #
 # Each check runs even if an earlier one failed, and the target fails at the
-# end if any did - a suite that stops at the first failure tells you least
-# when you most want the rest of it.
+# end if any did.
 WASM_NET_CHECKS :=
-WASM_NET_BROWSER_CHECKS :=
 ifdef XMPP_SERVER
 WASM_NET_CHECKS := \
-	node wasm/test/xmpp.mjs || rc=1; \
-	node wasm/test/http.mjs || rc=1; \
-	XMPP_WS_URL=$(XMPP_WS_URL) node wasm/test/tcl.mjs \
-	    $(WASM_BUILD)/tacky-tcltest.mjs --dir taco_integration || rc=1;
-WASM_NET_BROWSER_CHECKS := \
-	node wasm/test/browser.mjs --scenario session || rc=1; \
 	node wasm/test/browser.mjs --scenario call || rc=1; \
 	node wasm/test/browser.mjs --scenario groupcall || rc=1;
 endif
 
 wasm-test: wasm wasm-tcltest
 	@rc=0; \
-	node wasm/test/media-host.mjs || rc=1; \
-	node wasm/test/host.mjs $(WASM_DIST)/tacky.mjs || rc=1; \
-	node wasm/test/opfs.mjs $(WASM_DIST)/tacky.mjs $(ZIPPY) || rc=1; \
-	node wasm/test/tcl.mjs $(WASM_BUILD)/tacky-tcltest.mjs --dir taco || rc=1; \
-	$(WASM_NET_CHECKS) \
-	exit $$rc
-
-# The same thing where none of it is simulated: a module Worker, postMessage,
-# and the browser's own OPFS, visited twice so the second page finds what the
-# first stored. Needs chromium on PATH (CHROMIUM=... to name another). Under
-# with_prosody.sh it also places a call, with the media half in the page.
-wasm-test-browser: wasm wasm-tcltest
-	@rc=0; \
 	node wasm/test/browser.mjs || rc=1; \
 	node wasm/test/browser.mjs --scenario tcl || rc=1; \
-	$(WASM_NET_BROWSER_CHECKS) \
+	$(WASM_NET_CHECKS) \
 	exit $$rc
 
 # The same smoke page, to open in your own browser.

@@ -1,8 +1,8 @@
 # taco_http against a real server, whichever backend this build has: Tcl's
-# http natively, and in wasm tackyHttp - fetch under node (wasm/test/tcl.mjs),
-# XMLHttpRequest in a browser (browser.mjs --scenario tcl). The endpoints are
-# wasm/test/serve.mjs's /_t/ routes; natively this file serves them itself.
-# Only what all three backends share is asserted.
+# http natively, tackyHttp (XMLHttpRequest) in a browser (browser.mjs
+# --scenario tcl). The endpoints are wasm/test/serve.mjs's /_t/ routes;
+# natively this file serves them itself. Only what both backends share is
+# asserted.
 package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers

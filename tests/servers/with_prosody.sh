@@ -117,7 +117,9 @@ http_external_url = "http://${DOMAIN}:${HTTP_PORT}/"
 -- every one of these endpoints is cross-origin to it.
 http_cors_override = {
   websocket = { enabled = true };
-  file_share = { enabled = true };
+  -- An override replaces the module's own settings, so the headers an upload
+  -- slot carries have to be named again.
+  file_share = { enabled = true; credentials = true; headers = { Authorization = true } };
 }
 allow_registration = true
 daemonize = false
