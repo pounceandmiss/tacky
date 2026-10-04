@@ -86,8 +86,7 @@ export function createMediaHost({
         const pc = args.pc ?? '';
 
         if (op === 'close') {
-            for (const [name] of peers) closePeer(name);
-            for (const [name] of previews) closePreview(name);
+            closeAll();
             return;
         }
         if (op === 'openPreview') {
@@ -182,7 +181,7 @@ export function createMediaHost({
             serialize(state, op, pc, async () => {
                 for (const transceiver of state.senders.values()) {
                     const track = transceiver.sender?.track;
-                    if (track?.kind === 'video') track.enabled = !!Number(args.on);
+                    if (track?.kind === 'video') track.enabled = !!args.on;
                 }
             });
             return;
@@ -208,6 +207,23 @@ export function createMediaHost({
         return transceiver;
     }
 
+    // A stream of `kind` from deviceId, or from the default device if that one
+    // is gone or refused, which `pc` is told.
+    async function openDevice(pc, kind, deviceId) {
+        if (!deviceId) return navigator.mediaDevices.getUserMedia({ [kind]: true });
+        try {
+            return await navigator.mediaDevices.getUserMedia({ [kind]: { deviceId: { exact: deviceId } } });
+        } catch (err) {
+            const stream = await navigator.mediaDevices.getUserMedia({ [kind]: true });
+            emit(pc, 'deviceFallback', {
+                kind: kind === 'video' ? 'camera' : 'capture',
+                id: '',
+                reason: String(err?.name ?? err),
+            });
+            return stream;
+        }
+    }
+
     // Put real media behind a track. No mic is fatal to the call; no camera
     // leaves it audio-only.
     async function attach(state, pc, op, trackName, deviceId, kind) {
@@ -215,21 +231,9 @@ export function createMediaHost({
         if (!transceiver) return;
         if (transceiver.direction === 'recvonly') return;
 
-        const wanted = deviceId ? { deviceId: { exact: deviceId } } : true;
         let stream;
         try {
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({ [kind]: wanted });
-            } catch (err) {
-                if (!deviceId) throw err;
-                // Device gone or refused: fall back to the default and say so.
-                stream = await navigator.mediaDevices.getUserMedia({ [kind]: true });
-                emit(pc, 'deviceFallback', {
-                    kind: kind === 'video' ? 'camera' : 'capture',
-                    id: '',
-                    reason: String(err?.name ?? err),
-                });
-            }
+            stream = await openDevice(pc, kind, deviceId);
         } catch (err) {
             fail(pc, op, String(err?.message ?? err), kind === 'audio' ? 1 : 0);
             return;
@@ -250,16 +254,7 @@ export function createMediaHost({
         camera.users.add(user);
         if (camera.track) return camera.track;
         if (!camera.opening) {
-            camera.opening = (async () => {
-                const wanted = deviceId ? { deviceId: { exact: deviceId } } : true;
-                try {
-                    return await navigator.mediaDevices.getUserMedia({ video: wanted });
-                } catch (err) {
-                    if (!deviceId) throw err;
-                    emit(user, 'deviceFallback', { kind: 'camera', id: '', reason: String(err?.name ?? err) });
-                    return navigator.mediaDevices.getUserMedia({ video: true });
-                }
-            })();
+            camera.opening = openDevice(user, 'video', deviceId);
         }
         try {
             const stream = await camera.opening;
@@ -370,27 +365,27 @@ export function createMediaHost({
         return true;
     }
 
+    function closeAll() {
+        for (const [name] of peers) closePeer(name);
+        for (const [name] of previews) closePreview(name);
+    }
+
     return {
         command,
         setAudioEnabled,
+        closeAll,
         /** By pc: `{ conn, sid, ... }`. Not contract. */
         peers,
         /** The camera's state. Not contract. */
         camera,
-        closeAll() {
-            for (const [name] of peers) closePeer(name);
-            for (const [name] of previews) closePreview(name);
-        },
     };
 }
 
-// iceServers arrives as an array or as an unschema'd Tcl list; URLs have no spaces.
-// turn:user:pass@host:port, percent-encoded, as extdisco.tcl builds it and
-// libdatachannel takes it. The browser wants the credentials as fields, as
-// libwebrtc does; this is rtc-webrtc's ParseIceServer.
-function toIceServers(value) {
-    if (!value) return [];
-    const urls = Array.isArray(value) ? value : String(value).split(/\s+/);
+// iceServers: URLs, turn:user:pass@host:port percent-encoded, as extdisco.tcl
+// builds them and libdatachannel takes them. The browser wants the
+// credentials as fields, as libwebrtc does; this is rtc-webrtc's
+// ParseIceServer.
+function toIceServers(urls = []) {
     return urls.filter(Boolean).map((url) => {
         const colon = url.indexOf(':');
         const at = url.lastIndexOf('@');

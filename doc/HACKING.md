@@ -50,8 +50,10 @@ To narrow a run:
 ```
 
 `test_all.tcl` honours a few environment variables: `NO_THREADED=1` and
-`NO_PROCESS=1` skip the alternate transports. Integration tests run from the same file
-when started via `tests/servers/with_prosody.sh` and friends.
+`NO_PROCESS=1` skip the alternate transports, and `TACKY_TEST_DIRS`,
+`TACKY_TEST_FILE` and `TACKY_TEST_MATCH` narrow the run (`TACKY_TEST_FILE=test_file.tcl`).
+Integration tests run from the same file when started via `tests/servers/with_prosody.sh`
+and friends. `make wasm-test` runs the same file in the browser.
 
 For the sake of keeping complexity bearable and at the cost of flakiness, most GUI tests are timing-sensitive, so a failure is worth rerunning, or running on its own with `-match`, before treating it as real.
 

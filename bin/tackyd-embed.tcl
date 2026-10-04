@@ -1,8 +1,8 @@
 # Embedded backend entry: speaks JSON to a host via a native emit callback
 # instead of length-prefixed stdio (cf. bin/tackyd-json.tcl).
 #
-# Runs on a dedicated backend thread. The host (the C shim, or a Tcl test)
-# must define `tacky_native_emit {json}` before calling tackyd_embed_init;
+# Runs on the backend's own thread. The host (embed/tacky.c, the browser's
+# bin/tacky-web.tcl, or a Tcl test) must define `tacky_native_emit {json}` before calling tackyd_embed_init;
 # every event/result is delivered by calling it with one complete JSON
 # message string. Requests are delivered by calling `tackyd_dispatch {json}`
 # on this thread.

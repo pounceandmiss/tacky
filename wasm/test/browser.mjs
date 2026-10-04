@@ -67,14 +67,7 @@ async function visit(cdp, sessionId, url) {
                 expression: 'globalThis.__smokeVisit ?? ""',
                 returnByValue: true,
             }, sessionId);
-            const { result: suite } = await cdp.send('Runtime.evaluate', {
-                expression: 'JSON.stringify(globalThis.__smokeSuite ?? null)',
-                returnByValue: true,
-            }, sessionId);
-            return {
-                ...smoke, visit: v.value,
-                suite: suite.value ? JSON.parse(suite.value) : null,
-            };
+            return { ...smoke, visit: v.value };
         }
         if (Date.now() > deadline) return null;
         await new Promise((r) => setTimeout(r, 250));
@@ -114,11 +107,6 @@ try {
     const first = await visit(cdp, sessionId, url);
     check('the page finished its run', first !== null, first ? '' : 'timed out');
     for (const c of first?.checks ?? []) check(c.name, c.ok, c.detail);
-
-    if (first?.suite?.failures?.length) {
-        console.log('failed in the browser:');
-        for (const name of first.suite.failures) console.log(`  ${name}`);
-    }
 
     if (scenario === 'storage') {
         check('it was the first visit to this origin', first?.visit === 'first', first?.visit);

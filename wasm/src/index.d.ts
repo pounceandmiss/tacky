@@ -11,11 +11,14 @@ export type InboundFrame =
     | ['error', number, string]
     | ['event', string, string, Record<string, unknown>];
 
-/** Where the backend keeps its store, as the worker chose it. */
-export type StorageMode = 'opfs' | 'idbfs' | 'memory';
+/** Where the backend keeps its store: OPFS, or memory when asked to be `transient`. */
+export type StorageMode = 'opfs' | 'memory';
+
+/** Why there is no store: no OPFS here, OPFS refused, or another tab holds it. */
+export type StoreFailure = 'unsupported' | 'refused' | 'locked';
 
 export interface ClientOptions {
-    /** Keep the store in memory whatever the browser offers. */
+    /** Keep the store in memory, for this tab only and for as long as it lives. */
     transient?: boolean;
     /** Where the store lives in the backend's filesystem. Default `/store`. */
     store?: string;
@@ -32,6 +35,12 @@ export interface Client {
     readonly ready: Promise<boolean>;
     /** Why it could not start, or why it died; null while it runs. */
     fatal: string | null;
+    /**
+     * Set with `fatal` when the cause is the store: OPFS missing, refused, or
+     * held by another tab. The worker never falls back to memory on its own;
+     * a page that wants to run without a store starts again with `transient`.
+     */
+    fatalReason: StoreFailure | null;
     /** The store the worker chose; null before it said. */
     storage: StorageMode | null;
     /** True once a `stop` finished cleanly. */

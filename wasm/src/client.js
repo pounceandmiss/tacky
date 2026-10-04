@@ -16,7 +16,7 @@ export function createClient(options = {}) {
     const waiters = [];
     const client = {
         worker, messages, onEvent,
-        storage: null, fatal: null, stopped: false,
+        storage: null, fatal: null, fatalReason: null, stopped: false,
     };
 
     let markReady;
@@ -27,7 +27,11 @@ export function createClient(options = {}) {
         switch (m.type) {
         case 'storage': client.storage = m.mode; break;
         case 'ready': markReady(true); break;
-        case 'fatal': client.fatal = m.message; markReady(false); break;
+        case 'fatal':
+            client.fatal = m.message;
+            client.fatalReason = m.reason ?? null;
+            markReady(false);
+            break;
         case 'stopped': client.stopped = true; break;
         case 'message': {
             const frame = JSON.parse(m.json);
@@ -43,12 +47,11 @@ export function createClient(options = {}) {
         for (const w of waiters.splice(0)) w();
     });
 
-    // Either the worker said something or a tick passed; the caller decides
-    // when it has waited long enough.
-    const wake = () => Promise.race([
-        new Promise((r) => waiters.push(r)),
-        new Promise((r) => setTimeout(r, 50)),
-    ]);
+    // Until the worker says something, or `ms` from now.
+    const next = (ms) => new Promise((r) => {
+        const timer = setTimeout(r, ms);
+        waiters.push(() => { clearTimeout(timer); r(); });
+    });
 
     client.until = async (want, ms = 30_000) => {
         const deadline = Date.now() + ms;
@@ -58,8 +61,9 @@ export function createClient(options = {}) {
                 const frame = messages[at - dropped];
                 if (want(frame)) return frame;
             }
-            if (client.fatal || Date.now() > deadline) return null;
-            await wake();
+            const left = deadline - Date.now();
+            if (client.fatal || left <= 0) return null;
+            await next(left);
         }
     };
     client.send = (frame) =>
@@ -78,7 +82,7 @@ export function createClient(options = {}) {
     client.stop = async (ms = 15_000) => {
         worker.postMessage({ type: 'stop' });
         const deadline = Date.now() + ms;
-        while (!client.stopped && Date.now() < deadline) await wake();
+        while (!client.stopped && Date.now() < deadline) await next(deadline - Date.now());
         worker.terminate();
         return client.stopped;
     };
