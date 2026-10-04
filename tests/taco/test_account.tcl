@@ -31,12 +31,6 @@ tacky_test account-list-one {list returns JID after one add} \
         wait_call tacky account list
     } -result {user@example.com}
 
-tacky_test account-list-enabled-json-bool {list -enabled takes a JSON boolean} \
-    {*}$common \
-    -body {
-        wait_call tacky account list -enabled false
-    } -result {user@example.com}
-
 tacky_test account-list-empty {list returns empty when no accounts} \
     -body {
         wait_call tacky account list

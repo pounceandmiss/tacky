@@ -168,9 +168,10 @@ arguments, and an optional token.
 The token (any integer) asks for a reply tagged with that same token.
 Leave it off and the request is fire-and-forget: no reply, and any error
 is dropped. Argument values go through untouched - the backend is untyped,
-so `5` and `"5"` mean the same thing on the way in. The exception is an
-argument typed `base64`: it is decoded to bytes before dispatch, and a bad
-encoding comes back as an error reply.
+so `5` and `"5"` mean the same thing on the way in. The exceptions are
+arguments typed `base64`, decoded to bytes before dispatch, and `bool`, where
+`true`/`false`, `1`/`0` and their string forms all work. A bad value of
+either comes back as an error reply.
 
     ["account", "add", {"acc": "user@example.com", "password": "secret"}]
     ["account", "list", {}, 1]
