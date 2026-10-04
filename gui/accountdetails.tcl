@@ -120,7 +120,7 @@ snit::widgetadaptor signin {
             [mymethod OnConnected]
         tacky listen -tag $win conn <AuthError> -acc $jid \
             [mymethod OnFailed "Authentication failed"]
-        tacky listen -tag $win conn <Disconnected> -acc $jid \
+        tacky listen -tag $win conn <ConnError> -acc $jid \
             [mymethod OnFailed "Connection failed"]
         tacky account add -acc $jid -password $pw
         tacky account enable -acc $jid
@@ -155,8 +155,11 @@ snit::widgetadaptor signin {
         $win.proceed configure -text "Proceed" -command [mymethod Proceed]
     }
 
+    # The backend would keep retrying a connection error; the next Proceed
+    # adds the account afresh.
     method OnFailed {fallback ev} {
         tacky unlisten $win
+        catch { tacky account remove -acc $jid }
         set msg [expr {[dict exists $ev -message]
             ? [dict get $ev -message] : $fallback}]
         $self Idle
