@@ -8,6 +8,7 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { runSuite } from './tcl-suite.js';
+import { serve } from './serve.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -25,6 +26,9 @@ const tacoArgs = flag('taco-args', process.env.XMPP_WS_URL ? '-transport websock
 const accountArgs = flag('account-args', process.env.XMPP_WS_URL
     ? `-websocket_url ${process.env.XMPP_WS_URL}` : '');
 const server = flag('server', process.env.XMPP_SERVER ?? '');
+// The HTTP endpoints test_httpreq.tcl talks to.
+const httpServer = await serve([]);
+const httpBase = flag('http-base', `http://127.0.0.1:${httpServer.address().port}`);
 
 /*
  * tcltest reports by printing, and its counters are reset by the
@@ -44,7 +48,9 @@ const evaluate = async (script) => {
     return [rc, M.ccall('zippy_result', 'string', [], [])];
 };
 
-const result = await runSuite(M, lines, { dir, file, match, tacoArgs, accountArgs, server });
+const result = await runSuite(M, lines,
+    { dir, file, match, tacoArgs, accountArgs, server, httpBase });
+httpServer.close();
 if (result.driverError) {
     console.error(`the driver itself failed: ${result.driverError}`);
     process.exit(2);

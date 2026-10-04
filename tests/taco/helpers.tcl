@@ -45,6 +45,11 @@ if {![info exists ::tacky_test_taco_args]} {
 if {![info exists ::tacky_test_account_args]} {
     set ::tacky_test_account_args {}
 }
+# Where test_httpreq.tcl's HTTP endpoints are (wasm/test/serve.mjs); natively
+# the test serves them itself.
+if {![info exists ::tacky_test_http_base]} {
+    set ::tacky_test_http_base {}
+}
 
 # The three interchangeable tacky front ends: the type that creates one, and
 # the constraint gating it. tacky_env builds a single mode; tacky_test fans a
