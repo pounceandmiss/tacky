@@ -1793,6 +1793,9 @@ snit::type taco_message {
         if {$complete} {
             $self ClearBoundingHole $chatJid $direction $before $after \
                 $wasBounded
+            # Rows the archive no longer has (wiped, expired) were behind
+            # that hole; return them rather than an empty page.
+            set local [$self GetLocal $chatJid $before $after $limit]
         } else {
             $self PlaceFarEdgeHole $chatJid $parsed $direction
         }

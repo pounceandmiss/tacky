@@ -2135,6 +2135,23 @@ test message-history-mam-complete-removes-bounding-hole {MAM complete=true on a 
             alice@example.com]
     } -result {0}
 
+test message-history-complete-returns-rows-behind-hole {an empty complete page returns the local rows behind the cleared hole} \
+    {*}$msg_common \
+    -body {
+        msg_store [list \
+            [msg_msg timestamp 100 server_id s1 body old]]
+        $::_client message messagestore hole add alice@example.com newer 100
+        msg_store [list \
+            [msg_msg timestamp 500 server_id s5 body new]]
+        # A reset archive knows s5 but nothing before it.
+        set ::_got ""
+        tacky message history -acc $acc -chat alice@example.com \
+            -before 500 -limit 50 \
+            -command [list apply {{r} {set ::_got $r}}]
+        msg_mam_respond {} -complete true
+        lmap m $::_got {dict get $m content body}
+    } -result {old}
+
 # =============================================================================
 # History: cancel
 # =============================================================================
