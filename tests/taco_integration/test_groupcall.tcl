@@ -274,7 +274,7 @@ namespace eval ::test::groupcall_int {
         set Twin [taco_client [namespace current]::twin \
             -username [lindex [split $acc @] 0] \
             -password [dict get $PASS $acc] \
-            -host $HOST -resource twin -taco ::tacky \
+            -host $HOST -port $::test::helpers::xmppPort -resource twin -taco ::tacky \
             {*}$::tacky_test_taco_args]
         $Twin connect
         waitUntil {[string match */twin [$Twin cget -jid]]}

@@ -212,6 +212,9 @@ def main() -> None:
     xmpp.register_plugin("xep_0380")
     xmpp.register_plugin("xep_0384", module=sys.modules[__name__])
     xmpp.ca_certs = ca_path
+    # slixmpp re-resolves the host with default_port and dials that, not the
+    # port given to connect().
+    xmpp.default_port = port
 
     xmpp.connect((host, port), force_starttls=True)
     asyncio.get_event_loop().run_forever()
