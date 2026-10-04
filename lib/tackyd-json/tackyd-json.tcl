@@ -20,8 +20,9 @@ json::write indented false
 #   {tuples S}     -> flat list grouped by fields of S into JSON array of objects
 #   <name>         -> named type lookup (always a dict schema)
 #
-# Arguments pass through untouched unless -argschemas declares them, where
-# base64 is the only type.
+# Arguments pass through untouched unless -argschemas declares them as base64
+# (decoded to bytes) or bool (any Tcl boolean, JSON true/false included, to
+# 0/1).
 #
 # Usage:
 #   jsonify to_json $value $type
@@ -137,15 +138,22 @@ snit::type jsonify_type {
             return $d
         }
         dict for {arg hint} [dict get $argschemas $schema_key] {
-            if {$hint ne "base64" || ![dict exists $d $arg]} {
-                continue
+            if {![dict exists $d $arg]} continue
+            set v [dict get $d $arg]
+            switch -- $hint {
+                base64 {
+                    if {[catch {binary decode base64 -strict $v} decoded]} {
+                        error "argument $arg is not valid base64: $decoded"
+                    }
+                    dict set d $arg $decoded
+                }
+                bool {
+                    if {![string is boolean -strict $v]} {
+                        error "argument $arg is not a boolean: $v"
+                    }
+                    dict set d $arg [expr {$v ? 1 : 0}]
+                }
             }
-            if {[catch {
-                binary decode base64 -strict [dict get $d $arg]
-            } decoded]} {
-                error "argument $arg is not valid base64: $decoded"
-            }
-            dict set d $arg $decoded
         }
         return $d
     }
@@ -290,6 +298,20 @@ jsonify_type jsonify \
     -argschemas {
         avatar/publish          {data base64}
         avatar/inject           {data base64}
+        account/list            {enabled bool}
+        account/set             {enabled bool}
+        bookmarks/item          {autojoin bool}
+        message/resend          {plaintext bool}
+        notify/set              {muted bool mentions bool}
+        omemo/setBlindTrust     {value bool}
+        omemo/setEnabled        {value bool}
+        file/download           {auto bool}
+        calls/start             {video bool}
+        calls/setVideo          {on bool}
+        groupcall/start         {video bool}
+        groupcall/join          {video bool}
+        groupcall/setVideo      {on bool}
+        log/setenabled          {enabled bool}
     }
 
 # -- helpers shared with entry-point dispatch ---------------------------

@@ -451,6 +451,17 @@ test json-backend-parse-base64-invalid {raw bytes where base64 was declared fail
         [string match {argument data is not valid base64:*} $err]
 } -result {1 1}
 
+# -- bool arguments ----------------------------------------------------------
+
+test json-backend-parse-bool-arg {JSON true/false reach the method as 1/0} -body {
+    set parts [::json::json2dict {["notify","set",{"chat":"a@b.c","muted":true,"mentions":false}]}]
+    jsonify decode_args notify/set [lindex $parts 2]
+} -result {chat a@b.c muted 1 mentions 0}
+
+test json-backend-parse-bool-invalid {a non-boolean where bool was declared fails loudly} -body {
+    list [catch {jsonify decode_args account/list {enabled maybe}} err] $err
+} -result {1 {argument enabled is not a boolean: maybe}}
+
 test json-backend-parse-no-arg-schema {a method with no declared args is untouched} -body {
     jsonify decode_args message/search {acc user@srv chat room@muc}
 } -result {acc user@srv chat room@muc}
