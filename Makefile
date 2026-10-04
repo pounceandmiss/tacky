@@ -249,8 +249,13 @@ $(WASM_BUILD)/tacky-tcltest.mjs:
 	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
 	    app
 
-# The two builds must not run at once - one build tree, one scripts.zip.
-.NOTPARALLEL: wasm wasm-tcltest
+# Targets here must not run at once: the native ones share build/linux, wasm and
+# wasm-tcltest share one build tree and scripts.zip, and all of them fetch into
+# build/deps. With prerequisites, .NOTPARALLEL only serializes *those targets'*
+# prerequisites, so `make -j wasm-test` still ran the two wasm builds together;
+# bare, it serializes this makefile. The parallelism is zippy's: its sub-makes
+# keep -j.
+.NOTPARALLEL:
 
 XMPP_WS_URL ?= ws://127.0.0.1:5280/xmpp-websocket
 
