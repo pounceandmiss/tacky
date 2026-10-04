@@ -18,7 +18,7 @@ namespace eval ::test::bareconn {
 
     # Test configuration - matches with_prosody.sh
     variable HOST "example.local"
-    variable PORT 5222
+    variable PORT $::test::helpers::xmppPort
 
     # Test state
     variable ready 0
@@ -126,7 +126,7 @@ namespace eval ::test::conn {
 
     # Test configuration - matches with_prosody.sh
     variable HOST "example.local"
-    variable PORT 5222
+    variable PORT $::test::helpers::xmppPort
     variable USER "test"
     variable PASS "testpass"
 

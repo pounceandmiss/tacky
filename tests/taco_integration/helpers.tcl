@@ -31,7 +31,10 @@ if {[llength [info commands ::tacky_init_plain]] == 0} {
     }
 }
 
-namespace eval ::test::helpers {}
+namespace eval ::test::helpers {
+    # The server's c2s port: with_prosody.sh picks a free one per run.
+    variable xmppPort [expr {[info exists ::env(XMPP_PORT)] ? $::env(XMPP_PORT) : 5222}]
+}
 
 # Displayed text of a derived message dict: the text body or a media caption.
 # "" for a retracted tombstone, which carries no content.

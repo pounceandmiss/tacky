@@ -5,7 +5,7 @@
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 DOMAIN="example.local"
-PORT_HOST=5222
+XMPP_PORT=5222
 
 USERS=(
   "test:testpass"
@@ -29,37 +29,34 @@ USERS=(
 
 # ─── Functions ───────────────────────────────────────────────────────────────
 
-# Find and remove any container bound to PORT_HOST.
-lib_ensure_port_free() {
-  local container_name="$1"
-  local cid
-  cid=$(docker ps --filter "publish=${PORT_HOST}" --format '{{.ID}}' | head -n1 || true)
-  if [ -n "$cid" ]; then
-    docker rm -f "$cid" >/dev/null 2>&1 || true
-  fi
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+# A TCP port nothing on this host is using, below the ephemeral range so an
+# outgoing connection can't be holding it.
+lib_pick_port() {
+  local port
+  while :; do
+    port=$((20000 + RANDOM % 12000))
+    if [ -z "$(ss -Htan "sport = :${port}")" ]; then
+      echo "$port"
+      return
+    fi
+  done
 }
 
-# Pre-start cleanup: free port, remove temp dir, clean /etc/hosts.
+# Pre-start cleanup: remove a leftover container and temp dir of this run's
+# name. Other runs' containers are left alone.
 lib_cleanup_stale() {
   local test_dir="$1"
   local container_name="$2"
-  lib_ensure_port_free "$container_name"
+  docker rm -f "$container_name" >/dev/null 2>&1 || true
   rm -rf "$test_dir" >/dev/null 2>&1 || true
-  if grep -q -F "$DOMAIN" /etc/hosts 2>/dev/null; then
-    sudo -- sh -c "sed -i '/[[:space:]]$DOMAIN\$/d' /etc/hosts" || true
-  fi
 }
 
-# Teardown: stop container, clean /etc/hosts, remove temp dir.
+# Teardown: stop container, remove temp dir. The /etc/hosts entry stays, a
+# concurrent run may still be resolving it.
 lib_cleanup() {
   local container_name="$1"
   local test_dir="$2"
-  local display_name="$3"
   docker rm -f "$container_name" >/dev/null 2>&1 || true
-  if grep -q -F "$DOMAIN" /etc/hosts 2>/dev/null; then
-    sudo -- sh -c "sed -i '/[[:space:]]$DOMAIN\$/d' /etc/hosts" || true
-  fi
   rm -rf "$test_dir"
 }
 
@@ -132,7 +129,7 @@ lib_create_users() {
 lib_banner() {
   local display_name="$1"
   echo ""
-  echo ">>> ${display_name} ready (${DOMAIN}:${PORT_HOST}, SPOOF_SSL_CERT=${SPOOF_SSL_CERT})"
+  echo ">>> ${display_name} ready (${DOMAIN}:${XMPP_PORT}, SPOOF_SSL_CERT=${SPOOF_SSL_CERT})"
   echo ""
 }
 

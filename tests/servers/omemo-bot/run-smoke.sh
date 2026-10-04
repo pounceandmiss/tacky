@@ -14,7 +14,7 @@ if [ -z "${OMEMO_BOT_CONTAINER:-}" ] || [ -z "${OMEMO_BOT_JID:-}" ]; then
 fi
 
 DOMAIN="example.local"
-XMPP_PORT="${PORT_HOST:-5222}"
+XMPP_PORT="${XMPP_PORT:-5222}"
 
 exec docker exec \
   -e TESTER_JID="test@${DOMAIN}" \

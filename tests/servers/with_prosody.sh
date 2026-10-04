@@ -4,6 +4,9 @@
 #
 # Flags:
 #   --sm   Enable XEP-0198 Stream Management (smacks module)
+#
+# Exported to <command>: XMPP_SERVER, XMPP_PORT, XMPP_WS_URL, SPOOF_SSL_CERT,
+# PROSODY_CONTAINER.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +22,15 @@ CONTAINER_NAME="prosody-test-$$"
 TEST_DIR="/tmp/prosody-test-$$"
 ENABLE_SM=false
 
+# Ports are picked per run so several runs can share the host.
+XMPP_PORT=$(lib_pick_port)
+HTTP_PORT=$(lib_pick_port)
+while [ "$HTTP_PORT" = "$XMPP_PORT" ]; do HTTP_PORT=$(lib_pick_port); done
+
 export XMPP_SERVER="prosody"
+export XMPP_PORT
+export XMPP_WS_URL="ws://127.0.0.1:${HTTP_PORT}/xmpp-websocket"
+export PROSODY_CONTAINER="$CONTAINER_NAME"
 
 # ─── Parse arguments ─────────────────────────────────────────────────────────
 
@@ -40,7 +51,7 @@ set -- "${args[@]+"${args[@]}"}"
 
 _check_ready() {
   docker exec "${CONTAINER_NAME}" prosodyctl about >/dev/null 2>&1 \
-    && (exec 3<>"/dev/tcp/127.0.0.1/${PORT_HOST}") 2>/dev/null \
+    && (exec 3<>"/dev/tcp/127.0.0.1/${XMPP_PORT}") 2>/dev/null \
     && exec 3<&- 3>&-
 }
 
@@ -73,7 +84,17 @@ modules_enabled = {
   ${SM_MODULE}
 }
 
--- XMPP over WebSocket (RFC 7395), at ws://127.0.0.1:5280/xmpp-websocket, for
+-- Only the two listeners the tests use, on this run's ports; the fixed
+-- defaults (5269, 5281, ...) would collide with a concurrent run.
+c2s_ports = { ${XMPP_PORT} }
+http_ports = { ${HTTP_PORT} }
+https_ports = { }
+s2s_ports = { }
+c2s_direct_tls_ports = { }
+s2s_direct_tls_ports = { }
+component_ports = { }
+
+-- XMPP over WebSocket (RFC 7395), at ${XMPP_WS_URL}, for
 -- the wasm build: a browser page has no sockets, so this is the only way in.
 -- Two settings make that endpoint usable from a test rather than from a
 -- deployment behind a TLS-terminating proxy:
@@ -90,7 +111,7 @@ consider_websocket_secure = true
 -- the Host header and only ${DOMAIN} has /file_share on it - the harness
 -- puts ${DOMAIN} in /etc/hosts for exactly this kind of reason.
 http_file_share_size_limit = 10485760
-http_external_url = "http://${DOMAIN}:5280/"
+http_external_url = "http://${DOMAIN}:${HTTP_PORT}/"
 
 -- A page under test is served from a static server on a port of its own, so
 -- every one of these endpoints is cross-origin to it.
@@ -126,7 +147,6 @@ EOF
 
 # ─── Start & wait ────────────────────────────────────────────────────────────
 
-lib_ensure_port_free "$CONTAINER_NAME"
 lib_pull_image "$IMAGE"
 
 docker run -d \

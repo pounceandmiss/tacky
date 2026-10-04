@@ -78,7 +78,7 @@ snit::type TcpProxy {
 namespace eval ::test::BareInterrupt {
 
     variable HOST "example.local"
-    variable PORT 5222
+    variable PORT $::test::helpers::xmppPort
 
     variable ready 0
     variable transportError ""
@@ -143,7 +143,7 @@ namespace eval ::test::BareInterrupt {
 namespace eval ::test::AuthInterrupt {
 
     variable HOST "example.local"
-    variable PORT 5222
+    variable PORT $::test::helpers::xmppPort
     variable USER "test"
     variable PASS "testpass"
 
@@ -264,7 +264,7 @@ namespace eval ::test::AuthInterrupt {
 namespace eval ::test::AutoReconnect {
 
     variable HOST "example.local"
-    variable PORT 5222
+    variable PORT $::test::helpers::xmppPort
     variable USER "test"
     variable PASS "testpass"
 

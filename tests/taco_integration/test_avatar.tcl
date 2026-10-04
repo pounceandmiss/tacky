@@ -9,7 +9,6 @@ package require sha1
 namespace eval ::test::avatar_int {
 
     variable HOST "example.local"
-    variable PORT 5222
     variable TIMEOUT 10000
 
     variable ROMEO "romeo@example.local"
