@@ -58,7 +58,6 @@ snit::type taco_avatar {
         set PendingPubSubHash [dict create]
         set RefetchedHash [dict create]
         array set ActiveTags {}
-        $self Migrate
         $client pubsub handler urn:xmpp:avatar:metadata \
             [mymethod OnMetadataNotification]
         $client caps addFeature urn:xmpp:avatar:metadata+notify
@@ -574,23 +573,5 @@ snit::type taco_avatar {
         }
 
         $client emit avatar <Update> -jid $jid -hash $hash
-    }
-
-    method Migrate {} {
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS avatar_metadata(
-                jid TEXT PRIMARY KEY,
-                hash TEXT NOT NULL,
-                type TEXT NOT NULL,
-                bytes INTEGER,
-                width INTEGER,
-                height INTEGER,
-                source TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS avatar_data(
-                hash TEXT PRIMARY KEY,
-                data BLOB NOT NULL
-            );
-        }
     }
 }

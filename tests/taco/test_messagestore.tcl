@@ -5,6 +5,7 @@ package require taco
 set ms_common {
     -setup {
         sqlite3 testdb :memory:
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     }
     -cleanup {
@@ -1083,6 +1084,7 @@ test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves w
 test messagestore-resolvereply-origin-id-author {origin_id collision across senders disambiguated by MUC author} \
     -setup {
         sqlite3 testdb :memory:
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     } -cleanup {store destroy; testdb close} \
     -body {
@@ -1100,6 +1102,7 @@ test messagestore-resolvereply-origin-id-author {origin_id collision across send
 test messagestore-resolvereply-author-mismatch {origin_id match but wrong MUC author resolves to nothing} \
     -setup {
         sqlite3 testdb :memory:
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     } -cleanup {store destroy; testdb close} \
     -body {
@@ -1550,9 +1553,9 @@ test messagestore-reconcile-backfills-occupant-id \
 test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phantoms} \
     -setup {
         sqlite3 testdb :memory:
-        taco_messagestore create store -db testdb
-        store destroy
+        taco_schema_migrate testdb per-account
         testdb eval {ALTER TABLE chat_message DROP COLUMN invite}
+        testdb eval {PRAGMA user_version = 0}
         set inviteXml "<message from='room@muc.example.com'><x xmlns='http://jabber.org/protocol/muc#user'><invite from='alice@example.com/phone'/></x><body>hi</body></message>"
         testdb eval {
             INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
@@ -1567,6 +1570,7 @@ test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phant
         }
     } \
     -body {
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
         list [expr {"invite" in [testdb eval {
                   SELECT name FROM pragma_table_info('chat_message')}]}] \
@@ -1582,9 +1586,9 @@ test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phant
 test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invite dict} \
     -setup {
         sqlite3 testdb :memory:
-        taco_messagestore create store -db testdb
-        store destroy
+        taco_schema_migrate testdb per-account
         testdb eval {
+            PRAGMA user_version = 0;
             DROP INDEX idx_chat_message_invite_room;
             ALTER TABLE chat_message DROP COLUMN invite_room;
             ALTER TABLE chat_message DROP COLUMN invite_declined;
@@ -1596,6 +1600,7 @@ test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invi
         }
     } \
     -body {
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
         list [store invitesToRoom room@muc.example.com] \
              [store pendingInvite room@muc.example.com?join]

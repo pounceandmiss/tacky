@@ -47,7 +47,6 @@ snit::type taco_roster {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $self Migrate
         $client iq handler set jabber:iq:roster [mymethod OnPush]
         $client bus subscribe $self <Ready> [mymethod OnReady]
     }
@@ -283,24 +282,6 @@ snit::type taco_roster {
                 INSERT OR IGNORE INTO roster_item_group(roster_item_jid, group_name)
                 VALUES($jid, $groupBody)
             }
-        }
-    }
-
-    method Migrate {} {
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS roster_item(
-                jid PRIMARY KEY,
-                name,
-                subscription,
-                ask,
-                approved
-            );
-            CREATE TABLE IF NOT EXISTS roster_item_group(
-                group_name,
-                roster_item_jid,
-                PRIMARY KEY(group_name, roster_item_jid)
-            );
-            CREATE TABLE IF NOT EXISTS roster_ver(value);
         }
     }
 }

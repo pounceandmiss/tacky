@@ -37,7 +37,6 @@ snit::type taco_caps {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $self Migrate
 
         # Default identity
         set identities [list [dict create category client type pc name Tacky lang ""]]
@@ -328,21 +327,5 @@ snit::type taco_caps {
         }
 
         $client bus publish <CapsResolved> -jid $from
-    }
-
-    method Migrate {} {
-        # A pure cache: an older shape is dropped, not migrated.
-        set columns [$client db eval {SELECT name FROM pragma_table_info('caps_cache')}]
-        if {"identities" ni $columns} {
-            $client db eval {DROP TABLE IF EXISTS caps_cache}
-        }
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS caps_cache(
-                ver TEXT PRIMARY KEY,
-                node TEXT,
-                identities TEXT,
-                features TEXT
-            );
-        }
     }
 }

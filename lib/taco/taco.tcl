@@ -229,6 +229,8 @@ proc taco_call {taco module method args} {
     return -options $opts $result
 }
 
+source [file join [file dirname [info script]] schema.tcl]
+
 set _taco_dir [file join [file dirname [info script]] modules]
 foreach script [lsort [glob [file join $_taco_dir *.tcl]]] {
     source $script
@@ -327,6 +329,7 @@ snit::type taco_type {
     method CompleteUnlock {} {
         if {$CompleteUnlockDone} return
         set CompleteUnlockDone 1
+        taco_schema_migrate $db accounts
         install account using taco_account ${selfns}::account \
             -db $db -taco $self -data-dir $options(-data-dir)
         install setting using taco_setting ${selfns}::setting -db $db -taco $self

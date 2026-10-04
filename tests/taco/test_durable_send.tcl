@@ -9,6 +9,7 @@ package require taco
 set ds_ms_common {
     -setup {
         sqlite3 testdb :memory:
+        taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     }
     -cleanup {

@@ -70,13 +70,6 @@ snit::type taco_file {
         array set Transfers {}
         array set DownloadByUrl {}
         $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS attachment_key(
-                hash TEXT PRIMARY KEY,
-                iv   BLOB NOT NULL,
-                key  BLOB NOT NULL
-            )
-        }
     }
 
     destructor {
