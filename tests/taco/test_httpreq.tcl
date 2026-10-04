@@ -15,6 +15,7 @@ namespace eval ::test::httpreq {
     variable Buf
     array set Buf {}
     variable Server ""
+    variable AcceptEncoding ""
 }
 
 proc ::test::httpreq::accept {ch addr port} {
@@ -41,6 +42,8 @@ proc ::test::httpreq::readable {ch} {
         if {[regexp -nocase {^content-length:\s*(\d+)} $line -> n]} {
             set length $n
         }
+        regexp -nocase {^accept-encoding:\s*(\S+)} $line -> \
+            ::test::httpreq::AcceptEncoding
     }
     if {[string length $body] < $length} return
     fileevent $ch readable {}
@@ -59,6 +62,8 @@ proc ::test::httpreq::route {ch method path body} {
         respond $ch 200 $Echoed($arg)
     } elseif {$route eq "status"} {
         respond $ch $arg "status $arg"
+    } elseif {$route eq "accept-encoding"} {
+        respond $ch 200 $::test::httpreq::AcceptEncoding
     } elseif {$route eq "slow"} {
         after 3000 [list ::test::httpreq::respond $ch 200 slow]
     } else {
@@ -81,6 +86,7 @@ if {$::tacky_test_http_base eq "" && ![testConstraint wasm]} {
         "http://127.0.0.1:[lindex [fconfigure $::test::httpreq::Server -sockname] 2]"
 }
 testConstraint httpBase [expr {$::tacky_test_http_base ne ""}]
+testConstraint nativeHttp [expr {![testConstraint wasm]}]
 
 # -- helpers ------------------------------------------------------------------
 
@@ -154,6 +160,13 @@ test httpreq-get-reports-progress {a download reports progress up to its size} \
         unset -nocomplain ::_hr_progress
     } -result {1 200000}
 
+test httpreq-get-asks-identity {a download asks for no content coding} \
+    -constraints {httpBase nativeHttp} -body {
+        ::test::httpreq::finish [::test::httpreq::run get /_t/accept-encoding \
+            -outfile [::test::httpreq::file ae]]
+        ::test::httpreq::get ae
+    } -result identity
+
 test httpreq-404-is-an-answer {a 404 completes, with its status code} \
     -constraints httpBase -body {
         ::test::httpreq::finish [::test::httpreq::run get /_t/status/404 \
@@ -182,7 +195,7 @@ test httpreq-reset {a reset request still calls back, as reset} \
         list $::test::httpreq::done $status
     } -result {1 reset}
 
-foreach name {up down big bigdown 404 slow reset} {
+foreach name {up down big bigdown ae 404 slow reset} {
     ::file delete [::test::httpreq::file $name]
 }
 if {$::test::httpreq::Server ne ""} {
