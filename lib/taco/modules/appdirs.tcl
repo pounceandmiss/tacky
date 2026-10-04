@@ -1,9 +1,28 @@
-# AI-generated. Works on Linux, hope it works on other platforms too.
 # config: accounts.db. data: per-account databases and downloaded attachments.
 # cache: regenerable files only. On Darwin config and data are one directory.
+# Unixes other than Darwin and Haiku get the XDG layout.
 proc appdirs {which} {
-    switch -- $::tcl_platform(os) {
-        Linux {
+    switch -glob -- $::tcl_platform(os) {
+        Darwin {
+            if {$which in {config data}} {
+                set base [file join $::env(HOME) Library {Application Support}]
+            } else {
+                set base [file join $::env(HOME) Library Caches]
+            }
+        }
+        Haiku {
+            set base [file join $::env(HOME) config \
+                [dict get {config settings data data cache cache} $which]]
+        }
+        Windows* {
+            # Data is not roaming: the OMEMO identity key is per-device.
+            switch -- $which {
+                config  { return [file join $::env(APPDATA) tacky] }
+                data    { return [file join $::env(LOCALAPPDATA) tacky data] }
+                default { return [file join $::env(LOCALAPPDATA) tacky cache] }
+            }
+        }
+        default {
             switch -- $which {
                 config {
                     set base [expr {[info exists ::env(XDG_CONFIG_HOME)]
@@ -20,21 +39,6 @@ proc appdirs {which} {
                         ? $::env(XDG_CACHE_HOME)
                         : [file join $::env(HOME) .cache]}]
                 }
-            }
-        }
-        Darwin {
-            if {$which in {config data}} {
-                set base [file join $::env(HOME) Library {Application Support}]
-            } else {
-                set base [file join $::env(HOME) Library Caches]
-            }
-        }
-        default {
-            # Data is not roaming: the OMEMO identity key is per-device.
-            switch -- $which {
-                config  { return [file join $::env(APPDATA) tacky] }
-                data    { return [file join $::env(LOCALAPPDATA) tacky data] }
-                default { return [file join $::env(LOCALAPPDATA) tacky cache] }
             }
         }
     }
