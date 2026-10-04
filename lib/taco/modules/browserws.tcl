@@ -52,7 +52,7 @@ proc ::websocket::send {sock type {msg ""}} {
         error "only text messages in a browser"
     }
     # A failed send arrives as an error event.
-    ::em::call -command [list ::websocket::Sent $sock] tackyWsSend $sock $msg
+    ::em::call tackyWsSend $sock $msg
     return [string length $msg]
 }
 
@@ -62,7 +62,7 @@ proc ::websocket::close {sock {code 1000} {reason ""}} {
         error "$sock is not a WebSocket"
     }
     variable Reasons
-    ::em::call -command list tackyWsClose $sock $code $reason
+    ::em::call tackyWsClose $sock $code $reason
     set Reasons($sock) $reason
     Closed $sock ok $code
 }
@@ -76,12 +76,6 @@ proc ::websocket::Event {sock kind payload} {
         return
     }
     Push $sock $kind $payload
-}
-
-proc ::websocket::Sent {sock result value} {
-    if {$result ne "ok"} {
-        Event $sock error $value
-    }
 }
 
 # The open call settled with the close code, or failed: report close and

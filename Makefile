@@ -129,10 +129,10 @@ lib: dist-dir
 	$(call copy-if-changed,$(LINUX_BUILD)/libtacky.a,dist/libtacky.a)
 
 # dist/wasm/: the taco backend for a browser, and everything a page needs to
-# use it, in one directory to copy onto a site. embed/tacky_wasm.c drives the
-# interpreter; wasm/src/ is the page's side of it, and the files locate each
-# other relative to their own URLs so the directory can live anywhere on the
-# origin.
+# use it, in one directory to copy onto a site. bin/tacky-web.tcl is the
+# backend's entry script, run by zippy's wasm launcher; wasm/src/ is the page's
+# side of it, and the files locate each other relative to their own URLs so the
+# directory can live anywhere on the origin.
 #
 #   tacky.mjs, tacky.wasm   the backend
 #   worker.js               the Web Worker it runs in
@@ -145,11 +145,8 @@ lib: dist-dir
 # a consumer has types. wasm/src/index.d.ts is that surface: a change to it is
 # a change to the version in wasm/src/package.json.
 #
-# The build itself is the same shape as libtacky.a - zippy's `lib` target with
-# the emscripten overlay, then one emcc link here - in its own tree, like every
-# other platform. EXPORTED_FUNCTIONS is what pulls the shim out of the archive:
-# the linker roots on them, and EMSCRIPTEN_KEEPALIVE alone does not make an
-# archive member a root.
+# The build is zippy's `app` target with the emscripten overlay, in its own
+# tree like every other platform.
 #
 #   make wasm            emcc on PATH                -> build/wasm/
 #   make DOCKER=1 wasm   zippy's pinned emsdk image  -> build/wasm-docker/
@@ -158,9 +155,8 @@ lib: dist-dir
 # moves between releases, and a distro package moves under you. Separate
 # BASEDIRs do it rather than a docker cache mount (IN_DOCKER_BUILD_SUBDIR=
 # turns that off), so the container tree stays under build/ for `make clean`.
-# Under DOCKER=1 the inner make and the final link both run in the container at
-# /src, so BASEDIR, the shim path and HOST_TCLSH (the image's tcl9.0) are
-# container paths - and ZIPPY has to be inside the project, since only the
+# Under DOCKER=1 the inner make runs in the container at /src, so BASEDIR,
+# the pre-js paths and HOST_TCLSH (the image's tcl9.0) are container paths - and ZIPPY has to be inside the project, since only the
 # project is mounted. That is the submodule's own path, so only a zippy
 # checked out elsewhere (ZIPPY=../zippy-wasm) has to build without docker.
 ifdef DOCKER
@@ -168,13 +164,11 @@ ifdef DOCKER
   WASM_MAKE  := IN_DOCKER_BUILD_SUBDIR= \
                 IN_DOCKER_CCACHE_DIR=/src/$(WASM_BUILD)/.ccache \
                 $(ZIPPY)/in_docker.sh emsdk make
-  WASM_EMCC  := IN_DOCKER_BUILD_SUBDIR= $(ZIPPY)/in_docker.sh emsdk emcc
   WASM_ROOT  := /src
   WASM_TCLSH := /usr/local/bin/tclsh9.0
 else
   WASM_BUILD := build/wasm
   WASM_MAKE  := $(MAKE)
-  WASM_EMCC  := emcc
   WASM_ROOT  := $(CURDIR)
   # Reuse the native tree's when it is there; otherwise say nothing and let
   # zippy build its own (emscripten.mk's NATIVE_TCLSH).
@@ -192,63 +186,47 @@ WASM_EM_BUILD := $(WASM_ROOT)/$(WASM_BUILD)/_build-emscripten
 # JS linked into every wasm module: the browser backends of taco_http and
 # ::websocket.
 WASM_PRE_JS_SRC := wasm/em/http.js wasm/em/ws.js
-WASM_PRE_JS := $(addprefix --pre-js $(WASM_ROOT)/,$(WASM_PRE_JS_SRC))
-wasm: dist-dir $(WASM_DIST)/tacky.mjs
-	cp $(ZIPPY)/emscripten/opfs-pool.js wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
 
-# zippy's make runs every time and rebuilds what changed; tacky.mjs is linked
-# again only if that changed libtacky.a.
-$(WASM_BUILD)/libtacky.a: FORCE
+# One wasm launcher: $(1) its name, $(2) SOURCES, $(3) ENTRY_SCRIPT, $(4)
+# APP_EXCLUDE. zippy's make runs every time and rebuilds what changed.
+define wasm-app
 	mkdir -p $(WASM_BUILD)
 	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(wasm_DEPS)" \
-	    SCRIPTS_ZIP=$(WASM_EM_BUILD)/scripts-lib.zip \
-	    SCRIPTS_OBJ=$(WASM_EM_BUILD)/scripts-lib.o \
-	    SOURCES="$(tackyd-json_SRC)" \
-	    ENTRY_SCRIPT="" \
-	    APP_EXCLUDE="$(COMMON_EXCL)" \
-	    LIB_SHIM_SRC=$(WASM_ROOT)/embed/tacky_wasm.c \
-	    LIB_NAME=tacky \
-	    BASEDIR=$(WASM_ROOT)/$(WASM_BUILD) \
-	    DEPSDIR=$(WASM_DEPS_DIR) \
-	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
-	    lib
-
-$(WASM_DIST)/tacky.mjs: $(WASM_BUILD)/libtacky.a $(WASM_PRE_JS_SRC)
-	mkdir -p $(WASM_DIST)
-	$(WASM_EMCC) -O2 -o $(WASM_DIST)/tacky.mjs $(WASM_BUILD)/libtacky.a $(ZIPPY_EM_LDFLAGS) \
-	    -sEXPORT_NAME=createTacky $(WASM_PRE_JS) \
-	    -sEXPORTED_FUNCTIONS=_tacky_boot,_tacky_start,_tacky_persist,_tacky_run,_opfsvfs_register
-
-# build/wasm/tacky-tcltest.mjs: the same interpreter with tacky's own Tcl test
-# suite bundled beside lib/, driven through zippy_eval. Tacky has hundreds of
-# tests; running those in wasm says far more about the port than anything
-# written again in JavaScript, and says it about the code that ships.
-#
-# Same build tree as `wasm`, so the deps are shared; its script zip is its own.
-WASM_TEST_EXCL := $(filter-out tests test_all.tcl,$(COMMON_EXCL))
-wasm-tcltest: $(WASM_BUILD)/tacky-tcltest.mjs
-
-.PHONY: $(WASM_BUILD)/tacky-tcltest.mjs FORCE
-FORCE:
-$(WASM_BUILD)/tacky-tcltest.mjs:
-	mkdir -p $(WASM_BUILD)
-	for f in $(WASM_PRE_JS_SRC); do [ ! $$f -nt $@ ] || rm -f $@; done
-	$(WASM_MAKE) -f $(ZIPPY)/zippy.mk TARGET_OS=emscripten \
-	    SHELL_TYPE=tclsh \
-	    DEPS="$(wasm_DEPS)" \
-	    SCRIPTS_ZIP=$(WASM_EM_BUILD)/scripts-test.zip \
-	    SCRIPTS_OBJ=$(WASM_EM_BUILD)/scripts-test.o \
-	    EM_APP_LDFLAGS="$(WASM_PRE_JS)" \
-	    SOURCES="lib bin tests" \
-	    ENTRY_SCRIPT="" \
-	    APP_EXCLUDE="$(WASM_TEST_EXCL)" \
-	    BIN_NAME=tacky-tcltest \
+	    SCRIPTS_ZIP=$(WASM_EM_BUILD)/scripts-$(1).zip \
+	    SCRIPTS_OBJ=$(WASM_EM_BUILD)/scripts-$(1).o \
+	    EM_APP_LDFLAGS="$(addprefix --pre-js $(WASM_ROOT)/,$(WASM_PRE_JS_SRC))" \
+	    EM_APP_DEPS="$(addprefix $(WASM_ROOT)/,$(WASM_PRE_JS_SRC))" \
+	    SOURCES="$(2)" \
+	    ENTRY_SCRIPT="$(3)" \
+	    APP_EXCLUDE="$(4)" \
+	    BIN_NAME=$(1) \
 	    BASEDIR=$(WASM_ROOT)/$(WASM_BUILD) \
 	    DEPSDIR=$(WASM_DEPS_DIR) \
 	    $(if $(WASM_TCLSH),HOST_TCLSH=$(WASM_TCLSH),) \
 	    app
+endef
+
+.PHONY: $(WASM_BUILD)/tacky.mjs $(WASM_BUILD)/tacky-tcltest.mjs
+wasm: dist-dir $(WASM_BUILD)/tacky.mjs
+	mkdir -p $(WASM_DIST)
+	cp $(WASM_BUILD)/tacky.mjs $(WASM_BUILD)/tacky.wasm $(ZIPPY)/emscripten/opfs-pool.js \
+	    wasm/src/*.js wasm/src/index.d.ts wasm/src/package.json $(WASM_DIST)/
+
+$(WASM_BUILD)/tacky.mjs:
+	$(call wasm-app,tacky,$(tackyd-json_SRC),bin/tacky-web.tcl,$(COMMON_EXCL))
+
+# build/wasm/tacky-tcltest.mjs: the same interpreter with tacky's own Tcl test
+# suite bundled beside lib/, and no entry script: the page runs test_all.tcl
+# through zippy_eval. Tacky has hundreds of tests; running those in wasm says
+# far more about the port than anything written again in JavaScript, and says
+# it about the code that ships.
+WASM_TEST_EXCL := $(filter-out tests test_all.tcl,$(COMMON_EXCL))
+wasm-tcltest: $(WASM_BUILD)/tacky-tcltest.mjs
+
+$(WASM_BUILD)/tacky-tcltest.mjs:
+	$(call wasm-app,tacky-tcltest,lib bin tests test_all.tcl,,$(WASM_TEST_EXCL))
 
 # Targets here must not run at once: the native ones share build/linux, wasm and
 # wasm-tcltest share one build tree and scripts.zip, and all of them fetch into

@@ -116,10 +116,13 @@ is its reference.
 Four things come from the page rather than the backend, because a page owns
 them: the transport is XMPP over WebSocket (RFC 7395), since there are no
 sockets; file transfers go through the browser's own HTTP stack; SQLite runs
-on a VFS over the Origin Private File System, with IndexedDB and memory behind
-it; and WebRTC is the page's, driven by `createMediaHost` in
-`wasm/src/media-host.js`, which reports the peer's media by call `sid`. TLS
-and image decoding are the platform's too.
+on a VFS over the Origin Private File System - or in memory, but only when the
+page asks for a transient store; and WebRTC is the page's, driven by
+`createMediaHost` in `wasm/src/media-host.js`, which reports the peer's media
+by call `sid`. TLS and image decoding are the platform's too. The store is one
+tab's at a time: a client started while another tab holds it fails with
+`fatalReason` `locked`, so a site with several tabs runs the backend in one and
+relays to it.
 
 The websocket endpoint is per account: its `websocket_url` if set, else the
 `urn:xmpp:alt-connections:websocket` link in

@@ -59,42 +59,26 @@ function check(name, ok, detail = '') {
     return ok;
 }
 
-// -- tcl: the native suites, in the interpreter `make wasm-tcltest` builds ---
-// tests/taco, then tests/taco_integration over the WebSocket when a server is
-// given (?ws=...).
+// -- tcl: test_all.tcl, in the interpreter `make wasm-tcltest` builds ------
+// With a server (?ws=...), tests/taco_integration joins in over the WebSocket.
 
 async function tclScenario() {
     status.textContent = 'running tacky\u2019s Tcl suite\u2026';
-    const lines = [];
-    const { default: createInterp } = await import('./tacky-tcltest.mjs');
-    const M = await createInterp({
-        print: (line) => lines.push(line),
-        printErr: (line) => lines.push(line),
-    });
-    let suites = [['taco', {}]];
+    const env = { TACKY_TEST_DIRS: 'taco', TACKY_TEST_HTTP_BASE: location.origin };
     if (WS) {
-        suites.push(['taco_integration', {
-            tacoArgs: '-transport websocket',
-            accountArgs: `-websocket_url ${WS}`,
-            server: params.get('server') ?? '',
-        }]);
-    }
-    if (params.get('dir')) suites = suites.filter(([dir]) => dir === params.get('dir'));
-    const failures = [];
-    for (const [dir, extra] of suites) {
-        const result = await runSuite(M, lines, {
-            dir,
-            file: params.get('file') ?? '',
-            match: params.get('match') ?? '*',
-            httpBase: location.origin,
-            ...extra,
+        Object.assign(env, {
+            TACKY_TEST_DIRS: 'taco taco_integration',
+            TACKY_TEST_TACO_ARGS: '-transport websocket',
+            TACKY_TEST_ACCOUNT_ARGS: `-websocket_url ${WS}`,
+            XMPP_SERVER: params.get('server') ?? '',
         });
-        check(`${dir}: tcltest passes`, result.ok,
-            result.driverError ?? `${result.summary.trim()} ${result.failures.slice(0, 30).join(' ')}`);
-        failures.push(...result.failures);
-        if (!result.ok && result.report) console.log(result.report.join('\n'));
     }
-    globalThis.__smokeSuite = { failures };
+    for (const [param, name] of [['dir', 'TACKY_TEST_DIRS'], ['file', 'TACKY_TEST_FILE'],
+            ['match', 'TACKY_TEST_MATCH']]) {
+        if (params.get(param)) env[name] = params.get(param);
+    }
+    const result = await runSuite(env);
+    check('tcltest passes', result.ok, result.error ?? '');
 }
 
 // -- storage: a setting written on the first visit is there on the second ---
@@ -129,6 +113,14 @@ async function storageScenario() {
         check('second visit: the setting survived a reload', true, previous);
     }
     globalThis.__smokeVisit = previous === '' ? 'first' : 'second';
+
+    // A second tab, as far as OPFS can tell: the store is this one's.
+    const other = createClient();
+    check('a second client is refused the store, not given another',
+        await other.ready === false && other.fatalReason === 'locked',
+        `${other.fatalReason}: ${other.fatal}`);
+    other.worker.terminate();
+
     check('the backend stops cleanly', await client.stop());
 }
 
