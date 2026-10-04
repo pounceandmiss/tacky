@@ -175,7 +175,11 @@ proc ::taco_http::NativeRequest {method url optsVar} {
 
     NativeInit
     set opts [list -timeout $o(-timeout)]
-    if {[llength $o(-headers)]} { lappend opts -headers $o(-headers) }
+    set headers $o(-headers)
+    # The file is wanted byte for byte, and -progress counts decoded bytes
+    # against a compressed Content-Length.
+    if {$method eq "GET"} { lappend headers Accept-Encoding identity }
+    if {[llength $headers]} { lappend opts -headers $headers }
     if {$method eq "PUT"} {
         set fh [open $o(-infile) rb]
         lappend opts -method PUT -querychannel $fh -queryblocksize 65536
