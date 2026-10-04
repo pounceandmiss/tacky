@@ -344,12 +344,92 @@ test media-ontrack-audio-numeric-mid \
 
 test media-input-device-falls-back {an unusable mic warns and falls back to the default} \
     {*}$media_env -body {
-        mockrtc::fail ::rtcma::capturer::new "device gone" "-device-id *"
+        tacky audio setPreferredDevice -kind capture -id mic9
+        mockrtc::fail ::rtcma::capturer::new "device gone" "-device-id mic9"
         set sid [media_caller]
         string map [list $sid SID] [list \
             [llength [mockrtc::calls ::rtcma::capturer::new]] \
             [lindex [calls_events] end]]
     } -result {2 {<Warning> -sid SID -reason {input device unavailable, using default}}}
+
+# The rtcma calls for one side made after log index $from, by short name.
+proc media_side_calls {which from} {
+    set out {}
+    foreach entry [lrange [mockrtc::log] $from end] {
+        set cmd [lindex $entry 0]
+        if {[string match ::rtcma::${which}::* $cmd]} {
+            lappend out [namespace tail $cmd]
+        }
+    }
+    return $out
+}
+
+test media-output-unopenable-warns {no speaker at all warns and the call runs on} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::new "no device" "*"
+        set sid [media_caller]
+        set events [calls_events]
+        string map [list $sid SID] [list \
+            [lindex $events end] \
+            [llength [lsearch -all -index 0 $events <Failed>]] \
+            [dict exists [calls_state] $sid] \
+            [llength [mockrtc::calls ::rtcma::player::attach]] \
+            [llength [mockrtc::calls ::rtcma::capturer::attach]]]
+    } -result {{<Warning> -sid SID -reason {output device could not be opened: no device}} 0 1 0 1}
+
+test media-output-late-open {picking a speaker mid-call opens the missing side} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::new "no device" "-device-id {}"
+        set sid [media_caller]
+        set from [llength [mockrtc::log]]
+        c.calls setDevices -sid $sid -output spk2
+        list [media_side_calls player $from] \
+            [lindex [mockrtc::calls ::rtcma::player::new] end] \
+            [expr {[lindex [mockrtc::calls ::rtcma::player::attach] 0 1]
+                   eq [lindex [mockrtc::calls ::rtcma::capturer::attach] 0 1]}]
+    } -result {{new attach start set-volume} {-device-id spk2} 1}
+
+test media-input-late-open {picking a mic mid-call opens the missing side} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::capturer::new "no device" "-device-id {}"
+        set sid [media_caller]
+        set from [llength [mockrtc::log]]
+        c.calls setDevices -sid $sid -input mic2
+        media_side_calls capturer $from
+    } -result {new attach start set-volume}
+
+test media-late-open-fails-retries {a late open that fails warns and is tried again} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::new "no device" "*"
+        set sid [media_caller]
+        c.calls setDevices -sid $sid -output spk2
+        set warning [lindex [calls_events] end]
+        set from [llength [mockrtc::log]]
+        c.calls setDevices -sid $sid -output spk3
+        string map [list $sid SID] [list $warning \
+            [media_side_calls player $from]]
+    } -result {{<Warning> -sid SID -reason {output device unavailable: no device}} {new new}}
+
+test media-late-open-takes-volume {a side opened late gets the volume set while it was missing} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::new "no device" "-device-id {}"
+        set sid [media_caller]
+        set from [llength [mockrtc::log]]
+        c.calls applyVolume -kind playback -volume 0.25
+        set before [media_side_calls player $from]
+        c.calls setDevices -sid $sid -output spk2
+        list $before [lindex [mockrtc::calls ::rtcma::player::set-volume] end 1]
+    } -result {{} 0.25}
+
+test media-teardown-one-sided {hanging up with a side never opened destroys only the other} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::new "no device" "*"
+        set sid [media_caller]
+        c.calls hangup -sid $sid
+        list [llength [mockrtc::calls ::rtcma::capturer::destroy]] \
+            [llength [mockrtc::calls ::rtcma::player::destroy]] \
+            [dict exists [calls_state] $sid]
+    } -result {1 0 0}
 
 # -- Buffered candidates --
 

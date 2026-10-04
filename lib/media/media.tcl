@@ -34,7 +34,9 @@
 # Device ids are opaque strings from enumerate*, and a stored preference
 # outlives the backend that produced it. A backend asked for an id it does
 # not know opens its default instead and reports `deviceFallback`; it never
-# fails a call over a stale preference.
+# fails a call over a stale preference. An audio side no device can serve is
+# an advisory `error op attachAudio kind capture|playback`; the pc stays
+# usable and setAudioDevice for that kind opens it.
 #
 # Capabilities (`tacky::media capabilities` -> flag -> 0|1) let callers skip
 # what a backend cannot do:

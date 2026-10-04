@@ -741,6 +741,15 @@ snit::type taco_calls {
                 jlog debug "transport-info: candidate rejected: $reason"
                 return
             }
+            attachAudio {
+                # Advisory: one side has no device, the call runs on and
+                # picking a device opens it. Fatal falls through below.
+                if {![dict get $ev fatal]} {
+                    $client emit calls <Warning> -sid $sid -reason \
+                        "[$self AudioSide $ev] device could not be opened: $reason"
+                    return
+                }
+            }
             setAudioDevice {
                 $client emit calls <Warning> -sid $sid \
                     -reason "[$self AudioSide $ev] device unavailable: $reason"
