@@ -137,8 +137,7 @@ beside its page, so `make wasm` here is the first step of its build.
 
 ```
 make test              # the suite, natively
-make wasm-test         # the wasm backend under node, tacky's suite included
-make wasm-test-browser # the same in headless Chromium: a Worker, OPFS, a reload
+make wasm-test         # the wasm backend in headless Chromium, tacky's suite included
 ```
 
 The wasm targets bundle `tests/` into a wasm interpreter and run the suite
@@ -146,7 +145,7 @@ there, so the browser build answers to the same tests as the native one. A
 test needing something a page lacks - a thread, a process, a listening socket
 - carries the `!wasm` constraint rather than being deleted.
 
-Either target picks up its networked half when a server is up, the way `make
+Both pick up their networked half when a server is up, the way `make
 test` picks up `tests/taco_integration`. Needs docker:
 
 ```

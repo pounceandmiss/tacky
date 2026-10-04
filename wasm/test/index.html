@@ -59,7 +59,9 @@ function check(name, ok, detail = '') {
     return ok;
 }
 
-// -- tcl: the native suite, in the interpreter `make wasm-tcltest` builds ----
+// -- tcl: the native suites, in the interpreter `make wasm-tcltest` builds ---
+// tests/taco, then tests/taco_integration over the WebSocket when a server is
+// given (?ws=...).
 
 async function tclScenario() {
     status.textContent = 'running tacky\u2019s Tcl suite\u2026';
@@ -69,23 +71,30 @@ async function tclScenario() {
         print: (line) => lines.push(line),
         printErr: (line) => lines.push(line),
     });
-    const result = await runSuite(M, lines, {
-        dir: params.get('dir') ?? 'taco',
-        file: params.get('file') ?? '',
-        match: params.get('match') ?? '*',
-        httpBase: location.origin,
-    });
-    globalThis.__smokeSuite = result;
-
-    if (result.driverError) {
-        check('the suite runs at all', false, result.driverError);
-        return;
+    let suites = [['taco', {}]];
+    if (WS) {
+        suites.push(['taco_integration', {
+            tacoArgs: '-transport websocket',
+            accountArgs: `-websocket_url ${WS}`,
+            server: params.get('server') ?? '',
+        }]);
     }
-    check(`${result.total} tests ran`, result.total > 0,
-        `${result.passed} passed, ${result.skipped} skipped, ${result.failed} failed`);
-    check('none of them failed', result.failed === 0,
-        result.failures.slice(0, 30).join(' '));
-    check('every test file loaded', !result.broken, result.broken ?? '');
+    if (params.get('dir')) suites = suites.filter(([dir]) => dir === params.get('dir'));
+    const failures = [];
+    for (const [dir, extra] of suites) {
+        const result = await runSuite(M, lines, {
+            dir,
+            file: params.get('file') ?? '',
+            match: params.get('match') ?? '*',
+            httpBase: location.origin,
+            ...extra,
+        });
+        check(`${dir}: tcltest passes`, result.ok,
+            result.driverError ?? `${result.summary.trim()} ${result.failures.slice(0, 30).join(' ')}`);
+        failures.push(...result.failures);
+        if (!result.ok && result.report) console.log(result.report.join('\n'));
+    }
+    globalThis.__smokeSuite = { failures };
 }
 
 // -- storage: a setting written on the first visit is there on the second ---

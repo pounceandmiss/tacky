@@ -28,7 +28,12 @@ const buildDir = resolve(flag('build', 'build/wasm'));
 const scenario = flag('scenario', 'storage');
 const DOMAIN = process.env.XMPP_DOMAIN ?? 'example.local';
 const query = new URLSearchParams({ scenario });
-if (scenario !== 'storage') {
+// The tcl scenario's narrowing: one suite (taco, taco_integration), one file.
+for (const name of ['dir', 'file', 'match']) {
+    if (flag(name)) query.set(name, flag(name));
+}
+// The tcl scenario runs the integration suite too when it is given a server.
+if (scenario !== 'storage' && (scenario !== 'tcl' || process.env.XMPP_SERVER)) {
     query.set('ws', flag('ws', process.env.XMPP_WS_URL
         ?? 'ws://127.0.0.1:5280/xmpp-websocket'));
     query.set('jid', flag('jid', `test@${DOMAIN}`));
@@ -37,6 +42,7 @@ if (scenario !== 'storage') {
     query.set('pass2', flag('pass2', 'romeopass'));
     query.set('jid3', flag('jid3', `juliet@${DOMAIN}`));
     query.set('pass3', flag('pass3', 'julietpass'));
+    query.set('server', flag('server', process.env.XMPP_SERVER ?? ''));
 }
 
 let failures = 0;
@@ -88,6 +94,9 @@ cdp.on((msg) => {
     if (msg.method === 'Runtime.exceptionThrown') {
         const d = msg.params.exceptionDetails;
         console.log('   [page error]', d.exception?.description ?? d.text);
+    } else if (msg.method === 'Log.entryAdded' && msg.params.entry.level !== 'verbose') {
+        // The browser's own messages: blocked requests, CORS, network errors.
+        console.log(`   [${msg.params.entry.source}]`, msg.params.entry.text, msg.params.entry.url ?? '');
     } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type !== 'debug') {
         console.log(`   [console.${msg.params.type}]`,
             msg.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
@@ -98,6 +107,7 @@ try {
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
     await cdp.send('Runtime.enable', {}, sessionId);
+    await cdp.send('Log.enable', {}, sessionId);
     await cdp.send('Page.enable', {}, sessionId);
 
     console.log(`-- ${scenario} (${url}) --`);
