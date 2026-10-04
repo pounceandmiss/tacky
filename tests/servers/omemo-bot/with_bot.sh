@@ -10,7 +10,7 @@
 #   OMEMO_BOT_JID         bot@example.local
 #   OMEMO_BOT_PASSWORD    botpass
 #   OMEMO_BOT_CONTAINER   docker container name (e.g. for docker exec)
-# Plus everything with_prosody.sh exports: SPOOF_SSL_CERT, XMPP_SERVER.
+# Plus everything with_prosody.sh exports.
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ BOT_READY_TIMEOUT=20
 DOMAIN="example.local"
 BOT_USER="bot"
 BOT_PASSWORD="botpass"
-XMPP_PORT="${PORT_HOST:-5222}"
+XMPP_PORT="${XMPP_PORT:-5222}"
 
 export OMEMO_BOT_JID="${BOT_USER}@${DOMAIN}"
 export OMEMO_BOT_PASSWORD="$BOT_PASSWORD"
@@ -42,13 +42,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-echo ">>> Locating prosody container"
-PROSODY_CONTAINER="$(docker ps --filter 'name=prosody-test-' --format '{{.Names}}' | head -n1)"
-if [ -z "$PROSODY_CONTAINER" ]; then
-  echo "ERROR: no prosody-test-* container running" >&2
+if [ -z "${PROSODY_CONTAINER:-}" ]; then
+  echo "ERROR: PROSODY_CONTAINER not set - run this via tests/servers/with_prosody.sh" >&2
   exit 2
 fi
-echo "    found: $PROSODY_CONTAINER"
 
 echo ">>> Building $IMAGE (cached layers reused on re-run)"
 docker build --network host -t "$IMAGE" "$SCRIPT_DIR"
