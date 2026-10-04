@@ -12,6 +12,8 @@ snit::type jlog_type {
     option -defaultlevel -default warning -configuremethod SetDefaultLevel
     # Past this the log rotates to <path>.1; 0 disables rotation.
     option -maxlogbytes 4194304
+    # Logged stanzas lose what a person wrote; see jlog_redact.
+    option -redactcontent 1
 
     # Shared with the native loggers (libdatachannel / rtc-ma); ordered least
     # to most severe, with "none" last as a silence-everything threshold.
@@ -189,6 +191,20 @@ snit::type jlog_type {
         return $logfile
     }
 
+    method setredact {args} {
+        array set opts {-enabled 1}
+        array set opts $args
+        if {![string is boolean -strict $opts(-enabled)]} {
+            error "invalid -enabled \"$opts(-enabled)\": must be a boolean"
+        }
+        $self configure -redactcontent [string is true $opts(-enabled)]
+        return
+    }
+
+    method getredact {args} {
+        return $options(-redactcontent)
+    }
+
     # Omitting -source drives every native logger.
     method setnativelevel {args} {
         array set opts {-source "" -level none}
@@ -277,7 +293,8 @@ snit::type jlog_type {
         }
         set line "\[$ts $opts(-level)\] $who: $opts(-text)"
         if {[info exists opts(-stanza)]} {
-            append line \n [jwrite -pretty [jlog_redact $opts(-stanza)]]
+            append line \n [jwrite -pretty \
+                [jlog_redact $opts(-stanza) $options(-redactcontent)]]
         }
         return $line
     }
@@ -389,23 +406,75 @@ snit::type taco_log {
         jlog setenabled {*}$args -dir $options(-cache-dir)
     }
     tackymethod getfile {args} { jlog getfile {*}$args }
+    tackymethod setredact {args} { jlog setredact {*}$args }
+    tackymethod getredact {args} { jlog getredact {*}$args }
 }
 
 # A stanza as it may be written to a log: secrets replaced. Covers what a
 # stanza can carry in the clear - SASL exchanges, a <password/> (account
-# registration and password change, a room's join), and data form fields
-# named for a password or secret (room configuration, registration forms).
-proc jlog_redact {node} {
+# registration and password change, a room's join), data form fields named
+# for a password or secret (room configuration, registration forms), and the
+# headers of an upload slot.
+#
+# With content set, what a person wrote or shared is replaced too. Best
+# effort: only the elements named below, and nothing a server or a newer
+# extension puts elsewhere.
+proc jlog_redact {node {content 1}} {
     set tag [dict get $node tag]
     set ns [expr {[dict exists $node ns] ? [dict get $node ns] : ""}]
     if {$tag eq "password"
             || $ns eq "urn:ietf:params:xml:ns:xmpp-sasl"
             && $tag in {auth response success challenge}} {
-        if {[dict get $node body] ne ""} {
-            dict set node body "\[redacted\]"
-        }
+        set node [jlog_redact_text $node]
         dict set node children {}
         return $node
+    }
+    if {$tag eq "slot" && $ns eq "urn:xmpp:http:upload:0"} {
+        set kids {}
+        foreach c [dict get $node children] {
+            if {$content && [dict get $c tag] in {put get}
+                    && [dict exists $c attrs url]} {
+                dict set c attrs url "\[redacted\]"
+            }
+            set ckids {}
+            foreach h [dict get $c children] {
+                if {[dict get $h tag] eq "header"} {
+                    set h [jlog_redact_text $h]
+                }
+                lappend ckids $h
+            }
+            dict set c children $ckids
+            lappend kids $c
+        }
+        dict set node children $kids
+        return $node
+    }
+    if {$content} {
+        if {$tag in {body subject}} {
+            return [jlog_redact_text $node 1]
+        }
+        if {$tag eq "html" && $ns eq "http://jabber.org/protocol/xhtml-im"} {
+            dict set node children {}
+            dict set node body "\[redacted\]"
+            return $node
+        }
+        # Their children carry no ns of their own when built with j.
+        set leaves [switch -- $ns {
+            urn:xmpp:reactions:0 { list reaction }
+            jabber:x:oob         { list url desc }
+            default              { list }
+        }]
+        if {$leaves ne ""} {
+            set kids {}
+            foreach c [dict get $node children] {
+                if {[dict get $c tag] in $leaves} {
+                    set c [jlog_redact_text $c 1]
+                }
+                lappend kids $c
+            }
+            dict set node children $kids
+            return $node
+        }
     }
     if {$tag eq "field"} {
         set var ""
@@ -423,9 +492,24 @@ proc jlog_redact {node} {
     }
     set kids {}
     foreach c [dict get $node children] {
-        lappend kids [jlog_redact $c]
+        lappend kids [jlog_redact $c $content]
     }
     dict set node children $kids
+    return $node
+}
+
+# Empty text stays empty, so a bodyless stanza still reads as one. The length
+# tells a short message from a truncated one without saying what it was.
+proc jlog_redact_text {node {withLength 0}} {
+    set text [expr {[dict exists $node body] ? [dict get $node body] : ""}]
+    if {$text eq ""} {
+        return $node
+    }
+    if {$withLength} {
+        dict set node body "\[redacted [string length $text] chars\]"
+    } else {
+        dict set node body "\[redacted\]"
+    }
     return $node
 }
 

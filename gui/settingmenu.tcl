@@ -3,19 +3,22 @@
 # unset, Apply leaves it untouched; a stored value arrives via observe's pull.
 namespace eval settingmenu {}
 
-# settingmenu::checkbutton MENU LABEL -var FQVAR -key KEY ?-onchange CMD? ?-tag T? ?-tacky T?
+# settingmenu::checkbutton MENU LABEL -var FQVAR -key KEY ?-onchange CMD? ?-confirm CMD? ?-tag T? ?-tacky T?
 #   -var       fully-qualified var name  (pass [myvar foo] from inside a type)
 #   -tag       observe/cleanup tag       (pass $win so `unlisten $win` frees it)
 #   -onchange  optional command prefix run after the value updates
+#   -confirm   optional command prefix run with the new value on a click only,
+#              before it is stored; false puts the box back and stores nothing
 #   -tacky     tacky instance            (pass $options(-tacky) where injectable)
 proc settingmenu::checkbutton {menu label args} {
-    array set opt {-onchange "" -tag "" -tacky ::tacky}
+    array set opt {-onchange "" -confirm "" -tag "" -tacky ::tacky}
     array set opt $args
     set var $opt(-var)
     set key $opt(-key)
     if {$opt(-tag) eq ""} { set opt(-tag) $var }
     $menu add checkbutton -label $label -variable $var \
-        -command [list settingmenu::Toggle $opt(-tacky) $key $var $opt(-onchange)]
+        -command [list settingmenu::Toggle $opt(-tacky) $key $var \
+            $opt(-onchange) $opt(-confirm)]
     $opt(-tacky) observe -tag $opt(-tag) setting <Changed> -key $key \
         [list settingmenu::Apply $var $opt(-onchange)]
 }
@@ -39,7 +42,11 @@ proc settingmenu::radiogroup {menu args} {
         [list settingmenu::ApplyValue $var $opt(-onchange)]
 }
 
-proc settingmenu::Toggle {t key var onchange} {
+proc settingmenu::Toggle {t key var onchange {confirm ""}} {
+    if {$confirm ne "" && ![uplevel #0 [linsert $confirm end [set $var]]]} {
+        set $var [expr {![set $var]}]
+        return
+    }
     $t setting set -key $key -value [set $var]
     if {$onchange ne ""} { uplevel #0 $onchange }
 }

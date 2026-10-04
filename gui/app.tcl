@@ -73,6 +73,8 @@ snit::type app_type {
             ::tacky observe -tag $self setting <Changed> -key log_to_file \
                 [mymethod ApplyLogFile]
         }
+        ::tacky observe -tag $self setting <Changed> -key log_redact_content \
+            [mymethod ApplyLogRedact]
         if {$options(-debug-level) eq ""} {
             ::tacky observe -tag $self setting <Changed> -key log_level \
                 [mymethod ApplyLogLevel]
@@ -113,6 +115,12 @@ snit::type app_type {
         set val [dict get $ev -value]
         if {$val eq ""} return
         ::tacky log setenabled -enabled [expr {!!$val}]
+    }
+
+    method ApplyLogRedact {ev} {
+        set val [dict get $ev -value]
+        if {$val eq ""} return
+        ::tacky log setredact -enabled [expr {!!$val}]
     }
 
     method ApplyLogLevel {ev} {
