@@ -199,8 +199,6 @@ snit::type taco_account {
             error "Account doesn't exist: $jid"
         }
 
-        $options(-taco) emit account <Removed> -acc $jid
-
         set client [$self liveClient -acc $jid]
         if {$client ne ""} {
             catch {$client disconnect}
@@ -214,6 +212,7 @@ snit::type taco_account {
             set base [file join $options(-data-dir) $jid.db]
             taco_dbfile delete $base $base-wal $base-shm
         }
+        $options(-taco) emit account <Removed> -acc $jid
     }
 
     method enable {args} {
