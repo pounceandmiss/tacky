@@ -227,15 +227,15 @@ every event name is bare, both in an `["event", ...]` message and as a
     account exists {acc: string}                    -> bool
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
     account add {acc: string, password?: string, username?: string, domain?: string,
-                 websocket_url?: string}
+                 port?: int, websocket_url?: string}
     account set {acc: string, password?: string, username?: string, domain?: string,
-                 websocket_url?: string, enabled?: bool}
+                 port?: int, websocket_url?: string, enabled?: bool}
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
-    account_fields = {username: string, domain: string, password: string,
+    account_fields = {username: string, domain: string, port: int, password: string,
                       resource: string, enabled: bool, websocket_url: string}
 
 `add` creates or updates. On create, `username` and `domain` default to
@@ -249,6 +249,9 @@ online one keeps its session. `changePassword` changes the password
 on the server (XEP-0077) and, if that works, updates the stored one - the
 reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
+
+`port` (default 5222) is the port on `domain` the account dials on the tcp
+transport. Changes apply on the next connect.
 
 `websocket_url` (`ws://` or `wss://`) is where the account dials on the
 websocket transport. Empty, it is discovered: the

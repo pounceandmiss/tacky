@@ -202,7 +202,7 @@ jsonify_type jsonify \
         bookmarks/defaultNick   string
         account/list            list
         account/exists          bool
-        account/get             {dict {enabled bool}}
+        account/get             {dict {enabled bool port int}}
         chats/latest            list
         presence/get            presence
         presence/isOnline       bool
