@@ -111,19 +111,19 @@ proc ::taco_http::BrowserRequest {method url optsVar} {
     return $token
 }
 
-# tackyHttp resolves with {status code message}; `error` means the call
-# itself failed.
+# tackyHttp resolves with the HTTP status code, or fails with "timed out",
+# "aborted" or what went wrong.
 proc ::taco_http::BrowserDone {token result value} {
     variable Requests
     if {![info exists Requests($token)]} return
     if {$result eq "ok"} {
-        lassign $value status ncode message
+        dict set Requests($token) status ok
+        dict set Requests($token) ncode $value
     } else {
-        lassign [list error 0 $value] status ncode message
+        dict set Requests($token) status \
+            [dict getdef {{timed out} timeout aborted reset} $value error]
+        dict set Requests($token) error $value
     }
-    dict set Requests($token) status $status
-    dict set Requests($token) ncode $ncode
-    dict set Requests($token) error $message
     BrowserNotify $token
 }
 

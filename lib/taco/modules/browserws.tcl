@@ -18,6 +18,9 @@ namespace eval ::websocket {
     # sock -> {call id, handler}
     variable Socks
     array set Socks {}
+    # sock -> the reason the browser gave with its close
+    variable Reasons
+    array set Reasons {}
     variable Next 0
 }
 
@@ -58,13 +61,20 @@ proc ::websocket::close {sock {code 1000} {reason ""}} {
     if {![info exists Socks($sock)]} {
         error "$sock is not a WebSocket"
     }
+    variable Reasons
     ::em::call -command list tackyWsClose $sock $code $reason
-    Closed $sock ok [list $code $reason]
+    set Reasons($sock) $reason
+    Closed $sock ok $code
 }
 
 proc ::websocket::Event {sock kind payload} {
     variable Socks
+    variable Reasons
     if {![info exists Socks($sock)]} return
+    if {$kind eq "close"} {
+        set Reasons($sock) $payload
+        return
+    }
     Push $sock $kind $payload
 }
 
@@ -74,18 +84,22 @@ proc ::websocket::Sent {sock result value} {
     }
 }
 
-# The open call settled (the socket closed, or the call failed): report
-# close and disconnect, once.
+# The open call settled with the close code, or failed: report close and
+# disconnect, once.
 proc ::websocket::Closed {sock result value} {
     variable Socks
+    variable Reasons
     if {![info exists Socks($sock)]} return
     lassign $Socks($sock) id handler
     unset Socks($sock)
     ::em::cancel $id
-    if {$result ne "ok"} {
-        set value [list 1006 $value]
+    if {$result eq "ok"} {
+        set msg [list $value [expr {[info exists Reasons($sock)] ? $Reasons($sock) : ""}]]
+    } else {
+        set msg [list 1006 $value]
     }
-    Push $sock close $value $handler
+    unset -nocomplain Reasons($sock)
+    Push $sock close $msg $handler
     Push $sock disconnect "Disconnected from remote end" $handler
 }
 
