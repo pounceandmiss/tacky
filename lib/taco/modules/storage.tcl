@@ -402,10 +402,7 @@ snit::type taco_storage {
             if {$direction eq "encrypt"} {
                 taco_pragma_key migratekeydb $passphrase
             }
-            migratekeydb eval {
-                CREATE TABLE IF NOT EXISTS attachment_key(
-                    hash TEXT PRIMARY KEY, iv BLOB NOT NULL, key BLOB NOT NULL)
-            }
+            taco_schema_migrate migratekeydb per-account
             if {$direction eq "encrypt"} {
                 if {[dict exists $byAccount $jid]} {
                     foreach hash [dict keys [dict get $byAccount $jid]] {

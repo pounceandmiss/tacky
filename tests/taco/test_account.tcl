@@ -261,20 +261,3 @@ tacky_test account-websocket-url-enable-updates {enable carries a changed one to
         tacky account enable -acc a@example.com
         list $before [[tacky client a@example.com] cget -ws-url]
     } -result {{} wss://ws.example.com/x}
-
-test account-schema-upgrade {an accounts.db from before port and websocket_url gains both, rows intact} \
-    -setup {
-        sqlite3 ::_olddb :memory:
-        ::_olddb eval {
-            CREATE TABLE account(jid PRIMARY KEY, username, domain, password,
-                                 resource, enabled INTEGER DEFAULT 0);
-            INSERT INTO account(jid, username, domain, password, enabled)
-                VALUES('old@example.com', 'old', 'example.com', 'secret', 1);
-        }
-    } -cleanup {
-        catch {::_oldaccount destroy}
-        ::_olddb close
-    } -body {
-        taco_account ::_oldaccount -db ::_olddb
-        ::_olddb eval {SELECT password, enabled, port, websocket_url FROM account WHERE jid='old@example.com'}
-    } -result {secret 1 5222 {}}

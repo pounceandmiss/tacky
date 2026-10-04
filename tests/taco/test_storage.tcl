@@ -499,11 +499,7 @@ test storage-migrate-attach-files-selects-matching-hashes-only \
 # column on chat_message) for OmemoAttachUrlsByAccount's own query.
 proc storagetest_plant_chat_message {jidDbFile url} {
     sqlite3 ::_storagetestmsgdb $jidDbFile
-    ::_storagetestmsgdb eval {
-        CREATE TABLE IF NOT EXISTS chat_message(
-            timestamp INTEGER, chat_jid TEXT, attachments TEXT,
-            PRIMARY KEY(chat_jid, timestamp))
-    }
+    taco_schema_migrate ::_storagetestmsgdb per-account
     set atts [list [dict create url $url type file name f size "" mime ""]]
     ::_storagetestmsgdb eval {
         INSERT INTO chat_message(timestamp, chat_jid, attachments)

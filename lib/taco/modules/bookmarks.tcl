@@ -46,7 +46,6 @@ snit::type taco_bookmarks {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $self Migrate
         $client pubsub handler urn:xmpp:bookmarks:1 -own-only \
             [mymethod OnNotification]
         $client caps addFeature urn:xmpp:bookmarks:1+notify
@@ -552,23 +551,6 @@ snit::type taco_bookmarks {
             if {!$row(autojoin)} return
             if {[$client muc isJoined -jid $jid]} return
             $self Join $jid $row(nick) $row(password)
-        }
-    }
-
-    method Migrate {} {
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS bookmark(
-                jid TEXT PRIMARY KEY,
-                name TEXT,
-                autojoin INTEGER DEFAULT 0,
-                nick TEXT,
-                password TEXT,
-                extensions_xml TEXT
-            );
-            CREATE TABLE IF NOT EXISTS bookmark_config(
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
         }
     }
 }

@@ -24,7 +24,6 @@ snit::type taco_nick {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $self Migrate
         $client pubsub handler http://jabber.org/protocol/nick \
             [mymethod OnNotification]
         $client caps addFeature http://jabber.org/protocol/nick+notify
@@ -131,14 +130,5 @@ snit::type taco_nick {
             VALUES ($from, $nick)
         }
         $client emit nick <Changed> -jid $from
-    }
-
-    method Migrate {} {
-        $client db eval {
-            CREATE TABLE IF NOT EXISTS pep_nick(
-                jid TEXT PRIMARY KEY,
-                nick TEXT NOT NULL DEFAULT ''
-            );
-        }
     }
 }

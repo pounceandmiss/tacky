@@ -220,7 +220,6 @@ snit::type taco_omemo {
         set PostponedHeartbeats [dict create]
         set HealAt [dict create]
 
-        $self Migrate
 
         # Both the store and the trust rows are keyed on the bare jid, which
         # is known before the stream binds: pick it up here so an offline or
@@ -265,48 +264,6 @@ snit::type taco_omemo {
             catch {after cancel $tok}
         }
         set BundleFetchTimer [dict create]
-    }
-
-    method Migrate {} {
-        $db eval {
-            CREATE TABLE IF NOT EXISTS omemo_store(
-                account_jid TEXT PRIMARY KEY,
-                device_id   INTEGER NOT NULL,
-                blob        BLOB NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS omemo_sessions(
-                account_jid TEXT NOT NULL,
-                peer_jid    TEXT NOT NULL,
-                peer_device INTEGER NOT NULL,
-                blob        BLOB NOT NULL,
-                PRIMARY KEY (account_jid, peer_jid, peer_device)
-            );
-            CREATE TABLE IF NOT EXISTS omemo_skipped(
-                account_jid TEXT NOT NULL,
-                peer_jid    TEXT NOT NULL,
-                peer_device INTEGER NOT NULL,
-                dh          BLOB NOT NULL,
-                nr          INTEGER NOT NULL,
-                mk          BLOB NOT NULL,
-                PRIMARY KEY (account_jid, peer_jid, peer_device, dh, nr)
-            );
-            CREATE TABLE IF NOT EXISTS omemo_trust(
-                account_jid     TEXT NOT NULL,
-                peer_jid        TEXT NOT NULL,
-                peer_device     INTEGER NOT NULL,
-                identity_pk     BLOB NOT NULL,
-                trust           TEXT NOT NULL
-                                CHECK (trust IN
-                                    ('undecided','trusted','untrusted','compromised')),
-                active          INTEGER NOT NULL DEFAULT 1,
-                last_activation INTEGER NOT NULL,
-                PRIMARY KEY (account_jid, peer_jid, peer_device)
-            );
-            CREATE TABLE IF NOT EXISTS omemo_spk(
-                account_jid TEXT PRIMARY KEY,
-                rotated_at  INTEGER NOT NULL
-            );
-        }
     }
 
     # =====================================================================

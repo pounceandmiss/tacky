@@ -78,6 +78,7 @@ snit::type taco_client {
                 PRAGMA synchronous = NORMAL;
             }
         }
+        taco_schema_migrate $db per-account
 
         install setting using taco_setting $self.setting -db $db -taco $self
 

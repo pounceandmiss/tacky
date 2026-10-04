@@ -4,9 +4,6 @@ snit::type taco_setting {
 
     constructor args {
         $self configurelist $args
-        $options(-db) eval {
-            CREATE TABLE IF NOT EXISTS setting(key PRIMARY KEY, value DEFAULT '');
-        }
     }
 
     tackymethod get {args} {
