@@ -39,11 +39,14 @@ snit::type taco_account {
                 enabled INTEGER DEFAULT 0
             );
         }
-        # Older accounts.db files lack it.
-        if {"websocket_url" ni [$options(-db) eval {
-                SELECT name FROM pragma_table_info('account')}]} {
-            $options(-db) eval {
-                ALTER TABLE account ADD COLUMN websocket_url TEXT NOT NULL DEFAULT ''
+        # Older accounts.db files lack these.
+        set columns [$options(-db) eval {SELECT name FROM pragma_table_info('account')}]
+        foreach {col def} {
+            port          {INTEGER NOT NULL DEFAULT 5222}
+            websocket_url {TEXT NOT NULL DEFAULT ''}
+        } {
+            if {$col ni $columns} {
+                $options(-db) eval "ALTER TABLE account ADD COLUMN $col $def"
             }
         }
     }

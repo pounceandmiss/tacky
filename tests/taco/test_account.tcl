@@ -262,7 +262,7 @@ tacky_test account-websocket-url-enable-updates {enable carries a changed one to
         list $before [[tacky client a@example.com] cget -ws-url]
     } -result {{} wss://ws.example.com/x}
 
-test account-websocket-url-upgrade {an accounts.db from before the column gains it, rows intact} \
+test account-schema-upgrade {an accounts.db from before port and websocket_url gains both, rows intact} \
     -setup {
         sqlite3 ::_olddb :memory:
         ::_olddb eval {
@@ -276,5 +276,5 @@ test account-websocket-url-upgrade {an accounts.db from before the column gains 
         ::_olddb close
     } -body {
         taco_account ::_oldaccount -db ::_olddb
-        ::_olddb eval {SELECT password, enabled, websocket_url FROM account WHERE jid='old@example.com'}
-    } -result {secret 1 {}}
+        ::_olddb eval {SELECT password, enabled, port, websocket_url FROM account WHERE jid='old@example.com'}
+    } -result {secret 1 5222 {}}
