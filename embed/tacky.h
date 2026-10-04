@@ -36,9 +36,10 @@ typedef void (*tacky_emit_fn)(void *ud, const char *json, size_t len);
 
 /* Start the backend thread and construct the backend. `backend_args` is a NULL-
  * terminated array of C strings forwarded to its constructor (may be NULL
- * for none). Returns as soon as requests can be queued; the backend
- * initializes asynchronously and processes queued requests, in order, once it
- * is up. Returns NULL only on immediate failure (allocation, thread spawn).
+ * for none). The backend defaults to -transient 1 (nothing persists); pass
+ * "-transient", "0" to keep data. Returns as soon as requests can be queued;
+ * the backend initializes asynchronously and processes queued requests, in
+ * order, once it is up. Returns NULL only on immediate failure (allocation, thread spawn).
  * If initialization fails, the backend emits
  * ["event","backend","Dead",{"error":...}] and goes dead: no replies ever
  * arrive, and the handle must still be passed to tacky_destroy(). */

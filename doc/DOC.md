@@ -81,8 +81,10 @@ matter; it contains C++, so link the host app with `g++`. The ABI is
 
 - `tacky_create` starts the backend on its own thread and returns right away.
   `backend_args` is a NULL-terminated array of backend constructor options
-  (e.g. `"-transient", "0"`), or NULL; pass `-config-dir`, `-data-dir` and
-  `-cache-dir` to override the defaults in [Storage layout](#storage-layout).
+  (e.g. `"-transient", "0"`), or NULL. The backend defaults to `-transient 1`,
+  so an app that keeps its data passes `"-transient", "0"`. Pass
+  `-config-dir`, `-data-dir` and `-cache-dir` to override the defaults in
+  [Storage layout](#storage-layout).
   It also takes `-debug-level` and `-debug-file` from [log](#log) - without a
   file the backend logs to the host's stderr, which a service process usually
   discards.
@@ -221,6 +223,10 @@ event. The brackets are notation, not part of the name: on the JSON wire
 every event name is bare, both in an `["event", ...]` message and as a
 `pull` argument. The Tcl binding does use the bracketed form literally.
 
+`account`, `register`, `setting`, `storage`, `media`, `audio`, `video` and
+`log` are global. Every other module is per-account: each of its methods
+takes `acc`, the account's bare JID, which most signatures below leave out.
+
 ## account
 
     account list {enabled?: bool}                   -> [string]   account bare JIDs
@@ -282,7 +288,8 @@ string).
     register submit {token: string, values: {*: string}}
     register cancel {token: string}
 
-    form       = {fields: [form_field]}
+    form       = {type: string, title?: string, instructions?: string,
+                  fields: [form_field]}
     form_field = {var: string, type: string, label: string, required: bool,
                   value: [string], options: [{label: string, value: string}],
                   media: {cid: string, type: string}}
@@ -647,7 +654,9 @@ becomes `caption`, and the files are listed in `attachments`.
   bumps it by a microsecond if two would collide. `before`/`after` on
   `history` are exclusive cursors.
 - `server_status` tracks the hop to your own server: `""` (it has the
-  message), `pending`, `uploading`, or `failed`.
+  message), `pending`, `uploading`, or `failed`. Without XEP-0198 on the
+  server, only a MUC echo or the next archive catch-up confirms a send, so a
+  1:1 message can stay `pending` after `remote_status` reaches `delivered`.
 - `remote_status` is the hop after that, what the far end has done with it:
   `none` (nothing back yet), `delivered` (XEP-0184 or XEP-0333 `<received>`),
   or `read` (XEP-0333 `<displayed>`). It only ever moves forward along that
