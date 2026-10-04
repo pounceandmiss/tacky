@@ -137,3 +137,39 @@ test accountwindow-log-reveal-survives-a-stored-on {a window opens with the file
 } -cleanup {
     aw_cleanup
 } -result normal
+
+test settingmenu-confirm-refusal-stores-nothing {a refused click puts the box back and leaves the setting alone} -setup {
+    aw_setup
+    set ::sm_on 0
+    set ::sm_asked {}
+} -body {
+    menu .sm -tearoff 0
+    settingmenu::checkbutton .sm "Write log file" -var ::sm_on \
+        -key log_to_file -tag .sm \
+        -confirm {apply {{on} {lappend ::sm_asked $on; return 0}}}
+    .sm invoke 0
+    wait
+    list $::sm_on $::sm_asked [wait_call tacky setting get -key log_to_file]
+} -cleanup {
+    catch {destroy .sm}
+    aw_cleanup
+    unset -nocomplain ::sm_on ::sm_asked
+} -result {0 1 {}}
+
+test settingmenu-confirm-skips-stored-values {a stored value is applied without asking} -setup {
+    aw_setup
+    set ::sm_on 0
+    set ::sm_asked {}
+} -body {
+    tacky setting set -key log_to_file -value 1
+    menu .sm -tearoff 0
+    settingmenu::checkbutton .sm "Write log file" -var ::sm_on \
+        -key log_to_file -tag .sm \
+        -confirm {apply {{on} {lappend ::sm_asked $on; return 0}}}
+    wait
+    list $::sm_on $::sm_asked
+} -cleanup {
+    catch {destroy .sm}
+    aw_cleanup
+    unset -nocomplain ::sm_on ::sm_asked
+} -result {1 {}}

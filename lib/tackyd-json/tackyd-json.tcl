@@ -241,6 +241,7 @@ jsonify_type jsonify \
         setting/list            list
         log/getlevel            string
         log/getfile             string
+        log/getredact           bool
         debugtap/on             int
         message/rawxml          string
         message/ownRead         {dict {timestamp int unread int}}
@@ -312,6 +313,7 @@ jsonify_type jsonify \
         groupcall/join          {video bool}
         groupcall/setVideo      {on bool}
         log/setenabled          {enabled bool}
+        log/setredact           {enabled bool}
     }
 
 # -- helpers shared with entry-point dispatch ---------------------------

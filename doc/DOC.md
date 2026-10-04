@@ -1327,6 +1327,8 @@ Events:
     log setfile    {path: string}                                           -> ""
     log setenabled {enabled: boolean}                                       -> ""
     log getfile    {}                                                       -> string   "" when logging to stderr
+    log setredact  {enabled: boolean}                                       -> ""
+    log getredact  {}                                                       -> boolean
 
 The backend's logger. The frontend's lines land in the same file as the backend's
 own, set by `--debug-file` at startup, otherwise to stderr. 
@@ -1375,7 +1377,14 @@ wins for that run and leaves the setting untouched.
 `none` is a threshold, never a severity: `write` drops a record at that level, so
 a caller may pipe a level straight from `getlevel` back into `write`.
 
-The log file can hold full stanzas, even encrypted message bodies, so should be treated as highly sensitive.
+At `debug` and below every stanza in and out is logged. Credentials are always
+replaced: SASL exchanges, `<password/>`, password and secret form fields, and
+upload slot headers. `setredact` (default on) also replaces message content:
+`<body>` and `<subject>` text (as `[redacted N chars]`), reactions, XHTML-IM,
+out-of-band URLs and upload slot URLs. This is best effort; JIDs, nicks, the
+roster, presence, room names and the IP addresses in call candidates and native
+logs stay, so treat a log as private. The GUI stores the switch as the
+`log_redact_content` setting.
 
 `write` is non-blocking, so the log may not be written by the time it returns.
 

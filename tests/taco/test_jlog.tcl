@@ -427,3 +427,80 @@ test jlog-redacts-secrets {passwords, SASL bodies and secret form fields never r
          [string match *juliet* $line] [string match *Balcony* $line] \
          [string match *AGp1bGlldABodW50ZXIy* $auth]
 } -result {0 0 1 1 0}
+
+proc jlog_redacted_message {} {
+    j message -id m1 -type chat {
+        j body -body {meet at the bench}
+        j subject -body {the plan}
+        j request -ns urn:xmpp:receipts
+        j origin-id -ns urn:xmpp:sid:0 -id o1
+        j reactions -ns urn:xmpp:reactions:0 -id m0 { j reaction -body wave }
+        j html -ns http://jabber.org/protocol/xhtml-im {
+            j body -ns http://www.w3.org/1999/xhtml -body {meet at the bench}
+        }
+        j x -ns jabber:x:oob { j url -body https://up.example/f/cat.jpg }
+    }
+}
+
+test jlog-redacts-message-content {what a person wrote never reaches a log, even forwarded} -body {
+    set line [jlog FormatLine [list -text in -stanza [j message {
+        j result -ns urn:xmpp:mam:2 -id r1 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j #as-is [jlog_redacted_message]
+            }
+        }
+    }]]]
+    list [string match *bench* $line] [string match {*the plan*} $line] \
+         [string match *wave* $line] [string match *cat.jpg* $line] \
+         [string match {*redacted 17 chars*} $line] \
+         [string match {*id='o1'*} $line] [string match *urn:xmpp:receipts* $line]
+} -result {0 0 0 0 1 1 1}
+
+test jlog-redact-keeps-empty-body {a bodyless stanza still reads as one} -body {
+    jwrite [jlog_redact [j message { j body }]]
+} -match glob -result {*<body*/>*}
+
+test jlog-redact-content-off {without content redaction the text stays but secrets still go} -body {
+    set node [j iq -type set {
+        j query -ns jabber:iq:register {
+            j password -body hunter2
+            j x -ns jabber:x:oob { j url -body https://up.example/f/cat.jpg }
+        }
+    }]
+    set out [jwrite [jlog_redact [j message {
+        j body -body hello
+        j #as-is $node
+    }] 0]]
+    list [string match *hello* $out] [string match *cat.jpg* $out] \
+         [string match *hunter2* $out]
+} -result {1 1 0}
+
+test jlog-redacts-upload-slot-headers {slot headers are credentials, hidden either way} -body {
+    set slot [j iq -type result {
+        j slot -ns urn:xmpp:http:upload:0 {
+            j put -url https://up.example/put/tok {
+                j header -name Authorization -body {Basic QWxhZGRpbg==}
+            }
+            j get -url https://up.example/get/tok
+        }
+    }]
+    set on [jwrite [jlog_redact $slot 1]]
+    set off [jwrite [jlog_redact $slot 0]]
+    list [string match *QWxhZGRpbg* $on] [string match *up.example* $on] \
+         [string match *QWxhZGRpbg* $off] [string match *up.example* $off]
+} -result {0 0 0 1}
+
+test jlog-redact-follows-the-switch {setredact decides what a formatted line shows} \
+    {*}$probe -body {
+        set stanza [j message { j body -body hello }]
+        set on [jprobe FormatLine [list -text in -stanza $stanza]]
+        jprobe setredact -enabled 0
+        set off [jprobe FormatLine [list -text in -stanza $stanza]]
+        list [string match *hello* $on] [string match *hello* $off] \
+             [jprobe getredact]
+    } -result {0 1 0}
+
+test jlog-setredact-rejects-non-boolean {redaction takes only a boolean} \
+    {*}$probe -body {
+        jprobe setredact -enabled maybe
+    } -returnCodes error -match glob -result {invalid -enabled "maybe"*}

@@ -28,6 +28,7 @@ snit::widget accountwindow {
     variable logFileVar 0
     variable logLevelVar "warning"
     variable logNativeVar 0
+    variable logRedactVar 1
     variable loggingMenu ""
     # Must match taco_file's fallbacks; it is what enforces them.
     variable autofetchVar "contacts"
@@ -89,7 +90,11 @@ snit::widget accountwindow {
         menu $mb.file.logging -tearoff 0
         settingmenu::checkbutton $mb.file.logging "Write log file" \
             -var [myvar logFileVar] -key log_to_file -tag $win \
-            -onchange [mymethod SyncLogFileEntry]
+            -onchange [mymethod SyncLogFileEntry] \
+            -confirm [mymethod ConfirmLogFile]
+        settingmenu::checkbutton $mb.file.logging \
+            "Hide message text (best effort)" \
+            -var [myvar logRedactVar] -key log_redact_content -tag $win
         $mb.file.logging add cascade -label "Log level" \
             -menu $mb.file.logging.level
         menu $mb.file.logging.level -tearoff 0
@@ -346,6 +351,18 @@ snit::widget accountwindow {
         if {$loggingMenu eq ""} return
         $loggingMenu entryconfigure "Show Log File" \
             -state [expr {$logFileVar ? "normal" : "disabled"}]
+    }
+
+    method ConfirmLogFile {on} {
+        if {!$on} { return 1 }
+        set ans [tk_messageBox -parent $win -type okcancel -icon warning \
+            -title "Write Log File" \
+            -message "Log files can contain private information." \
+            -detail "Contacts, addresses, room names and, unless\
+                \"Hide message text\" is on, message content. Hiding message\
+                text is best effort and can miss things. Check a log before\
+                sharing it."]
+        return [expr {$ans eq "ok"}]
     }
 
     method ShowLogFile {} {
