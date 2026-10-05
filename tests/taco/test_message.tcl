@@ -1158,7 +1158,7 @@ test message-previous-run-row-not-in-flight \
     } -result 0
 
 # ...and a row wired on an earlier stream stops being in flight when a
-# fresh <Ready> arrives, so it becomes retryable again. This is the
+# fresh <SessionStart> arrives, so it becomes retryable again. This is the
 # stranding regression: it used to stay marked and be skipped forever.
 test message-fresh-ready-releases-previous-stream \
     {a row wired on an earlier stream is released by the next fresh Ready} \

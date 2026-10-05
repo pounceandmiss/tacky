@@ -38,7 +38,7 @@ snit::type taco_notify {
         $client bus subscribe $self message:<New> [mymethod OnNew]
         $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
         $client bus subscribe $self message:<CatchupDone> [mymethod OnCatchupDone]
-        $client bus subscribe $self <Ready> [mymethod OnReady]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
     }
 
     destructor {

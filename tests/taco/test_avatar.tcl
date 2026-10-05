@@ -162,7 +162,7 @@ test avatar-visible-survives-disconnect {a dropped connection leaves a visible J
     {*}$avatar_common \
     -body {
         c avatar visible -jid alice@example.com
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         c.conn clear
         c.conn feed [pep_metadata alice@example.com newhash]
         avatar_data_requested
@@ -224,8 +224,8 @@ test avatar-visible-refetches-changed-hash {a hash that moved on since the unans
 # through the reconnect has no list to rebuild, so nothing places the mark that
 # would otherwise carry the re-ask.
 
-# <Ready> reaches every module, and the rest want a bound JID to work from, so
-# these run against a session that came up once already.
+# <SessionStart> reaches every module, and the rest want a bound JID to work
+# from, so these run against a session that came up once already.
 set avatar_ready_common [tacky_env -mock conn -taco-client {
     -host test.example.com -port 5222
     -username user -password pass -resource res
@@ -236,7 +236,7 @@ test avatar-ready-refetches-missing-bytes {a new session goes after bytes a mark
     -body {
         avatar_seed alice@example.com abc123 -data ""
         c avatar visible -jid alice@example.com
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         c.conn clear
         c.conn fire_ready 0
         avatar_data_requested
@@ -247,7 +247,7 @@ test avatar-ready-leaves-a-served-jid-alone {a session up is silent about avatar
     -body {
         avatar_seed alice@example.com abc123
         c avatar visible -jid alice@example.com
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         c.conn clear
         avatar_watch
         c.conn fire_ready 0
@@ -259,7 +259,7 @@ test avatar-ready-ignores-an-unmarked-jid {an unmarked JID is not re-asked for} 
     {*}$avatar_ready_common \
     -body {
         avatar_seed alice@example.com abc123 -data ""
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         c.conn clear
         c.conn fire_ready 0
         avatar_data_requested

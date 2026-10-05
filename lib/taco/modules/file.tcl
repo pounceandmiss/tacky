@@ -65,7 +65,7 @@ snit::type taco_file {
         set client $options(-client)
         array set Transfers {}
         array set DownloadByUrl {}
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {

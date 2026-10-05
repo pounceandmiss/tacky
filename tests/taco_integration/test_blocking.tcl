@@ -15,7 +15,7 @@ namespace eval ::test::blocking_int {
     variable ROMEO "romeo@example.local"
     variable JULIET "juliet@example.local"
 
-    # The support check runs on <Ready> alongside catchup; poll for it.
+    # The support check runs on <SessionStart> alongside catchup; poll for it.
     proc waitBlockingReady {acc} {
         variable TIMEOUT
         set deadline [expr {[clock milliseconds] + $TIMEOUT}]

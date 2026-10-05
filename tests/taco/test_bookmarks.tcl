@@ -109,7 +109,7 @@ test bookmarks-room-state-disconnect-resets {disconnect clears tracked room stat
     -body {
         bm_insert room@muc.example.com name "Room" autojoin 1
         c bus publish muc:<Error> -jid room@muc.example.com -error forbidden -stanza {}
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         bm_state room@muc.example.com
     } -result {idle {}}
 

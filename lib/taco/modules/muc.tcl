@@ -88,7 +88,7 @@ snit::type taco_muc {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {

@@ -48,7 +48,7 @@ snit::type taco_roster {
         $self configurelist $args
         set client $options(-client)
         $client iq handler set jabber:iq:roster [mymethod OnPush]
-        $client bus subscribe $self <Ready> [mymethod OnReady]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
     }
 
     destructor {

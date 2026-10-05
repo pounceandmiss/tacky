@@ -8,13 +8,13 @@ set blocking_common [tacky_env -mock conn -taco-client {
     -username user -password pass -resource res
 }]
 
-# <Ready> also runs message catchup, which needs a bound JID.
+# <SessionStart> also runs message catchup, which needs a bound JID.
 set blocking_ready_common [tacky_env -mock conn -taco-client {
     -host test.example.com -port 5222
     -username user -password pass -resource res
 } -bound-jid user@test.example.com/res]
 
-# By -to: taco_avatar also sends a disco#info on <Ready>, to our bare JID.
+# By -to: on <SessionStart> taco_avatar also sends a disco#info to our bare JID.
 proc last_blocking_disco_iq {} {
     set found ""
     foreach iq [c.conn get_written] {
@@ -43,7 +43,7 @@ proc blocklist_result {id jids} {
 }
 
 test blocking-disco-checks-server-on-ready \
-    {<Ready> disco#info's our own server for urn:xmpp:blocking} \
+    {<SessionStart> disco#info's our own server for urn:xmpp:blocking} \
     {*}$blocking_ready_common \
     -body {
         set iq [last_blocking_disco_iq]
@@ -249,7 +249,7 @@ test blocking-list-kept-over-disconnect \
     {*}$blocking_ready_common \
     -body {
         confirm_blocklist {alice@example.com}
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         list [c blocking supported] [c blocking list]
     } -result {0 alice@example.com}
 
@@ -258,7 +258,7 @@ test blocking-unsupported-server-drops-list \
     {*}$blocking_ready_common \
     -body {
         confirm_blocklist {alice@example.com}
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         set changed none
         tacky listen blocking <Changed> {apply {{ev} { set ::changed $ev }}}
         c.conn clear

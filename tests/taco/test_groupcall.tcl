@@ -629,7 +629,7 @@ test groupcall-fresh-stream-ends-call {a reconnect that could not resume ends th
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        c bus publish <Ready>
+        c bus publish <SessionStart>
         list [lsearch -inline [gc_events] {<Left>*}] [c.groupcall list] \
             [dict get [c.groupcall status -jid $ROOM] joined]
     } -result [list [list <Left> -jid $ROOM -reason disconnected -chat $ROOM] {} 0]
@@ -639,7 +639,7 @@ test groupcall-disconnect-while-preparing {losing the stream mid-join reports th
         gc_room [gc_presence carol -jid $CAROL -preparing 1]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         list [lsearch -inline [gc_events] {<Left>*}] [c.groupcall list]
     } -result [list [list <Left> -jid $ROOM -reason disconnected] {}]
 
@@ -1141,7 +1141,7 @@ test groupcall-preview-disconnect-closes {losing the stream closes the preview} 
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         list [llength [mockmedia::calls ClosePreview]] [c.groupcall list]
     } -result {1 {}}
 
@@ -1350,7 +1350,7 @@ test groupcall-live-forgotten-on-reconnect {a fresh stream forgets what rooms sa
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat]
         gc_answer_room call@muc.example.com there
-        c bus publish <Ready>
+        c bus publish <SessionStart>
         list [gc_live $ROOM?join] [llength [gc_disco_asks call@muc.example.com]]
     } -result {? 2}
 
@@ -1633,7 +1633,7 @@ test groupcall-three-both-legs-fail {every leg failing leaves us in the call, al
 test groupcall-three-disconnect-mid-call {losing our stream with two in ends our call and our legs} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
-        c bus publish <Disconnect>
+        c bus publish <SessionEnd>
         list [dict get [lindex [gc_event_args <Left>] 0] -reason] [c.groupcall list] \
             [llength [mockmedia::calls ClosePreview]]
     } -result {disconnected {} 0}

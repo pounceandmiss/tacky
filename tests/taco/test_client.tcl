@@ -89,31 +89,31 @@ test client-stanza-routes-iq {OnStanza routes iq stanzas to iq component} \
 
 # -- Bus lifecycle ----------------------------------------------------------
 
-test client-bus-ready-fires {bus publishes <Ready> on non-resumed connect} \
+test client-bus-ready-fires {bus publishes <SessionStart> on non-resumed connect} \
     {*}$common \
     -body {
         set got 0
-        c bus subscribe _ <Ready> {apply {{args} { incr ::got }}}
+        c bus subscribe _ <SessionStart> {apply {{args} { incr ::got }}}
         c.conn configure -bound-jid "user@test.example.com/res1"
         c.conn fire_ready 0
         set got
     } -result {1}
 
-test client-bus-ready-skipped-on-resume {bus does not publish <Ready> on resume} \
+test client-bus-ready-skipped-on-resume {bus does not publish <SessionStart> on resume} \
     {*}$common \
     -body {
         set got 0
-        c bus subscribe _ <Ready> {apply {{args} { incr ::got }}}
+        c bus subscribe _ <SessionStart> {apply {{args} { incr ::got }}}
         c.conn configure -bound-jid "user@test.example.com/res1"
         c.conn fire_ready 1
         set got
     } -result {0}
 
-test client-bus-disconnect-fires {bus publishes <Disconnect> on disconnect} \
+test client-bus-disconnect-fires {bus publishes <SessionEnd> on disconnect} \
     {*}$common \
     -body {
         set got 0
-        c bus subscribe _ <Disconnect> {apply {{args} { incr ::got }}}
+        c bus subscribe _ <SessionEnd> {apply {{args} { incr ::got }}}
         c.conn configure -bound-jid "user@test.example.com/res1"
         c.conn fire_ready 0
         c.conn fire_disconnect "gone"

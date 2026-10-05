@@ -25,8 +25,8 @@ snit::type taco_vcard {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client bus subscribe $self <Ready> [mymethod OnReady]
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {

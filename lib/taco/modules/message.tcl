@@ -85,8 +85,8 @@ snit::type taco_message {
         # retry pending OMEMO sends once they do.
         $client bus subscribe $self omemo:<SelfReady> \
             [mymethod OnOmemoSelfReady]
-        $client bus subscribe $self <Ready>      [mymethod OnReady]
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
+        $client bus subscribe $self <SessionEnd>   [mymethod OnDisconnect]
         set WiredNow [dict create]
         # An 'uploading' row from a previous run was never sent (PUT isn't
         # resumable); reconcile it to 'failed' so the user can retry.
@@ -100,17 +100,17 @@ snit::type taco_message {
 
     method OnReady {args} {
         # A fresh stream: nothing we wrote to the old one is in flight any
-        # more. <Ready> fires only on a fresh session (not on resumption),
-        # which is exactly right - across a resume SM still holds those
-        # stanzas, so the set must survive.
+        # more. <SessionStart> fires only on a fresh session (not on
+        # resumption), which is exactly right - across a resume SM still holds
+        # those stanzas, so the set must survive.
         set WiredNow [dict create]
         $self PlaceReconnectHoles
         # RetryPending runs from OnCatchup, not here. Catchup confirms
         # whatever the server actually archived, so the retry only has to
         # deal with what genuinely never landed - and by then omemo's
         # store and devicelists have had a full MAM round-trip to warm,
-        # where a retry at <Ready> is guaranteed to hit NOT_READY (the
-        # message module is constructed before omemo, so its <Ready>
+        # where a retry at <SessionStart> is guaranteed to hit NOT_READY (the
+        # message module is constructed before omemo, so its <SessionStart>
         # handler runs first).
         $self DoCatchup
     }
@@ -728,7 +728,7 @@ snit::type taco_message {
     # own_id -> 1 for sends written to the CURRENT stream, i.e. the ones
     # SM is holding for ack or replay. Deliberately memory-only: this is
     # per-connection truth, so a restart starts empty and a stale row can
-    # never look in flight. Cleared on a fresh <Ready>, pruned as rows
+    # never look in flight. Cleared on a fresh <SessionStart>, pruned as rows
     # settle.
     variable WiredNow
 

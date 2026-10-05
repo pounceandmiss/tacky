@@ -51,7 +51,7 @@ snit::type taco_mam {
         array set Archives {}
         array set FieldCache {}
         binary scan [omemo::random 8] H* idTag
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {
