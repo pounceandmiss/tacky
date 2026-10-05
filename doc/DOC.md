@@ -16,6 +16,7 @@ and get back replies and events.
   - [account](#account)
   - [register](#register)
   - [conn](#conn)
+  - [app](#app)
   - [setting](#setting)
   - [storage](#storage)
   - [chatlist](#chatlist)
@@ -224,8 +225,8 @@ event. The brackets are notation, not part of the name: on the JSON wire
 every event name is bare, both in an `["event", ...]` message and as a
 `pull` argument. The Tcl binding does use the bracketed form literally.
 
-`account`, `register`, `setting`, `storage`, `media`, `audio`, `video` and
-`log` are global. Every other module is per-account: each of its methods
+`account`, `register`, `app`, `setting`, `storage`, `media`, `audio`,
+`video` and `log` are global. Every other module is per-account: each of its methods
 takes `acc`, the account's bare JID, which most signatures below leave out.
 
 ## account
@@ -313,11 +314,12 @@ pullable (use Tcl `observe`, or just track the last event you saw).
 
     conn probe {}
 
-`probe` checks that the link is alive now, e.g. when the user returns to
-the app. It does nothing unless the account is connected, idle for 10s and
-not already being checked; if nothing answers within 10s the connection
-is dropped and reconnects. The backend also probes by itself after the
-machine wakes from suspend. Setting `conn_probe` to `0` turns both off.
+`probe` checks that the link is alive now. It does nothing unless the
+account is connected, idle for 10s and not already being checked; if
+nothing answers within 10s the connection is dropped and reconnects. The
+backend also probes by itself after the machine wakes from suspend and
+when the app becomes active (see [app](#app)). Setting `conn_probe` to `0`
+turns all of these off.
 
 Events:
 
@@ -330,6 +332,18 @@ Events:
 `<ConnError>` gives the reason, `state: "waiting"` is the gap between
 tries, and `connected` clears it. `<AuthError>` is the end of the road -
 the backend stops until you re-enable the account.
+
+## app
+
+Facts the frontend reports about the app as a whole.
+
+    app setActive {active: bool}
+    app isActive {}                -> bool
+
+`active` is whether the user is using the app: focused on the desktop, in
+the foreground on mobile. Until a frontend reports otherwise it counts as
+active. On becoming active, connected accounts check their link
+(`conn probe`).
 
 ## setting
 

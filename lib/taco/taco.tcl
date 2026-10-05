@@ -250,6 +250,7 @@ snit::type taco_type {
     component debugtap -public debugtap
     component log -public log
     component storage -public storage
+    component app -public app
 
     option -transient -default 1 -readonly yes
     option -config-dir -readonly yes -default ""
@@ -311,6 +312,7 @@ snit::type taco_type {
         install storage using taco_storage ${selfns}::storage -db $db -taco $self \
             -config-dir $options(-config-dir) -data-dir $options(-data-dir) \
             -cache-dir $options(-cache-dir)
+        install app using taco_app ${selfns}::app -taco $self
         # An encrypted accounts.db can't run any query until `storage unlock`
         # verifies the passphrase; a pending encrypt request needs a fresh
         # passphrase from the gate before there's anything to unlock. Either
@@ -359,14 +361,9 @@ snit::type taco_type {
         catch {::rtcma::set-log-level none}
         catch {::rtcmv::set-log-level none}
         catch {::tacky::media::webrtc::set-log-level none}
-        catch {
-            foreach jid [$db eval {SELECT jid FROM account}] {
-                set client $self.client($jid)
-                if {[info commands $client] ne ""} {
-                    catch {$client disconnect}
-                    catch {$client destroy}
-                }
-            }
+        foreach client [$self clients] {
+            catch {$client disconnect}
+            catch {$client destroy}
         }
         catch {$db close}
         # After the clients: their calls hold peer connections on it.
@@ -390,12 +387,23 @@ snit::type taco_type {
     # always a no-op: migrations only ever run at the pre-boot gate, before
     # any client has connected - kept as cheap insurance regardless.
     method DisconnectAllAccounts {} {
-        foreach jid [$db eval {SELECT jid FROM account}] {
-            set client $self.client($jid)
-            if {[info commands $client] ne ""} {
-                catch {$client destroy}
+        foreach client [$self clients] {
+            catch {$client destroy}
+        }
+    }
+
+    # The clients that exist now; unlike `client`, creates none. Empty
+    # while accounts.db is still locked.
+    method clients {} {
+        set clients {}
+        catch {
+            foreach jid [$db eval {SELECT jid FROM account}] {
+                if {[info commands $self.client($jid)] ne ""} {
+                    lappend clients $self.client($jid)
+                }
             }
         }
+        return $clients
     }
 
     method connect {} {

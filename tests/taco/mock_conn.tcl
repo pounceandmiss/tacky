@@ -5,6 +5,7 @@ snit::type mock_conn {
     variable written
     variable connected
     variable closed
+    variable probes 0
     variable mockState disconnected
     variable mockLastError ""
 
@@ -130,6 +131,14 @@ snit::type mock_conn {
         if {$options(-ondisconnect) ne ""} {
             {*}$options(-ondisconnect) $msg
         }
+    }
+
+    method probe {args} {
+        incr probes
+    }
+
+    method probe_count {} {
+        return $probes
     }
 
     method get_written {} {
