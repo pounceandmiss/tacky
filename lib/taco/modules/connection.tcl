@@ -774,6 +774,7 @@ snit::type conn {
 
     method WakeTick {} {
         set wakeAfterId ""
+        if {$authState ne "ready"} return
         set elapsed [expr {[clock milliseconds] - $wakeLast}]
         if {$elapsed > 3 * $options(-wake-check)} {
             jlog inform "clock jumped ${elapsed}ms, probing"
