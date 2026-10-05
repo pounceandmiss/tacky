@@ -273,7 +273,7 @@ jsonify_type jsonify \
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string error string}}
         muc/<Presence>          {dict {occupant occupant}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
-        muc/<Left>              {dict {involuntary bool codes {list int}}}
+        muc/<Left>              {dict {involuntary bool codes {list int} disconnected bool}}
         muc/<NickChanged>       {dict {self bool}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
         muc/<VoiceRequest>      {dict {form form}}
