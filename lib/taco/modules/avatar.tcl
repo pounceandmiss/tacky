@@ -61,8 +61,8 @@ snit::type taco_avatar {
         $client pubsub handler urn:xmpp:avatar:metadata \
             [mymethod OnMetadataNotification]
         $client caps addFeature urn:xmpp:avatar:metadata+notify
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
-        $client bus subscribe $self <Ready> [mymethod OnReady]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
     }
 
     # VisibleJids survives: it tracks what the frontend displays, not the session.

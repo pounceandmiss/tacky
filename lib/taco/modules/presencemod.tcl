@@ -38,7 +38,7 @@ snit::type taco_presence {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
         $client bus subscribe $self <CapsResolved> [mymethod OnCapsResolved]
     }
 

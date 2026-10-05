@@ -149,7 +149,7 @@ snit::type taco_calls {
         set Calls [dict create]
         set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
-        $client bus subscribe $self <Ready> [mymethod OnFreshStream]
+        $client bus subscribe $self <SessionStart> [mymethod OnFreshStream]
 
         $client caps addFeature urn:xmpp:jingle:1
         $client caps addFeature urn:xmpp:jingle:apps:rtp:1

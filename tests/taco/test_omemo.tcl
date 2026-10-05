@@ -207,7 +207,7 @@ test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} 
     unset -nocomplain spkOld spkBefore spkFirst spkSecond
 } -result {published 1 survived 1}
 
-# A disabled account never fires <Ready>, but the GUI still opens its
+# A disabled account never fires <SessionStart>, but the GUI still opens its
 # own-key panel.
 test omemo-unit-offline-getters-answer {getters work without OnReady} -setup {
     tacky_type create ::tacky
@@ -2000,7 +2000,7 @@ test omemo-unit-stale-bundle-reply-ignored {a bundle reply from before a reconne
                 set id [xsearch $st -get @id]
             }
         }
-        # A reconnect: a fresh <Ready>, with no <Disconnect> before it.
+        # A reconnect: a fresh <SessionStart>, with no <SessionEnd> before it.
         c omemo OnReady
         c conn feed [j iq -type error -id $id -from $::test::omemo_unit::ROMEO {
             j error -type cancel {

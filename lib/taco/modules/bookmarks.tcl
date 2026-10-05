@@ -49,12 +49,12 @@ snit::type taco_bookmarks {
         $client pubsub handler urn:xmpp:bookmarks:1 -own-only \
             [mymethod OnNotification]
         $client caps addFeature urn:xmpp:bookmarks:1+notify
-        $client bus subscribe $self <Ready> [mymethod OnReady]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
         $client bus subscribe $self muc:<Joining> [mymethod OnMucJoining]
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
         $client bus subscribe $self muc:<Error> [mymethod OnMucError]
         $client bus subscribe $self muc:<Left> [mymethod OnMucLeft]
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {

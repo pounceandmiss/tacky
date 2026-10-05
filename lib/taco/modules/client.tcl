@@ -126,13 +126,13 @@ snit::type taco_client {
             # carbons state, so only enable on a fresh session.
             $iq request -type set \
                 -payload [j enable -ns urn:xmpp:carbons:2]
-            $bus publish <Ready>
+            $bus publish <SessionStart>
         }
     }
 
     method OnDisconnect {msg} {
         $iq live 0
-        $bus publish <Disconnect>
+        $bus publish <SessionEnd>
     }
 
     method OnAuthError {msg} {

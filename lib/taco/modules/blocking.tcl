@@ -33,8 +33,8 @@ snit::type taco_blocking {
         $self configurelist $args
         set client $options(-client)
         $client iq handler set $NS [mymethod OnPush]
-        $client bus subscribe $self <Ready> [mymethod OnReady]
-        $client bus subscribe $self <Disconnect> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnReady]
+        $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
     destructor {
@@ -42,7 +42,7 @@ snit::type taco_blocking {
         catch {$client iq unhandler set $NS}
     }
 
-    # The list stays; the next <Ready> refetches or drops it.
+    # The list stays; the next <SessionStart> refetches or drops it.
     method OnDisconnect {args} {
         set Supported 0
     }

@@ -242,8 +242,8 @@ snit::type taco_omemo {
         # We use it to flush Postponed for queries that decrypted at
         # least one OMEMO message - see the mamHadOmemo / Postponed
         # commentary in the variable block.
-        $client bus subscribe $self <Ready>         [mymethod OnReady]
-        $client bus subscribe $self <Disconnect>    [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart>  [mymethod OnReady]
+        $client bus subscribe $self <SessionEnd>    [mymethod OnDisconnect]
         $client bus subscribe $self mam:<QueryEnd>  [mymethod OnMamQueryEnd]
     }
 
@@ -271,8 +271,8 @@ snit::type taco_omemo {
     # =====================================================================
 
     method OnReady {args} {
-        # A fresh stream (<Ready> is not fired on resumption). A reconnect
-        # skips <Disconnect>, so the old connection's state goes here too:
+        # A fresh stream (<SessionStart> is not fired on resumption). A reconnect
+        # skips <SessionEnd>, so the old connection's state goes here too:
         # replies to what we asked on it are stale (see FetchGen).
         $self OnDisconnect
         set accountJid [jid bare [$client cget -jid]]
@@ -1916,7 +1916,7 @@ snit::type taco_omemo {
     method encrypt {chatJid plaintext} {
         if {$store eq ""} {
             # Transient: OnReady hasn't initialised the store yet (e.g. a
-            # prior-session pending row retried before omemo's <Ready>
+            # prior-session pending row retried before omemo's <SessionStart>
             # handler ran this connection). omemo:<SelfReady> re-drives
             # the retry once the store is up.
             return -code error -errorcode TACO_OMEMO_NOT_READY \

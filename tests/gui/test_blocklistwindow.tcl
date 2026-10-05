@@ -64,7 +64,7 @@ test blw-lists-the-blocklist {the fetched list shows sorted, and the actions com
 test blw-server-losing-feature-disables {a reconnect to a server without the feature empties the list and disables the actions} \
     -setup {blw_up} -body {
     blw_confirm {alice@example.com}
-    $::_client bus publish <Disconnect>
+    $::_client bus publish <SessionEnd>
     $::_client blocking OnReady
     set disco [lindex [$::_client.conn get_written] end]
     $::_client.conn feed [j iq -type result -id [xsearch $disco -get @id] \
