@@ -137,7 +137,6 @@ snit::type taco_groupcall {
         $client bus subscribe $self muc:<Left>        [mymethod OnRoomLeft]
         $client bus subscribe $self muc:<Presence>    [mymethod OnChatPresence]
         $client bus subscribe $self <SessionEnd>      [mymethod OnDisconnect]
-        $client bus subscribe $self <SessionStart>    [mymethod OnDisconnect]
         $client caps addFeature $NS
         $client caps addFeature $NS_INVITES
     }
@@ -630,9 +629,7 @@ snit::type taco_groupcall {
     }
 
     # Only the room state is ours to drop, with nothing on the wire; the legs
-    # are taco_calls' to end or resume. A reconnect skips <SessionEnd>, so a
-    # fresh stream (<SessionStart>, not fired on resumption) does this too: the
-    # server has already taken us out of every room.
+    # are taco_calls' to end or resume.
     method OnDisconnect {args} {
         array unset Live *
         foreach room [array names Rooms] {

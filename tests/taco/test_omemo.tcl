@@ -2000,7 +2000,8 @@ test omemo-unit-stale-bundle-reply-ignored {a bundle reply from before a reconne
                 set id [xsearch $st -get @id]
             }
         }
-        # A reconnect: a fresh <SessionStart>, with no <SessionEnd> before it.
+        # A reconnect that could not resume.
+        c bus publish <SessionEnd>
         c omemo OnReady
         c conn feed [j iq -type error -id $id -from $::test::omemo_unit::ROMEO {
             j error -type cancel {
