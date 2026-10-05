@@ -628,6 +628,14 @@ snit::type conn {
     option -keepalive -default 60000
     option -keepalive-timeout -default 30000
 
+    # How long an explicit `probe` waits for any answer before dropping.
+    option -probe-timeout -default 10000
+
+    # Wall-clock tick that notices a suspend: a tick arriving far later
+    # than scheduled means the machine slept, and the link is probed. 0
+    # disables.
+    option -wake-check -default 5000
+
     # Event callback: {*}$cmd conn <Event> ...
     option -emit -default ""
 
@@ -671,6 +679,10 @@ snit::type conn {
     variable lastRx 0
     variable probeAt 0
     variable probeSeq 0
+
+    # Wake check: the timer and when it was last armed.
+    variable wakeAfterId ""
+    variable wakeLast 0
 
     constructor {args} {
         install base using baseconn $self.base \
@@ -722,9 +734,10 @@ snit::type conn {
 
     method StartKeepalive {} {
         $self StopKeepalive
-        if {$options(-keepalive) <= 0} return
         set lastRx [clock milliseconds]
         set probeAt 0
+        $self ArmWakeCheck
+        if {$options(-keepalive) <= 0} return
         $self ArmKeepalive $options(-keepalive)
     }
 
@@ -733,7 +746,40 @@ snit::type conn {
             after cancel $keepaliveAfterId
             set keepaliveAfterId ""
         }
+        if {$wakeAfterId ne ""} {
+            after cancel $wakeAfterId
+            set wakeAfterId ""
+        }
         set probeAt 0
+    }
+
+    # Check now that the link is alive: a no-op unless it is ready, idle
+    # for -probe-timeout and not already being probed. Silence for
+    # -probe-timeout after the probe drops it.
+    method probe {args} {
+        if {$authState ne "ready" || $probeAt > 0} return
+        if {[clock milliseconds] - $lastRx < $options(-probe-timeout)} return
+        if {$keepaliveAfterId ne ""} {
+            after cancel $keepaliveAfterId
+        }
+        $self SendProbe
+        $self ArmKeepalive $options(-probe-timeout)
+    }
+
+    method ArmWakeCheck {} {
+        if {$options(-wake-check) <= 0} return
+        set wakeLast [clock milliseconds]
+        set wakeAfterId [after $options(-wake-check) [mymethod WakeTick]]
+    }
+
+    method WakeTick {} {
+        set wakeAfterId ""
+        set elapsed [expr {[clock milliseconds] - $wakeLast}]
+        if {$elapsed > 3 * $options(-wake-check)} {
+            jlog inform "clock jumped ${elapsed}ms, probing"
+            $self probe
+        }
+        $self ArmWakeCheck
     }
 
     method ArmKeepalive {ms} {
@@ -751,13 +797,20 @@ snit::type conn {
             }
             set probeAt 0
         }
+        # An explicit probe arms this timer even with keepalive off.
+        if {$options(-keepalive) <= 0} return
         set idle [expr {$now - $lastRx}]
         if {$idle < $options(-keepalive)} {
             $self ArmKeepalive [expr {$options(-keepalive) - $idle}]
             return
         }
-        # Anything that comes back will do: an <a/>, the ping's result, or
-        # any other stanza.
+        $self SendProbe
+        $self ArmKeepalive $options(-keepalive-timeout)
+    }
+
+    # Anything that comes back will do: an <a/>, the ping's result, or
+    # any other stanza.
+    method SendProbe {} {
         if {[dict get [$sm getInfo] mode] eq "active"} {
             catch {$sm RequestAck}
         } else {
@@ -765,8 +818,7 @@ snit::type conn {
                 j ping -ns urn:xmpp:ping
             }]}
         }
-        set probeAt $now
-        $self ArmKeepalive $options(-keepalive-timeout)
+        set probeAt [clock milliseconds]
     }
 
     # Give up the in-progress connect attempt if it neither succeeds nor

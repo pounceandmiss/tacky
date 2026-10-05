@@ -1254,3 +1254,40 @@ test conn-keepalive-pings-without-sm {without stream management the probe is a p
         set st [lindex [c.base get_written] 0]
         list [dict get $st tag] [xsearch $st ping -get ns]
     } -result {iq urn:xmpp:ping}
+
+test conn-probe-drops-a-silent-link {an explicit probe that goes unanswered drops the link} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr1"
+        conn_wait 40
+        c.base clear
+        c probe
+        conn_wait 60
+        list [lmap st [c.base get_written] {dict get $st tag}] $_tdisconnect [c isReady]
+    } -result {r {{no answer from the server}} 0}
+
+test conn-probe-skips-a-busy-link {a probe right after traffic sends nothing} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0 -probe-timeout 1000
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr2"
+        c.base clear
+        c.base inject [make_sm_ack 0]
+        c probe
+        c.base get_written
+    } -result {}
+
+test conn-wake-jump-probes {a wake tick arriving far too late probes the link} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 20 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr3"
+        c.base clear
+        after 150
+        conn_wait 40
+        lmap st [c.base get_written] {dict get $st tag}
+    } -result {r}

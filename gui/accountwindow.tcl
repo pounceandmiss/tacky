@@ -61,6 +61,7 @@ snit::widget accountwindow {
         bind $win <Control-Shift-X> [mymethod OpenXmlConsole]
         bind $win <Control-f> [mymethod InlineOpenFind]
         bind $win <Control-F> [mymethod OpenAccountSearch]
+        bind $win <Activate> [mymethod OnActivate %W]
 
         ::tacky listen -tag $win account <Disabled> [mymethod OnAccountGone]
         ::tacky listen -tag $win account <Removed>  [mymethod OnAccountGone]
@@ -215,6 +216,12 @@ snit::widget accountwindow {
         set currentAccount $jid
         $self BuildPanel
         wm title $win "Tacky - $currentAccount"
+    }
+
+    # <Activate> reaches every child through the toplevel's bind tag.
+    method OnActivate {w} {
+        if {$w ne $win} return
+        catch {::tacky conn probe -acc $currentAccount}
     }
 
     method OnAccountGone {ev} {

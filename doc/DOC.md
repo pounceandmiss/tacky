@@ -308,9 +308,18 @@ for the flow.
 
 ## conn
 
-The per-account connection lifecycle. Events only, no methods. `<State>`
-and `<ConnError>` are pullable (use Tcl `observe`, or just track the last
-event you saw).
+The per-account connection lifecycle. `<State>` and `<ConnError>` are
+pullable (use Tcl `observe`, or just track the last event you saw).
+
+    conn probe {}
+
+`probe` checks that the link is alive now, e.g. when the user returns to
+the app. It does nothing unless the account is connected, idle for 10s and
+not already being checked; if nothing answers within 10s the connection
+is dropped and reconnects. The backend also probes by itself after the
+machine wakes from suspend.
+
+Events:
 
     conn <State>     {acc: string, state: string}     every transition
     conn <ConnError> {acc: string, message: string}    transport failure
