@@ -215,6 +215,13 @@ proc jinglesdp::to_sdp {jingleStanza args} {
         AppendSdpAttrs lines [dict get $m attrs]
     }
 
+    # These values come from the peer's XML. A line break would let it add
+    # its own lines, e.g. a second a=fingerprint.
+    foreach line $lines {
+        if {[regexp {[\x00-\x1f\x7f]} $line]} {
+            error "control character in a Jingle field"
+        }
+    }
     return [join $lines $LINE_DIVIDER]$LINE_DIVIDER
 }
 
@@ -255,13 +262,26 @@ proc jinglesdp::AppendTransportAttrs {transport mmVar} {
 
     set fp [xsearch $transport fingerprint -ns $NS_DTLS -get node]
     if {$fp ne ""} {
-        set hash [xsearch $fp -get @hash]
-        set body [xsearch $fp -get body]
-        if {$hash eq "" || $body eq ""} { error "DTLS-SRTP missing hash" }
+        lassign [CheckFingerprint [xsearch $fp -get @hash] \
+            [string trim [xsearch $fp -get body]] [xsearch $fp -get @setup]] \
+            hash body setup
         lappend mm fingerprint "$hash $body"
-        set setup [xsearch $fp -get @setup]
         if {$setup ne ""} { lappend mm setup $setup }
     }
+}
+
+# Check the DTLS fingerprint fields against RFC 8122; return them or error.
+proc jinglesdp::CheckFingerprint {hash body setup} {
+    if {![regexp {^[A-Za-z0-9-]+$} $hash]} {
+        error "DTLS-SRTP fingerprint has a bad hash"
+    }
+    if {![regexp {^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})*$} $body]} {
+        error "DTLS-SRTP fingerprint is not a fingerprint"
+    }
+    if {$setup ni {"" actpass active passive holdconn}} {
+        error "DTLS-SRTP fingerprint has a bad setup"
+    }
+    list $hash $body $setup
 }
 
 proc jinglesdp::PayloadTypeToSdp {pt} {

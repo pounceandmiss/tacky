@@ -37,7 +37,7 @@ proc media_pc {sid} {
         [dict get [dict get [calls_state] $sid] pc]]
 }
 
-proc media_session_initiate {sid from {senders both}} {
+proc media_session_initiate {sid from {senders both} {fp AA:BB}} {
     j iq -type set -from $from -to user@test.example.com -id si1 {
         j jingle -ns urn:xmpp:jingle:1 -action session-initiate -sid $sid {
             j content -creator initiator -name audio -senders $senders {
@@ -48,7 +48,7 @@ proc media_session_initiate {sid from {senders both}} {
                 j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
                     -ufrag abc -pwd xyzxyzxyzxyz {
                     j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 \
-                        -hash sha-256 -setup actpass -body AA:BB
+                        -hash sha-256 -setup actpass -body $fp
                 }
             }
         }
@@ -68,7 +68,7 @@ proc media_transport_info {sid from} {
     }
 }
 
-proc media_session_accept {sid from {senders both}} {
+proc media_session_accept {sid from {senders both} {fp CC:DD}} {
     j iq -type set -from $from -to user@test.example.com -id sa1 {
         j jingle -ns urn:xmpp:jingle:1 -action session-accept -sid $sid {
             j content -creator initiator -name audio -senders $senders {
@@ -78,7 +78,7 @@ proc media_session_accept {sid from {senders both}} {
                 j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
                     -ufrag def -pwd defdefdefdef {
                     j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 \
-                        -hash sha-256 -setup active -body CC:DD
+                        -hash sha-256 -setup active -body $fp
                 }
             }
         }
@@ -531,6 +531,36 @@ test media-offer-rejected-fails-and-terminates \
             [xsearch $jingle -get @sid] \
             [xsearch $jingle reason * -get tag]
     } -result {{<Failed> -sid tk-m6 -reason {remote offer rejected: invalid state}} 0 session-terminate tk-m6 general-error}
+
+test media-offer-malformed-is-refused \
+    {an offer whose fingerprint would add an SDP line is refused and the call fails} \
+    {*}$media_env -body {
+        c.conn feed [calls_jmi_in propose tk-m8 $::MEDIA_PEER]
+        c.calls accept -sid tk-m8
+        c.conn feed [media_session_initiate tk-m8 $::MEDIA_PEER both \
+            "AA:BB\r\na=fingerprint:sha-256 EE:FF"]
+        set resp [calls_last_written]
+        list \
+            [xsearch $resp -get @type] [media_error_condition $resp] \
+            [lindex [calls_events] end 0] \
+            [dict exists [calls_state] tk-m8] \
+            [llength [mockrtc::calls ::rtc::pc::set-remote-description]]
+    } -result {error bad-request <Failed> 0 0}
+
+test media-answer-malformed-fails-and-terminates \
+    {an answer whose fingerprint would add an SDP line fails the call} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        c.conn feed [media_session_accept $sid $::MEDIA_PEER both \
+            "CC:DD\na=fingerprint:sha-256 EE:FF"]
+        set terminate [media_jingle_sent]
+        list \
+            [lindex [calls_events] end 0] \
+            [dict exists [calls_state] $sid] \
+            [xsearch $terminate -get @action] \
+            [xsearch $terminate reason * -get tag] \
+            [llength [mockrtc::calls ::rtc::pc::set-remote-description]]
+    } -result {<Failed> 0 session-terminate failed-application 0}
 
 test media-buffered-candidate-rejected-is-skipped \
     {a rejected buffered candidate is skipped, not fatal to the call} \

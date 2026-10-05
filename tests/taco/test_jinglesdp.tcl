@@ -387,3 +387,50 @@ test jinglesdp-roundtrip-candidate "BuildCandidate -> CandidateToSdp preserves a
     set value "1 1 udp 1686052607 198.51.100.1 56789 typ srflx raddr 10.0.0.1 rport 54321 generation 0"
     jinglesdp::CandidateToSdp [jinglesdp::BuildCandidate $value]
 } -result {1 1 udp 1686052607 198.51.100.1 56789 typ srflx raddr 10.0.0.1 rport 54321 generation 0}
+
+# --- the DTLS fingerprint cannot carry anything else into the SDP ----------
+
+# An audio content whose transport has the given fingerprint fields.
+proc jinglesdp_test::with_fingerprint {hash body setup {ufrag abc}} {
+    j jingle -ns $::NS_JINGLE {
+        j content -ns $::NS_JINGLE -creator initiator -name audio {
+            j description -ns $::NS_RTP -media audio {
+                j payload-type -id 111 -name opus -clockrate 48000 -channels 2
+            }
+            j transport -ns $::NS_ICE_UDP -ufrag $ufrag -pwd xyz {
+                j fingerprint -ns $::NS_DTLS -hash $hash -setup $setup -body $body
+            }
+        }
+    }
+}
+
+test jinglesdp-to_sdp-fingerprint-injected-line \
+    {a line break in the fingerprint's text, hash or setup cannot add a second a=fingerprint} -body {
+    set inj "\r\na=fingerprint:sha-256 EE:FF"
+    lmap fields [list \
+        [list sha-256 "AA:BB$inj" actpass] \
+        [list "sha-256 EE:FF$inj" AA:BB actpass] \
+        [list sha-256 AA:BB "actpass$inj"]] {
+        catch {jinglesdp::to_sdp [jinglesdp_test::with_fingerprint {*}$fields]}
+    }
+} -result {1 1 1}
+
+test jinglesdp-to_sdp-control-character-anywhere \
+    {a control character in any field (here ice-ufrag) refuses the conversion} -body {
+    list [catch {jinglesdp::to_sdp [jinglesdp_test::with_fingerprint \
+        sha-256 AA:BB actpass "abc\na=fingerprint:sha-256 EE:FF"]} msg] $msg
+} -result {1 {control character in a Jingle field}}
+
+test jinglesdp-to_sdp-fingerprint-grammar {hash, colon hex and setup role are checked} -body {
+    lmap fields {
+        {sha-256 AA:BB actpass}
+        {sha-256 aa:bb:0f active}
+        {sha-256 "  AA:BB\n " passive}
+        {sha-256 AABB actpass}
+        {sha-256 AA:BG actpass}
+        {sha/256 AA:BB actpass}
+        {sha-256 AA:BB both}
+    } {
+        expr {![catch {jinglesdp::to_sdp [jinglesdp_test::with_fingerprint {*}$fields]}]}
+    }
+} -result {1 1 1 0 0 0 0}
