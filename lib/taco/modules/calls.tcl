@@ -277,6 +277,17 @@ snit::type taco_calls {
         $self Cleanup $sid
     }
 
+    # Fail a session that reached Jingle: emit <Failed>, drop the media and
+    # terminate with $jingleReason.
+    method FailCall {sid reason jingleReason} {
+        if {![dict exists $Calls $sid]} return
+        set peer [dict get $Calls $sid peer]
+        $client emit calls <Failed> -sid $sid -reason $reason
+        $self TeardownMedia $sid
+        $self SendTerminate $sid $peer $jingleReason
+        $self Cleanup $sid
+    }
+
     # Every call in flight, one dict each, unordered. The only way to
     # learn a sid you did not see <Outgoing>/<Incoming> for, which is what
     # a client that restarted needs. Cleanup drops a session in the same
@@ -1153,7 +1164,14 @@ snit::type taco_calls {
         # the answer only offers what we can actually play back.
         set jingle [$self FilterCodecs $jingle]
         # -initiator names the SDP's author: the peer, who initiated.
-        set sdp [::jinglesdp::to_sdp $jingle -initiator 1]
+        # An offer that doesn't convert is refused, which ends the session
+        # for the peer as well.
+        if {[catch {::jinglesdp::to_sdp $jingle -initiator 1} sdp]} {
+            $self IqError $stanza bad-request
+            $client emit calls <Failed> -sid $sid -reason "bad offer: $sdp"
+            $self Cleanup $sid
+            return
+        }
         jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
         dict set Calls $sid peer $from
         dict set Calls $sid state new
@@ -1218,8 +1236,16 @@ snit::type taco_calls {
             $self IqError $stanza out-of-order
             return
         }
-        # The peer wrote this answer, as the responder.
-        set sdp [::jinglesdp::to_sdp $jingle -initiator 0]
+        # The peer wrote this answer, as the responder. One that doesn't
+        # convert ends a call still waiting for it; a malformed repeat of
+        # an answer already applied is only refused.
+        if {[catch {::jinglesdp::to_sdp $jingle -initiator 0} sdp]} {
+            $self IqError $stanza bad-request
+            if {![dict exists $Calls $sid remote_set]} {
+                $self FailCall $sid "bad answer: $sdp" failed-application
+            }
+            return
+        }
         # A duplicate/retransmitted accept applies fine once but is
         # rejected the second time — not fatal to the call already
         # running, so OnMediaError warns rather than failing it, and we
