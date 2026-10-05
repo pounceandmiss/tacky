@@ -26,6 +26,8 @@ snit::type app_type {
     variable windows {}
     variable winCounter 0
     variable setupWin ""
+    variable reportedActive 1
+    variable focusAfter ""
 
     constructor args {
         $self configurelist $args
@@ -60,8 +62,25 @@ snit::type app_type {
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
         install notifier using notifier $self.notifier -controller $self
+        bind all <FocusIn> +[mymethod FocusMoved]
+        bind all <FocusOut> +[mymethod FocusMoved]
 
         ::tacky storage status -command [mymethod OnStorageStatus]
+    }
+
+    # The app is active while any of its windows has focus. Settling for a
+    # moment first keeps a switch between two of our own windows silent.
+    method FocusMoved {} {
+        if {$focusAfter ne ""} { after cancel $focusAfter }
+        set focusAfter [after 200 [mymethod ReportFocus]]
+    }
+
+    method ReportFocus {} {
+        set focusAfter ""
+        set active [expr {[focus] ne ""}]
+        if {$active == $reportedActive} return
+        set reportedActive $active
+        catch {::tacky app setActive -active $active}
     }
 
     # `setting` (like every module but `storage`) doesn't exist yet while
@@ -88,6 +107,11 @@ snit::type app_type {
     }
 
     destructor {
+        if {$focusAfter ne ""} { after cancel $focusAfter }
+        foreach ev {<FocusIn> <FocusOut>} {
+            set script [string map [list [mymethod FocusMoved] ""] [bind all $ev]]
+            bind all $ev [string trim $script]
+        }
         catch {::tacky unlisten $self}
         catch {$notifier destroy}
         foreach w $windows {
