@@ -54,6 +54,7 @@ snit::type taco_client {
         # Install conn first so delegated options (-host, -port, etc.) have a target
         install conn using conn $self.conn \
             -autoreconnect 1 \
+            -probe-allowed-command [list taco_setting_get $self conn_probe 1] \
             -emit [mymethod emit] \
             -onready [mymethod OnReady] \
             -onautherror [mymethod OnAuthError] \

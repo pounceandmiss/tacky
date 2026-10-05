@@ -29,6 +29,7 @@ snit::widget accountwindow {
     variable logLevelVar "warning"
     variable logNativeVar 0
     variable logRedactVar 1
+    variable connProbeVar 1
     variable loggingMenu ""
     # Must match taco_file's fallbacks; it is what enforces them.
     variable autofetchVar "contacts"
@@ -116,6 +117,8 @@ snit::widget accountwindow {
         # Set last: a stored value reaches -onchange above, mid-build.
         set loggingMenu $mb.file.logging
         $self SyncLogFileEntry
+        settingmenu::checkbutton $mb.file "Check connection on wake and focus" \
+            -var [myvar connProbeVar] -key conn_probe -tag $win
         $mb.file add separator
         $mb.file add command -label "Quit" \
             -command [mymethod Quit] -accelerator "Ctrl+Q"

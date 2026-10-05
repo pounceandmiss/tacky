@@ -636,6 +636,10 @@ snit::type conn {
     # disables.
     option -wake-check -default 5000
 
+    # Command prefix; a false result turns `probe` (and so the wake
+    # check) into a no-op. "" always allows.
+    option -probe-allowed-command -default ""
+
     # Event callback: {*}$cmd conn <Event> ...
     option -emit -default ""
 
@@ -759,6 +763,8 @@ snit::type conn {
     method probe {args} {
         if {$authState ne "ready" || $probeAt > 0} return
         if {[clock milliseconds] - $lastRx < $options(-probe-timeout)} return
+        if {$options(-probe-allowed-command) ne ""
+                && [string is false -strict [{*}$options(-probe-allowed-command)]]} return
         if {$keepaliveAfterId ne ""} {
             after cancel $keepaliveAfterId
         }

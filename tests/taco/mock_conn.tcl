@@ -17,6 +17,7 @@ snit::type mock_conn {
     option -password -default ""
     option -resource -default ""
     option -autoreconnect -default 0
+    option -probe-allowed-command -default ""
 
     # Event callback
     option -emit -default ""

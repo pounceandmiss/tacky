@@ -1280,6 +1280,19 @@ test conn-probe-skips-a-busy-link {a probe right after traffic sends nothing} \
         c.base get_written
     } -result {}
 
+test conn-probe-opt-out {a disallowed probe sends nothing} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0 -probe-timeout 30 \
+            -probe-allowed-command {expr 0}
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr4"
+        conn_wait 40
+        c.base clear
+        c probe
+        c.base get_written
+    } -result {}
+
 test conn-wake-jump-probes {a wake tick arriving far too late probes the link} \
     {*}$common \
     -body {
