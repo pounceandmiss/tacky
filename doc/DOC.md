@@ -317,7 +317,7 @@ pullable (use Tcl `observe`, or just track the last event you saw).
 the app. It does nothing unless the account is connected, idle for 10s and
 not already being checked; if nothing answers within 10s the connection
 is dropped and reconnects. The backend also probes by itself after the
-machine wakes from suspend.
+machine wakes from suspend. Setting `conn_probe` to `0` turns both off.
 
 Events:
 
