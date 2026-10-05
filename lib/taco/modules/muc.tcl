@@ -43,7 +43,7 @@
 # tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
-# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes
+# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1?
 # tacky listen muc <Error> $cmd              ;# -jid $room -error $errorType -stanza $stanza
 # tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict
 # tacky listen muc <Unavailable> $cmd        ;# -jid $room -nick $nick -reason $r -codes $codes -occupant $dict
@@ -106,7 +106,10 @@ snit::type taco_muc {
             after cancel $JoinTimers($roomJid)
         }
         array unset JoinTimers *
-        array unset Rooms *
+        # The session took us out of every room, joined or still joining.
+        foreach roomJid [array names Rooms] {
+            $self SelfLeft $roomJid 0 {} -disconnected 1
+        }
     }
 
     # A join that ends without our self-presence: its -command hears it,
@@ -1426,7 +1429,7 @@ snit::type taco_muc {
     # We are out of this room: drop its state and say so. `involuntary` is 1
     # when the server put us out rather than us asking, and `codes` carries
     # the status codes behind it; bookmarks decides on re-entry from both.
-    method SelfLeft {roomJid involuntary codes} {
+    method SelfLeft {roomJid involuntary codes args} {
         set myNick ""
         if {[info exists Rooms($roomJid)]} {
             set myNick [dict get $Rooms($roomJid) nick]
@@ -1434,7 +1437,7 @@ snit::type taco_muc {
         set hidden [$self isHidden -jid $roomJid]
         $self CleanupRoom $roomJid
         $self EmitAs $hidden <Left> -jid $roomJid -nick $myNick \
-            -involuntary $involuntary -codes $codes
+            -involuntary $involuntary -codes $codes {*}$args
     }
 
     # A hidden room's events go only on the bus, tagged -hidden 1 so

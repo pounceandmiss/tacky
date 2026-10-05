@@ -611,10 +611,12 @@ snit::type taco_groupcall {
         $self OnMujiGone $room $opts(-nick) $isSelf
     }
 
-    # We are out of the room: the call is gone with it.
+    # The call goes with the room. On a session end OnDisconnect does this
+    # instead, and the legs stay taco_calls' to end or resume.
     method OnRoomLeft {args} {
-        array set opts {-jid ""}
+        array set opts {-jid "" -disconnected 0}
         array set opts $args
+        if {$opts(-disconnected)} return
         set room [jid norm $opts(-jid)]
         if {![info exists Rooms($room)] && [info exists Calls($room)]} {
             $client emit groupcall <Left> -jid $room -reason "left the room" \

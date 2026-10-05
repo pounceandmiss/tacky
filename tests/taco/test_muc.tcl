@@ -1224,6 +1224,19 @@ test muc-fresh-stream-clears-rooms {a reconnect that could not resume leaves no 
         list [c muc isJoined -jid room1@muc.example.com] [llength [c muc rooms]]
     } -result {0 0}
 
+test muc-session-end-reports-rooms-left {a session end says Left for rooms joined and still joining} \
+    {*}$muc_common \
+    -body {
+        muc_join room1@muc.example.com me
+        c muc join -jid room2@muc.example.com -nick me
+        set ::got {}
+        c bus subscribe _ muc:<Left> {apply {{args} {
+            lappend ::got [dict get $args -jid] [dict get $args -disconnected]
+        }}}
+        c.conn fire_disconnect "gone"
+        lsort -stride 2 $::got
+    } -result {room1@muc.example.com 1 room2@muc.example.com 1}
+
 # -- tacky listen filtering ---------------------------------------------------
 
 test muc-listen-filters-by-jid {tacky listen filters message <New> by -jid} \
