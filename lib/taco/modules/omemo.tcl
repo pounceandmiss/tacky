@@ -271,10 +271,6 @@ snit::type taco_omemo {
     # =====================================================================
 
     method OnReady {args} {
-        # A fresh stream (<SessionStart> is not fired on resumption). A reconnect
-        # skips <SessionEnd>, so the old connection's state goes here too:
-        # replies to what we asked on it are stale (see FetchGen).
-        $self OnDisconnect
         set accountJid [jid bare [$client cget -jid]]
         $self EnsureStore
         # Before PublishBundle: a rotation changes spk/spk_id/spks, which

@@ -629,10 +629,10 @@ test groupcall-fresh-stream-ends-call {a reconnect that could not resume ends th
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        c bus publish <SessionStart>
+        c.conn fire_ready 0
         list [lsearch -inline [gc_events] {<Left>*}] [c.groupcall list] \
             [dict get [c.groupcall status -jid $ROOM] joined]
-    } -result [list [list <Left> -jid $ROOM -reason disconnected -chat $ROOM] {} 0]
+    } -result [list [list <Left> -jid $ROOM -reason disconnected] {} 0]
 
 test groupcall-disconnect-while-preparing {losing the stream mid-join reports the join over} \
     {*}$groupcall_env -body {
@@ -1350,7 +1350,7 @@ test groupcall-live-forgotten-on-reconnect {a fresh stream forgets what rooms sa
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat]
         gc_answer_room call@muc.example.com there
-        c bus publish <SessionStart>
+        c.conn fire_ready 0
         list [gc_live $ROOM?join] [llength [gc_disco_asks call@muc.example.com]]
     } -result {? 2}
 

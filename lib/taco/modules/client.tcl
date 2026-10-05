@@ -1,6 +1,8 @@
 snit::type taco_client {
     # Set while a message that arrived as a carbon is dispatched.
     variable InCarbon 0
+    # Set from <SessionStart> until its <SessionEnd>.
+    variable SessionLive 0
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
         nick chats chatlist author extdisco calls groupcall omemo file notify blocking
@@ -121,6 +123,12 @@ snit::type taco_client {
         set options(-jid) [$conn cget -bound-jid]
         $iq live 1
         if {!$resumed} {
+            # An autoreconnect never calls OnDisconnect, so a stream that
+            # could not be resumed ends the last session here.
+            if {$SessionLive} {
+                $bus publish <SessionEnd>
+            }
+            set SessionLive 1
             # XEP-0280: ask the server to carbon-copy messages sent and
             # received by our other resources. Stream resumption preserves
             # carbons state, so only enable on a fresh session.
@@ -132,6 +140,7 @@ snit::type taco_client {
 
     method OnDisconnect {msg} {
         $iq live 0
+        set SessionLive 0
         $bus publish <SessionEnd>
     }
 

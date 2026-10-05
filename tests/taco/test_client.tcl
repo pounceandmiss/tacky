@@ -120,6 +120,32 @@ test client-bus-disconnect-fires {bus publishes <SessionEnd> on disconnect} \
         set got
     } -result {1}
 
+test client-bus-fresh-stream-ends-last-session {a reconnect that could not resume ends the last session first} \
+    {*}$common \
+    -body {
+        set ::got {}
+        c bus subscribe _ <SessionStart> {apply {{args} { lappend ::got start }}}
+        c bus subscribe _ <SessionEnd> {apply {{args} { lappend ::got end }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c.conn fire_ready 1
+        c.conn fire_ready 0
+        set ::got
+    } -result {start end start}
+
+test client-bus-session-ends-once {a disconnect then a fresh stream end the session once} \
+    {*}$common \
+    -body {
+        set ::got {}
+        c bus subscribe _ <SessionStart> {apply {{args} { lappend ::got start }}}
+        c bus subscribe _ <SessionEnd> {apply {{args} { lappend ::got end }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c.conn fire_disconnect "gone"
+        c.conn fire_ready 0
+        set ::got
+    } -result {start end start}
+
 test client-bus-emit-publishes {emit publishes module:event on bus} \
     {*}$common \
     -body {

@@ -1214,6 +1214,16 @@ test muc-disconnect-clears-rooms {disconnect clears all room state} \
              [llength [c muc rooms]]
     } -result {0 0 0}
 
+test muc-fresh-stream-clears-rooms {a reconnect that could not resume leaves no room joined} \
+    {*}$muc_common \
+    -body {
+        c.conn configure -bound-jid user@test.example.com/res
+        c.conn fire_ready 0
+        muc_join room1@muc.example.com me
+        c.conn fire_ready 0
+        list [c muc isJoined -jid room1@muc.example.com] [llength [c muc rooms]]
+    } -result {0 0}
+
 # -- tacky listen filtering ---------------------------------------------------
 
 test muc-listen-filters-by-jid {tacky listen filters message <New> by -jid} \
