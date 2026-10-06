@@ -6,7 +6,7 @@ package require taco
 
 # Video group calls end to end: three accounts in hosted calls on Prosody,
 # over libtacky_webrtc.so ($TACKY_WEBRTC_LIB, default dist/) with its fake
-# camera and dummy audio. Frames are counted: each leg's incoming video, and
+# camera and dummy audio. Frames are counted: each session's incoming video, and
 # the self-view, which must keep running as peers leave. The accounts share
 # the process, and so one camera.
 namespace eval ::test::groupcall_video {
@@ -26,7 +26,7 @@ namespace eval ::test::groupcall_video {
     variable RoomSeq 0
     variable ROOM ""
     variable Events
-    variable Legs
+    variable Sessions
 
     variable LIB [expr {[info exists ::env(TACKY_WEBRTC_LIB)] ? $::env(TACKY_WEBRTC_LIB)
         : [file join [file dirname [file dirname [file dirname [file normalize [info script]]]]] \
@@ -57,8 +57,8 @@ namespace eval ::test::groupcall_video {
     }
 
     proc onLeg {acc state argsL} {
-        variable Legs
-        lappend Legs($acc,[dict get $argsL -sid]) $state
+        variable Sessions
+        lappend Sessions($acc,[dict get $argsL -sid]) $state
     }
 
     proc events {acc event} {
@@ -73,8 +73,8 @@ namespace eval ::test::groupcall_video {
 
     proc has {acc event} { expr {[llength [events $acc $event]] > 0} }
 
-    # Peer bare JID -> sid of every group leg $acc has now.
-    proc legsOf {acc} {
+    # Peer bare JID -> sid of every group session $acc has now.
+    proc sessionsOf {acc} {
         set out {}
         foreach row [tacky calls list -acc $acc] {
             if {[dict get $row group] eq ""} continue
@@ -84,16 +84,16 @@ namespace eval ::test::groupcall_video {
     }
 
     proc legActive {acc sid} {
-        variable Legs
-        expr {[info exists Legs($acc,$sid)] && "active" in $Legs($acc,$sid)}
+        variable Sessions
+        expr {[info exists Sessions($acc,$sid)] && "active" in $Sessions($acc,$sid)}
     }
 
-    # Everyone in $accs has a live leg to each of the others.
+    # Everyone in $accs has a live session to each of the others.
     proc meshLive {accs} {
         foreach acc $accs {
-            set legs [legsOf $acc]
-            if {[dict size $legs] < [llength $accs] - 1} { return 0 }
-            dict for {peer sid} $legs {
+            set sessions [sessionsOf $acc]
+            if {[dict size $sessions] < [llength $accs] - 1} { return 0 }
+            dict for {peer sid} $sessions {
                 if {![legActive $acc $sid]} { return 0 }
             }
         }
@@ -102,11 +102,11 @@ namespace eval ::test::groupcall_video {
 
     # -- Frames ---------------------------------------------------------------
 
-    # Frames decoded so far on $acc's leg to $peer (a bare JID).
+    # Frames decoded so far on $acc's session to $peer (a bare JID).
     proc incoming {acc peer} {
-        set legs [legsOf $acc]
-        if {![dict exists $legs $peer]} { return -1 }
-        set sid [dict get $legs $peer]
+        set sessions [sessionsOf $acc]
+        if {![dict exists $sessions $peer]} { return -1 }
+        set sid [dict get $sessions $peer]
         set h [lindex [array names ::tacky::media::PcCb */$sid] 0]
         if {$h eq ""} { return -1 }
         dict get [::tacky::media::webrtc::Op test-streams $h] incoming
@@ -127,10 +127,10 @@ namespace eval ::test::groupcall_video {
         return 0
     }
 
-    # Every leg of every $accs is decoding video right now.
+    # Every session of every $accs is decoding video right now.
     proc allFlowing {accs} {
         foreach acc $accs {
-            foreach peer [dict keys [legsOf $acc]] {
+            foreach peer [dict keys [sessionsOf $acc]] {
                 if {![grows [list incoming $acc $peer]]} { return "$acc<-$peer" }
             }
         }
@@ -207,9 +207,9 @@ namespace eval ::test::groupcall_video {
         variable PASS
         variable LIB
         variable Events
-        variable Legs
+        variable Sessions
         array unset Events
-        array unset Legs
+        array unset Sessions
         set ::env(TACKY_WEBRTC_FAKE_CAMERA) 1
         set ::env(TACKY_WEBRTC_DUMMY_AUDIO) 1
         tacky_init -media-backend webrtc -webrtc-lib $LIB
@@ -222,7 +222,7 @@ namespace eval ::test::groupcall_video {
             list conn <State> -acc $acc -state connected
         }]
         foreach {acc pass} $PASS {
-            foreach ev {<Joined> <PeerJoined> <PeerLeft> <Left> <Warning>
+            foreach ev {<Joined> <Session> <Left> <Warning>
                         <Started> <StartFailed> <VideoPreview>} {
                 tacky listen -tag gc_video groupcall $ev -acc $acc \
                     [list ::test::groupcall_video::onGroupcall $acc $ev]
@@ -249,7 +249,7 @@ namespace eval ::test::groupcall_video {
     # == Three with video ======================================================
 
     test groupcall-video-three-mesh \
-        {three with video: every leg decodes, one camera serves every sender and self-view} \
+        {three with video: every session decodes, one camera serves every sender and self-view} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -268,7 +268,7 @@ namespace eval ::test::groupcall_video {
             variable TEST
             set call [videoCall [list $JULIET $TEST]]
             leave $JULIET $call
-            waitUntil {[dict size [legsOf $ROMEO]] == 1 && [dict size [legsOf $TEST]] == 1}
+            waitUntil {[dict size [sessionsOf $ROMEO]] == 1 && [dict size [sessionsOf $TEST]] == 1}
             list [allFlowing [list $ROMEO $TEST]] [previewFlowing] [dict get [camera] users]
         } -result {ok 1 4}
 
@@ -281,7 +281,7 @@ namespace eval ::test::groupcall_video {
             set call [videoCall [list $JULIET $TEST]]
             leave $TEST $call
             leave $JULIET $call
-            waitUntil {[dict size [legsOf $ROMEO]] == 0}
+            waitUntil {[dict size [sessionsOf $ROMEO]] == 0}
             settle 500
             set cam [camera]
             list [dict get $cam open] [dict get $cam users] [previewFlowing] \
@@ -295,7 +295,7 @@ namespace eval ::test::groupcall_video {
             variable TEST
             set call [videoCall [list $JULIET $TEST]]
             leave $ROMEO $call
-            waitUntil {[dict size [legsOf $JULIET]] == 1 && [dict size [legsOf $TEST]] == 1}
+            waitUntil {[dict size [sessionsOf $JULIET]] == 1 && [dict size [sessionsOf $TEST]] == 1}
             allFlowing [list $JULIET $TEST]
         } -result ok
 
@@ -308,7 +308,7 @@ namespace eval ::test::groupcall_video {
             variable LIVE_TIMEOUT
             set call [videoCall [list $JULIET $TEST]]
             leave $JULIET $call
-            waitUntil {[dict size [legsOf $ROMEO]] == 1}
+            waitUntil {[dict size [sessionsOf $ROMEO]] == 1}
             settle 1000
             array unset ::test::groupcall_video::Events $JULIET
             tacky groupcall start -acc $JULIET -chat $ROOM -video 1
@@ -325,8 +325,8 @@ namespace eval ::test::groupcall_video {
             variable TEST
             set call [videoCall [list $JULIET $TEST]]
             [tacky client $TEST] disconnect
-            waitUntil {![dict exists [legsOf $ROMEO] test@example.local]
-                       && ![dict exists [legsOf $JULIET] test@example.local]} 60000
+            waitUntil {![dict exists [sessionsOf $ROMEO] test@example.local]
+                       && ![dict exists [sessionsOf $JULIET] test@example.local]} 60000
             list [allFlowing [list $ROMEO $JULIET]] [previewFlowing]
         } -result {ok 1}
 

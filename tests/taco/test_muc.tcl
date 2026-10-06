@@ -141,33 +141,53 @@ proc muc_hidden_lifecycle {} {
     }]
 }
 
-test muc-hidden-no-frontend-events {a hidden room reports nothing to the frontend} \
+test muc-hidden-events-like-any-room {a hidden room emits the same frontend events as any room} \
     {*}$muc_common \
     -body {
         set ::got {}
         foreach ev {<Joining> <Joined> <Presence> <Left>} {
             tacky listen muc $ev [list apply {{ev args} { lappend ::got $ev }} $ev]
         }
-        tacky listen bookmarks <RoomState> {apply {{args} { lappend ::got <RoomState> }}}
         muc_hidden_lifecycle
         c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
         set ::got
-    } -result {}
+    } -result {<Joining> <Joined> <Presence> <Presence> <Left>}
 
-test muc-hidden-events-stay-on-the-bus {a hidden room's events reach the modules, tagged} \
+test muc-hidden-stays-out-of-bookmarks-and-chat-list {a hidden room gets no bookmark room state and no chat list row} \
     {*}$muc_common \
     -body {
         set ::got {}
-        foreach ev {<Joined> <Presence> <Left>} {
-            c bus subscribe ::muc_test muc:$ev [list apply {{ev args} {
-                lappend ::got $ev [dict get $args -hidden]
-            }} $ev]
-        }
+        tacky listen bookmarks <RoomState> {apply {{args} { lappend ::got <RoomState> }}}
         muc_hidden_lifecycle
         c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
-        c bus unsubscribe ::muc_test
-        set ::got
-    } -result {<Joined> 1 <Presence> 1 <Presence> 1 <Left> 1}
+        list $::got [lsearch -all -inline [lmap row [c chatlist get] {dict get $row jid}] call@*]
+    } -result {{} {}}
+
+test muc-hidden-join-error-stays-out-of-bookmarks {a refused join to a hidden room produces no bookmark room state} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen bookmarks <RoomState> {apply {{args} { lappend ::got <RoomState> }}}
+        c muc join -jid call@muc.example.com -nick abc123 -hidden 1
+        c.conn feed [j presence -type error -from call@muc.example.com/abc123 {
+            j error -type auth { j registration-required -ns urn:ietf:params:xml:ns:xmpp-stanzas }
+        }]
+        list $::got [c muc isHidden -jid call@muc.example.com]
+    } -result {{} 1}
+
+test muc-hidden-known-after-leaving {isHidden still answers for a room just left, until it is joined again} \
+    {*}$muc_common \
+    -body {
+        set ::during {}
+        tacky listen muc <Left> {apply {{ev} {
+            set ::during [c muc isHidden -jid [dict get $ev -jid]]
+        }}}
+        muc_hidden_lifecycle
+        c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
+        set after [c muc isHidden -jid call@muc.example.com]
+        c muc join -jid call@muc.example.com -nick me
+        list $::during $after [c muc isHidden -jid call@muc.example.com]
+    } -result {1 1 0}
 
 test muc-hidden-state {a hidden room is joined, hidden, and not among rooms} \
     {*}$muc_common \
@@ -621,6 +641,85 @@ test muc-nick-changed-updates-mynick {nick change updates myNick} \
         }]
         c muc myNick -jid room@muc.example.com
     } -result {newme}
+
+# -- Occupant fields, item JIDs, renames, replays ---------------------------------
+
+# An occupant presence carrying <tag xmlns='urn:test'>$text</tag>.
+proc muc_tagged_presence {from jid text args} {
+    j presence -from $from {*}$args {
+        if {$text ne ""} { j tag -ns urn:test -body $text }
+        j x -ns http://jabber.org/protocol/muc#user {
+            j item -role participant -affiliation member -jid $jid
+        }
+    }
+}
+
+test muc-occupant-field-follows-presence {a registered field is set, updated and cleared from each presence} \
+    {*}$muc_common \
+    -body {
+        c muc addOccupantField tag {apply {{stanza} {
+            xsearch $stanza tag -ns urn:test -get body
+        }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_tagged_presence room@muc.example.com/bob bob@example.com/x one]
+        set first [dict get [c muc occupant -jid room@muc.example.com -nick bob] tag]
+        set ::seen {}
+        tacky listen muc <Presence> {apply {{ev} { lappend ::seen [dict get $ev -occupant tag] }}}
+        c.conn feed [muc_tagged_presence room@muc.example.com/bob bob@example.com/x two]
+        c.conn feed [muc_tagged_presence room@muc.example.com/bob bob@example.com/x ""]
+        list $first $::seen [dict get [c muc occupant -jid room@muc.example.com -nick me] tag]
+    } -result {one {two {}} {}}
+
+test muc-occupant-jids-lists-every-item {a nick shared by two sessions lists both JIDs} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j presence -from room@muc.example.com/bob {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -role participant -affiliation member -jid bob@example.com/a
+                j item -role participant -affiliation member -jid bob@example.com/b
+            }
+        }]
+        set occ [c muc occupant -jid room@muc.example.com -nick bob]
+        list [dict get $occ jid] [dict get $occ jids]
+    } -result {bob@example.com/a {bob@example.com/a bob@example.com/b}}
+
+test muc-rename-moves-occupant {a rename moves the occupant to the new nick at once, with its JID and fields} \
+    {*}$muc_common \
+    -body {
+        c muc addOccupantField tag {apply {{stanza} {
+            xsearch $stanza tag -ns urn:test -get body
+        }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_tagged_presence room@muc.example.com/bob bob@example.com/x one]
+        set ::ev {}
+        tacky listen muc <NickChanged> {apply {{ev} { set ::ev $ev }}}
+        c.conn feed [j presence -from room@muc.example.com/bob -type unavailable {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -role participant -affiliation member -jid bob@example.com/x -nick robert
+                j status -code 303
+            }
+        }]
+        set occ [dict get $::ev -occupant]
+        list [lsort [lmap o [c muc occupants -jid room@muc.example.com] {dict get $o nick}]] \
+            [dict get $::ev -oldNick] [dict get $::ev -newNick] \
+            [dict get $occ nick] [dict get $occ jid] [dict get $occ tag] \
+            [dict get [c muc occupant -jid room@muc.example.com -nick robert] jid]
+    } -result {{me robert} bob robert robert bob@example.com/x one bob@example.com/x}
+
+test muc-self-presence-replays-others {presences re-sent after our self-presence carry -replay} \
+    {*}$muc_common \
+    -body {
+        set ::seen {}
+        tacky listen muc <Presence> {apply {{ev} {
+            lappend ::seen [dict get $ev -nick] [expr {[dict exists $ev -replay] ? [dict get $ev -replay] : 0}]
+        }}}
+        c muc join -jid room@muc.example.com -nick me
+        c.conn feed [muc_presence from room@muc.example.com/bob self 0 jid bob@example.com/x]
+        c.conn feed [muc_presence from room@muc.example.com/me self 1]
+        c.conn feed [muc_presence from room@muc.example.com/carol self 0 jid carol@example.com/x]
+        set ::seen
+    } -result {bob 0 me 0 bob 1 carol 0}
 
 # -- Messaging ----------------------------------------------------------------
 

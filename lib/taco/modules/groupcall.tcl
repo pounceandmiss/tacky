@@ -1,6 +1,6 @@
 # Group calls: XEP-0272 Muji with XEP-0482 call invites. Participants
 # announce the call in their MUC presence and each pair holds one Jingle
-# session, a mesh of taco_calls legs (see calls.tcl "Group-call legs").
+# session, a mesh (see calls.tcl "Group-call sessions").
 # This module picks the room, who calls whom and when, and the payloads.
 #
 # A call is a room; its JID is the call's -jid. Two kinds:
@@ -25,64 +25,68 @@
 # tacky groupcall decline      -acc $jid -chat $chat -timestamp $ts
 # tacky groupcall inCall       -acc $jid -jid $room      ;# -> bool
 # tacky groupcall leave        -acc $jid -jid $room
-# tacky groupcall setVideo     -acc $jid -jid $room -on 0|1   ;# camera mute, every leg
+# tacky groupcall setVideo     -acc $jid -jid $room -on 0|1   ;# camera mute, every session
 # tacky groupcall invite       -acc $jid -jid $room -to $bareJid
-# tacky groupcall status       -acc $jid -jid $room
-#   ;# -> {active bool joined bool count int mode mesh}
-# tacky groupcall participants -acc $jid -jid $room
-#   ;# -> one dict per occupant announcing the call:
-#   ;#    nick jid sid state audio video preparing
 # tacky groupcall list         -acc $jid
 #   ;# -> one dict per room we are in a call in: jid chat hosted count video mode
 #   ;#    preview (the self-view's channel, {name $n} or {id $i}; {} if none)
+#   ;#    sessions (peer real JID -> sid)
+#
+# Participants are MUC occupants. Each carries `call`, parsed from their
+# <muji> presence: "" when not in the call, else {state preparing|announced
+# audio 0|1 video 0|1 contents {media -> payload list}}. Track them with muc
+# occupants and muc <Presence>/<Unavailable>/<NickChanged>; count is the
+# occupants announced.
 #
 # tacky listen groupcall <Started>    $cmd ;# -jid $room -chat $chat
 # tacky listen groupcall <StartFailed> $cmd ;# -chat $chat -reason $t
-# tacky listen groupcall <Changed>    $cmd ;# -jid $room -active $b -count $n -joined $b ?-chat $chat?
 # tacky listen groupcall <Joined>     $cmd ;# -jid $room ?-chat $chat?
-# tacky listen groupcall <PeerJoined> $cmd ;# -jid $room -nick $n -peer $fullJid -sid $sid -video $b
-# tacky listen groupcall <PeerLeft>   $cmd ;# -jid $room -nick $n -peer $fullJid -sid $sid -reason $t
+# tacky listen groupcall <Session>    $cmd ;# -jid $room -peer $fullJid -sid $sid -video $b
 # tacky listen groupcall <Left>       $cmd ;# -jid $room -reason $t ?-chat $chat?
 # tacky listen groupcall <Invited>    $cmd ;# -jid $room -from $bareJid -chat $chat -timestamp $ts -video $b
 # tacky listen groupcall <Warning>    $cmd ;# -jid $room -reason $t
 # tacky listen groupcall <VideoPreview> $cmd ;# -jid $room ?-chat $chat? ?-name $n? ?-id $i?
 #
+# <Session>: our session with -peer (an occupant's real JID) is now -sid,
+# replacing any earlier one for that peer. Its media state comes from the
+# calls events for that sid. A session ending does not mean the peer left.
+#
 # <VideoPreview> is our self-view for the whole video call, on a camera the
-# backend shares with every leg (the `preview` media capability), so it runs
+# backend shares with every session (the `preview` media capability), so it runs
 # while we are alone and outlives any peer. Without that capability the
-# legs' own <VideoPreview> is the self-view.
+# sessions' own <VideoPreview> is the self-view.
 #
-# <Changed> is room-level, fired for every joined room whether we are in
-# the call or not (a "call in progress - join" banner watches it). Per-leg
-# media state is the calls module's events (<Active>, <Ended>, <Failed>,
-# <Warning>, <VideoTrack>, <VideoPreview>, <VideoEnded>), keyed by the sid
-# from <PeerJoined>.
+# join sends <muji><preparing/></muji>, waits for the echo, then waits up to
+# PREPARE_TIMEOUT_MS for occupants that were preparing at that point. It
+# then announces the agreed payload types and calls everyone already
+# announced (XEP-0272 §3: the joiner initiates).
 #
-# join announces <muji><preparing/></muji> and waits for its echo, then
-# gives occupants still preparing PREPARE_TIMEOUT_MS. It then announces the
-# room's agreed payload types and calls everyone already in: the joiner
-# initiates (XEP-0272 §3), so later arrivals call us via AcceptSession.
+# "Already announced" follows the room's presence order, which every
+# occupant sees the same: we call anyone whose contents arrive before the
+# echo of ours and expect a call from anyone after. If both sides initiate
+# anyway, calls keeps the lower sid (XEP-0166 §7.2.16) and AcceptSession
+# -replaces swaps it in.
+#
 # leave clears the presence before terminating (§4).
 #
-# Sessions go to real JIDs (XEP-0272 v0.2): a participant whose JID the
-# room hides gets a <Warning> and no leg. Codec changes after we announced
-# re-announce; live legs keep what they negotiated.
+# Participants are keyed by real JID: sessions go there (XEP-0272 v0.2) and
+# nicks change. An occupant whose JID the room hides gets a <Warning>, no
+# session, and is not waited for. Codec changes after we announced
+# re-announce; live sessions keep what they negotiated.
 #
 # Per-room state (Rooms($room) dict, only while we are in the call):
 #   state    : preparing|announced
 #   video    : 1 if we offer video
 #   mode     : mesh
 #   payloads : media -> list of {id name clockrate ?channels?} we announced
-#   peers    : nick -> {jid sid video}, participants we have or expect a
-#              leg with (sid "" until it exists)
+#   sessions : real JID -> {sid video}; sid "" before it exists or after it ends
 #   timer    : pending after id or "": the echo wait, then the prepare wait
 #   echoed   : 1 once the room has echoed our <preparing/>
+#   waitfor  : real JIDs preparing when our <preparing/> echoed
+#   placed   : 1 once the room has echoed our contents
+#   warned   : nicks already warned about a hidden JID
 #   preview  : the media preview we hold for the self-view, "" when none
 #   view     : its channel, {name $n} or {id $i}, {} until it is up
-#
-# Muji($room) is each joined room's view of the call, nick -> {preparing
-# contents} (contents: media -> payload list), kept whether we are in or
-# not: status and <Changed> answer from it.
 #
 # Calls($room) is a hosted call we are entering or in:
 #   chat     : the chat it belongs to, "" when unknown
@@ -121,7 +125,6 @@ snit::type taco_groupcall {
 
     variable client
     variable Rooms -array {}
-    variable Muji -array {}
     variable Calls -array {}
     # See "Whether a hosted call is still going".
     variable Live -array {}
@@ -131,11 +134,13 @@ snit::type taco_groupcall {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client bus subscribe $self calls:<Ended>     [mymethod OnLegEnded ended]
-        $client bus subscribe $self calls:<Failed>    [mymethod OnLegEnded failed]
+        $client muc addOccupantField call [mymethod ParseMuji]
+        $client bus subscribe $self calls:<Ended>     [mymethod OnSessionEnded ended]
+        $client bus subscribe $self calls:<Failed>    [mymethod OnSessionEnded failed]
+        $client bus subscribe $self muc:<Presence>    [mymethod OnMucPresence]
         $client bus subscribe $self muc:<Unavailable> [mymethod OnOccupantGone]
         $client bus subscribe $self muc:<Left>        [mymethod OnRoomLeft]
-        $client bus subscribe $self muc:<Presence>    [mymethod OnChatPresence]
+        $client bus subscribe $self muc:<Destroyed>   [mymethod OnRoomLeft]
         $client bus subscribe $self <SessionEnd>      [mymethod OnDisconnect]
         $client caps addFeature $NS
         $client caps addFeature $NS_INVITES
@@ -260,15 +265,15 @@ snit::type taco_groupcall {
         array set opts $args
         set room [jid norm $opts(-jid)]
         if {![info exists Rooms($room)]} return
-        dict for {nick peer} [dict get $Rooms($room) peers] {
-            if {[dict get $peer sid] eq ""} continue
-            $client calls setVideo -sid [dict get $peer sid] -on $opts(-on)
+        dict for {real session} [dict get $Rooms($room) sessions] {
+            if {[dict get $session sid] eq ""} continue
+            $client calls setVideo -sid [dict get $session sid] -on $opts(-on)
         }
         return
     }
 
     # Hook called by the global `video` module after the preferred camera
-    # changes. The legs switch through calls; this reaches the self-view,
+    # changes. The sessions switch through calls; this reaches the self-view,
     # which may be all there is while we are alone in the call.
     tackymethod applyPreferredCamera {args} {
         array set opts {-id ""}
@@ -299,53 +304,6 @@ snit::type taco_groupcall {
         return
     }
 
-    tackymethod status {args} {
-        array set opts {-jid ""}
-        array set opts $args
-        set room [jid norm $opts(-jid)]
-        set count [$self CallSize $room]
-        set joined [expr {[info exists Rooms($room)]
-                          && [dict get $Rooms($room) state] eq "announced"}]
-        return [dict create active [expr {$count > 0}] joined $joined \
-            count $count mode mesh]
-    }
-
-    tackymethod participants {args} {
-        array set opts {-jid ""}
-        array set opts $args
-        set room [jid norm $opts(-jid)]
-        if {![info exists Muji($room)]} { return {} }
-        set legs {}
-        foreach row [$client calls list] {
-            dict set legs [dict get $row sid] [dict get $row state]
-        }
-        set out {}
-        dict for {nick info} $Muji($room) {
-            set sid ""
-            set state none
-            if {[info exists Rooms($room)]
-                    && [dict exists $Rooms($room) peers $nick]} {
-                set sid [dict get $Rooms($room) peers $nick sid]
-                if {$sid ne "" && [dict exists $legs $sid]} {
-                    set state [dict get $legs $sid]
-                } elseif {$sid ne ""} {
-                    set state ended
-                } else {
-                    set state expected
-                }
-            }
-            set contents [dict get $info contents]
-            lappend out [dict create \
-                nick $nick \
-                jid [$client muc realJid $room $nick] \
-                sid $sid state $state \
-                audio [dict exists $contents audio] \
-                video [dict exists $contents video] \
-                preparing [dict get $info preparing]]
-        }
-        return $out
-    }
-
     tackymethod list {args} {
         set out {}
         foreach room [lsort [array names Rooms]] {
@@ -355,7 +313,8 @@ snit::type taco_groupcall {
                 count [$self CallSize $room] \
                 video [dict get $Rooms($room) video] \
                 mode [dict get $Rooms($room) mode] \
-                preview [dict get $Rooms($room) view]]
+                preview [dict get $Rooms($room) view] \
+                sessions [$self SessionSids $room]]
         }
         return $out
     }
@@ -364,120 +323,138 @@ snit::type taco_groupcall {
     # taco_calls hook: an inbound session-initiate with <muji room/>
     # =========================================================================
 
-    # Is $peer someone we are waiting on in $room's call? Answers with our
-    # video intent (0/1) to open the leg with, or "" to refuse. A peer we
-    # already have a leg with is refused too: one session per pair.
+    # Whether $peer may open a session in $room's call: our video intent
+    # (0/1), or "" to refuse. Refused when we are not announced, when $peer is
+    # not an announced occupant's real JID, or when we already have a session
+    # with them other than -replaces (ours, which lost a crossing tie-break).
     method AcceptSession {args} {
-        array set opts {-room "" -peer "" -sid "" -video 0}
+        array set opts {-room "" -peer "" -sid "" -video 0 -replaces ""}
         array set opts $args
         set room [jid norm $opts(-room)]
         if {![info exists Rooms($room)]
                 || [dict get $Rooms($room) state] ne "announced"} {
             return ""
         }
-        set nick [$self NickOf $room $opts(-peer)]
-        if {$nick eq ""} { return "" }
-        if {![info exists Muji($room)] || ![dict exists $Muji($room) $nick]
-                || [dict get $Muji($room) $nick preparing]} {
-            return ""
+        set occ [$self OccupantOf $room $opts(-peer)]
+        if {$occ eq "" || [$self CallState $occ] ne "announced"} { return "" }
+        set peer $opts(-peer)
+        if {[dict exists $Rooms($room) sessions $peer]} {
+            set old [dict get $Rooms($room) sessions $peer sid]
+            if {$old ne "" && $old ne $opts(-replaces)} { return "" }
         }
-        if {[dict exists $Rooms($room) peers $nick]
-                && [dict get $Rooms($room) peers $nick sid] ne ""} {
-            return ""
-        }
-        dict set Rooms($room) peers $nick \
-            [dict create jid $opts(-peer) sid $opts(-sid) video $opts(-video)]
-        $client emit groupcall <PeerJoined> -jid $room -nick $nick \
-            -peer $opts(-peer) -sid $opts(-sid) -video $opts(-video)
+        dict set Rooms($room) sessions $peer \
+            [dict create sid $opts(-sid) video $opts(-video)]
+        $client emit groupcall <Session> -jid $room \
+            -peer $peer -sid $opts(-sid) -video $opts(-video)
         $self Met $room
         return [dict get $Rooms($room) video]
     }
 
     # =========================================================================
-    # Presence: the room's view of the call
+    # Presence: the room's occupants, as muc reports them
     # =========================================================================
 
-    # Every MUC presence, after taco_muc has recorded the occupant.
-    method OnPresence {stanza} {
-        set from [xsearch $stanza -get @from]
-        if {![jid valid $from] || [jid resource $from] eq ""} return
-        set room [jid norm [jid bare $from]]
-        set nick [jid resource $from]
-        # A room taco_muc tracks, joined or still joining: the occupants
-        # it replays before our own self-presence are the call so far.
-        set myNick [$client muc myNick -jid $room]
-        if {$myNick eq "" && ![info exists Muji($room)]} return
-        set type_ [xsearch $stanza -get @type]
-        if {$type_ ni {"" available}} return
-        set mucX [xsearch $stanza x -ns http://jabber.org/protocol/muc#user -get node]
-        if {$mucX eq ""} return
-
+    # The occupant field `call` from a <muji> presence; "" if absent or empty.
+    method ParseMuji {stanza} {
         set muji [xsearch $stanza muji -ns $NS -get node]
-        set isSelf [expr {$nick eq $myNick}]
-
-        # A nick shared with another session of ours: the room shows theirs,
-        # so nobody sees our <muji>, and peers would refuse our sessions.
-        if {$isSelf && [info exists Rooms($room)]
-                && [dict get $Rooms($room) state] eq "preparing"} {
-            # The room lists every session behind the nick, one <item> each.
-            set mine [jid norm [$client cget -jid]]
-            set others {}
-            xsearch $mucX item -script it {
-                set ij [xsearch $it -get @jid]
-                if {$ij ne "" && [jid norm $ij] ne $mine} { lappend others $ij }
-            }
-            if {[llength $others]} {
-                $self GiveUp $room "another device of yours\
-                    ([lindex $others 0]) is in this room as $nick, and the\
-                    room shows its presence instead of this one"
-                return
-            }
-        }
-
-        if {$muji eq ""} {
-            $self OnMujiGone $room $nick $isSelf
-            return
-        }
+        if {$muji eq ""} { return "" }
         # <preparing/> inherits muji's namespace on the wire; matched by tag.
         set preparing [expr {[xsearch $muji preparing -get node] ne ""}]
         set contents [$self ParseContents $muji]
-        dict set Muji($room) $nick [dict create preparing $preparing contents $contents]
+        if {!$preparing && ![dict size $contents]} { return "" }
+        return [dict create state [expr {$preparing ? "preparing" : "announced"}] \
+            audio [dict exists $contents audio] video [dict exists $contents video] \
+            contents $contents]
+    }
 
-        if {$isSelf} {
-            $self OnOwnEcho $room $preparing
+    # preparing, announced, or "" if not in the call.
+    method CallState {occ} {
+        if {![dict exists $occ call] || [dict get $occ call] eq ""} { return "" }
+        return [dict get $occ call state]
+    }
+
+    # Every occupant presence, in room order.
+    method OnMucPresence {args} {
+        $self OnChatPresence {*}$args
+        # A caps refresh, not a new presence.
+        if {[dict exists $args -replay] && [dict get $args -replay]} return
+        set room [jid norm [dict get $args -jid]]
+        if {![info exists Rooms($room)]} return
+        set occ [dict get $args -occupant]
+        if {[dict get $args -nick] eq [$client muc myNick -jid $room]} {
+            $self OnOwnPresence $room $occ
             return
         }
-        $self EmitChanged $room
-        if {![info exists Rooms($room)]} return
-        switch -- [dict get $Rooms($room) state] {
+        set real [dict get $occ jid]
+        switch -- [$self CallState $occ] {
+            "" { $self OnOutOfCall $room $real }
             preparing {
-                # Someone we were waiting on is done, or someone new started
-                # preparing: re-check whether we can announce.
-                $self MaybeAnnounce $room
+                # They started after us and wait for us.
+                if {[dict get $Rooms($room) state] eq "preparing"} { $self MaybeAnnounce $room }
             }
             announced {
-                if {$preparing} return
-                # Someone done preparing after us calls us: note them and
-                # recompute the room's agreed codecs.
+                if {[dict get $Rooms($room) state] eq "preparing"} {
+                    # Someone we may be waiting on is done.
+                    $self MaybeAnnounce $room
+                    return
+                }
+                # Before our contents echo we call them; after it they call us.
                 $self ReannounceIfChanged $room
-                if {![dict exists $Rooms($room) peers $nick]} {
-                    $self NotePeer $room $nick
+                if {$real eq ""} {
+                    $self WarnHidden $room [dict get $occ nick]
+                } elseif {![dict exists $Rooms($room) sessions $real]} {
+                    dict set Rooms($room) sessions $real [dict create sid "" video 0]
+                    if {![dict get $Rooms($room) placed]} { $self Dial $room $real }
                 }
             }
         }
     }
 
     # A presence of ours came back from the room.
-    method OnOwnEcho {room preparing} {
-        $self EmitChanged $room
-        if {![info exists Rooms($room)]} return
-        if {[dict get $Rooms($room) state] eq "preparing" && $preparing} {
-            if {![dict get $Rooms($room) echoed]} {
-                dict set Rooms($room) echoed 1
-                after cancel [dict get $Rooms($room) timer]
-                dict set Rooms($room) timer ""
+    method OnOwnPresence {room occ} {
+        set state [dict get $Rooms($room) state]
+        # A nick shared with another session of ours: the room shows theirs,
+        # so nobody sees our <muji>, and peers would refuse our sessions.
+        if {$state eq "preparing"} {
+            set mine [jid norm [$client cget -jid]]
+            foreach ij [dict get $occ jids] {
+                if {[jid norm $ij] eq $mine} continue
+                $self GiveUp $room "another device of yours ($ij) is in this\
+                    room as [dict get $occ nick], and the room shows its\
+                    presence instead of this one"
+                return
             }
-            $self MaybeAnnounce $room
+        }
+        switch -- [$self CallState $occ] {
+            "" {
+                # We left, or another client of ours cleared it. While a new
+                # join still waits for its <preparing/> echo, this is the echo
+                # of the earlier leave (or of the room join): ignore it.
+                if {$state ne "preparing" || [dict get $Rooms($room) echoed]} {
+                    $self Leave $room "left"
+                }
+            }
+            preparing {
+                if {$state ne "preparing"} return
+                if {![dict get $Rooms($room) echoed]} {
+                    dict set Rooms($room) echoed 1
+                    after cancel [dict get $Rooms($room) timer]
+                    dict set Rooms($room) timer ""
+                    # Wait only for those preparing now; hidden JIDs are
+                    # unreachable anyway.
+                    set ahead {}
+                    foreach o [$client muc occupants -jid $room] {
+                        if {[dict get $o nick] eq [dict get $occ nick]} continue
+                        if {[$self CallState $o] ne "preparing" || [dict get $o jid] eq ""} continue
+                        lappend ahead [dict get $o jid]
+                    }
+                    dict set Rooms($room) waitfor $ahead
+                }
+                $self MaybeAnnounce $room
+            }
+            announced {
+                if {$state eq "announced"} { dict set Rooms($room) placed 1 }
+            }
         }
     }
 
@@ -494,17 +471,17 @@ snit::type taco_groupcall {
         $client muc sendPresence $room {}
         $self Farewell $room
         $self Leave $room $reason
-        $self EmitChanged $room
     }
 
-    # Announce as soon as no other occupant is still preparing, else wait
-    # for the echo that clears them - bounded by PREPARE_TIMEOUT_MS.
+    # After our <preparing/> echo, announce once nobody in waitfor is still
+    # preparing, or after PREPARE_TIMEOUT_MS.
     method MaybeAnnounce {room} {
         if {[dict get $Rooms($room) state] ne "preparing"} return
-        set myNick [$client muc myNick -jid $room]
+        if {![dict get $Rooms($room) echoed]} return
         set waiting 0
-        dict for {nick info} $Muji($room) {
-            if {$nick ne $myNick && [dict get $info preparing]} { incr waiting }
+        foreach real [dict get $Rooms($room) waitfor] {
+            set occ [$self OccupantOf $room $real]
+            if {$occ ne "" && [$self CallState $occ] eq "preparing"} { incr waiting }
         }
         if {$waiting} {
             if {[dict get $Rooms($room) timer] eq ""} {
@@ -541,37 +518,41 @@ snit::type taco_groupcall {
         $client message PatchCallRows $room
 
         set myNick [$client muc myNick -jid $room]
-        set wantVideo [dict get $Rooms($room) video]
-        dict for {nick info} $Muji($room) {
-            if {$nick eq $myNick || [dict get $info preparing]} continue
-            set real [$self NotePeer $room $nick]
-            if {$real eq ""} continue
-            set video [expr {$wantVideo && [dict exists $info contents video]}]
-            set sid [$client calls StartGroupSession \
-                -room $room -peer $real -video $video]
-            dict set Rooms($room) peers $nick \
-                [dict create jid $real sid $sid video $video]
-            $client emit groupcall <PeerJoined> -jid $room -nick $nick \
-                -peer $real -sid $sid -video $video
-            $self Met $room
+        foreach occ [$client muc occupants -jid $room] {
+            if {[dict get $occ nick] eq $myNick || [$self CallState $occ] ne "announced"} continue
+            set real [dict get $occ jid]
+            if {$real eq ""} {
+                $self WarnHidden $room [dict get $occ nick]
+                continue
+            }
+            if {[dict exists $Rooms($room) sessions $real]} continue
+            $self Dial $room $real
         }
-        $self EmitChanged $room
     }
 
-    # A participant with no leg yet. "" real JID = the room hides it, which
-    # is as far as we get with them.
-    method NotePeer {room nick} {
-        set real [$client muc realJid $room $nick]
-        dict set Rooms($room) peers $nick [dict create jid $real sid "" video 0]
-        if {$real eq ""} {
-            $client emit groupcall <Warning> -jid $room \
-                -reason "$nick: JID hidden by the room, cannot connect"
-        }
-        return $real
+    # Start our session with $real.
+    method Dial {room real} {
+        set occ [$self OccupantOf $room $real]
+        set video [expr {[dict get $Rooms($room) video]
+                         && $occ ne "" && [dict get $occ call video]}]
+        set sid [$client calls StartGroupSession \
+            -room $room -peer $real -video $video]
+        dict set Rooms($room) sessions $real [dict create sid $sid video $video]
+        $client emit groupcall <Session> -jid $room \
+            -peer $real -sid $sid -video $video
+        $self Met $room
+    }
+
+    # Warn once per nick that the room hides their JID.
+    method WarnHidden {room nick} {
+        if {$nick in [dict get $Rooms($room) warned]} return
+        dict lappend Rooms($room) warned $nick
+        $client emit groupcall <Warning> -jid $room \
+            -reason "$nick: JID hidden by the room, cannot connect"
     }
 
     # The room's codec set moved under us: say what we can still do. Live
-    # legs keep what they negotiated.
+    # sessions keep what they negotiated.
     method ReannounceIfChanged {room} {
         set payloads [$self AgreedPayloads $room]
         if {$payloads eq [dict get $Rooms($room) payloads]} return
@@ -579,40 +560,25 @@ snit::type taco_groupcall {
         $client muc sendPresence $room [list [$self ContentsNode $payloads]]
     }
 
-    # An occupant's presence lost its <muji>, or they left.
-    method OnMujiGone {room nick isSelf} {
-        if {![info exists Muji($room)] || ![dict exists $Muji($room) $nick]} return
-        dict unset Muji($room) $nick
-        if {$isSelf} {
-            # Our own leave echo, or another client of ours cleared it.
-            if {[info exists Rooms($room)]} { $self Leave $room "left" }
-            $self EmitChanged $room
-            return
+    # $real left the call or the room: hang up their session, and recheck
+    # whether we can announce.
+    method OnOutOfCall {room real} {
+        if {![info exists Rooms($room)]} return
+        if {$real ne "" && [dict exists $Rooms($room) sessions $real]} {
+            set sid [dict get $Rooms($room) sessions $real sid]
+            dict unset Rooms($room) sessions $real
+            if {$sid ne ""} { $client calls hangup -sid $sid }
         }
-        if {[info exists Rooms($room)]
-                && [dict exists $Rooms($room) peers $nick]} {
-            set peer [dict get $Rooms($room) peers $nick]
-            dict unset Rooms($room) peers $nick
-            set sid [dict get $peer sid]
-            if {$sid ne ""} {
-                $client calls hangup -sid $sid
-            }
-            $client emit groupcall <PeerLeft> -jid $room -nick $nick \
-                -peer [dict get $peer jid] -sid $sid -reason "left the call"
-        }
-        $self EmitChanged $room
+        if {[dict get $Rooms($room) state] eq "preparing"} { $self MaybeAnnounce $room }
     }
 
     method OnOccupantGone {args} {
-        array set opts {-jid "" -nick ""}
-        array set opts $args
-        set room [jid norm $opts(-jid)]
-        set isSelf [expr {$opts(-nick) eq [$client muc myNick -jid $room]}]
-        $self OnMujiGone $room $opts(-nick) $isSelf
+        set room [jid norm [dict get $args -jid]]
+        $self OnOutOfCall $room [dict get $args -occupant jid]
     }
 
     # The call goes with the room. On a session end OnDisconnect does this
-    # instead, and the legs stay taco_calls' to end or resume.
+    # instead, and the sessions stay taco_calls' to end or resume.
     method OnRoomLeft {args} {
         array set opts {-jid "" -disconnected 0}
         array set opts $args
@@ -624,13 +590,9 @@ snit::type taco_groupcall {
             unset Calls($room)
         }
         if {[info exists Rooms($room)]} { $self Leave $room "left the room" }
-        if {[info exists Muji($room)]} {
-            unset Muji($room)
-            $self EmitChanged $room
-        }
     }
 
-    # Only the room state is ours to drop, with nothing on the wire; the legs
+    # Only the room state is ours to drop, with nothing on the wire; the sessions
     # are taco_calls' to end or resume.
     method OnDisconnect {args} {
         array unset Live *
@@ -642,32 +604,30 @@ snit::type taco_groupcall {
                 {*}[$self ChatArgs $room]
             unset Calls($room)
         }
-        array unset Muji *
     }
 
     # =========================================================================
-    # Legs ending on their own
+    # Sessions ending on their own
     # =========================================================================
 
-    # A leg ended without the peer leaving the call: report it gone. The
-    # participant stays known, with no leg; nothing redials.
-    method OnLegEnded {how args} {
+    # A session ended (calls <Ended>/<Failed>). The participant stays;
+    # nothing redials.
+    method OnSessionEnded {how args} {
         set sid [dict get $args -sid]
         foreach room [array names Rooms] {
-            dict for {nick peer} [dict get $Rooms($room) peers] {
-                if {[dict get $peer sid] ne $sid} continue
-                dict set Rooms($room) peers $nick sid ""
-                set reason [expr {$how eq "failed" && [dict exists $args -reason]
-                                  ? [dict get $args -reason] : "session ended"}]
-                $client emit groupcall <PeerLeft> -jid $room -nick $nick \
-                    -peer [dict get $peer jid] -sid $sid -reason $reason
+            dict for {real session} [dict get $Rooms($room) sessions] {
+                if {[dict get $session sid] ne $sid} continue
+                dict set Rooms($room) sessions $real sid ""
                 # A refusing peer does not see us in the call, usually
                 # because another session of ours shares the nick (which our
                 # own echo does not always reveal).
-                if {$reason eq "session-initiate rejected"} {
+                if {$how eq "failed" && [dict exists $args -reason]
+                        && [dict get $args -reason] eq "session-initiate rejected"} {
+                    set occ [$self OccupantOf $room $real]
+                    set who [expr {$occ eq "" ? $real : [dict get $occ nick]}]
                     set me [$client muc myNick -jid $room]
                     $client emit groupcall <Warning> -jid $room \
-                        -reason "$nick does not see you in the call; is another\
+                        -reason "$who does not see you in the call; is another\
                             device of yours in this room as $me?"
                 }
                 return
@@ -695,7 +655,7 @@ snit::type taco_groupcall {
     # Helpers
     # =========================================================================
 
-    # Drop our room state and hang up every leg. The presence is the
+    # Drop our room state and hang up every session. The presence is the
     # caller's business: leave sends it, the other exits already lost it.
     method Leave {room reason {hangup 1}} {
         set state $Rooms($room)
@@ -705,9 +665,9 @@ snit::type taco_groupcall {
             ::tacky::media closePreview [dict get $state preview]
         }
         if {$hangup} {
-            dict for {nick peer} [dict get $state peers] {
-                if {[dict get $peer sid] ne ""} {
-                    $client calls hangup -sid [dict get $peer sid]
+            dict for {real session} [dict get $state sessions] {
+                if {[dict get $session sid] ne ""} {
+                    $client calls hangup -sid [dict get $session sid]
                 }
             }
         }
@@ -721,14 +681,6 @@ snit::type taco_groupcall {
             unset Calls($room)
             if {[$client muc isJoined -jid $room]} { $client muc leave -jid $room }
         }
-    }
-
-    method EmitChanged {room} {
-        set st [$self status -jid $room]
-        set chat [$self ChatOf $room]
-        $client emit groupcall <Changed> -jid $room \
-            -active [dict get $st active] -count [dict get $st count] \
-            -joined [dict get $st joined] {*}[expr {$chat eq "" ? "" : [list -chat $chat]}]
     }
 
     # -chat and the chat a call belongs to, for an event; nothing when none.
@@ -749,21 +701,29 @@ snit::type taco_groupcall {
 
     # Occupants announcing contents (not merely preparing), us included.
     method CallSize {room} {
-        if {![info exists Muji($room)]} { return 0 }
         set n 0
-        dict for {nick info} $Muji($room) {
-            if {![dict get $info preparing]} { incr n }
+        foreach occ [$client muc occupants -jid $room] {
+            if {[$self CallState $occ] eq "announced"} { incr n }
         }
         return $n
     }
 
-    # The nick whose real JID is $fullJid, "" if nobody's. Occupants of a
-    # non-anonymous room carry their full JID, so the match is exact.
-    method NickOf {room fullJid} {
+    # The occupant whose real JID is $fullJid, "" if none.
+    method OccupantOf {room fullJid} {
+        if {$fullJid eq ""} { return "" }
         foreach occ [$client muc occupants -jid $room] {
-            if {[dict get $occ jid] eq $fullJid} { return [dict get $occ nick] }
+            if {[dict get $occ jid] eq $fullJid} { return $occ }
         }
         return ""
+    }
+
+    # Real JID -> sid of our existing sessions in $room.
+    method SessionSids {room} {
+        set out {}
+        dict for {real session} [dict get $Rooms($room) sessions] {
+            if {[dict get $session sid] ne ""} { dict set out $real [dict get $session sid] }
+        }
+        return $out
     }
 
     # media -> payload list, from a <muji> node's contents. Content
@@ -804,10 +764,10 @@ snit::type taco_groupcall {
             set ours [expr {[dict exists $mine $kind] ? [dict get $mine $kind] : {}}]
             set agreed {}
             set anyone 0
-            dict for {nick info} $Muji($room) {
-                if {$nick eq $myNick || [dict get $info preparing]} continue
-                if {![dict exists $info contents $kind]} continue
-                set theirs [dict get $info contents $kind]
+            foreach occ [$client muc occupants -jid $room] {
+                if {[dict get $occ nick] eq $myNick || [$self CallState $occ] ne "announced"} continue
+                if {![dict exists $occ call contents $kind]} continue
+                set theirs [dict get $occ call contents $kind]
                 set agreed [expr {$anyone ? [$self Intersect $agreed $theirs] : $theirs}]
                 set anyone 1
             }
@@ -842,7 +802,7 @@ snit::type taco_groupcall {
     # Our <preparing/>, in a room we are in.
     method BeginJoin {room video} {
         set Rooms($room) [dict create state preparing video $video mode mesh \
-            payloads {} peers {} echoed 0 preview "" view {} \
+            payloads {} sessions {} echoed 0 waitfor {} placed 0 warned {} preview "" view {} \
             timer [after $ECHO_TIMEOUT_MS [mymethod OnEchoTimeout $room]]]
         $client muc sendPresence $room [list [$self PreparingNode]]
         if {$video} { $self OpenPreview $room }
@@ -1146,7 +1106,7 @@ snit::type taco_groupcall {
     # Someone entering a chat whose hosted call we are in is let into its
     # room, so a late arrival can still come to the call.
     method OnChatPresence {args} {
-        if {[dict exists $args -hidden]} return
+        if {[$client muc isHidden -jid [dict get $args -jid]]} return
         set chat [jid norm [dict get $args -jid]]
         set occ [dict get $args -occupant]
         if {![dict exists $occ jid] || [dict get $occ jid] eq ""} return
@@ -1171,7 +1131,7 @@ snit::type taco_groupcall {
 
     # <muji> with one <content> per media, in the jingle namespace so Dino
     # reads it (Movim does the same). The content name is the media name,
-    # which is also the leg's m-line label (taco_calls MID / VIDEO_MID):
+    # which is also the session's m-line label (taco_calls MID / VIDEO_MID):
     # XEP-0272 §3 matches session contents to conference ones by name.
     method ContentsNode {payloads} {
         return [j muji -ns $NS {

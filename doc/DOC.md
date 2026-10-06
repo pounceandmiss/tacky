@@ -779,10 +779,15 @@ room (a direct invite has none to send). The row stays as a record, unless
 the room's chat then holds only declined invites (a room you never joined):
 that chat is dropped with a `chatlist <Remove>`.
 
-A room tacky joins for its own use, such as a group call's room (see
-[groupcall](#groupcall)), is hidden from the frontend: never bookmarked or
-archived, its messages dropped, left out of `muc rooms`, and named by no
-`muc` or `bookmarks` event.
+A group call creates an auxiliary, hidden room under the hood; see [Group
+calls](#group-calls).
+
+An occupant is `{nick, jid, jids, role, affiliation, show, status, caps,
+call}`. `jid` is the real JID if the room shows it; `jids` lists every JID
+sharing the nick; `call` is their part in a [group call](#groupcall), `{}`
+if none. `<NickChanged>` carries the occupant under its new nick. A
+`<Presence>` with `replay: true` only refreshes `caps` after your role
+changed.
 
 ## notify
 
@@ -1027,9 +1032,9 @@ callee side of `<Incoming>`; the caller side is `peer_ringing`, set once a peer
 device has answered `<Ringing>`. `peer` is bare, as the events report it, even
 after the session has latched a full JID. `video_local` is whether this side
 offered/is sending video; `video_remote` is whether the peer did. `group` is
-the room JID when the call is a leg of a [group call](#groupcall), else `""`.
-Legs are listed like any call, so a restarted frontend finds them, but they
-raise `groupcall <PeerJoined>` instead of `<Outgoing>`/`<Incoming>`.
+the room JID when the call is one of a [group call](#groupcall)'s sessions, else `""`.
+Group-call sessions are listed like any call, so a restarted frontend finds them, but they
+raise `groupcall <Session>` instead of `<Outgoing>`/`<Incoming>`.
 
 Events:
 
@@ -1058,95 +1063,66 @@ tear the video half down on its own. See
 
 ## groupcall
 
-    groupcall start        {chat: string, video?: bool}       a hosted call for a chat
-    groupcall join         {jid: string, video?: bool, chat?: string, id?: string}
-    groupcall join         {chat: string, timestamp: int, video?: bool}   answer a call invite
-    groupcall decline      {chat: string, timestamp: int}
-    groupcall inCall       {jid: string}                      -> bool
-    groupcall leave        {jid: string}
-    groupcall setVideo     {jid: string, on?: bool}           on default: true
-    groupcall invite       {jid: string, to: string}          XEP-0482, to a bare JID
-    groupcall status       {jid: string}                      -> {active: bool, joined: bool, count: int, mode: string}
-    groupcall participants {jid: string}                      -> [groupcall_peer]
-    groupcall list         {}                                 -> [groupcall_row]
+    groupcall start    {chat: string, video?: bool}            a hosted call for a chat
+    groupcall join     {jid: string, video?: bool, chat?: string, id?: string}
+    groupcall join     {chat: string, timestamp: int, video?: bool}   answer an invite
+    groupcall decline  {chat: string, timestamp: int}
+    groupcall inCall   {jid: string}                           -> bool
+    groupcall leave    {jid: string}
+    groupcall setVideo {jid: string, on?: bool}                on default: true
+    groupcall invite   {jid: string, to: string}               XEP-0482, to a bare JID
+    groupcall list     {}                                      -> [groupcall_row]
 
-    groupcall_peer = {nick: string, jid: string, sid: string, state: string,
-                      audio: bool, video: bool, preparing: bool}
     groupcall_row  = {jid: string, chat: string, hosted: bool, count: int,
-                      video: bool, mode: string, preview: {name?: string, id?: string}}
-
-A group call (XEP-0272 Muji) is held in a room, and `jid` is always that
-room's JID. There are two kinds:
-
-- **Hosted**: the call has a room of its own, as in Dino. `start` creates
-  one for `chat` (a group chat, bare or `?join`, or a contact): members-only,
-  showing real JIDs, with the chat's members let in, and posts an XEP-0482
-  invite to the chat. Each device enters under its own random nick, so an
-  account with several devices in the chat still works (under a shared nick
-  the room shows one device's presence for all). The room is hidden
-  elsewhere (see [muc](#muc)). To join one you were invited to, pass the
-  invite's room as `jid`, plus its `chat` and `id` so the chat hears you
-  accepted.
-- **In-room**: held in the group chat itself under your nick there, as in
-  Movim. `join` with the group chat's `jid` joins one; `start` never makes
-  one. Another device of yours in the chat under the same nick blocks
-  joining (`<Left>` says so).
-
-`join` of a room you are in joins its in-room call; any other room is
-entered as a hosted call's. `video: true` offers your camera. Each other
-participant becomes a leg: an ordinary [calls](#calls) session whose
-`<Active>`, `<Ended>`, `<Failed>`, `<Warning>`, `<VideoTrack>`,
-`<VideoPreview>` and `<VideoEnded>` carry the `sid` from `<PeerJoined>`.
-`leave` ends every leg and clears your announcement; for a hosted call it
-also posts `left` to the chat, or `retract` if you started it and nobody
-came. `setVideo` mutes the camera on all legs. `invite` sends a contact an
-invite, first letting them into a hosted call's room.
-
-`status` works for any joined room, in the call or not: `active` is whether
-anyone announces a call, `count` how many do, `joined` whether you do.
-`participants` lists everyone announcing, with `state` from your leg to
-them: `none` when you are not in the call, `expected` while waiting for
-them to connect, else the leg's `calls` state, or `ended`. `mode` is
-`mesh`.
+                      video: bool, mode: "mesh", preview: {name?: string, id?: string},
+                      sessions: {<peer JID>: <sid>}}
+    occupant.call  = {} | {state: "preparing" | "announced", audio: bool,
+                          video: bool, contents: {<media>: [payload]}}
 
 Events:
 
-    groupcall <Started>     {jid: string, chat: string}
-    groupcall <StartFailed> {chat: string, reason: string}
-    groupcall <Changed>     {jid: string, active: bool, count: int, joined: bool, chat?: string}
-    groupcall <Joined>      {jid: string, chat?: string}
-    groupcall <PeerJoined>  {jid: string, nick: string, peer: string, sid: string, video: bool}
-    groupcall <PeerLeft>    {jid: string, nick: string, peer: string, sid: string, reason: string}
-    groupcall <Left>        {jid: string, reason: string, chat?: string}
-    groupcall <Invited>     {jid: string, from: string, chat: string, timestamp: int, video: bool}
-    groupcall <Warning>     {jid: string, reason: string}
+    groupcall <Started>      {jid: string, chat: string}
+    groupcall <StartFailed>  {chat: string, reason: string}
+    groupcall <Joined>       {jid: string, chat?: string}
+    groupcall <Session>      {jid: string, peer: string, sid: string, video: bool}
+    groupcall <Left>         {jid: string, reason: string, chat?: string}
+    groupcall <Invited>      {jid: string, from: string, chat: string, timestamp: int, video: bool}
+    groupcall <Warning>      {jid: string, reason: string}
     groupcall <VideoPreview> {jid: string, chat?: string} & frame_stream
 
-`<VideoPreview>` is your self-view while you are in a video call, alone or
-not; `groupcall list` repeats it as `preview`. It needs the backend's
-`preview` capability, which shares one camera across legs so legs coming
-and going don't touch it. Without it, each leg's `calls <VideoPreview>` is
-the self-view. A camera that fails to open raises `<Warning>` and the call
-goes on without it.
+A call (XEP-0272 Muji) lives in a room; `jid` is the room's JID.
 
-`start` in a chat whose newest call's room still exists joins that call
-instead, with no `<Started>`; that is how you rejoin a call you left.
-`<Started>` gives a started call its `jid`, then `<Joined>` follows as for
-any join. Every join ends with `<Left>`, even one that never got in, whose
-`reason` then says why (`the call has ended`, `you are not on this call's
-guest list`, ...). `<Changed>`, `<Joined>` and `<Left>` carry the call's
-`chat` when it has one. `<Changed>` fires on any change to a call, for a
-"call in progress, join" banner. `<PeerLeft>` with reason `left the call`
-means the participant is gone; any other reason is a leg that ended while
-they still announce the call, and nothing redials.
+- **Hosted** (as in Dino): `start` makes a members-only room for `chat`
+  (a group chat or a contact), lets the chat's members in, and posts an
+  XEP-0482 invite. Each device joins under its own random nick. To join
+  from an invite, pass its room as `jid` plus `chat` and `id`, or answer the
+  stored invite with `chat` and `timestamp`.
+- **In-room** (as in Movim): the call is held in the group chat itself;
+  `join` with the chat's `jid`. tacky never starts one. Another device of
+  yours under the same nick blocks joining (`<Left>` says so).
 
-A call invite posted to one of your chats is kept as a message
-(`content.type` `"call"`, see [message](#message)). `join` / `decline` with
-its `chat` and `timestamp` answer it, as with `muc acceptInvite`: `join`
-enters the call and tells the chat, `decline` tells the chat no.
-`<Invited>` is the moment to ring for one arriving live; it is not raised
-for history a room replays or for an invite from another device of yours.
-See [Group calls](#group-calls).
+**Participants are the room's occupants.** Track them with `muc occupants`
+and `muc` `<Presence>`, `<Unavailable>`, `<NickChanged>`: an occupant is in
+the call while its `call` is non-empty, joined once `announced`. A group
+chat's "call in progress" banner reads the same field.
+
+**Media**: you hold one [calls](#calls) session per participant.
+`<Session>` names it (`peer` is the occupant's `jid`); a later `<Session>`
+for the same peer replaces it. Its state comes from `calls` events for that
+`sid`. A session ending does not mean the participant left, and nothing
+redials. `list` gives the current `sessions` for a window opened mid-call.
+
+`<VideoPreview>` is your self-view while in a video call (`list` repeats it
+as `preview`); without the backend's `preview` capability use the
+sessions' `calls <VideoPreview>`. `setVideo` mutes the camera on all
+sessions. `invite` lets the contact into a hosted call's room first.
+
+Every join ends with `<Left>`, with a `reason` when it failed (`the call has
+ended`, `you are not on this call's guest list`, ...). `leave` also posts
+`left` to a hosted call's chat, or `retract` if you started it and nobody
+came. `start` in a chat whose last call is still going joins it instead.
+`<Invited>` is when to ring for a live invite; not raised for replayed
+history or invites from your own devices. See [Group calls](#group-calls).
 
 ## media
 
@@ -1189,7 +1165,7 @@ to grey out a control it would otherwise offer:
     videoDevice   `video setPreferredCamera` does anything
     videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
     preview       a group call keeps a self-view of its own (`groupcall
-                  <VideoPreview>`), on one camera shared by every leg
+                  <VideoPreview>`), on one camera shared by every session
 
 An absent capability breaks nothing: the matching call is accepted and does
 nothing, enumeration comes back empty, and a frontend that ignores all this
@@ -1886,55 +1862,33 @@ request, so the answer is authoritative: a call it does not name is over.
 
 ## Group calls
 
-A call among a chat's members: XEP-0272 Multiparty Jingle (Muji), as Dino
-and Movim implement it, so tacky users can share a call with either. Each
-participant announces itself in its presence to the call's room, and
-`groupcall status` / `<Changed>` read the call off the occupants'
-presences. No server component is needed; any MUC service works.
+tacky does mesh group calls, Dino-style: every participant holds one Jingle
+session with every other, so cost grows with each participant and a handful
+is the practical limit.
 
-`groupcall start` holds the call in a room of its own, as Dino does, and
-posts an XEP-0482 invite to the chat pointing at it. Movim holds calls in
-the group chat itself; tacky joins those but never starts one. A separate
-room is what makes several devices on one account work: the chat shows one
-device's presence for all of them under the shared nick, so only that
-device could take part, while in the call's room each device has its own
-random nick. The room is members-only and shows real JIDs; the chat's
-members are let in, as is anyone who enters the chat during the call.
+A call lives in an auxiliary MUC created under the hood. The room is hidden:
+not bookmarked, archived or in the chat list, its messages dropped, left out
+of `muc rooms`. Its `muc` events are the same as any room's, and `muc
+isHidden` tells it apart. It is members-only and shows real JIDs. Calls held
+in a group chat itself (as Movim does) can be joined too, but tacky never
+starts one.
 
-It is a mesh: each participant holds a Jingle session with every other, so
-joining a call of *n* people opens *n* legs, each a `calls` session with
-its own media. Every leg encodes the microphone and camera separately
-(though the camera is opened once and shared), so a handful of people is
-the practical limit.
+Using the API:
 
-The sequence, from `groupcall join`:
+1. `groupcall start` from a chat, or `groupcall join` with an invite
+   (`<Invited>` is when to ring). `<Started>` gives the call's room `jid`;
+   `<Joined>` means you are in.
+2. Show participants from the room like any MUC: `muc occupants` and `muc`
+   `<Presence>`, `<Unavailable>` and `<NickChanged>` for that `jid`. An
+   occupant is in the call while its `call` is non-empty. Renames and leaves
+   need no extra handling.
+3. For each participant, `groupcall <Session>` gives the `sid` of your media
+   session with them (`peer` is the occupant's `jid`); drive the tile from
+   `calls` events for that `sid`. A window opened mid-call gets the current
+   ones from `groupcall list`.
+4. `groupcall leave` to hang up; `<Left>` ends every join, with a `reason`
+   if it failed.
 
-1. Presence to the room with `<muji><preparing/></muji>`: we are about to
-   announce and want the codec map to hold still.
-2. Once the room echoes it, anyone else still preparing gets five seconds
-   to finish. Then the payload types: the intersection of what participants
-   announced, keeping their ids, cut to what our backend supports
-   (`media payloadTypes`); our own list if the call is new.
-3. Presence with the contents (`audio`, plus `video` if asked) and
-   `<Joined>`. Then a session-initiate carrying `<muji room='...'/>` to each
-   participant already announced: the joiner calls (XEP-0272 §3), so two
-   people never call each other at once. Each is a `<PeerJoined>`.
-4. Someone announcing after us calls us; their session-initiate is accepted
-   because they are announced in a room whose call we are in. Anyone else
-   sending one gets `item-not-found`, as with an unagreed 1:1 call.
-5. A participant dropping `<muji>` from their presence, or leaving the
-   room, has their leg hung up: `<PeerLeft>`. `groupcall leave` clears our
-   own presence, then terminates every leg: `<Left>`. Leaving the room, or
-   losing the stream, does the same.
-
-Sessions go to real JIDs, so the room must show them (`muc#roomconfig_whois`
-= anyone), as a hosted call's room always does. In an in-room call in a
-semi-anonymous room the announcement and banner still work, but a
-participant whose JID is hidden gets a `<Warning>` and no leg. If the room's
-codec set changes after we announced, we re-announce; legs already up keep
-what they negotiated.
-
-`groupcall invite` sends someone an XEP-0482 pointer to the call's room,
-arriving as `<Invited>`. Dino joins the room under a random nick (to Dino a
-Muji room is only for the call), so inviting a Dino user to an in-room call
-renames them in the group chat; a hosted call's room avoids this.
+A participant whose JID the room hides cannot be connected to and raises
+`<Warning>`. Dino joins any call room under a random nick, so inviting a
+Dino user to a call held in a group chat renames them there.

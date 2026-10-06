@@ -1,6 +1,6 @@
 # Unit tests for taco_groupcall: the XEP-0272 presence choreography and the
-# legs it opens through taco_calls. Runs against the mock media backend, so
-# a leg gets as far as its offer, which is where the wire is checked.
+# sessions it opens through taco_calls. Runs against the mock media backend, so
+# a session gets as far as its offer, which is where the wire is checked.
 package require tcltest
 namespace import ::tcltest::*
 package require tacky::testhelpers
@@ -168,6 +168,13 @@ proc gc_echo_preparing {} {
     c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res -preparing 1]
 }
 
+# Our own contents echoed back: whoever announces after this calls us.
+proc gc_echo_announce {{nick me} {room ""} args} {
+    if {$room eq ""} { set room $::ROOM }
+    c.conn feed [gc_presence $nick -room $room -self 1 -jid user@test.example.com/res \
+        -contents [list audio [list $::OPUS_111]] {*}$args]
+}
+
 # The <muji> node of the last presence we wrote, "" if it had none.
 proc gc_muji_written {} {
     foreach w [lreverse [c.conn get_written]] {
@@ -200,13 +207,21 @@ proc gc_events {} {
     return $out
 }
 
+proc gc_event_args {name} {
+    set out {}
+    foreach e [gc_events] {
+        if {[lindex $e 0] eq $name} { lappend out [lrange $e 1 end] }
+    }
+    return $out
+}
+
 proc gc_event_names {} {
     set out {}
     foreach e [gc_events] { lappend out [lindex $e 0] }
     return $out
 }
 
-# Answer the XEP-0215 request a new leg makes, so its pc comes up.
+# Answer the XEP-0215 request a new session makes, so its pc comes up.
 proc gc_answer_extdisco {} {
     set id ""
     foreach w [c.conn get_written] {
@@ -256,17 +271,60 @@ proc gc_session_initiate {sid from {room ""}} {
     }
 }
 
-# The sid a <PeerJoined> for $nick carried.
+# The sid of the first <Session> with $nick.
 proc gc_sid_of {nick} {
-    foreach e [gc_events] {
-        if {[lindex $e 0] eq "<PeerJoined>" && [dict get [lrange $e 1 end] -nick] eq $nick} {
-            return [dict get [lrange $e 1 end] -sid]
-        }
+    foreach e [gc_event_args <Session>] {
+        if {[gc_nick_of [dict get $e -peer]] eq $nick} { return [dict get $e -sid] }
     }
     return ""
 }
 
-# The pc handle of a leg, as mock media logged it.
+# A participant's fixture name: their JID's localpart (bob@example.com/desk
+# is bob).
+proc gc_nick_of {real} {
+    lindex [split $real @] 0
+}
+
+# Who each <Session> was with, in order.
+proc gc_session_nicks {} {
+    lmap e [gc_event_args <Session>] { gc_nick_of [dict get $e -peer] }
+}
+
+# Names of the peers whose sessions ended (calls <Ended>/<Failed>), in
+# order.
+proc gc_nicks_left {} {
+    set who {}
+    foreach e [gc_event_args <Session>] {
+        dict set who [dict get $e -sid] [gc_nick_of [dict get $e -peer]]
+    }
+    set out {}
+    foreach e $::_emitted {
+        if {[lindex $e 0] ne "calls" || [lindex $e 1] ni {<Ended> <Failed>}} continue
+        set sid [dict get [lrange $e 2 end] -sid]
+        if {[dict exists $who $sid]} { lappend out [dict get $who $sid] }
+    }
+    return $out
+}
+
+# {active joined count} for $room, computed as a frontend would: from muc
+# occupants and groupcall list.
+proc gc_status {room} {
+    set count 0
+    foreach occ [c muc occupants -jid $room] {
+        if {[dict get $occ call] ne "" && [dict get $occ call state] eq "announced"} { incr count }
+    }
+    set joined [expr {$room in [lmap r [c.groupcall list] { dict get $r jid }]}]
+    dict create active [expr {$count > 0}] joined $joined count $count
+}
+
+# An occupant's call state: preparing, announced, or "" when not in the call.
+proc gc_occupant_call {room nick} {
+    set occ [c muc occupant -jid $room -nick $nick]
+    if {$occ eq "" || [dict get $occ call] eq ""} { return "" }
+    dict get $occ call state
+}
+
+# The pc handle of a session, as mock media logged it.
 proc gc_pc_of {sid} {
     foreach entry [mockmedia::calls CreatePeer] {
         if {[string match "*/$sid" [lindex $entry 0]]} { return [lindex $entry 0] }
@@ -300,9 +358,9 @@ test groupcall-first-in-announces-own-codecs {alone in the room, the echo announ
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
         list [gc_payloads [gc_muji_written]] [gc_event_names] \
-            [c.groupcall status -jid $ROOM]
+            [gc_status $ROOM]
     } -result [list {audio {{111 opus}} video {{96 VP8}}} \
-        {<VideoPreview> <Changed> <Joined> <Changed>} {active 0 joined 1 count 0 mode mesh}]
+        {<VideoPreview> <Joined>} {active 0 joined 1 count 0}]
 
 test groupcall-audio-only-announces-no-video {without -video the announcement has no video content} \
     {*}$groupcall_env -body {
@@ -335,20 +393,22 @@ test groupcall-joiner-calls-those-in {the joiner initiates to everyone already a
             [xsearch $jingle -get @action] \
             [xsearch $jingle muji -ns $NS_MUJI -get @room] \
             [expr {[xsearch $jingle -get @sid] eq $sid}] \
-            [lsearch -inline [gc_events] {<PeerJoined>*}]]
+            [lsearch -inline [gc_events] {<Session>*}]]
     } -result [list 1 $BOB session-initiate $ROOM 1 \
-        [list <PeerJoined> -jid $ROOM -nick bob -peer $BOB -sid SID -video 0]]
+        [list <Session> -jid $ROOM -peer $BOB -sid SID -video 0]]
 
-test groupcall-leg-is-not-a-1to1-call {a leg emits no <Outgoing> and lists its room} \
+test groupcall-session-is-not-a-1to1-call {a session emits no <Outgoing> and lists its room} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        list [calls_events] [dict get [lindex [c.calls list] 0] group] \
-            [c.groupcall list]
-    } -result [list {} $ROOM [list [list jid $ROOM chat $ROOM hosted 0 count 1 video 0 mode mesh preview {}]]]
+        set sid [gc_sid_of bob]
+        string map [list $sid SID] [list [calls_events] [dict get [lindex [c.calls list] 0] group] \
+            [c.groupcall list]]
+    } -result [list {} $ROOM [list [list jid $ROOM chat $ROOM hosted 0 count 1 video 0 mode mesh preview {} \
+        sessions [list $BOB SID]]]]
 
-test groupcall-video-only-when-peer-offers {a leg offers video only to a peer announcing it} \
+test groupcall-video-only-when-peer-offers {a session offers video only to a peer announcing it} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]] \
             [gc_presence carol -jid $CAROL \
@@ -356,21 +416,20 @@ test groupcall-video-only-when-peer-offers {a leg offers video only to a peer an
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
         set out {}
-        foreach e [gc_events] {
-            if {[lindex $e 0] ne "<PeerJoined>"} continue
-            lappend out [dict get [lrange $e 1 end] -nick] [dict get [lrange $e 1 end] -video]
+        foreach e [gc_event_args <Session>] {
+            lappend out [gc_nick_of [dict get $e -peer]] [dict get $e -video]
         }
         lsort -stride 2 $out
     } -result {bob 0 carol 1}
 
-test groupcall-hidden-jid-warns {a room hiding a participant's JID gets a warning, not a leg} \
+test groupcall-hidden-jid-warns {a room hiding a participant's JID gets a warning, not a session} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        list [gc_event_names] [llength [c.calls list]] \
-            [dict get [lindex [c.groupcall participants -jid $ROOM] 0] state]
-    } -result {{<Changed> <Joined> <Warning> <Changed>} 0 expected}
+        list [gc_event_names] [llength [c.calls list]] [gc_occupant_call $ROOM bob] \
+            [dict get [lindex [c.groupcall list] 0] sessions]
+    } -result {{<Joined> <Warning>} 0 announced {}}
 
 # -- Waiting on preparing peers ------------------------------------------------
 
@@ -382,7 +441,7 @@ test groupcall-waits-for-preparing-peer {a peer still preparing holds our announ
         set before [gc_event_names]
         c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
         list $before [gc_event_names] [expr {[gc_sid_of carol] ne ""}]
-    } -result {<Changed> {<Changed> <Changed> <Joined> <PeerJoined> <Changed>} 1}
+    } -result {{} {<Joined> <Session>} 1}
 
 test groupcall-preparing-wait-is-bounded {a peer stuck preparing is waited out} \
     {*}$groupcall_env -body {
@@ -394,7 +453,7 @@ test groupcall-preparing-wait-is-bounded {a peer stuck preparing is waited out} 
         after 200 [list set $flag 1]
         testwait::Block $flag 2000 "prepare timeout"
         list [gc_event_names] [llength [c.calls list]]
-    } -result {{<Changed> <Joined> <Changed>} 0}
+    } -result {<Joined> 0}
 
 # -- Peers arriving after us ---------------------------------------------------
 
@@ -403,6 +462,7 @@ test groupcall-late-peer-calls-us {a peer announcing after us is let in when the
         gc_room
         c.groupcall join -jid $ROOM
         gc_echo_preparing
+        gc_echo_announce
         c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         set before [llength [c.calls list]]
         c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
@@ -413,11 +473,12 @@ test groupcall-late-peer-calls-us {a peer announcing after us is let in when the
             [expr {[gc_pc_of bob-sid] ne ""}]
     } -result [list 0 result si1 bob-sid $ROOM 1]
 
-test groupcall-late-peer-video-follows-ours {an inbound leg sends video only if we joined with it} \
+test groupcall-late-peer-video-follows-ours {an inbound session sends video only if we joined with it} \
     {*}$groupcall_env -body {
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
+        gc_echo_announce
         c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
         dict get [lindex [c.calls list] 0] video_local
@@ -440,7 +501,7 @@ test groupcall-initiate-for-room-not-joined-refused {a muji session-initiate for
         gc_error_condition [gc_written_id si1]
     } -result item-not-found
 
-test groupcall-one-leg-per-peer {a second session-initiate from a connected peer is refused} \
+test groupcall-one-session-per-peer {a second session-initiate from a connected peer is refused} \
     {*}$groupcall_env -body {
         gc_room
         c.groupcall join -jid $ROOM
@@ -465,7 +526,7 @@ test groupcall-preparing-peer-cannot-initiate {a peer that has not announced con
 
 # -- Peers leaving --------------------------------------------------------------
 
-test groupcall-peer-drops-muji {a peer clearing <muji> has its leg hung up} \
+test groupcall-peer-drops-muji {a peer clearing <muji> has its session hung up} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
@@ -476,23 +537,23 @@ test groupcall-peer-drops-muji {a peer clearing <muji> has its leg hung up} \
         lassign [gc_jingle_written] to jingle
         string map [list $sid SID] [list $to [xsearch $jingle -get @action] \
             [llength [c.calls list]] \
-            [lsearch -inline [gc_events] {<PeerLeft>*}] \
-            [c.groupcall status -jid $ROOM]]
+            [gc_nicks_left] [gc_occupant_call $ROOM bob] \
+            [gc_status $ROOM]]
     } -result [list $BOB session-terminate 0 \
-        [list <PeerLeft> -jid $ROOM -nick bob -peer $BOB -sid SID -reason "left the call"] \
-        {active 0 joined 1 count 0 mode mesh}]
+        bob {} \
+        {active 0 joined 1 count 0}]
 
-test groupcall-peer-leaves-room {a peer leaving the room has its leg hung up} \
+test groupcall-peer-leaves-room {a peer leaving the room has its session hung up} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
         c.conn feed [gc_presence bob -jid $BOB -type unavailable]
-        list [llength [c.calls list]] \
-            [llength [lsearch -all -inline [gc_events] {<PeerLeft>*}]]
-    } -result {0 1}
+        list [llength [c.calls list]] [gc_nicks_left] \
+            [c muc occupant -jid $ROOM -nick bob]
+    } -result {0 bob {}}
 
-test groupcall-leg-ending-reports-peer {a leg the peer terminated is reported left, and the participant stays} \
+test groupcall-session-ending-keeps-participant {a session the peer terminated ends, and the participant stays in the call} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
@@ -503,9 +564,9 @@ test groupcall-leg-ending-reports-peer {a leg the peer terminated is reported le
                 j reason { j success }
             }
         }]
-        string map [list $sid SID] [list [lsearch -inline [gc_events] {<PeerLeft>*}] \
-            [dict get [lindex [c.groupcall participants -jid $ROOM] 0] state]]
-    } -result [list [list <PeerLeft> -jid $ROOM -nick bob -peer $BOB -sid SID -reason "session ended"] expected]
+        list [gc_nicks_left] [gc_occupant_call $ROOM bob] \
+            [dict get [lindex [c.groupcall list] 0] sessions]
+    } -result {bob announced {}}
 
 test groupcall-refused-initiate-warns {a peer refusing our session is reported, with the likely cause} \
     {*}$groupcall_env -body {
@@ -527,12 +588,10 @@ test groupcall-refused-initiate-warns {a peer refusing our session is reported, 
                 j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
-        string map [list $sid SID] [list \
-            [lsearch -inline [gc_events] {<PeerLeft>*}] \
+        list [gc_nicks_left] \
             [lsearch -inline [gc_events] {<Warning>*}] \
-            [dict get [c.groupcall status -jid $ROOM] joined]]
-    } -result [list \
-        [list <PeerLeft> -jid $ROOM -nick bob -peer $BOB -sid SID -reason "session-initiate rejected"] \
+            [dict get [gc_status $ROOM] joined]
+    } -result [list bob \
         [list <Warning> -jid $ROOM -reason "bob does not see you in the call; is another device of yours in this room as me?"] \
         1]
 
@@ -563,7 +622,7 @@ test groupcall-own-clear-echo-leaves {our muji-less echo from another device of 
         c.groupcall join -jid $ROOM
         gc_echo_preparing
         c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
-        list [lindex [gc_event_names] end-1] [c.groupcall list]
+        list [lindex [gc_event_names] end] [c.groupcall list]
     } -result {<Left> {}}
 
 test groupcall-room-left-ends-call {being put out of the room ends the call} \
@@ -573,8 +632,8 @@ test groupcall-room-left-ends-call {being put out of the room ends the call} \
         gc_echo_preparing
         c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res -type unavailable]
         list [expr {"<Left>" in [gc_event_names]}] [llength [c.calls list]] \
-            [c.groupcall status -jid $ROOM]
-    } -result {1 0 {active 0 joined 0 count 0 mode mesh}}
+            [gc_status $ROOM]
+    } -result {1 0 {active 0 joined 0 count 0}}
 
 test groupcall-backend-failure-leaves {a backend that cannot name its payload types ends the join} \
     {*}$groupcall_env -body {
@@ -584,10 +643,10 @@ test groupcall-backend-failure-leaves {a backend that cannot name its payload ty
         c.conn clear
         gc_echo_preparing
         list [gc_muji_written] [lsearch -inline [gc_events] {<Left>*}] \
-            [c.groupcall status -jid $ROOM]
+            [gc_status $ROOM]
     } -result [list {} \
         [list <Left> -jid $ROOM -reason "media backend failed: no payload types" -chat $ROOM] \
-        {active 0 joined 0 count 0 mode mesh}]
+        {active 0 joined 0 count 0}]
 
 test groupcall-shared-nick-gives-up {another session of ours holding the nick ends the join} \
     {*}$groupcall_env -body {
@@ -599,8 +658,8 @@ test groupcall-shared-nick-gives-up {another session of ours holding the nick en
         list [gc_muji_written] [lindex [lsearch -inline [gc_events] {<Left>*}] 0] \
             [string match "*user@test.example.com/phone*" \
                 [dict get [lrange [lsearch -inline [gc_events] {<Left>*}] 1 end] -reason]] \
-            [c.groupcall status -jid $ROOM]
-    } -result {{} <Left> 1 {active 0 joined 0 count 0 mode mesh}}
+            [gc_status $ROOM]
+    } -result {{} <Left> 1 {active 0 joined 0 count 0}}
 
 test groupcall-echo-timeout-gives-up {a <preparing/> the room never echoes ends the join} \
     {*}$groupcall_env -body {
@@ -609,9 +668,9 @@ test groupcall-echo-timeout-gives-up {a <preparing/> the room never echoes ends 
         c.groupcall join -jid $ROOM
         after 100 { set ::_waited 1 }
         vwait ::_waited
-        list [lsearch -inline [gc_events] {<Left>*}] [c.groupcall status -jid $ROOM]
+        list [lsearch -inline [gc_events] {<Left>*}] [gc_status $ROOM]
     } -result [list [list <Left> -jid $ROOM -reason "the room never showed our call presence" -chat $ROOM] \
-        {active 0 joined 0 count 0 mode mesh}]
+        {active 0 joined 0 count 0}]
 
 test groupcall-echo-arrives-in-time {the echo timer does not fire once the room has echoed} \
     {*}$groupcall_env -body {
@@ -621,8 +680,8 @@ test groupcall-echo-arrives-in-time {the echo timer does not fire once the room 
         gc_echo_preparing
         after 100 { set ::_waited 1 }
         vwait ::_waited
-        list [expr {"<Left>" in [gc_event_names]}] [c.groupcall status -jid $ROOM]
-    } -result {0 {active 0 joined 1 count 0 mode mesh}}
+        list [expr {"<Left>" in [gc_event_names]}] [gc_status $ROOM]
+    } -result {0 {active 0 joined 1 count 0}}
 
 test groupcall-fresh-stream-ends-call {a reconnect that could not resume ends the call we were in} \
     {*}$groupcall_env -body {
@@ -631,7 +690,7 @@ test groupcall-fresh-stream-ends-call {a reconnect that could not resume ends th
         gc_echo_preparing
         c.conn fire_ready 0
         list [lsearch -inline [gc_events] {<Left>*}] [c.groupcall list] \
-            [dict get [c.groupcall status -jid $ROOM] joined]
+            [dict get [gc_status $ROOM] joined]
     } -result [list [list <Left> -jid $ROOM -reason disconnected] {} 0]
 
 test groupcall-disconnect-while-preparing {losing the stream mid-join reports the join over} \
@@ -814,27 +873,24 @@ test groupcall-in-room-shared-nick-any-item {a nick shared with another device i
 
 # -- Watching a call we are not in -----------------------------------------------
 
-test groupcall-tracks-call-in-room {a call in progress is seen from the occupants' presences} \
+test groupcall-tracks-call-in-room {a call in progress is seen from the occupants, with no groupcall event of ours} \
     {*}$groupcall_env -body {
         gc_room
         c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.conn feed [gc_presence carol -jid $CAROL -preparing 1]
-        list [gc_events] [c.groupcall status -jid $ROOM] \
-            [lsort [lmap p [c.groupcall participants -jid $ROOM] {
-                list [dict get $p nick] [dict get $p preparing] [dict get $p audio] [dict get $p state]}]]
-    } -result [list [list [list <Changed> -jid $ROOM -active 1 -count 1 -joined 0 -chat $ROOM] \
-                          [list <Changed> -jid $ROOM -active 1 -count 1 -joined 0 -chat $ROOM]] \
-        {active 1 joined 0 count 1 mode mesh} \
-        {{bob 0 1 none} {carol 1 0 none}}]
+        list [gc_events] [gc_status $ROOM] \
+            [lsort [lmap o [c muc occupants -jid $ROOM] {
+                if {[dict get $o call] eq ""} continue
+                list [dict get $o nick] [dict get $o call state] [dict get $o call audio]}]]
+    } -result {{} {active 1 joined 0 count 1} {{bob announced 1} {carol preparing 0}}}
 
 test groupcall-call-ending-in-room {the last participant leaving clears the room's call} \
     {*}$groupcall_env -body {
         gc_room
         c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.conn feed [gc_presence bob -jid $BOB]
-        list [lindex [gc_events] end] [c.groupcall status -jid $ROOM]
-    } -result [list [list <Changed> -jid $ROOM -active 0 -count 0 -joined 0 -chat $ROOM] \
-        {active 0 joined 0 count 0 mode mesh}]
+        list [gc_events] [gc_status $ROOM] [gc_occupant_call $ROOM bob]
+    } -result {{} {active 0 joined 0 count 0} {}}
 
 # -- Invites (XEP-0482) ------------------------------------------------------------
 
@@ -1038,6 +1094,8 @@ proc gc_started_echo {call} {
     set nick [jid resource [gc_last_join]]
     c.conn feed [gc_presence $nick -room $call -self 1 \
         -jid user@test.example.com/res -role moderator -affiliation owner -preparing 1]
+    # Alone, we announce at once; the room echoes that too.
+    gc_echo_announce $nick $call -role moderator -affiliation owner
 }
 
 # $nick ($full) arriving in the call's room announcing audio, then calling us.
@@ -1047,7 +1105,7 @@ proc gc_late_peer {call nick full sid} {
     c.conn feed [gc_session_initiate $sid $full $call]
 }
 
-# A leg's peer terminating it, with a Jingle reason.
+# A session's peer terminating it, with a Jingle reason.
 proc gc_terminate {sid from {reason success}} {
     c.conn feed [j iq -type set -from $from -to user@test.example.com/res -id t-$sid {
         j jingle -ns urn:xmpp:jingle:1 -action session-terminate -sid $sid {
@@ -1056,17 +1114,7 @@ proc gc_terminate {sid from {reason success}} {
     }]
 }
 
-proc gc_event_args {name} {
-    set out {}
-    foreach e [gc_events] {
-        if {[lindex $e 0] eq $name} { lappend out [lrange $e 1 end] }
-    }
-    return $out
-}
 
-proc gc_nicks_left {} {
-    lmap e [gc_event_args <PeerLeft>] { dict get $e -nick }
-}
 
 # -- The self-view ----------------------------------------------------------------
 
@@ -1105,14 +1153,14 @@ test groupcall-preview-outlives-peers {the preview stays while peers leave, in e
             [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111] video [list $VP8_96]]]
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        set legs [llength [gc_event_args <PeerJoined>]]
+        set sessions [llength [gc_event_args <Session>]]
         c.conn feed [gc_presence carol -jid $CAROL -type unavailable]
         set afterCarol [llength [mockmedia::calls ClosePreview]]
         c.conn feed [gc_presence bob -jid $BOB]
         set alone [list [llength [mockmedia::calls ClosePreview]] \
-            [dict get [c.groupcall status -jid $ROOM] joined]]
+            [dict get [gc_status $ROOM] joined]]
         c.groupcall leave -jid $ROOM
-        list $legs $afterCarol $alone [llength [mockmedia::calls ClosePreview]] \
+        list $sessions $afterCarol $alone [llength [mockmedia::calls ClosePreview]] \
             [llength [mockmedia::calls OpenPreview]] [lsort [gc_nicks_left]]
     } -result {2 0 {0 1} 1 1 {bob carol}}
 
@@ -1145,7 +1193,7 @@ test groupcall-preview-disconnect-closes {losing the stream closes the preview} 
         list [llength [mockmedia::calls ClosePreview]] [c.groupcall list]
     } -result {1 {}}
 
-test groupcall-preview-without-capability {a backend with no preview leaves the self-view to the legs} \
+test groupcall-preview-without-capability {a backend with no preview leaves the self-view to the sessions} \
     {*}$groupcall_env -body {
         ::tacky::media close
         mockmedia::capabilities {
@@ -1157,7 +1205,7 @@ test groupcall-preview-without-capability {a backend with no preview leaves the 
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
         list [mockmedia::calls OpenPreview] [gc_event_args <VideoPreview>] \
-            [dict get [c.groupcall status -jid $ROOM] joined]
+            [dict get [gc_status $ROOM] joined]
     } -result {{} {} 1}
 
 test groupcall-preview-no-camera-joins-anyway {a camera that will not open warns, and the call goes on} \
@@ -1166,7 +1214,7 @@ test groupcall-preview-no-camera-joins-anyway {a camera that will not open warns
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        list [gc_event_args <Warning>] [dict get [c.groupcall status -jid $ROOM] joined] \
+        list [gc_event_args <Warning>] [dict get [gc_status $ROOM] joined] \
             [dict get [lindex [c.groupcall list] 0] preview]
     } -result [list [list [list -jid $ROOM -reason "camera: no camera could be opened"]] 1 {}]
 
@@ -1468,7 +1516,7 @@ proc gc_hosted_three {} {
     return $call
 }
 
-# Answer every XEP-0215 request written so far, each leg its own.
+# Answer every XEP-0215 request written so far, each session its own.
 proc gc_answer_every_extdisco {} {
     foreach w [c.conn get_written] {
         if {[dict get $w tag] ne "iq"} continue
@@ -1481,16 +1529,16 @@ proc gc_answer_every_extdisco {} {
     }
 }
 
-proc gc_leg_sids {} {
+proc gc_session_sids {} {
     lsort [lmap l [c.calls list] {dict get $l sid}]
 }
 
-test groupcall-three-late-arrivals {two peers arriving after us each get their leg} \
+test groupcall-three-late-arrivals {two peers arriving after us each get their session} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
-        list [gc_leg_sids] [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}] \
-            [dict get [c.groupcall status -jid $call] count]
-    } -result {{sid-bob sid-carol} {bob carol} 2}
+        list [gc_session_sids] [gc_session_nicks] \
+            [dict get [gc_status $call] count]
+    } -result {{sid-bob sid-carol} {bob carol} 3}
 
 test groupcall-three-arrive-reversed {the same, carol first: the order of arrival does not matter} \
     {*}$groupcall_env -body {
@@ -1499,16 +1547,16 @@ test groupcall-three-arrive-reversed {the same, carol first: the order of arriva
         gc_started_echo $call
         gc_late_peer $call carol $CAROL sid-carol
         gc_late_peer $call bob $BOB sid-bob
-        list [gc_leg_sids] [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}]
+        list [gc_session_sids] [gc_session_nicks]
     } -result {{sid-bob sid-carol} {carol bob}}
 
-test groupcall-three-joiner-calls-both {joining with two already in: we call both, one leg each} \
+test groupcall-three-joiner-calls-both {joining with two already in: we call both, one session each} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]] \
             [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        list [llength [gc_leg_sids]] [lsort [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}]]
+        list [llength [gc_session_sids]] [lsort [gc_session_nicks]]
     } -result {2 {bob carol}}
 
 foreach {order first second} {forward bob carol reverse carol bob} {
@@ -1517,15 +1565,15 @@ foreach {order first second} {forward bob carol reverse carol bob} {
             set call [gc_hosted_three]
             set full [dict create bob $BOB carol $CAROL]
             c.conn feed [gc_presence @1 -room $call -jid [dict get $full @1] -type unavailable]
-            set one [list [dict get [c.groupcall status -jid $call] count] [gc_leg_sids]]
+            set one [list [dict get [gc_status $call] count] [gc_session_sids]]
             c.conn feed [gc_presence @2 -room $call -jid [dict get $full @2] -type unavailable]
-            list $one [dict get [c.groupcall status -jid $call] count] [gc_leg_sids] \
-                [dict get [c.groupcall status -jid $call] joined] [gc_nicks_left] \
+            list $one [dict get [gc_status $call] count] [gc_session_sids] \
+                [dict get [gc_status $call] joined] [gc_nicks_left] \
                 [llength [mockmedia::calls ClosePreview]]
-        }] -result [list [list 1 [list sid-$second]] 0 {} 1 [list $first $second] 0]
+        }] -result [list [list 2 [list sid-$second]] 1 {} 1 [list $first $second] 0]
 }
 
-test groupcall-three-we-leave-first {leaving with two still in hangs both legs up and says left} \
+test groupcall-three-we-leave-first {leaving with two still in hangs both sessions up and says left} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
         lassign [gc_invite_sent $ROOM invite] - id
@@ -1541,21 +1589,17 @@ test groupcall-three-we-leave-first {leaving with two still in hangs both legs u
             [gc_invite_sent $ROOM retract] [c.calls list]
     } -result [list [lsort [list $BOB $CAROL]] 1 {} {}]
 
-test groupcall-three-one-leg-fails {one leg failing: that peer is reported gone, the other leg and the call go on} \
+test groupcall-three-one-session-fails {one session failing: that peer is reported gone, the other session and the call go on} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
         gc_terminate sid-bob $BOB connectivity-error
-        set left [lindex [gc_event_args <PeerLeft>] 0]
-        list [dict get $left -nick] [gc_leg_sids] \
-            [dict get [c.groupcall status -jid $call] joined] \
-            [lsort [lmap p [c.groupcall participants -jid $call] {
-                if {[dict get $p state] eq "none"} continue
-                list [dict get $p nick] [dict get $p state]
-            }]] \
+        list [gc_nicks_left] [gc_session_sids] \
+            [dict get [gc_status $call] joined] \
+            [gc_occupant_call $call bob] [dict get [lindex [c.groupcall list] 0] sessions] \
             [llength [mockmedia::calls ClosePreview]]
-    } -result {bob sid-carol 1 {{bob expected} {carol new}} 0}
+    } -result [list bob sid-carol 1 announced [list $CAROL sid-carol] 0]
 
-test groupcall-three-one-refuses {joining two, one refusing our session: the other leg goes on} \
+test groupcall-three-one-refuses {joining two, one refusing our session: the other session goes on} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]] \
             [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
@@ -1576,8 +1620,8 @@ test groupcall-three-one-refuses {joining two, one refusing our session: the oth
         c.conn feed [j iq -type error -from $BOB -to user@test.example.com/res -id $id {
             j error -type cancel { j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas }
         }]
-        list [gc_nicks_left] [expr {[gc_leg_sids] eq [list $carolSid]}] \
-            [dict get [c.groupcall status -jid $ROOM] joined]
+        list [gc_nicks_left] [expr {[gc_session_sids] eq [list $carolSid]}] \
+            [dict get [gc_status $ROOM] joined]
     } -result {bob 1 1}
 
 test groupcall-three-one-stuck-preparing {one of two stuck preparing: the other is called, the laggard calls us later} \
@@ -1589,28 +1633,29 @@ test groupcall-three-one-stuck-preparing {one of two stuck preparing: the other 
         gc_echo_preparing
         set waiting [expr {"<Joined>" in [gc_event_names]}]
         after 60 {set ::gc_wait 1}; vwait ::gc_wait
-        set called [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}]
+        set called [gc_session_nicks]
+        gc_echo_announce
         c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
         c.conn feed [gc_session_initiate sid-carol $CAROL $ROOM]
-        list $waiting $called [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}]
+        list $waiting $called [gc_session_nicks]
     } -result {0 bob {bob carol}}
 
-test groupcall-three-one-hidden {one of two hiding their JID: a warning for them, a leg to the other} \
+test groupcall-three-one-hidden {one of two hiding their JID: a warning for them, a session to the other} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -contents [list audio [list $OPUS_111]]] \
             [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
         c.groupcall join -jid $ROOM
         gc_echo_preparing
-        list [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}] \
-            [llength [gc_event_args <Warning>]] [llength [gc_leg_sids]]
+        list [gc_session_nicks] \
+            [llength [gc_event_args <Warning>]] [llength [gc_session_sids]]
     } -result {carol 1 1}
 
-test groupcall-three-peer-comes-back {a peer leaving and coming back gets a fresh leg} \
+test groupcall-three-peer-comes-back {a peer leaving and coming back gets a fresh session} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
         c.conn feed [gc_presence bob -room $call -jid $BOB -type unavailable]
         gc_late_peer $call bob $BOB sid-bob2
-        list [gc_leg_sids] [lmap e [gc_event_args <PeerJoined>] {dict get $e -nick}]
+        list [gc_session_sids] [gc_session_nicks]
     } -result {{sid-bob2 sid-carol} {bob carol bob}}
 
 test groupcall-three-fourth-arrives {a fourth arriving while one of three already left} \
@@ -1618,19 +1663,19 @@ test groupcall-three-fourth-arrives {a fourth arriving while one of three alread
         set call [gc_hosted_three]
         c.conn feed [gc_presence carol -room $call -jid $CAROL -type unavailable]
         gc_late_peer $call dave $DAVE sid-dave
-        list [gc_leg_sids] [dict get [c.groupcall status -jid $call] count]
-    } -result {{sid-bob sid-dave} 2}
+        list [gc_session_sids] [dict get [gc_status $call] count]
+    } -result {{sid-bob sid-dave} 3}
 
-test groupcall-three-both-legs-fail {every leg failing leaves us in the call, alone, not out of it} \
+test groupcall-three-both-sessions-fail {every session failing leaves us in the call, alone, not out of it} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
         gc_terminate sid-bob $BOB connectivity-error
         gc_terminate sid-carol $CAROL failed-transport
-        list [lsort [gc_nicks_left]] [gc_leg_sids] \
-            [dict get [c.groupcall status -jid $call] joined] [gc_event_args <Left>]
+        list [lsort [gc_nicks_left]] [gc_session_sids] \
+            [dict get [gc_status $call] joined] [gc_event_args <Left>]
     } -result {{bob carol} {} 1 {}}
 
-test groupcall-three-disconnect-mid-call {losing our stream with two in ends our call and our legs} \
+test groupcall-three-disconnect-mid-call {losing our stream with two in ends our call and our sessions} \
     {*}$groupcall_env -body {
         set call [gc_hosted_three]
         c bus publish <SessionEnd>
@@ -1680,3 +1725,427 @@ test groupcall-start-stale-answer-waits {start waits past a stale answer for the
         gc_answer_room old@muc.example.com item-not-found
         list $waiting [expr {[jid bare [gc_last_join]] ni {"" old@muc.example.com}}]
     } -result {{} 1}
+
+# Each session's direction, outgoing or incoming.
+proc gc_directions {} {
+    lmap row [c.calls list] { dict get $row direction }
+}
+
+# -- Room order: who calls whom ------------------------------------------------
+#
+# We call peers whose contents arrive before the echo of ours; later ones
+# call us.
+
+test groupcall-peer-ordered-before-us-is-called {a peer whose contents the room shows before ours is called at once} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        # Alone, we announced; bob's contents come before that echo.
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        set called [gc_sid_of bob]
+        gc_echo_announce
+        list [expr {$called ne ""}] [gc_directions]
+    } -result {1 outgoing}
+
+test groupcall-peer-ordered-after-us-calls-us {a peer whose contents the room shows after ours is not called, and calls us} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        set before [llength [c.calls list]]
+        c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
+        list $before [xsearch [gc_written_id si1] -get @type] \
+            [gc_directions]
+    } -result {0 result incoming}
+
+test groupcall-later-preparer-does-not-hold-us {someone who starts preparing after our echo does not hold us up} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence carol -jid $CAROL -preparing 1]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [gc_presence bob -jid $BOB -preparing 1]
+        set held [expr {"<Joined>" in [gc_event_names]}]
+        c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
+        list $held [expr {"<Joined>" in [gc_event_names]}] \
+            [gc_session_nicks]
+    } -result {0 1 carol}
+
+test groupcall-announce-waits-for-own-echo {we announce only after our own <preparing/> echoes, even with nobody preparing} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence carol -jid $CAROL -preparing 1]
+        c.groupcall join -jid $ROOM
+        # carol is done before the room has shown us preparing.
+        c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
+        set early [expr {"<Joined>" in [gc_event_names]}]
+        gc_echo_preparing
+        list $early [expr {"<Joined>" in [gc_event_names]}]
+    } -result {0 1}
+
+# -- Crossing initiates (XEP-0166 §7.2.16) ---------------------------------------
+#
+# Both sides dialled: the lower sid wins, one session per pair. Our sids are
+# tk-<hex>, so aa-... sorts below them and zz-... above.
+
+# We, joining with $nick ($full) in, dial them; the offer is on the wire.
+# Our sid.
+proc gc_dialled {nick full} {
+    gc_room [gc_presence $nick -jid $full -contents [list audio [list $::OPUS_111]]]
+    c.groupcall join -jid $::ROOM
+    gc_echo_preparing
+    set sid [gc_sid_of $nick]
+    gc_answer_extdisco
+    mockmedia::drive localDescription [gc_pc_of $sid] [gc_offer_sdp] offer
+    return $sid
+}
+proc gc_dialled_bob {} { gc_dialled bob $::BOB }
+
+# The peer's session-accept of our session $sid.
+proc gc_session_accept {sid from} {
+    j iq -type set -from $from -to user@test.example.com/res -id sa1 {
+        j jingle -ns urn:xmpp:jingle:1 -action session-accept -sid $sid {
+            j content -creator initiator -name audio {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio {
+                    j payload-type -id 111 -name opus -clockrate 48000 -channels 2
+                }
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
+                    -ufrag def -pwd defdefdefdef {
+                    j fingerprint -ns urn:xmpp:jingle:apps:dtls:0 \
+                        -hash sha-256 -setup active -body CC:DD
+                }
+            }
+        }
+    }
+}
+
+# calls <Ended>/<Failed> events, which a session dropped for a crossing
+# initiate must not raise.
+proc gc_session_endings {} {
+    set out {}
+    foreach e $::_emitted {
+        if {[lindex $e 0] eq "calls" && [lindex $e 1] in {<Ended> <Failed>}} {
+            lappend out [lindex $e 1]
+        }
+    }
+    return $out
+}
+
+
+test groupcall-crossing-initiate-lower-sid-wins {their crossing initiate with the lower sid replaces our session without events} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        c.conn feed [gc_session_initiate aa-bob $BOB $ROOM]
+        # Their reply to our initiate.
+        set iq [lindex [lmap w [c.conn get_written] {
+            if {[xsearch $w jingle -ns urn:xmpp:jingle:1 -get @sid] ne $ours} continue
+            set w
+        }] end]
+        c.conn feed [j iq -type error -from $BOB -to user@test.example.com/res \
+            -id [xsearch $iq -get @id] {
+            j error -type cancel {
+                j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j tie-break -ns urn:xmpp:jingle:errors:1
+            }
+        }]
+        list [xsearch [gc_written_id si1] -get @type] [gc_session_sids] \
+            [lmap e [gc_event_args <Session>] { dict get $e -sid }] [gc_nicks_left] \
+            [lmap e [gc_events] { if {[lindex $e 0] ni {<Ended> <Failed>}} continue; set e }]
+    } -match glob -result {result aa-bob {tk-* aa-bob} {} {}}
+
+test groupcall-crossing-initiate-higher-sid-loses {their crossing initiate with the higher sid is refused as a tie-break} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        c.conn feed [gc_session_initiate zz-bob $BOB $ROOM]
+        set err [gc_written_id si1]
+        list [xsearch $err -get @type] [gc_error_condition $err] \
+            [expr {[xsearch $err error tie-break -ns urn:xmpp:jingle:errors:1 -get node] ne ""}] \
+            [expr {[gc_session_sids] eq [list $ours]}] [gc_nicks_left]
+    } -result {error conflict 1 1 {}}
+
+test groupcall-crossing-before-our-offer {their initiate wins, whatever the sids, if our offer was not sent yet} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set ours [gc_sid_of bob]
+        # Our session still waits on extdisco, so nothing was sent.
+        c.conn feed [gc_session_initiate zz-bob $BOB $ROOM]
+        list [xsearch [gc_written_id si1] -get @type] [gc_session_sids] \
+            [expr {$ours ne "" && $ours ne "zz-bob"}] [gc_nicks_left]
+    } -result {result zz-bob 1 {}}
+
+# -- Room order and crossing initiates: failure cases ----------------------------
+
+test groupcall-preparer-ahead-leaving-releases-us {someone we wait on leaving the room lets us announce at once} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence carol -jid $CAROL -preparing 1]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set held [expr {"<Joined>" in [gc_event_names]}]
+        c.conn feed [gc_presence carol -jid $CAROL -type unavailable]
+        list $held [expr {"<Joined>" in [gc_event_names]}]
+    } -result {0 1}
+
+test groupcall-preparer-ahead-giving-up-releases-us {someone we wait on clearing their <muji> lets us announce at once} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence carol -jid $CAROL -preparing 1]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [gc_presence carol -jid $CAROL]
+        list [expr {"<Joined>" in [gc_event_names]}] [llength [c.calls list]]
+    } -result {1 0}
+
+test groupcall-unechoed-announce-still-one-session {our contents never echoed: we call a later peer too, and the crossing leaves one session} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        set ours [gc_sid_of bob]
+        gc_answer_extdisco
+        mockmedia::drive localDescription [gc_pc_of $ours] [gc_offer_sdp] offer
+        c.conn feed [gc_session_initiate aa-bob $BOB $ROOM]
+        list [expr {$ours ne ""}] [gc_session_sids] [gc_directions] [gc_nicks_left] [gc_session_endings]
+    } -result {1 aa-bob incoming {} {}}
+
+test groupcall-crossing-equal-sid-lower-jid-wins {crossing initiates with our own sid: their lower JID wins, and the session is theirs} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        # bob@... sorts below user@...
+        c.conn feed [gc_session_initiate $ours $BOB $ROOM]
+        list [xsearch [gc_written_id si1] -get @type] [expr {[gc_session_sids] eq [list $ours]}] \
+            [gc_directions] [gc_nicks_left] [gc_session_endings]
+    } -result {result 1 incoming {} {}}
+
+test groupcall-crossing-equal-sid-higher-jid-loses {crossing initiates with our own sid: their higher JID loses as a tie-break} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled zoe zoe@example.com/x]
+        # zoe@... sorts above user@...
+        c.conn feed [gc_session_initiate $ours zoe@example.com/x $ROOM]
+        set err [gc_written_id si1]
+        list [gc_error_condition $err] \
+            [expr {[xsearch $err error tie-break -ns urn:xmpp:jingle:errors:1 -get node] ne ""}] \
+            [gc_directions] [gc_session_endings]
+    } -result {conflict 1 outgoing {}}
+
+test groupcall-crossing-refused-keeps-ours {if groupcall refuses a winning crossing initiate, our session stays} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        # bob preparing again (adding a stream): no session from him now.
+        c.conn feed [gc_presence bob -jid $BOB -preparing 1]
+        c.conn feed [gc_session_initiate aa-bob $BOB $ROOM]
+        list [gc_error_condition [gc_written_id si1]] [expr {[gc_session_sids] eq [list $ours]}] \
+            [gc_directions] [gc_session_endings]
+    } -result {item-not-found 1 outgoing {}}
+
+test groupcall-initiate-after-answer-is-no-crossing {an initiate once our session was answered is a second session, refused} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        c.conn feed [gc_session_accept $ours $BOB]
+        set accepted [xsearch [gc_written_id sa1] -get @type]
+        c.conn feed [gc_session_initiate aa-bob $BOB $ROOM]
+        list $accepted [gc_error_condition [gc_written_id si1]] \
+            [expr {[gc_session_sids] eq [list $ours]}] [gc_directions]
+    } -result {result item-not-found 1 outgoing}
+
+test groupcall-dropped-session-ignores-late-extdisco {a session dropped before its offer opens no media when its ICE servers arrive} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set ours [gc_sid_of bob]
+        c.conn feed [gc_session_initiate zz-bob $BOB $ROOM]
+        gc_answer_every_extdisco
+        list [expr {[gc_pc_of $ours] eq ""}] [expr {[gc_pc_of zz-bob] ne ""}] [gc_session_endings]
+    } -result {1 1 {}}
+
+test groupcall-reannounce-before-echo-keeps-order {re-announcing codecs before our first echo does not change who calls} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        # bob, ahead of our echo, uses another opus id: we re-announce and call him.
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_100]]]
+        set announced 0
+        foreach w [c.conn get_written] {
+            if {[dict get $w tag] ne "presence"} continue
+            set muji [xsearch $w muji -ns $NS_MUJI -get node]
+            if {$muji ne "" && [xsearch $muji preparing -get node] eq ""} { incr announced }
+        }
+        gc_echo_announce
+        c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_100]]]
+        list $announced [gc_session_nicks]
+    } -result {2 bob}
+
+test groupcall-rejoin-ignores-stale-leave-echo {leaving and joining again at once: the echo of the leave does not end the new join} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.groupcall leave -jid $ROOM
+        c.groupcall join -jid $ROOM
+        # The room shows the leave, then the new <preparing/>.
+        c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
+        set still [c.groupcall inCall -jid $ROOM]
+        gc_echo_preparing
+        list $still [lrange [gc_event_names] end-2 end] [dict get [gc_status $ROOM] joined]
+    } -result {1 {<Joined> <Left> <Joined>} 1}
+
+test groupcall-own-clear-after-echo-still-leaves {once the new join was echoed, a muji-less echo of ours still ends it} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
+        list [c.groupcall inCall -jid $ROOM] [lindex [gc_event_args <Left>] end]
+    } -result [list 0 [list -jid $ROOM -reason left -chat $ROOM]]
+
+test groupcall-tie-break-error-is-not-a-refusal {a <tie-break/> reply to our initiate raises no "does not see you" warning} \
+    {*}$groupcall_env -body {
+        set ours [gc_dialled_bob]
+        set iq [lindex [lmap w [c.conn get_written] {
+            if {[xsearch $w jingle -ns urn:xmpp:jingle:1 -get @sid] ne $ours} continue
+            set w
+        }] end]
+        c.conn feed [j iq -type error -from $BOB -to user@test.example.com/res \
+            -id [xsearch $iq -get @id] {
+            j error -type cancel {
+                j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j tie-break -ns urn:xmpp:jingle:errors:1
+            }
+        }]
+        list [lmap e [calls_events] {
+                if {[lindex $e 0] ne "<Failed>"} continue
+                dict get [lrange $e 1 end] -reason }] \
+            [expr {"<Warning>" in [gc_event_names]}]
+    } -result {{{session-initiate lost a tie-break}} 0}
+
+test groupcall-hidden-peer-ahead-warns {a peer ahead of our echo whose JID the room hides gets a warning, not a session} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [gc_presence bob -contents [list audio [list $OPUS_111]]]
+        list [lmap e [gc_event_args <Warning>] { dict get $e -reason }] [llength [c.calls list]]
+    } -result {{{bob: JID hidden by the room, cannot connect}} 0}
+
+test groupcall-ended-peer-reannouncing-not-dialled {a peer whose session ended re-announcing codecs is not called again} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
+        gc_terminate bob-sid $BOB
+        set before [llength [c.calls list]]
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_100]]]
+        list $before [llength [c.calls list]] [llength [gc_event_args <Session>]]
+    } -result {0 0 1}
+
+test groupcall-crossing-with-own-other-device {crossing initiates between two of our own devices settle like any others} \
+    {*}$groupcall_env -body {
+        set other user@test.example.com/other
+        set ours [gc_dialled me2 $other]
+        # /other sorts below /res: with our own sid, theirs wins.
+        c.conn feed [gc_session_initiate $ours $other $ROOM]
+        list [xsearch [gc_written_id si1] -get @type] [expr {[gc_session_sids] eq [list $ours]}] \
+            [gc_directions] [gc_nicks_left] [gc_session_endings]
+    } -result {result 1 incoming {} {}}
+
+# -- Renames, room destruction, replayed presences --------------------------------
+
+# $old renames to $new: unavailable with 303, then presence under the new nick.
+proc gc_rename {old new full args} {
+    c.conn feed [j presence -from $::ROOM/$old -type unavailable {
+        j x -ns http://jabber.org/protocol/muc#user {
+            j item -jid $full -nick $new -role participant -affiliation member
+            j status -code 303
+        }
+    }]
+    c.conn feed [gc_presence $new -jid $full {*}$args]
+}
+
+test groupcall-peer-rename-keeps-one-participant {a peer renaming mid-call stays one participant with one session, and their leave still hangs it up} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
+        gc_rename bob robert $BOB -contents [list audio [list $OPUS_111]]
+        set renamed [list [gc_status $ROOM] [gc_session_sids] \
+            [lsort [lmap o [c muc occupants -jid $ROOM] { dict get $o nick }]]]
+        c.conn feed [gc_presence robert -jid $BOB -type unavailable]
+        list $renamed [gc_session_sids] [gc_nicks_left] [gc_status $ROOM]
+    } -result {{{active 1 joined 1 count 2} bob-sid {me robert}} {} bob {active 1 joined 1 count 1}}
+
+test groupcall-own-rename-counts-once {renaming ourselves mid-call counts us once and keeps the call} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.conn feed [j presence -from $ROOM/me -type unavailable {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -jid user@test.example.com/res -nick me2 -role participant -affiliation member
+                j status -code 303
+                j status -code 110
+            }
+        }]
+        gc_echo_announce me2
+        list [c.groupcall inCall -jid $ROOM] [gc_status $ROOM] [llength [gc_session_sids]] \
+            [expr {"<Left>" in [gc_event_names]}]
+    } -result {1 {active 1 joined 1 count 2} 1 0}
+
+test groupcall-rename-of-awaited-peer-releases-us {someone we wait on renaming and then announcing still releases us} \
+    {*}$groupcall_env -body {
+        set ::taco_groupcall::PREPARE_TIMEOUT_MS 3000
+        gc_room [gc_presence carol -jid $CAROL -preparing 1]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_rename carol caroline $CAROL -preparing 1
+        set held [expr {"<Joined>" in [gc_event_names]}]
+        c.conn feed [gc_presence caroline -jid $CAROL -contents [list audio [list $OPUS_111]]]
+        list $held [expr {"<Joined>" in [gc_event_names]}] [gc_session_nicks]
+    } -result {0 1 carol}
+
+test groupcall-room-destroyed-ends-call {the room destroyed mid-call ends the call and its sessions} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c.conn feed [j presence -from $ROOM/me -type unavailable {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -role none -affiliation none
+                j destroy { j reason -body "gone" }
+                j status -code 110
+            }
+        }]
+        list [c.groupcall inCall -jid $ROOM] [lindex [gc_event_args <Left>] end] \
+            [llength [c.calls list]]
+    } -result [list 0 [list -jid $ROOM -reason "left the room"] 0]
+
+test groupcall-replayed-presence-ignored {presences muc re-sends with our echoes neither dial nor re-announce} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        # Before our contents echo: we call bob.
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_100]]]
+        c.conn clear
+        # Our contents echo; muc re-sends bob's presence with it.
+        gc_echo_announce
+        set replays 0
+        foreach e $::_emitted {
+            if {[lindex $e 0] eq "muc" && [lindex $e 1] eq "<Presence>"
+                    && [dict exists [lrange $e 2 end] -replay]} { incr replays }
+        }
+        set presences 0
+        foreach w [c.conn get_written] { if {[dict get $w tag] eq "presence"} { incr presences } }
+        list $replays [llength [gc_event_args <Session>]] $presences
+    } -result {1 1 0}

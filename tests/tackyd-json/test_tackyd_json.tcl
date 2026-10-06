@@ -518,3 +518,47 @@ test json-dispatch-refuses-internal-methods {snit builtins and capitalised metho
         {["setting","cget",{}]}
     } { catch {tackyd_dispatch $frame} err; set err }
 } -result {{not callable: setting Migrate} {not callable: setting configure} {not callable: destroy x} {not callable: setting cget}}
+
+# -- Group calls: participants are occupants -----------------------------------
+
+test json-muc-presence-occupant-call {an occupant's call goes out typed, booleans as booleans} -setup {
+    _test_clear
+} -body {
+    _test_emit muc <Presence> -jid room@muc.example.com -nick bob -occupant \
+        [dict create nick bob jid bob@example.com/desk jids {bob@example.com/desk} \
+            role participant affiliation member show "" status "" \
+            caps [dict create kick 0 ban 0 make_moderator 0 grant_voice 0 \
+                revoke_voice 0 grant_membership 0 revoke_membership 0] \
+            call [dict create state announced audio 1 video 0 \
+                contents [dict create audio [list [dict create id 111 name opus clockrate 48000 channels 2]]]]]
+    set occ [dict get [lindex [json::json2dict [lindex [_test_sent] 0]] 3] occupant]
+    list [dict get $occ jids] [dict get $occ call state] [dict get $occ call audio] \
+        [dict get $occ call video] [dict get [lindex [dict get $occ call contents audio] 0] id] \
+        [string match {*"audio":true*} [lindex [_test_sent] 0]]
+} -result {bob@example.com/desk announced true false 111 1}
+
+test json-muc-presence-occupant-not-in-call {an occupant not in the call has an empty call} -setup {
+    _test_clear
+} -body {
+    _test_emit muc <Presence> -jid room@muc.example.com -nick dave -occupant \
+        [dict create nick dave jid dave@example.com/x jids {dave@example.com/x} \
+            role participant affiliation member show "" status "" caps {} call ""]
+    string match {*"call":\{\}*} [lindex [_test_sent] 0]
+} -result 1
+
+test json-groupcall-session {groupcall <Session> types its video flag} -setup {
+    _test_clear
+} -body {
+    _test_emit groupcall <Session> -jid room@muc.example.com -peer bob@example.com/desk -sid s1 -video 1
+    string match {*"video":true*} [lindex [_test_sent] 0]
+} -result 1
+
+test json-groupcall-list-sessions {groupcall list rows carry sessions, peer to sid} -setup {
+    _test_clear
+} -body {
+    _test_on_result 7 groupcall/list [list [dict create jid room@muc.example.com chat "" \
+        hosted 1 count 2 video 0 mode mesh preview {} \
+        sessions [dict create bob@example.com/desk s1]]]
+    set listed [lindex [lindex [json::json2dict [lindex [_test_sent] 0]] 2] 0]
+    list [dict get $listed hosted] [dict get $listed sessions]
+} -result {true {bob@example.com/desk s1}}

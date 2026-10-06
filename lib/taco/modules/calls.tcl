@@ -93,14 +93,14 @@
 # secret: the propose goes to the bare JID, so all of the peer's
 # resources and every server on the path see it.
 #
-# Group-call legs: taco_groupcall (XEP-0272 Muji) runs one session per
-# participant here. A leg skips JMI (room presence is the ring), carries the
-# room JID as `group`, and emits no <Outgoing>/<Incoming>.
+# Group-call sessions: taco_groupcall (XEP-0272 Muji) runs one session per
+# participant here. Such a session skips JMI (room presence is the ring),
+# carries the room JID as `group`, and emits no <Outgoing>/<Incoming>.
 #
 # Per-call state ([dict get $Calls $sid] dict):
 #   peer       : remote JID (bare until proceeded, then full)
 #   initiator  : 1 for caller, 0 for callee
-#   group      : room JID for a group-call leg, "" for a 1:1 call
+#   group      : room JID for a group-call session, "" for a 1:1 call
 #   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
 #   peer_ringing : 1 once a peer device answered <ringing> (caller side);
 #     a field, not a state, because the state machine does not move for it
@@ -199,7 +199,7 @@ snit::type taco_calls {
             vtrack -1 vsend 0 vrecv 0]
     }
 
-    # One group-call leg to a participant's full JID, straight to media and
+    # One group-call session to a participant's full JID, straight to media and
     # session-initiate (no JMI). Returns the sid.
     method StartGroupSession {args} {
         array set opts {-room "" -peer "" -video 0}
@@ -540,6 +540,8 @@ snit::type taco_calls {
                 dict lappend jingle children \
                     [j muji -ns urn:xmpp:jingle:muji:0 -room [dict get $call group]]
             }
+            # Sent: a crossing initiate is now settled by sid.
+            dict set Calls $sid jingle 1
             $client iq request -type set -to [dict get $call peer] \
                 -payload $jingle \
                 -command [mymethod OnInitiateAck $sid]
@@ -601,9 +603,15 @@ snit::type taco_calls {
     }
 
     method OnInitiateAck {sid stanza} {
+        # Already dropped for a crossing initiate; the peer answers it with
+        # <tie-break/>.
+        if {![dict exists $Calls $sid]} return
         if {[xsearch $stanza -get @type] eq "error"} {
-            $client emit calls <Failed> -sid $sid \
-                -reason "session-initiate rejected"
+            # <tie-break/>: the peer kept its own initiate; not a refusal.
+            set lost [expr {[xsearch $stanza error tie-break \
+                -ns urn:xmpp:jingle:errors:1 -get node] ne ""}]
+            $client emit calls <Failed> -sid $sid -reason [expr {$lost
+                ? "session-initiate lost a tie-break" : "session-initiate rejected"}]
             $self TeardownMedia $sid
             $self Cleanup $sid
         }
@@ -1098,8 +1106,36 @@ snit::type taco_calls {
         # we reject the IQ — the call never existed locally.
         # A sender that isn't our peer gets the same answer as an unknown
         # sid, so a guessed sid can't be confirmed.
-        # Except a Muji leg, whose sender taco_groupcall vouches for.
-        if {![dict exists $Calls $sid] && ![$self OpenGroupLeg $jingle $sid $from]} {
+        # Except a Muji session, whose sender taco_groupcall vouches for.
+        #
+        # Crossing initiates (XEP-0166 §7.2.16): we also have an unanswered
+        # group session to this peer. The lower sid wins, then the lower JID.
+        # If ours wins, theirs gets <tie-break/>; otherwise, or if ours was
+        # never sent, theirs replaces ours, which is dropped silently.
+        set ours [$self CrossingSession $from]
+        if {$ours ne "" && ([dict exists $Calls $sid] && $sid ne $ours)} {
+            set ours ""
+        }
+        if {$ours ne ""} {
+            set cmp [string compare $sid $ours]
+            if {$cmp == 0} {
+                set cmp [string compare [jid norm $from] [jid norm [$client cget -jid]]]
+            }
+            if {[dict exists $Calls $ours jingle] && $cmp > 0} {
+                $self IqError $stanza conflict tie-break
+                return
+            }
+            # Same sid: drop ours first, theirs reuses the entry.
+            if {$sid eq $ours} { $self DropSession $ours }
+            if {![$self OpenGroupSession $jingle $sid $from $ours]} {
+                # groupcall refused theirs: ours stays, or ends if already
+                # dropped.
+                if {$sid eq $ours} { $client emit calls <Ended> -sid $ours }
+                $self IqError $stanza item-not-found
+                return
+            }
+            if {$sid ne $ours} { $self DropSession $ours }
+        } elseif {![dict exists $Calls $sid] && ![$self OpenGroupSession $jingle $sid $from]} {
             $self IqError $stanza item-not-found
             return
         }
@@ -1257,8 +1293,9 @@ snit::type taco_calls {
     # =========================================================================
 
     # A session-initiate with <muji room/> from a known participant becomes a
-    # callee leg in `proceeded`, as if JMI-accepted. Returns 1 if opened.
-    method OpenGroupLeg {jingle sid from} {
+    # callee session in `proceeded`, as if JMI-accepted. Returns 1 if opened.
+    # $replaces: our unanswered session to $from that this one replaces.
+    method OpenGroupSession {jingle sid from {replaces ""}} {
         set room [xsearch $jingle muji -ns urn:xmpp:jingle:muji:0 -get @room]
         if {$room eq "" || ![jid valid $room]} { return 0 }
         set hasVideo 0
@@ -1270,12 +1307,28 @@ snit::type taco_calls {
             }
         }
         set wantVideo [$client groupcall AcceptSession \
-            -room $room -peer $from -sid $sid -video $hasVideo]
+            -room $room -peer $from -sid $sid -video $hasVideo -replaces $replaces]
         if {$wantVideo eq ""} { return 0 }
         dict set Calls $sid [$self NewCallDict $from 0 proceeded \
             [expr {$wantVideo ? 1 : 0}] [jid norm $room]]
         dict set Calls $sid video_remote $hasVideo
         return 1
+    }
+
+    # Drop a session that lost a crossing tie-break: no terminate, no event.
+    method DropSession {sid} {
+        $self TeardownMedia $sid
+        $self Cleanup $sid
+    }
+
+    # Our unanswered group session to $from (full JID), "" if none.
+    method CrossingSession {from} {
+        dict for {sid call} $Calls {
+            if {![dict get $call initiator] || [dict get $call group] eq ""} continue
+            if {[dict get $call peer] ne $from || [dict exists $call remote_set]} continue
+            return $sid
+        }
+        return ""
     }
 
     # Walk a session-initiate's Jingle tree and drop, from each rtp
@@ -1342,9 +1395,13 @@ snit::type taco_calls {
         $client write [j iq {*}$ackArgs]
     }
 
-    method IqError {stanza condition} {
+    # $jingleCondition: an optional urn:xmpp:jingle:errors:1 condition.
+    method IqError {stanza condition {jingleCondition ""}} {
         set payload [j error -type cancel {
             j $condition -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            if {$jingleCondition ne ""} {
+                j $jingleCondition -ns urn:xmpp:jingle:errors:1
+            }
         }]
         $client iq respond -type error -for $stanza -payload $payload
     }

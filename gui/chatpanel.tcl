@@ -82,12 +82,12 @@ snit::widget chatpanel {
         if {$isMuc} {
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
-            # A call belonging to the room: held in it (from the occupants'
-            # presences) or in a room of its own we are in.
-            ::tacky listen -tag $win groupcall <Changed> \
-                -acc $options(-acc) -chat $roomJid [mymethod OnGroupCallChanged]
-            ::tacky groupcall status -acc $options(-acc) -jid $roomJid \
-                -tag $win -command [mymethod OnGroupCallStatus]
+            # A call held in the room, read from its occupants.
+            foreach event {<Joined> <Presence> <Unavailable> <Left>} {
+                ::tacky listen -tag $win muc $event \
+                    -acc $options(-acc) -jid $roomJid [mymethod RefreshGroupCall]
+            }
+            $self RefreshGroupCall
         } else {
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
@@ -518,8 +518,8 @@ snit::widget chatpanel {
 
     # --- Group calls (rooms only) ---
     #
-    # groupcall <Changed> names the menu entry and raises a banner while a
-    # call we are not in is on. app.tcl opens the window on <Joined>, and
+    # The room's occupants (their `call`) drive the menu entry, and a banner
+    # while a call we are not in is on. app.tcl opens the window on <Joined>, and
     # asks about a call someone starts (an invite, groupcall <Invited>).
 
     method GroupCallLabel {} {
@@ -539,14 +539,27 @@ snit::widget chatpanel {
         }
     }
 
-    method OnGroupCallStatus {st} {
-        $self ApplyGroupCall [dict get $st active] [dict get $st count] \
-            [dict get $st joined] $roomJid
+    method RefreshGroupCall {args} {
+        ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
+            -tag $win -command [mymethod RefreshGroupCallWith]
     }
 
-    method OnGroupCallChanged {ev} {
-        $self ApplyGroupCall [dict get $ev -active] [dict get $ev -count] \
-            [dict get $ev -joined] [dict get $ev -jid]
+    method RefreshGroupCallWith {me} {
+        ::tacky muc occupants -acc $options(-acc) -jid $roomJid \
+            -tag $win -command [mymethod OnGroupCallOccupants $me]
+    }
+
+    # Count announced occupants; joined if we are one.
+    method OnGroupCallOccupants {me occupants} {
+        set count 0
+        set joined 0
+        foreach occ $occupants {
+            set call [dict get $occ call]
+            if {$call eq "" || [dict get $call state] ne "announced"} continue
+            incr count
+            if {[dict get $occ nick] eq $me} { set joined 1 }
+        }
+        $self ApplyGroupCall [expr {$count > 0}] $count $joined $roomJid
     }
 
     method ApplyGroupCall {active count joined jid} {

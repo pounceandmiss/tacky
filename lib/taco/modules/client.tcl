@@ -310,9 +310,8 @@ snit::type taco_client {
                 if {$type_ in {subscribe subscribed unsubscribe unsubscribed}} {
                     $roster OnSubscription $stanza
                 } else {
+                    # groupcall reads call rooms through muc's events.
                     $muc OnPresence $stanza
-                    # After muc: a Muji leg needs the occupant's real JID.
-                    $groupcall OnPresence $stanza
                     $presence OnPresence $stanza
                 }
             }
