@@ -94,6 +94,8 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
   [auth.internal]
 
 [internal_databases.mnesia]
+# mod_caps needs cets since 6.6; cets uses the rdbms pool below.
+[internal_databases.cets]
 
 [outgoing_pools.rdbms.default]
   scope = "global"
