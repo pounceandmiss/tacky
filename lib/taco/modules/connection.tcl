@@ -599,8 +599,6 @@ snit::type conn {
 
     # Called after auth + bind + SM are complete; receives boolean (0=fresh, 1=resumed)
     option -onready -default ""
-    # Called right after resource binding succeeds, before SM negotiation
-    option -onbound -default ""
     # Called on SASL/bind failure; receives message string
     option -onautherror -default ""
     # Called when the server rejects the bind with <conflict/>; the handler
@@ -1121,11 +1119,6 @@ snit::type conn {
                         return
                     }
                     set options(-bound-jid) $boundJid
-
-                    # Fire onbound before SM so the stanza is sent during the SM roundtrip
-                    if {$options(-onbound) ne ""} {
-                        {*}$options(-onbound)
-                    }
 
                     # Tell sm to enable (it handles the negotiation)
                     set authState sm-negotiating

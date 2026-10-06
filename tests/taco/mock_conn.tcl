@@ -23,7 +23,6 @@ snit::type mock_conn {
 
     # Callbacks
     option -onready -default ""
-    option -onbound -default ""
     option -onautherror -default ""
     option -onresourceconflict -default ""
     option -ondisconnect -default ""
