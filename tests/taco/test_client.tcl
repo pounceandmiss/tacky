@@ -32,6 +32,26 @@ test client-onready-emits-state {a session coming up emits conn <State> connecte
         list [lindex $found 0] [lindex $found 1] [lindex $found 2] [lindex $found 3] [lindex $found 4] [lindex $found 5]
     } -result {conn <State> -acc user@test.example.com -state connected}
 
+test client-onready-initial-presence {initial presence goes out on a fresh stream only} \
+    {*}$common \
+    -body {
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        set n {}
+        foreach resumed {0 1} {
+            c.conn clear
+            c.conn fire_ready $resumed
+            set p 0
+            foreach s [c.conn get_written] {
+                if {[dict get $s tag] eq "presence"
+                        && ![dict exists $s attrs to]} {
+                    incr p
+                }
+            }
+            lappend n $p
+        }
+        set n
+    } -result {1 0}
+
 # -- OnDisconnect -----------------------------------------------------------
 
 test client-ondisconnect-emits {OnDisconnect emits conn <Disconnected>} \

@@ -55,7 +55,6 @@ snit::type taco_client {
         install conn using conn $self.conn \
             -autoreconnect 1 \
             -emit [mymethod emit] \
-            -onbound [mymethod OnBound] \
             -onready [mymethod OnReady] \
             -onautherror [mymethod OnAuthError] \
             -onresourceconflict [mymethod OnResourceConflict] \
@@ -114,15 +113,12 @@ snit::type taco_client {
         tacky emit $module $event -acc [jid bare $options(-jid)] {*}$args
     }
 
-    method OnBound {} {
-        set options(-jid) [$conn cget -bound-jid]
-        $conn writeImmediate [j presence {j #as-is [$caps cNode]}]
-    }
-
     method OnReady {resumed} {
         set options(-jid) [$conn cget -bound-jid]
         $iq live 1
         if {!$resumed} {
+            # After <enabled/>, so the backlog it releases is SM-covered.
+            $conn write [j presence {j #as-is [$caps cNode]}]
             # An autoreconnect never calls OnDisconnect, so a stream that
             # could not be resumed ends the last session here.
             if {$SessionLive} {
