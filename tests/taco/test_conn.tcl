@@ -1304,3 +1304,58 @@ test conn-wake-jump-probes {a wake tick arriving far too late probes the link} \
         conn_wait 40
         lmap st [c.base get_written] {dict get $st tag}
     } -result {r}
+
+test conn-probe-answered-keeps-the-link {an answered probe keeps the link and keepalive goes on} \
+    {*}$common \
+    -body {
+        c configure -keepalive 100 -keepalive-timeout 1000 -wake-check 0 \
+            -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr5"
+        conn_wait 40
+        c probe
+        c.base inject [make_sm_ack 0]
+        conn_wait 60
+        set ready [c isReady]
+        c.base clear
+        conn_wait 200
+        list $_tdisconnect $ready [lmap st [c.base get_written] {dict get $st tag}]
+    } -result {{} 1 r}
+
+test conn-probe-once-while-pending {a probe while one is pending sends nothing more} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr6"
+        conn_wait 40
+        c.base clear
+        c probe
+        c probe
+        lmap st [c.base get_written] {dict get $st tag}
+    } -result {r}
+
+test conn-wake-on-time-no-probe {wake ticks that arrive on time send nothing} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 20 -probe-timeout 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr7"
+        c.base clear
+        conn_wait 150
+        c.base get_written
+    } -result {}
+
+test conn-wake-check-stops-when-not-ready {the wake check stops once the link leaves ready} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 20
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr8"
+        c connect
+        conn_wait 60
+        llength [lmap id [after info] {
+            if {![string match *WakeTick* [lindex [after info $id] 0]]} continue
+            set id
+        }]
+    } -result {0}
