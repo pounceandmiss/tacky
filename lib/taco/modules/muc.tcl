@@ -1,7 +1,6 @@
 # tacky muc join -acc $jid -jid $room -nick $nick ?-password $pw? ?-history {...}? ?-hidden 0|1?
 #   ;# -hidden: a room for tacky's own use (a group call's): not bookmarked,
-#   ;# listed or archived; events stay on the bus tagged -hidden 1, messages
-#   ;# are dropped.
+#   ;# listed or archived; messages dropped. Events are as for any room.
 # tacky muc leave -acc $jid -jid $room ?-status $text?
 # tacky muc nick -acc $jid -jid $room -nick $newNick
 # tacky muc status -acc $jid -jid $room ?-show $val? ?-status $text?
@@ -34,25 +33,28 @@
 # tacky muc getSubject -acc $jid -jid $room
 # tacky muc occupants -acc $jid -jid $room
 # tacky muc occupant -acc $jid -jid $room -nick $nick
+#   ;# occupant: nick jid jids role affiliation show status caps, plus
+#   ;# fields from addOccupantField (groupcall's call)
 # tacky muc myNick -acc $jid -jid $room
 # tacky muc myRole -acc $jid -jid $room
 # tacky muc myAffiliation -acc $jid -jid $room
 # tacky muc haveVoice -acc $jid -jid $room
 # tacky muc isJoined -acc $jid -jid $room
-# tacky muc isHidden -acc $jid -jid $room
+# tacky muc isHidden -acc $jid -jid $room   ;# remembered after leaving, until rejoined
 # tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
 # tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1?
 # tacky listen muc <Error> $cmd              ;# -jid $room -error $errorType -stanza $stanza
-# tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict
+# tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict ?-replay 1?
+#   ;# -replay 1: re-sent after our role changed (caps), not a new presence
 # tacky listen muc <Unavailable> $cmd        ;# -jid $room -nick $nick -reason $r -codes $codes -occupant $dict
 # tacky listen muc <Subject> $cmd            ;# -jid $room -nick $nick -subject $text
 # NOTE: MUC messages are delivered via message <New>, not muc events.
 # NOTE: invitations are stored as messages (content type "invite"), not muc
 # events: a room-relayed one in the room's chat, a direct one in the inviter's.
 # tacky listen muc <Decline> $cmd            ;# -jid $room -from $declinerJid -reason $text
-# tacky listen muc <NickChanged> $cmd        ;# -jid $room -oldNick $old -newNick $new -self $bool
+# tacky listen muc <NickChanged> $cmd        ;# -jid $room -oldNick $old -newNick $new -self $bool -occupant $dict
 # tacky listen muc <Kicked> $cmd             ;# -jid $room -nick $nick -actor $actorNick -reason $text
 # tacky listen muc <Banned> $cmd             ;# -jid $room -nick $nick -actor $actorNick -reason $text
 # tacky listen muc <ConfigChanged> $cmd      ;# -jid $room -codes $statusCodes
@@ -64,9 +66,18 @@
 snit::type taco_muc {
     variable client
 
-    # roomJid -> dict: nick, subject, joined, leaving, occupants (dict nick->occupantDict)
-    # Each occupantDict: {nick $n jid $fullJid role $r affiliation $a show $s status $st}
+    # roomJid -> dict: nick, myOccupantId, subject, joined, leaving,
+    # occupants (dict nick->occupantDict), hidden, created.
+    # Each occupantDict: {nick $n jid $fullJid jids $allItemJids role $r
+    # affiliation $a show $s status $st}, plus one key per addOccupantField.
     variable Rooms -array {}
+
+    # roomJid -> hidden flag of a room no longer tracked (isHidden); cleared
+    # on rejoin.
+    variable WasHidden -array {}
+
+    # name -> parse command for extra occupant fields (addOccupantField).
+    variable OccupantFields {}
 
     # roomJid -> join -command callback (pending joins)
     variable JoinCallbacks -array {}
@@ -130,7 +141,7 @@ snit::type taco_muc {
         if {![info exists Rooms($roomJid)] || [dict get $Rooms($roomJid) joined]} return
         jlog warn "$roomJid did not answer the join"
         $self FailJoin $roomJid remote-server-timeout
-        unset Rooms($roomJid)
+        $self ForgetRoom $roomJid
         $self Emit $roomJid <Error> -jid $roomJid -error remote-server-timeout -stanza {}
     }
 
@@ -144,6 +155,7 @@ snit::type taco_muc {
         set opts(-jid) [jid norm $opts(-jid)]
 
         # Initialize room tracking state
+        unset -nocomplain WasHidden($opts(-jid))
         set Rooms($opts(-jid)) [dict create \
             nick $opts(-nick) myOccupantId "" subject "" joined 0 \
             leaving 0 occupants [dict create] \
@@ -749,9 +761,19 @@ snit::type taco_muc {
         return [dict get $Rooms($jid) joined]
     }
 
+    # Whether $room was joined -hidden; remembered after leaving, until
+    # rejoined, so the events reporting it gone can be told apart.
     tackymethod isHidden {args} {
         set room [jid norm [dict get $args -jid]]
-        expr {[info exists Rooms($room)] && [dict get $Rooms($room) hidden]}
+        if {[info exists Rooms($room)]} { return [dict get $Rooms($room) hidden] }
+        expr {[info exists WasHidden($room)] && $WasHidden($room)}
+    }
+
+    # Add $name to every occupant: {*}$cmd $stanza on each presence, ""
+    # when absent. A module reads a presence extension off the occupants
+    # this way and gets renames and leaves for free.
+    method addOccupantField {name cmd} {
+        dict set OccupantFields $name $cmd
     }
 
     tackymethod rooms {args} {
@@ -829,7 +851,7 @@ snit::type taco_muc {
 
         # Clean up room tracking if we never joined
         if {[info exists Rooms($roomJid)] && ![dict get $Rooms($roomJid) joined]} {
-            unset Rooms($roomJid)
+            $self ForgetRoom $roomJid
         }
 
         $self Emit $roomJid <Error> -jid $roomJid -error $errorType -stanza $stanza
@@ -887,11 +909,11 @@ snit::type taco_muc {
             -occupant [$self WithCaps $roomJid $occupant]
 
         # Every occupant's caps are relative to my role/affiliation, which may
-        # have just changed; refresh them all.
+        # have just changed; refresh them all (-replay 1).
         dict for {onick occ} [dict get $Rooms($roomJid) occupants] {
             if {$onick eq $nick} continue
             $self Emit $roomJid <Presence> -jid $roomJid -nick $onick \
-                -occupant [$self WithCaps $roomJid $occ]
+                -occupant [$self WithCaps $roomJid $occ] -replay 1
         }
     }
 
@@ -935,16 +957,20 @@ snit::type taco_muc {
         # Nick change (status 303)
         if {303 in $codes} {
             set newNick [xsearch $mucX item -get @nick]
-            # Remove old nick from occupants
+            # Move the occupant to the new nick now; the next presence updates it.
             set occs [dict get $Rooms($roomJid) occupants]
+            set moved [expr {[dict exists $occs $nick] ? [dict get $occs $nick] : $occupant}]
+            dict set moved nick $newNick
             dict unset occs $nick
+            dict set occs $newNick $moved
             dict set Rooms($roomJid) occupants $occs
 
             if {$isSelf} {
                 dict set Rooms($roomJid) nick $newNick
             }
 
-            $self Emit $roomJid <NickChanged> -jid $roomJid -oldNick $nick -newNick $newNick -self $isSelf
+            $self Emit $roomJid <NickChanged> -jid $roomJid -oldNick $nick -newNick $newNick \
+                -self $isSelf -occupant [$self WithCaps $roomJid $moved]
             return
         }
 
@@ -1292,14 +1318,25 @@ snit::type taco_muc {
         set jid_ [xsearch $mucX item -get @jid]
         set show [xsearch $stanza show -get body]
         set statusText [xsearch $stanza status -get body]
+        # One <item> per session sharing the nick.
+        set jids {}
+        xsearch $mucX item -script it {
+            set ij [xsearch $it -get @jid]
+            if {$ij ne ""} { lappend jids $ij }
+        }
 
-        return [dict create \
+        set occ [dict create \
             nick $nick \
             jid $jid_ \
+            jids $jids \
             role $role \
             affiliation $affiliation \
             show $show \
             status $statusText]
+        dict for {name cmd} $OccupantFields {
+            dict set occ $name [{*}$cmd $stanza]
+        }
+        return $occ
     }
 
     method ParseStatusCodes {mucX} {
@@ -1434,28 +1471,26 @@ snit::type taco_muc {
         if {[info exists Rooms($roomJid)]} {
             set myNick [dict get $Rooms($roomJid) nick]
         }
-        set hidden [$self isHidden -jid $roomJid]
         $self CleanupRoom $roomJid
-        $self EmitAs $hidden <Left> -jid $roomJid -nick $myNick \
+        $self Emit $roomJid <Left> -jid $roomJid -nick $myNick \
             -involuntary $involuntary -codes $codes {*}$args
     }
 
-    # A hidden room's events go only on the bus, tagged -hidden 1 so
-    # bookmarks and the stores skip them; never to the frontend.
+    # Same events for every room. Modules that file rooms (bookmarks,
+    # message, author) skip hidden ones via isHidden.
     method Emit {roomJid event args} {
-        $self EmitAs [$self isHidden -jid $roomJid] $event {*}$args
+        $client emit muc $event {*}$args
     }
 
-    method EmitAs {hidden event args} {
-        if {$hidden} {
-            $client bus publish muc:$event -hidden 1 {*}$args
-        } else {
-            $client emit muc $event {*}$args
-        }
+    # Stop tracking a room; keep its hidden flag for isHidden.
+    method ForgetRoom {roomJid} {
+        if {![info exists Rooms($roomJid)]} return
+        set WasHidden($roomJid) [dict get $Rooms($roomJid) hidden]
+        unset Rooms($roomJid)
     }
 
     method CleanupRoom {roomJid} {
-        unset -nocomplain Rooms($roomJid)
+        $self ForgetRoom $roomJid
         # A join still waiting is over: say so rather than drop it.
         $self FailJoin $roomJid item-not-found
     }

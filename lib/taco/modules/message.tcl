@@ -142,7 +142,7 @@ snit::type taco_message {
     # and pagination reaches the rest. A voluntary leave has no gap to record.
     method OnMucLeft {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[dict exists $args -hidden]} return
+        if {[$client muc isHidden -jid [dict get $args -jid]]} return
         array set opts {-jid "" -involuntary 0}
         array set opts $args
         if {!$opts(-involuntary)} return
@@ -1201,7 +1201,7 @@ snit::type taco_message {
     # whichever lands second dedups.
     method OnMucJoined {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[dict exists $args -hidden]} return
+        if {[$client muc isHidden -jid [dict get $args -jid]]} return
         set roomJid [dict get $args -jid]
         if {[info exists PendingRetry($roomJid)]} {
             unset PendingRetry($roomJid)

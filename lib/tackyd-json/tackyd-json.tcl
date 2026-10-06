@@ -162,7 +162,7 @@ snit::type jsonify_type {
 jsonify_type jsonify \
     -types {
         message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string id string inviter string reason string state string video bool active bool live bool formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
-        occupant    {caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
+        occupant    {jids list caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} call {dict {audio bool video bool contents {map {list payload}}}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
         chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool blocked bool}
@@ -173,8 +173,7 @@ jsonify_type jsonify \
         camera      {facing int}
         call_row    {peer_ringing bool}
         payload     {id int clockrate int channels int}
-        groupcall_row  {count int video bool hosted bool preview {dict {name string id string}}}
-        groupcall_peer {audio bool video bool preparing bool}
+        groupcall_row  {count int video bool hosted bool preview {dict {name string id string}} sessions {map string}}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
@@ -226,10 +225,8 @@ jsonify_type jsonify \
         media/payloadTypes      {map {list payload}}
         calls/start             string
         calls/list              {list call_row}
-        groupcall/status        {dict {active bool joined bool count int}}
         groupcall/inCall        bool
         groupcall/list          {list groupcall_row}
-        groupcall/participants  {list groupcall_peer}
         author/get              {dict {}}
         register/media          base64
         register/form           form
@@ -271,19 +268,18 @@ jsonify_type jsonify \
         message/<CatchupDone>   {dict {count int}}
         message/<Tail>          {dict {timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string error string}}
-        muc/<Presence>          {dict {occupant occupant}}
+        muc/<Presence>          {dict {occupant occupant replay bool}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
         muc/<Left>              {dict {involuntary bool codes {list int} disconnected bool}}
-        muc/<NickChanged>       {dict {self bool}}
+        muc/<NickChanged>       {dict {self bool occupant occupant}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
         muc/<VoiceRequest>      {dict {form form}}
         chatlist/<Item>         {dict {item chat_entry}}
         blocking/<Changed>      {dict {list list}}
         notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
-        groupcall/<Changed>     {dict {active bool count int joined bool}}
         groupcall/<Invited>     {dict {timestamp int video bool}}
-        groupcall/<PeerJoined>  {dict {video bool}}
+        groupcall/<Session>     {dict {video bool}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
         omemo/<BlindTrust>         {dict {value bool}}

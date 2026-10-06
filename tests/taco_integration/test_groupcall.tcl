@@ -5,7 +5,7 @@ package require libtacky
 package require taco
 
 # XEP-0272 (Muji) group calls in a real Prosody room: presence, who calls
-# whom, Jingle legs going live, leaving, and join failures only a real server
+# whom, Jingle sessions going live, leaving, and join failures only a real server
 # shows (a nick shared with another session of the same account). Audio is
 # stubbed as in test_calls.tcl; DTLS and ICE run for real.
 
@@ -15,7 +15,7 @@ namespace eval ::test::groupcall_int {
 
     variable HOST "example.local"
     variable TIMEOUT 15000
-    # A leg going live: loopback DTLS, with slack for a cold libdatachannel.
+    # A session going live: loopback DTLS, with slack for a cold libdatachannel.
     variable LIVE_TIMEOUT 30000
 
     variable ROMEO  "romeo@example.local"
@@ -32,8 +32,8 @@ namespace eval ::test::groupcall_int {
 
     # acc -> list of {event argsDict}, groupcall events in arrival order.
     variable Events
-    # acc,sid -> list of leg states (active, ended, failed).
-    variable Legs
+    # acc,sid -> list of session states (active, ended, failed).
+    variable Sessions
     variable Twin ""
 
     variable _rtcmaHandleSeq 0
@@ -109,9 +109,30 @@ namespace eval ::test::groupcall_int {
         lappend Events($acc) [list $event [dict remove $argsL -acc]]
     }
 
+    # Localparts of occupants who left the call or the room, from muc events.
+    proc onMuc {acc event ev} {
+        variable InCall
+        variable Gone
+        set occ [dict get $ev -occupant]
+        set real [dict get $occ jid]
+        if {$real eq ""} return
+        set was [expr {[info exists InCall($acc)] && [dict exists $InCall($acc) $real]}]
+        if {$event eq "<Presence>" && [dict get $occ call] ne ""} {
+            dict set InCall($acc) $real 1
+        } elseif {$was} {
+            dict unset InCall($acc) $real
+            lappend Gone($acc) [lindex [split $real @] 0]
+        }
+    }
+
+    proc gone {acc} {
+        variable Gone
+        expr {[info exists Gone($acc)] ? $Gone($acc) : {}}
+    }
+
     proc onLeg {acc state argsL} {
-        variable Legs
-        lappend Legs($acc,[dict get $argsL -sid]) $state
+        variable Sessions
+        lappend Sessions($acc,[dict get $argsL -sid]) $state
     }
 
     # The args of every $event $acc saw, in order.
@@ -127,16 +148,21 @@ namespace eval ::test::groupcall_int {
 
     proc has {acc event} { expr {[llength [events $acc $event]] > 0} }
 
-    # nick -> sid of every <PeerJoined> $acc saw.
+    # Peer localpart -> sid, from the <Session> events $acc saw (latest wins).
     proc peers {acc} {
         set out {}
-        foreach a [events $acc <PeerJoined>] {
-            dict set out [dict get $a -nick] [dict get $a -sid]
+        foreach a [events $acc <Session>] {
+            dict set out [lindex [split [dict get $a -peer] @] 0] [dict get $a -sid]
         }
         return $out
     }
 
-    # Every leg each of $accs has is live.
+    proc legEnded {acc sid} {
+        variable Sessions
+        expr {[info exists Sessions($acc,$sid)] && "ended" in $Sessions($acc,$sid)}
+    }
+
+    # Every session each of $accs has is live.
     proc allLive {accs} {
         foreach acc $accs {
             dict for {nick sid} [peers $acc] {
@@ -147,11 +173,11 @@ namespace eval ::test::groupcall_int {
     }
 
     proc legActive {acc sid} {
-        variable Legs
-        expr {[info exists Legs($acc,$sid)] && "active" in $Legs($acc,$sid)}
+        variable Sessions
+        expr {[info exists Sessions($acc,$sid)] && "active" in $Sessions($acc,$sid)}
     }
 
-    # The direction of $acc's leg $sid: outgoing if $acc initiated it.
+    # The direction of $acc's session $sid: outgoing if $acc initiated it.
     proc direction {acc sid} {
         foreach row [tacky calls list -acc $acc] {
             if {[dict get $row sid] eq $sid} { return [dict get $row direction] }
@@ -213,9 +239,16 @@ namespace eval ::test::groupcall_int {
         tacky groupcall leave -acc $acc -jid [expr {$call eq "" ? $ROOM : $call}]
     }
 
+    # {active joined count} as $acc sees it from the room's occupants.
     proc status {acc {call ""}} {
         variable ROOM
-        tacky groupcall status -acc $acc -jid [expr {$call eq "" ? $ROOM : $call}]
+        set room [expr {$call eq "" ? $ROOM : $call}]
+        set count 0
+        foreach occ [tacky muc occupants -acc $acc -jid $room] {
+            if {[dict get $occ call] ne "" && [dict get $occ call state] eq "announced"} { incr count }
+        }
+        set joined [expr {$room in [lmap r [tacky groupcall list -acc $acc] { dict get $r jid }]}]
+        dict create active [expr {$count > 0}] joined $joined count $count
     }
 
     proc joined {acc {call ""}} { dict get [status $acc $call] joined }
@@ -226,9 +259,13 @@ namespace eval ::test::groupcall_int {
         variable HOST
         variable PASS
         variable Events
-        variable Legs
+        variable Sessions
+        variable InCall
+        variable Gone
         array unset Events
-        array unset Legs
+        array unset Sessions
+        array unset InCall
+        array unset Gone
         muteRtcma
         tacky_init
         # No mod_external_services on the rig: ICE runs on host candidates.
@@ -241,10 +278,14 @@ namespace eval ::test::groupcall_int {
             list conn <State> -acc $acc -state connected
         }]
         foreach {acc pass} $PASS {
-            foreach ev {<Changed> <Joined> <PeerJoined> <PeerLeft> <Left>
+            foreach ev {<Joined> <Session> <Left>
                         <Warning> <Invited> <Started> <StartFailed>} {
                 tacky listen -tag gc_int groupcall $ev -acc $acc \
                     [list ::test::groupcall_int::onGroupcall $acc $ev]
+            }
+            foreach ev {<Presence> <Unavailable>} {
+                tacky listen -tag gc_int muc $ev -acc $acc \
+                    [list ::test::groupcall_int::onMuc $acc $ev]
             }
             foreach {ev state} {<Active> active <Ended> ended <Failed> failed} {
                 tacky listen -tag gc_int calls $ev -acc $acc \
@@ -306,7 +347,7 @@ namespace eval ::test::groupcall_int {
         } -result {1 1 {} 0}
 
     test groupcall-int-two-join \
-        {the second to join calls the first; both legs go live} \
+        {the second to join calls the first; both sessions go live} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -344,7 +385,7 @@ namespace eval ::test::groupcall_int {
         } -result {1 outgoing incoming}
 
     test groupcall-int-three-way-mesh \
-        {three join one after another: every pair gets exactly one live leg} \
+        {three join one after another: every pair gets exactly one live session} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -364,7 +405,7 @@ namespace eval ::test::groupcall_int {
                 dict for {nick sid} [peers $acc] { dict set sids $sid 1 }
             }
             waitUntil {[allLive [list $ROMEO $JULIET $TEST]]} $LIVE_TIMEOUT
-            # Joiner initiates: the later of each pair has the outgoing leg.
+            # Joiner initiates: the later of each pair has the outgoing session.
             list [dict size $sids] \
                 [lsort [dict keys [peers $TEST]]] \
                 [direction $JULIET [dict get [peers $JULIET] romeo]] \
@@ -374,7 +415,7 @@ namespace eval ::test::groupcall_int {
         } -result {3 {juliet romeo} outgoing outgoing outgoing 3}
 
     test groupcall-int-simultaneous-join \
-        {two joining at once, each preparing while the other is: one leg between them} \
+        {two joining at once, each preparing while the other is: one session between them} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -407,12 +448,13 @@ namespace eval ::test::groupcall_int {
             joinCall $ROMEO
             waitUntil {[has $ROMEO <Joined>]}
             joinCall $JULIET
-            waitUntil {[dict get [tacky groupcall status -acc $TEST -jid $ROOM] count] == 2}
-            list [tacky groupcall status -acc $TEST -jid $ROOM] \
-                [lsort [lmap p [tacky groupcall participants -acc $TEST -jid $ROOM] {
-                    dict get $p nick}]] \
+            waitUntil {[dict get [status $TEST] count] == 2}
+            list [status $TEST] \
+                [lsort [lmap o [tacky muc occupants -acc $TEST -jid $ROOM] {
+                    if {[dict get $o call] eq ""} continue
+                    dict get $o nick}]] \
                 [llength [tacky calls list -acc $TEST]]
-        } -result {{active 1 joined 0 count 2 mode mesh} {juliet romeo} 0}
+        } -result {{active 1 joined 0 count 2} {juliet romeo} 0}
 
     # == Leaving ==============================================================
 
@@ -433,23 +475,21 @@ namespace eval ::test::groupcall_int {
     }
 
     test groupcall-int-leave \
-        {leaving hangs the leg up; the one left behind is told and stays in} \
+        {leaving hangs the session up; the one left behind is told and stays in} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
             set sid [liveCall]
             leaveCall $JULIET
-            waitUntil {[llength [events $ROMEO <PeerLeft>]] > 0
-                       && [dict get [status $ROMEO] count] == 1}
-            set pl [lindex [events $ROMEO <PeerLeft>] 0]
-            list [dict get $pl -nick] [dict get $pl -reason] \
-                [expr {[dict get $pl -sid] eq $sid}] \
+            waitUntil {[llength [gone $ROMEO]] > 0
+                       && [dict get [status $ROMEO] count] == 1 && [legEnded $ROMEO $sid]}
+            list [gone $ROMEO] [legEnded $ROMEO $sid] \
                 [has $JULIET <Left>] [joined $JULIET] [joined $ROMEO] \
                 [llength [tacky calls list -acc $JULIET]]
-        } -result {juliet {left the call} 1 1 0 1 0}
+        } -result {juliet 1 1 0 1 0}
 
     test groupcall-int-rejoin \
-        {leaving and joining again connects afresh, on a new leg} \
+        {leaving and joining again connects afresh, on a new session} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -457,7 +497,7 @@ namespace eval ::test::groupcall_int {
             variable LIVE_TIMEOUT
             set first [liveCall]
             leaveCall $JULIET
-            waitUntil {[llength [events $ROMEO <PeerLeft>]] > 0}
+            waitUntil {[llength [gone $ROMEO]] > 0}
             array unset Events
             joinCall $JULIET
             waitUntil {[dict exists [peers $JULIET] romeo]
@@ -479,10 +519,10 @@ namespace eval ::test::groupcall_int {
             liveCall
             leaveCall $JULIET
             leaveCall $ROMEO
-            waitUntil {![dict get [tacky groupcall status -acc $TEST -jid $ROOM] active]}
-            list [tacky groupcall status -acc $TEST -jid $ROOM] \
+            waitUntil {![dict get [status $TEST] active]}
+            list [status $TEST] \
                 [has $ROMEO <Left>] [has $JULIET <Left>]
-        } -result {{active 0 joined 0 count 0 mode mesh} 1 1}
+        } -result {{active 0 joined 0 count 0} 1 1}
 
     test groupcall-int-peer-leaves-room \
         {a participant leaving the room altogether leaves the call} \
@@ -492,8 +532,8 @@ namespace eval ::test::groupcall_int {
             variable ROOM
             liveCall
             tacky muc leave -acc $JULIET -jid $ROOM
-            waitUntil {[llength [events $ROMEO <PeerLeft>]] > 0}
-            list [dict get [lindex [events $ROMEO <PeerLeft>] 0] -nick] \
+            waitUntil {[llength [gone $ROMEO]] > 0}
+            list [lindex [gone $ROMEO] 0] \
                 [has $JULIET <Left>] [joined $ROMEO] [dict get [status $ROMEO] count]
         } -result {juliet 1 1 1}
 
@@ -510,8 +550,8 @@ namespace eval ::test::groupcall_int {
             # The path a real network drop takes, not a deliberate close.
             [tacky client $JULIET] conn OnTransportError "simulated drop"
             # Juliet learns on the fresh stream after the reconnect backoff.
-            waitUntil {[llength [events $ROMEO <PeerLeft>]] > 0 && [has $JULIET <Left>]} 30000
-            list [dict get [lindex [events $ROMEO <PeerLeft>] 0] -nick] \
+            waitUntil {[llength [gone $ROMEO]] > 0 && [has $JULIET <Left>]} 30000
+            list [lindex [gone $ROMEO] 0] \
                 [dict get [lindex [events $JULIET <Left>] 0] -reason] \
                 [joined $ROMEO] [joined $JULIET]
         } -result {juliet disconnected 1 0}
@@ -529,7 +569,7 @@ namespace eval ::test::groupcall_int {
             waitUntil {[dict get [[$c conn sm] getInfo] resumed]
                        && [$c conn isReady]} 30000
             settle 1000
-            list [has $ROMEO <PeerLeft>] [has $JULIET <Left>] \
+            list [llength [gone $ROMEO]] [has $JULIET <Left>] \
                 [joined $ROMEO] [joined $JULIET]
         } -result {0 0 1 1}
 
@@ -560,7 +600,7 @@ namespace eval ::test::groupcall_int {
         } -result {1 0 0}
 
     test groupcall-int-hidden-jids \
-        {in a room that hides real JIDs a joiner cannot reach the others: warned, no leg} \
+        {in a room that hides real JIDs a joiner cannot reach the others: warned, no session} \
         -constraints {withServer && notMongoose && notEjabberd && !wasm} \
         -setup { ::test::groupcall_int::setup moderators } \
         -cleanup { ::test::groupcall_int::cleanup } \
@@ -601,7 +641,7 @@ namespace eval ::test::groupcall_int {
     }
 
     test groupcall-int-hosted-start-join \
-        {a hosted call: its own room, hidden, joined from the chat, legs live} \
+        {a hosted call: its own room, hidden, joined from the chat, sessions live} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
@@ -774,7 +814,7 @@ namespace eval ::test::groupcall_int {
         expr {[dict exists $content live] ? [dict get $content live] : "?"}
     }
 
-    # Everyone in $accs has a live leg to each of the others.
+    # Everyone in $accs has a live session to each of the others.
     proc meshLive {accs} {
         foreach acc $accs {
             if {[dict size [peers $acc]] < [llength $accs] - 1} { return 0 }
@@ -782,8 +822,8 @@ namespace eval ::test::groupcall_int {
         allLive $accs
     }
 
-    # The legs $acc has now, peer bare JID -> sid, from the calls module.
-    proc legsOf {acc} {
+    # The sessions $acc has now, peer bare JID -> sid, from the calls module.
+    proc sessionsOf {acc} {
         set out {}
         foreach row [tacky calls list -acc $acc] {
             if {[dict get $row group] eq ""} continue
@@ -810,15 +850,15 @@ namespace eval ::test::groupcall_int {
 
     foreach {name order} {juliet-first {JULIET TEST} test-first {TEST JULIET}} {
         test groupcall-int-hosted-three-$name \
-            "three in a hosted call, answered $name: everyone has a live leg to everyone" \
+            "three in a hosted call, answered $name: everyone has a live session to everyone" \
             {*}$common -body [string map [list @ORDER@ $order] {
                 variable ROMEO
                 variable JULIET
                 variable TEST
                 set call [hostedThree {@ORDER@}]
                 list [dict get [status $ROMEO $call] count] \
-                    [lsort [dict keys [legsOf $ROMEO]]] [lsort [dict keys [legsOf $JULIET]]] \
-                    [lsort [dict keys [legsOf $TEST]]]
+                    [lsort [dict keys [sessionsOf $ROMEO]]] [lsort [dict keys [sessionsOf $JULIET]]] \
+                    [lsort [dict keys [sessionsOf $TEST]]]
             }] -result [list 3 {juliet@example.local test@example.local} \
                 {romeo@example.local test@example.local} {juliet@example.local romeo@example.local}]
     }
@@ -832,11 +872,11 @@ namespace eval ::test::groupcall_int {
                 variable TEST
                 set call [hostedThree {JULIET TEST}]
                 leaveCall $@1 $call
-                waitUntil {[dict size [legsOf $ROMEO]] == 1 && [dict size [legsOf $@2]] == 1}
+                waitUntil {[dict size [sessionsOf $ROMEO]] == 1 && [dict size [sessionsOf $@2]] == 1}
                 set two [list [dict get [status $ROMEO $call] count] \
                     [allLive [list $ROMEO $@2]]]
                 leaveCall $@2 $call
-                waitUntil {[dict size [legsOf $ROMEO]] == 0}
+                waitUntil {[dict size [sessionsOf $ROMEO]] == 0}
                 settle 500
                 list {*}$two [dict get [status $ROMEO $call] count] [joined $ROMEO $call] \
                     [live $ROMEO] [live $@1]
@@ -844,16 +884,16 @@ namespace eval ::test::groupcall_int {
     }
 
     test groupcall-int-hosted-three-starter-leaves-first \
-        {the starter leaving first: the other two keep their leg, and the call stays live} \
+        {the starter leaving first: the other two keep their session, and the call stays live} \
         {*}$common -body {
             variable ROMEO
             variable JULIET
             variable TEST
             set call [hostedThree {JULIET TEST}]
             leaveCall $ROMEO $call
-            waitUntil {[dict size [legsOf $JULIET]] == 1 && [dict size [legsOf $TEST]] == 1}
+            waitUntil {[dict size [sessionsOf $JULIET]] == 1 && [dict size [sessionsOf $TEST]] == 1}
             settle 500
-            list [dict keys [legsOf $JULIET]] [allLive [list $JULIET $TEST]] \
+            list [dict keys [sessionsOf $JULIET]] [allLive [list $JULIET $TEST]] \
                 [live $ROMEO] [live $JULIET] [has $JULIET <Left>]
         } -result {test@example.local 1 1 1 0}
 
@@ -879,17 +919,17 @@ namespace eval ::test::groupcall_int {
             variable LIVE_TIMEOUT
             set call [hostedThree {JULIET TEST}]
             leaveCall $JULIET $call
-            waitUntil {[dict size [legsOf $ROMEO]] == 1 && [dict size [legsOf $TEST]] == 1}
+            waitUntil {[dict size [sessionsOf $ROMEO]] == 1 && [dict size [sessionsOf $TEST]] == 1}
             settle 500
             set before [live $JULIET]
             array unset ::test::groupcall_int::Events $JULIET
-            array unset ::test::groupcall_int::Legs $JULIET,*
+            array unset ::test::groupcall_int::Sessions $JULIET,*
             tacky groupcall start -acc $JULIET -chat $::test::groupcall_int::ROOM
             waitUntil {[has $JULIET <Joined>] || [has $JULIET <Left>]}
             waitUntil {[meshLive [list $ROMEO $JULIET $TEST]]} $LIVE_TIMEOUT
             list $before [has $JULIET <Started>] \
                 [expr {[dict get [lindex [tacky groupcall list -acc $JULIET] 0] jid] eq $call}] \
-                [lsort [dict keys [legsOf $JULIET]]]
+                [lsort [dict keys [sessionsOf $JULIET]]]
         } -result {1 0 1 {romeo@example.local test@example.local}}
 
     test groupcall-int-hosted-one-drops {one of three losing their connection: the other two go on together} \
@@ -898,12 +938,12 @@ namespace eval ::test::groupcall_int {
             variable JULIET
             variable TEST
             set call [hostedThree {JULIET TEST}]
-            set sid [dict get [legsOf $ROMEO] test@example.local]
+            set sid [dict get [sessionsOf $ROMEO] test@example.local]
             # Test vanishes without a word: no <left>, no unavailable of its own.
             [tacky client $TEST] disconnect
-            waitUntil {![dict exists [legsOf $ROMEO] test@example.local]
-                       && ![dict exists [legsOf $JULIET] test@example.local]} 60000
-            list [dict keys [legsOf $ROMEO]] [dict keys [legsOf $JULIET]] \
+            waitUntil {![dict exists [sessionsOf $ROMEO] test@example.local]
+                       && ![dict exists [sessionsOf $JULIET] test@example.local]} 60000
+            list [dict keys [sessionsOf $ROMEO]] [dict keys [sessionsOf $JULIET]] \
                 [allLive [list $ROMEO $JULIET]] [joined $ROMEO $call] [joined $JULIET $call]
         } -result {juliet@example.local romeo@example.local 1 1 1}
 
@@ -921,7 +961,7 @@ namespace eval ::test::groupcall_int {
             settle 1000
             answerInvite $TEST
             waitUntil {[meshLive [list $ROMEO $JULIET $TEST]]} $LIVE_TIMEOUT
-            list [direction $TEST [dict get [legsOf $TEST] romeo@example.local]] \
-                [direction $TEST [dict get [legsOf $TEST] juliet@example.local]]
+            list [direction $TEST [dict get [sessionsOf $TEST] romeo@example.local]] \
+                [direction $TEST [dict get [sessionsOf $TEST] juliet@example.local]]
         } -result {outgoing outgoing}
 }
