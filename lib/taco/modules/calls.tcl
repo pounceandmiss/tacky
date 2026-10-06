@@ -841,8 +841,36 @@ snit::type taco_calls {
         # Carbon of our own outbound propose: drop.
         set myBare [jid bare [$client cget -jid]]
         if {[jid bare $from] eq $myBare} return
-        # Duplicate or sid collision: ignore.
-        if {[dict exists $Calls $sid]} return
+        # Duplicate or sid collision: ignore, unless it is our own proposed
+        # sid from the account we call (equal-sid tie-break below).
+        if {[dict exists $Calls $sid]} {
+            set ours [dict get $Calls $sid]
+            if {![dict get $ours initiator] || [dict get $ours state] ne "proposed"
+                    || ![jid matches-bare $from [dict get $ours peer]]} return
+        }
+
+        # Crossing proposes (XEP-0353 §4.1): the lower sid wins (i;octet),
+        # then the lower JID; the receiver of the losing propose rejects it
+        # with <tie-break/>. Theirs rings only if it beats every propose of
+        # ours to them; ours then end.
+        set beaten {}
+        dict for {ours call} $Calls {
+            if {![dict get $call initiator] || [dict get $call state] ne "proposed"} continue
+            if {![jid matches-bare $from [dict get $call peer]]} continue
+            set cmp [string compare $ours $sid]
+            if {$cmp == 0} {
+                set cmp [string compare [jid norm [$client cget -jid]] [jid norm $from]]
+            }
+            if {$cmp < 0} {
+                $client write [$self BuildJmiTieBreak $from $sid]
+                return
+            }
+            lappend beaten $ours
+        }
+        foreach ours $beaten {
+            $client emit calls <Ended> -sid $ours
+            $self Cleanup $ours
+        }
 
         set ns urn:xmpp:jingle-message:0
         set child [xsearch $stanza propose -ns $ns -get node]
@@ -932,7 +960,8 @@ snit::type taco_calls {
             $self Cleanup $sid
             return
         }
-        # Caller side: callee declined our propose.
+        # Caller side: callee declined our propose, or rejected it as a
+        # tie-break.
         if {$state eq "proposed" && [dict get $call initiator]} {
             if {![$self PeerMatches $sid $from]} return
             $client emit calls <Ended> -sid $sid
@@ -966,6 +995,16 @@ snit::type taco_calls {
                 }
             } else {
                 j $action -ns $ns -id $sid
+            }
+        }]
+    }
+
+    # The <reject> of a propose that lost the tie-break (XEP-0353 §4.1).
+    method BuildJmiTieBreak {to sid} {
+        return [j message -to $to -type chat {
+            j reject -ns urn:xmpp:jingle-message:0 -id $sid {
+                j reason -ns urn:xmpp:jingle:1 { j expired }
+                j tie-break
             }
         }]
     }

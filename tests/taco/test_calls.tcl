@@ -188,6 +188,117 @@ test calls-reject-by-sibling-ends-ring {another of our resources declining stops
             [lindex [calls_events] end]
     } -result {0 {<Ended> -sid tk-in7}}
 
+# -- Crossing proposes (XEP-0353 §4.1) --
+
+# The reject a written message carries: {sid reason tie-break?}.
+proc calls_reject_sent {stanza} {
+    set r [xsearch $stanza reject -ns urn:xmpp:jingle-message:0 -get node]
+    if {$r eq ""} { return "" }
+    set reason [xsearch $r reason -ns urn:xmpp:jingle:1 * -get node]
+    list [xsearch $r -get @id] [expr {$reason eq "" ? "" : [dict get $reason tag]}] \
+        [expr {[xsearch $r tie-break -get node] ne ""}]
+}
+
+# Our sids are tk-<hex>: zz-... sorts above them, aa-... below.
+test calls-crossing-propose-ours-wins {a crossing propose with a higher sid is rejected as a tie-break and never rings} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        c.conn feed [calls_jmi_in propose zz-in $::PEER]
+        set w [calls_last_written]
+        string map [list $sid SID] [list [xsearch $w -get @to] [calls_reject_sent $w] \
+            [dict keys [calls_state]] [dict get [calls_state] $sid state] \
+            [lmap e [calls_events] { lindex $e 0 }]]
+    } -result [list $PEER {zz-in expired 1} SID proposed <Outgoing>]
+
+test calls-crossing-propose-theirs-wins {a crossing propose with a lower sid ends ours and rings} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        c.conn feed [calls_jmi_in propose aa-in $::PEER]
+        string map [list $sid SID] [list [lmap w [c.conn get_written] { calls_jmi_sent $w }] \
+            [dict keys [calls_state]] [lrange [calls_events] 1 end]]
+    } -result [list {{ringing aa-in}} aa-in \
+        [list {<Ended> -sid SID} {<Incoming> -sid aa-in -from peer@example.com -video 0}]]
+
+test calls-crossing-propose-equal-sid-lower-jid {crossing proposes with the same sid: the lower JID wins} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        # peer@... sorts below user@...: theirs wins.
+        c.conn feed [calls_jmi_in propose $sid $::PEER]
+        set lower [list [dict get [calls_state] $sid initiator] [lindex [calls_events] end 0]]
+        set sid2 [c.calls start -to zed@example.com]
+        c.conn clear
+        # zed@... sorts above user@...: ours wins.
+        c.conn feed [calls_jmi_in propose $sid2 zed@example.com/x]
+        string map [list $sid2 SID] [list $lower [calls_reject_sent [calls_last_written]] \
+            [dict get [calls_state] $sid2 initiator]]
+    } -result {{0 <Incoming>} {SID expired 1} 1}
+
+test calls-tie-break-reject-ends-ours {a reject with <tie-break/> ends our proposed call} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [j message -from $::PEER -to user@test.example.com -type chat {
+            j reject -ns urn:xmpp:jingle-message:0 -id $sid {
+                j reason -ns urn:xmpp:jingle:1 { j expired }
+                j tie-break
+            }
+        }]
+        string map [list $sid SID] [list [dict exists [calls_state] $sid] \
+            [lindex [calls_events] end]]
+    } -result {0 {<Ended> -sid SID}}
+
+test calls-propose-from-another-contact-still-rings {calling one contact, another's propose rings as before} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_jmi_in propose aa-other other@example.com/x]
+        list [dict get [calls_state] $sid state] [dict get [calls_state] aa-other state]
+    } -result {proposed ringing}
+
+# A <reject> with <tie-break/>, as the winner of crossing proposes sends.
+proc calls_tie_break_in {sid from} {
+    j message -from $from -to user@test.example.com -type chat {
+        j reject -ns urn:xmpp:jingle-message:0 -id $sid {
+            j reason -ns urn:xmpp:jingle:1 { j expired }
+            j tie-break
+        }
+    }
+}
+
+test calls-tie-break-reject-from-stranger-ignored {a <tie-break/> reject from someone we are not calling leaves our call} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_tie_break_in $sid stranger@example.com/x]
+        list [dict get [calls_state] $sid state] [lmap e [calls_events] { lindex $e 0 }]
+    } -result {proposed <Outgoing>}
+
+# Another device of ours won the crossing; the carbon of its <tie-break/>
+# reject stops the ring here.
+test calls-tie-break-by-sibling-ends-ring {our other device rejecting the peer's propose as a tie-break stops our ring} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose zz-in $::PEER]
+        c.conn feed [calls_tie_break_in zz-in user@test.example.com/desktop]
+        list [dict exists [calls_state] zz-in] [lindex [calls_events] end]
+    } -result {0 {<Ended> -sid zz-in}}
+
+test calls-crossing-propose-against-two-of-ours {a crossing propose must beat every propose of ours to that contact} \
+    {*}$calls_env -body {
+        set a [c.calls start -to peer@example.com]
+        set b [c.calls start -to peer@example.com]
+        lassign [lsort [list $a $b]] lo hi
+        c.conn clear
+        # Between ours: the lower of ours wins; neither ends.
+        c.conn feed [calls_jmi_in propose ${lo}0 $::PEER]
+        set between [list [lindex [calls_reject_sent [calls_last_written]] 2] \
+            [expr {[lsort [dict keys [calls_state]]] eq [list $lo $hi]}] \
+            [expr {"<Ended>" in [lmap e [calls_events] { lindex $e 0 }]}]]
+        # Below both: theirs wins, and both of ours end.
+        c.conn feed [calls_jmi_in propose aa-in $::PEER]
+        list $between [dict keys [calls_state]] \
+            [llength [lsearch -all [lmap e [calls_events] { lindex $e 0 }] <Ended>]]
+    } -result {{1 1 0} aa-in 2}
+
 # -- Sender binding --
 
 test calls-ringing-binds-to-peer {only the called account's resources may report ringing} \
