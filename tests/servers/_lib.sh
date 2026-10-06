@@ -5,7 +5,6 @@
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 DOMAIN="example.local"
-XMPP_PORT=5222
 
 USERS=(
   "test:testpass"
@@ -42,22 +41,39 @@ lib_pick_port() {
   done
 }
 
-# Pre-start cleanup: remove a leftover container and temp dir of this run's
-# name. Other runs' containers are left alone.
-lib_cleanup_stale() {
+# Set each named variable to a different free port (`lib_pick_ports A B`),
+# so concurrent runs and servers already on the default ports don't collide.
+lib_pick_ports() {
+  local name port taken=" "
+  for name in "$@"; do
+    port=$(lib_pick_port)
+    while [[ $taken == *" $port "* ]]; do port=$(lib_pick_port); done
+    taken+="$port "
+    printf -v "$name" '%s' "$port"
+  done
+}
+
+# Remove this run's containers and temp dir, before starting and on exit.
+# The /etc/hosts entry stays: a concurrent run may still be using it.
+# $1 = temp dir, then the container names.
+lib_cleanup() {
   local test_dir="$1"
-  local container_name="$2"
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  shift
+  local c
+  for c in "$@"; do
+    docker rm -f "$c" >/dev/null 2>&1 || true
+  done
   rm -rf "$test_dir" >/dev/null 2>&1 || true
 }
 
-# Teardown: stop container, remove temp dir. The /etc/hosts entry stays, a
-# concurrent run may still be resolving it.
-lib_cleanup() {
-  local container_name="$1"
-  local test_dir="$2"
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
-  rm -rf "$test_dir"
+# Whether the output of a command contains $1. Reads the output whole:
+# under pipefail, `cmd | grep -q` can fail with SIGPIPE.
+# $1 = text to look for, then the command.
+lib_output_has() {
+  local needle="$1" out
+  shift
+  out=$(timeout 20 "$@" 2>/dev/null) || return 1
+  [[ $out == *"$needle"* ]]
 }
 
 # Generate a self-signed cert with SAN for DOMAIN.
@@ -83,17 +99,17 @@ lib_pull_image() {
   docker pull --quiet "$image"
 }
 
-# Wait for the server to become ready.
-# $1 = display name, $2 = max wait seconds, $3 = interval seconds,
-# $4 = check function name (called with no args, must return 0 when ready).
+# Wait until a command succeeds, or exit.
+# $1 = what is waited for, $2 = max wait seconds, $3 = interval seconds,
+# then the command.
 lib_wait_for_ready() {
   local display_name="$1"
   local max_wait="$2"
   local interval="$3"
-  local check_fn="$4"
+  shift 3
   local elapsed=0
 
-  until "$check_fn"; do
+  until "$@"; do
     sleep "$interval"
     elapsed=$((elapsed + interval))
     if [ "$elapsed" -ge "$max_wait" ]; then
@@ -131,6 +147,17 @@ lib_banner() {
   echo ""
   echo ">>> ${display_name} ready (${DOMAIN}:${XMPP_PORT}, SPOOF_SSL_CERT=${SPOOF_SSL_CERT})"
   echo ""
+}
+
+# Once the server is up: hosts entry, users, banner, then the command.
+# $1 = display name, $2 = container, $3 = register function, then the command.
+lib_finish() {
+  local display_name="$1" container_name="$2" register_fn="$3"
+  shift 3
+  lib_add_hosts_entry
+  lib_create_users "$container_name" "$register_fn"
+  lib_banner "$display_name"
+  lib_run_command "$@"
 }
 
 # Run the user's command with proper exit-code handling.

@@ -22,10 +22,7 @@ CONTAINER_NAME="prosody-test-$$"
 TEST_DIR="/tmp/prosody-test-$$"
 ENABLE_SM=false
 
-# Ports are picked per run so several runs can share the host.
-XMPP_PORT=$(lib_pick_port)
-HTTP_PORT=$(lib_pick_port)
-while [ "$HTTP_PORT" = "$XMPP_PORT" ]; do HTTP_PORT=$(lib_pick_port); done
+lib_pick_ports XMPP_PORT HTTP_PORT
 
 export XMPP_SERVER="prosody"
 export XMPP_PORT
@@ -62,8 +59,8 @@ _register_user() {
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
-lib_cleanup_stale "$TEST_DIR" "$CONTAINER_NAME"
-trap 'lib_cleanup "$CONTAINER_NAME" "$TEST_DIR" "$DISPLAY_NAME"' EXIT INT TERM HUP
+lib_cleanup "$TEST_DIR" "$CONTAINER_NAME"
+trap 'lib_cleanup "$TEST_DIR" "$CONTAINER_NAME"' EXIT INT TERM HUP
 
 lib_generate_certs "$TEST_DIR"
 
@@ -161,7 +158,4 @@ docker run -d \
   "${IMAGE}" >/dev/null
 
 lib_wait_for_ready "$DISPLAY_NAME" "$MAX_WAIT" "$INTERVAL" _check_ready
-lib_add_hosts_entry
-lib_create_users "$CONTAINER_NAME" _register_user
-lib_banner "$DISPLAY_NAME"
-lib_run_command "$@"
+lib_finish "$DISPLAY_NAME" "$CONTAINER_NAME" _register_user "$@"

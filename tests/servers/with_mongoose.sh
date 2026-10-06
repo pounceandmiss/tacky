@@ -20,15 +20,17 @@ TEST_DIR="/tmp/mongooseim-test-$$"
 PG_DB="mongooseim"
 PG_USER="mongooseim"
 PG_PASS="mongooseim"
-PG_PORT=5432
+
+lib_pick_ports XMPP_PORT HTTP_PORT GRAPHQL_PORT PG_PORT
 
 export XMPP_SERVER="mongoose"
+export XMPP_PORT
 
 # ─── Callbacks ───────────────────────────────────────────────────────────────
 
 _check_ready() {
-  docker exec "${CONTAINER_NAME}" \
-    /usr/lib/mongooseim/bin/mongooseimctl status 2>/dev/null | grep -q "started"
+  lib_output_has "started" \
+    docker exec "${CONTAINER_NAME}" /usr/lib/mongooseim/bin/mongooseimctl status
 }
 
 _register_user() {
@@ -41,9 +43,8 @@ _register_user() {
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
-lib_cleanup_stale "$TEST_DIR" "$CONTAINER_NAME"
-docker rm -f "$PG_CONTAINER_NAME" >/dev/null 2>&1 || true
-trap 'lib_cleanup "$CONTAINER_NAME" "$TEST_DIR" "$DISPLAY_NAME"; docker rm -f "$PG_CONTAINER_NAME" >/dev/null 2>&1 || true' EXIT INT TERM HUP
+lib_cleanup "$TEST_DIR" "$CONTAINER_NAME" "$PG_CONTAINER_NAME"
+trap 'lib_cleanup "$TEST_DIR" "$CONTAINER_NAME" "$PG_CONTAINER_NAME"' EXIT INT TERM HUP
 
 lib_generate_certs "$TEST_DIR"
 
@@ -58,7 +59,7 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
   language = "en"
 
 [[listen.c2s]]
-  port = 5222
+  port = ${XMPP_PORT}
   access = "c2s"
   shaper = "normal"
   max_stanza_size = 65536
@@ -67,16 +68,8 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
   tls.certfile = "/certs/${DOMAIN}.crt"
   tls.keyfile = "/certs/${DOMAIN}.key"
 
-[[listen.s2s]]
-  port = 5269
-  shaper = "fast"
-  max_stanza_size = 131072
-  tls.verify_mode = "none"
-  tls.certfile = "/certs/${DOMAIN}.crt"
-  tls.keyfile = "/certs/${DOMAIN}.key"
-
 [[listen.http]]
-  port = 5280
+  port = ${HTTP_PORT}
   transport.num_acceptors = 10
   transport.max_connections = 1024
 
@@ -86,7 +79,7 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
 
 [[listen.http]]
   ip_address = "127.0.0.1"
-  port = 5551
+  port = ${GRAPHQL_PORT}
   transport.num_acceptors = 10
   transport.max_connections = 1024
 
@@ -180,23 +173,18 @@ docker run -d \
   -e POSTGRES_DB="${PG_DB}" \
   -e POSTGRES_USER="${PG_USER}" \
   -e POSTGRES_PASSWORD="${PG_PASS}" \
-  "${PG_IMAGE}" >/dev/null
+  "${PG_IMAGE}" -c port="${PG_PORT}" >/dev/null
 
-# Wait for PostgreSQL database to be ready
-_pg_elapsed=0
-until docker exec "${PG_CONTAINER_NAME}" psql -U "${PG_USER}" -d "${PG_DB}" -c "SELECT 1" >/dev/null 2>&1; do
-  sleep 1
-  _pg_elapsed=$((_pg_elapsed + 1))
-  if [ "$_pg_elapsed" -ge 30 ]; then
-    echo "ERROR: PostgreSQL did not start within 30s."
-    exit 1
-  fi
-done
+_pg_ready() {
+  docker exec "${PG_CONTAINER_NAME}" \
+    psql -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DB}" -c "SELECT 1" >/dev/null 2>&1
+}
+lib_wait_for_ready PostgreSQL 30 1 _pg_ready
 
 # Load MongooseIM schema
 docker run --rm --entrypoint sh \
   "${IMAGE}" -c 'cat /usr/lib/mongooseim/lib/mongooseim-*/priv/pg.sql' \
-  | docker exec -i "${PG_CONTAINER_NAME}" psql -U "${PG_USER}" -d "${PG_DB}" -q
+  | docker exec -i "${PG_CONTAINER_NAME}" psql -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DB}" -q
 
 # ─── Start MongooseIM ────────────────────────────────────────────────────────
 
@@ -210,7 +198,4 @@ docker run -d \
   "${IMAGE}" >/dev/null
 
 lib_wait_for_ready "$DISPLAY_NAME" "$MAX_WAIT" "$INTERVAL" _check_ready
-lib_add_hosts_entry
-lib_create_users "$CONTAINER_NAME" _register_user
-lib_banner "$DISPLAY_NAME"
-lib_run_command "$@"
+lib_finish "$DISPLAY_NAME" "$CONTAINER_NAME" _register_user "$@"

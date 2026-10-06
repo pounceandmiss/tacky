@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/_lib.sh"
 DISPLAY_NAME="ejabberd"
 IMAGE="ghcr.io/processone/ejabberd:latest"
 MYSQL_IMAGE="mysql:8.0"
-MAX_WAIT=50
+MAX_WAIT=90
 INTERVAL=2
 CONTAINER_NAME="ejabberd-test-$$"
 MYSQL_CONTAINER_NAME="ejabberd-mysql-$$"
@@ -21,15 +21,19 @@ MYSQL_DB="ejabberd"
 MYSQL_USER="ejabberd"
 MYSQL_PASS="ejabberd"
 MYSQL_ROOT_PASS="root"
-MYSQL_PORT=3306
+
+lib_pick_ports XMPP_PORT HTTP_PORT MYSQL_PORT ERL_DIST_PORT
 
 export XMPP_SERVER="ejabberd"
+export XMPP_PORT
 
 # ─── Callbacks ───────────────────────────────────────────────────────────────
 
+# Not "started": ejabberd prints that while still starting up, next to
+# "ejabberd is not running in that node".
 _check_ready() {
-  docker exec "${CONTAINER_NAME}" \
-    ejabberdctl status 2>/dev/null | grep -q "started"
+  lib_output_has "is running in that node" \
+    docker exec "${CONTAINER_NAME}" ejabberdctl status
 }
 
 _register_user() {
@@ -40,9 +44,8 @@ _register_user() {
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
-lib_cleanup_stale "$TEST_DIR" "$CONTAINER_NAME"
-docker rm -f "$MYSQL_CONTAINER_NAME" >/dev/null 2>&1 || true
-trap 'lib_cleanup "$CONTAINER_NAME" "$TEST_DIR" "$DISPLAY_NAME"; docker rm -f "$MYSQL_CONTAINER_NAME" >/dev/null 2>&1 || true' EXIT INT TERM HUP
+lib_cleanup "$TEST_DIR" "$CONTAINER_NAME" "$MYSQL_CONTAINER_NAME"
+trap 'lib_cleanup "$TEST_DIR" "$CONTAINER_NAME" "$MYSQL_CONTAINER_NAME"' EXIT INT TERM HUP
 
 lib_generate_certs "$TEST_DIR"
 
@@ -71,7 +74,7 @@ sql_password: "${MYSQL_PASS}"
 
 listen:
   -
-    port: 5222
+    port: ${XMPP_PORT}
     ip: "::"
     module: ejabberd_c2s
     max_stanza_size: 262144
@@ -80,12 +83,7 @@ listen:
     starttls: true
     starttls_required: false
   -
-    port: 5269
-    ip: "::"
-    module: ejabberd_s2s_in
-    max_stanza_size: 524288
-  -
-    port: 5280
+    port: ${HTTP_PORT}
     ip: "::"
     module: ejabberd_http
     request_handlers:
@@ -210,20 +208,15 @@ docker run -d \
   -e MYSQL_USER="${MYSQL_USER}" \
   -e MYSQL_PASSWORD="${MYSQL_PASS}" \
   "${MYSQL_IMAGE}" \
+  --port="${MYSQL_PORT}" --mysqlx=OFF \
   --character-set-server=utf8mb4 \
   --collation-server=utf8mb4_unicode_ci >/dev/null
 
-# Wait for MySQL to accept connections with the application user
-_mysql_elapsed=0
-until docker exec "${MYSQL_CONTAINER_NAME}" \
-  mysql -u "${MYSQL_USER}" -p"${MYSQL_PASS}" "${MYSQL_DB}" -e "SELECT 1" >/dev/null 2>&1; do
-  sleep 2
-  _mysql_elapsed=$((_mysql_elapsed + 2))
-  if [ "$_mysql_elapsed" -ge 180 ]; then
-    echo "ERROR: MySQL did not start within 180s."
-    exit 1
-  fi
-done
+_mysql_ready() {
+  docker exec "${MYSQL_CONTAINER_NAME}" \
+    mysql -u "${MYSQL_USER}" -p"${MYSQL_PASS}" "${MYSQL_DB}" -e "SELECT 1" >/dev/null 2>&1
+}
+lib_wait_for_ready MySQL 180 2 _mysql_ready
 
 # Load ejabberd SQL schema
 docker run --rm --network none --entrypoint cat \
@@ -235,15 +228,15 @@ docker run --rm --network none --entrypoint cat \
 
 lib_pull_image "$IMAGE"
 
+# With ERL_DIST_PORT set, ejabberdctl skips epmd, which can hang for minutes
+# on hosts with IPv6 disabled.
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --network host \
+  -e ERL_DIST_PORT="${ERL_DIST_PORT}" \
   -v "${TEST_DIR}/conf/ejabberd.yml":/opt/ejabberd/conf/ejabberd.yml:ro \
   -v "${TEST_DIR}/certs":/opt/ejabberd/certs:ro \
   "${IMAGE}" >/dev/null
 
 lib_wait_for_ready "$DISPLAY_NAME" "$MAX_WAIT" "$INTERVAL" _check_ready
-lib_add_hosts_entry
-lib_create_users "$CONTAINER_NAME" _register_user
-lib_banner "$DISPLAY_NAME"
-lib_run_command "$@"
+lib_finish "$DISPLAY_NAME" "$CONTAINER_NAME" _register_user "$@"
