@@ -3,7 +3,8 @@
 #   bareconn   Ready as soon as the transport connects. No auth, no SM.
 #              Use for server-to-server links or pre-auth scenarios.
 #
-#   conn       Full XMPP client: SASL PLAIN auth, resource binding, XEP-0198
+#   conn       Full XMPP client: SASL (SCRAM-SHA-1/256 with optional
+#              tls-exporter binding, or PLAIN), resource binding, XEP-0198
 #              stream management, auto-reconnect with exponential backoff.
 #              Use for normal client-to-server connections.
 #
@@ -40,7 +41,7 @@
 #
 # conn-only options:
 #   -host, -port           Server to connect to (default port 5222)
-#   -username, -password   SASL PLAIN credentials
+#   -username, -password   SASL credentials
 #   -resource              Requested resource for binding
 #   -onautherror cmd       Called with message on SASL/bind failure
 #   -autoreconnect bool    Auto-reconnect on transport errors (default off)
@@ -567,7 +568,7 @@ snit::type bareconn {
     }
 }
 
-# Full XMPP client connection. On top of baseconn, handles SASL PLAIN
+# Full XMPP client connection. On top of baseconn, handles SASL
 # auth, resource binding, and XEP-0198 stream management (via the sm
 # component). Supports auto-reconnect with exponential backoff.
 # Flow: connect → STARTTLS → SASL auth → bind → SM enable → ready.
@@ -590,7 +591,7 @@ snit::type conn {
     # Remote port (default 5222 for c2s XMPP)
     option -port -default 5222
 
-    # SASL PLAIN credentials
+    # SASL credentials
     option -username -default ""
     option -password -default ""
     # Requested resource for binding; server may assign one if empty
@@ -646,6 +647,11 @@ snit::type conn {
     # Last failure message, "" once connected; pulled by `tacky observe`.
     variable lastError ""
 
+    # The SASL exchange in progress, {} outside one: mech, and for SCRAM also
+    # digest, gs2header, cbdata, bare, serverSignature and step (first,
+    # final, verified).
+    variable sasl {}
+
     # Stanzas queued before the session is ready; flushed on connect
     variable writeBuffer [list]
 
@@ -695,6 +701,7 @@ snit::type conn {
             $base close
         }
         set authState disconnected
+        set sasl {}
         $self SetConnState connecting
         jlog inform "connecting to $options(-host):$options(-port)"
         $base connect $options(-host) $options(-port)
@@ -933,23 +940,41 @@ snit::type conn {
         }
     }
 
-    # Process stanzas during SASL negotiation: send PLAIN auth on
-    # <features>, restart stream on <success>, error on <failure>.
+    # Process stanzas during SASL negotiation: pick a mechanism and send
+    # <auth> on <features>, answer SCRAM <challenge>s, restart the stream
+    # on <success> (after checking the SCRAM server signature), error on
+    # <failure>.
     method HandleAuthStanza {stanza} {
         set tag [dict get $stanza tag]
 
         switch -- $tag {
             features {
-                set saslPlain [base64::encode "\0$options(-username)\0$options(-password)"]
-                set authStanza [j auth \
-                    -ns urn:ietf:params:xml:ns:xmpp-sasl \
-                    -mechanism PLAIN \
-                    -body $saslPlain]
-                # Never the stanza: its body is base64 of user and password.
-                jlog debug "stanza out: auth mechanism=PLAIN"
-                $base writeStanza $authStanza
+                $self StartSasl [xsearch $stanza mechanisms mechanism -gather body]
+            }
+            challenge {
+                set step [dict getdef $sasl step ""]
+                if {$step eq "first"} {
+                    $self ScramFinal [dict get $stanza body]
+                } elseif {$step eq "final"} {
+                    # Server-final as a challenge rather than in <success>:
+                    # check it and acknowledge with an empty response.
+                    if {[$self ScramVerify [dict get $stanza body]]} {
+                        $base writeStanza [j response \
+                            -ns urn:ietf:params:xml:ns:xmpp-sasl]
+                    }
+                } else {
+                    $self OnAuthError "SASL: unexpected challenge"
+                }
             }
             success {
+                set step [dict getdef $sasl step ""]
+                if {$step eq "final"} {
+                    if {![$self ScramVerify [dict get $stanza body]]} return
+                } elseif {$step ne "" && $step ne "verified"} {
+                    $self OnAuthError "SASL: success before the exchange completed"
+                    return
+                }
+                set sasl {}
                 # Restart stream - need fresh XML parser
                 $base CreateReader
                 set authState binding
@@ -957,9 +982,115 @@ snit::type conn {
                 $base writeNow [::jab::header "" to $options(-host)]
             }
             failure {
-                $self OnAuthError "SASL authentication failed"
+                set msg "SASL authentication failed"
+                set cond [lindex [xsearch $stanza * -gather tag] 0]
+                if {$cond ne "" && $cond ne "text"} {
+                    append msg ": $cond"
+                }
+                $self OnAuthError $msg
             }
         }
+    }
+
+    # Pick the strongest offered mechanism we can do and send <auth>.
+    method StartSasl {offered} {
+        set canScram [scram::available]
+        set cbdata [$self ChannelBinding]
+        set mech ""
+        foreach m {SCRAM-SHA-256-PLUS SCRAM-SHA-1-PLUS SCRAM-SHA-256 SCRAM-SHA-1 PLAIN} {
+            if {$m ni $offered} continue
+            if {[string match SCRAM-* $m] && !$canScram} continue
+            if {[string match *-PLUS $m] && $cbdata eq ""} continue
+            set mech $m
+            break
+        }
+        if {$mech eq ""} {
+            $self OnAuthError \
+                "No supported SASL mechanism (offered: [join $offered {, }])"
+            return
+        }
+        set sasl [dict create mech $mech]
+        if {$mech eq "PLAIN"} {
+            set body [binary encode base64 [encoding convertto utf-8 \
+                "\0$options(-username)\0$options(-password)"]]
+        } else {
+            if {[string match *-PLUS $mech]} {
+                set flag p=tls-exporter
+            } elseif {$cbdata ne ""} {
+                # We could bind but no -PLUS was offered: flag y, so a server
+                # that does support binding detects the downgrade.
+                set flag y
+                set cbdata ""
+            } else {
+                set flag n
+            }
+            lassign [scram::client_first $options(-username) [scram::nonce] \
+                $flag] gs2header bare
+            dict set sasl digest [scram::digest $mech]
+            dict set sasl gs2header $gs2header
+            dict set sasl cbdata $cbdata
+            dict set sasl bare $bare
+            dict set sasl step first
+            set body [binary encode base64 \
+                [encoding convertto utf-8 $gs2header$bare]]
+        }
+        # Never the stanza: its body carries the credentials.
+        jlog debug "stanza out: auth mechanism=$mech"
+        $base writeStanza [j auth \
+            -ns urn:ietf:params:xml:ns:xmpp-sasl \
+            -mechanism $mech \
+            -body $body]
+    }
+
+    # Answer the server-first message with the client proof.
+    method ScramFinal {body} {
+        if {[catch {
+            lassign [scram::client_final [dict get $sasl digest] \
+                $options(-password) [dict get $sasl gs2header] \
+                [dict get $sasl cbdata] [dict get $sasl bare] \
+                [$self SaslDecode $body]] final serverSignature
+        } err]} {
+            $self OnAuthError "SASL: $err"
+            return
+        }
+        dict set sasl step final
+        dict set sasl serverSignature $serverSignature
+        $base writeStanza [j response \
+            -ns urn:ietf:params:xml:ns:xmpp-sasl \
+            -body [binary encode base64 [encoding convertto utf-8 $final]]]
+    }
+
+    # Check the server-final message; the server proves it knows the
+    # password too. Returns 0 (after OnAuthError) if it does not.
+    method ScramVerify {body} {
+        if {[catch {
+            scram::check_server_final [dict get $sasl serverSignature] \
+                [$self SaslDecode $body]
+        } err]} {
+            $self OnAuthError "SASL: $err"
+            return 0
+        }
+        dict set sasl step verified
+        return 1
+    }
+
+    method SaslDecode {body} {
+        encoding convertfrom utf-8 [binary decode base64 $body]
+    }
+
+    # tls-exporter channel binding data (RFC 9266), or "" without our own
+    # TLS (websocket, -starttls off) or below TLS 1.3: on 1.2 tls-exporter
+    # needs the extended master secret, which mtls does not report.
+    method ChannelBinding {} {
+        set sock [$base socket]
+        if {$sock eq ""
+                || [catch {::mtls::status $sock} status]
+                || ![dict exists $status version]
+                || [dict get $status version] ne "TLSv1.3"
+                || [catch {::mtls::exporter $sock EXPORTER-Channel-Binding 32} cb]} {
+            return ""
+        }
+        return $cb
     }
 
     # Process stanzas during resource binding: on <features>, resume the

@@ -2,6 +2,9 @@ package require tcltest
 namespace import ::tcltest::*
 package require taco
 
+# PBKDF2 comes from mtls; builds without it (wasm) have no SCRAM.
+testConstraint mtls [scram::available]
+
 snit::type mockbaseconn {
     variable state
     variable written
@@ -48,8 +51,14 @@ snit::type mockbaseconn {
         return $state
     }
 
+    variable socket ""
     method socket {} {
-        return ""
+        return $socket
+    }
+
+    # The channel conn reads TLS state from (see with_tls).
+    method set_socket {name} {
+        set socket $name
     }
 
     # -- test helpers --
@@ -245,7 +254,228 @@ test conn-sasl-failure-fires-onautherror {SASL failure fires -onautherror} \
         c.base inject [make_features]
         c.base inject [make_failure]
         list [lindex $_tauth_err 0] [c.base state]
-    } -result {{SASL authentication failed} disconnected}
+    } -result {{SASL authentication failed: not-authorized} disconnected}
+
+proc make_features_offering {mechs} {
+    j features -ns http://etherx.jabber.org/streams {
+        j mechanisms -ns urn:ietf:params:xml:ns:xmpp-sasl {
+            foreach m $mechs {
+                j mechanism -body $m
+            }
+        }
+    }
+}
+
+proc make_sasl {tag msg} {
+    j $tag -ns urn:ietf:params:xml:ns:xmpp-sasl \
+        -body [binary encode base64 $msg]
+}
+
+proc sasl_sent {} {
+    lmap s [c.base get_written] {
+        list [dict get $s tag] [dict getdef $s attrs mechanism ""] \
+            [binary decode base64 [dict get $s body]]
+    }
+}
+
+# RFC 7677 section 3, with its fixed client nonce.
+proc with_rfc7677_nonce {script} {
+    rename scram::nonce _scram_nonce
+    proc scram::nonce {} { return rOprNGfwEbeRWgbNEkqO }
+    try {
+        uplevel 1 $script
+    } finally {
+        rename scram::nonce {}
+        rename _scram_nonce scram::nonce
+    }
+}
+
+set rfc7677_server_first {r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096}
+
+test conn-sasl-prefers-scram-sha-256 {SCRAM-SHA-256 is chosen over SCRAM-SHA-1 and PLAIN} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base clear
+        with_rfc7677_nonce {
+            c.base inject [make_features_offering {PLAIN SCRAM-SHA-1 SCRAM-SHA-256}]
+        }
+        sasl_sent
+    } -result {{auth SCRAM-SHA-256 n,,n=user,r=rOprNGfwEbeRWgbNEkqO}}
+
+test conn-sasl-scram-sha-1-over-plain {SCRAM-SHA-1 is chosen over PLAIN} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base clear
+        c.base inject [make_features_offering {PLAIN SCRAM-SHA-1}]
+        lindex [sasl_sent] 0 1
+    } -result SCRAM-SHA-1
+
+test conn-sasl-no-common-mechanism {no usable mechanism fires -onautherror} \
+    {*}$common \
+    -body {
+        c connect
+        c.base clear
+        c.base inject [make_features_offering {DIGEST-MD5 EXTERNAL}]
+        list $_tauth_err [c.base get_written]
+    } -result {{{No supported SASL mechanism (offered: DIGEST-MD5, EXTERNAL)}} {}}
+
+test conn-sasl-scram-exchange {a SCRAM-SHA-256 exchange proves the password and checks the server} \
+    {*}$common -constraints mtls \
+    -body {
+        c configure -password pencil
+        c connect
+        with_rfc7677_nonce {
+            c.base inject [make_features_offering SCRAM-SHA-256]
+        }
+        c.base clear
+        c.base inject [make_sasl challenge $rfc7677_server_first]
+        set sent [sasl_sent]
+        c.base inject [make_sasl success v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=]
+        list $sent $_tauth_err [c state]
+    } -result {{{response {} {c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=}}} {} binding}
+
+# Run $script as if on TLS $version with tls-exporter data $cb, stubbing
+# ::mtls::status and ::mtls::exporter.
+proc with_tls {version cb script} {
+    package require mtls
+    c.base set_socket tlssock
+    rename ::mtls::status _real_mtls_status
+    rename ::mtls::exporter _real_mtls_exporter
+    proc ::mtls::status {sock} [list return [list version $version]]
+    proc ::mtls::exporter {sock label length} [list return $cb]
+    try {
+        uplevel 1 $script
+    } finally {
+        rename ::mtls::status {}
+        rename ::mtls::exporter {}
+        rename _real_mtls_status ::mtls::status
+        rename _real_mtls_exporter ::mtls::exporter
+    }
+}
+
+test conn-sasl-plus-with-binding {on TLS 1.3, SCRAM-SHA-256-PLUS binds to tls-exporter} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base clear
+        with_tls TLSv1.3 [string repeat \x01 32] {
+            with_rfc7677_nonce {
+                c.base inject [make_features_offering {SCRAM-SHA-256 SCRAM-SHA-256-PLUS}]
+            }
+        }
+        sasl_sent
+    } -result {{auth SCRAM-SHA-256-PLUS p=tls-exporter,,n=user,r=rOprNGfwEbeRWgbNEkqO}}
+
+test conn-sasl-binding-flags-y-without-plus {binding available but no -PLUS offered: the gs2 flag is y} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base clear
+        with_tls TLSv1.3 [string repeat \x01 32] {
+            with_rfc7677_nonce {
+                c.base inject [make_features_offering SCRAM-SHA-256]
+            }
+        }
+        sasl_sent
+    } -result {{auth SCRAM-SHA-256 y,,n=user,r=rOprNGfwEbeRWgbNEkqO}}
+
+test conn-sasl-no-binding-below-tls13 {on TLS 1.2 no -PLUS is chosen, and the flag is n} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base clear
+        with_tls TLSv1.2 [string repeat \x01 32] {
+            with_rfc7677_nonce {
+                c.base inject [make_features_offering {SCRAM-SHA-256 SCRAM-SHA-256-PLUS}]
+            }
+        }
+        sasl_sent
+    } -result {{auth SCRAM-SHA-256 n,,n=user,r=rOprNGfwEbeRWgbNEkqO}}
+
+test conn-sasl-plain-without-scram {without SCRAM support, PLAIN is used even when SCRAM is offered} \
+    {*}$common \
+    -body {
+        rename scram::available _real_scram_available
+        proc scram::available {} { return 0 }
+        try {
+            c connect
+            c.base clear
+            c.base inject [make_features_offering {SCRAM-SHA-256 PLAIN}]
+        } finally {
+            rename scram::available {}
+            rename _real_scram_available scram::available
+        }
+        sasl_sent
+    } -result [list [list auth PLAIN "\0user\0pass"]]
+
+test conn-sasl-plain-only {a server offering only PLAIN gets PLAIN} \
+    {*}$common \
+    -body {
+        c connect
+        c.base clear
+        c.base inject [make_features_offering PLAIN]
+        sasl_sent
+    } -result [list [list auth PLAIN "\0user\0pass"]]
+
+test conn-sasl-unexpected-challenge {a challenge outside a SCRAM exchange is an auth error} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject [make_features_offering PLAIN]
+        c.base inject [make_sasl challenge whatever]
+        list $_tauth_err [c state]
+    } -result {{{SASL: unexpected challenge}} disconnected}
+
+test conn-sasl-bad-server-first {a server-first without a salt is an auth error} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        with_rfc7677_nonce {
+            c.base inject [make_features_offering SCRAM-SHA-256]
+        }
+        c.base inject [make_sasl challenge r=rOprNGfwEbeRWgbNEkqOxyz,i=4096]
+        list $_tauth_err [c state]
+    } -result {{{SASL: server-first-message lacks s=}} disconnected}
+
+test conn-sasl-server-final-as-challenge {a server-final sent as a challenge is checked and acknowledged} \
+    {*}$common -constraints mtls \
+    -body {
+        c configure -password pencil
+        c connect
+        with_rfc7677_nonce {
+            c.base inject [make_features_offering SCRAM-SHA-256]
+        }
+        c.base inject [make_sasl challenge $rfc7677_server_first]
+        c.base clear
+        c.base inject [make_sasl challenge v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=]
+        set ack [sasl_sent]
+        c.base inject [make_success]
+        list $ack $_tauth_err [c state]
+    } -result {{{response {} {}}} {} binding}
+
+test conn-sasl-scram-bad-server-signature {a wrong server signature in success is an auth error} \
+    {*}$common -constraints mtls \
+    -body {
+        c configure -password pencil
+        c connect
+        with_rfc7677_nonce {
+            c.base inject [make_features_offering SCRAM-SHA-256]
+        }
+        c.base inject [make_sasl challenge $rfc7677_server_first]
+        c.base inject [make_sasl success v=[binary encode base64 [string repeat x 32]]]
+        list $_tauth_err [c state]
+    } -result {{{SASL: server signature mismatch}} disconnected}
+
+test conn-sasl-scram-success-without-final {success before the client proof is an auth error} \
+    {*}$common -constraints mtls \
+    -body {
+        c connect
+        c.base inject [make_features_offering SCRAM-SHA-1]
+        c.base inject [make_success]
+        list $_tauth_err [c state]
+    } -result {{{SASL: success before the exchange completed}} disconnected}
 
 test conn-bind-sends-request {second features triggers bind iq} \
     {*}$common \
@@ -476,7 +706,7 @@ test conn-auth-error-logs {an auth failure logs at error level} \
         conn_capture_log
         c.base inject [make_failure]
         conn_logged error
-    } -result {{SASL authentication failed}}
+    } -result {{SASL authentication failed: not-authorized}}
 
 # -- Auth error (no reconnect) ---------------------------------------------
 
@@ -526,7 +756,7 @@ test conn-emit-autherror-event {-emit receives AuthError event} \
         c.base inject [make_features]
         c.base inject [make_failure]
         extract_emitted "<AuthError>" -message
-    } -result {{SASL authentication failed}}
+    } -result {{SASL authentication failed: not-authorized}}
 
 # -- pull ---------------------------------------------------------------------
 
