@@ -769,6 +769,21 @@ snit::type taco_muc {
         return [dict get $Rooms($jid) joined]
     }
 
+    # Whether $jid is a room we know of: joined now, bookmarked, or with
+    # room history stored. For telling a room's (or an occupant's) stanza
+    # from a contact's when nothing in the stanza can be trusted to say so.
+    tackymethod isKnownRoom {args} {
+        set room [jid norm [jid bare [dict get $args -jid]]]
+        if {[info exists Rooms($room)] && [dict get $Rooms($room) joined]} {
+            return 1
+        }
+        set roomChat ${room}?join
+        expr {[$client db exists {SELECT 1 FROM bookmark WHERE jid=$room}]
+            || [$client db exists {
+                SELECT 1 FROM chat_message WHERE chat_jid=$roomChat
+            }]}
+    }
+
     # Whether $room was joined -hidden; remembered after leaving, until
     # rejoined, so the events reporting it gone can be told apart.
     tackymethod isHidden {args} {

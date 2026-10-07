@@ -79,6 +79,23 @@ test roster-incoming-subscribe-emits {incoming subscribe emits roster <Subscribe
         list [dict get $_got -jid] [dict get $_got -type]
     } -result {bob@example.com subscribe}
 
+test roster-incoming-subscribe-from-room-ignored {a subscription request from a known room or its occupants is ignored} \
+    {*}$roster_common \
+    -body {
+        set ::_got {}
+        tacky listen roster <Subscribe> {apply {{ev} {
+            lappend ::_got [dict get $ev -jid]
+        }}}
+        $_client db eval {
+            INSERT INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 0, 'me', '')
+        }
+        $_client.conn feed [j presence -type subscribe -from room@muc.example.com]
+        $_client.conn feed [j presence -type subscribe -from room@muc.example.com/spammer]
+        $_client.conn feed [j presence -type subscribe -from bob@example.com/res]
+        set ::_got
+    } -result {bob@example.com}
+
 # -- Incoming: subscribed emits event -----------------------------------------
 
 test roster-incoming-subscribed-emits {incoming subscribed emits roster <Subscribe>} \
