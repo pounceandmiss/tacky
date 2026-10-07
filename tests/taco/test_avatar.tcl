@@ -168,6 +168,16 @@ test avatar-visible-survives-disconnect {a dropped connection leaves a visible J
         avatar_data_requested
     } -result 1
 
+test avatar-pep-from-full-jid-dropped {a metadata event from a full jid (a room occupant) does not set the room's avatar} \
+    {*}$avatar_common \
+    -body {
+        c avatar visible -jid room@muc.example.com
+        c.conn clear
+        c.conn feed [pep_metadata room@muc.example.com/mallory newhash]
+        c.conn feed [pep_metadata alice@example.com/phone newhash]
+        avatar_data_requested
+    } -result 0
+
 test avatar-invisible-parks-fetch {an unmarked JID's new hash is parked, not fetched} \
     {*}$avatar_common \
     -body {

@@ -33,8 +33,15 @@ snit::type taco_pubsub {
         if {[llength $eventNodes] == 0} { return 0 }
         set node [xsearch [lindex $eventNodes 0] items -get @node]
         if {$node eq "" || ![info exists PubSubHandlers($node)]} { return 0 }
+        set from [xsearch $stanza -get @from]
+        # Pubsub services are bare jids. An event from a full jid comes from a
+        # client, e.g. a room occupant, and would be applied to the room's
+        # bare jid (its avatar or name).
+        if {[jid resource $from] ne ""} {
+            jlog error "Dropping $node event from '$from'" -stanza $stanza
+            return 1
+        }
         if {$OwnOnly($node)} {
-            set from [xsearch $stanza -get @from]
             if {![jid fromMe $from [$client cget -jid]]} {
                 jlog error "Dropping $node event from '$from'" -stanza $stanza
                 return 1
