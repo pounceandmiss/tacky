@@ -202,9 +202,11 @@ namespace eval ::test::muc_edit_int {
             list $before [expr {[rowOfBody $ROMEO "archived"] ne ""}]
         } -result {0 1}
 
+    # Not on MongooseIM: its rooms send no occupant-ids (XEP-0421), and a
+    # room correction without one is dropped, so there is no edit to see.
     test muc-int-edit-replace-id-is-origin-not-stanza-id \
         {a MUC correction goes out referencing the origin-id, not the room stanza-id} \
-        {*}$common \
+        {*}$common -constraints {withServer && notMongoose} \
         -body {
             variable ROMEO
             variable JULIET

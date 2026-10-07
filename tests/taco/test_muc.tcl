@@ -2066,6 +2066,26 @@ test muc-edit-by-occupant-id \
         list [dict get $m content body] [dict get $m edited] [llength [muc_msgs]]
     } -result {hello 1 1}
 
+# A room without occupant-ids (MongooseIM): nothing ties a correction to the
+# original's author, so it is dropped, not shown as a message of its own.
+test muc-edit-without-occupant-id-ignored \
+    {a correction from another occupant with no occupant-id is dropped} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j body -body "helo"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j replace -ns urn:xmpp:message-correct:0 -id srv1
+            j body -body "hello"
+        }]
+        set m [lindex [muc_msgs] 0]
+        list [dict get $m content body] [dict get $m edited] [llength [muc_msgs]]
+    } -result {helo 0 1}
+
 test muc-edit-occupant-spoof-rejected \
     {a correction from a different occupant-id does not edit the original} \
     {*}$muc_common \

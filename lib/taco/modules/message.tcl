@@ -2410,9 +2410,10 @@ snit::type taco_message {
         # (a <replace> carries a body and a <retract> may carry a fallback
         # body, either of which would otherwise store as a fresh message).
         # A correction or retraction whose target isn't stored yet is
-        # deferred. An unauthorized retraction is dropped; an unauthorized
-        # correction falls through and is stored as a separate message,
-        # without the target's encryption status.
+        # deferred. An unauthorized retraction is dropped, as is a room
+        # correction with no occupant-id; any other unauthorized correction
+        # falls through and is stored as a separate message, without the
+        # target's encryption status.
         set edit [$self ParseCorrection $chatJid $msgNode]
         if {$edit ne ""} {
             set v [$self PatchVerdict $chatJid edit $edit $ts]
@@ -2590,9 +2591,17 @@ snit::type taco_message {
             raw_xml [jwrite $plainNode] sender $sender]
     }
 
-    # ok / missing / deny for a ParseCorrection result against its stored
-    # target.
+    # ok / missing / deny / ignore for a ParseCorrection result against its
+    # stored target.
     method AuthorizeEdit {chatJid edit} {
+        # In a room another occupant is known by occupant-id (XEP-0421) only.
+        # A correction without one can't be tied to an author: drop it,
+        # rather than store its text as a message of its own.
+        set sender [dict get $edit sender]
+        if {[IsRoomChatJid $chatJid] && ![dict get $sender is_own]
+                && [dict get $sender sender_id] eq ""} {
+            return ignore
+        }
         set auth [$self TargetAuthFields $chatJid [dict get $edit target_id]]
         if {$auth eq ""} { return missing }
         lassign $auth targetOcc targetFrom targetOwn targetEnc targetFp
@@ -2654,7 +2663,8 @@ snit::type taco_message {
 
     # The verdict for a parsed correction/retraction ($kind edit|retract):
     # applied when authorized, held for its target when that isn't stored
-    # yet. Unauthorized: a retraction is dropped, a correction returns "".
+    # yet. Unauthorized: a retraction is dropped, and so is a room correction
+    # with no occupant-id; any other correction returns "".
     method PatchVerdict {chatJid kind patch ts} {
         set auth [expr {$kind eq "edit"
             ? [$self AuthorizeEdit $chatJid $patch]
@@ -2668,7 +2678,7 @@ snit::type taco_message {
                     kind $kind patch $patch]
             }
         }
-        if {$kind eq "edit"} { return "" }
+        if {$kind eq "edit" && $auth ne "ignore"} { return "" }
         return [dict create verdict drop timestamp $ts]
     }
 
