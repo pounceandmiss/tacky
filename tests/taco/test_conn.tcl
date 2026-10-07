@@ -621,6 +621,29 @@ test conn-close-resets-state {close resets state} \
         list [c state] [c isReady]
     } -result {disconnected 0}
 
+test conn-close-ends-sm-session {after a close the next stream enables SM afresh and replays nothing} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-abc"
+        c write [j message -to "friend@example.com" {j body -body "unacked"}]
+        # Buffered while waiting to reconnect.
+        c configure -autoreconnect 1
+        c.base inject_error "connection lost"
+        c write [j presence]
+        c close
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base clear
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        set tags [lmap s [c.base get_written] {dict get $s tag}]
+        c.base clear
+        c.base inject [make_sm_enabled "sm-def"]
+        list $tags [lmap s [c.base get_written] {dict get $s tag}]
+    } -result {{iq enable} {}}
+
 test conn-close-while-disconnected-noop {close on disconnected is a no-op} \
     {*}$common \
     -body {
@@ -953,7 +976,30 @@ test conn-sm-resume-failed-enable-reaches-ready {resume fail -> enable -> enable
         list $_tready_resumed [c isReady]
     } -result {0 1}
 
-test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked stanzas} \
+test conn-sm-resume-failed-without-h-drops-queue {resume fail without h replays nothing: what arrived is unknown} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-retry4"
+        c write [j message -to "friend@example.com" {j body -body "unacked"}]
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base inject [make_sm_failed]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        c.base clear
+        c.base inject [make_sm_enabled "sm-retry4-new"]
+        # Message sends are retried by RetryPending against the archive.
+        set hasMessage 0
+        foreach s [c.base get_written] {
+            if {[dict get $s tag] eq "message"} { set hasMessage 1; break }
+        }
+        list [c isReady] $hasMessage
+    } -result {1 0}
+
+test conn-sm-resume-failed-replays-queue {resume fail with h -> enable replays the unacked stanzas past it} \
     {*}$common \
     -body {
         c connect
@@ -966,7 +1012,7 @@ test conn-sm-resume-failed-replays-queue {resume fail -> enable replays unacked 
         c.base inject [make_features]
         c.base inject [make_success]
         c.base inject [make_bind_features_with_sm]
-        c.base inject [make_sm_failed]
+        c.base inject [make_sm_failed 0]
         c.base inject [make_bind_result "user@test.example.com/r"]
         c.base clear
         c.base inject [make_sm_enabled "sm-retry3-new"]

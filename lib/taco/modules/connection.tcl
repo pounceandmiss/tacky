@@ -722,15 +722,19 @@ snit::type conn {
         $self ArmConnectTimeout
     }
 
-    # Gracefully shut down: send </stream:stream>, close socket, notify SM.
-    # No-op if already disconnected.
+    # Gracefully shut down: send </stream:stream> and close the socket. This
+    # ends the session, so SM state and the write buffer are dropped: the
+    # next connect may be days later, and stale presence or IQs shouldn't go
+    # out then. Pending messages stay in the store and are resent from
+    # there. No-op if already disconnected.
     method close {} {
         if {$connState eq "disconnected"} return
         $self CancelReconnect
         $self CancelConnectTimeout
         $self StopKeepalive
         set authState disconnected
-        $sm onDisconnect
+        set writeBuffer [list]
+        $sm reset
         catch {$base writeNow "</stream:stream>"}
         $base close
         $self SetConnState disconnected
