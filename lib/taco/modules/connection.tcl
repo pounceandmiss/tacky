@@ -767,8 +767,7 @@ snit::type conn {
     method probe {args} {
         if {$authState ne "ready" || $probeAt > 0} return
         if {[clock milliseconds] - $lastRx < $options(-probe-timeout)} return
-        if {$options(-probe-allowed-command) ne ""
-                && [string is false -strict [{*}$options(-probe-allowed-command)]]} return
+        if {![$self ProbeAllowed]} return
         if {$keepaliveAfterId ne ""} {
             after cancel $keepaliveAfterId
         }
@@ -778,19 +777,38 @@ snit::type conn {
 
     method ArmWakeCheck {} {
         if {$options(-wake-check) <= 0} return
+        if {$wakeAfterId ne ""} { after cancel $wakeAfterId }
         set wakeLast [clock milliseconds]
         set wakeAfterId [after $options(-wake-check) [mymethod WakeTick]]
     }
 
+    # Runs while ready and while a reconnect waits out its backoff. After a
+    # wake the network is likely back, so reconnect now instead of waiting
+    # out the rest of the backoff (up to a minute).
     method WakeTick {} {
         set wakeAfterId ""
-        if {$authState ne "ready"} return
+        if {$authState ne "ready" && $connState ne "waiting"} return
         set elapsed [expr {[clock milliseconds] - $wakeLast}]
         if {$elapsed > 3 * $options(-wake-check)} {
-            jlog inform "clock jumped ${elapsed}ms, probing"
-            $self probe
+            if {$connState eq "waiting"} {
+                if {[$self ProbeAllowed]} {
+                    jlog inform "clock jumped ${elapsed}ms, reconnecting now"
+                    set reconnectAttempt 0
+                    $self CancelReconnect
+                    set reconnectAfterId [after 0 [mymethod DoReconnect]]
+                    return
+                }
+            } else {
+                jlog inform "clock jumped ${elapsed}ms, probing"
+                $self probe
+            }
         }
         $self ArmWakeCheck
+    }
+
+    method ProbeAllowed {} {
+        expr {$options(-probe-allowed-command) eq ""
+            || ![string is false -strict [{*}$options(-probe-allowed-command)]]}
     }
 
     method ArmKeepalive {ms} {
@@ -803,7 +821,16 @@ snit::type conn {
         set now [clock milliseconds]
         if {$probeAt > 0} {
             if {$lastRx < $probeAt} {
-                $self OnTransportError "no answer from the server"
+                # The timer fired much later than scheduled, so the process
+                # was suspended and the answer may be unread in the socket.
+                # Probe again instead of dropping the stream.
+                set wait [expr {max($options(-keepalive-timeout), $options(-probe-timeout))}]
+                if {$now - $probeAt < 2 * $wait} {
+                    $self OnTransportError "no answer from the server"
+                    return
+                }
+                $self SendProbe
+                $self ArmKeepalive $options(-probe-timeout)
                 return
             }
             set probeAt 0
@@ -899,6 +926,7 @@ snit::type conn {
         set delay [lindex $reconnectIntervals $idx]
         incr reconnectAttempt
         $self SetConnState waiting
+        $self ArmWakeCheck
         jlog inform "reconnect attempt $reconnectAttempt in ${delay}ms"
         set reconnectAfterId [after $delay [mymethod DoReconnect]]
     }
