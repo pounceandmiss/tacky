@@ -604,11 +604,16 @@ snit::type taco_file {
         }
         set putUrl [xsearch $stanza slot put -get @url]
         set getUrl [xsearch $stanza slot get -get @url]
+        # XEP-0363 allows only these headers in a slot. Others (Host,
+        # Content-Length, ...) would let the upload service alter our PUT.
+        # CR/LF are stripped so a value can't inject another header.
         set headers {}
         xsearch $stanza slot put header -script h {
             set n [xsearch $h -get @name]
-            set v [xsearch $h -get body]
-            if {$n ne ""} { lappend headers $n $v }
+            set v [string map {\r "" \n ""} [xsearch $h -get body]]
+            if {[string tolower $n] in {authorization cookie expires}} {
+                lappend headers $n $v
+            }
         }
         {*}$cmd [list $putUrl $getUrl $headers]
     }

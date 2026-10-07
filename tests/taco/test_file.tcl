@@ -219,6 +219,23 @@ test file-slot-parse {slot result yields put/get URLs and headers} {*}$file_env 
     set ::_slot
 } -result {https://up.example/PUT/pic.png https://dl.example/GET/pic.png {Authorization {Bearer xyz}}}
 
+test file-slot-header-whitelist {only Authorization, Cookie and Expires survive, without line breaks} {*}$file_env -body {
+    set iq [j iq -type result {
+        j slot -ns urn:xmpp:http:upload:0 {
+            j put -url "https://up.example/PUT/pic.png" {
+                j header -name Host -body "evil.example"
+                j header -name cookie -body "a=1\r\nX-Injected: 1"
+                j header -name Content-Length -body 1
+                j header -name Expires -body "Tue, 06 Oct 2026 00:00:00 GMT"
+            }
+            j get -url "https://dl.example/GET/pic.png"
+        }
+    }]
+    set ::_slot ""
+    $::_client file OnSlotResult [list apply {{s} {set ::_slot $s}}] $iq
+    lindex $::_slot 2
+} -result {cookie {a=1X-Injected: 1} Expires {Tue, 06 Oct 2026 00:00:00 GMT}}
+
 test file-slot-error-yields-empty {a non-result slot reply yields ""} {*}$file_env -body {
     set iq [j iq -type error {
         j error -type cancel { j not-acceptable -ns urn:ietf:params:xml:ns:xmpp-stanzas }
