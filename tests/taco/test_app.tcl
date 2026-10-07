@@ -23,3 +23,17 @@ test app-conn-probe-setting-reaches-conn {the conn_probe setting is what decides
         tacky setting set -key conn_probe -value 0
         list $before [{*}$allowed]
     } -result {1 0}
+
+test app-active-updates-csi {going idle and coming back each update every client's CSI state} \
+    {*}[tacky_env -mock conn -account user@test.example.com] \
+    -body {
+        set counts {}
+        tacky app setActive -active 0
+        lappend counts [$::_client conn csi_update_count]
+        tacky app setActive -active 0
+        lappend counts [$::_client conn csi_update_count]
+        tacky app setActive -active 1
+        lappend counts [$::_client conn csi_update_count]
+        set active [$::_client conn cget -active-command]
+        lappend counts [{*}$active]
+    } -result {1 1 2 1}

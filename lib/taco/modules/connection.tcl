@@ -641,6 +641,10 @@ snit::type conn {
     # would otherwise be reconnected to every second, indefinitely.
     option -stable-after -default 30000
 
+    # Command prefix answering whether the user is using the app, for
+    # XEP-0352 Client State Indication. "" (or an error) counts as active.
+    option -active-command -default ""
+
     # Command prefix; a false result turns `probe` (and so the wake
     # check) into a no-op. "" always allows.
     option -probe-allowed-command -default ""
@@ -692,6 +696,11 @@ snit::type conn {
     variable probeAt 0
     variable probeSeq 0
 
+    # XEP-0352: whether this stream's features offer CSI, and the state
+    # the server last heard ("" when unknown, after a resume).
+    variable csiOffered 0
+    variable csiSent active
+
     # Wake check: the timer and when it was last armed.
     variable wakeAfterId ""
     variable wakeLast 0
@@ -724,6 +733,7 @@ snit::type conn {
         }
         set authState disconnected
         set sasl {}
+        set csiOffered 0
         $self SetConnState connecting
         jlog inform "connecting to $options(-host):$options(-port)"
         $base connect $options(-host) $options(-port)
@@ -771,6 +781,22 @@ snit::type conn {
             set stableAfterId ""
         }
         set probeAt 0
+    }
+
+    # Tell the server whether the user is using the app (XEP-0352), when it
+    # offers CSI and the state differs from what it last heard. A nonza:
+    # written outside SM, which counts stanzas only.
+    method csiUpdate {} {
+        if {$authState ne "ready" || !$csiOffered} return
+        set want active
+        if {$options(-active-command) ne ""
+                && ![catch {{*}$options(-active-command)} on]
+                && [string is false -strict $on]} {
+            set want inactive
+        }
+        if {$want eq $csiSent} return
+        $base writeStanza [j $want -ns urn:xmpp:csi:0]
+        set csiSent $want
     }
 
     method OnStable {} {
@@ -1221,6 +1247,8 @@ snit::type conn {
 
         switch -- $tag {
             features {
+                set csiOffered [expr {[llength \
+                    [xsearch $stanza csi -ns urn:xmpp:csi:0]] > 0}]
                 # Let sm check for SM support
                 $sm onFeatures $stanza
                 if {[$sm resumable]} {
@@ -1311,6 +1339,10 @@ snit::type conn {
             $self SetConnState connected
             $self StartKeepalive
             set stableAfterId [after $options(-stable-after) [mymethod OnStable]]
+            # A new stream starts active (XEP-0352); a resumed one is told
+            # again, whatever it held before.
+            set csiSent [expr {[dict get $info resumed] ? "" : "active"}]
+            $self csiUpdate
 
             if {$options(-onready) ne ""} {
                 {*}$options(-onready) [dict get $info resumed]

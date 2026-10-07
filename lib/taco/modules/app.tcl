@@ -13,10 +13,9 @@ snit::type taco_app {
         set now [string is true -strict [dict get $args -active]]
         if {$now == $active} return
         set active $now
-        if {$active} {
-            foreach client [$options(-taco) clients] {
-                catch {$client conn probe}
-            }
+        foreach client [$options(-taco) clients] {
+            catch {$client conn csiUpdate}
+            if {$active} { catch {$client conn probe} }
         }
     }
 
