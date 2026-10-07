@@ -372,6 +372,20 @@ namespace eval ::test::AutoReconnect {
         list $readyCount $lastResumed [c isReady]
     } -result {2 1 1}
 
+    # Without it (conn -sm 0, on the same server) there is nothing to
+    # resume: the reconnect binds a fresh session.
+    test reconnect-binds-fresh-without-sm {without SM a reconnect starts a fresh session} \
+        {*}$common -body {
+        c configure -sm 0
+        c connect
+        wait_var [namespace current]::done 6000
+        set done 0
+        proxy kill
+        wait_var [namespace current]::done 6000
+        list $readyCount $lastResumed [c isReady] \
+            [dict get [[c sm] getInfo] mode]
+    } -result {2 0 1 passthrough}
+
     test reconnect-003 {state reaches waiting before reconnect} \
         {*}$common -body {
         c connect

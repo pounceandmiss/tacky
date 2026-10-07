@@ -1,5 +1,13 @@
 # Stream Management (XEP-0198) with automatic negotiation
 #
+# Both modes keep written stanzas in one queue, count them in `out`, and ask
+# for confirmation on the same schedule (-ack-frequency, -ack-delay). They
+# differ only in how they ask and read the answer: active mode sends <r/>
+# and reads h from <a/>; passthrough (no SM) sends a ping to the server, and
+# its reply confirms everything written before it, since a server processes
+# one stream's stanzas in order (RFC 6120 10.1). Either way the confirmed
+# stanzas go to -ack-command.
+#
 # Usage:
 #   install sm using sm ${self}::sm -write [mymethod DirectWrite]
 #   $sm onFeatures $featuresStanza  ;# checks if server supports SM
@@ -12,10 +20,15 @@ snit::type sm {
     # Mode: passthrough (no SM) or active (real SM)
     variable mode passthrough
 
-    # Stanza counters (active mode only)
+    # Stanza counters. in is SM's only; out and serverh are kept in both
+    # modes, serverh from <a h/> or from a ping's reply.
     variable in 0       ;# How many stanzas we've received (our @h)
     variable out 0      ;# How many stanzas we've sent
-    variable serverh 0  ;# Last @h we got from server (how many it received)
+    variable serverh 0  ;# How many the server has confirmed
+
+    # Passthrough: pings sent to confirm, id -> the out they cover.
+    variable barriers {}
+    variable barrierSeq 0
 
     # Outgoing stanza queue
     variable queue {}
@@ -47,6 +60,11 @@ snit::type sm {
     # a disconnect/reconnect.  The overflowing stanza is already in the
     # queue at that point, so SM resumption will replay it.
     option -max-queue-size -default 5000
+    # 0 leaves stream management off even when the server offers it.
+    option -enabled -default 1
+    # Our full JID, to tell our server's answer to a ping from anyone
+    # else's: {*}$cmd -> jid.
+    option -own-jid-command -default ""
 
     constructor {args} {
         $self configurelist $args
@@ -60,6 +78,11 @@ snit::type sm {
 
     method onFeatures {featuresStanza} {
         if {[llength [xsearch $featuresStanza sm -ns "urn:xmpp:sm:3"]] > 0} {
+            if {!$options(-enabled)} {
+                set mode passthrough
+                jlog inform "Server supports stream management; not enabling it"
+                return 0
+            }
             set mode active
             jlog inform "Server supports stream management"
             return 1
@@ -71,12 +94,7 @@ snit::type sm {
 
     method onConnect {} {
         if {$mode eq "passthrough"} {
-            # No SM - just mark as running and flush queue
-            set state running
-            foreach stanza $queue {
-                {*}$options(-write) $stanza
-            }
-            set queue {}
+            $self StartPassthrough
             return
         }
 
@@ -107,6 +125,14 @@ snit::type sm {
         set state disconnected
 
         if {$mode eq "passthrough"} {
+            # Nothing to resume. What was written and not confirmed is
+            # dropped here; a message among it is still pending in the store
+            # and settled against the archive (message RetryPending).
+            set queue {}
+            set out 0
+            set serverh 0
+            set unackedCount 0
+            set barriers {}
             return
         }
 
@@ -127,11 +153,30 @@ snit::type sm {
         set out 0
         set serverh 0
         set unackedCount 0
+        set barriers {}
+    }
+
+    # Begin a stream without SM: what was queued for it goes out through
+    # outStanza, counted and covered by the next ping like anything else.
+    method StartPassthrough {} {
+        set mode passthrough
+        set state running
+        set out 0
+        set serverh 0
+        set unackedCount 0
+        set barriers {}
+        set replay $queue
+        set queue {}
+        foreach stanza $replay {
+            $self outStanza $stanza
+        }
     }
 
     method inStanza {stanza} {
         if {$mode eq "passthrough"} {
-            # Nothing to do
+            if {$state eq "running"} {
+                $self BarrierAnswer $stanza
+            }
             return
         }
 
@@ -241,12 +286,7 @@ snit::type sm {
                     # Enable failed, genuinely can't do SM
                     jlog warn "SM enable failed (h=$h), falling back to passthrough"
                     set streamId ""
-                    set mode passthrough
-                    set state running
-                    foreach stanza $queue {
-                        {*}$options(-write) $stanza
-                    }
-                    set queue {}
+                    $self StartPassthrough
                 }
             }
 
@@ -279,7 +319,7 @@ snit::type sm {
 
             "a" {
                 $self TakeAcked [xsearch $stanza -get @h]
-                set unackedCount 0
+                $self Answered
             }
 
             default {
@@ -289,16 +329,6 @@ snit::type sm {
     }
 
     method outStanza {stanza} {
-        if {$mode eq "passthrough"} {
-            if {$state eq "running"} {
-                {*}$options(-write) $stanza
-            } else {
-                lappend queue $stanza
-            }
-            return
-        }
-
-        # Active SM mode
         lappend queue $stanza
         $self Incr out
 
@@ -330,19 +360,66 @@ snit::type sm {
         }
     }
 
-    # Ask the server how far it has got, dropping any pending delayed ask.
+    # Ask the server how far it has got, dropping any pending delayed ask:
+    # <r/> with SM, a ping without it.
     method RequestAck {} {
         if {$ackRequestTimer ne ""} {
             after cancel $ackRequestTimer
             set ackRequestTimer ""
         }
-        {*}$options(-write) [j r -ns "urn:xmpp:sm:3"]
+        if {$mode eq "active"} {
+            {*}$options(-write) [j r -ns "urn:xmpp:sm:3"]
+        } else {
+            set id sm-barrier-[incr barrierSeq]
+            dict set barriers $id $out
+            {*}$options(-write) [j iq -type get -id $id {
+                j ping -ns urn:xmpp:ping
+            }]
+        }
         set unackedCount 0
+    }
+
+    # An answer came in: what is still unconfirmed counts as unasked, so a
+    # stanza written while the question was out is asked about too.
+    method Answered {} {
+        set unackedCount [$self Hdiff $out $serverh]
+    }
+
+    # Passthrough: the server's reply to one of our pings (a result, or an
+    # error - either way it was processed in order) confirms what was written
+    # before it, and the replies to any earlier pings with it.
+    method BarrierAnswer {stanza} {
+        if {[dict get $stanza tag] ne "iq"} return
+        lassign [xsearch $stanza -get {@type @id @from}] type_ id from
+        if {$type_ ni {result error} || ![dict exists $barriers $id]} return
+        if {![$self FromOurServer $from]} {
+            jlog warn "Ignoring a reply to $id from '$from'"
+            return
+        }
+        set h [dict get $barriers $id]
+        dict for {bid bh} $barriers {
+            if {[$self Hdiff $h $bh] <= 0x7FFFFFFF} { dict unset barriers $bid }
+        }
+        $self TakeAcked $h
+        $self Answered
+    }
+
+    # Whether $from is our server answering us (RFC 6120 8.1.2.1): no from,
+    # our bare JID, or our domain.
+    method FromOurServer {from} {
+        if {$from eq ""} { return 1 }
+        set own ""
+        if {$options(-own-jid-command) ne ""} {
+            set own [{*}$options(-own-jid-command)]
+        }
+        if {$own eq "" || ![jid valid $from]} { return 0 }
+        set from [jid norm $from]
+        expr {$from eq [jid norm [jid bare $own]] || $from eq [jid norm [jid domain $own]]}
     }
 
     method OnAckDelay {} {
         set ackRequestTimer ""
-        # unackedCount 0 means an <a/> arrived meanwhile.
+        # unackedCount 0 means an answer meanwhile confirmed everything.
         if {$state ne "running" || $unackedCount == 0} {
             return
         }

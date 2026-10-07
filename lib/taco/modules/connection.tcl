@@ -584,6 +584,9 @@ snit::type conn {
     component sm
 
     delegate method socket to base
+    # 0 negotiates no stream management even when the server offers it: for
+    # tests of the path without it, and for a server whose SM misbehaves.
+    delegate option -sm to sm as -enabled
     delegate option * to base except {-ontransportready -command -header-command -error-command}
 
     # Remote hostname to connect to
@@ -711,7 +714,8 @@ snit::type conn {
             -command [mymethod OnStanza] \
             -error-command [mymethod OnTransportError]
         install sm using sm $self.sm -write [list $self.base writeStanza] \
-            -ack-command [mymethod OnSmAck]
+            -ack-command [mymethod OnSmAck] \
+            -own-jid-command [list $self cget -bound-jid]
         $self configurelist $args
     }
 
