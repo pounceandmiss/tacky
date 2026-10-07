@@ -70,6 +70,10 @@ snit::type taco_messagestore {
     # it), {*}livecmd $chat $ts $room -> 1|0|"" (anyone is; "" unknown).
     option -incallcmd -default ""
     option -livecmd -default ""
+    # {*}deferredcmd $chat $patches, after a store inserted the target of
+    # corrections/retractions held by `defer`. Each patch is
+    # {kind K timestamp T patch P}, already removed from the table.
+    option -deferredcmd -default ""
 
     # Columns every message read path returns, in one place so a new column
     # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
@@ -78,6 +82,8 @@ snit::type taco_messagestore {
                           reply_id, reply_to, server_status, remote_status,
                           encryption, sender_fp, fail_reason, attachments,
                           invite, invite_declined, call, call_state}
+    # Deferred corrections/retractions kept per chat (see `defer`).
+    typevariable MaxDeferred 500
 
     constructor args {
         $self configurelist $args
@@ -322,6 +328,7 @@ snit::type taco_messagestore {
 
         set jid [dict get [lindex $messages 0] chat_jid]
         set insertedTimestamps {}
+        set deferred {}
         set prevTs -1
 
         $options(-db) transaction {
@@ -381,9 +388,53 @@ snit::type taco_messagestore {
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
+                lappend deferred {*}[$self TakeDeferred $jid \
+                    [list $m(server_id) $m(own_id) $originId]]
             }
         }
+        if {[llength $deferred] && $options(-deferredcmd) ne ""} {
+            {*}$options(-deferredcmd) $jid $deferred
+        }
         return [dict create inserted $insertedTimestamps]
+    }
+
+    # --- Deferred corrections/retractions -------------------------------
+
+    # Hold a correction/retraction whose target isn't stored yet. The most
+    # recent MaxDeferred per chat are kept; older ones are presumed to
+    # target messages that will never arrive.
+    method defer {chatJid targetId kind ts patch} {
+        $options(-db) eval {
+            INSERT OR IGNORE INTO pending_patch(chat_jid, target_id, kind,
+                timestamp, patch)
+            VALUES($chatJid, $targetId, $kind, $ts, $patch);
+            DELETE FROM pending_patch WHERE chat_jid=$chatJid AND rowid NOT IN (
+                SELECT rowid FROM pending_patch WHERE chat_jid=$chatJid
+                ORDER BY timestamp DESC LIMIT $MaxDeferred)
+        }
+    }
+
+    # Remove and return the deferred patches aimed at any of $ids, oldest
+    # first, so successive corrections land in the order they were made.
+    method TakeDeferred {chatJid ids} {
+        set out {}
+        foreach id [lsort -unique $ids] {
+            if {$id eq ""} continue
+            $options(-db) eval {
+                SELECT kind, timestamp, patch FROM pending_patch
+                WHERE chat_jid=$chatJid AND target_id=$id
+            } row {
+                lappend out [dict create kind $row(kind) \
+                    timestamp $row(timestamp) patch $row(patch)]
+            }
+            $options(-db) eval {
+                DELETE FROM pending_patch
+                WHERE chat_jid=$chatJid AND target_id=$id
+            }
+        }
+        return [lsort -command [list apply {{a b} {
+            expr {[dict get $a timestamp] - [dict get $b timestamp]}
+        }}] $out]
     }
 
     # --- Get ------------------------------------------------------------

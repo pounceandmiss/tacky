@@ -64,7 +64,8 @@ snit::type taco_message {
         set client $options(-client)
         install messagestore using taco_messagestore $self.messagestore \
             -db [$client cget -db] -joinedcmd [mymethod RoomJoined] \
-            -incallcmd [mymethod InCall] -livecmd [mymethod CallLive]
+            -incallcmd [mymethod InCall] -livecmd [mymethod CallLive] \
+            -deferredcmd [mymethod ApplyDeferred]
         array set PendingRetry {}
         array set ActiveTags {}
         set CatchupInFlight [dict create]
@@ -640,6 +641,11 @@ snit::type taco_message {
             edit     { $self ApplyEditVerdict $chatJid $r }
             retract  { $self ApplyRetractVerdict $chatJid $r }
             call     { $self ApplyCallVerdict $chatJid $r }
+            defer    {
+                set patch [dict get $r patch]
+                $messagestore defer $chatJid [dict get $patch target_id] \
+                    [dict get $r kind] [dict get $r timestamp] $patch
+            }
             default  { return 0 }
         }
         return 1
@@ -2308,6 +2314,9 @@ snit::type taco_message {
     #   {verdict drop      timestamp T}               new but displayless
     #   {verdict new       timestamp T msg M}         new, store M
     #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
+    #   {verdict edit|retract timestamp T ...}        XEP-0308/0424/0425
+    #   {verdict defer timestamp T kind K patch P}    edit/retract, target
+    #                                                 not stored yet
     method Classify {chatJid msgNode ts ids} {
         # An error stanza reports a failed delivery; it is never content.
         # What it echoes back describes the original message, so storing any
@@ -2334,13 +2343,18 @@ snit::type taco_message {
         # reactions - they short-circuit before reconcile/ParseMessage
         # (a <replace> carries a body and a <retract> may carry a fallback
         # body, either of which would otherwise store as a fresh message).
+        # A correction or retraction whose target isn't stored yet is
+        # deferred. An unauthorized retraction is dropped; an unauthorized
+        # correction falls through and is stored as a separate message,
+        # without the target's encryption status.
         set edit [$self ParseCorrection $chatJid $msgNode]
         if {$edit ne ""} {
-            return [dict create verdict edit timestamp $ts {*}$edit]
+            set v [$self PatchVerdict $chatJid edit $edit $ts]
+            if {$v ne ""} { return $v }
         }
         set retract [$self ParseRetraction $chatJid $msgNode]
         if {$retract ne ""} {
-            return [dict create verdict retract timestamp $ts {*}$retract]
+            return [$self PatchVerdict $chatJid retract $retract $ts]
         }
         # XEP-0482 answers to a call invite patch that invite's row.
         foreach tag {accept reject retract left} {
@@ -2482,10 +2496,11 @@ snit::type taco_message {
         return [expr {$from eq [jid bare $targetFrom]}]
     }
 
-    # Extract an XEP-0308 correction into {target_id new_body raw_xml}, or ""
-    # when the stanza carries none / the target is unknown / the sender is not
-    # the original author. The body is read after OMEMO decrypt (the <replace>
-    # hint itself is plaintext, but the corrected body may be encrypted).
+    # Extract an XEP-0308 correction into {target_id new_body encryption
+    # sender_fp raw_xml sender}, or "" when the stanza carries none.
+    # AuthorizeEdit decides whether it may apply. The body is read after
+    # OMEMO decrypt (the <replace> hint itself is plaintext, but the
+    # corrected body may be encrypted).
     method ParseCorrection {chatJid msgNode} {
         set rep [lindex [xsearch $msgNode replace \
             -ns urn:xmpp:message-correct:0] 0]
@@ -2499,54 +2514,103 @@ snit::type taco_message {
             set body [reply::strip_fallback $plainNode $body]
         }
         if {$body eq ""} { return "" }
-        set auth [$self TargetAuthFields $chatJid $targetId]
-        if {$auth eq ""} { return "" }
-        lassign $auth targetOcc targetFrom targetOwn targetEnc targetFp
         set sender [$self resolveSender $chatJid $msgNode]
         dict set sender from [xsearch $msgNode -get @from]
-        if {![$self SameAuthor $chatJid $sender $targetOcc $targetFrom $targetOwn]} {
-            return ""
+        set enc [expr {[dict exists $plainNode decrypted] ? "omemo" : ""}]
+        set senderFp [expr {[dict exists $plainNode sender_fp] \
+            ? [dict get $plainNode sender_fp] : ""}]
+        return [dict create target_id $targetId new_body $body \
+            encryption $enc sender_fp $senderFp \
+            raw_xml [jwrite $plainNode] sender $sender]
+    }
+
+    # ok / missing / deny for a ParseCorrection result against its stored
+    # target.
+    method AuthorizeEdit {chatJid edit} {
+        set auth [$self TargetAuthFields $chatJid [dict get $edit target_id]]
+        if {$auth eq ""} { return missing }
+        lassign $auth targetOcc targetFrom targetOwn targetEnc targetFp
+        if {![$self SameAuthor $chatJid [dict get $edit sender] \
+                $targetOcc $targetFrom $targetOwn]} {
+            return deny
         }
         # Authorship is server-asserted, so the correction must also carry the
         # target's protection: no cleartext rewrite of an encrypted row, and
         # the same sender identity when the target names one. Otherwise the
         # server could swap an e2ee body and leave the padlock on it.
-        set enc [expr {[dict exists $plainNode decrypted] ? "omemo" : ""}]
-        set senderFp [expr {[dict exists $plainNode sender_fp] \
-            ? [dict get $plainNode sender_fp] : ""}]
-        if {$targetEnc eq "omemo" && $enc ne "omemo"} { return "" }
-        if {$targetFp ne "" && $senderFp ne $targetFp} { return "" }
-        return [dict create target_id $targetId new_body $body \
-            encryption $enc sender_fp $senderFp \
-            raw_xml [jwrite $plainNode]]
+        if {$targetEnc eq "omemo" && [dict get $edit encryption] ne "omemo"} {
+            return deny
+        }
+        if {$targetFp ne "" && [dict get $edit sender_fp] ne $targetFp} {
+            return deny
+        }
+        return ok
     }
 
-    # Extract an XEP-0424/0425 retraction into {target_id}, or "" when the
-    # stanza carries none / the target is unknown / it is not authorized. In a
-    # MUC only the room's moderated broadcast (from the bare room jid) is
-    # honored; in 1:1 only the original sender may self-retract.
+    # Extract an XEP-0424/0425 retraction into {target_id from}, or "" when
+    # the stanza carries none. AuthorizeRetract decides whether it may apply.
     method ParseRetraction {chatJid msgNode} {
         set ret [lindex [xsearch $msgNode retract \
             -ns urn:xmpp:message-retract:1] 0]
         if {$ret eq ""} { return "" }
         set targetId [xsearch $ret -get @id]
         if {$targetId eq ""} { return "" }
-        set auth [$self TargetAuthFields $chatJid $targetId]
-        if {$auth eq ""} { return "" }
+        return [dict create target_id $targetId \
+            from [xsearch $msgNode -get @from]]
+    }
+
+    # ok / missing / deny for a ParseRetraction result against its stored
+    # target. In a MUC only the room's moderated broadcast (from the bare
+    # room jid) is honored; in 1:1 only the original sender may self-retract.
+    method AuthorizeRetract {chatJid retract} {
+        set auth [$self TargetAuthFields $chatJid [dict get $retract target_id]]
+        if {$auth eq ""} { return missing }
         lassign $auth targetOcc targetFrom
-        set rawFrom [xsearch $msgNode -get @from]
+        set rawFrom [dict get $retract from]
         if {[IsRoomChatJid $chatJid]} {
             # Moderation: the room broadcasts from its bare jid. A <retract>
             # from an occupant (room/nick) is not honored.
-            if {[jid resource $rawFrom] ne ""} { return "" }
+            if {[jid resource $rawFrom] ne ""} { return deny }
         } elseif {[IsMucChatJid $chatJid]} {
             # A private chat in a room: only its author, the occupant it
             # came from, may take a message back.
-            if {[jid norm $rawFrom] ne [jid norm $targetFrom]} { return "" }
+            if {[jid norm $rawFrom] ne [jid norm $targetFrom]} { return deny }
         } else {
-            if {[jid bare $rawFrom] ne [jid bare $targetFrom]} { return "" }
+            if {[jid bare $rawFrom] ne [jid bare $targetFrom]} { return deny }
         }
-        return [dict create target_id $targetId]
+        return ok
+    }
+
+    # The verdict for a parsed correction/retraction ($kind edit|retract):
+    # applied when authorized, held for its target when that isn't stored
+    # yet. Unauthorized: a retraction is dropped, a correction returns "".
+    method PatchVerdict {chatJid kind patch ts} {
+        set auth [expr {$kind eq "edit"
+            ? [$self AuthorizeEdit $chatJid $patch]
+            : [$self AuthorizeRetract $chatJid $patch]}]
+        switch $auth {
+            ok {
+                return [dict create verdict $kind timestamp $ts {*}$patch]
+            }
+            missing {
+                return [dict create verdict defer timestamp $ts \
+                    kind $kind patch $patch]
+            }
+        }
+        if {$kind eq "edit"} { return "" }
+        return [dict create verdict drop timestamp $ts]
+    }
+
+    # A store just inserted the target of these deferred patches (from
+    # messagestore -deferredcmd): authorize each against it now and apply.
+    method ApplyDeferred {chatJid deferred} {
+        foreach d $deferred {
+            set v [$self PatchVerdict $chatJid [dict get $d kind] \
+                [dict get $d patch] [dict get $d timestamp]]
+            if {$v ne "" && [dict get $v verdict] ne "defer"} {
+                $self ApplyPatchVerdict $chatJid $v
+            }
+        }
     }
 
     # Apply a `reaction` verdict to the store and, when the target
