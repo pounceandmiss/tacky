@@ -21,6 +21,11 @@ snit::type taco_setting {
             ON CONFLICT(key) DO UPDATE SET value=$opts(-value);
         }
         $options(-taco) emit setting <Changed> -key $opts(-key) -value $opts(-value)
+        # Some disco features follow a setting (caps addFeature -if). Only
+        # the taco-level store has clients; a per-account one skips this.
+        if {![catch {$options(-taco) clients} clients]} {
+            foreach client $clients { catch {$client caps refresh} }
+        }
     }
 
     # pull -event <Changed> -key K  (-event ignored - setting has one event)

@@ -6,6 +6,7 @@ snit::type taco_client {
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
         nick chats chatlist author extdisco calls groupcall omemo file notify blocking
+        entity
     }
     variable _modules $mods
     foreach mod $mods {
