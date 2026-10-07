@@ -2491,6 +2491,18 @@ test muc-left-kick-reports-codes {a kick reports its status codes on <Left>} \
         list [dict get $::got -involuntary] [dict get $::got -codes]
     } -result {1 {110 307}}
 
+test muc-left-kick-without-110 {a kick from our own nick without status 110 (MongooseIM) still puts us out} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_presence from room@muc.example.com/me \
+                         type unavailable role none self 0 codes 307]
+        list [dict get $::got -involuntary] [dict get $::got -codes] \
+            [c muc isJoined -jid room@muc.example.com]
+    } -result {1 307 0}
+
 test muc-left-kick-not-rejoined {a kick is an answer, not a failure to retry} \
     {*}$muc_common \
     -body {
