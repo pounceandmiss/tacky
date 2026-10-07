@@ -217,6 +217,7 @@ snit::type taco_messagestore {
             DELETE FROM chat_message WHERE chat_jid=$jid;
             DELETE FROM chat_own_read WHERE chat_jid=$jid;
             DELETE FROM message_alias WHERE chat_jid=$jid;
+            DELETE FROM chat_archive_mark WHERE chat_jid=$jid;
         }
     }
 
@@ -415,27 +416,26 @@ snit::type taco_messagestore {
         }
     }
 
-    # Remove and return the deferred patches aimed at any of $ids, oldest
-    # first, so successive corrections land in the order they were made.
+    # Remove and return the deferred patches aimed at any of $ids in the
+    # order they arrived, so successive corrections land in the order they
+    # were made. Not by timestamp: those can be on two clocks (PatchWins).
     method TakeDeferred {chatJid ids} {
         set out {}
         foreach id [lsort -unique $ids] {
             if {$id eq ""} continue
             $options(-db) eval {
-                SELECT kind, timestamp, patch FROM pending_patch
+                SELECT rowid, kind, timestamp, patch FROM pending_patch
                 WHERE chat_jid=$chatJid AND target_id=$id
             } row {
-                lappend out [dict create kind $row(kind) \
-                    timestamp $row(timestamp) patch $row(patch)]
+                lappend out [list $row(rowid) [dict create kind $row(kind) \
+                    timestamp $row(timestamp) patch $row(patch)]]
             }
             $options(-db) eval {
                 DELETE FROM pending_patch
                 WHERE chat_jid=$chatJid AND target_id=$id
             }
         }
-        return [lsort -command [list apply {{a b} {
-            expr {[dict get $a timestamp] - [dict get $b timestamp]}
-        }}] $out]
+        return [lmap p [lsort -integer -index 0 $out] { lindex $p 1 }]
     }
 
     # --- Get ------------------------------------------------------------
@@ -1057,25 +1057,70 @@ snit::type taco_messagestore {
         }
     }
 
+    # --- Last writer wins, across two clocks ------------------------
+    # A correction's or reaction's time is the server's (archive, trusted
+    # <delay>) or ours (our own action, or a live stanza with no stamp), and
+    # the two clocks can be minutes apart. So times are compared only on the
+    # same clock. A local one arrived live, in the server's order, or is our
+    # own doing: it is the newest. A server one against a local one is
+    # newer only past the local one's `after`, the newest server stamp the
+    # chat had shown when the local one was taken. That can let an older
+    # archived patch through over a live one; the archive also holds the
+    # newer, which comes later in the same forward walk and wins on stamps.
+
+    # Whether a patch at $inTs on $inClock replaces one held at $heldTs
+    # ("" or 0: none held).
+    proc PatchWins {inTs inClock heldTs heldClock heldAfter} {
+        if {$heldTs eq "" || $heldTs == 0} { return 1 }
+        if {$inClock ne "server"} { return 1 }
+        if {$heldClock eq "server"} { return [expr {$inTs > $heldTs}] }
+        return [expr {$inTs > $heldAfter}]
+    }
+
+    # Note a server stamp seen in $chatJid; forward-only.
+    method noteArchiveTs {chatJid ts} {
+        if {![string is entier -strict $ts]} return
+        $options(-db) eval {
+            INSERT INTO chat_archive_mark(chat_jid, ts) VALUES($chatJid, $ts)
+            ON CONFLICT(chat_jid) DO UPDATE SET ts=max(ts, excluded.ts)
+        }
+    }
+
+    # The `after` a patch on $clock is stored with.
+    method PatchAfter {chatJid clock} {
+        if {$clock eq "server"} { return 0 }
+        set mark [$options(-db) onecolumn {
+            SELECT ts FROM chat_archive_mark WHERE chat_jid=$chatJid
+        }]
+        expr {$mark eq "" ? 0 : $mark}
+    }
+
     # --- Reactions (XEP-0444) --------------------------------------
 
-    # Apply a reactor's full emoji set. Last-writer-wins: a set with an
-    # older-or-equal ts than the reactor's stored one is ignored. Returns
-    # the target message's local timestamp (so the caller can <Reactions>), or
-    # "" when LWW skipped it or the target message isn't stored yet.
-    method applyReaction {chatJid targetId senderId senderLabel isOwn emojis ts} {
+    # Apply a reactor's full emoji set. Last-writer-wins (PatchWins) against
+    # the reactor's stored set; $clock is `server` or `local`, the clock $ts
+    # is on. Returns the target message's local timestamp (so the caller can
+    # <Reactions>), or "" when LWW skipped it or the target message isn't
+    # stored yet.
+    method applyReaction {chatJid targetId senderId senderLabel isOwn emojis ts
+            {clock server}} {
         if {$targetId eq "" || $senderId eq ""} { return "" }
-        set prev [$options(-db) onecolumn {
-            SELECT ts FROM message_reaction
+        set held {"" "" 0}
+        $options(-db) eval {
+            SELECT ts, clock, after_ts FROM message_reaction
             WHERE chat_jid=$chatJid AND target_id=$targetId
               AND sender_id=$senderId
-        }]
-        if {$prev ne "" && $ts <= $prev} { return "" }
+        } row {
+            set held [list $row(ts) $row(clock) $row(after_ts)]
+        }
+        if {![PatchWins $ts $clock {*}$held]} { return "" }
+        set after [$self PatchAfter $chatJid $clock]
         $options(-db) eval {
             INSERT OR REPLACE INTO message_reaction(chat_jid, target_id,
-                    sender_id, sender_label, is_own, emojis, ts)
+                    sender_id, sender_label, is_own, emojis, ts, clock,
+                    after_ts)
             VALUES($chatJid, $targetId, $senderId, $senderLabel, $isOwn,
-                   $emojis, $ts)
+                   $emojis, $ts, $clock, $after)
         }
         return [$self resolveTargetTs $chatJid $targetId]
     }
@@ -1154,28 +1199,33 @@ snit::type taco_messagestore {
     # the rows carrying the referenced id by who wrote it.
     #
     # Replace a stored message's body with a correction. Last-writer-wins on
-    # edited_ts; a retracted message is immutable. Returns the target's local
+    # edited_ts (PatchWins; $clock as for applyReaction); a retracted
+    # message is immutable. Returns the target's local
     # timestamp (so the caller can <Edited>), or "" when not stored or skipped.
     # `stamp` is the correction's own {encryption sender_fp}, so the row
     # tracks the body now displayed. No default: it would be a downgrade.
-    method applyEdit {chatJid targetTs newBody rawXml ts stamp} {
+    method applyEdit {chatJid targetTs newBody rawXml ts stamp {clock server}} {
         set enc [dict get $stamp encryption]
         set senderFp [dict get $stamp sender_fp]
         set found 0
         $options(-db) eval {
-            SELECT edited_ts, retracted FROM chat_message
+            SELECT edited_ts, edited_clock, edited_after, retracted
+            FROM chat_message
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
               AND kind='message'
         } row {
             set found 1
-            set prev $row(edited_ts)
+            set held [list $row(edited_ts) $row(edited_clock) \
+                $row(edited_after)]
             set retracted $row(retracted)
         }
         if {!$found || $retracted} { return "" }
-        if {$ts <= $prev} { return "" }
+        if {![PatchWins $ts $clock {*}$held]} { return "" }
+        set after [$self PatchAfter $chatJid $clock]
         $options(-db) eval {
             UPDATE chat_message
             SET body=$newBody, raw_xml=$rawXml, edited_ts=$ts,
+                edited_clock=$clock, edited_after=$after,
                 encryption=$enc, sender_fp=$senderFp
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
         }

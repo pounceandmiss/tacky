@@ -637,6 +637,15 @@ snit::type taco_message {
         # on what it gets, so hand it now rather than ParseTimestamp's "".
         set ts [ParseTimestamp $stamp]
         set now [clock microseconds]
+        # A stamped stanza is on the server's clock even when that runs
+        # ahead of ours: room history replayed on join must not count as
+        # news to a correction's last-writer-wins.
+        if {$ts eq ""} {
+            set tsClock local
+        } else {
+            set tsClock server
+            $messagestore noteArchiveTs $chatJid $ts
+        }
         if {$ts eq "" || $ts > $now} { set ts $now }
         set idArgs {}
         if {$isOwn} {
@@ -646,7 +655,7 @@ snit::type taco_message {
             set idArgs [list -own_id $ownId]
         }
         set ids [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs]
-        set verdict [$self Classify $chatJid $stanza $ts $ids]
+        set verdict [$self Classify $chatJid $stanza $ts $ids $tsClock]
         # History a room replays on join is not news: nothing rings for it.
         dict set verdict delayed [expr {$stamp ne ""}]
         $self DispatchLive $chatJid $verdict
@@ -1578,7 +1587,7 @@ snit::type taco_message {
         $messagestore addAliases $chatJid $opts(-timestamp) "" $oid
         set targetTs [$messagestore applyEdit $chatJid $opts(-timestamp) \
             $newBody $readable [clock microseconds] \
-            [dict create encryption $encMode sender_fp ""]]
+            [dict create encryption $encMode sender_fp ""] local]
         if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
     }
 
@@ -1671,7 +1680,7 @@ snit::type taco_message {
         set ownId [$self OwnReactionSenderId $chatJid]
         set ownLabel [$self OwnReactionLabel $chatJid]
         $messagestore applyReaction $chatJid $targetId $ownId $ownLabel 1 \
-            $emojis [clock microseconds]
+            $emojis [clock microseconds] local
         $self EmitReactionPatch $chatJid $targetTs
         lassign [$self DeriveAddressing $chatJid] msgType toJid
         $self SendReactions $toJid $msgType $targetId $emojis
@@ -2351,7 +2360,13 @@ snit::type taco_message {
         set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
         set ts [ParseTimestamp \
             [xsearch $fwdNode delay -ns urn:xmpp:delay -get @stamp]]
-        if {$ts eq ""} { set ts [clock microseconds] }
+        if {$ts eq ""} {
+            set ts [clock microseconds]
+            set tsClock local
+        } else {
+            set tsClock server
+            $messagestore noteArchiveTs $chatJid $ts
+        }
         set msgNode [$client ingressAddresses \
             [lindex [xsearch $fwdNode message] 0]]
         if {$msgNode eq ""} {
@@ -2368,7 +2383,7 @@ snit::type taco_message {
                 target_id $serverId]
         }
         set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
-        return [$self Classify $chatJid $msgNode $ts $ids]
+        return [$self Classify $chatJid $msgNode $ts $ids $tsClock]
     }
 
     # The single ingestion core, shared by the live path (ingestLive) and
@@ -2389,7 +2404,7 @@ snit::type taco_message {
     #                                                 message I was retracted
     #   {verdict defer timestamp T kind K patch P}    edit/retract, target
     #                                                 not stored yet
-    method Classify {chatJid msgNode ts ids} {
+    method Classify {chatJid msgNode ts ids clock} {
         # An error stanza reports a failed delivery; it is never content.
         # What it echoes back describes the original message, so storing any
         # of it files another author's text into this chat. Above the patch
@@ -2408,8 +2423,9 @@ snit::type taco_message {
         if {$reaction ne ""} {
             # `timestamp` keeps the reaction verdict uniform with the
             # others so the MAM parsed-list consumers (SweepFetchedRange /
-            # PlaceFarEdgeHole) can span it; it's also the LWW ts.
-            return [dict create verdict reaction timestamp $ts {*}$reaction]
+            # PlaceFarEdgeHole) can span it; it's also the LWW ts, on $clock.
+            return [dict create verdict reaction timestamp $ts clock $clock \
+                {*}$reaction]
         }
         # Corrections/retractions mutate an existing stored row, so - like
         # reactions - they short-circuit before reconcile/ParseMessage
@@ -2423,6 +2439,7 @@ snit::type taco_message {
         set edit [$self ParseCorrection $chatJid $msgNode]
         if {$edit ne ""} {
             dict set edit ids [list [lindex $ids 0] [lindex $ids 2]]
+            dict set edit clock $clock
             set v [$self PatchVerdict $chatJid edit $edit $ts]
             if {$v ne ""} { return $v }
         }
@@ -2736,7 +2753,8 @@ snit::type taco_message {
         set targetTs [$messagestore applyReaction $chatJid \
             [dict get $verdict target_id] [dict get $verdict sender_id] \
             [dict get $verdict sender_label] [dict get $verdict is_own] \
-            [dict get $verdict emojis] [dict get $verdict timestamp]]
+            [dict get $verdict emojis] [dict get $verdict timestamp] \
+            [dict get $verdict clock]]
         if {$targetTs eq ""} return
         $self EmitReactionPatch $chatJid $targetTs
     }
@@ -2755,7 +2773,8 @@ snit::type taco_message {
             [dict get $verdict target_ts] [dict get $verdict new_body] \
             [dict get $verdict raw_xml] [dict get $verdict timestamp] \
             [dict create encryption [dict get $verdict encryption] \
-                sender_fp [dict get $verdict sender_fp]]]
+                sender_fp [dict get $verdict sender_fp]] \
+            [dict getdef $verdict clock server]]
         if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
         # The correction names the message from now on, whether or not its
         # body is the newest. After the edit, so a patch held for these
