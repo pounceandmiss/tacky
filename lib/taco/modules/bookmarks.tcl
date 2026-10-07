@@ -18,6 +18,11 @@
 # tacky bookmarks defaultNick -acc $jid ?-nick $newNick?
 # tacky bookmarks setNickAll -acc $jid -nick $nick
 #
+# Changes made on another device arrive as notifications and are applied
+# here too: autojoin turned on joins the room, turned off leaves it, a new
+# nick is taken in a joined room, and a removed bookmark (or all of them,
+# on a purge or node delete) leaves its room.
+#
 # tacky listen bookmarks <Changed> -acc $jid $command
 #   -action clear | add | update | remove
 #   -jid $roomJid  (present when action is add/update/remove)
@@ -39,6 +44,14 @@ snit::type taco_bookmarks {
     # room -> nick requested by `nick` in a joined room, until the room
     # accepts or refuses it.
     variable nickWanted {}
+
+    # Our own publishes and retracts come back as notifications. Each one
+    # sent is remembered until its echo arrives, so the echo isn't taken
+    # for a change made on another device:
+    #   room -> list of {name autojoin nick password} we published
+    #   room -> retracts sent and not yet echoed
+    variable pendingPublish {}
+    variable pendingRetract {}
 
     # Fields `item` accepts from a caller. jid is excluded: it is the key and
     # is canonicalized separately, so a caller's raw ?join form must not
@@ -141,33 +154,48 @@ snit::type taco_bookmarks {
 
     # Publish one bookmark, the array named by $bmVar, as its own item with
     # the node's publish-options (XEP-0402: one item per publish).
-    method Publish {bmVar} {
+    method Publish {bmVar {retried 0}} {
         upvar 1 $bmVar bm
-        $client iq request -type set -command [mymethod OnPublishResult $bm(jid)] -payload \
+        dict lappend pendingPublish $bm(jid) [$self EchoKey \
+            $bm(name) $bm(autojoin) $bm(nick) $bm(password)]
+        $client iq request -type set \
+            -command [mymethod OnPublishResult [array get bm] $retried] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j publish -node urn:xmpp:bookmarks:1 {
                     j #as-is [$self BookmarkItemNode bm]
                 }
                 j publish-options {
-                    j x -ns jabber:x:data -type submit {
-                        j field -var FORM_TYPE -type hidden {
-                            j value -body "http://jabber.org/protocol/pubsub#publish-options"
-                        }
-                        j field -var pubsub#persist_items {
-                            j value -body true
-                        }
-                        j field -var pubsub#max_items {
-                            j value -body max
-                        }
-                        j field -var pubsub#send_last_published_item {
-                            j value -body never
-                        }
-                        j field -var pubsub#access_model {
-                            j value -body whitelist
-                        }
-                    }
+                    j #as-is [$self NodeConfigForm \
+                        http://jabber.org/protocol/pubsub#publish-options submit]
                 }
             }]
+    }
+
+    # The node configuration XEP-0402 requires: as publish-options, and to
+    # reconfigure a node that another client created otherwise.
+    method NodeConfigForm {formType formKind} {
+        j x -ns jabber:x:data -type $formKind {
+            j field -var FORM_TYPE -type hidden {
+                j value -body $formType
+            }
+            j field -var pubsub#persist_items {
+                j value -body true
+            }
+            j field -var pubsub#max_items {
+                j value -body max
+            }
+            j field -var pubsub#send_last_published_item {
+                j value -body never
+            }
+            j field -var pubsub#access_model {
+                j value -body whitelist
+            }
+        }
+    }
+
+    # What identifies one of our publishes when it is echoed back.
+    method EchoKey {name autojoin nick password} {
+        list $name [expr {$autojoin in {true 1} ? 1 : 0}] $nick $password
     }
 
     # The publish/retract IQs above are otherwise fire-and-forget (no
@@ -178,9 +206,34 @@ snit::type taco_bookmarks {
     # removal had never happened. Raising here instead routes the failure
     # through the normal bgerror -> `error <Background>` path (see
     # taco.tcl's ::taco_bg), which the frontend already surfaces.
-    method OnPublishResult {jid stanza} {
+    method OnPublishResult {bmList retried stanza} {
         if {[xsearch $stanza -get @type] ne "error"} return
-        error "Could not save bookmark for $jid: [$self ErrorCondition $stanza]"
+        array set bm $bmList
+        # The node exists with a different configuration (created by another
+        # client), so the publish-options can't be met. Reconfigure it as
+        # XEP-0402 requires and publish once more.
+        if {!$retried && [llength [xsearch $stanza error precondition-not-met \
+                -ns http://jabber.org/protocol/pubsub#errors]]} {
+            $client iq request -type set \
+                -command [mymethod OnReconfigured $bmList] -payload \
+                [j pubsub -ns http://jabber.org/protocol/pubsub#owner {
+                    j configure -node urn:xmpp:bookmarks:1 {
+                        j #as-is [$self NodeConfigForm \
+                            http://jabber.org/protocol/pubsub#node_config submit]
+                    }
+                }]
+            return
+        }
+        error "Could not save bookmark for $bm(jid): [$self ErrorCondition $stanza]"
+    }
+
+    method OnReconfigured {bmList stanza} {
+        array set bm $bmList
+        if {[xsearch $stanza -get @type] eq "error"} {
+            error "Could not save bookmark for $bm(jid): the bookmarks node\
+                could not be reconfigured ([$self ErrorCondition $stanza])"
+        }
+        $self Publish bm 1
     }
 
     method OnRetractResult {jid stanza} {
@@ -357,6 +410,8 @@ snit::type taco_bookmarks {
         set mucReason {}
         set mucRejoined {}
         set nickWanted {}
+        set pendingPublish {}
+        set pendingRetract {}
     }
 
     method ResolveMucStatus {jid} {
@@ -424,6 +479,7 @@ snit::type taco_bookmarks {
         $client db eval {DELETE FROM bookmark WHERE jid=$jid}
         $client emit bookmarks <Changed> -action remove -jid $jid
 
+        dict incr pendingRetract $jid
         $client iq request -type set -command [mymethod OnRetractResult $jid] -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j retract -node urn:xmpp:bookmarks:1 -notify true {
@@ -467,28 +523,111 @@ snit::type taco_bookmarks {
         if {[llength $eventNodes] == 0} return
         set eventNode [lindex $eventNodes 0]
 
-        # Handle item publications
-        xsearch $eventNode items item -script itemNode {
-        set jid [jid norm [xsearch $itemNode -get @id]]
-            if {$jid eq ""} continue
-
-            set existed [$client db eval {SELECT count(*) FROM bookmark WHERE jid=$jid}]
-            $self StoreItem $jid $itemNode
-            if {$existed} {
-                $client emit bookmarks <Changed> -action update -jid $jid
-            } else {
-                $client emit bookmarks <Changed> -action add -jid $jid
-                $self AutojoinOne $jid
-            }
+        # All bookmarks removed at once (XEP-0060 purge or node delete):
+        # handled as if each had been retracted.
+        if {[llength [xsearch $eventNode purge]]
+                || [llength [xsearch $eventNode delete]]} {
+            set jids [$client db eval {SELECT jid FROM bookmark}]
+            $client db eval {DELETE FROM bookmark}
+            $client emit bookmarks <Changed> -action clear
+            foreach jid $jids { $self LeaveIfIn $jid }
+            return
         }
 
-        # Handle retractions
-        xsearch $eventNode items retract -script retractNode {
-        set jid [jid norm [xsearch $retractNode -get @id]]
+        xsearch $eventNode items item -script itemNode {
+            set jid [jid norm [xsearch $itemNode -get @id]]
             if {$jid eq ""} continue
+            $self OnRemoteItem $jid $itemNode
+        }
 
+        xsearch $eventNode items retract -script retractNode {
+            set jid [jid norm [xsearch $retractNode -get @id]]
+            if {$jid eq ""} continue
+            if {[dict exists $pendingRetract $jid]} {
+                # The echo of our own retract.
+                if {[dict incr pendingRetract $jid -1] <= 0} {
+                    dict unset pendingRetract $jid
+                }
+                continue
+            }
+            if {![$client db exists {SELECT 1 FROM bookmark WHERE jid=$jid}]} continue
             $client db eval {DELETE FROM bookmark WHERE jid=$jid}
             $client emit bookmarks <Changed> -action remove -jid $jid
+            $self LeaveIfIn $jid
+        }
+    }
+
+    # A published bookmark item: the echo of our own publish, or a change
+    # from another device, which is stored and acted on if it changed
+    # anything.
+    method OnRemoteItem {jid itemNode} {
+        set old [$self StoredKey $jid]
+        $self StoreItem $jid $itemNode
+        set new [$self StoredKey $jid]
+        # Echo of our own publish: its content is already in the store, so
+        # there is nothing to act on, and it must not overwrite a newer
+        # local change.
+        if {[dict exists $pendingPublish $jid]} {
+            set sent [dict get $pendingPublish $jid]
+            set i [lsearch -exact $sent $new]
+            if {$i >= 0} {
+                set sent [lreplace $sent 0 $i]
+                if {[llength $sent]} {
+                    dict set pendingPublish $jid $sent
+                    # A newer publish is still in flight: keep its values,
+                    # not this older echo's.
+                    $self RestoreRow $jid [lindex $sent end]
+                } else {
+                    dict unset pendingPublish $jid
+                }
+                return
+            }
+        }
+        if {$old eq ""} {
+            $client emit bookmarks <Changed> -action add -jid $jid
+            $self AutojoinOne $jid
+            return
+        }
+        $client emit bookmarks <Changed> -action update -jid $jid
+        lassign $old - oldAutojoin oldNick
+        lassign $new - newAutojoin newNick
+        if {!$oldAutojoin && $newAutojoin} {
+            $self AutojoinOne $jid
+        } elseif {$oldAutojoin && !$newAutojoin} {
+            $self LeaveIfIn $jid
+        } elseif {$newNick ne "" && $newNick ne $oldNick
+                && [$client muc isJoined -jid $jid]
+                && [$client muc myNick -jid $jid] ne $newNick} {
+            $client muc nick -jid $jid -nick $newNick
+        }
+    }
+
+    # The stored bookmark's EchoKey, "" when there is none.
+    method StoredKey {jid} {
+        $client db eval {
+            SELECT name, autojoin, nick, password FROM bookmark WHERE jid=$jid
+        } row {
+            return [$self EchoKey $row(name) $row(autojoin) $row(nick) $row(password)]
+        }
+        return ""
+    }
+
+    # Write back the fields of our newest in-flight publish over an older
+    # echo that StoreItem stored.
+    method RestoreRow {jid key} {
+        lassign $key name autojoin nick password
+        $client db eval {
+            UPDATE bookmark SET name=$name, autojoin=$autojoin, nick=$nick,
+                password=$password
+            WHERE jid=$jid
+        }
+    }
+
+    # Leave $jid if we are in it or joining it (its bookmark was removed or
+    # its autojoin turned off on another device).
+    method LeaveIfIn {jid} {
+        if {[$client muc isTracked -jid $jid]} {
+            $client muc leave -jid $jid
         }
     }
 
@@ -579,7 +718,7 @@ snit::type taco_bookmarks {
 
     method AutojoinAll {} {
         $client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
-            if {[$client muc isJoined -jid $row(jid)]} continue
+            if {[$client muc isTracked -jid $row(jid)]} continue
             $self Join $row(jid) $row(nick) $row(password)
         }
     }
@@ -589,7 +728,7 @@ snit::type taco_bookmarks {
             SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid
         } row {
             if {!$row(autojoin)} return
-            if {[$client muc isJoined -jid $jid]} return
+            if {[$client muc isTracked -jid $jid]} return
             $self Join $jid $row(nick) $row(password)
         }
     }

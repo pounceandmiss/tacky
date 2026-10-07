@@ -31,7 +31,13 @@ snit::type taco_pubsub {
     method OnMessage {stanza} {
         set eventNodes [xsearch $stanza event -ns http://jabber.org/protocol/pubsub#event]
         if {[llength $eventNodes] == 0} { return 0 }
-        set node [xsearch [lindex $eventNodes 0] items -get @node]
+        # The node is named on <items>, or on <purge>/<delete> when all
+        # items were removed.
+        set node ""
+        foreach tag {items purge delete} {
+            set node [xsearch [lindex $eventNodes 0] $tag -get @node]
+            if {$node ne ""} break
+        }
         if {$node eq "" || ![info exists PubSubHandlers($node)]} { return 0 }
         set from [xsearch $stanza -get @from]
         # Pubsub services are bare jids. An event from a full jid comes from a

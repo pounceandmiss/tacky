@@ -224,6 +224,183 @@ test bookmarks-wire-notification {pubsub notifications add and retract bookmarks
         list $actions $joined $stored $gone
     } -result {{add remove} 1 {joining {}} 1}
 
+# -- Changes made on another device ---------------------------------------
+
+# Feed a bookmark notification from our own PEP service, as sent for
+# another device's publish or for the echo of ours.
+proc bm_push {room autojoin {nick me} {name Room}} {
+    c.conn feed [j message -from user@test.example.com {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node urn:xmpp:bookmarks:1 {
+                j item -id $room {
+                    j conference -ns urn:xmpp:bookmarks:1 \
+                        -autojoin $autojoin -name $name {
+                        j nick -body $nick
+                    }
+                }
+            }
+        }
+    }]
+}
+
+proc bm_push_retract {room} {
+    c.conn feed [j message -from user@test.example.com {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node urn:xmpp:bookmarks:1 {
+                j retract -id $room
+            }
+        }
+    }]
+}
+
+proc bm_push_purge {} {
+    c.conn feed [j message -from user@test.example.com {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j purge -node urn:xmpp:bookmarks:1
+        }
+    }]
+}
+
+# Presences sent: {to type} each, since the last clear.
+proc bm_presences {} {
+    set out {}
+    foreach st [c.conn get_written] {
+        if {[dict get $st tag] ne "presence"} continue
+        lappend out [list [xsearch $st -get @to] [xsearch $st -get @type]]
+    }
+    return $out
+}
+
+# Join $room as $nick and feed the room's self-presence.
+proc bm_in_room {room nick} {
+    c muc join -jid $room -nick $nick
+    c.conn feed [j presence -from $room/$nick {
+        j x -ns http://jabber.org/protocol/muc#user {
+            j item -affiliation member -role participant
+            j status -code 110
+        }
+    }]
+}
+
+test bookmarks-remote-autojoin-on-joins {autojoin turned on elsewhere joins the room} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_push room@muc.example.com false
+        set before [bm_presences]
+        c.conn clear
+        bm_push room@muc.example.com true
+        list $before [bm_presences]
+    } -result {{} {{room@muc.example.com/me {}}}}
+
+test bookmarks-remote-autojoin-off-leaves {autojoin turned off elsewhere leaves the room} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_push room@muc.example.com true
+        bm_in_room room@muc.example.com me
+        c.conn clear
+        bm_push room@muc.example.com false
+        bm_presences
+    } -result {{room@muc.example.com/me unavailable}}
+
+test bookmarks-remote-nick-renames {a nick changed elsewhere is taken in a joined room} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_push room@muc.example.com true
+        bm_in_room room@muc.example.com me
+        c.conn clear
+        bm_push room@muc.example.com true newme
+        bm_presences
+    } -result {{room@muc.example.com/newme {}}}
+
+test bookmarks-remote-retract-leaves {a bookmark removed elsewhere leaves its room} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_push room@muc.example.com true
+        bm_in_room room@muc.example.com me
+        c.conn clear
+        bm_push_retract room@muc.example.com
+        list [bm_presences] [bm_state room@muc.example.com]
+    } -result {{{room@muc.example.com/me unavailable}} missing}
+
+test bookmarks-remote-purge-clears {a purge removes every bookmark and leaves their rooms} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_push room@muc.example.com true
+        bm_push other@muc.example.com false
+        bm_in_room room@muc.example.com me
+        set ::actions {}
+        tacky listen bookmarks <Changed> \
+            {apply {{ev} { lappend ::actions [dict get $ev -action] }}}
+        c.conn clear
+        bm_push_purge
+        list [bm_presences] [llength [c bookmarks get]] $::actions
+    } -result {{{room@muc.example.com/me unavailable}} 0 clear}
+
+test bookmarks-own-echo-is-not-a-change {the echo of our own publish or retract changes nothing} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        bm_in_room room@muc.example.com me
+        # Unstar but stay (-leave 0), then the retract's echo arrives.
+        c bookmarks item -jid room@muc.example.com -autojoin 1 -nick me -name Room
+        bm_push room@muc.example.com true
+        c bookmarks remove -jid room@muc.example.com -leave 0
+        c.conn clear
+        bm_push_retract room@muc.example.com
+        list [bm_presences] [c muc isJoined -jid room@muc.example.com]
+    } -result {{} 1}
+
+test bookmarks-crossed-echo-keeps-the-newer-change {an echo of an older publish doesn't undo a newer local change} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        # Tick join, then untick it before the first echo comes back.
+        c bookmarks item -jid room@muc.example.com -autojoin 1 -nick me -name Room
+        c bookmarks leave -jid room@muc.example.com
+        c.conn clear
+        bm_push room@muc.example.com true
+        set mid [list [bm_presences] [c bookmarks autojoin -jid room@muc.example.com]]
+        bm_push room@muc.example.com false
+        list $mid [bm_presences] [c bookmarks autojoin -jid room@muc.example.com]
+    } -result {{{} 0} {} 0}
+
+test bookmarks-no-second-join-while-joining {autojoin doesn't send another join to a room being joined} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        c muc join -jid room@muc.example.com -nick me
+        c.conn clear
+        bm_push room@muc.example.com true
+        bm_presences
+    } -result {}
+
+test bookmarks-publish-reconfigures-on-precondition {a publish refused for node options reconfigures the node and publishes again} \
+    {*}$bookmarks_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        c bookmarks item -jid room@muc.example.com -autojoin 1 -nick me
+        set pub [lindex [lsearch -all -inline -index 1 [lmap s [c.conn get_written] {
+            list $s [xsearch $s pubsub publish -get @node]}] urn:xmpp:bookmarks:1] 0 0]
+        c.conn clear
+        c.conn feed [j iq -type error -id [xsearch $pub -get @id] {
+            j error -type cancel {
+                j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j precondition-not-met -ns http://jabber.org/protocol/pubsub#errors
+            }
+        }]
+        set conf [lindex [c.conn get_written] end]
+        set confOk [expr {[xsearch $conf pubsub configure -get @node] eq "urn:xmpp:bookmarks:1"}]
+        c.conn clear
+        c.conn feed [j iq -type result -id [xsearch $conf -get @id]]
+        set again [lindex [c.conn get_written] end]
+        list $confOk [xsearch $again pubsub publish item -get @id]
+    } -result {1 room@muc.example.com}
+
 test bookmarks-wire-extensions-preserved {republish keeps extensions from the server copy} \
     {*}$bookmarks_common \
     -body {
