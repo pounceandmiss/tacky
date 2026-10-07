@@ -1099,6 +1099,13 @@ snit::type conn {
                 if {$cond ne "" && $cond ne "text"} {
                     append msg ": $cond"
                 }
+                # RFC 6120 6.5.13: a problem on the server's side, not with
+                # the credentials. Retry later, from the 15 s backoff step.
+                if {$cond eq "temporary-auth-failure"} {
+                    set reconnectAttempt [expr {max($reconnectAttempt, 3)}]
+                    $self OnTransportError $msg
+                    return
+                }
                 $self OnAuthError $msg
             }
         }
