@@ -1,6 +1,6 @@
 # Tacky
 
-A desktop XMPP chat client built with Tcl/Tk. Pre-alpha.
+A desktop XMPP chat client built with Tcl/Tk. Beta.
 
 ## Screenshots
 
@@ -87,72 +87,20 @@ the API it carries is the backend's JSON contract: see
 
 ## Browser
 
-The same backend builds to WebAssembly and runs in a Web Worker.
-
-```sh
-make wasm              # needs emcc on PATH   -> dist/wasm/
-make DOCKER=1 wasm     # needs only docker    -> dist/wasm/
-```
-
-`dist/wasm/` is the whole deliverable: copy it onto a site and import from it.
-Every file locates the others relative to its own URL, so it can live anywhere
-on the origin, and nothing in it needs a bundler. It is also an npm package as
-it stands - `package.json` names the version, `index.d.ts` declares the
-surface - though it is not published; `npm pack dist/wasm` makes the tarball.
-
-```js
-import { createClient } from './tacky/index.js';
-
-const client = createClient();
-await client.ready;
-
-client.send(['account', 'add', { acc: 'me@example.com', password }]);
-await client.event('conn', 'State', (a) => a.state === 'connected');
-```
-
-That is the same JSON protocol the C library carries; [doc/DOC.md](doc/DOC.md)
-is its reference.
-
-Four things come from the page rather than the backend, because a page owns
-them: the transport is XMPP over WebSocket (RFC 7395), since there are no
-sockets; file transfers go through the browser's own HTTP stack; SQLite runs
-on a VFS over the Origin Private File System - or in memory, but only when the
-page asks for a transient store; and WebRTC is the page's, driven by
-`createMediaHost` in `wasm/src/media-host.js`, which reports the peer's media
-by call `sid`. TLS and image decoding are the platform's too. The store is one
-tab's at a time: a client started while another tab holds it fails with
-`fatalReason` `locked`, so a site with several tabs runs the backend in one and
-relays to it.
-
-The websocket endpoint is per account: its `websocket_url` if set, else the
-`urn:xmpp:alt-connections:websocket` link in
-`https://<domain>/.well-known/host-meta` (XEP-0156), else
-`wss://<domain>/xmpp-websocket`.
-
-### The client
-
-[wacky](https://codeberg.org/another-im/wacky) is a web client over this
-package: TypeScript and lit, speaking the same JSON protocol through
-`index.js`. It takes `tacky-wasm` from `../tacky_t/dist/wasm` and stages it
-beside its page, so `make wasm` here is the first step of its build.
+The same backend builds to WebAssembly (`make wasm`) and runs in a Web Worker,
+speaking the same JSON protocol. See [wasm/README.md](wasm/README.md).
 
 ## Tests
 
 ```
 make test              # the suite, natively
-make wasm-test         # the wasm backend in headless Chromium, tacky's suite included
+make wasm-test         # the same suite in headless Chromium
 ```
 
-The wasm targets bundle `tests/` into a wasm interpreter and run the suite
-there, so the browser build answers to the same tests as the native one. A
-test needing something a page lacks - a thread, a process, a listening socket
-- carries the `!wasm` constraint rather than being deleted.
-
-Both pick up their networked half when a server is up, the way `make
-test` picks up `tests/taco_integration`. Needs docker:
+Networked integration tests run when a server is up. Needs docker:
 
 ```
-tests/servers/with_prosody.sh make wasm-test
+tests/servers/with_prosody.sh make test
 ```
 
 ## Architecture
