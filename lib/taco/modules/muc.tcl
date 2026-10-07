@@ -181,6 +181,12 @@ snit::type taco_muc {
             lappend mucChildren password $opts(-password)
         }
 
+        # A room whose archive answered before gets its history from MAM
+        # after the join (message DoMucCatchup); the join history would
+        # only repeat the newest of it.
+        if {![dict exists $args -history] && [$self HasArchive $opts(-jid)]} {
+            set opts(-history) {maxstanzas 0}
+        }
         set historyAttrs {}
         dict for {k v} $opts(-history) {
             lappend historyAttrs -$k $v
@@ -767,6 +773,23 @@ snit::type taco_muc {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return 0}
         return [dict get $Rooms($jid) joined]
+    }
+
+    # Whether $room's MAM archive answered the last time it was asked,
+    # remembered across sessions so the next join can skip join history.
+    method HasArchive {room} {
+        set v ""
+        catch {set v [$client setting get -key muc.archive.$room]}
+        expr {$v eq "1"}
+    }
+
+    # Record what the room's archive said (message's room catchup): 1 when
+    # it answered, 0 when the room has none.
+    method noteArchive {room has} {
+        set room [jid norm $room]
+        set has [expr {$has ? 1 : 0}]
+        if {$has == [$self HasArchive $room]} return
+        $client setting set -key muc.archive.$room -value $has
     }
 
     # Whether $jid is a room we know of: joined now, bookmarked, or with

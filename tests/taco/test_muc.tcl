@@ -80,6 +80,38 @@ test muc-join-sends-presence {join sends presence with MUC namespace} \
              [expr {[xsearch $p x -ns http://jabber.org/protocol/muc] ne ""}]
     } -result {presence room@muc.example.com/me 1}
 
+proc muc_join_history {} {
+    c muc join -jid room@muc.example.com -nick me
+    xsearch [lindex [c.conn get_written] end] \
+        x -ns http://jabber.org/protocol/muc history -get @maxstanzas
+}
+
+test muc-join-history-skipped-for-archived-room {a room whose archive answered is joined without join history, until it says it has none} \
+    {*}$muc_common \
+    -body {
+        set first [muc_join_history]
+        c message OnMucCatchup room@muc.example.com?join \
+            [dict create messages {} complete true]
+        set archived [muc_join_history]
+        # A timeout says nothing about the archive.
+        c message OnMucCatchup room@muc.example.com?join \
+            [dict create error 1 error_condition remote-server-timeout]
+        set afterTimeout [muc_join_history]
+        c message OnMucCatchup room@muc.example.com?join \
+            [dict create error 1 error_condition feature-not-implemented]
+        list $first $archived $afterTimeout [muc_join_history]
+    } -result {{} 0 0 {}}
+
+test muc-join-explicit-history-kept {an explicit -history is sent as given, archive or not} \
+    {*}$muc_common \
+    -body {
+        c message OnMucCatchup room@muc.example.com?join \
+            [dict create messages {} complete true]
+        c muc join -jid room@muc.example.com -nick me -history {maxstanzas 5}
+        xsearch [lindex [c.conn get_written] end] \
+            x -ns http://jabber.org/protocol/muc history -get @maxstanzas
+    } -result 5
+
 test muc-join-with-password {join includes password in MUC element} \
     {*}$muc_common \
     -body {
