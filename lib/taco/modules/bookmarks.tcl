@@ -406,6 +406,16 @@ snit::type taco_bookmarks {
     method OnResult {stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
+            # A timeout or other error tells us nothing about the bookmarks,
+            # so join the autojoin rooms from the last successful fetch.
+            # item-not-found means there are no bookmarks, so the stored
+            # list is stale.
+            # Only while connected: joins buffered while offline would be
+            # sent again by the next session's autojoin.
+            if {[dict get [stanza_error $stanza] condition] ne "item-not-found"
+                    && [$client conn state] eq "connected"} {
+                $self AutojoinAll
+            }
             return
         }
 
