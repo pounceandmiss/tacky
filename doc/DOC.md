@@ -343,7 +343,9 @@ Facts the frontend reports about the app as a whole.
 `active` is whether the user is using the app: focused on the desktop, in
 the foreground on mobile. Until a frontend reports otherwise it counts as
 active. On becoming active, connected accounts check their link
-(`conn probe`).
+(`conn probe`). Accounts whose server supports Client State Indication
+(XEP-0352) also tell it each change, so while the app is inactive the
+server can hold back presence updates and typing notifications.
 
 ## setting
 

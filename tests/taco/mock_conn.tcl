@@ -19,6 +19,7 @@ snit::type mock_conn {
     option -resource -default ""
     option -autoreconnect -default 0
     option -probe-allowed-command -default ""
+    option -active-command -default ""
 
     # Event callback
     option -emit -default ""
@@ -135,6 +136,16 @@ snit::type mock_conn {
 
     method probe {args} {
         incr probes
+    }
+
+    variable csiUpdates 0
+
+    method csiUpdate {} {
+        incr csiUpdates
+    }
+
+    method csi_update_count {} {
+        return $csiUpdates
     }
 
     method probe_count {} {

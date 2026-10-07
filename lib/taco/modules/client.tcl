@@ -55,6 +55,7 @@ snit::type taco_client {
         install conn using conn $self.conn \
             -autoreconnect 1 \
             -probe-allowed-command [list taco_setting_get $self conn_probe 1] \
+            -active-command [mymethod AppActive] \
             -emit [mymethod emit] \
             -onready [mymethod OnReady] \
             -onautherror [mymethod OnAuthError] \
@@ -99,6 +100,11 @@ snit::type taco_client {
         foreach mod $_modules {
             install $mod using taco_$mod $self.$mod -client $self
         }
+    }
+
+    # Whether the user is using the app, for conn's CSI (XEP-0352).
+    method AppActive {} {
+        $options(-taco) app isActive
     }
 
     # An explicit disconnect ends the session. conn doesn't report its own

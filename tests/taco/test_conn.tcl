@@ -786,6 +786,85 @@ test conn-sasl-temporary-failure-retries {a temporary-auth-failure reconnects la
         list [c state] $_tauth_err [lsearch -all -inline [conn_logged info] "reconnect*"]
     } -result {waiting {} {{reconnect attempt 4 in 15000ms}}}
 
+# -- Client State Indication (XEP-0352) ------------------------------------
+
+proc make_bind_features_with_csi {} {
+    j features {
+        j bind -ns urn:ietf:params:xml:ns:xmpp-bind
+        j sm -ns urn:xmpp:sm:3
+        j csi -ns urn:xmpp:csi:0
+    }
+}
+
+# Drive to ready on features offering CSI, with the app's state in ::_tactive.
+proc drive_to_ready_csi {smid} {
+    c connect
+    c.base inject [make_features]
+    c.base inject [make_success]
+    c.base inject [make_bind_features_with_csi]
+    c.base inject [make_bind_result "user@test.example.com/r"]
+    c.base inject [make_sm_enabled $smid]
+}
+
+proc csi_sent {} {
+    set out {}
+    foreach st [c.base get_written] {
+        if {[dict get $st ns] eq "urn:xmpp:csi:0"} { lappend out [dict get $st tag] }
+    }
+    return $out
+}
+
+test conn-csi-follows-the-app {CSI goes inactive and back with the app, once per change} \
+    {*}$common \
+    -body {
+        set ::_tactive 1
+        c configure -active-command {set ::_tactive}
+        drive_to_ready_csi sm-c1
+        set atReady [csi_sent]
+        set ::_tactive 0
+        c csiUpdate
+        c csiUpdate
+        set ::_tactive 1
+        c csiUpdate
+        list $atReady [csi_sent]
+    } -result {{} {inactive active}}
+
+test conn-csi-inactive-at-login {a session that comes up while the app is idle says inactive at once} \
+    {*}$common \
+    -body {
+        set ::_tactive 0
+        c configure -active-command {set ::_tactive}
+        drive_to_ready_csi sm-c2
+        csi_sent
+    } -result {inactive}
+
+test conn-csi-not-offered {without CSI in the features nothing is sent} \
+    {*}$common \
+    -body {
+        set ::_tactive 0
+        c configure -active-command {set ::_tactive}
+        c connect
+        drive_to_ready "user@test.example.com/r" sm-c3
+        c csiUpdate
+        csi_sent
+    } -result {}
+
+test conn-csi-resent-on-resume {a resumed stream is told the state again} \
+    {*}$common \
+    -body {
+        set ::_tactive 1
+        c configure -active-command {set ::_tactive}
+        drive_to_ready_csi sm-c4
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base clear
+        c.base inject [make_bind_features_with_csi]
+        c.base inject [make_sm_resumed sm-c4 0]
+        csi_sent
+    } -result {active}
+
 # -- Stream errors -----------------------------------------------------------
 
 proc make_stream_error {cond {text ""}} {
