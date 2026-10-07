@@ -773,6 +773,19 @@ test conn-auth-error-no-reconnect {SASL failure does not trigger reconnect} \
         c state
     } -result {disconnected}
 
+test conn-sasl-temporary-failure-retries {a temporary-auth-failure reconnects later instead of stopping} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        c.base inject [make_features]
+        conn_capture_log
+        c.base inject [j failure -ns urn:ietf:params:xml:ns:xmpp-sasl {
+            j temporary-auth-failure
+        }]
+        list [c state] $_tauth_err [lsearch -all -inline [conn_logged info] "reconnect*"]
+    } -result {waiting {} {{reconnect attempt 4 in 15000ms}}}
+
 # -- Stream errors -----------------------------------------------------------
 
 proc make_stream_error {cond {text ""}} {
