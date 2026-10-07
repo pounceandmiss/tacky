@@ -807,6 +807,11 @@ snit::type taco_muc {
             }]}
     }
 
+    # Whether we are in $room or joining it (join sent, no answer yet).
+    tackymethod isTracked {args} {
+        info exists Rooms([jid norm [jid bare [dict get $args -jid]]])
+    }
+
     # Whether $room was joined -hidden; remembered after leaving, until
     # rejoined, so the events reporting it gone can be told apart.
     tackymethod isHidden {args} {

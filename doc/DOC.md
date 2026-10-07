@@ -501,6 +501,12 @@ IRC gateway going down). `nick` renames you in one room and stores it;
 back to the JID's localpart. `autojoin` reads one room's flag, for a menu that
 has to show its state before it opens.
 
+Changes made on another device are applied the same way: autojoin turned on
+joins the room, autojoin turned off leaves it, a changed `nick` is taken in a
+joined room, and a removed bookmark, or every bookmark on a purge or a node
+delete, leaves its room. The echoes of this device's own changes are
+recognised and change nothing.
+
 Changes emit `bookmarks <Changed>`, but a frontend watches `chatlist <Item>` /
 `<Remove>` instead - the funneled events carry the room state too.
 
