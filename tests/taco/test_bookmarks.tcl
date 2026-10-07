@@ -171,6 +171,27 @@ test bookmarks-wire-result {items result populates the store and triggers autojo
             [expr {[xsearch $p x -ns http://jabber.org/protocol/muc] ne ""}]
     } -result {{joining {}} room@muc.example.com/me 1}
 
+test bookmarks-fetch-timeout-joins-known-rooms {an unanswered fetch still enters the autojoin rooms last listed} \
+    {*}$bookmarks_common \
+    -body {
+        bm_insert room@muc.example.com autojoin 1 nick me
+        bm_insert quiet@muc.example.com autojoin 0 nick me
+        c.conn fire_state connected
+        set joins {}
+        foreach cond {item-not-found remote-server-timeout} {
+            c bookmarks request
+            set req [lindex [c.conn get_written] end]
+            c.conn clear
+            c.conn feed [j iq -type error -id [xsearch $req -get @id] {
+                j error -type wait {
+                    j $cond -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+            lappend joins [lmap p [c.conn get_written] {xsearch $p -get @to}]
+        }
+        set joins
+    } -result {{} room@muc.example.com/me}
+
 test bookmarks-wire-notification {pubsub notifications add and retract bookmarks} \
     {*}$bookmarks_common \
     -body {
