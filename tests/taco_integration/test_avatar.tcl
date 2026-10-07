@@ -77,13 +77,36 @@ namespace eval ::test::avatar_int {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
+        # Listen before subscribing: the presences can arrive before a
+        # listener registered afterwards.
+        foreach {acc peer} [list $ROMEO $JULIET $JULIET $ROMEO] {
+            set [namespace current]::sees($acc) 0
+            tacky listen presence <Changed> -acc $acc -jid $peer \
+                [list apply {{var args} { set $var 1 }} [namespace current]::sees($acc)]
+            set [namespace current]::asked($acc) 0
+            tacky listen roster <Subscribe> -acc $acc -jid $peer -type subscribe \
+                [list apply {{var args} { set $var 1 }} [namespace current]::asked($acc)]
+        }
         tacky roster subscribe -acc $ROMEO -jid $JULIET
         tacky roster subscribe -acc $JULIET -jid $ROMEO
-        tacky roster approve -acc $ROMEO -jid $JULIET
-        tacky roster approve -acc $JULIET -jid $ROMEO
-        wait_events {
-            {presence <Changed> -acc romeo@example.local -jid juliet@example.local}
-            {presence <Changed> -acc juliet@example.local -jid romeo@example.local}
+        # Approve a request once it has arrived, as a user would. Sent
+        # before it, the approval is a pre-approval (RFC 6121 3.4), which a
+        # server need not keep: MongooseIM drops it.
+        # Already subscribed (an earlier test in this run), no request comes.
+        foreach {acc peer} [list $ROMEO $JULIET $JULIET $ROMEO] {
+            set deadline [expr {[clock milliseconds] + 10000}]
+            while {![set [namespace current]::asked($acc)]
+                    && [tacky roster subscription -acc $acc -jid $peer] ni {from both}} {
+                if {[clock milliseconds] > $deadline} {
+                    error "no subscription request from $peer reached $acc"
+                }
+                after 50 [list set [namespace current]::tick 1]
+                vwait [namespace current]::tick
+            }
+            tacky roster approve -acc $acc -jid $peer
+        }
+        foreach acc [list $ROMEO $JULIET] {
+            wait_value [namespace current]::sees($acc) 1 10000
         }
         tacky avatar visible -acc $JULIET -jid $ROMEO
     }
@@ -183,7 +206,10 @@ namespace eval ::test::avatar_int {
 
     # --- Fresh-startup: Juliet loads Romeo's pre-existing avatar on connect ---
 
-    test avatar-int-fresh-startup "Juliet loads Romeo's pre-existing avatar via initial PEP push on a fresh connect" {*}$common -body {
+    # Not on MongooseIM: on a reconnect with caps it already knows, it doesn't
+    # send a contact's last published item (XEP-0163 says it should), and
+    # Tacky relies on that push.
+    test avatar-int-fresh-startup "Juliet loads Romeo's pre-existing avatar via initial PEP push on a fresh connect" {*}$common -constraints {withServer && notMongoose} -body {
         variable SAMPLE_PNG_RAW
         variable SAMPLE_PNG_HASH
         variable ROMEO

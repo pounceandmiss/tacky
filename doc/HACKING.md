@@ -57,6 +57,8 @@ and friends. `make wasm-test` runs the same file in the browser.
 
 The test servers run with stream management on (XEP-0198). A test of the path without it turns it off for its own session with `conn -sm 0`. For an occasional sweep of the whole suite without it, run `tests/servers/with_prosody.sh --no-sm <command>`.
 
+MongooseIM is buggy: it advertises MAM full-text search (`urn:xmpp:fulltext:0`) but does not search, instead just returns all results as if the query wasn't there. Server-side search tests skip MongooseIM.
+
 For the sake of keeping complexity bearable and at the cost of flakiness, most GUI tests are timing-sensitive, so a failure is worth rerunning, or running on its own with `-match`, before treating it as real.
 
 ## Writing XMPP code

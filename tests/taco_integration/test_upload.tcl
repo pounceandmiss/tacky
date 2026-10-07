@@ -57,8 +57,10 @@ namespace eval ::test::upload {
     }
 }
 
+# Not on MongooseIM: its mod_http_upload stores files in S3 only, which the
+# test server has none of.
 test upload-int-round-trip {a file goes up to the server and comes back down unchanged} \
-    -constraints withServer \
+    -constraints {withServer && notMongoose} \
     -setup ::test::upload::setup -cleanup ::test::upload::cleanup -body {
         set acc $::test::upload::ACC
         set data "upload round trip [clock milliseconds]\n[string repeat x 5000]\nend\n"
