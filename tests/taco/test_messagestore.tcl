@@ -1583,6 +1583,77 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {newer}
 
+# Times on two clocks (PatchWins): a local one is ours, a server one the
+# archive's; with our clock ahead, ours read later than they are.
+
+test messagestore-edit-server-after-local \
+    {an archived edit stamped past the chat's mark when ours was made beats ours} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store noteArchiveTs alice@example.com 1000
+        store applyEdit alice@example.com 100 mine "<xml/>" 5000 \
+            {encryption {} sender_fp {}} local
+        store applyEdit alice@example.com 100 theirs "<xml/>" 2000 \
+            {encryption {} sender_fp {}} server
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
+    } -result {theirs}
+
+test messagestore-edit-server-before-local \
+    {an archived edit from before the chat's mark when ours was made loses} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store noteArchiveTs alice@example.com 1000
+        store applyEdit alice@example.com 100 mine "<xml/>" 5000 \
+            {encryption {} sender_fp {}} local
+        store applyEdit alice@example.com 100 old "<xml/>" 900 \
+            {encryption {} sender_fp {}} server
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
+    } -result {mine}
+
+test messagestore-edit-live-beats-server \
+    {a live edit wins over a held archived one, whatever the numbers say} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
+        store applyEdit alice@example.com 100 archived "<xml/>" 5000 \
+            {encryption {} sender_fp {}} server
+        store applyEdit alice@example.com 100 live "<xml/>" 4000 \
+            {encryption {} sender_fp {}} local
+        dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
+    } -result {live}
+
+test messagestore-reaction-server-after-local \
+    {an archived reaction set stamped past the mark replaces our later-stamped one} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+        store noteArchiveTs alice@example.com 1000
+        store applyReaction alice@example.com sid1 me@x me@x 1 {👍} 9000 local
+        store applyReaction alice@example.com sid1 me@x me@x 1 {} 2000 server
+        dict size [store reactionsForMessage alice@example.com 5000]
+    } -result 0
+
+test messagestore-archive-mark-forward-only {the mark only moves forward} \
+    {*}$ms_common \
+    -body {
+        store noteArchiveTs alice@example.com 1000
+        store noteArchiveTs alice@example.com 500
+        testdb onecolumn {SELECT ts FROM chat_archive_mark}
+    } -result {1000}
+
+test messagestore-deferred-in-arrival-order \
+    {held patches come back in the order they arrived, not by timestamp} \
+    {*}$ms_common \
+    -body {
+        store defer alice@example.com t1 edit 900 {n first}
+        store defer alice@example.com t1 edit 100 {n second}
+        lmap d [store TakeDeferred alice@example.com t1] {
+            dict get [dict get $d patch] n
+        }
+    } -result {first second}
+
 test messagestore-edit-target-not-found {applyEdit on an unknown target returns empty} \
     {*}$ms_common \
     -body {

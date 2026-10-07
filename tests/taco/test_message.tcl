@@ -4104,6 +4104,81 @@ test message-reaction-mam-parsed-has-timestamp \
         list [llength [lmap m $parsed {dict get $m timestamp}]] [llength $toStore]
     } -result {1 0}
 
+# Our clock ahead of the server's: what we do here is stamped later than
+# what the archive says another device of ours did after it.
+
+proc msg_at {jid ts} {
+    lindex [$::_client message messagestore get ids $jid [list $ts]] 0
+}
+
+proc msg_stamp_ago {secs} {
+    clock format [expr {[clock seconds] - $secs}] \
+        -format %Y-%m-%dT%H:%M:%SZ -gmt 1
+}
+
+# An archived message from alice, so the chat has a server stamp to go by.
+proc msg_archived_hello {id ago} {
+    j result -ns urn:xmpp:mam:2 -id $id {
+        j forwarded -ns urn:xmpp:forward:0 {
+            j delay -ns urn:xmpp:delay -stamp [msg_stamp_ago $ago]
+            j message -type chat -from alice@example.com/phone \
+                    -to user@test.example.com -id $id {
+                j body -body hello
+            }
+        }
+    }
+}
+
+test message-reaction-removed-elsewhere-despite-skew \
+    {a reaction removal from another device beats our own, though our clock stamped ours later} \
+    {*}$msg_common -body {
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set own [lindex [msg_store_latest alice@example.com] end]
+        set oid [dict get $own own_id]
+        msg_catchup [dict create messages [list [msg_archived_hello a1 600]] \
+            complete 1]
+        tacky message react -acc $acc -chat alice@example.com \
+            -timestamp [dict get $own timestamp] -emoji 👍
+        set rn [j result -ns urn:xmpp:mam:2 -id a2 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp [msg_stamp_ago 300]
+                j message -type chat -from user@test.example.com/other \
+                        -to alice@example.com {
+                    j reactions -ns urn:xmpp:reactions:0 -id $oid
+                }
+            }
+        }]
+        msg_catchup [dict create messages [list $rn] complete 1]
+        dict exists [msg_at alice@example.com [dict get $own timestamp]] \
+            reactions
+    } -result {0}
+
+test message-edit-elsewhere-despite-skew \
+    {a correction from another device beats our own, though our clock stamped ours later} \
+    {*}$msg_common -body {
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        tacky message send -acc $acc -chat alice@example.com -body "hi"
+        set own [lindex [msg_store_latest alice@example.com] end]
+        set oid [dict get $own own_id]
+        msg_catchup [dict create messages [list [msg_archived_hello a1 600]] \
+            complete 1]
+        tacky message edit -acc $acc -chat alice@example.com \
+            -timestamp [dict get $own timestamp] -body "hi here"
+        set rn [j result -ns urn:xmpp:mam:2 -id a2 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp [msg_stamp_ago 300]
+                j message -type chat -from user@test.example.com/other \
+                        -to alice@example.com -id c2 {
+                    j replace -ns urn:xmpp:message-correct:0 -id $oid
+                    j body -body "hi from the phone"
+                }
+            }
+        }]
+        msg_catchup [dict create messages [list $rn] complete 1]
+        dict get [msg_at alice@example.com [dict get $own timestamp]] \
+            content body
+    } -result {hi from the phone}
+
 # --- Edits (XEP-0308) / retractions (XEP-0424), 1:1 ------------------------
 
 test message-edit-incoming-1to1 {a peer correction swaps the body and marks edited} \
@@ -4516,7 +4591,7 @@ test message-error-verdict-drop {an error stanza's echoed body is not stored} \
             j body -body "echoed back"
         }]
         dict get [$::_client message Classify \
-            alice@example.com $node 1000 {{} {} {}}] verdict
+            alice@example.com $node 1000 {{} {} {}} local] verdict
     } -result drop
 
 test message-error-reactions-drop {an error echoing <reactions> patches nothing} \
@@ -4528,7 +4603,7 @@ test message-error-reactions-drop {an error echoing <reactions> patches nothing}
             }
         }]
         dict get [$::_client message Classify \
-            alice@example.com $node 1000 {{} {} {}}] verdict
+            alice@example.com $node 1000 {{} {} {}} local] verdict
     } -result drop
 
 test message-error-replace-drop {an error echoing <replace> edits nothing} \
@@ -4539,7 +4614,7 @@ test message-error-replace-drop {an error echoing <replace> edits nothing} \
             j body -body "edited"
         }]
         dict get [$::_client message Classify \
-            alice@example.com $node 1000 {{} {} {}}] verdict
+            alice@example.com $node 1000 {{} {} {}} local] verdict
     } -result drop
 
 test message-error-mam-wrapped-drop {an error nested in a MAM result is not content} \
