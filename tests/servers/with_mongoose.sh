@@ -25,6 +25,8 @@ lib_pick_ports XMPP_PORT HTTP_PORT GRAPHQL_PORT PG_PORT
 
 export XMPP_SERVER="mongoose"
 export XMPP_PORT
+# mod_stream_management is in the config below: tests that need it check this.
+export XMPP_SM=1
 
 # ─── Callbacks ───────────────────────────────────────────────────────────────
 
