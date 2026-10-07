@@ -851,10 +851,20 @@ snit::type taco_muc {
         if {![jid valid $from]} return
         if {[jid resource $from] eq ""} {
             set roomJid [jid norm $from]
-            if {[xsearch $stanza -get @type] eq "error"
-                    && [info exists Rooms($roomJid)]
-                    && ![dict get $Rooms($roomJid) joined]} {
-                $self OnPresenceError $roomJid "" $stanza
+            if {![info exists Rooms($roomJid)]} return
+            set type_ [xsearch $stanza -get @type]
+            if {$type_ eq "error"} {
+                if {![dict get $Rooms($roomJid) joined]} {
+                    $self OnPresenceError $roomJid "" $stanza
+                }
+                return
+            }
+            # The room's own presence carries its avatar hash (XEP-0153),
+            # sent on join and when an owner changes it. Only the room's
+            # bare jid reaches this branch; an occupant can only affect its
+            # room/nick entry.
+            if {$type_ eq "" && ![dict get $Rooms($roomJid) hidden]} {
+                $client avatar OnVCardPresence $roomJid $stanza
             }
             return
         }
@@ -969,9 +979,9 @@ snit::type taco_muc {
 
             $self Emit $roomJid <Joined> -jid $roomJid -nick $nick
 
-            # Fetch room avatar for bookmark display
+            # The room's avatar, for its chat list entry.
             if {![dict get $Rooms($roomJid) hidden]} {
-                $client avatar ensureVCard $roomJid
+                $self RoomInfo $roomJid
             }
 
             # Status 201 = room was just created, needs configuration
@@ -1171,6 +1181,12 @@ snit::type taco_muc {
                 set codes [$self ParseStatusCodes $mucX]
                 if {[llength $codes] > 0} {
                     $self Emit $roomJid <ConfigChanged> -jid $roomJid -codes $codes
+                    # 104: the room configuration changed, possibly its
+                    # avatar too; re-read disco#info.
+                    if {104 in $codes && [info exists Rooms($roomJid)]
+                            && ![dict get $Rooms($roomJid) hidden]} {
+                        $self RoomInfo $roomJid
+                    }
                 }
             }
             return 1
@@ -1343,6 +1359,34 @@ snit::type taco_muc {
         } else {
             {*}$command {}
         }
+    }
+
+    # Ask the room's disco#info for its avatar hash (XEP-0486,
+    # muc#roominfo_avatarhash). Unlike the room's presence on join, which is
+    # only sent when there is an avatar, it also reports when there is none.
+    # A room whose disco#info has no such field gets the one-time vCard
+    # fetch instead.
+    method RoomInfo {roomJid} {
+        $client iq request -type get -to $roomJid \
+            -command [mymethod OnRoomInfo $roomJid] \
+            -payload [j query -ns http://jabber.org/protocol/disco#info]
+    }
+
+    method OnRoomInfo {roomJid stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            $client avatar ensureVCard $roomJid
+            return
+        }
+        foreach formNode [xsearch $stanza query x -ns jabber:x:data] {
+            set form [::tacky::forms::parse $formNode]
+            foreach field [dict get $form fields] {
+                if {[dict get $field var] ne "muc#roominfo_avatarhash"} continue
+                $client avatar announce $roomJid \
+                    [string tolower [lindex [dict get $field value] 0]]
+                return
+            }
+        }
+        $client avatar ensureVCard $roomJid
     }
 
     method OnDiscoverRoomsResult {command onerror stanza} {

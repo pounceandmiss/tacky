@@ -305,6 +305,19 @@ test avatar-vcard-keeps-pubsub {a vCard result never overwrites a PEP avatar} \
         list [avatar_row alice@example.com] $::avatar_updates
     } -result {{pephash 64 pubsub} {}}
 
+test avatar-vcard-without-photo-forgets {a fetched vCard with no photo clears a cached vCard avatar, not a PEP one} \
+    {*}$avatar_common \
+    -body {
+        avatar_seed room@muc.example.com oldhash -source vcard
+        avatar_seed alice@example.com pephash -source pubsub
+        set empty [j iq -type result -from x {
+            j vCard -ns vcard-temp { j FN -body "No photo" }
+        }]
+        c avatar OnVCardResult room@muc.example.com $empty
+        c avatar OnVCardResult alice@example.com $empty
+        list [avatar_row room@muc.example.com] [avatar_row alice@example.com]
+    } -result {{} {pephash 64 pubsub}}
+
 test avatar-vcard-presence-no-wipe {an empty vCard photo does not clear a PEP avatar} \
     {*}$avatar_common \
     -body {
