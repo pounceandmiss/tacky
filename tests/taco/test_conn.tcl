@@ -721,6 +721,36 @@ test conn-reconnect-logs-backoff {a scheduled reconnect records its delay} \
         conn_logged info
     } -result {{reconnect attempt 1 in 1000ms}}
 
+test conn-backoff-climbs-through-short-sessions {a session dropped soon after login does not reset the backoff} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1 -stable-after 1000
+        c connect
+        conn_capture_log
+        foreach smid {s1 s2 s3} {
+            drive_to_ready "user@test.example.com/r" $smid
+            c.base inject_error "read failed"
+            c DoReconnect
+        }
+        conn_logged info
+    } -match glob -result {*attempt 1 in 1000ms* *attempt 2 in 2000ms* *attempt 3 in 5000ms*}
+
+test conn-backoff-resets-after-stable-session {a session that stays up resets the backoff} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1 -stable-after 20
+        c connect
+        drive_to_ready "user@test.example.com/r" s1
+        c.base inject_error "read failed"
+        c DoReconnect
+        drive_to_ready "user@test.example.com/r" s2
+        after 60 {set ::_stable_waited 1}
+        vwait ::_stable_waited
+        conn_capture_log
+        c.base inject_error "read failed"
+        lsearch -all -inline [conn_logged info] "reconnect*"
+    } -result {{reconnect attempt 1 in 1000ms}}
+
 test conn-auth-error-logs {an auth failure logs at error level} \
     {*}$common \
     -body {
