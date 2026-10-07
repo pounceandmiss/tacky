@@ -978,6 +978,12 @@ snit::type conn {
         jlog debug "stanza in" -stanza $stanza
         set lastRx [clock milliseconds]
 
+        if {[dict get $stanza tag] eq "error"
+                && [dict get $stanza ns] eq "http://etherx.jabber.org/streams"} {
+            $self OnStreamError $stanza
+            return
+        }
+
         switch -- $authState {
             authenticating {
                 $self HandleAuthStanza $stanza
@@ -1283,6 +1289,59 @@ snit::type conn {
             if {$options(-ondisconnect) ne ""} {
                 {*}$options(-ondisconnect) $msg
             }
+        }
+    }
+
+    # RFC 6120 §4.9 stream errors. not-authorized is an auth error.
+    # conflict (another client took our resource) and the addressing errors
+    # stop reconnecting: retrying would kick the other client off or fail
+    # again. system-shutdown and reset reconnect as usual; anything else
+    # reconnects starting further along the backoff, since a session that
+    # was up reset the attempt count.
+    method OnStreamError {stanza} {
+        set cond ""
+        foreach tag [xsearch $stanza * -gather tag] {
+            if {$tag ne "text"} { set cond $tag; break }
+        }
+        set text [xsearch $stanza text -get body]
+        set msg "Stream error: [expr {$cond eq "" ? "undefined-condition" : $cond}]"
+        if {$text ne ""} { append msg " ($text)" }
+        switch -- $cond {
+            not-authorized {
+                $self OnAuthError $msg
+            }
+            conflict - host-unknown - host-gone - improper-addressing -
+            invalid-from - unsupported-version {
+                $self OnFatalError $msg
+            }
+            system-shutdown - reset {
+                $self OnTransportError $msg
+            }
+            default {
+                set reconnectAttempt [expr {max($reconnectAttempt, 3)}]
+                $self OnTransportError $msg
+            }
+        }
+    }
+
+    # Like a transport error, but without the automatic reconnect.
+    method OnFatalError {msg} {
+        $self CancelReconnect
+        $self CancelConnectTimeout
+        $self StopKeepalive
+        set authState disconnected
+        set lastError $msg
+        jlog error "$options(-host): $msg"
+        $sm onDisconnect
+        catch {$base writeNow "</stream:stream>"}
+        $base close
+        $self SetConnState disconnected
+        if {$options(-emit) ne ""} {
+            {*}$options(-emit) conn <ConnError> -message $msg
+            {*}$options(-emit) conn <Disconnected> -message $msg
+        }
+        if {$options(-ondisconnect) ne ""} {
+            {*}$options(-ondisconnect) $msg
         }
     }
 

@@ -720,6 +720,59 @@ test conn-auth-error-no-reconnect {SASL failure does not trigger reconnect} \
         c state
     } -result {disconnected}
 
+# -- Stream errors -----------------------------------------------------------
+
+proc make_stream_error {cond {text ""}} {
+    j error -ns http://etherx.jabber.org/streams {
+        j $cond -ns urn:ietf:params:xml:ns:xmpp-streams
+        if {$text ne ""} {
+            j text -ns urn:ietf:params:xml:ns:xmpp-streams -body $text
+        }
+    }
+}
+
+test conn-stream-conflict-stops {a stream taken over by another client ends without reconnecting} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-x"
+        c.base inject [make_stream_error conflict "Replaced by new connection"]
+        list [c state] $_tdisconnect [c.base state]
+    } -result {disconnected {{Stream error: conflict (Replaced by new connection)}} disconnected}
+
+test conn-stream-not-authorized-is-auth-error {a not-authorized stream error is an auth error} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-x"
+        c.base inject [make_stream_error not-authorized]
+        list [c state] $_tauth_err
+    } -result {disconnected {{Stream error: not-authorized}}}
+
+test conn-stream-shutdown-reconnects-at-once {a server shutting down is asked again on the first backoff step} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-x"
+        conn_capture_log
+        c.base inject [make_stream_error system-shutdown]
+        list [c state] [conn_logged info]
+    } -result {waiting {{reconnect attempt 1 in 1000ms}}}
+
+test conn-stream-other-error-backs-off {any other stream error reconnects further along the backoff} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-x"
+        conn_capture_log
+        c.base inject [make_stream_error policy-violation]
+        list [c state] [conn_logged info]
+    } -result {waiting {{reconnect attempt 4 in 15000ms}}}
+
 # -- State emission -----------------------------------------------------------
 
 proc extract_emitted {event key} {
