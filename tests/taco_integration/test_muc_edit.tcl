@@ -210,7 +210,9 @@ namespace eval ::test::muc_edit_int {
             variable JULIET
             variable CHAT
 
-            # Juliet posts to the room; wait until Romeo receives it.
+            # Juliet posts to the room; wait until Romeo receives it. The
+            # bodies are non-ASCII on purpose, so multi-byte UTF-8 goes
+            # through the correction too.
             awaitEvent message <New> -acc $ROMEO -jid $CHAT {
                 [tacky client $JULIET] message send -chat $CHAT -body "первое"
             }
@@ -247,7 +249,11 @@ namespace eval ::test::muc_edit_int {
             foreach m $rMsgs {
                 switch -- [::test::helpers::msgText $m] {
                     "первое" { incr nFirst }
-                    "второе" { incr nSecond; set rawxml [dict get $m raw_xml] }
+                    "второе" {
+                        incr nSecond
+                        set rawxml [[tacky client $ROMEO] message rawxml \
+                            -chat $CHAT -timestamp [dict get $m timestamp]]
+                    }
                 }
             }
             set replaceId ""

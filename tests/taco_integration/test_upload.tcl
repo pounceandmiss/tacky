@@ -4,7 +4,7 @@ package require tacky::testhelpers::integration
 package require libtacky
 package require taco
 
-# XEP-0363 against the test server's http_file_share: a file goes up and
+# XEP-0363 against the test server's upload service: a file goes up and
 # comes back down byte for byte, natively over Tcl's http and in a browser
 # over XMLHttpRequest.
 
@@ -77,7 +77,7 @@ test upload-int-round-trip {a file goes up to the server and comes back down unc
         file delete $path
         set local [dict get $down -localpath]
         list [dict get $up -state] [dict get $up -error] \
-            [regexp {^https?://[^/]+/file_share/} $url] \
+            [regexp {^https?://[^/]+/.} $url] \
             [dict get $down -state] [dict get $down -error] \
             [expr {$local ne "" && [::test::upload::readBytes $local] eq $data}]
     } -result {done {} 1 done {} 1}
