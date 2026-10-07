@@ -1150,6 +1150,42 @@ test muc-destroyed-cleans-up {destroyed cleans up room state} \
         c muc isJoined -jid room@muc.example.com
     } -result {0}
 
+# The destroy notice need not carry 110 (XEP-0045 §10.9's example has none).
+test muc-destroyed-leaves-without-rejoin {a destroyed autojoin room is left, and not re-entered} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [j presence -from room@muc.example.com/me -type unavailable {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -role none -affiliation none
+                j destroy { j reason -body "closing" }
+            }
+        }]
+        list [dict get $::got -involuntary] [dict get $::got -destroyed] \
+             [llength [c.conn get_written]]
+    } -result {1 1 0}
+
+test muc-join-error-from-bare-room {a join refused from the bare room jid fails at once} \
+    {*}$muc_common \
+    -body {
+        set ::_join {}
+        c muc join -jid gone@muc.example.com -nick me \
+            -command {apply {{r} {lappend ::_join [dict get $r -error]}}}
+        c.conn feed [j presence -type error -from gone@muc.example.com {
+            j error -type cancel {
+                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        list $::_join [c muc isJoined -jid gone@muc.example.com]
+    } -result {item-not-found 0}
+
 # -- Room created (201) ------------------------------------------------------
 
 test muc-room-created-event {<RoomCreated> fires on status 201} \
