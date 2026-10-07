@@ -1450,6 +1450,45 @@ test messagestore-reaction-room-ignores-origin-id \
         set out
     } -result {1 0 {} 1 1 100}
 
+test messagestore-alias-names-the-message \
+    {a correction's ids find the corrected row; in a room only its stanza-id} \
+    {*}$ms_common \
+    -body {
+        set out {}
+        foreach jid {room@conf.example.com?join alice@example.com} {
+            store store [list [dict create timestamp 100 chat_jid $jid \
+                from_jid $jid/a body a server_id sidA own_id "" \
+                origin_id oa raw_xml ""]]
+            store addAliases $jid 100 sidC oc
+            store applyReaction $jid sidC bob@x bob@x 0 {👍} 300
+            lappend out [store resolveTargetTs $jid sidC] \
+                [store resolveTargetTs $jid oc] \
+                [store resolveReply $jid sidC] \
+                [dict keys [store reactionsForMessage $jid 100]]
+        }
+        set out
+    } -result {100 {} 100 👍 100 100 100 👍}
+
+test messagestore-alias-follows-confirmed-row \
+    {an alias of a pending send still names it once its echo moves it} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 own_id o1 origin_id o1 \
+            server_status pending]]
+        store addAliases alice@example.com 100 "" oc
+        store reconcile alice@example.com s1 o1 o1 500
+        store resolveTargetTs alice@example.com oc
+    } -result {500}
+
+test messagestore-forget-chat-drops-aliases {forgetting a chat drops its aliases too} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sidA]]
+        store addAliases alice@example.com 100 sidC oc
+        store forgetChat alice@example.com
+        testdb onecolumn {SELECT COUNT(*) FROM message_alias}
+    } -result {0}
+
 test messagestore-reaction-own-set {ownReactions returns our current set for toggling} \
     {*}$ms_common \
     -body {

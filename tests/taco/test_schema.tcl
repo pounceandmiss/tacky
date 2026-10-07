@@ -124,7 +124,7 @@ test schema-per-account-upgrade {a <jid>.db from before migrations reaches the f
              [::_db eval {SELECT body FROM chat_message}] \
              [::_db eval {SELECT count(*) FROM caps_cache}] \
              [expr {[schema_shape ::_db] eq [schema_fresh_shape per-account]}]
-    } -result {2 hello 0 1}
+    } -result {3 hello 0 1}
 
 test schema-step-kinds {.sql and .tcl steps run in number order} \
     -setup {

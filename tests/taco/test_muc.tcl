@@ -2153,6 +2153,86 @@ test muc-reaction-ignores-origin-id-collision \
         lmap m [muc_msgs] { dict exists $m reactions }
     } -result {1 0}
 
+# -- Corrections' ids name the message they corrected -------------------------
+
+# A room message as the archive holds it, optionally a correction of $replace.
+proc muc_archived_from {id stamp nick occ originId body {replace ""}} {
+    j result -ns urn:xmpp:mam:2 -id $id {
+        j forwarded -ns urn:xmpp:forward:0 {
+            j delay -ns urn:xmpp:delay -stamp $stamp
+            j message -type groupchat -from room@muc.example.com/$nick \
+                    -id $originId {
+                j origin-id -ns urn:xmpp:sid:0 -id $originId
+                j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+                if {$replace ne ""} {
+                    j replace -ns urn:xmpp:message-correct:0 -id $replace
+                }
+                j body -body $body
+            }
+        }
+    }
+}
+
+proc muc_feed_from {nick occ sid originId body {replace ""}} {
+    c.conn feed [j message -type groupchat -id $originId \
+            -from room@muc.example.com/$nick {
+        j stanza-id -ns urn:xmpp:sid:0 -id $sid -by room@muc.example.com
+        j origin-id -ns urn:xmpp:sid:0 -id $originId
+        j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+        if {$replace ne ""} {
+            j replace -ns urn:xmpp:message-correct:0 -id $replace
+        }
+        j body -body $body
+    }]
+}
+
+# Conversations reacts to a corrected message by its correction's stanza-id.
+test muc-reaction-by-correction-stanza-id \
+    {a reaction naming a correction's stanza-id lands on the corrected message} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        muc_feed_from alice occ-a srvA oA "helo"
+        muc_feed_from alice occ-a srvC oC "hello" oA
+        c.conn feed [j message -type groupchat -from room@muc.example.com/bob {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-b
+            j reactions -ns urn:xmpp:reactions:0 -id srvC { j reaction -body 👍 }
+        }]
+        set m [lindex [muc_msgs] 0]
+        list [llength [muc_msgs]] [dict get $m content body] \
+            [dict get $m reactions]
+    } -result {1 hello {👍 {reactors bob mine 0}}}
+
+test muc-chained-correction-by-origin-id \
+    {a correction of a correction edits the original, for its author only} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        muc_feed_from alice occ-a srvA oA "v1"
+        muc_feed_from alice occ-a srvC1 oC1 "v2" oA
+        muc_feed_from bob occ-b srvX oX "bob's" oC1
+        set afterBob [dict get [lindex [muc_msgs] 0] content body]
+        muc_feed_from alice occ-a srvC2 oC2 "v3" oC1
+        list $afterBob [dict get [lindex [muc_msgs] 0] content body]
+    } -result {v2 v3}
+
+# The archive is walked newest first: both corrections come before the
+# message, the second naming the first.
+test muc-chained-correction-deferred \
+    {corrections held for their target apply in order once it arrives} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        lassign [c message IngestMamBatch room@muc.example.com?join \
+            [dict create messages [list \
+                [muc_archived_from srvC2 2024-01-01T00:00:03Z alice occ-a oC2 v3 oC1] \
+                [muc_archived_from srvC1 2024-01-01T00:00:02Z alice occ-a oC1 v2 oA] \
+                [muc_archived_from srvA 2024-01-01T00:00:01Z alice occ-a oA v1]]]] \
+            parsed toStore
+        c message messagestore store $toStore
+        lmap m [muc_msgs] { dict get $m content body }
+    } -result {v3}
+
 test muc-moderation-tombstones \
     {a moderated retraction broadcast from the room bare jid tombstones the message} \
     {*}$muc_common \
