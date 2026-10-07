@@ -62,16 +62,13 @@ proc reply::quote {quoteBody} {
 }
 
 # Reply id another client resolves against, by chat kind: MUC uses the
-# stanza-id (server_id); 1:1 uses the origin-id, since peers never see our
-# server id. Falls through to the next id when one is absent (our own pending
-# send has no server_id yet).
+# stanza-id (server_id), and only it: occupants match nothing else, so our
+# own send before its echo has none to give. 1:1 uses the origin-id, since
+# peers never see our server id, falling through to the next id when one
+# is absent.
 proc reply::pick_id {isMuc serverId originId ownId} {
-    if {$isMuc} {
-        set candidates [list $serverId $originId $ownId]
-    } else {
-        set candidates [list $originId $ownId $serverId]
-    }
-    foreach c $candidates {
+    if {$isMuc} { return $serverId }
+    foreach c [list $originId $ownId $serverId] {
         if {$c ne ""} { return $c }
     }
     return ""

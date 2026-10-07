@@ -1575,7 +1575,7 @@ snit::type taco_message {
             $newBody $oid $msgType $toJid $encMode "" "" 0 $targetId]]
         # No sender_fp on our own rows: we never decrypt our own sends, and
         # is_own already authorizes correcting them from any of our devices.
-        set targetTs [$messagestore applyEdit $chatJid $targetId \
+        set targetTs [$messagestore applyEdit $chatJid $opts(-timestamp) \
             $newBody $readable [clock microseconds] \
             [dict create encryption $encMode sender_fp ""]]
         if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
@@ -1599,7 +1599,7 @@ snit::type taco_message {
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
             j store -ns urn:xmpp:hints
         }]
-        set targetTs [$messagestore applyRetract $chatJid $targetId]
+        set targetTs [$messagestore applyRetract $chatJid $opts(-timestamp)]
         if {$targetTs ne ""} { $self EmitRetracted $chatJid $targetTs }
     }
 
@@ -1613,7 +1613,12 @@ snit::type taco_message {
         array set opts $args
         set chatJid $opts(-chat)
         set targetId [$self ReferenceId $chatJid $opts(-timestamp)]
-        if {$targetId eq ""} return
+        if {$targetId eq ""} {
+            if {$opts(-onerror) ne ""} {
+                {*}$opts(-onerror) "That message hasn't reached the room yet"
+            }
+            return
+        }
         regsub {\?join$} $chatJid {} roomJid
         set roomJid [jid bare $roomJid]
         set reason $opts(-reason)
@@ -2528,24 +2533,29 @@ snit::type taco_message {
         return [dict create sender_id $senderId is_own $isOwn]
     }
 
-    # Authorization fields of a stored target message, matched by its wire id
-    # (the id-triple): {occupant_id from_jid isOwn encryption sender_fp}, where
-    # isOwn is whether the target is our own send (own_id set). Returns "" when
-    # none is stored.
-    method TargetAuthFields {chatJid targetId} {
-        set found 0
+    # The stored messages a correction or retraction may target, matched by
+    # any of their wire ids (the id-triple), oldest first. Several can match:
+    # origin-ids are the sender's choice, so the caller picks by author. Each
+    # is a dict {ts occ from own enc fp server_id}, where own is whether it
+    # is our own send (own_id set).
+    method TargetCandidates {chatJid targetId} {
+        set out {}
         $client db eval {
-            SELECT occupant_id, from_jid, own_id, encryption, sender_fp
+            SELECT timestamp, occupant_id, from_jid, own_id, encryption,
+                   sender_fp, server_id
             FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND ( (server_id != '' AND server_id=$targetId)
                  OR (origin_id != '' AND origin_id=$targetId)
                  OR (own_id    != '' AND own_id=$targetId) )
-            LIMIT 1
-        } row { set found 1 }
-        if {!$found} { return "" }
-        return [list $row(occupant_id) $row(from_jid) \
-            [expr {$row(own_id) ne ""}] $row(encryption) $row(sender_fp)]
+            ORDER BY timestamp
+        } row {
+            lappend out [dict create ts $row(timestamp) \
+                occ $row(occupant_id) from $row(from_jid) \
+                own [expr {$row(own_id) ne ""}] enc $row(encryption) \
+                fp $row(sender_fp) server_id $row(server_id)]
+        }
+        return $out
     }
 
     # True iff a stanza from $chatJid may correct/retract a stored target:
@@ -2591,8 +2601,8 @@ snit::type taco_message {
             raw_xml [jwrite $plainNode] sender $sender]
     }
 
-    # ok / missing / deny / ignore for a ParseCorrection result against its
-    # stored target.
+    # {ok ts} / missing / deny / ignore for a ParseCorrection result against
+    # its stored target; ts is the target row's.
     method AuthorizeEdit {chatJid edit} {
         # In a room another occupant is known by occupant-id (XEP-0421) only.
         # A correction without one can't be tied to an author: drop it,
@@ -2602,13 +2612,19 @@ snit::type taco_message {
                 && [dict get $sender sender_id] eq ""} {
             return ignore
         }
-        set auth [$self TargetAuthFields $chatJid [dict get $edit target_id]]
-        if {$auth eq ""} { return missing }
-        lassign $auth targetOcc targetFrom targetOwn targetEnc targetFp
-        if {![$self SameAuthor $chatJid [dict get $edit sender] \
-                $targetOcc $targetFrom $targetOwn]} {
-            return deny
+        set candidates [$self TargetCandidates $chatJid [dict get $edit target_id]]
+        if {$candidates eq ""} { return missing }
+        set target ""
+        foreach c $candidates {
+            if {[$self SameAuthor $chatJid $sender \
+                    [dict get $c occ] [dict get $c from] [dict get $c own]]} {
+                set target $c
+                break
+            }
         }
+        if {$target eq ""} { return deny }
+        set targetEnc [dict get $target enc]
+        set targetFp [dict get $target fp]
         # Authorship is server-asserted, so the correction must also carry the
         # target's protection: no cleartext rewrite of an encrypted row, and
         # the same sender identity when the target names one. Otherwise the
@@ -2619,7 +2635,7 @@ snit::type taco_message {
         if {$targetFp ne "" && [dict get $edit sender_fp] ne $targetFp} {
             return deny
         }
-        return ok
+        return [list ok [dict get $target ts]]
     }
 
     # Extract an XEP-0424/0425 retraction into {target_id from}, or "" when
@@ -2633,32 +2649,40 @@ snit::type taco_message {
             from [dict get $sender from] sender $sender]
     }
 
-    # ok / missing / deny for a ParseRetraction result against its stored
-    # target. In a MUC the room's moderated broadcast (from the bare room
-    # jid) is honored, and an occupant's own retraction when its occupant-id
-    # is the author's; in 1:1 only the original sender may self-retract.
+    # {ok ts} / missing / deny for a ParseRetraction result against its
+    # stored target. In a MUC the room's moderated broadcast (from the bare
+    # room jid, naming the room's stanza-id) is honored, and an occupant's
+    # own retraction when its occupant-id is the author's; in 1:1 only the
+    # original sender may self-retract.
     method AuthorizeRetract {chatJid retract} {
-        set auth [$self TargetAuthFields $chatJid [dict get $retract target_id]]
-        if {$auth eq ""} { return missing }
-        lassign $auth targetOcc targetFrom targetOwn
+        set targetId [dict get $retract target_id]
+        set candidates [$self TargetCandidates $chatJid $targetId]
+        if {$candidates eq ""} { return missing }
         set rawFrom [dict get $retract from]
-        if {[IsRoomChatJid $chatJid]} {
-            # Moderation comes from the room's bare jid. From an occupant
-            # (room/nick) it is an XEP-0424 self-retraction, accepted only
-            # with a matching occupant-id (XEP-0421), since nicks get reused.
-            if {[jid resource $rawFrom] ne ""
-                    && ![$self SameAuthor $chatJid [dict get $retract sender] \
-                        $targetOcc $targetFrom $targetOwn]} {
-                return deny
+        foreach c $candidates {
+            set targetFrom [dict get $c from]
+            if {[IsRoomChatJid $chatJid]} {
+                # Moderation comes from the room's bare jid. From an occupant
+                # (room/nick) it is an XEP-0424 self-retraction, accepted only
+                # with a matching occupant-id (XEP-0421), since nicks get
+                # reused.
+                if {[jid resource $rawFrom] eq ""} {
+                    set ok [expr {[dict get $c server_id] eq $targetId}]
+                } else {
+                    set ok [$self SameAuthor $chatJid \
+                        [dict get $retract sender] [dict get $c occ] \
+                        $targetFrom [dict get $c own]]
+                }
+            } elseif {[IsMucChatJid $chatJid]} {
+                # A private chat in a room: only its author, the occupant it
+                # came from, may take a message back.
+                set ok [expr {[jid norm $rawFrom] eq [jid norm $targetFrom]}]
+            } else {
+                set ok [expr {[jid bare $rawFrom] eq [jid bare $targetFrom]}]
             }
-        } elseif {[IsMucChatJid $chatJid]} {
-            # A private chat in a room: only its author, the occupant it
-            # came from, may take a message back.
-            if {[jid norm $rawFrom] ne [jid norm $targetFrom]} { return deny }
-        } else {
-            if {[jid bare $rawFrom] ne [jid bare $targetFrom]} { return deny }
+            if {$ok} { return [list ok [dict get $c ts]] }
         }
-        return ok
+        return deny
     }
 
     # The verdict for a parsed correction/retraction ($kind edit|retract):
@@ -2669,9 +2693,10 @@ snit::type taco_message {
         set auth [expr {$kind eq "edit"
             ? [$self AuthorizeEdit $chatJid $patch]
             : [$self AuthorizeRetract $chatJid $patch]}]
-        switch $auth {
+        switch [lindex $auth 0] {
             ok {
-                return [dict create verdict $kind timestamp $ts {*}$patch]
+                return [dict create verdict $kind timestamp $ts {*}$patch \
+                    target_ts [lindex $auth 1]]
             }
             missing {
                 return [dict create verdict defer timestamp $ts \
@@ -2717,7 +2742,7 @@ snit::type taco_message {
     # tombstone). Shared by the live and every MAM dispatch path.
     method ApplyEditVerdict {chatJid verdict} {
         set targetTs [$messagestore applyEdit $chatJid \
-            [dict get $verdict target_id] [dict get $verdict new_body] \
+            [dict get $verdict target_ts] [dict get $verdict new_body] \
             [dict get $verdict raw_xml] [dict get $verdict timestamp] \
             [dict create encryption [dict get $verdict encryption] \
                 sender_fp [dict get $verdict sender_fp]]]
@@ -2726,8 +2751,15 @@ snit::type taco_message {
     }
 
     method ApplyRetractVerdict {chatJid verdict} {
-        set targetTs [$messagestore applyRetract $chatJid \
-            [dict get $verdict target_id]]
+        # A MAM tombstone names the archive id and needs no author check.
+        if {[dict exists $verdict target_ts]} {
+            set targetTs [dict get $verdict target_ts]
+        } else {
+            set targetTs [$messagestore resolveTargetTs $chatJid \
+                [dict get $verdict target_id]]
+            if {$targetTs eq ""} return
+        }
+        set targetTs [$messagestore applyRetract $chatJid $targetTs]
         if {$targetTs eq ""} return
         $self EmitRetracted $chatJid $targetTs
     }

@@ -4354,6 +4354,19 @@ test message-moderate-sends-request {moderate asks the room to retract by stanza
              [xsearch $req moderate reason -get body]
     } -result {srv1 spam}
 
+test message-moderate-unechoed-reports {a message the room hasn't echoed has no stanza-id to moderate by} \
+    {*}$msg_common -body {
+        set room room@conf.example.com?join
+        msg_store [list [msg_msg chat_jid $room timestamp 100 \
+            from_jid room@conf.example.com/me server_id "" \
+            own_id o1 origin_id o1 server_status pending]]
+        set before [llength [$::_client conn get_written]]
+        set got ""
+        tacky message moderate -acc $acc -chat $room -timestamp 100 \
+            -onerror [list apply {{msg} { set ::got $msg }}]
+        list [expr {[llength [$::_client conn get_written]] - $before}] $got
+    } -result {0 {That message hasn't reached the room yet}}
+
 test message-moderate-error-maps-condition \
     {a rejected moderation request reports friendly text} \
     {*}$msg_common -body {
