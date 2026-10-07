@@ -4033,6 +4033,91 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
              [llength [msg_store_latest alice@example.com]]
     } -result {{hello world} 1 1}
 
+# Corrections and retractions routinely arrive before their target (an
+# archive walked newest first, a target still in flight). They wait for it
+# rather than being stored as messages of their own.
+test message-edit-before-target {a correction arriving before its target applies when the target lands} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
+            j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body -body "hello world"
+        }]
+        set before [llength [msg_store_latest alice@example.com]]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body -body "helo"
+        }]
+        set rows [msg_store_latest alice@example.com]
+        set m [lindex $rows 0]
+        list $before [dict get $m content body] [dict get $m edited] [llength $rows]
+    } -result {0 {hello world} 1 1}
+
+test message-retract-before-target {a retraction arriving before its target is not stored, and retracts the target when it lands} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id r1 {
+            j retract -ns urn:xmpp:message-retract:1 -id m1
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
+            j body -body "This person attempted to retract a previous message"
+        }]
+        set before [llength [msg_store_latest alice@example.com]]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body -body "oops"
+        }]
+        set rows [msg_store_latest alice@example.com]
+        list $before [dict get [lindex $rows 0] retracted] [llength $rows]
+    } -result {0 1 1}
+
+test message-retract-before-target-other-author {a deferred retraction is authorized against the target once it lands} \
+    {*}$msg_common -body {
+        # A deferred retraction in alice's chat from someone else. It must
+        # still be authorized when the target arrives.
+        $::_client message messagestore defer alice@example.com m1 retract 1 \
+            [dict create target_id m1 from mallory@example.com/x]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body -body "keep me"
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m retracted] [dict get $m content body]
+    } -result {0 {keep me}}
+
+test message-mam-retract-same-page {a retraction in the same MAM page as its target retracts it} \
+    {*}$msg_common -body {
+        set orig [j result -ns urn:xmpp:mam:2 -id arch-1 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+                j message -type chat -from alice@example.com/phone -to $acc -id m1 {
+                    j origin-id -ns urn:xmpp:sid:0 -id m1
+                    j body -body "oops"
+                }
+            }
+        }]
+        set edit [j result -ns urn:xmpp:mam:2 -id arch-2 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:05Z
+                j message -type chat -from alice@example.com/phone -to $acc -id m2 {
+                    j replace -ns urn:xmpp:message-correct:0 -id m1
+                    j body -body "oops, fixed"
+                }
+            }
+        }]
+        set retract [j result -ns urn:xmpp:mam:2 -id arch-3 {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:01:00Z
+                j message -type chat -from alice@example.com/phone -to $acc -id r1 {
+                    j retract -ns urn:xmpp:message-retract:1 -id m1
+                    j body -body "This person attempted to retract a previous message"
+                }
+            }
+        }]
+        lassign [$::_client message IngestMamBatch alice@example.com \
+            [dict create messages [list $orig $edit $retract]]] parsed toStore
+        msg_store $toStore
+        set rows [msg_store_latest alice@example.com]
+        list [llength $toStore] [llength $rows] [dict get [lindex $rows 0] retracted]
+    } -result {1 1 1}
+
 # Feed an incoming message the decrypt path's way: `decrypted` and `sender_fp`
 # ride the node dict, not the XML.
 proc msg_feed_decrypted {id body fp {replaceId ""}} {
@@ -4481,12 +4566,16 @@ test message-pm-author-may-retract {the PM partner's own retraction is honoured,
                 j retract -ns urn:xmpp:message-retract:1 -id a1
             }
         }}
-        list \
-            [expr {[$::_client message ParseRetraction room@muc.example.com/alice \
-                [apply $retract room@muc.example.com/mallory]] ne ""}] \
-            [expr {[$::_client message ParseRetraction room@muc.example.com/alice \
-                [apply $retract room@muc.example.com/alice]] ne ""}]
-    } -result {0 1}
+        set chat room@muc.example.com/alice
+        set verdict {{chat from} {
+            set p [$::_client message ParseRetraction $chat \
+                [apply $::retract $from]]
+            dict get [$::_client message PatchVerdict $chat retract $p 0] verdict
+        }}
+        set ::retract $retract
+        list [apply $verdict $chat room@muc.example.com/mallory] \
+             [apply $verdict $chat room@muc.example.com/alice]
+    } -result {drop retract}
 
 # Room messages still pending after catchup: retried when the room is
 # joined, from what is pending then.
