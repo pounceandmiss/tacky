@@ -1775,8 +1775,8 @@ test muc-moderation-tombstones \
         dict get [lindex [muc_msgs] 0] retracted
     } -result {1}
 
-test muc-occupant-retract-ignored \
-    {a <retract> from an occupant (not the room bare jid) is not honored} \
+test muc-occupant-retract-other-ignored \
+    {a <retract> from an occupant other than the author is not honored, nor stored} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -occupant occ-me
@@ -1786,12 +1786,34 @@ test muc-occupant-retract-ignored \
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
             j body -body "keep me"
         }]
+        # Same nick as the author, different occupant-id (someone who took
+        # the nick after the author left).
         c.conn feed [j message -type groupchat -from room@muc.example.com/other {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-mallory
+            j retract -ns urn:xmpp:message-retract:1 -id srv1
+            j body -body "This person attempted to retract a previous message"
+        }]
+        list [dict get [lindex [muc_msgs] 0] retracted] [llength [muc_msgs]]
+    } -result {0 1}
+
+test muc-occupant-retract-own \
+    {an occupant's retraction of its own message (same occupant-id) is honored} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body -body "oops"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/renamed {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
             j retract -ns urn:xmpp:message-retract:1 -id srv1
+            j body -body "This person attempted to retract a previous message"
         }]
-        dict get [lindex [muc_msgs] 0] retracted
-    } -result {0}
+        list [dict get [lindex [muc_msgs] 0] retracted] [llength [muc_msgs]]
+    } -result {1 1}
 
 test muc-moderate-sends-iq \
     {moderate sends a XEP-0425 moderate IQ to the room referencing the stanza-id} \

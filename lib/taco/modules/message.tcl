@@ -2555,22 +2555,30 @@ snit::type taco_message {
         if {$ret eq ""} { return "" }
         set targetId [xsearch $ret -get @id]
         if {$targetId eq ""} { return "" }
+        set sender [$self resolveSender $chatJid $msgNode]
+        dict set sender from [xsearch $msgNode -get @from]
         return [dict create target_id $targetId \
-            from [xsearch $msgNode -get @from]]
+            from [dict get $sender from] sender $sender]
     }
 
     # ok / missing / deny for a ParseRetraction result against its stored
-    # target. In a MUC only the room's moderated broadcast (from the bare
-    # room jid) is honored; in 1:1 only the original sender may self-retract.
+    # target. In a MUC the room's moderated broadcast (from the bare room
+    # jid) is honored, and an occupant's own retraction when its occupant-id
+    # is the author's; in 1:1 only the original sender may self-retract.
     method AuthorizeRetract {chatJid retract} {
         set auth [$self TargetAuthFields $chatJid [dict get $retract target_id]]
         if {$auth eq ""} { return missing }
-        lassign $auth targetOcc targetFrom
+        lassign $auth targetOcc targetFrom targetOwn
         set rawFrom [dict get $retract from]
         if {[IsRoomChatJid $chatJid]} {
-            # Moderation: the room broadcasts from its bare jid. A <retract>
-            # from an occupant (room/nick) is not honored.
-            if {[jid resource $rawFrom] ne ""} { return deny }
+            # Moderation comes from the room's bare jid. From an occupant
+            # (room/nick) it is an XEP-0424 self-retraction, accepted only
+            # with a matching occupant-id (XEP-0421), since nicks get reused.
+            if {[jid resource $rawFrom] ne ""
+                    && ![$self SameAuthor $chatJid [dict get $retract sender] \
+                        $targetOcc $targetFrom $targetOwn]} {
+                return deny
+            }
         } elseif {[IsMucChatJid $chatJid]} {
             # A private chat in a room: only its author, the occupant it
             # came from, may take a message back.
