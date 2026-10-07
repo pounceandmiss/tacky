@@ -1445,6 +1445,51 @@ test conn-wake-on-time-no-probe {wake ticks that arrive on time send nothing} \
         c.base get_written
     } -result {}
 
+test conn-wake-cuts-backoff {a wake while waiting to reconnect reconnects now} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1 -keepalive 0 -wake-check 20
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr9"
+        c.base inject_error "read failed"
+        set before [c state]
+        # Simulated sleep, well within the 1 s backoff.
+        after 150
+        conn_wait 40
+        list $before [c state]
+    } -result {waiting authenticating}
+
+test conn-wake-backoff-opt-out {with probing disallowed, a wake leaves the backoff alone} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1 -keepalive 0 -wake-check 20 \
+            -probe-allowed-command {expr 0}
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr10"
+        c.base inject_error "read failed"
+        after 150
+        conn_wait 40
+        c state
+    } -result {waiting}
+
+test conn-probe-overdue-asks-again {a probe whose timeout fires far too late asks again rather than drop} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0 -probe-timeout 20 \
+            -keepalive-timeout 20
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-pr11"
+        conn_wait 40
+        c.base clear
+        c probe
+        # Block past the probe timeout, then deliver the answer.
+        after 150
+        conn_wait 5
+        c.base inject [make_sm_ack 0]
+        conn_wait 40
+        list [lmap st [c.base get_written] {dict get $st tag}] $_tdisconnect [c isReady]
+    } -result {{r r} {} 1}
+
 test conn-wake-check-stops-when-not-ready {the wake check stops once the link leaves ready} \
     {*}$common \
     -body {
