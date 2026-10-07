@@ -23,6 +23,9 @@ snit::type taco_caps {
     # Our identity and features (hardcoded, updated manually as XEPs are added)
     variable identities {}
     variable features {}
+    # Features advertised only while a command says so (a setting):
+    # feature -> command prefix returning a boolean. See addFeature.
+    variable conditional {}
 
     # Cached values (invalidated when identity/features change)
     variable cachedQueryNode ""
@@ -106,8 +109,16 @@ snit::type taco_caps {
             error 0 error_text ""]
     }
 
-    # Register an additional disco feature (e.g. namespace+notify for PEP)
-    method addFeature {feat} {
+    # Register an additional disco feature (e.g. namespace+notify for PEP).
+    # With -if, the feature is advertised only while {*}$cmd is true; call
+    # `refresh` when what it reads changes.
+    method addFeature {feat args} {
+        if {[dict exists $args -if]} {
+            dict set conditional $feat [dict get $args -if]
+            set cachedVer ""
+            set cachedQueryNode ""
+            return
+        }
         if {$feat ni $features} {
             lappend features $feat
             set features [lsort $features]
@@ -115,6 +126,30 @@ snit::type taco_caps {
             set cachedVer ""
             set cachedQueryNode ""
         }
+    }
+
+    # The features advertised now: the fixed ones and the conditional ones
+    # whose command holds.
+    method CurrentFeatures {} {
+        set out $features
+        dict for {feat cmd} $conditional {
+            if {![catch {{*}$cmd} on] && [string is true -strict $on]} {
+                lappend out $feat
+            }
+        }
+        lsort -unique $out
+    }
+
+    # Rebuild after a conditional feature's command may have changed, and
+    # announce the new caps if they did change and a session is up.
+    method refresh {} {
+        set old $cachedVer
+        set cachedVer ""
+        set cachedQueryNode ""
+        $self BuildIfNeeded
+        if {$old eq "" || $old eq $cachedVer} return
+        if {[$client conn state] ne "connected"} return
+        $client write [j presence {j #as-is [$self cNode]}]
     }
 
     # Return <c/> element dict for inclusion in outgoing presence
@@ -177,7 +212,7 @@ snit::type taco_caps {
                 }
                 j identity {*}$idArgs
             }
-            foreach feat $features {
+            foreach feat [$self CurrentFeatures] {
                 j feature -var $feat
             }
         }]

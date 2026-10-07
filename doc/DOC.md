@@ -339,6 +339,7 @@ Facts the frontend reports about the app as a whole.
 
     app setActive {active: bool}
     app isActive {}                -> bool
+    app idleSeconds {}             -> int
 
 `active` is whether the user is using the app: focused on the desktop, in
 the foreground on mobile. Until a frontend reports otherwise it counts as
@@ -346,6 +347,7 @@ active. On becoming active, connected accounts check their link
 (`conn probe`). Accounts whose server supports Client State Indication
 (XEP-0352) also tell it each change, so while the app is inactive the
 server can hold back presence updates and typing notifications.
+`idleSeconds` is how long the app has been inactive, 0 while active.
 
 ## setting
 
@@ -358,6 +360,19 @@ A global key/value store - not tied to any account.
 Event:
 
     setting <Changed> {key: string, value: string}
+
+Keys the backend reads, besides `conn_probe` (see [conn](#conn)):
+
+- `answer_time`: `1` answers Entity Time queries (XEP-0202) with the local
+  time and timezone offset.
+- `answer_last_activity`: `1` answers Last Activity queries (XEP-0012)
+  with `app idleSeconds`.
+
+Both are off when unset. When on, they are answered only to the account's
+own resources and to contacts with a presence subscription to it (`from`
+or `both`); anyone else gets `service-unavailable`, as when off. Their
+disco features are advertised only while on, and changing either sends
+updated caps.
 
 ## storage
 

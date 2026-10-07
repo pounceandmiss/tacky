@@ -30,6 +30,8 @@ snit::widget accountwindow {
     variable logNativeVar 0
     variable logRedactVar 1
     variable connProbeVar 1
+    variable answerTimeVar 0
+    variable answerLastVar 0
     variable loggingMenu ""
     # Must match taco_file's fallbacks; it is what enforces them.
     variable autofetchVar "contacts"
@@ -118,6 +120,10 @@ snit::widget accountwindow {
         $self SyncLogFileEntry
         settingmenu::checkbutton $mb.file "Check connection on wake and focus" \
             -var [myvar connProbeVar] -key conn_probe -tag $win
+        settingmenu::checkbutton $mb.file "Share my local time with contacts" \
+            -var [myvar answerTimeVar] -key answer_time -tag $win
+        settingmenu::checkbutton $mb.file "Share how long I've been away with contacts" \
+            -var [myvar answerLastVar] -key answer_last_activity -tag $win
         $mb.file add separator
         $mb.file add command -label "Quit" \
             -command [mymethod Quit] -accelerator "Ctrl+Q"

@@ -241,6 +241,7 @@ jsonify_type jsonify \
         log/getredact           bool
         debugtap/on             int
         app/isActive            bool
+        app/idleSeconds         int
         message/rawxml          string
         message/ownRead         {dict {timestamp int unread int}}
         mam/query               {dict {messages list complete bool}}
