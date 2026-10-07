@@ -295,12 +295,13 @@ snit::type taco_bookmarks {
     method OnMucLeft {args} {
         # A hidden room (see muc join -hidden) is none of ours.
         if {[$client muc isHidden -jid [dict get $args -jid]]} return
-        array set opts {-jid "" -involuntary 0 -codes {}}
+        array set opts {-jid "" -involuntary 0 -codes {} -destroyed 0}
         array set opts $args
         dict set mucStatus $opts(-jid) left
         dict unset mucReason $opts(-jid)
         $self EmitRoomState $opts(-jid)
-        if {$opts(-involuntary)} {
+        # Don't rejoin a destroyed room: on most services joining recreates it.
+        if {$opts(-involuntary) && !$opts(-destroyed)} {
             $self RejoinAfterRemoval $opts(-jid) $opts(-codes)
         }
     }

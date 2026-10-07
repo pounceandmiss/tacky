@@ -44,7 +44,7 @@
 # tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
-# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1?
+# tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1? ?-destroyed 1?
 # tacky listen muc <Error> $cmd              ;# -jid $room -error $errorType -stanza $stanza
 # tacky listen muc <Presence> $cmd           ;# -jid $room -nick $nick -occupant $dict ?-replay 1?
 #   ;# -replay 1: re-sent after our role changed (caps), not a new presence
@@ -794,8 +794,19 @@ snit::type taco_muc {
         set from [xsearch $stanza -get @from]
         if {$from eq ""} return
 
-        # MUC presence comes from room@service/nick
-        if {![jid valid $from] || [jid resource $from] eq ""} return
+        # MUC presence comes from room@service/nick, but a service may reject
+        # a join (no such room, service unavailable) from the bare room jid.
+        # Fail the join now instead of at its timeout.
+        if {![jid valid $from]} return
+        if {[jid resource $from] eq ""} {
+            set roomJid [jid norm $from]
+            if {[xsearch $stanza -get @type] eq "error"
+                    && [info exists Rooms($roomJid)]
+                    && ![dict get $Rooms($roomJid) joined]} {
+                $self OnPresenceError $roomJid "" $stanza
+            }
+            return
+        }
 
         set roomJid [jid norm [jid bare $from]]
         set nick [jid resource $from]
@@ -949,7 +960,9 @@ snit::type taco_muc {
             set altRoom [xsearch $destroyNode -get @jid]
             set destroyReason [xsearch $destroyNode reason -get body]
 
-            $self CleanupRoom $roomJid
+            # We are out of the room: emit <Left>, flagged -destroyed so
+            # bookmarks doesn't rejoin (and recreate) it.
+            $self SelfLeft $roomJid 1 $codes -destroyed 1
             $self Emit $roomJid <Destroyed> -jid $roomJid -altRoom $altRoom -reason $destroyReason
             return
         }
