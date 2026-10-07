@@ -1563,6 +1563,15 @@ test omemo-unit-enabled-default-on \
         list unset_nocache $noCache unset_cached $withCache
     } -result {unset_nocache 1 unset_cached 1}
 
+test omemo-unit-enabled-default-off-for-room-pm \
+    {a room PM (room/nick) defaults to off; an explicit setting still wins} \
+    {*}$jid_common -body {
+        set pm room@muc.example.com/alice
+        set dflt [c omemo IsEnabled $pm]
+        c omemo setEnabled -jid $pm -value 1
+        list $dflt [c omemo IsEnabled $pm]
+    } -result {0 1}
+
 test omemo-unit-enabled-explicit-overrides \
     {explicit setEnabled wins over the default-on} \
     {*}$jid_common -body {

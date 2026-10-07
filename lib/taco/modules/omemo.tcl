@@ -2247,7 +2247,10 @@ snit::type taco_omemo {
     method IsEnabled {peerJid} {
         set v ""
         catch {set v [$client setting get -key omemo.enabled.$peerJid]}
-        if {$v eq ""} { return 1 }
+        # Unset defaults on, except for a room PM (room/nick): device lists
+        # are published under bare jids, so there are no keys to encrypt to
+        # and the send would wait for them forever.
+        if {$v eq ""} { return [expr {[jid resource $peerJid] eq ""}] }
         return [expr {!![string is true -strict $v]}]
     }
 
