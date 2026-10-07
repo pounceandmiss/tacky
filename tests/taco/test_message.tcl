@@ -3868,6 +3868,47 @@ test message-carbon-wrapper-delay \
         set out
     } -result {c1 1 c2 0}
 
+test message-pm-carbon-filed-under-occupant {a carbon of a room PM we sent elsewhere goes to the room/nick chat, not a chat with the room} \
+    {*}$msg_common \
+    -body {
+        $::_client db eval {
+            INSERT INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 0, 'me', '')
+        }
+        set carbon {{to} {
+            j message -from $::acc -to $::acc/res {
+                j sent -ns urn:xmpp:carbons:2 {
+                    j forwarded -ns urn:xmpp:forward:0 {
+                        j message -type chat -id pm1 -from $::acc/other -to $to {
+                            j body -body psst
+                            j x -ns http://jabber.org/protocol/muc#user
+                        }
+                    }
+                }
+            }
+        }}
+        $::_client conn feed [apply $carbon room@muc.example.com/alice]
+        # Not a known room: the muc#user element alone doesn't make it a PM.
+        $::_client conn feed [apply $carbon bob@example.com/laptop]
+        list [llength [msg_store_latest room@muc.example.com/alice]] \
+             [dict get [lindex [msg_store_latest room@muc.example.com/alice] 0] is_outgoing] \
+             [llength [msg_store_latest room@muc.example.com]] \
+             [llength [msg_store_latest bob@example.com]]
+    } -result {1 1 0 1}
+
+test message-pm-send-marked {a room PM we send carries the muc#user mark; a 1:1 message does not} \
+    {*}$msg_common \
+    -body {
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo setEnabled -jid room@muc.example.com/alice -value 0
+        tacky message send -acc $acc -chat room@muc.example.com/alice -body pm
+        set pm [lindex [$::_client conn get_written] end]
+        tacky message send -acc $acc -chat alice@example.com -body dm
+        set dm [lindex [$::_client conn get_written] end]
+        list [llength [xsearch $pm x -ns http://jabber.org/protocol/muc#user]] \
+             [llength [xsearch $dm x -ns http://jabber.org/protocol/muc#user]]
+    } -result {1 0}
+
 test message-autoreceipt-none \
     {a plain message triggers no receipt} \
     {*}$msg_common \
