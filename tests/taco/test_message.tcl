@@ -3900,7 +3900,6 @@ test message-pm-send-marked {a room PM we send carries the muc#user mark; a 1:1 
     {*}$msg_common \
     -body {
         $::_client omemo setEnabled -jid alice@example.com -value 0
-        $::_client omemo setEnabled -jid room@muc.example.com/alice -value 0
         tacky message send -acc $acc -chat room@muc.example.com/alice -body pm
         set pm [lindex [$::_client conn get_written] end]
         tacky message send -acc $acc -chat alice@example.com -body dm
