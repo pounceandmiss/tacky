@@ -166,6 +166,20 @@ test client-bus-session-ends-once {a disconnect then a fresh stream end the sess
         set ::got
     } -result {start end start}
 
+test client-disconnect-ends-session {disconnect ends the session once, and the next one is fresh} \
+    {*}$common \
+    -body {
+        set ::got {}
+        c bus subscribe _ <SessionStart> {apply {{args} { lappend ::got start }}}
+        c bus subscribe _ <SessionEnd> {apply {{args} { lappend ::got end }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c disconnect
+        c disconnect
+        c.conn fire_ready 0
+        list $::got [c iq isLive]
+    } -result {{start end start} 1}
+
 test client-bus-emit-publishes {emit publishes module:event on bus} \
     {*}$common \
     -body {

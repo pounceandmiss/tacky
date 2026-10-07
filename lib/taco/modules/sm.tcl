@@ -114,6 +114,21 @@ snit::type sm {
         jlog debug "Disconnected: queue=[llength $queue], out=$out, serverh=$serverh, in=$in"
     }
 
+    # Called after a graceful close (</stream:stream>), which ends the
+    # session (XEP-0198 §5). The server has processed everything sent before
+    # it, so there is nothing to resume or replay. If the socket was in fact
+    # dead, unsent messages are still pending in the store and RetryPending
+    # settles them against the archive.
+    method reset {} {
+        $self onDisconnect
+        set streamId ""
+        set queue {}
+        set in 0
+        set out 0
+        set serverh 0
+        set unackedCount 0
+    }
+
     method inStanza {stanza} {
         if {$mode eq "passthrough"} {
             # Nothing to do
@@ -208,7 +223,18 @@ snit::type sm {
 
                 if {$streamId ne ""} {
                     # Resume failed: conn binds a resource and asks for a
-                    # fresh stream. The queue stays, replayed after <enabled/>.
+                    # fresh stream. With h, the stanzas past it are replayed
+                    # after <enabled/>. Without h we can't tell which ones
+                    # arrived, and replaying them all could duplicate them,
+                    # so the queue is dropped. Messages are still pending in
+                    # the store and RetryPending resends any the archive
+                    # doesn't have; the rest only mattered to the old
+                    # session.
+                    if {$h eq "" && [llength $queue]} {
+                        jlog inform "Resume failed without h: dropping\
+                            [llength $queue] unacked stanzas"
+                        set queue {}
+                    }
                     jlog inform "Resume failed (h=$h), binding for a fresh stream"
                     $self ResumeFailed
                 } else {

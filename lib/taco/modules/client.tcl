@@ -101,8 +101,13 @@ snit::type taco_client {
         }
     }
 
+    # An explicit disconnect ends the session. conn doesn't report its own
+    # close, so stop the IQ timers and publish <SessionEnd> here.
     method disconnect {} {
         $conn close
+        if {$SessionLive} {
+            $self OnDisconnect "disconnected"
+        }
     }
 
     method write {stanza} {
