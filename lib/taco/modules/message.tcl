@@ -639,7 +639,8 @@ snit::type taco_message {
         switch [dict get $r verdict] {
             reaction { $self ApplyReactionVerdict $chatJid $r }
             edit     { $self ApplyEditVerdict $chatJid $r }
-            retract  { $self ApplyRetractVerdict $chatJid $r }
+            retract  -
+            tombstone { $self ApplyRetractVerdict $chatJid $r }
             call     { $self ApplyCallVerdict $chatJid $r }
             defer    {
                 set patch [dict get $r patch]
@@ -2297,6 +2298,14 @@ snit::type taco_message {
                 -stanza $resultNode
             return [dict create verdict drop timestamp $ts]
         }
+        # A message retracted or moderated after archiving comes back as a
+        # tombstone under its archive id; it's the only notice a client that
+        # was offline gets. The archive is the one we queried (mam checks the
+        # sender), so it is trusted.
+        if {$serverId ne "" && [IsTombstone $msgNode]} {
+            return [dict create verdict tombstone timestamp $ts \
+                target_id $serverId]
+        }
         set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
         return [$self Classify $chatJid $msgNode $ts $ids]
     }
@@ -2315,6 +2324,8 @@ snit::type taco_message {
     #   {verdict new       timestamp T msg M}         new, store M
     #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
     #   {verdict edit|retract timestamp T ...}        XEP-0308/0424/0425
+    #   {verdict tombstone timestamp T target_id I}   (MAM only) archived
+    #                                                 message I was retracted
     #   {verdict defer timestamp T kind K patch P}    edit/retract, target
     #                                                 not stored yet
     method Classify {chatJid msgNode ts ids} {
@@ -2550,10 +2561,7 @@ snit::type taco_message {
     # Extract an XEP-0424/0425 retraction into {target_id from}, or "" when
     # the stanza carries none. AuthorizeRetract decides whether it may apply.
     method ParseRetraction {chatJid msgNode} {
-        set ret [lindex [xsearch $msgNode retract \
-            -ns urn:xmpp:message-retract:1] 0]
-        if {$ret eq ""} { return "" }
-        set targetId [xsearch $ret -get @id]
+        set targetId [RetractTargetId $msgNode]
         if {$targetId eq ""} { return "" }
         set sender [$self resolveSender $chatJid $msgNode]
         dict set sender from [xsearch $msgNode -get @from]
@@ -2996,4 +3004,39 @@ proc IsMucChatJid {chatJid} {
 # never saw the room's stanza-id, and its author may retract.
 proc IsRoomChatJid {chatJid} {
     string match {*\?join} $chatJid
+}
+
+# The id a retraction targets, or "" when the message carries none:
+# XEP-0424 <retract id>, or the older form inside an XEP-0422 <apply-to id>
+# that rooms on pre-1.0 moderation (XEP-0425 v0) still broadcast:
+# <retract/> (urn:xmpp:message-retract:0) directly or under <moderated/>.
+proc RetractTargetId {msgNode} {
+    set id [xsearch $msgNode retract -ns urn:xmpp:message-retract:1 -get @id]
+    if {$id ne ""} { return $id }
+    foreach a [xsearch $msgNode apply-to -ns urn:xmpp:fasten:0] {
+        set inner [list $a {*}[xsearch $a moderated \
+            -ns urn:xmpp:message-moderate:0]]
+        foreach n $inner {
+            if {[llength [xsearch $n retract \
+                    -ns urn:xmpp:message-retract:0]]} {
+                return [xsearch $a -get @id]
+            }
+        }
+    }
+    return ""
+}
+
+# Whether an archived message is a tombstone, the placeholder an archive
+# keeps for a retracted or moderated message (XEP-0424 / XEP-0425, current
+# and v0 forms).
+proc IsTombstone {msgNode} {
+    foreach ns {urn:xmpp:message-retract:1 urn:xmpp:message-retract:0} {
+        if {[llength [xsearch $msgNode retracted -ns $ns]]} { return 1 }
+    }
+    foreach m [xsearch $msgNode moderated -ns urn:xmpp:message-moderate:0] {
+        if {[llength [xsearch $m retracted -ns urn:xmpp:message-retract:0]]} {
+            return 1
+        }
+    }
+    return 0
 }

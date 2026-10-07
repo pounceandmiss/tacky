@@ -1084,14 +1084,13 @@ snit::type taco_muc {
             }
 
             # A bodyless groupchat message carrying an XEP-0444 <reactions>,
-            # an XEP-0424/0425 <retract> (moderation broadcast) or an
+            # an XEP-0424/0425 <retract> (moderation broadcast, v1 or v0) or an
             # XEP-0482 call invite or answer is forwarded too;
             # ingestLive/Classify handle it. Other bodyless groupchat
             # stanzas fall through to the status-code handling below.
             set hasReactions [expr {[llength \
                 [xsearch $stanza reactions -ns urn:xmpp:reactions:0]] > 0}]
-            set hasRetract [expr {[llength \
-                [xsearch $stanza retract -ns urn:xmpp:message-retract:1]] > 0}]
+            set hasRetract [expr {[RetractTargetId $stanza] ne ""}]
             set hasCall [expr {[llength \
                 [xsearch $stanza * -ns urn:xmpp:call-invites:0]] > 0}]
             if {$bodyText ne "" || $hasReactions || $hasRetract || $hasCall} {
