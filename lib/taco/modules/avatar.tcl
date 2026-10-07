@@ -47,6 +47,9 @@ snit::type taco_avatar {
     variable PendingPubSubHash
     variable RefetchedHash
     variable ActiveTags
+    # JIDs with a vCard request in flight: a room's presence and its
+    # disco#info can both ask for the same fetch on join.
+    variable InflightVCard
 
     option -client -readonly yes
 
@@ -57,6 +60,7 @@ snit::type taco_avatar {
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
         set RefetchedHash [dict create]
+        set InflightVCard [dict create]
         array set ActiveTags {}
         $client pubsub handler urn:xmpp:avatar:metadata \
             [mymethod OnMetadataNotification]
@@ -70,6 +74,7 @@ snit::type taco_avatar {
         set PendingVCardHash [dict create]
         set PendingPubSubHash [dict create]
         set RefetchedHash [dict create]
+        set InflightVCard [dict create]
         array unset ActiveTags
     }
 
@@ -453,19 +458,26 @@ snit::type taco_avatar {
         set xNode [xsearch $stanza x -ns vcard-temp:x:update]
         if {$xNode eq ""} return
 
-        lassign [$self CachedRow $jid] existing source
-
         # No <photo/> at all: the sender is not ready to say (XEP-0153 3.2),
         # which leaves the avatar as it is. An empty one means none.
         if {![llength [xsearch $stanza x -ns vcard-temp:x:update photo]]} return
-        set hash [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
+        $self announce $jid [xsearch $stanza x -ns vcard-temp:x:update photo -get body]
+    }
+
+    # A vCard avatar hash learned for $jid, from presence (XEP-0153) or a
+    # room's disco#info (muc#roominfo_avatarhash): "" means none, so a
+    # cached vCard avatar is forgotten; a new hash is fetched immediately if
+    # $jid is visible, otherwise once it becomes visible. A PEP avatar
+    # (XEP-0084) takes precedence over both.
+    method announce {jid hash} {
+        set jid [jid norm $jid]
+        lassign [$self CachedRow $jid] existing source
         if {$hash eq ""} {
             if {$existing ne "" && $source ne "pubsub"} {
                 $self Forget $jid
             }
             return
         }
-
         if {$existing eq $hash || $source eq "pubsub"} return
         if {[$self IsVisible $jid]} {
             $self FetchVCard $jid
@@ -475,6 +487,8 @@ snit::type taco_avatar {
     }
 
     method FetchVCard {jid} {
+        if {[dict exists $InflightVCard $jid]} return
+        dict set InflightVCard $jid 1
         $client iq request -to $jid -payload \
             [j vCard -ns vcard-temp] \
             -command [mymethod OnVCardResult $jid]
@@ -490,12 +504,17 @@ snit::type taco_avatar {
     }
 
     method OnVCardResult {jid stanza} {
+        dict unset InflightVCard $jid
         if {[xsearch $stanza -get @type] eq "error"} return
 
         if {[lindex [$self CachedRow $jid] 1] eq "pubsub"} return
 
         set base64Data [xsearch $stanza vCard PHOTO BINVAL -get body]
-        if {$base64Data eq ""} return
+        if {$base64Data eq ""} {
+            # No photo in the vCard: drop a cached vCard avatar.
+            $self Forget $jid
+            return
+        }
 
         set type_ [xsearch $stanza vCard PHOTO TYPE -get body]
         if {$type_ eq ""} { set type_ "image/png" }

@@ -1206,6 +1206,168 @@ test muc-nick-accepted-saved {a nick the room accepts (303) is saved to the book
         list $before [muc_nick_bookmark] [c muc myNick -jid room@muc.example.com]
     } -result {me newme newme}
 
+# -- Room avatar (XEP-0153 presence, XEP-0486 disco#info) -----------------
+
+# The room's own presence carrying an avatar hash ("" for an empty photo).
+proc muc_room_avatar_presence {room hash} {
+    c.conn feed [j presence -from $room {
+        j x -ns vcard-temp:x:update {
+            j photo -body $hash
+        }
+    }]
+}
+
+# Stanzas written since the last clear, as {to kind}: kind is vcard,
+# disco or the tag.
+proc muc_avatar_asks {} {
+    set out {}
+    foreach st [c.conn get_written] {
+        set kind [dict get $st tag]
+        if {[llength [xsearch $st vCard -ns vcard-temp]]} { set kind vcard }
+        if {[llength [xsearch $st query -ns http://jabber.org/protocol/disco#info]]} {
+            set kind disco
+        }
+        lappend out [list [xsearch $st -get @to] $kind]
+    }
+    return $out
+}
+
+proc muc_seed_room_avatar {room hash} {
+    c db eval {
+        INSERT OR REPLACE INTO avatar_metadata(jid, hash, type, bytes, width, height, source)
+        VALUES ($room, $hash, 'image/png', 3, 0, 0, 'vcard')
+    }
+}
+
+# The vCard requests among muc_avatar_asks.
+proc muc_vcard_asks {} {
+    lsearch -all -inline [muc_avatar_asks] {* vcard}
+}
+
+# Answer the room's newest disco#info request with a roominfo form; $hash
+# "" gives an empty field, "none" leaves the field out.
+proc muc_answer_roominfo {room hash} {
+    set req ""
+    foreach st [c.conn get_written] {
+        if {[llength [xsearch $st query -ns http://jabber.org/protocol/disco#info]]} {
+            set req $st
+        }
+    }
+    c.conn feed [j iq -type result -id [xsearch $req -get @id] -from $room {
+        j query -ns http://jabber.org/protocol/disco#info {
+            j identity -category conference -type text
+            j x -ns jabber:x:data -type result {
+                j field -var FORM_TYPE -type hidden {
+                    j value -body http://jabber.org/protocol/muc#roominfo
+                }
+                if {$hash ne "none"} {
+                    j field -var muc#roominfo_avatarhash -type text-multi {
+                        if {$hash ne ""} { j value -body $hash }
+                    }
+                }
+            }
+        }
+    }]
+}
+
+test muc-room-avatar-on-join-asks-disco {joining a room asks its disco#info, not its vCard} \
+    {*}$muc_common \
+    -body {
+        c.conn clear
+        muc_join room@muc.example.com me
+        list [expr {{room@muc.example.com disco} in [muc_avatar_asks]}] \
+            [muc_vcard_asks]
+    } -result {1 {}}
+
+test muc-room-avatar-disco-hash {the disco#info hash fetches a new avatar, clears a removed one, and falls back to the vCard without the field} \
+    {*}$muc_common \
+    -body {
+        c avatar visible -jid room@muc.example.com
+        set out {}
+        # A new hash: fetched.
+        muc_join room@muc.example.com me
+        muc_answer_roominfo room@muc.example.com abc123
+        lappend out [muc_vcard_asks]
+        set vreq [lindex [c.conn get_written] end]
+        c.conn feed [j iq -type error -id [xsearch $vreq -get @id] \
+            -from room@muc.example.com {
+            j error -type cancel {
+                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        # Removed while we were away: an empty field forgets it.
+        muc_seed_room_avatar room@muc.example.com abc123
+        c muc RoomInfo room@muc.example.com
+        muc_answer_roominfo room@muc.example.com ""
+        lappend out [c avatar metadata -jid room@muc.example.com]
+        # No field at all: the vCard is asked once, as before.
+        c.conn clear
+        c muc RoomInfo room@muc.example.com
+        muc_answer_roominfo room@muc.example.com none
+        lappend out [muc_vcard_asks]
+    } -result {{{room@muc.example.com vcard}} {} {{room@muc.example.com vcard}}}
+
+test muc-room-avatar-presence {the room's own presence updates or clears its avatar} \
+    {*}$muc_common \
+    -body {
+        c avatar visible -jid room@muc.example.com
+        muc_join room@muc.example.com me
+        muc_seed_room_avatar room@muc.example.com old
+        c.conn clear
+        muc_room_avatar_presence room@muc.example.com new
+        set fetched [muc_vcard_asks]
+        muc_room_avatar_presence room@muc.example.com ""
+        list $fetched [c avatar metadata -jid room@muc.example.com] \
+            [c presence isOnline -jid room@muc.example.com]
+    } -result {{{room@muc.example.com vcard}} {} 0}
+
+test muc-room-avatar-presence-only-from-a-room-of-ours {a room presence we are not in, or a hidden one, sets no avatar} \
+    {*}$muc_common \
+    -body {
+        c avatar visible -jid other@muc.example.com
+        c avatar visible -jid call@muc.example.com
+        c muc join -jid call@muc.example.com -nick abc -hidden 1
+        c.conn clear
+        muc_room_avatar_presence other@muc.example.com h1
+        muc_room_avatar_presence call@muc.example.com h2
+        muc_avatar_asks
+    } -result {}
+
+test muc-room-avatar-config-change-asks-again {a configuration change (104) asks the room's disco#info again} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn clear
+        c.conn feed [j message -type groupchat -from room@muc.example.com {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j status -code 104
+            }
+        }]
+        muc_avatar_asks
+    } -result {{room@muc.example.com disco}}
+
+test muc-room-avatar-one-fetch-in-flight {a presence and disco#info naming the same new hash fetch once} \
+    {*}$muc_common \
+    -body {
+        c avatar visible -jid room@muc.example.com
+        muc_join room@muc.example.com me
+        set disco [lindex [c.conn get_written] end]
+        c.conn clear
+        muc_room_avatar_presence room@muc.example.com abc
+        c.conn feed [j iq -type result -id [xsearch $disco -get @id] \
+            -from room@muc.example.com {
+            j query -ns http://jabber.org/protocol/disco#info {
+                j x -ns jabber:x:data -type result {
+                    j field -var FORM_TYPE -type hidden {
+                        j value -body http://jabber.org/protocol/muc#roominfo
+                    }
+                    j field -var muc#roominfo_avatarhash { j value -body abc }
+                }
+            }
+        }]
+        muc_avatar_asks
+    } -result {{room@muc.example.com vcard}}
+
 # -- Room destroyed -----------------------------------------------------------
 
 test muc-destroyed-event {<Destroyed> event fires} \
