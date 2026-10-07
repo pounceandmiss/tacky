@@ -196,7 +196,7 @@ snit::type taco_message {
         }
 
         set acc [$self MergeCatchupPage $acc \
-            [$self CatchupPage $mamResult ""]]
+            [$self CatchupPage $mamResult "" [expr {$page == 1}]]]
 
         if {![$self CatchupIsLast $mamResult $page]} {
             $client mam query -before [dict get $mamResult first] -max 50 \
@@ -283,7 +283,7 @@ snit::type taco_message {
             return
         }
         $client muc noteArchive $roomJid 1
-        lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _ mins
+        lassign [$self CatchupPage $mamResult $roomChatJid 1] perChatCount _ mins
         if {![dict get $mamResult complete]} {
             $self PlaceCatchupFloorHoles $mins
         }
@@ -307,7 +307,11 @@ snit::type taco_message {
     #
     # Returns {perChatCount archiveFloor perChatMin}. Bounding the older edge
     # is the caller's job, once its whole run has stopped.
-    method CatchupPage {mamResult fixedChatJid} {
+    #
+    # $tail is 1 for the archive's newest page (a query with an empty
+    # <before/>): nothing newer was archived when it answered, so the page
+    # also speaks for everything above its newest message, up to now.
+    method CatchupPage {mamResult fixedChatJid {tail 0}} {
         set myBareJid [jid bare [$client cget -jid]]
         set perChatCount [dict create]
         # Oldest timestamp this page returned: the floor of the range the
@@ -391,9 +395,14 @@ snit::type taco_message {
 
         # The page speaks for everything from its floor up, so sweep from
         # there rather than from the chat's own oldest message: a reconnect
-        # hole sits below the new arrivals that displaced it.
+        # hole sits below the new arrivals that displaced it. The newest page
+        # speaks up to now: a reconnect hole sits just above the last message
+        # we had, and when that message is the page's newest (what followed
+        # it came in live, not yet archived) the page's own range is empty.
+        set now [clock microseconds]
         dict for {jid maxTs} $perChatMax {
-            $messagestore hole removeBetween $jid $archiveFloor $maxTs
+            $messagestore hole removeBetween $jid $archiveFloor \
+                [expr {$tail ? max($maxTs, $now) : $maxTs}]
         }
 
         dict for {jid _} $perChatMax {

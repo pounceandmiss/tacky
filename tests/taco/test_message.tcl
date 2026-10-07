@@ -2845,6 +2845,27 @@ test message-catchup-overlap-clears-reconnect-hole {catchup overlap sweeps the r
         list $sentBefore $sentAfter
     } -result {1 0}
 
+# The newest catchup page is the archive's tail: nothing newer was archived
+# when it answered. So a reconnect hole above its newest message is no gap,
+# even when the page holds only the message already known - the case where
+# what came after it arrived live, during the reconnect, and was not yet in
+# the archive (MongooseIM is slow enough to archive that this happens).
+test message-catchup-tail-page-clears-reconnect-hole {a newest page with only the known message still sweeps the reconnect hole above it} \
+    {*}$msg_common \
+    -body {
+        set srvTs [expr {[clock seconds] - 60}]
+        set stamp [clock format $srvTs -format %Y-%m-%dT%H:%M:%SZ -timezone :UTC]
+        # Received live a moment after the server stamped it.
+        msg_store [list [msg_msg chat_jid alice@example.com server_id arch-1 \
+            timestamp [expr {$srvTs * 1000000 + 250000}] body "before"]]
+        $::_client message PlaceReconnectHoles
+        set before [llength [$::_client message messagestore hole list alice@example.com]]
+        msg_catchup [dict create complete 1 first arch-1 last arch-1 messages [list \
+            [mam_result id arch-1 from alice@example.com/phone \
+                body "before" stamp $stamp]]]
+        list $before [llength [$::_client message messagestore hole list alice@example.com]]
+    } -result {1 0}
+
 test message-catchup-incomplete-places-hole {catchup with complete=false places older-edge hole for new chats} \
     {*}$msg_common \
     -body {
