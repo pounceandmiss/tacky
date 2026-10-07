@@ -3654,6 +3654,22 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
              [dict get $stored reply_id]
     } -result {ORIG1 alice@example.com 1 1 {my answer} ORIG1}
 
+test message-send-reply-no-quote-of-encrypted {a cleartext reply to an OMEMO message cites it without quoting its decrypted body} \
+    {*}$msg_common \
+    -body {
+        $::_client omemo setEnabled -jid alice@example.com -value 0
+        msg_store [list [msg_msg chat_jid alice@example.com \
+            from_jid alice@example.com/phone origin_id ENC1 \
+            body "the secret" encryption omemo]]
+        set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        tacky message send -acc $acc -chat alice@example.com \
+            -body "my answer" -reply_to_ts $tgtTs
+        set stanza [lindex [$::_client conn get_written] end]
+        list [xsearch $stanza reply -ns urn:xmpp:reply:0 -get @id] \
+             [xsearch $stanza body -get body] \
+             [llength [xsearch $stanza fallback -ns urn:xmpp:fallback:0]]
+    } -result {ENC1 {my answer} 0}
+
 test message-send-reply-own-pending {replying to our own pending message cites its origin/own id (no server_id yet)} \
     {*}$msg_common \
     -body {
