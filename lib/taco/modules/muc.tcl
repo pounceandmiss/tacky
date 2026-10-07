@@ -55,6 +55,7 @@
 # events: a room-relayed one in the room's chat, a direct one in the inviter's.
 # tacky listen muc <Decline> $cmd            ;# -jid $room -from $declinerJid -reason $text
 # tacky listen muc <NickChanged> $cmd        ;# -jid $room -oldNick $old -newNick $new -self $bool -occupant $dict
+# tacky listen muc <NickError> $cmd          ;# -jid $room -nick $refusedNick -error $condition
 # tacky listen muc <Kicked> $cmd             ;# -jid $room -nick $nick -actor $actorNick -reason $text
 # tacky listen muc <Banned> $cmd             ;# -jid $room -nick $nick -actor $actorNick -reason $text
 # tacky listen muc <ConfigChanged> $cmd      ;# -jid $room -codes $statusCodes
@@ -83,6 +84,10 @@ snit::type taco_muc {
     variable JoinCallbacks -array {}
     # roomJid -> the after token giving up on a join the room never answers
     variable JoinTimers -array {}
+
+    # roomJid -> nick requested in a joined room, until the room answers
+    # with a 303 (accepted) or an error (<NickError>).
+    variable PendingNick -array {}
     # How long a room has to answer a join.
     typevariable JoinTimeoutMs 30000
     # Our server's MUC service, probed once per session; ServiceWaiters are
@@ -220,6 +225,9 @@ snit::type taco_muc {
     method nick {args} {
         array set opts $args
         set opts(-jid) [jid norm $opts(-jid)]
+        if {[info exists Rooms($opts(-jid))] && [dict get $Rooms($opts(-jid)) joined]} {
+            set PendingNick($opts(-jid)) $opts(-nick)
+        }
         $client write [j presence -to $opts(-jid)/$opts(-nick)]
     }
 
@@ -849,6 +857,22 @@ snit::type taco_muc {
             set errorType unknown
         }
 
+        # Already joined: the error rejects a later request (a nick change, a
+        # status update) and we are still in the room, so it isn't a join
+        # failure.
+        if {[dict get $Rooms($roomJid) joined]} {
+            if {[info exists PendingNick($roomJid)]
+                    && $nick eq $PendingNick($roomJid)} {
+                unset PendingNick($roomJid)
+                $self Emit $roomJid <NickError> -jid $roomJid -nick $nick \
+                    -error $errorType
+            } else {
+                jlog warn "$roomJid: presence refused ($errorType)" \
+                    -stanza $stanza
+            }
+            return
+        }
+
         # Fire join callback if pending
         if {[info exists JoinTimers($roomJid)]} {
             after cancel $JoinTimers($roomJid)
@@ -980,6 +1004,7 @@ snit::type taco_muc {
 
             if {$isSelf} {
                 dict set Rooms($roomJid) nick $newNick
+                unset -nocomplain PendingNick($roomJid)
             }
 
             $self Emit $roomJid <NickChanged> -jid $roomJid -oldNick $nick -newNick $newNick \
@@ -1499,6 +1524,7 @@ snit::type taco_muc {
         if {![info exists Rooms($roomJid)]} return
         set WasHidden($roomJid) [dict get $Rooms($roomJid) hidden]
         unset Rooms($roomJid)
+        unset -nocomplain PendingNick($roomJid)
     }
 
     method CleanupRoom {roomJid} {

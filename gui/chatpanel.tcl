@@ -82,6 +82,8 @@ snit::widget chatpanel {
         if {$isMuc} {
             ::tacky listen -tag $win muc <RoomCreated> \
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
+            ::tacky listen -tag $win muc <NickError> \
+                -acc $options(-acc) -jid $roomJid [mymethod OnNickError]
             # A call held in the room, read from its occupants.
             foreach event {<Joined> <Presence> <Unavailable> <Left>} {
                 ::tacky listen -tag $win muc $event \
@@ -486,6 +488,16 @@ snit::widget chatpanel {
             -value $myNick]
         if {$newNick eq "" || $newNick eq $myNick} return
         ::tacky bookmarks nick -acc $options(-acc) -jid $roomJid -nick $newNick
+    }
+
+    method OnNickError {ev} {
+        if {![winfo exists $win]} return
+        set nick [dict get $ev -nick]
+        set msg [expr {[dict get $ev -error] eq "conflict"
+            ? "The nickname \"$nick\" is already in use in this room."
+            : "The room refused the nickname \"$nick\" ([dict get $ev -error])."}]
+        tk_messageBox -icon error -title "Nickname Not Changed" \
+            -parent [winfo toplevel $win] -message $msg
     }
 
     method RequestVoice {} {

@@ -1116,6 +1116,64 @@ test muc-join-callback-on-error {join -command callback fires on error} \
         list [dict get $got -jid] [dict get $got -error]
     } -result {room@muc.example.com registration-required}
 
+# -- Nick change -----------------------------------------------------------
+
+proc muc_nick_bookmark {} {
+    c db onecolumn {SELECT nick FROM bookmark WHERE jid='room@muc.example.com'}
+}
+
+proc bm_state_muc {} {
+    foreach item [c bookmarks get] {
+        if {[dict get $item jid] eq "room@muc.example.com"} {
+            return [list [dict get $item room_state] [dict get $item room_reason]]
+        }
+    }
+}
+
+test muc-nick-refused-stays-joined {a refused nick change is a <NickError>: the room stays joined, the bookmark keeps its nick} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        set ::got {}
+        tacky listen muc <Error> {apply {{ev} { lappend ::got error }}}
+        tacky listen muc <NickError> {apply {{ev} {
+            lappend ::got [dict get $ev -nick] [dict get $ev -error]
+        }}}
+        c bookmarks nick -jid room@muc.example.com -nick taken
+        c.conn feed [j presence -type error -from room@muc.example.com/taken {
+            j error -type cancel {
+                j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        list $::got [c muc isJoined -jid room@muc.example.com] \
+            [lindex [bm_state_muc] 0] [muc_nick_bookmark]
+    } -result {{taken conflict} 1 joined me}
+
+test muc-nick-accepted-saved {a nick the room accepts (303) is saved to the bookmark} \
+    {*}$muc_common \
+    -body {
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 1, 'me', '')
+        }
+        muc_join room@muc.example.com me
+        c bookmarks nick -jid room@muc.example.com -nick newme
+        set before [muc_nick_bookmark]
+        c.conn feed [j presence -type unavailable -from room@muc.example.com/me {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -nick newme -role participant -affiliation member
+                j status -code 303
+                j status -code 110
+            }
+        }]
+        c.conn feed [muc_presence from room@muc.example.com/newme self 1]
+        list $before [muc_nick_bookmark] [c muc myNick -jid room@muc.example.com]
+    } -result {me newme newme}
+
 # -- Room destroyed -----------------------------------------------------------
 
 test muc-destroyed-event {<Destroyed> event fires} \

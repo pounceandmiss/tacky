@@ -36,6 +36,10 @@ snit::type taco_bookmarks {
     # per stream bounds a server that keeps removing us.
     variable mucRejoined {}
 
+    # room -> nick requested by `nick` in a joined room, until the room
+    # accepts or refuses it.
+    variable nickWanted {}
+
     # Fields `item` accepts from a caller. jid is excluded: it is the key and
     # is canonicalized separately, so a caller's raw ?join form must not
     # overwrite it.
@@ -54,6 +58,8 @@ snit::type taco_bookmarks {
         $client bus subscribe $self muc:<Joined> [mymethod OnMucJoined]
         $client bus subscribe $self muc:<Error> [mymethod OnMucError]
         $client bus subscribe $self muc:<Left> [mymethod OnMucLeft]
+        $client bus subscribe $self muc:<NickChanged> [mymethod OnMucNickChanged]
+        $client bus subscribe $self muc:<NickError> [mymethod OnMucNickError]
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
     }
 
@@ -188,12 +194,34 @@ snit::type taco_bookmarks {
         return $condition
     }
 
-    # Change nickname in a room and update the bookmark.
+    # Change nickname in a room and update the bookmark. In a joined room
+    # the bookmark is updated only once the room accepts the nick
+    # (OnMucNickChanged); if the room refused it, the next autojoin would
+    # otherwise request the refused nick.
     method nick {args} {
         array set opts $args
         set opts(-jid) [jid norm [jid bare $opts(-jid)]]
-        $self item -jid $opts(-jid) -nick $opts(-nick)
+        if {[$client muc isJoined -jid $opts(-jid)]} {
+            dict set nickWanted $opts(-jid) $opts(-nick)
+        } else {
+            $self item -jid $opts(-jid) -nick $opts(-nick)
+        }
         $client muc nick -jid $opts(-jid) -nick $opts(-nick)
+    }
+
+    method OnMucNickChanged {args} {
+        array set opts {-jid "" -newNick "" -self 0}
+        array set opts $args
+        if {!$opts(-self) || ![dict exists $nickWanted $opts(-jid)]} return
+        set wanted [dict get $nickWanted $opts(-jid)]
+        dict unset nickWanted $opts(-jid)
+        if {$opts(-newNick) eq $wanted} {
+            $self item -jid $opts(-jid) -nick $wanted
+        }
+    }
+
+    method OnMucNickError {args} {
+        dict unset nickWanted [dict get $args -jid]
     }
 
     # Leave a room and disable autojoin.
@@ -328,6 +356,7 @@ snit::type taco_bookmarks {
         set mucStatus {}
         set mucReason {}
         set mucRejoined {}
+        set nickWanted {}
     }
 
     method ResolveMucStatus {jid} {
