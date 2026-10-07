@@ -332,9 +332,13 @@ snit::type taco_message {
 
                 if {[string equal -nocase $fromBare $myBareJid]} {
                     set chatJid $toBare
+                    set peer [xsearch $msgNode -get @to]
                 } else {
                     set chatJid $fromBare
+                    set peer [xsearch $msgNode -get @from]
                 }
+                set pmChat [$self PmChat $msgNode $peer]
+                if {$pmChat ne ""} { set chatJid $pmChat }
                 set inviteChat [$self inviteChat $msgNode]
                 if {$inviteChat ne ""} { set chatJid $inviteChat }
             }
@@ -474,6 +478,32 @@ snit::type taco_message {
         return "[dict get $invite room]?join"
     }
 
+    # The chat (room/nick) for a MUC private message (XEP-0045 §7.5) with
+    # $peer, or "". PMs carry an empty muc#user <x/>: rooms add it when
+    # relaying and senders add it (XEP-0280 §6), which is how a carbon of a
+    # PM is told apart from a chat with the room. Anyone can add the
+    # element, so $peer must also be a known room; otherwise a contact could
+    # create a room PM chat for one of its resources.
+    method PmChat {msgNode peer} {
+        if {$peer eq "" || [jid resource $peer] eq ""} { return "" }
+        set x [lindex [xsearch $msgNode x \
+            -ns http://jabber.org/protocol/muc#user] 0]
+        if {$x eq ""} { return "" }
+        if {[llength [xsearch $x invite]] || [llength [xsearch $x decline]]} {
+            return ""
+        }
+        set room [jid norm [jid bare $peer]]
+        set roomChat ${room}?join
+        if {![$client muc isJoined -jid $room]
+                && ![$client db exists {SELECT 1 FROM bookmark WHERE jid=$room}]
+                && ![$client db exists {
+                    SELECT 1 FROM chat_message WHERE chat_jid=$roomChat
+                }]} {
+            return ""
+        }
+        return "$room/[jid resource $peer]"
+    }
+
     # Called on message stanzas that haven't been intercepted by other
     # modules. These are supposed to be 1-1 messages.
     method OnMessage {stanza} {
@@ -486,7 +516,12 @@ snit::type taco_message {
         }
         set myBare [jid bare [$client cget -jid]]
         set isOwn [expr {$fromBare eq $myBare}]
-        if {$isOwn} {
+        set peer [xsearch $stanza -get [expr {$isOwn ? "@to" : "@from"}]]
+        set chatJid [$self PmChat $stanza $peer]
+        if {$chatJid ne ""} {
+            # muc handles PMs from joined rooms. This is a PM from a room
+            # this device hasn't joined, or a carbon of one we sent.
+        } elseif {$isOwn} {
             set chatJid [jid norm [jid bare [xsearch $stanza -get @to]]]
         } else {
             set chatJid $fromBare
@@ -828,6 +863,11 @@ snit::type taco_message {
             }
             if {$oobUrl ne ""} {
                 j x -ns jabber:x:oob { j url -body $oobUrl }
+            }
+            # Mark MUC PMs (XEP-0045 §7.5) so our other devices can file
+            # their carbons correctly (XEP-0280 §6).
+            if {[IsMucChatJid $chatJid] && ![IsRoomChatJid $chatJid]} {
+                j x -ns http://jabber.org/protocol/muc#user
             }
             # Ask 1:1 peers for delivery/read markers (XEP-0184/0333).
             if {$msgType eq "chat"} {
