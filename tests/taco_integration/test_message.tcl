@@ -224,7 +224,7 @@ namespace eval ::test::message_int {
 
     test message-int-search-remote-reports-unsupported \
         {an archive advertising no fulltext field answers unsupported, not the whole archive} \
-        {*}$common -constraints {withServer notEjabberd} \
+        {*}$common -constraints {withServer notEjabberd notMongoose} \
         -body {
             sendAndReceive "another needle"
             historyWait -acc $ROMEO -chat $JULIET -limit 50

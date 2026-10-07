@@ -147,7 +147,19 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
 [modules.mod_mam]
   backend = "rdbms"
   full_text_search = true
+  # Archive each message as it is routed: the default writer batches them
+  # into the database every few seconds, and a test querying the archive
+  # just after a send would find it empty.
+  [modules.mod_mam.async_writer]
+    enabled = false
   [modules.mod_mam.pm]
+  [modules.mod_mam.muc]
+    host = "conference.@HOST@"
+# Rooms at conference.<domain>, as on the other test servers.
+[modules.mod_muc]
+  host = "conference.@HOST@"
+  access = "muc"
+  access_create = "muc_create"
 
 [shaper.normal]
   max_rate = 16_384
@@ -162,6 +174,8 @@ cat > "${TEST_DIR}/conf/mongooseim.toml" <<EOF
   local = [{acl = "local", value = "allow"}]
   c2s = [{acl = "blocked", value = "deny"}, {acl = "all", value = "allow"}]
   register = [{acl = "all", value = "allow"}]
+  muc = [{acl = "all", value = "allow"}]
+  muc_create = [{acl = "local", value = "allow"}]
 
 [s2s]
   default_policy = "deny"
