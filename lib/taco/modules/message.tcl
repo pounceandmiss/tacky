@@ -1575,6 +1575,7 @@ snit::type taco_message {
             $newBody $oid $msgType $toJid $encMode "" "" 0 $targetId]]
         # No sender_fp on our own rows: we never decrypt our own sends, and
         # is_own already authorizes correcting them from any of our devices.
+        $messagestore addAliases $chatJid $opts(-timestamp) "" $oid
         set targetTs [$messagestore applyEdit $chatJid $opts(-timestamp) \
             $newBody $readable [clock microseconds] \
             [dict create encryption $encMode sender_fp ""]]
@@ -2421,6 +2422,7 @@ snit::type taco_message {
         # target's encryption status.
         set edit [$self ParseCorrection $chatJid $msgNode]
         if {$edit ne ""} {
+            dict set edit ids [list [lindex $ids 0] [lindex $ids 2]]
             set v [$self PatchVerdict $chatJid edit $edit $ts]
             if {$v ne ""} { return $v }
         }
@@ -2534,26 +2536,34 @@ snit::type taco_message {
     }
 
     # The stored messages a correction or retraction may target, matched by
-    # any of their wire ids (the id-triple), oldest first. Several can match:
-    # origin-ids are the sender's choice, so the caller picks by author. Each
-    # is a dict {ts occ from own enc fp server_id}, where own is whether it
-    # is our own send (own_id set).
+    # any of their wire ids (the id-triple) or an earlier correction's
+    # (message_alias), oldest first. Several can match: origin-ids are the
+    # sender's choice, so the caller picks by author. Each is a dict
+    # {ts occ from own enc fp by_server}, where own is whether it is our
+    # own send (own_id set) and by_server whether a stanza-id matched.
     method TargetCandidates {chatJid targetId} {
         set out {}
         $client db eval {
-            SELECT timestamp, occupant_id, from_jid, own_id, encryption,
-                   sender_fp, server_id
-            FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message'
-              AND ( (server_id != '' AND server_id=$targetId)
-                 OR (origin_id != '' AND origin_id=$targetId)
-                 OR (own_id    != '' AND own_id=$targetId) )
-            ORDER BY timestamp
+            SELECT m.timestamp AS ts, m.occupant_id AS occ, m.from_jid AS fr,
+                   m.own_id AS own, m.encryption AS enc, m.sender_fp AS fp,
+                   (m.server_id = $targetId OR EXISTS (
+                       SELECT 1 FROM message_alias a
+                       WHERE a.chat_jid = m.chat_jid
+                         AND a.target_ts = m.timestamp
+                         AND a.kind = 'server' AND a.alias_id = $targetId))
+                       AS by_server
+            FROM chat_message m
+            WHERE m.chat_jid=$chatJid AND m.kind='message'
+              AND ( (m.server_id != '' AND m.server_id=$targetId)
+                 OR (m.origin_id != '' AND m.origin_id=$targetId)
+                 OR (m.own_id    != '' AND m.own_id=$targetId)
+                 OR m.timestamp IN (SELECT target_ts FROM message_alias
+                     WHERE chat_jid=$chatJid AND alias_id=$targetId) )
+            ORDER BY m.timestamp
         } row {
-            lappend out [dict create ts $row(timestamp) \
-                occ $row(occupant_id) from $row(from_jid) \
-                own [expr {$row(own_id) ne ""}] enc $row(encryption) \
-                fp $row(sender_fp) server_id $row(server_id)]
+            lappend out [dict create ts $row(ts) occ $row(occ) \
+                from $row(fr) own [expr {$row(own) ne ""}] \
+                enc $row(enc) fp $row(fp) by_server $row(by_server)]
         }
         return $out
     }
@@ -2667,7 +2677,7 @@ snit::type taco_message {
                 # with a matching occupant-id (XEP-0421), since nicks get
                 # reused.
                 if {[jid resource $rawFrom] eq ""} {
-                    set ok [expr {[dict get $c server_id] eq $targetId}]
+                    set ok [dict get $c by_server]
                 } else {
                     set ok [$self SameAuthor $chatJid \
                         [dict get $retract sender] [dict get $c occ] \
@@ -2746,8 +2756,14 @@ snit::type taco_message {
             [dict get $verdict raw_xml] [dict get $verdict timestamp] \
             [dict create encryption [dict get $verdict encryption] \
                 sender_fp [dict get $verdict sender_fp]]]
-        if {$targetTs eq ""} return
-        $self EmitMessagePatch $chatJid $targetTs
+        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+        # The correction names the message from now on, whether or not its
+        # body is the newest. After the edit, so a patch held for these
+        # ids lands on top of it.
+        if {[dict exists $verdict ids]} {
+            $messagestore addAliases $chatJid [dict get $verdict target_ts] \
+                {*}[dict get $verdict ids]
+        }
     }
 
     method ApplyRetractVerdict {chatJid verdict} {

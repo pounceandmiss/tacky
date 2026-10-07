@@ -216,6 +216,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             DELETE FROM chat_message WHERE chat_jid=$jid;
             DELETE FROM chat_own_read WHERE chat_jid=$jid;
+            DELETE FROM message_alias WHERE chat_jid=$jid;
         }
     }
 
@@ -724,6 +725,7 @@ snit::type taco_messagestore {
               AND server_id != '' AND server_id=$replyId
             LIMIT 1
         }]
+        if {$ts eq ""} { set ts [$self AliasTarget $jid server $replyId] }
         if {$ts ne "" || [IsRoomChatJid $jid]} { return $ts }
 
         set isMuc [IsMucChatJid $jid]
@@ -733,6 +735,11 @@ snit::type taco_messagestore {
             WHERE chat_jid=$jid AND kind='message'
               AND ( (origin_id != '' AND origin_id=$replyId)
                  OR (own_id    != '' AND own_id=$replyId) )
+            UNION
+            SELECT m.timestamp, m.from_jid FROM message_alias a
+            JOIN chat_message m
+              ON m.chat_jid=a.chat_jid AND m.timestamp=a.target_ts
+            WHERE a.chat_jid=$jid AND a.kind='origin' AND a.alias_id=$replyId
         } row {
             lappend candidates [list $row(timestamp) $row(from_jid)]
         }
@@ -852,6 +859,9 @@ snit::type taco_messagestore {
                 LIMIT 1
             } row {
                 set targetTs $row(timestamp)
+            }
+            if {$targetTs eq ""} {
+                set targetTs [$self AliasTarget $chatJid origin $targetId]
             }
             if {$targetTs ne ""} {
                 set from [expr {$status eq "read" ? 0 : $targetTs}]
@@ -1087,7 +1097,7 @@ snit::type taco_messagestore {
     method resolveTargetTs {chatJid targetId} {
         if {$targetId eq ""} { return "" }
         set room [IsRoomChatJid $chatJid]
-        return [$options(-db) onecolumn {
+        set ts [$options(-db) onecolumn {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND ( (server_id != '' AND server_id=$targetId)
@@ -1095,6 +1105,47 @@ snit::type taco_messagestore {
                  OR (NOT $room AND own_id    != '' AND own_id=$targetId) )
             LIMIT 1
         }]
+        if {$ts eq ""} { set ts [$self AliasTarget $chatJid server $targetId] }
+        if {$ts eq "" && !$room} {
+            set ts [$self AliasTarget $chatJid origin $targetId]
+        }
+        return $ts
+    }
+
+    # --- Correction aliases ---------------------------------------------
+    # A correction's own ids name the message it corrected (see the
+    # message_alias schema step): clients refer to a corrected message by
+    # its newest correction.
+
+    # The row an alias of $kind (server|origin) names, or "".
+    method AliasTarget {chatJid kind id} {
+        if {$id eq ""} { return "" }
+        return [$options(-db) onecolumn {
+            SELECT target_ts FROM message_alias
+            WHERE chat_jid=$chatJid AND kind=$kind AND alias_id=$id
+        }]
+    }
+
+    # Record a correction's {serverId originId} as names of the row at
+    # $targetTs, then hand any patch held for those ids to -deferredcmd,
+    # as `store` does for a new row's own ids.
+    method addAliases {chatJid targetTs serverId originId} {
+        set deferred {}
+        $options(-db) transaction {
+            foreach kind {server origin} id [list $serverId $originId] {
+                if {$id eq ""} continue
+                $options(-db) eval {
+                    INSERT OR IGNORE INTO message_alias(chat_jid, kind,
+                        alias_id, target_ts)
+                    VALUES($chatJid, $kind, $id, $targetTs)
+                }
+            }
+            set deferred [$self TakeDeferred $chatJid \
+                [list $serverId $originId]]
+        }
+        if {[llength $deferred] && $options(-deferredcmd) ne ""} {
+            {*}$options(-deferredcmd) $chatJid $deferred
+        }
     }
 
     # --- Corrections (XEP-0308) / retractions (XEP-0424/0425) ------
@@ -1165,7 +1216,12 @@ snit::type taco_messagestore {
                 OR (NOT $room AND m.origin_id != ''
                     AND m.origin_id = r.target_id)
                 OR (NOT $room AND m.own_id != ''
-                    AND m.own_id = r.target_id) )
+                    AND m.own_id = r.target_id)
+                OR EXISTS (SELECT 1 FROM message_alias a
+                    WHERE a.chat_jid = m.chat_jid
+                      AND a.target_ts = m.timestamp
+                      AND a.alias_id = r.target_id
+                      AND (NOT $room OR a.kind = 'server')) )
             WHERE m.chat_jid = $chatJid AND m.timestamp = $ts
         } r {
             foreach e $r(emojis) {
@@ -1174,7 +1230,9 @@ snit::type taco_messagestore {
                     set mine($e) 0
                     lappend order $e
                 }
-                lappend reactors($e) $r(label)
+                if {$r(label) ni $reactors($e)} {
+                    lappend reactors($e) $r(label)
+                }
                 if {$r(own)} { set mine($e) 1 }
             }
         }
@@ -1233,7 +1291,9 @@ snit::type taco_messagestore {
                     THEN $serverId ELSE server_id END,
                 occupant_id = CASE WHEN $occupantId != ''
                     THEN $occupantId ELSE occupant_id END
-            WHERE chat_jid=$jid AND timestamp=$dupTs
+            WHERE chat_jid=$jid AND timestamp=$dupTs;
+            UPDATE message_alias SET target_ts=$newTs
+            WHERE chat_jid=$jid AND target_ts=$dupTs
         }
         return [dict create verdict confirmed chat_jid $jid \
             timestamp $dupTs newtimestamp $newTs]
