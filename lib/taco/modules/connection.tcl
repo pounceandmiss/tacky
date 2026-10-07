@@ -636,6 +636,11 @@ snit::type conn {
     # disables.
     option -wake-check -default 5000
 
+    # A session must stay up this long (ms) before the reconnect backoff
+    # starts over. A server that accepts the login and then drops us at once
+    # would otherwise be reconnected to every second, indefinitely.
+    option -stable-after -default 30000
+
     # Command prefix; a false result turns `probe` (and so the wake
     # check) into a no-op. "" always allows.
     option -probe-allowed-command -default ""
@@ -672,8 +677,11 @@ snit::type conn {
     # Reconnect backoff state
     # After-id for the pending reconnect timer, "" if none
     variable reconnectAfterId ""
-    # How many consecutive reconnect attempts so far (resets on success)
+    # How many consecutive reconnect attempts so far. Reset once a session
+    # has stayed up for -stable-after ms, not as soon as it is ready.
     variable reconnectAttempt 0
+    # After-id for that reset, "" if none is pending.
+    variable stableAfterId ""
     # Backoff schedule in ms; last value repeats indefinitely
     variable reconnectIntervals {1000 2000 5000 15000 30000 60000}
 
@@ -758,7 +766,16 @@ snit::type conn {
             after cancel $wakeAfterId
             set wakeAfterId ""
         }
+        if {$stableAfterId ne ""} {
+            after cancel $stableAfterId
+            set stableAfterId ""
+        }
         set probeAt 0
+    }
+
+    method OnStable {} {
+        set stableAfterId ""
+        set reconnectAttempt 0
     }
 
     # Check now that the link is alive: a no-op unless it is ready, idle
@@ -1280,13 +1297,13 @@ snit::type conn {
         set info [$sm getInfo]
         if {[dict get $info state] eq "running"} {
             set authState ready
-            set reconnectAttempt 0
             $self FlushWriteBuffer
             # FlushWriteBuffer may have triggered an SM overflow →
             # OnTransportError → authState back to disconnected.
             if {$authState ne "ready"} return
             $self SetConnState connected
             $self StartKeepalive
+            set stableAfterId [after $options(-stable-after) [mymethod OnStable]]
 
             if {$options(-onready) ne ""} {
                 {*}$options(-onready) [dict get $info resumed]
@@ -1329,7 +1346,7 @@ snit::type conn {
     # stop reconnecting: retrying would kick the other client off or fail
     # again. system-shutdown and reset reconnect as usual; anything else
     # reconnects starting further along the backoff, since a session that
-    # was up reset the attempt count.
+    # was up for a while has reset the attempt count.
     method OnStreamError {stanza} {
         set cond ""
         foreach tag [xsearch $stanza * -gather tag] {
