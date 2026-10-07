@@ -99,7 +99,17 @@ namespace eval ::test::muc_edit_int {
         joinRoom $JULIET juliet 1
     }
 
-    proc bringUp {} {
+    # Both in the room, Romeo without stream management.
+    proc setupRomeoWithoutSm {} {
+        variable ROMEO
+        variable JULIET
+        bringUp 0
+        joinRoom $ROMEO romeo 1
+        joinRoom $JULIET juliet
+    }
+
+    # $romeoSm 0 brings Romeo up without stream management (conn -sm 0).
+    proc bringUp {{romeoSm 1}} {
         variable HOST
         variable ROMEO
         variable JULIET
@@ -110,6 +120,17 @@ namespace eval ::test::muc_edit_int {
         tacky account add {*}$::tacky_test_account_args -acc $JULIET -password julietpass \
             -domain $HOST -username juliet
 
+        if {!$romeoSm} {
+            [tacky client $ROMEO] conn configure -sm 0
+        }
+        # Listen for catchup before enabling: an account can finish it
+        # while the other is still connecting.
+        foreach acc [list $ROMEO $JULIET] {
+            set [namespace current]::caughtUp($acc) 0
+            tacky listen message <CatchupDone> -acc $acc [list apply {{var args} {
+                set $var 1
+            }} [namespace current]::caughtUp($acc)]
+        }
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
 
@@ -117,9 +138,8 @@ namespace eval ::test::muc_edit_int {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
-        wait_events {
-            {message <CatchupDone> -acc romeo@example.local}
-            {message <CatchupDone> -acc juliet@example.local}
+        foreach acc [list $ROMEO $JULIET] {
+            wait_value [namespace current]::caughtUp($acc) 1 10000
         }
     }
 
@@ -135,6 +155,28 @@ namespace eval ::test::muc_edit_int {
 
     # maxstanzas 0 suppresses the room's own replay, so the archive query is
     # the only thing that can supply the message.
+    # Without stream management a room message is confirmed in the session,
+    # by the room's echo or by the ping that follows the send, whichever
+    # comes first, and the other occupant gets it.
+    test muc-int-send-confirmed-without-sm \
+        {without SM a room message is confirmed and delivered} \
+        -constraints {withServer && notMongoose} \
+        -setup { ::test::muc_edit_int::setupRomeoWithoutSm } \
+        -cleanup { ::test::muc_edit_int::cleanup } \
+        -body {
+            variable ROMEO
+            variable JULIET
+            variable CHAT
+            awaitEvent message <New> -acc $JULIET -jid $CHAT {
+                set confirmed [awaitEvent message <Confirmed> -acc $ROMEO -jid $CHAT {
+                    [tacky client $ROMEO] message send -chat $CHAT -body "room without sm"
+                }]
+            }
+            list [dict get [[[tacky client $ROMEO] conn sm] getInfo] mode] \
+                [dict get $confirmed -server_status] \
+                [expr {[rowOfBody $JULIET "room without sm"] ne ""}]
+        } -result {passthrough {} 1}
+
     test muc-int-join-syncs-room-archive \
         {joining a room pulls its archive, with no help from the join replay} \
         -constraints withServer \

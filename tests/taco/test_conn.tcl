@@ -1625,3 +1625,177 @@ test conn-wake-check-stops-when-not-ready {the wake check stops once the link le
             set id
         }]
     } -result {0}
+
+# -- Without stream management: pings confirm sends -------------------------
+#
+# The passthrough mode keeps written stanzas and asks about them on the same
+# schedule as SM, with a ping to the server instead of <r/>; the ping's reply
+# confirms everything written before it.
+
+# The ids of the barrier pings written since the last clear.
+proc barrier_ids {} {
+    set ids {}
+    foreach st [c.base get_written] {
+        if {[dict get $st tag] eq "iq"
+                && [llength [xsearch $st ping -ns urn:xmpp:ping]]} {
+            lappend ids [xsearch $st -get @id]
+        }
+    }
+    return $ids
+}
+
+proc barrier_reply {id {type result} {from ""}} {
+    set attrs [list -type $type -id $id]
+    if {$from ne ""} { lappend attrs -from $from }
+    c.base inject [j iq {*}$attrs]
+}
+
+proc msg {id} {
+    j message -to friend@example.com -id $id { j body -body $id }
+}
+
+# Ready without SM, asking after $delay ms or $freq stanzas.
+proc drive_passthrough {{delay 20} {freq 5}} {
+    c configure -keepalive 0 -wake-check 0
+    [c sm] configure -ack-delay $delay -ack-frequency $freq
+    c connect
+    drive_to_bind_no_sm "user@test.example.com/r"
+    c.base clear
+    set ::_temitted {}
+}
+
+test conn-sm-disabled-negotiates-none {-sm 0 enables no stream management even when offered} \
+    {*}$common \
+    -body {
+        c configure -sm 0
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_bind_features_with_sm]
+        c.base clear
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        list [lmap st [c.base get_written] {dict get $st tag}] [c isReady] \
+            [dict get [[c sm] getInfo] mode]
+    } -result {{} 1 passthrough}
+
+test conn-barrier-confirms-a-send {without SM a ping after the delay confirms what was written before it} \
+    {*}$common \
+    -body {
+        drive_passthrough
+        c write [msg m1]
+        set before [barrier_ids]
+        conn_wait 40
+        set ids [barrier_ids]
+        barrier_reply [lindex $ids 0]
+        list $before [llength $ids] [sm_acked_ids]
+    } -result {{} 1 m1}
+
+test conn-barrier-one-ping-per-burst {a burst gets one ping; reaching -ack-frequency asks at once} \
+    {*}$common \
+    -body {
+        drive_passthrough 1000 3
+        c write [msg m1]
+        c write [msg m2]
+        set two [llength [barrier_ids]]
+        c write [msg m3]
+        set three [llength [barrier_ids]]
+        barrier_reply [lindex [barrier_ids] 0]
+        list $two $three [sm_acked_ids]
+    } -result {0 1 {m1 m2 m3}}
+
+test conn-barrier-partial {each reply confirms only what was written before its ping} \
+    {*}$common \
+    -body {
+        drive_passthrough 1000 1
+        c write [msg m1]
+        c write [msg m2]
+        lassign [barrier_ids] p1 p2
+        barrier_reply $p1
+        set first [sm_acked_ids]
+        barrier_reply $p2
+        list $first [sm_acked_ids] [dict get [[c sm] getInfo] queueSize]
+    } -result {m1 {m1 m2} 0}
+
+test conn-barrier-later-reply-covers-earlier {a reply to a later ping confirms the earlier one's stanzas too; the earlier reply then does nothing} \
+    {*}$common \
+    -body {
+        drive_passthrough 1000 1
+        c write [msg m1]
+        c write [msg m2]
+        lassign [barrier_ids] p1 p2
+        barrier_reply $p2
+        barrier_reply $p1
+        sm_acked_ids
+    } -result {m1 m2}
+
+test conn-barrier-error-reply-confirms {an error reply to the ping confirms too} \
+    {*}$common \
+    -body {
+        drive_passthrough 1000 1
+        c write [msg m1]
+        barrier_reply [lindex [barrier_ids] 0] error
+        sm_acked_ids
+    } -result {m1}
+
+test conn-barrier-only-from-our-server {a reply to the ping from anyone but our server confirms nothing} \
+    {*}$common \
+    -body {
+        drive_passthrough 1000 1
+        c write [msg m1]
+        set id [lindex [barrier_ids] 0]
+        barrier_reply $id result mallory@example.com/x
+        set spoofed [sm_acked_ids]
+        barrier_reply $id result test.example.com
+        list $spoofed [sm_acked_ids]
+    } -result {{} m1}
+
+test conn-barrier-drop-confirms-nothing {a drop before the reply confirms nothing and replays nothing} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        drive_passthrough 1000 1
+        c write [msg m1]
+        set id [lindex [barrier_ids] 0]
+        c.base inject_error "connection lost"
+        c connect
+        c.base clear
+        drive_to_bind_no_sm "user@test.example.com/r"
+        barrier_reply $id
+        list [sm_acked_ids] [sent_message_ids]
+    } -result {{} {}}
+
+test conn-barrier-after-enable-failed {stanzas queued when <enable/> fails are written without SM and confirmed by a ping} \
+    {*}$common \
+    -body {
+        [c sm] configure -ack-delay 1000 -ack-frequency 1
+        c configure -keepalive 0 -wake-check 0
+        c connect
+        drive_to_bind "user@test.example.com/r"
+        c write [msg m1]
+        set ::_temitted {}
+        c.base clear
+        c.base inject [make_sm_failed]
+        set id [lindex [barrier_ids] 0]
+        barrier_reply $id
+        list [sent_message_ids] [sm_acked_ids] [dict get [[c sm] getInfo] mode]
+    } -result {m1 m1 passthrough}
+
+# With SM: a stanza written after <r/> went out but before its <a/> came
+# back is asked about once the delay passes. The <a/> used to reset the
+# count, so the delayed ask found nothing to ask about and the stanza waited
+# for the next send.
+test conn-sm-asks-again-after-a-partial-answer {a stanza written while <r/> was out is asked about after the delay} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 0
+        [c sm] configure -ack-delay 20
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-again"
+        c.base clear
+        c write [msg m1]
+        conn_wait 40
+        c write [msg m2]
+        c.base inject [make_sm_ack 1]
+        conn_wait 40
+        llength [lsearch -all [lmap st [c.base get_written] {dict get $st tag}] r]
+    } -result 2

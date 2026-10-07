@@ -71,7 +71,9 @@ namespace eval ::test::message_int {
         return [set $var]
     }
 
-    proc setup {} {
+    # $romeoSm 0 brings Romeo up without stream management (conn -sm 0), on
+    # the same server.
+    proc setup {{romeoSm 1}} {
         variable HOST
         variable ROMEO
         variable JULIET
@@ -82,6 +84,17 @@ namespace eval ::test::message_int {
         tacky account add {*}$::tacky_test_account_args -acc $JULIET -password julietpass \
             -domain $HOST -username juliet
 
+        if {!$romeoSm} {
+            [tacky client $ROMEO] conn configure -sm 0
+        }
+        # Listen for catchup before enabling: an account can finish it
+        # while the other is still connecting.
+        foreach acc [list $ROMEO $JULIET] {
+            set [namespace current]::caughtUp($acc) 0
+            tacky listen message <CatchupDone> -acc $acc [list apply {{var args} {
+                set $var 1
+            }} [namespace current]::caughtUp($acc)]
+        }
         tacky account enable -acc $ROMEO
         tacky account enable -acc $JULIET
 
@@ -90,9 +103,8 @@ namespace eval ::test::message_int {
             {conn <State> -acc romeo@example.local -state connected}
             {conn <State> -acc juliet@example.local -state connected}
         }
-        wait_events {
-            {message <CatchupDone> -acc romeo@example.local}
-            {message <CatchupDone> -acc juliet@example.local}
+        foreach acc [list $ROMEO $JULIET] {
+            wait_value [namespace current]::caughtUp($acc) 1 10000
         }
     }
 
@@ -139,6 +151,33 @@ namespace eval ::test::message_int {
             }
             set found
         } -result {1}
+
+    # -- Without stream management a 1:1 send is confirmed in the session ---
+    #
+    # No SM ack and no echo: the ping sm sends after the burst is what
+    # confirms it (RFC 6120 10.1 in-order processing).
+
+    test message-int-send-confirmed-without-sm \
+        {without SM a 1:1 send is confirmed by the server in the same session} \
+        -constraints withServer \
+        -setup { ::test::message_int::setup 0 } \
+        -cleanup { ::test::message_int::cleanup } \
+        -body {
+            variable ROMEO
+            variable JULIET
+            set romeo [tacky client $ROMEO]
+            $romeo omemo setEnabled -jid $JULIET -value 0
+            # The confirmation comes from Romeo's server and may come before
+            # Juliet has the message, so wait for both.
+            set heard [awaitEvent message <New> -acc $JULIET -jid $ROMEO {
+                set confirmed [awaitEvent message <Confirmed> -acc $ROMEO -jid $JULIET {
+                    $romeo message send -chat $JULIET -body "sent without sm"
+                }]
+            }]
+            list [dict get [[$romeo conn sm] getInfo] mode] \
+                [dict get $confirmed -server_status] \
+                [::test::helpers::msgText [dict get $heard -message]]
+        } -result {passthrough {} {sent without sm}}
 
     # -- MAM backfill works when local data is insufficient ---
 
