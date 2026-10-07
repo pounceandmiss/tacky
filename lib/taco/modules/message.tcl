@@ -873,7 +873,7 @@ snit::type taco_message {
         set encMode [$self OutgoingEncMode $opts(-chat) $msgType]
         if {[info exists opts(-reply_to_ts)] && $opts(-reply_to_ts) ne ""} {
             lassign [$self BuildReplyTarget $opts(-chat) $opts(-reply_to_ts)] \
-                replyId replyTo quoteBody
+                replyId replyTo quoteBody quoteEnc
             # An OMEMO-encrypted body is only visible after decryption, by
             # which point a peer's XEP-0428 fallback-stripping has already
             # run against the (unrelated) cleartext warning body -- there's
@@ -884,7 +884,10 @@ snit::type taco_message {
             # encrypted envelope instead; needs an envelope builder/parser
             # on both send and receive, plus OMEMO 2 (SCE is specified
             # against urn:xmpp:omemo:2, not our current legacy namespace).
-            if {$replyId ne "" && $encMode ne "omemo"} {
+            #
+            # Also skip quoting an encrypted target in a cleartext reply: its
+            # body is stored decrypted, so the quote would leak it.
+            if {$replyId ne "" && $encMode ne "omemo" && $quoteEnc eq ""} {
                 lassign [reply::quote $quoteBody] quote fbEnd
                 set wireBody $quote$opts(-body)
             }
@@ -941,19 +944,20 @@ snit::type taco_message {
     }
 
     # Look up the replied-to row and resolve its reply id (reply::pick_id).
-    # Returns {replyId author fullBody}; the body feeds the wire quote.
+    # Returns {replyId author fullBody encryption}; the body is used for the
+    # wire quote unless the target was encrypted.
     method BuildReplyTarget {chatJid ts} {
         set found 0
         $client db eval {
-            SELECT server_id, origin_id, own_id, from_jid, body
+            SELECT server_id, origin_id, own_id, from_jid, body, encryption
             FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$ts
             LIMIT 1
         } row { set found 1 }
-        if {!$found} { return [list "" "" ""] }
+        if {!$found} { return [list "" "" "" ""] }
         set replyId [reply::pick_id [IsRoomChatJid $chatJid] \
             $row(server_id) $row(origin_id) $row(own_id)]
-        return [list $replyId $row(from_jid) $row(body)]
+        return [list $replyId $row(from_jid) $row(body) $row(encryption)]
     }
 
     # Attachment send (XEP-0363 + XEP-0066), optimistic + progress:
