@@ -1024,7 +1024,11 @@ snit::type taco_muc {
 
     method OnUnavailable {roomJid nick stanza mucX} {
         set codes [$self ParseStatusCodes $mucX]
-        set isSelf [expr {110 in $codes}]
+        # 110 marks presence about us. Some servers leave it off a removal
+        # (MongooseIM's kick has only 307), but a room's nick is held by one
+        # occupant, so presence from our own nick is about us anyway.
+        set isSelf [expr {110 in $codes
+            || $nick eq [dict get $Rooms($roomJid) nick]}]
         set occupant [$self ParseItem $mucX $nick $stanza]
 
         set actor [xsearch $mucX item actor -get @nick]
