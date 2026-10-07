@@ -265,4 +265,52 @@ namespace eval ::test::muc_edit_int {
                  [expr {$replaceId eq $originId}] \
                  [expr {$replaceId eq $serverId}]
         } -result {1 1 1 0}
+
+    # Conversations reacts to a corrected message by the stanza-id of its
+    # newest correction. Juliet sends such a reaction by hand, naming the id
+    # the room gave her correction; Romeo shows it on the original.
+    test muc-int-reaction-by-correction-stanza-id \
+        {a reaction naming a correction's stanza-id shows on the corrected message} \
+        {*}$common -constraints {withServer && notMongoose} \
+        -body {
+            variable ROMEO
+            variable JULIET
+            variable ROOM
+            variable CHAT
+
+            awaitEvent message <New> -acc $ROMEO -jid $CHAT {
+                [tacky client $JULIET] message send -chat $CHAT -body "helo"
+            }
+            set jts [dict get [rowOfBody $JULIET "helo"] timestamp]
+            # Juliet edits at once, then again from the room's echo of her
+            # correction, which records its stanza-id.
+            set edits [namespace current]::_julietEdits
+            set $edits 0
+            set tag [tacky listen message <Edited> -acc $JULIET -jid $CHAT \
+                [list apply {{v args} { incr $v }} $edits]]
+            awaitEvent message <Edited> -acc $ROMEO -jid $CHAT {
+                [tacky client $JULIET] message edit \
+                    -chat $CHAT -timestamp $jts -body "hello"
+            }
+            wait_value $edits 2 10000
+            tacky unlisten $tag
+            # The room's echo moved Juliet's row to its own time.
+            set jts [dict get [rowOfBody $JULIET "hello"] timestamp]
+            set corrSid [[tacky client $JULIET] db onecolumn {
+                SELECT alias_id FROM message_alias
+                WHERE chat_jid=$CHAT AND kind='server' AND target_ts=$jts
+            }]
+            if {$corrSid eq ""} { error "no stanza-id recorded for the correction" }
+
+            awaitEvent message <Reactions> -acc $ROMEO -jid $CHAT {
+                [tacky client $JULIET] write [j message -type groupchat -to $ROOM {
+                    j reactions -ns urn:xmpp:reactions:0 -id $corrSid {
+                        j reaction -body 👍
+                    }
+                    j store -ns urn:xmpp:hints
+                }]
+            }
+            set row [rowOfBody $ROMEO "hello"]
+            list [llength [msgs $ROMEO]] [dict keys [dict get $row reactions]]
+        } -result {1 👍}
 }
