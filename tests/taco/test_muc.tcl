@@ -1811,6 +1811,73 @@ test muc-moderation-tombstones \
         dict get [lindex [muc_msgs] 0] retracted
     } -result {1}
 
+test muc-moderation-v0-retracts \
+    {a pre-1.0 moderation broadcast (apply-to + moderate:0) retracts the target} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn feed [j message -type groupchat -id srv1 \
+            -from room@muc.example.com/other {
+            j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+            j body -body "spam"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com {
+            j apply-to -ns urn:xmpp:fasten:0 -id srv1 {
+                j moderated -ns urn:xmpp:message-moderate:0 \
+                    -by room@muc.example.com/mod {
+                    j retract -ns urn:xmpp:message-retract:0
+                }
+            }
+        }]
+        dict get [lindex [muc_msgs] 0] retracted
+    } -result {1}
+
+# What the archive keeps for a message moderated while we were away.
+proc muc_tombstone {id form} {
+    j result -ns urn:xmpp:mam:2 -id $id {
+        j forwarded -ns urn:xmpp:forward:0 {
+            j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+            j message -type groupchat -from room@muc.example.com/other {
+                switch $form {
+                    v1 {
+                        j retracted -ns urn:xmpp:message-retract:1 \
+                                -stamp 2024-01-02T00:00:00Z {
+                            j moderated -ns urn:xmpp:message-moderate:1 \
+                                -by room@muc.example.com/mod
+                        }
+                    }
+                    v0 {
+                        j moderated -ns urn:xmpp:message-moderate:0 \
+                                -by room@muc.example.com/mod {
+                            j retracted -ns urn:xmpp:message-retract:0 \
+                                -stamp 2024-01-02T00:00:00Z
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+test muc-mam-tombstone-retracts-cached {an archive tombstone retracts the copy we already hold} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        foreach id {srv1 srv2} {
+            c.conn feed [j message -type groupchat -id $id \
+                -from room@muc.example.com/other {
+                j stanza-id -ns urn:xmpp:sid:0 -id $id -by room@muc.example.com
+                j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
+                j body -body "spam $id"
+            }]
+        }
+        lassign [c message IngestMamBatch room@muc.example.com?join \
+            [dict create messages [list [muc_tombstone srv1 v1] \
+                                        [muc_tombstone srv2 v0]]]] parsed toStore
+        list [llength $toStore] [lmap m [muc_msgs] {dict get $m retracted}]
+    } -result {0 {1 1}}
+
 test muc-occupant-retract-other-ignored \
     {a <retract> from an occupant other than the author is not honored, nor stored} \
     {*}$muc_common \
