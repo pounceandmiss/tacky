@@ -3841,6 +3841,33 @@ test message-autoreceipt-not-for-carbons \
         msg_written_marker_count received urn:xmpp:receipts
     } -result 0
 
+test message-carbon-wrapper-delay \
+    {a late carbon takes the server's delay from its wrapper, and only the server's} \
+    {*}$msg_common \
+    -body {
+        set carbon {{id by} {
+            j message -from $::acc -to $::acc/res {
+                j delay -ns urn:xmpp:delay -from $by -stamp 2024-01-01T00:00:00Z
+                j received -ns urn:xmpp:carbons:2 {
+                    j forwarded -ns urn:xmpp:forward:0 {
+                        j message -type chat -id $id -from alice@example.com/phone \
+                                -to $::acc/other {
+                            j body -body $id
+                        }
+                    }
+                }
+            }
+        }}
+        $::_client conn feed [apply $carbon c1 [jid domain $acc]]
+        $::_client conn feed [apply $carbon c2 alice@example.com]
+        set out {}
+        foreach m [msg_store_latest alice@example.com] {
+            lappend out [dict get $m content body] \
+                [expr {[dict get $m timestamp] == 1704067200000000}]
+        }
+        set out
+    } -result {c1 1 c2 0}
+
 test message-autoreceipt-none \
     {a plain message triggers no receipt} \
     {*}$msg_common \
