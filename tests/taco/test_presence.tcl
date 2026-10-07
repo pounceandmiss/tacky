@@ -121,6 +121,20 @@ test presence-unavailable-one-resource {going offline drops only that resource} 
         list [dict keys $left] [dict get $left desktop client]
     } -result {desktop {}}
 
+test presence-ignores-room-occupants {an occupant's room presence makes no contact online} \
+    {*}$presence_common -body {
+        set ::presence_changed {}
+        tacky listen presence <Changed> {apply {{ev} {
+            lappend ::presence_changed [dict getdef $ev -jid ""]
+        }}}
+        c.conn feed [j presence -from room@muc.example.com/alice {
+            j x -ns http://jabber.org/protocol/muc#user {
+                j item -affiliation member -role participant
+            }
+        }]
+        list [c presence isOnline -jid room@muc.example.com] $::presence_changed
+    } -result {0 {}}
+
 test presence-offline-shape {an unknown JID reports the full offline shape} \
     {*}$presence_common -body {
         c presence get -jid stranger@example.com

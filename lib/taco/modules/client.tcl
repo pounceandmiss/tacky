@@ -317,7 +317,12 @@ snit::type taco_client {
                 } else {
                     # groupcall reads call rooms through muc's events.
                     $muc OnPresence $stanza
-                    $presence OnPresence $stanza
+                    # Occupant presence is muc's only. Otherwise each nick is
+                    # recorded as a resource of the room's bare jid.
+                    if {[llength [xsearch $stanza x \
+                            -ns http://jabber.org/protocol/muc#user]] == 0} {
+                        $presence OnPresence $stanza
+                    }
                 }
             }
         }
