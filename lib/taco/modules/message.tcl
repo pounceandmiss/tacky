@@ -492,16 +492,8 @@ snit::type taco_message {
         if {[llength [xsearch $x invite]] || [llength [xsearch $x decline]]} {
             return ""
         }
-        set room [jid norm [jid bare $peer]]
-        set roomChat ${room}?join
-        if {![$client muc isJoined -jid $room]
-                && ![$client db exists {SELECT 1 FROM bookmark WHERE jid=$room}]
-                && ![$client db exists {
-                    SELECT 1 FROM chat_message WHERE chat_jid=$roomChat
-                }]} {
-            return ""
-        }
-        return "$room/[jid resource $peer]"
+        if {![$client muc isKnownRoom -jid $peer]} { return "" }
+        return "[jid norm [jid bare $peer]]/[jid resource $peer]"
     }
 
     # Called on message stanzas that haven't been intercepted by other

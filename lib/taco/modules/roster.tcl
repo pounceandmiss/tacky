@@ -254,6 +254,12 @@ snit::type taco_roster {
         set from [xsearch $stanza -get @from]
         if {$from eq ""} return
         set type_ [xsearch $stanza -get @type]
+        # A room has no roster to share, and from room/nick it is an
+        # occupant sending through the room: a way to prompt everyone in it.
+        if {[$client muc isKnownRoom -jid $from]} {
+            jlog inform "Ignoring $type_ from room $from"
+            return
+        }
         $client emit roster <Subscribe> -jid [jid norm [jid bare $from]] -type $type_
     }
 
