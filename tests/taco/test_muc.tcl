@@ -1116,7 +1116,7 @@ test muc-join-callback-on-error {join -command callback fires on error} \
         list [dict get $got -jid] [dict get $got -error]
     } -result {room@muc.example.com registration-required}
 
-# -- Nick change -----------------------------------------------------------
+# -- Nick change and the bookmark ------------------------------------------
 
 proc muc_nick_bookmark {} {
     c db onecolumn {SELECT nick FROM bookmark WHERE jid='room@muc.example.com'}
@@ -1808,6 +1808,49 @@ test muc-occupant-id-stored-on-message {a peer message persists its occupant-id}
 proc muc_msgs {} {
     dict get [c message messagestore get latest room@muc.example.com?join] messages
 }
+
+# Own messages from the room's archive: from room/nick, so ours only by
+# occupant-id. The room here rewrote @id; origin-id is what came back as sent.
+proc muc_archived {id originId occ body} {
+    j result -ns urn:xmpp:mam:2 -id $id {
+        j forwarded -ns urn:xmpp:forward:0 {
+            j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+            j message -type groupchat -from room@muc.example.com/me -id rewritten {
+                j origin-id -ns urn:xmpp:sid:0 -id $originId
+                j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+                j body -body $body
+            }
+        }
+    }
+}
+
+test muc-send-carries-origin-id {a room message carries an origin-id equal to its id} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c.conn clear
+        c message send -chat room@muc.example.com?join -body hi
+        set st [lindex [c.conn get_written] end]
+        expr {[xsearch $st origin-id -ns urn:xmpp:sid:0 -get @id] eq [xsearch $st -get @id]}
+    } -result 1
+
+test muc-mam-own-by-occupant-id {our message in the room archive is ours by occupant-id: a pending send confirms, another device's is outgoing} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        c message send -chat room@muc.example.com?join -body mine
+        set oid [dict get [lindex [muc_msgs] end] own_id]
+        lassign [c message IngestMamBatch room@muc.example.com?join \
+            [dict create messages [list \
+                [muc_archived srv1 $oid occ-me mine] \
+                [muc_archived srv2 other-device occ-me "from my phone"] \
+                [muc_archived srv3 someone occ-other "not mine"]]]] parsed toStore
+        c message messagestore store $toStore
+        lmap m [muc_msgs] {
+            list [dict get $m content body] [dict get $m is_outgoing] \
+                [dict get $m server_status]
+        }
+    } -result {{mine 1 {}} {{from my phone} 1 {}} {{not mine} 0 {}}}
 
 test muc-edit-by-occupant-id \
     {a groupchat correction from the same occupant-id swaps the body} \

@@ -597,7 +597,10 @@ snit::type taco_message {
         if {$ts eq "" || $ts > $now} { set ts $now }
         set idArgs {}
         if {$isOwn} {
-            set idArgs [list -own_id [xsearch $stanza -get @id]]
+            # Prefer origin-id: some rooms rewrite @id.
+            set ownId [xsearch $stanza origin-id -ns urn:xmpp:sid:0 -get @id]
+            if {$ownId eq ""} { set ownId [xsearch $stanza -get @id] }
+            set idArgs [list -own_id $ownId]
         }
         set ids [$self ExtractEnvelopeIds $stanza $chatJid {*}$idArgs]
         set verdict [$self Classify $chatJid $stanza $ts $ids]
@@ -792,6 +795,10 @@ snit::type taco_message {
         set omemo   [expr {$encMode eq "omemo"}]
         set encWire [expr {$omemo && $mode eq "wire"}]
         return [j message -to $toJid -type $msgType -id $oid {
+            # XEP-0359 origin-id: unlike @id, servers and rooms don't rewrite
+            # it, so it identifies the message in a room archive and for
+            # peers that reference it.
+            j origin-id -ns urn:xmpp:sid:0 -id $oid
             # XEP-0308 correction hint: plaintext even when the body is
             # OMEMO-encrypted, so a peer can match it to the original.
             if {$replaceId ne ""} {
@@ -2706,11 +2713,25 @@ snit::type taco_message {
             set rawFrom [xsearch $msgNode -get @from]
             if {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
                 set ownId [xsearch $msgNode -get @id]
+            } elseif {[IsRoomChatJid $chatJid] && [$self IsOwnByOccupant $chatJid $msgNode]} {
+                # Our own message from the room archive. It comes from
+                # room/nick, so match on occupant-id: the nick may have
+                # belonged to someone else when the message was sent.
+                set ownId $originId
             } else {
                 set ownId ""
             }
         }
         return [list $serverId $ownId $originId]
+    }
+
+    # Whether a room message carries our own occupant-id (XEP-0421). Fails
+    # closed: either id unknown is not ours.
+    method IsOwnByOccupant {chatJid msgNode} {
+        regsub {\?join$} $chatJid {} roomJid
+        set occ [xsearch $msgNode occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        set myOcc [$client muc myOccupantId -jid [jid bare $roomJid]]
+        expr {$occ ne "" && $occ eq $myOcc}
     }
 
     # The <stanza-id> of the archive this message lives in: the room's for
