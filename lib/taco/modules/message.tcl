@@ -272,10 +272,17 @@ snit::type taco_message {
     }
 
     method OnMucCatchup {roomChatJid mamResult} {
+        regsub {\?join$} $roomChatJid {} roomJid
         if {[dict exists $mamResult error]} {
+            # A room without an archive says so; a timeout says nothing.
+            set cond [dict getdef $mamResult error_condition ""]
+            if {$cond in {feature-not-implemented service-unavailable}} {
+                $client muc noteArchive $roomJid 0
+            }
             $self CatchupSettled $roomChatJid 0
             return
         }
+        $client muc noteArchive $roomJid 1
         lassign [$self CatchupPage $mamResult $roomChatJid] perChatCount _ mins
         if {![dict get $mamResult complete]} {
             $self PlaceCatchupFloorHoles $mins
