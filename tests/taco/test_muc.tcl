@@ -2106,6 +2106,53 @@ test muc-edit-occupant-spoof-rejected \
         list [dict get $m content body] [dict get $m edited]
     } -result {helo 0}
 
+# Origin-ids are the sender's choice, so two occupants' messages can share
+# one; a correction goes to the one its sender wrote.
+test muc-edit-shared-origin-id-picks-author \
+    {a correction naming an origin-id two messages share edits its author's} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me -occupant occ-me
+        foreach {nick occ sid body} {alice occ-a srvA "alice's" bob occ-b srvB "bob's"} {
+            c.conn feed [j message -type groupchat -id dup \
+                -from room@muc.example.com/$nick {
+                j stanza-id -ns urn:xmpp:sid:0 -id $sid -by room@muc.example.com
+                j origin-id -ns urn:xmpp:sid:0 -id dup
+                j occupant-id -ns urn:xmpp:occupant-id:0 -id $occ
+                j body -body $body
+            }]
+        }
+        c.conn feed [j message -type groupchat -from room@muc.example.com/bob {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-b
+            j replace -ns urn:xmpp:message-correct:0 -id dup
+            j body -body "bob's, fixed"
+        }]
+        lmap m [muc_msgs] { list [dict get $m content body] [dict get $m edited] }
+    } -result {{alice's 0} {{bob's, fixed} 1}}
+
+test muc-reaction-ignores-origin-id-collision \
+    {a reaction by stanza-id does not also land on a message whose origin-id equals it} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c.conn feed [j message -type groupchat -from room@muc.example.com/alice {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvA -by room@muc.example.com
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-a
+            j body -body "real"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/mallory {
+            j stanza-id -ns urn:xmpp:sid:0 -id srvM -by room@muc.example.com
+            j origin-id -ns urn:xmpp:sid:0 -id srvA
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-m
+            j body -body "decoy"
+        }]
+        c.conn feed [j message -type groupchat -from room@muc.example.com/bob {
+            j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-b
+            j reactions -ns urn:xmpp:reactions:0 -id srvA { j reaction -body 👍 }
+        }]
+        lmap m [muc_msgs] { dict exists $m reactions }
+    } -result {1 0}
+
 test muc-moderation-tombstones \
     {a moderated retraction broadcast from the room bare jid tombstones the message} \
     {*}$muc_common \

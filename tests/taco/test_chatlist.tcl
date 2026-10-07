@@ -335,7 +335,7 @@ test chatlist-edit-of-tail-reemits {editing the tail message re-emits the entry 
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1
-        c message messagestore applyEdit alice@example.com sid1 fixed "<xml/>" 150 \
+        c message messagestore applyEdit alice@example.com 100 fixed "<xml/>" 150 \
             {encryption "" sender_fp ""}
         set bodies {}
         tacky listen chatlist <Item> \
@@ -367,7 +367,7 @@ test chatlist-retract-of-tail-reemits {retracting the tail re-emits a tombstone 
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert alice@example.com timestamp 100 body gone server_id sid1
-        c message messagestore applyRetract alice@example.com sid1
+        c message messagestore applyRetract alice@example.com 100
         set got {}
         tacky listen chatlist <Item> \
             {apply {{e} {

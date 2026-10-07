@@ -943,7 +943,7 @@ test messagestore-search-skips-retracted {a retracted row keeps its body as a to
         ms_batch [list \
             [ms_msg timestamp 100 server_id sid1 body needle] \
             [ms_msg timestamp 200 server_id sid2 body needle]]
-        store applyRetract alice@example.com sid1
+        store applyRetract alice@example.com 100
         ms_search_ts alice@example.com needle
     } -result {200}
 
@@ -1066,7 +1066,7 @@ test messagestore-search-follows-an-edit {a corrected message is findable by its
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body {the needle}]]
-        store applyEdit alice@example.com sid1 {the pin} "<xml/>" 200 \
+        store applyEdit alice@example.com 100 {the pin} "<xml/>" 200 \
             {encryption {} sender_fp {}}
         list [ms_search_ts alice@example.com needle] \
              [ms_search_ts alice@example.com pin]
@@ -1081,14 +1081,14 @@ test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves w
         store resolveReply alice@example.com sid-x
     } -result {500}
 
-test messagestore-resolvereply-origin-id-author {origin_id collision across senders disambiguated by MUC author} \
+test messagestore-resolvereply-origin-id-author {origin_id collision across senders disambiguated by room PM author} \
     -setup {
         sqlite3 testdb :memory:
         taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     } -cleanup {store destroy; testdb close} \
     -body {
-        set jid room@conf.example.com?join
+        set jid room@conf.example.com/bob
         store store [list \
             [dict create timestamp 100 chat_jid $jid \
                 from_jid room@conf.example.com/alice body hi \
@@ -1099,19 +1099,32 @@ test messagestore-resolvereply-origin-id-author {origin_id collision across send
         store resolveReply $jid oxxx room@conf.example.com/bob
     } -result {200}
 
-test messagestore-resolvereply-author-mismatch {origin_id match but wrong MUC author resolves to nothing} \
+test messagestore-resolvereply-author-mismatch {origin_id match but wrong room PM author resolves to nothing} \
     -setup {
         sqlite3 testdb :memory:
         taco_schema_migrate testdb per-account
         taco_messagestore create store -db testdb
     } -cleanup {store destroy; testdb close} \
     -body {
-        set jid room@conf.example.com?join
+        set jid room@conf.example.com/alice
         store store [list [dict create timestamp 100 chat_jid $jid \
             from_jid room@conf.example.com/alice body hi \
             server_id sid1 own_id "" origin_id oxxx raw_xml ""]]
         store resolveReply $jid oxxx room@conf.example.com/charlie
     } -result {}
+
+# In a room an origin-id is whatever its sender chose, so it can name
+# another message's stanza-id; only the room's stanza-id identifies.
+test messagestore-resolvereply-room-stanza-id-only {in a room an origin-id resolves nothing, even with the right author} \
+    {*}$ms_common \
+    -body {
+        set jid room@conf.example.com?join
+        store store [list [dict create timestamp 100 chat_jid $jid \
+            from_jid room@conf.example.com/alice body hi \
+            server_id sid1 own_id "" origin_id oxxx raw_xml ""]]
+        list [store resolveReply $jid oxxx room@conf.example.com/alice] \
+             [store resolveReply $jid sid1]
+    } -result {{} 100}
 
 test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when reply-to is a full JID, disambiguating a same-id collision} \
     {*}$ms_common \
@@ -1337,7 +1350,7 @@ test messagestore-unread-excludes-retracted {a tombstone doesn't hold a chat unr
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1]]
-        store applyRetract alice@example.com sid1
+        store applyRetract alice@example.com 100
         store unreadCount alice@example.com
     } -result {0}
 
@@ -1418,6 +1431,25 @@ test messagestore-reaction-before-message {a reaction stored before its target s
         list $early [dict keys [store reactionsForMessage alice@example.com 5000]]
     } -result {{} 👍}
 
+test messagestore-reaction-room-ignores-origin-id \
+    {in a room a reaction attaches by stanza-id only, not to a row whose origin-id collides} \
+    {*}$ms_common \
+    -body {
+        set out {}
+        foreach jid {room@conf.example.com?join alice@example.com} {
+            store store [list \
+                [dict create timestamp 100 chat_jid $jid from_jid $jid/a \
+                    body a server_id sidA own_id "" origin_id oa raw_xml ""] \
+                [dict create timestamp 200 chat_jid $jid from_jid $jid/m \
+                    body m server_id sidM own_id "" origin_id sidA raw_xml ""]]
+            store applyReaction $jid sidA bob@x bob@x 0 {👍} 300
+            lappend out [dict size [store reactionsForMessage $jid 100]] \
+                [dict size [store reactionsForMessage $jid 200]] \
+                [store resolveTargetTs $jid oa]
+        }
+        set out
+    } -result {1 0 {} 1 1 100}
+
 test messagestore-reaction-own-set {ownReactions returns our current set for toggling} \
     {*}$ms_common \
     -body {
@@ -1477,7 +1509,7 @@ test messagestore-edit-swaps-body {applyEdit replaces body and sets edited} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com sid1 corrected "<xml/>" 200 \
+        store applyEdit alice@example.com 100 corrected "<xml/>" 200 \
             {encryption {} sender_fp {}}
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list [dict get $m content body] [dict get $m edited]
@@ -1488,7 +1520,7 @@ test messagestore-edit-stamps-encryption \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com sid1 corrected "<xml/>" 200 \
+        store applyEdit alice@example.com 100 corrected "<xml/>" 200 \
             {encryption omemo sender_fp aabb}
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] \
             encryption
@@ -1505,9 +1537,9 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com sid1 newer "<xml/>" 300 \
+        store applyEdit alice@example.com 100 newer "<xml/>" 300 \
             {encryption {} sender_fp {}}
-        store applyEdit alice@example.com sid1 older "<xml/>" 200 \
+        store applyEdit alice@example.com 100 older "<xml/>" 200 \
             {encryption {} sender_fp {}}
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {newer}
@@ -1515,7 +1547,7 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
 test messagestore-edit-target-not-found {applyEdit on an unknown target returns empty} \
     {*}$ms_common \
     -body {
-        store applyEdit alice@example.com nope corrected "<xml/>" 200 \
+        store applyEdit alice@example.com 999 corrected "<xml/>" 200 \
             {encryption {} sender_fp {}}
     } -result {}
 
@@ -1523,7 +1555,7 @@ test messagestore-retract-tombstones {applyRetract sets retracted} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1]]
-        store applyRetract alice@example.com sid1
+        store applyRetract alice@example.com 100
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] retracted
     } -result {1}
 
@@ -1531,8 +1563,8 @@ test messagestore-retract-is-sticky {a retracted message cannot be edited afterw
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyRetract alice@example.com sid1
-        set skipped [store applyEdit alice@example.com sid1 sneaky "<xml/>" 500 \
+        store applyRetract alice@example.com 100
+        set skipped [store applyEdit alice@example.com 100 sneaky "<xml/>" 500 \
             {encryption {} sender_fp {}}]
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list $skipped [dict exists $m content] [dict get $m retracted]

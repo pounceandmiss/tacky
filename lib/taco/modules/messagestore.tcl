@@ -703,7 +703,10 @@ snit::type taco_messagestore {
     }
 
     # Resolve an XEP-0461 reply target to its stored timestamp, or "".
-    #   server_id match  : authoritative (stanza-id is unique in the archive).
+    #   server_id match  : authoritative (stanza-id is unique in the archive),
+    #                      and the only match in a room, where any occupant
+    #                      can send an origin-id equal to another message's
+    #                      stanza-id.
     #   origin_id/own_id : client-generated ids aren't unique *across*
     #                      senders, so a genuine collision (two candidate
     #                      rows) is disambiguated by author (replyTo). A
@@ -721,7 +724,7 @@ snit::type taco_messagestore {
               AND server_id != '' AND server_id=$replyId
             LIMIT 1
         }]
-        if {$ts ne ""} { return $ts }
+        if {$ts ne "" || [IsRoomChatJid $jid]} { return $ts }
 
         set isMuc [IsMucChatJid $jid]
         set candidates {}
@@ -1077,42 +1080,47 @@ snit::type taco_messagestore {
     }
 
     # Local timestamp of a stored message matched by its wire id, against
-    # the stored envelope ids (mirrors resolveReply's id match). "" if not
-    # stored. Shared by reactions, edits, and retractions.
+    # the stored envelope ids (mirrors resolveReply's id match). In a room
+    # only the room's stanza-id counts: an origin-id is the sender's choice.
+    # "" if not stored. For reactions and markers; corrections and
+    # retractions are matched with their author (message TargetCandidates).
     method resolveTargetTs {chatJid targetId} {
         if {$targetId eq ""} { return "" }
+        set room [IsRoomChatJid $chatJid]
         return [$options(-db) onecolumn {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND ( (server_id != '' AND server_id=$targetId)
-                 OR (origin_id != '' AND origin_id=$targetId)
-                 OR (own_id    != '' AND own_id=$targetId) )
+                 OR (NOT $room AND origin_id != '' AND origin_id=$targetId)
+                 OR (NOT $room AND own_id    != '' AND own_id=$targetId) )
             LIMIT 1
         }]
     }
 
     # --- Corrections (XEP-0308) / retractions (XEP-0424/0425) ------
 
+    # The target comes as its row's timestamp: the caller picks it among
+    # the rows carrying the referenced id by who wrote it.
+    #
     # Replace a stored message's body with a correction. Last-writer-wins on
     # edited_ts; a retracted message is immutable. Returns the target's local
     # timestamp (so the caller can <Edited>), or "" when not stored or skipped.
     # `stamp` is the correction's own {encryption sender_fp}, so the row
     # tracks the body now displayed. No default: it would be a downgrade.
-    method applyEdit {chatJid targetId newBody rawXml ts stamp} {
+    method applyEdit {chatJid targetTs newBody rawXml ts stamp} {
         set enc [dict get $stamp encryption]
         set senderFp [dict get $stamp sender_fp]
-        set targetTs [$self resolveTargetTs $chatJid $targetId]
-        if {$targetTs eq ""} { return "" }
-        set prev 0
-        set retracted 0
+        set found 0
         $options(-db) eval {
             SELECT edited_ts, retracted FROM chat_message
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
+              AND kind='message'
         } row {
+            set found 1
             set prev $row(edited_ts)
             set retracted $row(retracted)
         }
-        if {$retracted} { return "" }
+        if {!$found || $retracted} { return "" }
         if {$ts <= $prev} { return "" }
         $options(-db) eval {
             UPDATE chat_message
@@ -1125,22 +1133,24 @@ snit::type taco_messagestore {
 
     # Tombstone a stored message. Sticky: once retracted, later edits no-op.
     # Returns the target's local timestamp, or "" when not stored.
-    method applyRetract {chatJid targetId} {
-        set targetTs [$self resolveTargetTs $chatJid $targetId]
-        if {$targetTs eq ""} { return "" }
+    method applyRetract {chatJid targetTs} {
         $options(-db) eval {
             UPDATE chat_message SET retracted=1
             WHERE chat_jid=$chatJid AND timestamp=$targetTs
+              AND kind='message'
         }
+        if {[$options(-db) changes] == 0} { return "" }
         return $targetTs
     }
 
     # Per-emoji aggregation of reactions on a displayed message, for the
     # GUI. Joins reaction rows against the message's envelope ids so it
     # works whether reactors targeted the origin-id (1:1) or stanza-id
-    # (MUC). Emoji order is first-seen; count is left to the GUI. Shape:
+    # (MUC; only that one there). Emoji order is first-seen; count is left
+    # to the GUI. Shape:
     #   {emoji {reactors {Alice Bob} mine 0|1} ...}
     method reactionsForMessage {chatJid ts} {
+        set room [IsRoomChatJid $chatJid]
         set order {}
         array set reactors {}
         array set mine {}
@@ -1152,8 +1162,10 @@ snit::type taco_messagestore {
               ON m.chat_jid = r.chat_jid
              AND m.kind = 'message'
              AND ( (m.server_id != '' AND m.server_id = r.target_id)
-                OR (m.origin_id != '' AND m.origin_id = r.target_id)
-                OR (m.own_id    != '' AND m.own_id    = r.target_id) )
+                OR (NOT $room AND m.origin_id != ''
+                    AND m.origin_id = r.target_id)
+                OR (NOT $room AND m.own_id != ''
+                    AND m.own_id = r.target_id) )
             WHERE m.chat_jid = $chatJid AND m.timestamp = $ts
         } r {
             foreach e $r(emojis) {
