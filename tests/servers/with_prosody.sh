@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # with_prosody.sh — spin up a Prosody XMPP server for integration testing.
-# Usage: tests/servers/with_prosody.sh [--sm] <command> [args...]
+# Usage: tests/servers/with_prosody.sh [--no-sm] <command> [args...]
 #
 # Flags:
-#   --sm   Enable XEP-0198 Stream Management (smacks module)
+#   --no-sm   Leave out XEP-0198 Stream Management (smacks), which is on by
+#             default as on the servers people use
+#   --sm      Accepted for old command lines; it is the default
 #
 # Exported to <command>: XMPP_SERVER, XMPP_PORT, XMPP_WS_URL, SPOOF_SSL_CERT,
 # PROSODY_CONTAINER.
@@ -20,7 +22,7 @@ MAX_WAIT=20
 INTERVAL=1
 CONTAINER_NAME="prosody-test-$$"
 TEST_DIR="/tmp/prosody-test-$$"
-ENABLE_SM=false
+ENABLE_SM=true
 
 lib_pick_ports XMPP_PORT HTTP_PORT
 
@@ -36,6 +38,9 @@ for arg in "$@"; do
   case "$arg" in
     --sm)
       ENABLE_SM=true
+      ;;
+    --no-sm)
+      ENABLE_SM=false
       ;;
     *)
       args+=("$arg")

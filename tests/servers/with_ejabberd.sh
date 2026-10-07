@@ -26,6 +26,8 @@ lib_pick_ports XMPP_PORT HTTP_PORT MYSQL_PORT ERL_DIST_PORT
 
 export XMPP_SERVER="ejabberd"
 export XMPP_PORT
+# mod_stream_mgmt is in the config below: tests that need it check this.
+export XMPP_SM=1
 
 # ─── Callbacks ───────────────────────────────────────────────────────────────
 

@@ -358,9 +358,10 @@ namespace eval ::test::AutoReconnect {
         set stateLog
     } -result {connecting authenticating binding connected waiting connecting authenticating binding connected}
 
-    # With stream management (with_prosody.sh --sm) the reconnect resumes the
-    # session: <resume/> in place of binding, as XEP-0198 5 has it. A resume
-    # sent after binding is refused and every reconnect starts over.
+    # With stream management (every test server has it; with_prosody.sh
+    # --no-sm leaves it out) the reconnect resumes the session: <resume/> in
+    # place of binding, as XEP-0198 5 has it. A resume sent after binding is
+    # refused and every reconnect starts over.
     test reconnect-resumes {a reconnect resumes the stream} \
         {*}$common -constraints {withServer smServer} -body {
         c connect
