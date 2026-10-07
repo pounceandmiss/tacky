@@ -92,6 +92,7 @@ listen:
       /admin: ejabberd_web_admin
       /api: mod_http_api
       /bosh: mod_bosh
+      /upload: mod_http_upload
 
 s2s_use_starttls: optional
 
@@ -142,6 +143,12 @@ modules:
   mod_carboncopy: {}
   mod_disco: {}
   mod_http_api: {}
+  # XEP-0363, plain HTTP on the test host as with_prosody.sh's
+  # http_file_share.
+  mod_http_upload:
+    put_url: "http://@HOST@:${HTTP_PORT}/upload"
+    docroot: /opt/ejabberd/upload
+    max_size: 10485760
   mod_mam:
     db_type: sql
     default: always
