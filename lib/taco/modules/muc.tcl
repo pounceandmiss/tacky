@@ -45,6 +45,7 @@
 # tacky muc roomInfo -acc $jid -jid $room    ;# {known live members_only non_anonymous occupant_id}
 # tacky muc roomPrivacy -acc $jid -jid $room ;# why its readers aren't known, {} when they are
 # tacky muc members -acc $jid -jid $room     ;# {list $status members {$realJid $affiliation ...}}
+# tacky muc people -acc $jid -jid $room      ;# {list groups me people}: who to show (see "People")
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
 # tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1? ?-destroyed 1?
@@ -68,6 +69,7 @@
 # tacky listen muc <AffiliationChanged> $cmd ;# -jid $room -target $bareJid -affiliation $new
 # tacky listen muc <RoomInfo> $cmd           ;# -jid $room -info $roomInfo (disco#info answered)
 # tacky listen muc <MembersChanged> $cmd     ;# -jid $room (members or its list status changed)
+# tacky listen muc <PeopleChanged> $cmd      ;# -jid $room (what `people` answers changed; coalesced)
 
 snit::type taco_muc {
     variable client
@@ -100,6 +102,10 @@ snit::type taco_muc {
 
     # name -> parse command for extra occupant fields (addOccupantField).
     variable OccupantFields {}
+    # name -> command for extra person fields (addPersonField).
+    variable PersonFields {}
+    # roomJid -> the after token of a <PeopleChanged> still to go out.
+    variable PeopleDue -array {}
 
     # roomJid -> join -command callback (pending joins)
     variable JoinCallbacks -array {}
@@ -132,6 +138,9 @@ snit::type taco_muc {
         catch {$client bus unsubscribe $self}
         foreach roomJid [array names JoinTimers] {
             after cancel $JoinTimers($roomJid)
+        }
+        foreach roomJid [array names PeopleDue] {
+            after cancel $PeopleDue($roomJid)
         }
     }
 
@@ -545,6 +554,127 @@ snit::type taco_muc {
             }
         }
         return [lsort $out]
+    }
+
+    # =====================================================================
+    # People
+    # =====================================================================
+    #
+    # Who to show for a room: everyone in it, and every member who is not.
+    # An occupant is matched to a member by the real bare JID its presence
+    # carries; one the room shows no JID for (an anonymous room) or that
+    # has no affiliation (an open room) is listed for being there. What
+    # the member list could not say (refused, `presence`) is simply not
+    # listed: the members are then the occupants.
+    #
+    # Ordered for showing, by group: moderator, participant, visitor,
+    # other (no role yet), then absent; by nick within a group, by JID
+    # among the absent.
+
+    typevariable GroupRank {moderator 0 participant 1 visitor 2 other 3 absent 4}
+
+    method GroupOf {role} {
+        expr {$role in {moderator participant visitor} ? $role : "other"}
+    }
+
+    # What the current user may do about the room itself, as OccupantCaps
+    # is about one occupant.
+    method RoomCaps {roomJid} {
+        set myRole [$self MyOccupantField $roomJid role]
+        set myAffil [$self MyOccupantField $roomJid affiliation]
+        dict create \
+            request_voice [expr {$myRole eq "visitor"}] \
+            destroy [expr {$myAffil eq "owner"}]
+    }
+
+    # people -jid $room -> {list $memberList groups {$group $count ...}
+    #                       me $roomCaps people {$person ...}}
+    # A person: {key nick jid occupant present self group role
+    # affiliation show status occupant_id caps}, plus each occupant field
+    # ("" for the absent) and each addPersonField. `key` is the real JID,
+    # or nick:$nick where there is none (or a second nick shares it); `jid`
+    # is the bare real JID; `occupant` is room/nick, "" for the absent.
+    tackymethod people {args} {
+        set roomJid [jid norm [dict get $args -jid]]
+        if {![info exists Rooms($roomJid)] || [dict get $Rooms($roomJid) hidden]} {
+            return [dict create list none groups {} \
+                me [dict create request_voice 0 destroy 0] people {}]
+        }
+        set myNick [dict get $Rooms($roomJid) nick]
+        set members [dict get $Rooms($roomJid) members]
+        set present {}
+        set seen [dict create]
+        dict for {nick occ} [dict get $Rooms($roomJid) occupants] {
+            set real [$self OccupantRealJid $occ]
+            set key [expr {$real ne "" && ![dict exists $seen $real]
+                ? $real : "nick:$nick"}]
+            if {$real ne ""} { dict set seen $real 1 }
+            set p [$self WithCaps $roomJid $occ]
+            dict unset p jids
+            dict set p key $key
+            dict set p jid $real
+            dict set p occupant $roomJid/$nick
+            dict set p present 1
+            dict set p self [expr {$nick eq $myNick}]
+            dict set p group [$self GroupOf [dict get $occ role]]
+            lappend present [$self WithPersonFields $roomJid $real $p]
+        }
+        set present [lsort -command [mymethod ComparePresent] $present]
+        set absent {}
+        foreach real [lsort [dict keys $members]] {
+            if {[dict exists $seen $real]} continue
+            set p [dict create key $real nick "" jid $real occupant "" \
+                present 0 self 0 group absent role none \
+                affiliation [dict get $members $real] show "" status "" \
+                occupant_id "" caps [$self EmptyCaps]]
+            dict for {name cmd} $OccupantFields { dict set p $name "" }
+            lappend absent [$self WithPersonFields $roomJid $real $p]
+        }
+        set groups [dict create]
+        foreach p [concat $present $absent] {
+            dict incr groups [dict get $p group]
+        }
+        return [dict create list [dict get $Rooms($roomJid) memberList] \
+            groups $groups me [$self RoomCaps $roomJid] \
+            people [concat $present $absent]]
+    }
+
+    method ComparePresent {a b} {
+        set c [expr {[dict get $GroupRank [dict get $a group]]
+            - [dict get $GroupRank [dict get $b group]]}]
+        if {$c} { return $c }
+        set c [string compare -nocase [dict get $a nick] [dict get $b nick]]
+        if {$c} { return $c }
+        string compare [dict get $a nick] [dict get $b nick]
+    }
+
+    method WithPersonFields {roomJid real p} {
+        dict for {name cmd} $PersonFields {
+            set v ""
+            if {[catch {{*}$cmd $roomJid $real} v]} {
+                jlog warn "muc people: $name for $real in $roomJid: $v"
+                set v ""
+            }
+            dict set p $name $v
+        }
+        return $p
+    }
+
+    # What `people` answers for $room may have changed: say so once, when
+    # the burst that changed it is over - a join is a presence per
+    # occupant. Public for the modules behind addPersonField.
+    method peopleChanged {roomJid} {
+        set roomJid [jid norm $roomJid]
+        if {[info exists Rooms($roomJid)]
+                ? [dict get $Rooms($roomJid) hidden]
+                : [info exists WasHidden($roomJid)] && $WasHidden($roomJid)} return
+        if {[info exists PeopleDue($roomJid)]} return
+        set PeopleDue($roomJid) [after idle [mymethod EmitPeopleChanged $roomJid]]
+    }
+
+    method EmitPeopleChanged {roomJid} {
+        unset -nocomplain PeopleDue($roomJid)
+        $client emit muc <PeopleChanged> -jid $roomJid
     }
 
     # An occupant-id the room vouched for, and the real JID its presence
@@ -1122,6 +1252,13 @@ snit::type taco_muc {
     # this way and gets renames and leaves for free.
     method addOccupantField {name cmd} {
         dict set OccupantFields $name $cmd
+    }
+
+    # Add $name to every person `people` lists: {*}$cmd $room $realJid,
+    # $realJid "" for an occupant whose real JID the room does not show.
+    # A module that changes such a field says so with peopleChanged.
+    method addPersonField {name cmd} {
+        dict set PersonFields $name $cmd
     }
 
     tackymethod rooms {args} {
@@ -1960,6 +2097,10 @@ snit::type taco_muc {
     # message, author) skip hidden ones via isHidden.
     method Emit {roomJid event args} {
         $client emit muc $event {*}$args
+        if {$event in {<Presence> <Unavailable> <NickChanged> <Joined> <Left>
+                <MembersChanged> <AffiliationChanged>}} {
+            $self peopleChanged $roomJid
+        }
     }
 
     # Stop tracking a room; keep its hidden flag for isHidden.

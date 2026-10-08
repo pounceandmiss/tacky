@@ -938,9 +938,10 @@ test omemo-muc-room-status {roomStatus says whether the room qualifies, whether 
         c omemo setEnabled -jid $::t::CHAT -value 1
         set st [c omemo roomStatus -jid $::t::CHAT]
         list [dict get $st jid] [dict get $st eligible] [dict get $st enabled] \
-            [dict get $st member_list] [dict get $st members] \
+            [dict get $st offered] [dict get $st member_list] \
+            [lmap m [dict get $st members] {dict get $m jid}] \
             [expr {[llength [::t::emitted omemo <RoomStatus>]] > 0}]
-    } -result [list $::t::CHAT 1 1 complete [list $::t::ROMEO] 1]
+    } -result [list $::t::CHAT 1 1 1 complete [list $::t::ROMEO] 1]
 
 test omemo-muc-enabling-fetches-member-devicelists {switching a room on fetches its members' devicelists} \
     {*}$mucenv -body {
@@ -958,5 +959,141 @@ test omemo-muc-pull-room-status {<RoomStatus> can be pulled} \
         c omemo pull -event <RoomStatus> -jid $::t::CHAT
         dict get [lindex [::t::emitted omemo <RoomStatus>] 0] -jid
     } -result $::t::CHAT
+
+# =====================================================================
+# Each member's keys, and the room's people
+# =====================================================================
+
+# A key of $jid's on file, undecided, as the first message or bundle from
+# that device would leave it.
+proc ::t::key {jid dev} {
+    c omemo EnsureTrustRow $jid $dev ik-$jid-$dev
+}
+
+# {jid keys trusted undecided attention reason} of each member, in order.
+proc ::t::memberKeys {} {
+    lmap m [dict get [c omemo roomStatus -jid $::t::CHAT] members] {
+        list [dict get $m jid] [dict get $m keys] [dict get $m trusted] \
+            [dict get $m undecided] [dict get $m attention] [dict get $m reason]
+    }
+}
+
+test omemo-muc-member-keys {each member's keys are counted, those needing attention first} \
+    {*}$mucenv -body {
+        ::t::join {} members [list $::t::ROMEO member $::t::MERC member]
+        ::t::injectDevicelist $::t::ROMEO {11 12}
+        ::t::key $::t::ROMEO 11
+        ::t::key $::t::ROMEO 12
+        set blind [::t::memberKeys]
+        # Verifying one ends blind trust for the other, which then holds a
+        # send up.
+        c omemo trust -jid $::t::ROMEO -device 11 -state trusted
+        set verified [::t::memberKeys]
+        c omemo trust -jid $::t::ROMEO -device 12 -state trusted
+        list $blind $verified [::t::memberKeys] \
+            [dict get [c omemo roomStatus -jid $::t::CHAT] attention]
+    } -result [list \
+        [list [list $::t::MERC 0 0 0 1 {}] [list $::t::ROMEO 2 0 2 0 {}]] \
+        [list [list $::t::MERC 0 0 0 1 {}] [list $::t::ROMEO 2 1 1 1 {}]] \
+        [list [list $::t::MERC 0 0 0 1 {}] [list $::t::ROMEO 2 2 0 0 {}]] 1]
+
+test omemo-muc-member-keys-follow-trust {a trust change re-tells the room's status} \
+    {*}$mucenv -body {
+        ::t::join {} members [list $::t::ROMEO member]
+        ::t::injectDevicelist $::t::ROMEO {11}
+        ::t::key $::t::ROMEO 11
+        set ::_emitted {}
+        c omemo trust -jid $::t::ROMEO -device 11 -state untrusted
+        set st [dict get [lindex [::t::emitted omemo <RoomStatus>] end] -status]
+        dict get [lindex [dict get $st members] 0] attention
+    } -result 1
+
+test omemo-muc-member-keys-follow-blind-trust {turning blind trust off re-tells which new keys hold a send up} \
+    {*}$mucenv -body {
+        ::t::join {} members [list $::t::ROMEO member]
+        ::t::injectDevicelist $::t::ROMEO {11}
+        ::t::key $::t::ROMEO 11
+        set before [::t::memberKeys]
+        set ::_emitted {}
+        c omemo setBlindTrust -value 0
+        list $before [llength [::t::emitted omemo <RoomStatus>]] [::t::memberKeys]
+    } -result [list [list [list $::t::ROMEO 1 0 1 0 {}]] 1 [list [list $::t::ROMEO 1 0 1 1 {}]]]
+
+test omemo-muc-member-keys-name-who-stopped-a-send {a member who stopped the last send says why} \
+    {*}$mucenv -body {
+        ::t::join {} members [list $::t::ROMEO member]
+        ::t::injectDevicelist $::t::ROMEO {}
+        c omemo setEnabled -jid $::t::CHAT -value 1
+        c message send -chat $::t::CHAT -body hello
+        ::t::memberKeys
+    } -result [list [list $::t::ROMEO 0 0 0 1 no_devices]]
+
+# {key nick jid present group affiliation} of each person, in order.
+proc ::t::people {} {
+    lmap p [dict get [c muc people -jid $::t::ROOM] people] {
+        list [dict get $p key] [dict get $p nick] [dict get $p jid] \
+            [dict get $p present] [dict get $p group] [dict get $p affiliation]
+    }
+}
+
+test omemo-muc-people {people are those in the room, then the members who are not} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member $::t::MERC admin]
+        set p [c muc people -jid $::t::ROOM]
+        list [::t::people] [dict get $p list] [dict get $p groups] \
+            [dict get [lindex [dict get $p people] 0] self] \
+            [dict get [lindex [dict get $p people] 1] occupant]
+    } -result [list [list \
+            [list $::t::JBARE juliet $::t::JBARE 1 participant member] \
+            [list $::t::ROMEO romeo $::t::ROMEO 1 participant member] \
+            [list $::t::MERC {} $::t::MERC 0 absent admin]] \
+        complete {participant 2 absent 1} 1 $::t::ROOM/romeo]
+
+test omemo-muc-people-keys {a member's keys ride on their person; ours and an open room's do not} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member]
+        ::t::injectDevicelist $::t::ROMEO {11}
+        ::t::key $::t::ROMEO 11
+        lmap p [dict get [c muc people -jid $::t::ROOM] people] {
+            expr {[dict get $p keys] eq "" ? "" : [dict get $p keys keys]}
+        }
+    } -result {{} 1}
+
+test omemo-muc-people-anonymous {an occupant the room shows no JID for is listed by nick} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo "" occ-r none]] \
+            features {http://jabber.org/protocol/muc muc_open muc_semianonymous}
+        ::t::people
+    } -result [list [list $::t::JBARE juliet $::t::JBARE 1 participant member] \
+        [list nick:romeo romeo {} 1 participant none]]
+
+test omemo-muc-people-changed-once-per-burst {a burst of presences is one <PeopleChanged>} \
+    {*}$mucenv -body {
+        ::t::join {}
+        update idletasks
+        set ::_emitted {}
+        foreach n {a b c} {
+            c.conn feed [::t::presence $n jid $n@x.lit/r affiliation none]
+        }
+        set before [llength [::t::emitted muc <PeopleChanged>]]
+        update idletasks
+        list $before [::t::emitted muc <PeopleChanged>]
+    } -result [list 0 [list [list -acc $::t::JBARE -jid $::t::ROOM]]]
+
+test omemo-muc-people-room-caps {what we may do about the room itself} \
+    {*}$mucenv -body {
+        ::t::join {}
+        set as [dict get [c muc people -jid $::t::ROOM] me]
+        c.conn feed [::t::presence juliet jid $::t::JFULL self 1 \
+            affiliation owner role visitor]
+        list $as [dict get [c muc people -jid $::t::ROOM] me]
+    } -result {{request_voice 0 destroy 0} {request_voice 1 destroy 1}}
+
+test omemo-muc-people-not-joined {a room we are not in has no people} \
+    {*}$mucenv -body {
+        c muc people -jid $::t::ROOM
+    } -result {list none groups {} me {request_voice 0 destroy 0} people {}}
 
 cleanupTests

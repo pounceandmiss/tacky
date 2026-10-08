@@ -169,7 +169,9 @@ jsonify_type jsonify \
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
-        omemo_room_status {eligible bool enabled bool reasons list members list unreachable {list {dict {}}}}
+        omemo_room_status {eligible bool enabled bool offered bool reasons list members {list member_keys} attention int unreachable {list {dict {}}}}
+        member_keys {keys int trusted int undecided int untrusted int compromised int attention bool}
+        person      {present bool self bool caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} call {dict {audio bool video bool contents {map {list payload}}}} keys member_keys}
         muc_room_info {known bool live bool members_only bool non_anonymous bool occupant_id bool}
         audio_device {default bool}
         camera      {facing int}
@@ -205,6 +207,7 @@ jsonify_type jsonify \
         muc/roomInfo            muc_room_info
         muc/roomPrivacy         list
         muc/members             {dict {members {map string}}}
+        muc/people              {dict {groups {map int} me {dict {request_voice bool destroy bool}} people {list person}}}
         roster/get              {list roster_item}
         roster/subscription     string
         blocking/supported      bool
