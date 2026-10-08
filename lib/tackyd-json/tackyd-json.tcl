@@ -218,6 +218,8 @@ jsonify_type jsonify \
         account/list            list
         account/exists          bool
         account/get             {dict {enabled bool port int}}
+        chat/isOpen             bool
+        chat/isLooking          bool
         presence/get            presence
         presence/isOnline       bool
         presence/resources      {map presence}

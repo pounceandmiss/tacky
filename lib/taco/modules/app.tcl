@@ -18,7 +18,10 @@ snit::type taco_app {
         if {!$active} { set inactiveSince [clock seconds] }
         foreach client [$options(-taco) clients] {
             catch {$client conn csiUpdate}
-            if {$active} { catch {$client conn probe} }
+            if {$active} {
+                catch {$client conn probe}
+                catch {$client chat ApplyHeld}
+            }
         }
     }
 
