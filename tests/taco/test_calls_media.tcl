@@ -14,7 +14,7 @@ if {[::tcltest::testConstraint wasm]} {
 }
 package require tacky::mockrtc
 
-set media_env [tacky_env -mock conn -capture-emit 1 -taco-client {
+set media_env [tacky_env -mock conn -capture-emit 1 -taco-args {-media-backend rtc} -taco-client {
     -domain test.example.com -port 5222
     -username user -password pass -resource res
     -taco ::tacky
