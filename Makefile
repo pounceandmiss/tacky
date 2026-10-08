@@ -483,7 +483,7 @@ linux: dist-dir
 #
 # WEBRTC_SRC names a checkout to build instead; fetch.sh still runs there.
 
-RTCWEBRTC_REPO   := https://codeberg.org/another-im/rtc-webrtc.git
+RTCWEBRTC_REPO   := https://codeberg.org/pounceandmiss/rtc-webrtc.git
 RTCWEBRTC_COMMIT := c1a0c13245b8a66efc36a779f9c18d5e8110c112
 
 WEBRTC_DEPS_DIR ?= $(DEPS_DIR)
