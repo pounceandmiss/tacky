@@ -169,6 +169,8 @@ jsonify_type jsonify \
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
+        omemo_room_status {eligible bool enabled bool reasons list members list unreachable {list {dict {}}}}
+        muc_room_info {known bool live bool members_only bool non_anonymous bool occupant_id bool}
         audio_device {default bool}
         camera      {facing int}
         call_row    {peer_ringing bool}
@@ -200,6 +202,9 @@ jsonify_type jsonify \
         muc/rooms               list
         muc/configGet           form
         muc/registerGet         form
+        muc/roomInfo            muc_room_info
+        muc/roomPrivacy         list
+        muc/members             {dict {members {map string}}}
         roster/get              {list roster_item}
         roster/subscription     string
         blocking/supported      bool
@@ -257,6 +262,7 @@ jsonify_type jsonify \
         omemo/isEnabled         bool
         omemo/setBlindTrust     bool
         omemo/setEnabled        bool
+        omemo/roomStatus        omemo_room_status
         chatlist/get            {list chat_entry}
         notify/get              {dict {muted bool mentions bool}}
 
@@ -276,6 +282,7 @@ jsonify_type jsonify \
         muc/<NickChanged>       {dict {self bool occupant occupant}}
         muc/<ConfigChanged>     {dict {codes {list int}}}
         muc/<VoiceRequest>      {dict {form form}}
+        muc/<RoomInfo>          {dict {info muc_room_info}}
         chatlist/<Item>         {dict {item chat_entry}}
         blocking/<Changed>      {dict {list list}}
         notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
@@ -289,6 +296,8 @@ jsonify_type jsonify \
         omemo/<TrustChanged>       {dict {device int}}
         omemo/<FingerprintChanged> {dict {device int}}
         omemo/<DecryptFailed>      {dict {device int}}
+        omemo/<RoomStatus>         {dict {status omemo_room_status}}
+        omemo/<MembersUnreachable> {dict {members {list {dict {}}}}}
 
         audio/<Volume>          {dict {volume double}}
         media/<HostCommand>     {dict {iceServers list on bool volume double inputVolume double outputVolume double}}

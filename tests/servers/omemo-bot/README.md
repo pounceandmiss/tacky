@@ -29,3 +29,12 @@ tests/servers/with_prosody.sh \
 SessionManager (see `xep_0384.py:482-486` in the upstream wheel — twomemo
 is commented out pending SCE). So the bot publishes a devicelist under
 `eu.siacs.conversations.axolotl` and never under `urn:xmpp:omemo:2`.
+
+## Group chats
+
+Send the bot a chat message `MUCJOIN <room> <nick>` (plain or encrypted) and
+it joins that room. There it decrypts each OMEMO message as the occupant the
+room names (the room has to be non-anonymous) and answers `echo: <text>` to
+the room, encrypted for every occupant's real JID.
+`tests/taco_integration/test_omemo_muc.tcl` (omemo-muc-int-slixmpp-interop)
+uses it.

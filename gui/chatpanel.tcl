@@ -26,6 +26,10 @@ snit::widget chatpanel {
     variable showJidIn1to1 0
     variable sendReceipts 1
     variable omemoEnabled 1
+    # A room's OMEMO state (omemo roomStatus), {} until it arrives; and the
+    # chat it is asked by (room@service?join).
+    variable roomOmemo {}
+    variable omemoChat ""
     variable mucList ""
     # name -> widget, for the banners packed above the composer.
     variable banners {}
@@ -46,6 +50,11 @@ snit::widget chatpanel {
         set isMuc $options(-groupchat)
         if {$isMuc} {
             set roomJid [jid bare $options(-jid)]
+            set omemoChat ${roomJid}?join
+            # Off until the room says otherwise (rooms default off).
+            set omemoEnabled 0
+        } else {
+            set omemoChat $options(-jid)
         }
 
         set paned [ttk::panedwindow $win.paned -orient horizontal]
@@ -59,9 +68,9 @@ snit::widget chatpanel {
             -attach-command [mymethod Attach]]
         pack $cv -expand yes -fill both
         pack $entry -fill x
-        if {!$isMuc} {
-            $self BuildOmemoToggle
-        }
+        $self BuildOmemoToggle
+        # A room's lock is shown once the room says it can use OMEMO.
+        if {$isMuc} { pack forget [$entry accessory].lock }
 
         $self EnableFileDrop [$cv textwidget]
         $self EnableFileDrop $entry.text
@@ -90,6 +99,12 @@ snit::widget chatpanel {
                     -acc $options(-acc) -jid $roomJid [mymethod RefreshGroupCall]
             }
             $self RefreshGroupCall
+            ::tacky observe -tag $win omemo <RoomStatus> \
+                -acc $options(-acc) -jid $omemoChat \
+                [mymethod OnRoomOmemoStatus]
+            ::tacky listen -tag $win omemo <MembersUnreachable> \
+                -acc $options(-acc) -jid $omemoChat \
+                [mymethod OnMembersUnreachable]
         } else {
             ::tacky observe -tag $win omemo <Enabled> \
                 -acc $options(-acc) -jid $options(-jid) \
@@ -171,11 +186,95 @@ snit::widget chatpanel {
 
     method ToggleOmemo {} {
         ::tacky omemo setEnabled -acc $options(-acc) \
-            -jid $options(-jid) -value $omemoEnabled
+            -jid $omemoChat -value $omemoEnabled \
+            -tag $win -onerror [mymethod OnToggleOmemoError]
+    }
+
+    # A room that no longer qualifies refuses to be switched on: put the
+    # switch back and say why.
+    method OnToggleOmemoError {message} {
+        if {![winfo exists $win]} return
+        set omemoEnabled 0
+        tk_messageBox -icon error -title "Encryption" \
+            -parent [winfo toplevel $win] \
+            -message "This room cannot be encrypted: only a members-only room\
+                that shows its members' addresses can use OMEMO."
     }
 
     method OpenOmemoKeys {} {
-        omemokeyswindow open $options(-acc) $options(-jid)
+        if {$isMuc} {
+            omemoroomkeys open $options(-acc) $omemoChat
+        } else {
+            omemokeyswindow open $options(-acc) $options(-jid)
+        }
+    }
+
+    # --- OMEMO in a room ---
+    #
+    # The lock and the Chat menu's encryption entries show for a room that
+    # can use OMEMO, or that has it on (a room that stopped qualifying keeps
+    # its switch, so it can be turned off). A send that failed closed puts up
+    # a banner naming who stopped it.
+
+    method RoomOmemoShown {} {
+        if {$roomOmemo eq ""} { return 0 }
+        expr {[dict get $roomOmemo eligible] || [dict get $roomOmemo enabled]}
+    }
+
+    method OnRoomOmemoStatus {ev} {
+        if {![winfo exists $win]} return
+        set roomOmemo [dict get $ev -status]
+        set omemoEnabled [dict get $roomOmemo enabled]
+        set lock [$entry accessory].lock
+        if {[$self RoomOmemoShown]} {
+            if {[winfo manager $lock] eq ""} { pack $lock -fill both -expand 1 }
+        } else {
+            pack forget $lock
+        }
+        $self ApplyRoomOmemoMenu
+        if {![llength [dict get $roomOmemo unreachable]]} {
+            $self HideBanner omemo
+        }
+    }
+
+    method ApplyRoomOmemoMenu {} {
+        set mb $options(-menubar)
+        if {$mb eq "" || ![winfo exists $mb.chat]} return
+        set state [expr {[$self RoomOmemoShown] ? "normal" : "disabled"}]
+        foreach label {"Encrypt with OMEMO" "OMEMO Keys..."} {
+            catch {$mb.chat entryconfigure $label -state $state}
+        }
+    }
+
+    # The banner, and the room's key screen, which is where it gets fixed.
+    method OnMembersUnreachable {ev} {
+        if {![winfo exists $win]} return
+        $self ShowUnreachable [lmap m [dict get $ev -members] {dict get $m jid}]
+        $self OpenOmemoKeys
+    }
+
+    method ShowUnreachable {jids} {
+        set fresh [expr {![$self HasBanner omemo]}]
+        set slot [[$self ShowBanner omemo \
+            -icon mate/16x16/status/stock_lock.png \
+            -close-command [mymethod HideBanner omemo]] body]
+        if {$fresh} {
+            ttk::label $slot.lbl -anchor w -wraplength 420 -justify left
+            ttk::button $slot.keys -text "Review keys..." -style Toolbutton \
+                -command [mymethod OpenOmemoKeys]
+            ttk::button $slot.off -text "Turn off encryption" -style Toolbutton \
+                -command [mymethod TurnOffRoomOmemo]
+            pack $slot.lbl -side left -padx 2 -fill x -expand yes
+            pack $slot.off $slot.keys -side right -padx 2
+        }
+        $slot.lbl configure -text "Not sent: no usable OMEMO device for\
+            [join $jids {, }]"
+    }
+
+    method TurnOffRoomOmemo {} {
+        set omemoEnabled 0
+        $self ToggleOmemo
+        $self HideBanner omemo
     }
 
     method Send {text} {
@@ -352,6 +451,13 @@ snit::widget chatpanel {
         settingmenu::checkbutton $mb.chat "Participants" \
             -var [myvar showParticipants] -key show_participants \
             -tag $win -onchange [mymethod ApplyParticipants]
+        $mb.chat add separator
+        $mb.chat add checkbutton -label "Encrypt with OMEMO" \
+            -variable [myvar omemoEnabled] \
+            -command [mymethod ToggleOmemo]
+        $mb.chat add command -label "OMEMO Keys..." \
+            -command [mymethod OpenOmemoKeys]
+        $self ApplyRoomOmemoMenu
         $mb.chat add separator
         $mb.chat add command -label "Invite User..." \
             -command [mymethod InviteUser]

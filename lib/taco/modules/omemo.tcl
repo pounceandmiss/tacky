@@ -18,6 +18,10 @@
 #   tacky omemo setBlindTrust   -acc $jid -value 0|1         -> persists BTBV setting
 #   tacky omemo setEnabled      -acc $jid -jid $j -value 0|1 -> per-chat OMEMO toggle
 #   tacky omemo isEnabled       -acc $jid -jid $j            -> 0|1 (that toggle)
+#   tacky omemo roomStatus      -acc $jid -jid $room?join    -> dict {jid eligible
+#                     reasons enabled member_list members unreachable}
+#   (trustList, setEnabled, isEnabled and prepareChat take a room chat,
+#   room@service?join, too: see "Group chats (XEP-0384 §5.7)" below)
 #
 # Async (plain method; pass -command):
 #   $client omemo prepareChat -jid $j ?-command cb?         -> warms peer cache
@@ -39,11 +43,17 @@
 #   omemo <FingerprintChanged>  -jid $peerJid -device D -fingerprint H
 #                                                           peer device IK rotated - security
 #                                                           alert (also auto-flips trust=compromised)
-#   omemo <DecryptFailed>       -jid $peerJid -device D -reason R   live decrypt error
+#   omemo <DecryptFailed>       -jid $peerJid -device D -reason R ?-room $room?join?
+#                                                           live decrypt error
+#   omemo <RoomStatus>          -jid $room?join -status S   roomStatus changed [pullable]
+#   omemo <MembersUnreachable>  -jid $room?join -members {{jid J reason R} ...}
+#                                                           a room send failed closed
 #
 # Internal-only ($client bus, no external tacky fan-out):
 #   omemo:<SessionReady>        -jid $peerJid               per peer-device ratchet built
 #                                                           - drives message.tcl retry
+#                                                           (also -jid $room?join for
+#                                                           each room it is a member of)
 #   omemo:<DevicelistResolved>  -jid $peerJid               devicelist fetched/notified
 #                                                           (devices or empty) - wakes
 #                                                           message.tcl to re-run encrypt
@@ -105,6 +115,16 @@ namespace eval ::taco::omemo {
             return [string range $bytes 1 end]
         }
         return $bytes
+    }
+
+    # The room of a room chat (room@service?join), normalized, or "" for
+    # any other chat - a 1:1 chat, or a room's private message
+    # (room@service/nick), which is keyed per peer like a 1:1 chat.
+    proc roomOf {chatJid} {
+        if {![string match {*\?join} $chatJid]} { return "" }
+        set room [string range $chatJid 0 end-5]
+        if {![jid valid $room] || [jid resource $room] ne ""} { return "" }
+        return [jid norm $room]
     }
 
     # Pick one of a bundle's one-time prekeys. Random, not first: building
@@ -204,6 +224,11 @@ snit::type taco_omemo {
     # (Current) and a reply from an earlier one is dropped.
     variable FetchGen 0
 
+    # Per room (bare JID) what only OMEMO knows about it: who stopped the
+    # last send that failed closed (unreachable, member -> reason), and
+    # the last <RoomStatus> emitted (shown). Membership is muc's.
+    variable Rooms [dict create]
+
     constructor args {
         $self configurelist $args
         set client $options(-client)
@@ -245,6 +270,9 @@ snit::type taco_omemo {
         $client bus subscribe $self <SessionStart>  [mymethod OnReady]
         $client bus subscribe $self <SessionEnd>    [mymethod OnDisconnect]
         $client bus subscribe $self mam:<QueryEnd>  [mymethod OnMamQueryEnd]
+        $client bus subscribe $self muc:<MembersChanged> [mymethod OnMucMembers]
+        $client bus subscribe $self muc:<RoomInfo>  [mymethod OnMucRoomInfo]
+        $client bus subscribe $self muc:<Left>      [mymethod OnMucLeft]
     }
 
     destructor {
@@ -480,6 +508,7 @@ snit::type taco_omemo {
     method NotifySessionReady {peerJid} {
         if {[$self HasPendingBundleFetch $peerJid]} return
         $client bus publish omemo:<SessionReady> -jid $peerJid
+        $self WakeRoomsOf $peerJid
     }
 
     method HasPendingBundleFetch {jid} {
@@ -526,6 +555,7 @@ snit::type taco_omemo {
             $client bus publish omemo:<SelfReady>
         } else {
             $client bus publish omemo:<SessionReady> -jid $peerJid
+            $self WakeRoomsOf $peerJid
         }
     }
 
@@ -865,6 +895,7 @@ snit::type taco_omemo {
         # no-change (empty->empty) yet is exactly the case to wake.
         $client bus publish omemo:<DevicelistResolved> -jid $peerJid
         $self EnsureBundlesForDevicelist $peerJid $devices
+        $self WakeRoomsOf $peerJid
     }
 
     # Warm announced devices: fetch each one's bundle and build the
@@ -1410,7 +1441,11 @@ snit::type taco_omemo {
     # gates whether prekey side effects (bundle republish, heartbeat)
     # fire immediately or queue up for the post-MAM flush.
     # See DispatchDecrypt header for the result-shape contract.
-    method DoDecrypt {encNode peerJid peerDev isMam} {
+    #
+    # $pre, when given, is {session key}: the payload key already opened
+    # on a copy of the session (TrialSender), which is adopted in place
+    # of the stored one.
+    method DoDecrypt {encNode peerJid peerDev isMam {pre {}}} {
         set headerNode [lindex [xsearch $encNode header] 0]
         if {$headerNode eq ""} { return {} }
         set ivB64 [xsearch $headerNode iv -get body]
@@ -1444,7 +1479,14 @@ snit::type taco_omemo {
         # Ensure session: load or open.
         set sess ""
         set key "$peerJid|$peerDev"
-        if {[dict exists $Sessions $key]} {
+        set hadSession 1
+        if {$pre ne ""} {
+            lassign $pre sess decKey
+            if {[dict exists $Sessions $key] && [dict get $Sessions $key] ne $sess} {
+                catch {[dict get $Sessions $key] destroy}
+            }
+            dict set Sessions $key $sess
+        } elseif {[dict exists $Sessions $key]} {
             set sess [dict get $Sessions $key]
         } else {
             set row [$db eval {
@@ -1461,13 +1503,16 @@ snit::type taco_omemo {
                 # session via decrypt_key directly. Create empty handle.
                 set sess [$self CreateSessionHandle $peerJid $peerDev]
                 dict set Sessions $key $sess
+                set hadSession 0
             }
         }
 
-        set ok 0
-        set decKey ""
+        set ok [expr {$pre ne ""}]
+        if {!$ok} { set decKey "" }
         set lastErr ""
         set lastEcode ""
+        # Opened already ($pre): nothing to try.
+        if {$ok} { set candidates [list] }
         foreach pair $candidates {
             lassign $pair isPrekey enc
             if {![catch {
@@ -1479,6 +1524,36 @@ snit::type taco_omemo {
             }
             set lastErr $out
             set lastEcode [dict get $opts -errorcode]
+        }
+        # A prekey message starts a session of its own (X3DH on one of our
+        # prekeys). When the session we hold refuses it, open it on a fresh
+        # one and adopt that, as libsignal does. The usual cause: we started
+        # a session from their bundle while they started theirs from ours,
+        # both warming ahead of the first message (EnsureBundlesForDevicelist;
+        # every member of a room does it for every other). Their identity key
+        # is still checked against the stored one below (EnsureTrustRow), and
+        # a failed attempt leaves the held session as it was.
+        if {!$ok && $hadSession} {
+            foreach pair $candidates {
+                lassign $pair isPrekey enc
+                if {!$isPrekey} continue
+                set fresh [$self CreateSessionHandle $peerJid $peerDev]
+                if {![catch {
+                    $fresh decrypt_key $store $enc -prekey 1
+                } out opts]} {
+                    jlog debug "OMEMO $peerJid/$peerDev: prekey message opened\
+                        on a fresh session; adopting it"
+                    catch {$sess destroy}
+                    set sess $fresh
+                    dict set Sessions $key $sess
+                    set decKey $out
+                    set ok 1
+                    break
+                }
+                catch {$fresh destroy}
+                set lastErr $out
+                set lastEcode [dict get $opts -errorcode]
+            }
         }
         if {!$ok} {
             # An undecryptable KeyTransport is neither a message nor proof
@@ -1804,6 +1879,19 @@ snit::type taco_omemo {
         # An archived bounce stays unopened, as a live one does.
         if {[xsearch $msgNode -get @type] eq "error"} { return $msgNode }
         set encNode [lindex $encNodes 0]
+        # A room's archive: the sender is the occupant the room vouches
+        # for (RoomDecrypt), never the room's own JID in @from.
+        if {[xsearch $msgNode -get @type] eq "groupchat"} {
+            set from [xsearch $msgNode -get @from]
+            if {![jid valid $from]} { return [$self SynthesisePlain $msgNode ""] }
+            set r [$self RoomDecrypt [jid norm [jid bare $from]] $msgNode $encNode 1]
+            if {$r eq ""} { return [$self SynthesisePlain $msgNode ""] }
+            lassign $r kind body fp
+            if {$kind in {keytransport duplicate dropped own}} {
+                return [$self SynthesisePlain $msgNode ""]
+            }
+            return [$self SynthesisePlain $msgNode $body $fp]
+        }
         set fromBare [jid bare [xsearch $msgNode -get @from]]
         set headerNode [lindex [xsearch $encNode header] 0]
         # All "skip this MAM result" exits below return a synthesised
@@ -1918,23 +2006,16 @@ snit::type taco_omemo {
             return -code error -errorcode TACO_OMEMO_NOT_READY \
                 "OMEMO store not initialised yet"
         }
+        set room [::taco::omemo::roomOf $chatJid]
+        if {$room ne ""} {
+            return [$self EncryptRoom $room $plaintext]
+        }
 
         jlog debug "encrypt -> $chatJid: peerDevlistCached=[dict exists $DeviceLists $chatJid]\
             ownDevlistCached=[dict exists $DeviceLists $accountJid]"
 
         # Devicelists must be loaded; if not, kick fetch and bail.
-        set kicked 0
-        if {![dict exists $DeviceLists $chatJid]} {
-            jlog debug "encrypt $chatJid: peer devicelist not cached, kicking fetch"
-            $self FetchDevicelist $chatJid [list apply {args {}}]
-            set kicked 1
-        }
-        if {![dict exists $DeviceLists $accountJid]} {
-            jlog debug "encrypt $chatJid: OWN devicelist not cached, kicking fetch"
-            $self FetchDevicelist $accountJid [list apply {args {}}]
-            set kicked 1
-        }
-        if {$kicked} {
+        if {[$self KickDevicelists [list $chatJid $accountJid]]} {
             return -code error -errorcode TACO_OMEMO_NOT_READY \
                 "devicelist fetch in flight"
         }
@@ -1945,61 +2026,14 @@ snit::type taco_omemo {
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "no devices on $chatJid devicelist"
         }
-        set ownDevs [list]
-        if {[dict exists $DeviceLists $accountJid]} {
-            foreach d [dict get $DeviceLists $accountJid] {
-                if {$d != $deviceId} { lappend ownDevs $d }
-            }
-        }
-        jlog debug "encrypt $chatJid: peerDevs=$peerDevs ownDevs=$ownDevs (ourDev=$deviceId)"
-        # Recipient set = peer devices + our own other devices, deduped
-        # and never including our own current device. For a self-chat
-        # (chatJid == accountJid) peerDevs already IS our devicelist, so
-        # without dedup/self-exclusion we'd (a) try to encrypt to our own
-        # current device and (b) double-list every other own device -
-        # calling encrypt_key twice on one session, desyncing its ratchet.
-        set rawCandidates [list]
-        set seen [dict create]
-        foreach pair [concat \
-                [lmap d $peerDevs {list $chatJid $d}] \
-                [lmap d $ownDevs  {list $accountJid $d}]] {
-            lassign $pair pj pd
-            if {$pj eq $accountJid && $pd == $deviceId} continue
-            set k "$pj|$pd"
-            if {[dict exists $seen $k]} continue
-            dict set seen $k 1
-            lappend rawCandidates $pair
-        }
-
-        # Sync session lookup only. If a candidate is unsessioned,
-        # EnsureSessionSync fires a bundle fetch in the background and
-        # returns ""; we count it as "warming" rather than "blocked"
-        # so we can distinguish NOT_READY from TERMINAL below.
-        set sessions [list]
+        lassign [$self CollectSessions [$self Candidates [list $chatJid]] \
+            $chatJid] sessions warming
         set peerSessionCount 0
-        set peerWarming 0
-        set ownWarming 0
-        foreach cand $rawCandidates {
-            lassign $cand pj pd
-            if {[$self IsDeviceBlocked $pj $pd]} {
-                jlog debug "encrypt $chatJid: $pj/$pd BLOCKED (trust/inactive)"
-                continue
-            }
-            set sess [$self EnsureSessionSync $pj $pd]
-            if {$sess eq ""} {
-                # A device we've given up on this connection is excluded
-                # like a blocked one - it must not hold up the send.
-                if {[$self BundleGaveUp $pj $pd]} {
-                    jlog debug "encrypt $chatJid: $pj/$pd GAVE UP (bundle unusable)"
-                    continue
-                }
-                jlog debug "encrypt $chatJid: $pj/$pd WARMING (no session yet)"
-                if {$pj eq $chatJid} { incr peerWarming } else { incr ownWarming }
-                continue
-            }
-            lappend sessions [list $pj $pd $sess]
-            if {$pj eq $chatJid} { incr peerSessionCount }
+        foreach s $sessions {
+            if {[lindex $s 0] eq $chatJid} { incr peerSessionCount }
         }
+        set peerWarming [llength [lsearch -all -exact $warming $chatJid]]
+        set ownWarming [expr {[llength $warming] - $peerWarming}]
         jlog debug "encrypt $chatJid: usableSessions=[llength $sessions]\
             peerSessions=$peerSessionCount peerWarming=$peerWarming\
             ownWarming=$ownWarming"
@@ -2024,14 +2058,86 @@ snit::type taco_omemo {
         # since our other clients read our sent messages the same way.
         # Bounded by BUNDLE_FETCH_TIMEOUT_MS, after which the device is
         # given up on above.
-        if {$peerWarming > 0 || $ownWarming > 0} {
+        if {[llength $warming] > 0} {
             jlog debug "encrypt NOT_READY $chatJid: holding for\
                 $peerWarming peer + $ownWarming own device(s) still warming"
             return -code error -errorcode TACO_OMEMO_NOT_READY \
-                "bundle fetch in flight for\
-                 [expr {$peerWarming + $ownWarming}] device(s)"
+                "bundle fetch in flight for [llength $warming] device(s)"
         }
+        return [$self WrapPayload $sessions $plaintext $chatJid]
+    }
 
+    # Kick a devicelist fetch for each of $jids not cached yet. 1 when any
+    # was missing (the caller is not ready).
+    method KickDevicelists {jids} {
+        set kicked 0
+        foreach jid $jids {
+            if {[dict exists $DeviceLists $jid]} continue
+            jlog debug "devicelist of $jid not cached, kicking fetch"
+            $self FetchDevicelist $jid [list apply {args {}}]
+            set kicked 1
+        }
+        return $kicked
+    }
+
+    # The {jid device} pairs a message to $jids is keyed for: their
+    # devices and our own other ones, deduped and never our own current
+    # device. For a self-chat ($jids holds our own JID) the peer list
+    # already IS our devicelist, so without dedup/self-exclusion we'd (a)
+    # try to encrypt to our own current device and (b) double-list every
+    # other own device - calling encrypt_key twice on one session,
+    # desyncing its ratchet.
+    method Candidates {jids} {
+        set out [list]
+        set seen [dict create]
+        foreach jid [concat $jids [list $accountJid]] {
+            if {![dict exists $DeviceLists $jid]} continue
+            foreach d [dict get $DeviceLists $jid] {
+                if {$jid eq $accountJid && $d == $deviceId} continue
+                set k "$jid|$d"
+                if {[dict exists $seen $k]} continue
+                dict set seen $k 1
+                lappend out [list $jid $d]
+            }
+        }
+        return $out
+    }
+
+    # Sync session lookup for each candidate: {sessions warming}, sessions
+    # a list of {jid device session}, warming one jid per device still
+    # being fetched. If a candidate is unsessioned, EnsureSessionSync fires
+    # a bundle fetch in the background and returns ""; it counts as
+    # "warming" rather than "blocked" so callers can distinguish NOT_READY
+    # from TERMINAL. Blocked devices (trust, inactive) and ones given up on
+    # this connection are left out of both.
+    method CollectSessions {candidates label} {
+        set sessions [list]
+        set warming [list]
+        foreach cand $candidates {
+            lassign $cand pj pd
+            if {[$self IsDeviceBlocked $pj $pd]} {
+                jlog debug "encrypt $label: $pj/$pd BLOCKED (trust/inactive)"
+                continue
+            }
+            set sess [$self EnsureSessionSync $pj $pd]
+            if {$sess eq ""} {
+                # A device we've given up on this connection is excluded
+                # like a blocked one - it must not hold up the send.
+                if {[$self BundleGaveUp $pj $pd]} {
+                    jlog debug "encrypt $label: $pj/$pd GAVE UP (bundle unusable)"
+                    continue
+                }
+                jlog debug "encrypt $label: $pj/$pd WARMING (no session yet)"
+                lappend warming $pj
+                continue
+            }
+            lappend sessions [list $pj $pd $sess]
+        }
+        return [list $sessions $warming]
+    }
+
+    # The <encrypted> node of $plaintext keyed for each of $sessions.
+    method WrapPayload {sessions plaintext label} {
         # Generate AES-GCM payload key + ciphertext + iv. The payload
         # is UTF-8 bytes: the picomemo binding wants a byte string, and
         # a Tcl string with non-ASCII codepoints throws EPARAM. Wrap the
@@ -2040,7 +2146,7 @@ snit::type taco_omemo {
         if {[catch {
             omemo::encrypt_message [encoding convertto utf-8 $plaintext]
         } encDict]} {
-            jlog debug "encrypt TERMINAL $chatJid: payload encrypt failed: $encDict"
+            jlog debug "encrypt TERMINAL $label: payload encrypt failed: $encDict"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "payload encryption failed: $encDict"
         }
@@ -2058,11 +2164,11 @@ snit::type taco_omemo {
                 [dict get $wrap isprekey] [dict get $wrap p]]
         }
         if {[llength $perRecipient] == 0} {
-            jlog debug "encrypt TERMINAL $chatJid: all per-session encrypts failed"
+            jlog debug "encrypt TERMINAL $label: all per-session encrypts failed"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "all per-session encrypts failed"
         }
-        jlog debug "encrypt OK $chatJid: wrapped for [llength $perRecipient] device(s)"
+        jlog debug "encrypt OK $label: wrapped for [llength $perRecipient] device(s)"
 
         return [j encrypted -ns $::taco::omemo::NS_AXOLOTL {
             j header -sid $deviceId {
@@ -2080,6 +2186,422 @@ snit::type taco_omemo {
             }
             j payload -body [base64::encode -wrapchar "" $ct]
         }]
+    }
+
+    # =====================================================================
+    # Group chats (XEP-0384 §5.7)
+    # =====================================================================
+    #
+    # A room can use OMEMO when it is members-only and non-anonymous: only
+    # then does it tell us every reader's real JID, which is what the keys
+    # are wrapped for. Whether it is, and who its members are, is the muc
+    # module's (roomPrivacy, members); this module only reads them.
+    #
+    # Sending fails closed per member, as Conversations and Dino do: a
+    # message is keyed for every device of every member (and our own other
+    # devices) or not sent. A member none of whose devices can be keyed
+    # stops the send, named in omemo <MembersUnreachable>; a member whose
+    # keys are still being fetched holds it (NOT_READY). OMEMO is off for a
+    # room until the user turns it on; a room that stops qualifying with it
+    # on fails its sends rather than sending in the clear.
+    #
+    # A room message is read with the session of its sender's real JID,
+    # which comes from the room and never from the sender: live, the
+    # occupant's presence under that nick (checked against its
+    # occupant-id where the room vouches for those); from the archive, the
+    # occupant-id alone, through the map muc keeps. Failing those, a
+    # session that opens the message names its sender (TrialSender). A
+    # muc#user <item jid/> the sender put in its own message is never
+    # read: any occupant can write one.
+
+    # The members a message to $room is keyed for, our own JID left out
+    # (our devices are always added).
+    method RoomMembers {room} {
+        set out {}
+        if {[catch {$client muc members -jid $room} m]} { return {} }
+        foreach {jid affil} [dict get $m members] {
+            if {$jid ne $accountJid && $jid ne $room} { lappend out $jid }
+        }
+        return [lsort $out]
+    }
+
+    method RoomMemberList {room} {
+        if {[catch {$client muc members -jid $room} m]} { return none }
+        return [dict get $m list]
+    }
+
+    method RoomReasons {room} {
+        if {[catch {$client muc roomPrivacy -jid $room} reasons]} {
+            return {unknown}
+        }
+        return $reasons
+    }
+
+    # The user's switch for a room: off unless turned on. Not ANDed with
+    # whether the room qualifies, so that a room which stops qualifying
+    # fails its sends (EncryptRoom) instead of sending in the clear.
+    method IsRoomEnabled {room} {
+        set v ""
+        catch {set v [$client setting get -key omemo.enabled.${room}?join]}
+        if {$v eq ""} { return 0 }
+        return [expr {!![string is true -strict $v]}]
+    }
+
+    # Fetch the devicelist of each member not cached yet (and through it
+    # their bundles), so a send finds them warm.
+    method WarmRoom {room} {
+        if {$store eq ""} return
+        foreach m [$self RoomMembers $room] {
+            if {[dict exists $DeviceLists $m]} continue
+            if {[dict exists $DevicelistFetchWaiters $m]} continue
+            $self FetchDevicelist $m [list apply {args {}}]
+        }
+    }
+
+    # Retry the room's parked sends (message.tcl OnOmemoSessionReady takes
+    # the room's chat as the peer).
+    method WakeRoom {room} {
+        $client bus publish omemo:<SessionReady> -jid ${room}?join
+    }
+
+    # A member's keys moved: wake each room it reads.
+    method WakeRoomsOf {jid} {
+        if {[catch {$client muc roomsOfMember $jid} rooms]} return
+        foreach room $rooms { $self WakeRoom $room }
+    }
+
+    method OnMucMembers {args} {
+        set room [jid norm [dict get $args -jid]]
+        if {[$self IsRoomEnabled $room]} { $self WarmRoom $room }
+        if {[$self RoomMemberList $room] ni {none pending}} {
+            $self WakeRoom $room
+        }
+        $self EmitRoomStatus $room
+    }
+
+    method OnMucRoomInfo {args} {
+        set room [jid norm [dict get $args -jid]]
+        # Parked sends to a room that no longer qualifies fail now.
+        $self WakeRoom $room
+        $self EmitRoomStatus $room
+    }
+
+    method OnMucLeft {args} {
+        dict unset Rooms [jid norm [dict get $args -jid]]
+    }
+
+    # Produce the <encrypted> node of a room message, or raise:
+    #   TACO_OMEMO_NOT_READY           the member list, a devicelist or a
+    #                                  bundle is still being fetched
+    #   {TACO_OMEMO_TERMINAL ROOM}     the room does not qualify
+    #   {TACO_OMEMO_TERMINAL MEMBERS}  some member cannot be keyed for;
+    #                                  omemo <MembersUnreachable> says who
+    method EncryptRoom {room plaintext} {
+        set reasons [$self RoomReasons $room]
+        if {[llength $reasons]} {
+            jlog debug "encrypt TERMINAL $room: room does not qualify ($reasons)"
+            return -code error -errorcode {TACO_OMEMO_TERMINAL ROOM} \
+                "$room cannot use OMEMO ([join $reasons {, }])"
+        }
+        set list [$self RoomMemberList $room]
+        if {$list in {none pending}} {
+            if {$list eq "none"
+                    && ![catch {$client muc isJoined -jid $room} joined] && $joined} {
+                catch {$client muc FetchMembers $room}
+            }
+            return -code error -errorcode TACO_OMEMO_NOT_READY \
+                "the member list of $room is not in yet"
+        }
+        set members [$self RoomMembers $room]
+        if {[$self KickDevicelists [concat $members [list $accountJid]]]} {
+            return -code error -errorcode TACO_OMEMO_NOT_READY \
+                "devicelists of $room's members are being fetched"
+        }
+        lassign [$self CollectSessions [$self Candidates $members] $room] \
+            sessions warming
+        # member -> why it cannot be reached
+        set left [dict create]
+        foreach m $members {
+            if {![llength [dict get $DeviceLists $m]]} {
+                dict set left $m no_devices
+                continue
+            }
+            if {$m in $warming} continue
+            set any 0
+            foreach s $sessions {
+                if {[lindex $s 0] eq $m} { set any 1; break }
+            }
+            if {!$any} { dict set left $m no_usable_device }
+        }
+        if {[dict size $left]} {
+            $self RoomLeftOut $room $left
+            return -code error -errorcode {TACO_OMEMO_TERMINAL MEMBERS} \
+                "not sent to $room: no usable OMEMO device for\
+                 [join [dict keys $left] {, }]"
+        }
+        if {[llength $warming]} {
+            jlog debug "encrypt NOT_READY $room: holding for\
+                [llength $warming] device(s) still warming"
+            return -code error -errorcode TACO_OMEMO_NOT_READY \
+                "bundle fetch in flight for [llength $warming] device(s)"
+        }
+        set enc [$self WrapPayload $sessions $plaintext $room]
+        $self RoomEntry $room
+        dict set Rooms $room unreachable {}
+        $self EmitRoomStatus $room
+        return $enc
+    }
+
+    method RoomEntry {room} {
+        if {![dict exists $Rooms $room]} {
+            dict set Rooms $room [dict create unreachable {} shown ""]
+        }
+    }
+
+    # A send that failed closed: who stopped it, and why.
+    method RoomLeftOut {room left} {
+        $self RoomEntry $room
+        dict set Rooms $room unreachable $left
+        set list [$self UnreachableList $left]
+        jlog warn "OMEMO $room: not sent; no usable device for\
+            [join [lmap e $list {format %s:%s [dict get $e jid] [dict get $e reason]}] {, }]"
+        $client emit omemo <MembersUnreachable> -jid ${room}?join -members $list
+        $self EmitRoomStatus $room
+    }
+
+    method UnreachableList {left} {
+        set out {}
+        foreach m [lsort [dict keys $left]] {
+            lappend out [dict create jid $m reason [dict get $left $m]]
+        }
+        return $out
+    }
+
+    # {jid eligible reasons enabled member_list members unreachable}
+    method RoomStatus {room} {
+        set reasons [$self RoomReasons $room]
+        set unreachable {}
+        if {[dict exists $Rooms $room]} {
+            set unreachable [dict get $Rooms $room unreachable]
+        }
+        return [dict create \
+            jid         ${room}?join \
+            eligible    [expr {![llength $reasons]}] \
+            reasons     $reasons \
+            enabled     [$self IsRoomEnabled $room] \
+            member_list [$self RoomMemberList $room] \
+            members     [$self RoomMembers $room] \
+            unreachable [$self UnreachableList $unreachable]]
+    }
+
+    # <RoomStatus>, when it says something new.
+    method EmitRoomStatus {room} {
+        set status [$self RoomStatus $room]
+        $self RoomEntry $room
+        if {[dict get $Rooms $room shown] eq $status} return
+        dict set Rooms $room shown $status
+        $client emit omemo <RoomStatus> -jid ${room}?join -status $status
+    }
+
+    # roomStatus -jid room@service?join -> RoomStatus dict: whether the
+    # room can use OMEMO and why not, whether it is on, who it is keyed
+    # for, and who stopped the last send that failed.
+    tackymethod roomStatus {args} {
+        set room [::taco::omemo::roomOf [dict get $args -jid]]
+        if {$room eq ""} {
+            return -code error "not a room chat: [dict get $args -jid]"
+        }
+        return [$self RoomStatus $room]
+    }
+
+    # Who wrote a room message: the real bare JID the room gives for its
+    # occupant, or "" when the room has not said. Live, from the occupant's
+    # presence under that nick -- and where the room vouches for
+    # occupant-ids, only if the message's id is the one that presence
+    # carried: another is someone who held the nick before or a nick
+    # changing hands. Then, and for the archive (whose nicks may have
+    # changed hands since), by the occupant-id alone. Never by the nick of
+    # an archived message, nor by anything the occupant wrote itself.
+    method RoomSender {room stanza isMam} {
+        set from [xsearch $stanza -get @from]
+        if {![jid valid $from]} { return "" }
+        set nick [jid resource $from]
+        set occId ""
+        if {![catch {$client muc TrustsOccupantId $room} vouched] && $vouched} {
+            set occId [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+        }
+        if {!$isMam && $nick ne ""
+                && ![catch {$client muc occupant -jid $room -nick $nick} occ]
+                && $occ ne "" && [dict get $occ jid] ne ""
+                && [jid valid [dict get $occ jid]]} {
+            set held [dict get $occ occupant_id]
+            if {$occId eq "" || $held eq "" || $occId eq $held} {
+                return [jid norm [jid bare [dict get $occ jid]]]
+            }
+        }
+        if {$occId eq ""} { return "" }
+        if {![catch {$client muc myOccupantId -jid $room} mine]
+                && $mine ne "" && $mine eq $occId} {
+            return $accountJid
+        }
+        if {[catch {$client muc occupantJid $room $occId} real]} { return "" }
+        return $real
+    }
+
+    # The sender of a room message the room did not name, found by the one
+    # session that opens it (Dino's fallback for history from those no
+    # longer in the room). Decrypting is the proof: only the holder of a
+    # session can write a message it opens, and only the holder of an
+    # identity key a prekey message under it.
+    #   prekey message:  opened with a fresh session, whose remote identity
+    #                    must be the stored key of exactly one JID with that
+    #                    device id -> {jid {}} (DoDecrypt opens it again)
+    #   other messages:  each JID with a session for that device id, room
+    #                    members first, on a copy of the session -> {jid
+    #                    {session key}} for the one that opens it, which
+    #                    DoDecrypt adopts
+    # "" when no session opens it.
+    method TrialSender {room encNode sid} {
+        set headerNode [lindex [xsearch $encNode header] 0]
+        if {$headerNode eq ""} { return "" }
+        set mine [list]
+        xsearch $headerNode key -script kn {
+            set rid [xsearch $kn -get @rid]
+            if {$rid eq "" || $rid != $deviceId} continue
+            set isPrekey [expr {[xsearch $kn -get @prekey] in {true 1}}]
+            lappend mine [list $isPrekey [base64::decode [dict get $kn body]]]
+        }
+        if {![llength $mine]} { return "" }
+        foreach pair $mine {
+            lassign $pair isPrekey enc
+            if {!$isPrekey} continue
+            set tmp [$self CreateSessionHandle $room $sid]
+            set ik ""
+            if {![catch {$tmp decrypt_key $store $enc -prekey 1}]} {
+                set ik [$tmp remote_identity]
+            }
+            catch {$tmp destroy}
+            if {$ik eq ""} continue
+            set jids [$db eval {
+                SELECT DISTINCT peer_jid FROM omemo_trust
+                WHERE account_jid=$accountJid AND peer_device=$sid
+                  AND identity_pk=$ik
+            }]
+            if {[llength $jids] == 1} { return [list [lindex $jids 0] {}] }
+            return ""
+        }
+        set members [$self RoomMembers $room]
+        set jids [$db eval {
+            SELECT peer_jid FROM omemo_sessions
+            WHERE account_jid=$accountJid AND peer_device=$sid
+        }]
+        set ordered [concat \
+            [lmap j $jids {expr {$j in $members ? $j : [continue]}}] \
+            [lmap j $jids {expr {$j ni $members ? $j : [continue]}}]]
+        foreach jid $ordered {
+            set blob [$db onecolumn {
+                SELECT blob FROM omemo_sessions
+                WHERE account_jid=$accountJid AND peer_jid=$jid
+                  AND peer_device=$sid
+            }]
+            foreach pair $mine {
+                lassign $pair isPrekey enc
+                set tmp [$self CreateSessionHandle $jid $sid]
+                if {[catch {$tmp deserialize $blob}]} {
+                    catch {$tmp destroy}
+                    continue
+                }
+                if {![catch {$tmp decrypt_key $store $enc -prekey 0} key]} {
+                    return [list $jid [list $tmp $key]]
+                }
+                catch {$tmp destroy}
+            }
+        }
+        return ""
+    }
+
+    # One room message's <encrypted> through DoDecrypt, as its sender:
+    # {kind body fingerprint sender}, kind one of DoDecrypt's, `own` (this
+    # device's own message, reflected: its row already holds the text, as
+    # for our own 1:1 echo) or `dropped` (a device we refuse); "" for a
+    # malformed element. A sender the room has not named and no session
+    # identifies is a decrypt_error.
+    method RoomDecrypt {room stanza encNode isMam} {
+        set sid [xsearch $encNode header -get @sid]
+        if {$sid eq "" || ![string is integer -strict $sid] || $sid <= 0} {
+            return ""
+        }
+        set sender [$self RoomSender $room $stanza $isMam]
+        set pre {}
+        if {$sender eq ""} {
+            set trial [$self TrialSender $room $encNode $sid]
+            if {$trial eq ""} {
+                jlog debug "OMEMO $room: [xsearch $stanza -get @from] is no occupant\
+                    whose real JID the room gave, and no session opens it"
+                return [list decrypt_error \
+                    "\[OMEMO\] Could not decrypt message: the room did not say who sent it" \
+                    "" ""]
+            }
+            lassign $trial sender pre
+            if {![catch {$client muc TrustsOccupantId $room 1} vouched] && $vouched} {
+                set occId [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
+                if {$occId ne ""} {
+                    catch {$client muc LearnOccupant $room $occId $sender}
+                }
+            }
+        }
+        if {$sender eq $accountJid && $sid == $deviceId} {
+            if {$pre ne ""} { catch {[lindex $pre 0] destroy} }
+            return [list own "" "" $sender]
+        }
+        set trust [$db onecolumn {
+            SELECT trust FROM omemo_trust
+            WHERE account_jid=$accountJid
+              AND peer_jid=$sender AND peer_device=$sid
+        }]
+        if {$trust in {compromised untrusted}} {
+            jlog warn "OMEMO drop: $room message from $sender/$sid marked $trust"
+            if {$pre ne ""} { catch {[lindex $pre 0] destroy} }
+            return [list dropped "" "" $sender]
+        }
+        set r [$self DoDecrypt $encNode $sender $sid $isMam $pre]
+        if {$r eq ""} { return "" }
+        lassign $r kind body fp
+        return [list $kind $body $fp $sender]
+    }
+
+    # A live groupchat message, from muc: the stanza to take in -- the
+    # message itself when it carries no OMEMO element, else the plaintext
+    # one made from it (SynthesisePlain) -- or "" when there is nothing to
+    # show (a key transport, a redelivery, a refused device). A failure is
+    # told as <DecryptFailed> with the room, and the chat gets its
+    # placeholder, as in 1:1.
+    method decryptRoomMessage {room stanza} {
+        set encNode [lindex [xsearch $stanza encrypted \
+            -ns $::taco::omemo::NS_AXOLOTL] 0]
+        if {$encNode eq ""} { return $stanza }
+        if {[xsearch $stanza -get @type] eq "error"} { return $stanza }
+        set room [jid norm $room]
+        set r [$self RoomDecrypt $room $stanza $encNode 0]
+        if {$r eq ""} {
+            jlog warn "OMEMO drop: malformed <encrypted/> in $room" -stanza $stanza
+            return ""
+        }
+        lassign $r kind body fp sender
+        switch -- $kind {
+            keytransport - duplicate - dropped {
+                jlog debug "OMEMO $kind in $room from $sender"
+                return ""
+            }
+            own { return [$self SynthesisePlain $stanza ""] }
+            decrypt_error {
+                set who [expr {$sender ne "" ? $sender : [xsearch $stanza -get @from]}]
+                $client emit omemo <DecryptFailed> -jid $who \
+                    -device [xsearch $encNode header -get @sid] \
+                    -reason $body -room ${room}?join
+            }
+        }
+        return [$self SynthesisePlain $stanza $body $fp]
     }
 
     # 1 if this device's bundle is unusable for the rest of the
@@ -2173,6 +2695,12 @@ snit::type taco_omemo {
         array set opts {-command {apply {args {}}}}
         array set opts $args
         set peerJid $opts(-jid)
+        set room [::taco::omemo::roomOf $peerJid]
+        if {$room ne ""} {
+            $self WarmRoom $room
+            {*}$opts(-command) $peerJid [$self RoomMembers $room]
+            return
+        }
         $self FetchDevicelist $peerJid \
             [mymethod AfterPrepareChat $opts(-command)]
     }
@@ -2187,9 +2715,22 @@ snit::type taco_omemo {
     # trustList -jid $peerJid -> list of dicts
     # {device <id> trust <state> active <0|1> fingerprint <hex>}
     # Returns every known device for that peer (incl. inactive rows).
+    #
+    # For a room chat (room@service?join): every member's devices, each row
+    # with a `jid` naming its member, members in order.
     tackymethod trustList {args} {
         array set opts $args
         set peerJid $opts(-jid)
+        set room [::taco::omemo::roomOf $peerJid]
+        if {$room ne ""} {
+            set out [list]
+            foreach m [$self RoomMembers $room] {
+                foreach row [$self trustList -jid $m] {
+                    lappend out [dict merge [dict create jid $m] $row]
+                }
+            }
+            return $out
+        }
         set out [list]
         $db eval {
             SELECT peer_device, trust, active, identity_pk
@@ -2215,6 +2756,12 @@ snit::type taco_omemo {
         $client emit omemo <TrustList> \
             -jid $peerJid \
             -trustList [$self trustList -jid $peerJid]
+        # The rooms it is a member of list its devices too.
+        if {[catch {$client muc roomsOfMember $peerJid} rooms]} return
+        foreach room $rooms {
+            $client emit omemo <TrustList> -jid ${room}?join \
+                -trustList [$self trustList -jid ${room}?join]
+        }
     }
 
     # blindTrust -> 0|1 (current BTBV setting; defaults to 1 if unset,
@@ -2239,12 +2786,14 @@ snit::type taco_omemo {
     # Per-chat OMEMO toggle - a genuine boolean, the user's choice.
     # Stored per peer under setting key omemo.enabled.<jid> in this
     # account's own setting store; defaults to ON (chats are encrypted
-    # by default, Dino-style). Peer capability is a separate concern
+    # by default, Dino-style), except for a room (IsRoomEnabled: off). Peer capability is a separate concern
     # (`ready`); when a peer can't do OMEMO the GUI warns and the
     # message stays pending until the user turns the toggle off and
     # resends. Read at send time by taco_message; the GUI observes
     # <Enabled>, so there's no public getter - IsEnabled is internal.
     method IsEnabled {peerJid} {
+        set room [::taco::omemo::roomOf $peerJid]
+        if {$room ne ""} { return [$self IsRoomEnabled $room] }
         set v ""
         catch {set v [$client setting get -key omemo.enabled.$peerJid]}
         # Unset defaults on, except for a room PM (room/nick): device lists
@@ -2257,17 +2806,33 @@ snit::type taco_omemo {
     # setEnabled -jid X -value 0|1 -> persist per-chat toggle, emit
     # <Enabled>. Pure setting write; pending messages are untouched
     # (their stamped `encryption` is honored on automatic retry).
+    #
+    # A room chat (room@service?join) can only be switched on while it
+    # qualifies (members-only and non-anonymous): {OMEMO ROOM_NOT_ELIGIBLE}
+    # otherwise. Off is always allowed.
     tackymethod setEnabled {args} {
         array set opts $args
         set peerJid $opts(-jid)
         set v [expr {!![string is true -strict $opts(-value)]}]
+        set room [::taco::omemo::roomOf $peerJid]
+        if {$room ne "" && $v} {
+            set reasons [$self RoomReasons $room]
+            if {[llength $reasons]} {
+                return -code error -errorcode {OMEMO ROOM_NOT_ELIGIBLE} \
+                    "$room cannot use OMEMO ([join $reasons {, }])"
+            }
+        }
         $client setting set -key omemo.enabled.$peerJid -value $v
         $client emit omemo <Enabled> -jid $peerJid -value $v
+        if {$room ne ""} {
+            if {$v} { $self WarmRoom $room }
+            $self EmitRoomStatus $room
+        }
         return $v
     }
 
-    # isEnabled -jid X -> the per-chat toggle, defaulting on for a chat
-    # nobody has set. A caller that has to know before it draws needs an
+    # isEnabled -jid X -> the per-chat toggle, defaulting on for a 1:1
+    # chat nobody has set, off for a room. A caller that has to know before it draws needs an
     # answer it can wait for; <Enabled> only says when it changes, and a
     # pull of it cannot report having gone missing.
     tackymethod isEnabled {args} {
@@ -2290,6 +2855,14 @@ snit::type taco_omemo {
             <Enabled> {
                 $client emit omemo <Enabled> \
                     -jid $opts(-jid) -value [$self IsEnabled $opts(-jid)]
+            }
+            <RoomStatus> {
+                set room [::taco::omemo::roomOf $opts(-jid)]
+                if {$room eq ""} {
+                    return -code error "not a room chat: $opts(-jid)"
+                }
+                $client emit omemo <RoomStatus> -jid $opts(-jid) \
+                    -status [$self RoomStatus $room]
             }
             default {
                 return -code error \
