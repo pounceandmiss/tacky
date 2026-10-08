@@ -506,6 +506,8 @@ Which chats the frontend shows, and how far down.
     chat view  {acc, chat, timestamp}
     chat isOpen    {acc, chat}   -> bool
     chat isLooking {acc, chat}   -> bool
+    chat setClientData {acc, chat, data: string}
+    chat clientData    {acc, chat}   -> string
 
 `open`/`close` are membership, not a count: open a chat once however many
 windows show it. A chat is looked at (`isLooking`) while open and the
@@ -519,6 +521,11 @@ views of a chat that isn't open are dropped.
 
 [notify](#notify) never alerts for a chat being looked at. Messages below the
 fold stay unread, so `chatlist`'s `unread` counts them until scrolled to.
+
+`setClientData` stores an opaque per-chat string for the frontend (scroll
+position, drafts); the chat need not be open. `clientData` returns it, `""` if
+none; storing `""` deletes it. It lives in the account's database: encrypted
+with it, removed with the account and when the chat's history is forgotten.
 
 ## bookmarks
 
