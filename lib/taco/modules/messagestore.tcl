@@ -211,13 +211,14 @@ snit::type taco_messagestore {
                     AND (invite_room = '' OR invite_declined=0)}]}
     }
 
-    # Drop a chat's whole history, its holes and read mark with it.
+    # Drop a chat's whole history, its holes, read mark and client data with it.
     method forgetChat {jid} {
         $options(-db) eval {
             DELETE FROM chat_message WHERE chat_jid=$jid;
             DELETE FROM chat_own_read WHERE chat_jid=$jid;
             DELETE FROM message_alias WHERE chat_jid=$jid;
             DELETE FROM chat_archive_mark WHERE chat_jid=$jid;
+            DELETE FROM chat_client_data WHERE chat_jid=$jid;
         }
     }
 
@@ -1054,6 +1055,29 @@ snit::type taco_messagestore {
         $options(-db) eval {
             INSERT OR REPLACE INTO chat_notify(chat_jid, muted, mentions)
             VALUES($chatJid, $muted, $mentions)
+        }
+    }
+
+    # --- Client data ----------------------------------------------
+
+    # The frontend's string for a chat, "" if none.
+    method clientData {chatJid} {
+        $options(-db) onecolumn {
+            SELECT data FROM chat_client_data WHERE chat_jid=$chatJid
+        }
+    }
+
+    # "" deletes the row.
+    method setClientData {chatJid data} {
+        if {$data eq ""} {
+            $options(-db) eval {
+                DELETE FROM chat_client_data WHERE chat_jid=$chatJid
+            }
+            return
+        }
+        $options(-db) eval {
+            INSERT OR REPLACE INTO chat_client_data(chat_jid, data)
+            VALUES($chatJid, $data)
         }
     }
 

@@ -137,3 +137,30 @@ test chat-view-room-no-displayed {a room view moves the watermark and sends no m
         list [dict get [tacky message ownRead -acc $acc -chat $room] timestamp] \
             [chat_displayed_count]
     } -result {100 0}
+
+test chat-client-data-roundtrip {client data comes back as stored, open or not} \
+    {*}$chat_common \
+    -body {
+        set out [list [tacky chat clientData -acc $acc -chat alice@example.com]]
+        tacky chat setClientData -acc $acc -chat alice@example.com \
+            -data {{"view":{"ts":100}}}
+        lappend out [tacky chat clientData -acc $acc -chat alice@example.com]
+        lappend out [tacky chat clientData -acc $acc -chat bob@example.com]
+    } -result {{} {{"view":{"ts":100}}} {}}
+
+test chat-client-data-empty-drops {storing an empty string drops the row} \
+    {*}$chat_common \
+    -body {
+        tacky chat setClientData -acc $acc -chat alice@example.com -data x
+        tacky chat setClientData -acc $acc -chat alice@example.com -data ""
+        $::_client db eval {SELECT count(*) FROM chat_client_data}
+    } -result 0
+
+test chat-client-data-forgotten-with-history {forgetting a chat forgets its client data} \
+    {*}$chat_common \
+    -body {
+        chat_theirs 100
+        tacky chat setClientData -acc $acc -chat alice@example.com -data x
+        $::_client message messagestore forgetChat alice@example.com
+        tacky chat clientData -acc $acc -chat alice@example.com
+    } -result {}

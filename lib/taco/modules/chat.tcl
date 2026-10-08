@@ -3,10 +3,12 @@
 #   chat open  -chat J
 #   chat close -chat J
 #   chat view  -chat J -timestamp T    T: newest message on screen
+#   chat setClientData -chat J -data S
+#   chat clientData    -chat J          -> S
 #
 # A chat is looked at while open and the app is active. Only then does a view
 # move the read watermark, and notify skips it. Open is membership, not a
-# count. Memory-only.
+# count. Memory-only, except client data: an opaque per-chat string, stored.
 
 snit::type taco_chat {
     option -client -readonly yes
@@ -42,6 +44,16 @@ snit::type taco_chat {
             return
         }
         $self Read $chatJid $ts
+    }
+
+    tackymethod setClientData {args} {
+        array set opts $args
+        $client message messagestore setClientData $opts(-chat) $opts(-data)
+    }
+
+    tackymethod clientData {args} {
+        array set opts $args
+        $client message messagestore clientData $opts(-chat)
     }
 
     tackymethod isOpen {args} {
