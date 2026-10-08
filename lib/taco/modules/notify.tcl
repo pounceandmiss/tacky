@@ -1,12 +1,11 @@
 # taco_notify - which arriving message deserves an alert.
 #
-# The gate is the read watermark, not window focus: a message alerts only
-# while it sits past chat_own_read, and the watermark moving is what cancels
-# or dismisses it. So there is no "I am looking at this chat" call to make.
+# A chat being looked at (chat isLooking) never alerts. Otherwise a message
+# alerts only while past chat_own_read; the watermark moving cancels or
+# dismisses it.
 #
-# A live alert waits out notify_delay_ms first. The chat view marks the tail
-# read on focus, scroll and arrival, so a message landing in a chat the user
-# is already reading is read inside that window and never alerts.
+# A live alert waits notify_delay_ms first, so a read from another device
+# landing just after can still cancel it.
 #
 # Policy per chat is `muted` plus `mentions`, and a mention overrides the
 # mute. Rooms default to muted, which leaves a public room pinging on your
@@ -84,6 +83,7 @@ snit::type taco_notify {
         set ts [dict get $opts(-message) timestamp]
         if {$ts < [$self Floor]} return
         if {$ts <= [$self Watermark $opts(-jid)]} return
+        if {[$client chat isLooking -chat $opts(-jid)]} return
         set mention [$self Store mentionAt $opts(-jid) $ts]
         if {![$self ShouldNotify $opts(-jid) $mention]} return
         $self Schedule [dict create jid $opts(-jid) ts $ts mention $mention \
@@ -106,6 +106,7 @@ snit::type taco_notify {
         dict unset Pending [PendingKey $alert]
         set chatJid [dict get $alert jid]
         if {[dict get $alert ts] <= [$self Watermark $chatJid]} return
+        if {[$client chat isLooking -chat $chatJid]} return
         $self Notify $alert
     }
 
@@ -156,6 +157,7 @@ snit::type taco_notify {
         array set opts {-jid "" -count 0}
         array set opts $args
         if {$opts(-jid) eq ""} return
+        if {[$client chat isLooking -chat $opts(-jid)]} return
         set rows [$self Store unreadTail \
             $opts(-jid) [$self Floor] $CatchupBurstMax]
         foreach row [lreverse $rows] {

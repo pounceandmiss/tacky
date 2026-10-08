@@ -20,6 +20,7 @@ and get back replies and events.
   - [setting](#setting)
   - [storage](#storage)
   - [chatlist](#chatlist)
+  - [chat](#chat)
   - [bookmarks](#bookmarks)
   - [roster](#roster)
   - [blocking](#blocking)
@@ -369,6 +370,7 @@ active. On becoming active, connected accounts check their link
 (XEP-0352) also tell it each change, so while the app is inactive the
 server can hold back presence updates and typing notifications.
 `idleSeconds` is how long the app has been inactive, 0 while active.
+Becoming active also applies views [chat](#chat) held.
 
 ## setting
 
@@ -494,6 +496,29 @@ bookmarks, new-message and room_state signals into just these three events, so
 you only need to subscribe to `chatlist`. The raw `bookmarks <Changed>`
 and `bookmarks <RoomState>` signals are still there, but a frontend
 normally sticks with the funneled ones.
+
+## chat
+
+Which chats the frontend shows, and how far down.
+
+    chat open  {acc, chat}
+    chat close {acc, chat}
+    chat view  {acc, chat, timestamp}
+    chat isOpen    {acc, chat}   -> bool
+    chat isLooking {acc, chat}   -> bool
+
+`open`/`close` are membership, not a count: open a chat once however many
+windows show it. A chat is looked at (`isLooking`) while open and the
+[app](#app) is active.
+
+`view` gives the newest message on screen. While the chat is looked at it
+reads up to there: `markOwnRead`, plus `markDisplayed` in a 1:1. Call it on
+every scroll and arrival; stamps at or behind the watermark are ignored.
+Views sent while the app is inactive are held until it is active again;
+views of a chat that isn't open are dropped.
+
+[notify](#notify) never alerts for a chat being looked at. Messages below the
+fold stay unread, so `chatlist`'s `unread` counts them until scrolled to.
 
 ## bookmarks
 
@@ -805,7 +830,8 @@ history landing behind it does not become unread.
 `markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored, so it
 is safe to call on every focus and scroll. It is local state and applies to
 group chats; `markDisplayed` is the separate wire half (a XEP-0333 `<displayed>`,
-1:1 only). Call both when the user reads a 1:1 chat. The watermark also advances
+1:1 only). A chat on screen leaves both to [chat](#chat) `view`; call them
+directly to read one that isn't. The watermark also advances
 on its own when you send a message from any of your devices, and when another
 device's `<displayed>` marker reaches this one.
 
@@ -924,10 +950,10 @@ not looking at the app; how to tell them is the frontend's job.
   single "Name (12)" alert.
 - `mention` marks a group-chat message that named you.
 
-The gate is the read watermark, not a "user is looking at this chat" call:
-a message alerts only while it sits past the watermark, and the alert is held
-for `notify_delay_ms` (default `500`) first, so a chat the user is reading
-marks itself read via `markOwnRead` and never alerts. Dismiss a shown alert
+A chat being looked at (see [chat](#chat)) never alerts. Otherwise a message
+alerts only while past the read watermark, held for `notify_delay_ms`
+(default `500`) so a read from another device landing just after still
+cancels it. Dismiss a shown alert
 when `message <OwnRead>` moves past it - that covers reads on your other
 devices too.
 

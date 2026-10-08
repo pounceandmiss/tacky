@@ -100,6 +100,40 @@ test notify-read-cancels-pending {reading inside the delay window cancels the al
         notify_jids
     } -result {}
 
+test notify-looking-silent {a chat the user is looking at never alerts, read or not} \
+    {*}$notify_common -body {
+        tacky chat open -acc $acc -chat alice@example.com
+        notify_incoming "hello"
+        list [notify_jids] [dict get \
+            [tacky message ownRead -acc $acc -chat alice@example.com] unread]
+    } -result {{} 1}
+
+test notify-open-inactive-alerts {an open chat in an app in the background still alerts} \
+    {*}$notify_common -body {
+        tacky chat open -acc $acc -chat alice@example.com
+        [$::_client cget -taco] app setActive -active 0
+        notify_incoming "hello"
+        notify_jids
+    } -result {alice@example.com}
+
+test notify-closed-alerts {closing the chat lets its messages alert again} \
+    {*}$notify_common -body {
+        tacky chat open -acc $acc -chat alice@example.com
+        tacky chat close -acc $acc -chat alice@example.com
+        notify_incoming "hello"
+        notify_jids
+    } -result {alice@example.com}
+
+test notify-looking-cancels-pending {opening the chat inside the delay window cancels the alert} \
+    {*}$notify_common -body {
+        [$::_client cget -taco] setting set -key notify_delay_ms -value 1
+        notify_incoming "hello"
+        tacky chat open -acc $acc -chat alice@example.com
+        after 20 {set ::waited 1}
+        vwait ::waited
+        notify_jids
+    } -result {}
+
 test notify-unread-count-rides-alert {the alert carries the chat's unread total} \
     {*}$notify_common -body {
         notify_incoming "one" m1
@@ -201,6 +235,14 @@ test notify-catchup-alerts {a backlog alerts once settled, carrying the true tot
         notify_catchup_done alice@example.com
         list [llength $::alerts] [lindex [lindex $::alerts end] 2]
     } -result {3 3}
+
+test notify-catchup-looking-silent {a backlog for a chat being looked at stays quiet} \
+    {*}$notify_common -body {
+        tacky chat open -acc $acc -chat alice@example.com
+        notify_store_unread alice@example.com 3
+        notify_catchup_done alice@example.com
+        llength $::alerts
+    } -result 0
 
 test notify-catchup-carries-body {a backlog alert carries its message text} \
     {*}$notify_common -body {
