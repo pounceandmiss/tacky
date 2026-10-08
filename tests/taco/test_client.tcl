@@ -3,7 +3,7 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 
 set common [tacky_env -capture-emit 1 -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 }]
 
@@ -411,6 +411,36 @@ test client-setpassword-keeps-online-session {an online account keeps its sessio
         tacky account set -acc user@test.example.com -password fresh
         expr {[$::_client.conn get_connects] - $before}
     } -result 0
+
+# -- where to connect (account set -host/-port/-tls/-srv) -------------------
+
+test client-sethost-reaches-client {connection settings go to the running client} \
+    {*}$pw_common \
+    -body {
+        tacky account set -acc user@test.example.com -host xmpp.example.org \
+            -port 5223 -tls direct -srv 0
+        list [$::_client cget -host] [$::_client cget -port] \
+            [$::_client cget -tls] [$::_client cget -srv] [$::_client cget -domain]
+    } -result {xmpp.example.org 5223 direct 0 test.example.com}
+
+test client-sethost-reconnects-offline {an enabled account that couldn't connect tries the new address at once} \
+    {*}$pw_common \
+    -body {
+        tacky account enable -acc user@test.example.com
+        set before [$::_client.conn get_connects]
+        tacky account set -acc user@test.example.com -host xmpp.example.org
+        expr {[$::_client.conn get_connects] - $before}
+    } -result 1
+
+test client-sethost-keeps-online-session {an online account keeps its session; the address is for next time} \
+    {*}$pw_common \
+    -body {
+        tacky account enable -acc user@test.example.com
+        $::_client.conn fire_state connected
+        set before [$::_client.conn get_connects]
+        tacky account set -acc user@test.example.com -host xmpp.example.org
+        list [expr {[$::_client.conn get_connects] - $before}] [$::_client cget -host]
+    } -result {0 xmpp.example.org}
 
 test client-setpassword-leaves-disabled-alone {a disabled account stays offline} \
     {*}$pw_common \

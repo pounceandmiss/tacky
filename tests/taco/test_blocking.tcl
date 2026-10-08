@@ -4,13 +4,13 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 
 set blocking_common [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 }]
 
 # <SessionStart> also runs message catchup, which needs a bound JID.
 set blocking_ready_common [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 } -bound-jid user@test.example.com/res]
 

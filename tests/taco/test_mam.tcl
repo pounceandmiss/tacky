@@ -4,7 +4,7 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 
 set mam_common [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 }]
 
@@ -183,7 +183,7 @@ test mam-result-other-room-dropped-not-misfiled {a room's results never land in 
     } -result {real1}
 
 set mam_two_sessions [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 } -extra-cleanup {catch {c2 destroy}}]
 
@@ -195,7 +195,7 @@ test mam-query-ids-do-not-collide-across-sessions {a second session mints its ow
     {*}$mam_two_sessions \
     -body {
         c configure -jid user@test.example.com/res
-        taco_client c2 -host test.example.com -port 5222 \
+        taco_client c2 -domain test.example.com -port 5222 \
             -username user -password pass -resource res
         c2 configure -jid user@test.example.com/res
         set ids {}

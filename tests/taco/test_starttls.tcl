@@ -75,7 +75,7 @@ test starttls-close-mid-handshake-forgets-the-buffer {a socket closed mid-STARTT
         set ::_st_peer ""
         set listener [socket -server st_accept -myaddr 127.0.0.1 0]
         set port [lindex [fconfigure $listener -sockname] 2]
-        baseconn bc -starttls true \
+        baseconn bc -domain example.com -starttls true \
             -error-command {apply {{msg} {set ::_st_err $msg}}}
     } \
     -body {
@@ -117,3 +117,84 @@ test starttls-failure-ends-at-once {a <failure/> answer fails the handshake righ
 test starttls-buffer-is-bounded {a server that never says <proceed/> is not buffered forever} -body {
     st_reply "<stream:stream id='x'>[string repeat x 70000]"
 } -result {error {no STARTTLS answer in the first 64 KiB}}
+
+# -- Trying targets in order (connectTargets) --------------------------------
+
+# A port nothing listens on: take one and give it back.
+proc st_closed_port {} {
+    set s [socket -server {apply {{args} {}}} -myaddr 127.0.0.1 0]
+    set port [lindex [fconfigure $s -sockname] 2]
+    close $s
+    return $port
+}
+
+proc st_wait {var {timeout 5000}} {
+    set id [after $timeout [list set $var timeout]]
+    vwait $var
+    after cancel $id
+}
+
+set targets_common {
+    -constraints !wasm
+    -setup {
+        jlog configure -logproc {apply {{msg} {}}}
+        set ::_st_attempts {}
+        set ::_st_errors {}
+        set ::_st_ready ""
+        set ::_st_peer ""
+        set listener [socket -server st_accept -myaddr 127.0.0.1 0]
+        set open [lindex [fconfigure $listener -sockname] 2]
+        baseconn bc -domain example.com \
+            -attempt-command {apply {{h p t} {lappend ::_st_attempts [list $p $t]}}} \
+            -error-command {apply {{msg} {lappend ::_st_errors $msg; set ::_st_ready error}}} \
+            -ontransportready {set ::_st_ready ready}
+    }
+    -cleanup {
+        catch {bc destroy}
+        catch {close $::_st_peer}
+        catch {close $listener}
+        jlog configure -logproc ""
+        unset -nocomplain ::_st_attempts ::_st_errors ::_st_ready ::_st_peer
+    }
+}
+
+test baseconn-targets-next-on-refusal {a refused target gives way to the next} \
+    {*}$targets_common -body {
+        set closed [st_closed_port]
+        bc connectTargets [list [list 127.0.0.1 $closed none] [list 127.0.0.1 $open none]]
+        st_wait ::_st_ready
+        list $::_st_ready [expr {$::_st_attempts eq [list [list $closed none] [list $open none]]}] \
+            $::_st_errors
+    } -result {ready 1 {}}
+
+test baseconn-targets-all-fail-once {when every target fails, the error comes once} \
+    {*}$targets_common -body {
+        bc connectTargets [list [list 127.0.0.1 [st_closed_port] none] \
+                                [list 127.0.0.1 [st_closed_port] none]]
+        st_wait ::_st_ready
+        after 100 {set ::_st_tick 1}; vwait ::_st_tick
+        list $::_st_ready [llength $::_st_attempts] [llength $::_st_errors] \
+            [string match "Connect failed:*" [lindex $::_st_errors 0]]
+    } -result {error 2 1 1}
+
+test baseconn-targets-stuck-handshake-moves-on {a target that never finishes TLS gives way after the attempt timeout} \
+    {*}$targets_common -body {
+        # st_accept never says <proceed/>
+        set plain [socket -server {apply {{c a p} {set ::_st_peer2 $c}}} -myaddr 127.0.0.1 0]
+        set plainPort [lindex [fconfigure $plain -sockname] 2]
+        bc configure -attempt-timeout 300
+        bc connectTargets [list [list 127.0.0.1 $open starttls] [list 127.0.0.1 $plainPort none]]
+        st_wait ::_st_ready
+        catch {close $::_st_peer2}
+        close $plain
+        list $::_st_ready \
+            [expr {$::_st_attempts eq [list [list $open starttls] [list $plainPort none]]}]
+    } -result {ready 1}
+
+test baseconn-targets-need-a-domain {without a domain nothing is dialled} \
+    {*}$targets_common -body {
+        bc configure -domain ""
+        bc connectTargets [list [list 127.0.0.1 $open none]]
+        st_wait ::_st_ready
+        list $::_st_ready $::_st_errors $::_st_attempts
+    } -result {error {{Connect failed: no domain}} {}}

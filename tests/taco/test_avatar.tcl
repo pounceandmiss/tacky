@@ -4,7 +4,7 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 
 set avatar_common [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 }]
 
@@ -237,7 +237,7 @@ test avatar-visible-refetches-changed-hash {a hash that moved on since the unans
 # <SessionStart> reaches every module, and the rest want a bound JID to work
 # from, so these run against a session that came up once already.
 set avatar_ready_common [tacky_env -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 } -bound-jid user@test.example.com/res]
 

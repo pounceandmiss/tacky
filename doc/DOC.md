@@ -235,15 +235,18 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account exists {acc: string}                    -> bool
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
     account add {acc: string, password?: string, username?: string, domain?: string,
-                 port?: int, websocket_url?: string}
+                 host?: string, port?: int, tls?: string, srv?: bool,
+                 websocket_url?: string}
     account set {acc: string, password?: string, username?: string, domain?: string,
-                 port?: int, websocket_url?: string, enabled?: bool}
+                 host?: string, port?: int, tls?: string, srv?: bool,
+                 websocket_url?: string, enabled?: bool}
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
-    account_fields = {username: string, domain: string, port: int, password: string,
+    account_fields = {username: string, domain: string, host: string, port: int,
+                      tls: string, srv: bool, password: string,
                       resource: string, enabled: bool, websocket_url: string}
 
 `add` creates or updates. On create, `username` and `domain` default to
@@ -258,8 +261,24 @@ on the server (XEP-0077) and, if that works, updates the stored one - the
 reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
 
-`port` (default 5222) is the port on `domain` the account dials on the tcp
-transport. Changes apply on the next connect.
+**Where an account connects.** `domain` is the XMPP domain; the server's
+certificate must name it. On the tcp transport, `host`, `port`, `tls` and
+`srv` say how to reach it:
+
+- `host` (default `""`): a DNS name or IP address to dial instead.
+- `port` (default 0): 0 means 5222, or 5223 with `tls` `direct`.
+- `tls` (default `auto`): `starttls`, `direct` (XEP-0368, ALPN
+  `xmpp-client`), or `none`, which sends the password and messages
+  unencrypted. `auto` is STARTTLS unless an SRV record says direct.
+- `srv` (default true): with no `host` and no `port`, try the
+  `_xmpps-client._tcp` and `_xmpp-client._tcp` records for `domain` in
+  RFC 2782 order, then `domain` on 5222.
+
+SRV needs a nameserver in `/etc/resolv.conf` (the registry on Windows), so
+Android skips it.
+
+Setting `domain`, `host`, `port`, `tls`, `srv` or `password` reconnects an
+enabled account that is offline; an online one uses them next time.
 
 `websocket_url` (`ws://` or `wss://`) is where the account dials on the
 websocket transport. Empty, it is discovered: the
@@ -284,7 +303,8 @@ In-band registration (XEP-0077) over a throwaway connection, kept separate
 from the account store. Each session is identified by a `token` (any unique
 string).
 
-    register connect {host: string, port?: int, websocket_url?: string, token: string}
+    register connect {domain: string, host?: string, port?: int, tls?: string,
+                      srv?: bool, websocket_url?: string, token: string}
     register form {token: string}                 -> form
     register media {token: string, var: string}   -> base64
     register submit {token: string, values: {*: string}}
@@ -303,8 +323,9 @@ Events:
     register <Success>    {token: string}
     register <Error>      {token: string, message: string}
 
-`websocket_url` works as an account's does; pass the same one to the
-`account add` that follows. See [Accounts and sign-in](#accounts-and-sign-in)
+`domain` is the server to register on (formerly `host`). The other options
+work as an account's do; pass the same ones to the `account add` that
+follows. See [Accounts and sign-in](#accounts-and-sign-in)
 for the flow.
 
 ## conn

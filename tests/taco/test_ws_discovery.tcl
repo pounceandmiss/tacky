@@ -137,6 +137,11 @@ namespace eval ::test::wsdisc {
             -error-command {lappend ::test::wsdisc::Errors} {*}$args
     }
 
+    proc dial {domain} {
+        ::test::wsdisc::bc configure -domain $domain
+        ::test::wsdisc::bc connectTargets {}
+    }
+
     proc done {} {
         catch {::test::wsdisc::bc destroy}
         # A reader is destroyed on the next idle (DestroyReader); the next
@@ -193,7 +198,7 @@ test ws-discovery-asks-then-dials {the host is asked first, and its endpoint dia
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         set before [list $::test::wsdisc::Asked $::test::wsdisc::Opened [::test::wsdisc::bc state]]
         ::test::wsdisc::answer [::test::wsdisc::lastToken] ok 200 $::test::wsdisc::DRAUGR
         list [string map [list $host HOST] $before] $::test::wsdisc::Opened
@@ -204,7 +209,7 @@ test ws-discovery-none-takes-convention {a host-meta that names none: the conven
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] ok 200 \
             {<XRD xmlns='http://docs.oasis-open.org/ns/xri/xrd-1.0'/>}
         string map [list $host HOST] $::test::wsdisc::Opened
@@ -215,10 +220,10 @@ test ws-discovery-answer-is-kept {an answer is kept: a reconnect dials without a
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] ok 200 $::test::wsdisc::DRAUGR
         ::test::wsdisc::bc close
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         list [llength $::test::wsdisc::Asked] $::test::wsdisc::Opened
     } -result {1 {wss://www.draugr.de/websocket/ wss://www.draugr.de/websocket/}}
 
@@ -227,10 +232,10 @@ test ws-discovery-404-is-an-answer {a 404 is the host saying it publishes nothin
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] ok 404 {<html>Not Found</html>}
         ::test::wsdisc::bc close
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         list [llength $::test::wsdisc::Asked] [string map [list $host HOST] $::test::wsdisc::Opened]
     } -result {1 {wss://HOST/xmpp-websocket wss://HOST/xmpp-websocket}}
 
@@ -239,13 +244,13 @@ test ws-discovery-failure-not-kept {a lookup that failed dials the convention, a
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] timeout 0
         ::test::wsdisc::bc close
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] error 0
         ::test::wsdisc::bc close
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         ::test::wsdisc::answer [::test::wsdisc::lastToken] ok 503 {}
         list [llength $::test::wsdisc::Asked] [string map [list $host HOST] $::test::wsdisc::Opened]
     } -result {3 {wss://HOST/xmpp-websocket wss://HOST/xmpp-websocket wss://HOST/xmpp-websocket}}
@@ -256,7 +261,7 @@ test ws-discovery-refused-request {a request that cannot even be made: the conve
     -cleanup { unset -nocomplain ::test::wsdisc::Refuse; ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         string map [list $host HOST] $::test::wsdisc::Opened
     } -result {wss://HOST/xmpp-websocket}
 
@@ -264,7 +269,7 @@ test ws-discovery-explicit-url {-ws-url is dialled as given; nobody is asked} \
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1:5280/xmpp-websocket
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         list $::test::wsdisc::Asked $::test::wsdisc::Opened
     } -result {{} ws://127.0.0.1:5280/xmpp-websocket}
 
@@ -273,7 +278,7 @@ test ws-discovery-close-while-asking {closed while asking: the lookup is cancell
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         set host [::test::wsdisc::host]
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect $host 5222
+        ::test::wsdisc::dial $host
         set token [::test::wsdisc::lastToken]
         ::test::wsdisc::bc close
         ::test::wsdisc::answer $token ok 200 $::test::wsdisc::DRAUGR
@@ -292,7 +297,7 @@ test ws-discovery-reset-calls-back {a reset that answers on the spot dials nothi
             ::test::wsdisc::Http $op {*}$args
         }
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         ::test::wsdisc::bc close
         list $::test::wsdisc::Opened [::test::wsdisc::bc state]
     } -result {{} disconnected}
@@ -301,7 +306,7 @@ test ws-discovery-cleans-up {the file the answer landed in is removed} \
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         set token [::test::wsdisc::lastToken]
         set file [dict get $::test::wsdisc::Pending($token) file]
         ::test::wsdisc::answer $token ok 200 $::test::wsdisc::DRAUGR
@@ -314,7 +319,7 @@ test ws-event-needs-xmpp-subprotocol {a server that did not agree to xmpp is ref
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         ::test::wsdisc::event [::test::wsdisc::lastSock] connect ""
         list [::test::wsdisc::bc state] $::test::wsdisc::Errors
     } -result {disconnected {{server did not agree to the xmpp subprotocol}}}
@@ -325,7 +330,7 @@ test ws-event-text-reaches-the-reader {a framed message comes out as a stanza} \
     -cleanup { unset -nocomplain ::_wsin; ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1/x \
             -command {apply {{st} {lappend ::_wsin [dict get $st tag]}}}
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         set sock [::test::wsdisc::lastSock]
         ::test::wsdisc::event $sock connect xmpp
         ::test::wsdisc::event $sock text \
@@ -339,7 +344,7 @@ test ws-event-write-is-one-text-message {a write goes out as one text message} \
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         ::test::wsdisc::event [::test::wsdisc::lastSock] connect xmpp
         ::test::wsdisc::bc writeNow "<presence/>"
         set ::test::wsdisc::Sent
@@ -349,7 +354,7 @@ test ws-event-remote-close-reported-once {the server closing is one error, with 
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         set sock [::test::wsdisc::lastSock]
         ::test::wsdisc::event $sock connect xmpp
         ::test::wsdisc::event $sock close {1001 {going away}}
@@ -361,7 +366,7 @@ test ws-event-local-close-is-quiet {closing it ourselves reports nothing} \
     -constraints !wasm \
     -setup { ::test::wsdisc::fake } -cleanup { ::test::wsdisc::done } -body {
         ::test::wsdisc::conn -ws-url ws://127.0.0.1/x
-        ::test::wsdisc::bc connect [::test::wsdisc::host] 5222
+        ::test::wsdisc::dial [::test::wsdisc::host]
         ::test::wsdisc::event [::test::wsdisc::lastSock] connect xmpp
         ::test::wsdisc::bc close
         list [::test::wsdisc::bc state] $::test::wsdisc::Errors

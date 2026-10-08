@@ -109,7 +109,7 @@ namespace eval ::test::BareInterrupt {
             reset
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
-            set conn [bareconn c \
+            set conn [bareconn c -domain $HOST \
                 -onready [namespace code onReady] \
                 -ondisconnect [namespace code onTransportError]]
         }
@@ -189,7 +189,7 @@ namespace eval ::test::AuthInterrupt {
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
             set conn [conn c \
-                -host $HOST \
+                -domain $HOST \
                 -port $proxyPort \
                 -username $USER \
                 -password $PASS \
@@ -321,7 +321,7 @@ namespace eval ::test::AutoReconnect {
             set proxy [TcpProxy proxy $HOST $PORT]
             set proxyPort [proxy port]
             set conn [conn c \
-                -host $HOST \
+                -domain $HOST \
                 -port $proxyPort \
                 -username $USER \
                 -password $PASS \

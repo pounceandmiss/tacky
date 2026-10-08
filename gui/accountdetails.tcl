@@ -26,6 +26,114 @@ snit::widget jidpassword {
     }
 }
 
+# The account's host, port, tls and srv. With -collapsible the fields hide
+# behind a checkbutton, and `args` is empty while it is off.
+#
+#   connectionfields .c ?-collapsible 1?
+#   .c args            -> {-host h -port p -tls t -srv 0|1} or {}
+#   .c load $fields    fill from an `account get` dict
+snit::widget connectionfields {
+    hulltype ttk::frame
+    option -collapsible -default 1 -readonly yes
+
+    typevariable Modes {
+        Automatic auto
+        STARTTLS starttls
+        "Direct TLS" direct
+        "None (unencrypted)" none
+    }
+
+    variable custom 0
+    variable host ""
+    variable port ""
+    variable mode Automatic
+    variable srv 1
+
+    constructor args {
+        $self configurelist $args
+        set f [ttk::frame $win.fields]
+        ttk::label $f.hostlbl -text "Host"
+        ttk::entry $f.host -textvariable [myvar host]
+        ttk::label $f.portlbl -text "Port"
+        ttk::spinbox $f.port -from 1 -to 65535 -width 7 \
+            -textvariable [myvar port]
+        ttk::label $f.modelbl -text "Security"
+        ttk::combobox $f.mode -state readonly -textvariable [myvar mode] \
+            -values [dict keys $Modes]
+        ttk::checkbutton $f.srv -text "Look up the server in DNS (SRV)" \
+            -variable [myvar srv]
+        ttk::label $f.hint -foreground gray50 -font TkSmallCaptionFont \
+            -text "Empty host and port: found automatically"
+        ttk::label $f.warning -foreground red3 \
+            -text "Password and messages are sent unencrypted"
+        grid $f.hostlbl $f.host -sticky ew -padx 4 -pady 2
+        grid $f.portlbl $f.port -sticky w -padx 4 -pady 2
+        grid $f.modelbl $f.mode -sticky w -padx 4 -pady 2
+        grid x $f.srv -sticky w -padx 4 -pady 2
+        grid x $f.hint -sticky w -padx 4
+        grid x $f.warning -sticky w -padx 4
+        grid configure $f.hostlbl $f.portlbl $f.modelbl -sticky w
+        grid columnconfigure $f 1 -weight 1
+        grid remove $f.warning
+
+        if {$options(-collapsible)} {
+            ttk::checkbutton $win.custom -text "Custom server address" \
+                -variable [myvar custom] -command [mymethod Show]
+            pack $win.custom -anchor w
+        } else {
+            set custom 1
+        }
+        trace add variable [myvar mode] write [mymethod Changed]
+        trace add variable [myvar host] write [mymethod Changed]
+        trace add variable [myvar port] write [mymethod Changed]
+        $self Show
+        $self Changed
+    }
+
+    method Show {} {
+        if {$custom} {
+            pack $win.fields -fill x -pady 2
+        } else {
+            pack forget $win.fields
+        }
+    }
+
+    # SRV only applies with no host and no port
+    method Changed {args} {
+        set f $win.fields
+        if {![winfo exists $f.srv]} return
+        $f.srv state [expr {$host eq "" && $port eq "" ? "!disabled" : "disabled"}]
+        if {[dict get $Modes $mode] eq "none"} {
+            grid $f.warning
+        } else {
+            grid remove $f.warning
+        }
+    }
+
+    method args {} {
+        if {!$custom} { return {} }
+        set p [string trim $port]
+        list -host [string trim $host] -port [expr {$p eq "" ? 0 : $p}] \
+            -tls [dict get $Modes $mode] -srv $srv
+    }
+
+    method load {fields} {
+        set host [dict get $fields host]
+        set p [dict get $fields port]
+        set port [expr {$p == 0 ? "" : $p}]
+        set mode Automatic
+        dict for {text value} $Modes {
+            if {$value eq [dict get $fields tls]} { set mode $text }
+        }
+        set srv [dict get $fields srv]
+        if {$options(-collapsible)} {
+            set custom [expr {$host ne "" || $port ne "" || $mode ne "Automatic"
+                              || !$srv}]
+            $self Show
+        }
+    }
+}
+
 snit::widget signinhull {
     # jid:      [...]
     # password: [...]
@@ -56,6 +164,7 @@ snit::widget signinhull {
         install accountdetails using jidpassword \
             $win.accountdetails \
             -array $options(-array)
+        connectionfields $win.connection
 
         install progressbar using ttk::progressbar $win.progressbar
 
@@ -63,6 +172,7 @@ snit::widget signinhull {
             ttk::label $win.statuslabel
 
         pack $accountdetails -in $inner -fill x -pady 4
+        pack $win.connection -in $inner -fill x -pady 4
         pack $statuslabel -in $inner -fill x -pady 4
         pack $progressbar -in $inner -fill x -pady 4
         pack $proceed -in $inner -pady 8
@@ -122,8 +232,16 @@ snit::widgetadaptor signin {
             [mymethod OnFailed "Authentication failed"]
         tacky listen -tag $win conn <ConnError> -acc $jid \
             [mymethod OnFailed "Connection failed"]
-        tacky account add -acc $jid -password $pw
-        tacky account enable -acc $jid
+        # After a refused add the enable fails too; only the add's error shows
+        tacky account add -acc $jid -password $pw {*}[$win.connection args] \
+            -tag $win -onerror [mymethod OnAddError]
+        tacky account enable -acc $jid -tag $win -onerror {apply {{msg} {}}}
+    }
+
+    method OnAddError {msg} {
+        tacky unlisten $win
+        $self Idle
+        $win.statuslabel configure -text $msg
     }
 
     method Cancel {} {
@@ -303,12 +421,14 @@ snit::widget signup {
         set s1inner [ttk::frame $s1.inner -padding 16]
         ttk::label $s1.label -text "Enter server address"
         ttk::entry $s1.server
+        connectionfields $s1.connection
         ttk::button $s1.proceed -text "Proceed" \
             -command [mymethod FetchForm]
         ttk::progressbar $s1.progressbar
         ttk::label $s1.statuslabel
         pack $s1.label -in $s1inner -fill x -pady 4
         pack $s1.server -in $s1inner -fill x -pady 4
+        pack $s1.connection -in $s1inner -fill x -pady 4
         pack $s1.proceed -in $s1inner -pady 8
         pack $s1.statuslabel -in $s1inner -fill x -pady 4
         pack $s1.progressbar -in $s1inner -fill x -pady 4
@@ -359,7 +479,15 @@ snit::widget signup {
             [mymethod OnSuccess]
         tacky listen -tag $win register <Error> -token $win \
             [mymethod OnError]
-        tacky register connect -host $server -token $win
+        tacky register connect -domain $server -token $win \
+            {*}[$pages.step1.connection args] \
+            -tag $win -onerror [mymethod OnConnectError]
+    }
+
+    method OnConnectError {msg} {
+        tacky unlisten $win
+        $self Idle 1
+        $pages.step1.statuslabel configure -text $msg
     }
 
     # A step's request is over, whatever the outcome: stop its spinner and put
@@ -463,7 +591,8 @@ snit::widget signup {
             if {$var eq "password"} { set pw $val }
         }
         if {$username ne "" && $server ne ""} {
-            tacky account add -acc $username@$server -password $pw
+            tacky account add -acc $username@$server -password $pw \
+                {*}[$pages.step1.connection args]
         }
 
         tacky unlisten $win

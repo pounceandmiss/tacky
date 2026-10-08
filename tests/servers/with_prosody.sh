@@ -7,8 +7,8 @@
 #             default as on the servers people use
 #   --sm      Accepted for old command lines; it is the default
 #
-# Exported to <command>: XMPP_SERVER, XMPP_PORT, XMPP_WS_URL, SPOOF_SSL_CERT,
-# PROSODY_CONTAINER.
+# Exported to <command>: XMPP_SERVER, XMPP_PORT, XMPP_TLS_PORT (direct TLS,
+# XEP-0368), XMPP_WS_URL, SPOOF_SSL_CERT, PROSODY_CONTAINER.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,10 +24,11 @@ CONTAINER_NAME="prosody-test-$$"
 TEST_DIR="/tmp/prosody-test-$$"
 ENABLE_SM=true
 
-lib_pick_ports XMPP_PORT HTTP_PORT
+lib_pick_ports XMPP_PORT XMPP_TLS_PORT HTTP_PORT
 
 export XMPP_SERVER="prosody"
 export XMPP_PORT
+export XMPP_TLS_PORT
 export XMPP_WS_URL="ws://127.0.0.1:${HTTP_PORT}/xmpp-websocket"
 export PROSODY_CONTAINER="$CONTAINER_NAME"
 
@@ -88,13 +89,13 @@ modules_enabled = {
   ${SM_MODULE}
 }
 
--- Only the two listeners the tests use, on this run's ports; the fixed
+-- Only the listeners the tests use, on this run's ports; the fixed
 -- defaults (5269, 5281, ...) would collide with a concurrent run.
 c2s_ports = { ${XMPP_PORT} }
 http_ports = { ${HTTP_PORT} }
 https_ports = { }
 s2s_ports = { }
-c2s_direct_tls_ports = { }
+c2s_direct_tls_ports = { ${XMPP_TLS_PORT} }
 s2s_direct_tls_ports = { }
 component_ports = { }
 

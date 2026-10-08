@@ -74,6 +74,22 @@ proc _xmpp_starttls_readable_cb {chan host cb} {
     }
 }
 
+# XEP-0368 direct TLS; calls back as xmpp_starttls does. ALPN lets a server
+# share port 443 with HTTPS.
+proc xmpp_directtls {chan domain cb} {
+    package require mtls
+    set extraopts {}
+    if {[info exists ::env(SPOOF_SSL_CERT)]} {
+        lappend extraopts -cafile $::env(SPOOF_SSL_CERT)
+    }
+    if {[catch {mtls::import $chan -servername $domain \
+            -alpn {xmpp-client} {*}$extraopts} tlschan]} {
+        {*}$cb error $tlschan
+        return
+    }
+    _xmpp_starttls_handshake $tlschan $cb
+}
+
 # mtls::handshake returns 1 (done), 0 (in progress), or throws the mbedTLS
 # failure reason, which we hand to $cb so callers can show it.
 proc _xmpp_starttls_handshake {tlschan cb} {

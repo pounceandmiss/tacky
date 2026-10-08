@@ -189,14 +189,60 @@ tacky_test account-add-error-methoderror {with -command alone the error becomes 
 
 # -- port ------------------------------------------------------------------
 
-tacky_test account-port-bad {only 1-65535 is taken} \
+tacky_test account-port-bad {only 0 (automatic) to 65535 is taken} \
     {*}$common \
     -body {
-        list [wait_call_error tacky account set -acc user@example.com -port 0] \
+        list [wait_call_error tacky account set -acc user@example.com -port -1] \
              [wait_call_error tacky account set -acc user@example.com -port 70000] \
              [wait_call_error tacky account set -acc user@example.com -port abc] \
              [wait_call tacky account get -acc user@example.com -field port]
-    } -result {{Invalid port: 0} {Invalid port: 70000} {Invalid port: abc} 5222}
+    } -result {{Invalid port: -1} {Invalid port: 70000} {Invalid port: abc} 0}
+
+# -- host, tls, srv ----------------------------------------------------------
+
+tacky_test account-add-refused-stores-nothing {an add with a bad field leaves no account behind} \
+    -body {
+        list [wait_call_error tacky account add -acc new@example.com -host https://x] \
+             [wait_call tacky account exists -acc new@example.com]
+    } -result {{Invalid host: https://x} 0}
+
+tacky_test account-connection-defaults {a new account connects automatically} \
+    {*}$common \
+    -body {
+        set d [wait_call tacky account get -acc user@example.com]
+        list [dict get $d host] [dict get $d port] [dict get $d tls] [dict get $d srv]
+    } -result {{} 0 auto 1}
+
+tacky_test account-connection-roundtrip {host, port, tls and srv are stored as given} \
+    {*}$common \
+    -body {
+        tacky account set -acc user@example.com -host xmpp.example.org \
+            -port 5223 -tls direct -srv 0
+        set d [wait_call tacky account get -acc user@example.com]
+        list [dict get $d host] [dict get $d port] [dict get $d tls] [dict get $d srv]
+    } -result {xmpp.example.org 5223 direct 0}
+
+tacky_test account-host-forms {a name, an IPv4 or IPv6 address (brackets dropped), or empty} \
+    {*}$common \
+    -body {
+        set out {}
+        foreach h {xmpp.example.org 192.0.2.1 {[2001:db8::1]} ::1 {}} {
+            tacky account set -acc user@example.com -host $h
+            lappend out [wait_call tacky account get -acc user@example.com -field host]
+        }
+        set out
+    } -result {xmpp.example.org 192.0.2.1 2001:db8::1 ::1 {}}
+
+tacky_test account-connection-bad {a URL, host:port, spaces, an unknown tls or a non-boolean srv is refused} \
+    {*}$common \
+    -body {
+        list [wait_call_error tacky account set -acc user@example.com -host https://x] \
+             [wait_call_error tacky account set -acc user@example.com -host x:5222] \
+             [wait_call_error tacky account set -acc user@example.com -host {a b}] \
+             [wait_call_error tacky account set -acc user@example.com -tls bogus] \
+             [wait_call_error tacky account set -acc user@example.com -srv 2] \
+             [wait_call tacky account get -acc user@example.com -field host]
+    } -result {{Invalid host: https://x} {Invalid host: x:5222} {Invalid host: a b} {Invalid tls: bogus} {Invalid srv: 2} {}}
 
 tacky_test account-port-reaches-client {the client dials the account's port, and enable carries a change} \
     -modes direct -mock conn \
@@ -208,7 +254,7 @@ tacky_test account-port-reaches-client {the client dials the account's port, and
         tacky account set -acc b@example.com -port 15222
         tacky account enable -acc b@example.com
         list {*}$before [[tacky client b@example.com] cget -port]
-    } -result {5223 5222 15222}
+    } -result {5223 0 15222}
 
 # -- websocket_url ---------------------------------------------------------
 

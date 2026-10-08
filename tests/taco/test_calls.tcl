@@ -5,7 +5,7 @@ package require tacky::testhelpers
 package require tacky::callshelpers
 
 set calls_env [tacky_env -mock conn -capture-emit 1 -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 } -bound-jid user@test.example.com/res]
 

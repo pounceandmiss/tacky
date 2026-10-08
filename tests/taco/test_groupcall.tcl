@@ -8,7 +8,7 @@ package require tacky::callshelpers
 package require tacky::mockmedia
 
 set groupcall_env [tacky_env -mock conn -capture-emit 1 -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
     -taco ::tacky
 } -bound-jid user@test.example.com/res -extra-setup {
