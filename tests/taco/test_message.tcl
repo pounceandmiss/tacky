@@ -2632,7 +2632,7 @@ test message-catchup-still-moves-chatlist {a stored catchup message still update
     {*}$msg_common \
     -body {
         set ::_updated {}
-        tacky listen chats <Updated> {apply {{ev} {
+        tacky listen chatlist <Item> {apply {{ev} {
             lappend ::_updated [dict get $ev -jid]
         }}}
         msg_ready
@@ -2641,7 +2641,7 @@ test message-catchup-still-moves-chatlist {a stored catchup message still update
             [mam_result id s1 queryid $qid \
                 from alice@example.com/phone to user@test.example.com \
                 body msg1 stamp 2024-01-01T10:00:00Z]]
-        # chats debounces its emits on `after idle`.
+        # chatlist debounces new tails on `after idle`.
         update idletasks
         set ::_updated
     } -result {alice@example.com}

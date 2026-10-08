@@ -490,7 +490,7 @@ confirmation of the newest message - not of an older one). `<Remove>` deletes - 
 that still has history, which comes back as an `<Item>` with
 `source: "free"`. `<Changed>` means a whole source was swapped out (first
 fetch, reconnect); refetch with `get`. The module funnels the roster,
-bookmarks, chats, and room_state signals into just these three events, so
+bookmarks, new-message and room_state signals into just these three events, so
 you only need to subscribe to `chatlist`. The raw `bookmarks <Changed>`
 and `bookmarks <RoomState>` signals are still there, but a frontend
 normally sticks with the funneled ones.
