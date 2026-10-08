@@ -36,7 +36,7 @@ proc bookmark_insert {jid args} {
     }
 }
 
-# Helper: insert a chat message (reuses pattern from test_chats.tcl)
+# Helper: insert a chat message
 proc chatlist_chat_insert {chat_jid args} {
     set defaults [dict create \
         timestamp [clock microseconds] \
@@ -248,19 +248,98 @@ test chatlist-remove-bookmark-gone {removing a bookmark with no history emits <R
         set evs
     } -result {room@muc.example.com?join}
 
-test chatlist-chats-updated-item {chats:<Updated> emits <Item>, not <RecentTop>, with fresh activity} \
+test chatlist-new-tail-item {a new message emits <Item> with fresh activity} \
     {*}$chatlist_common \
     -body {
         set ts [clock microseconds]
-        chatlist_chat_insert alice@example.com timestamp $ts
         set ev {}
         tacky listen chatlist <Item> \
             {apply {{e} { set ::ev $e }}}
-        c bus publish chats:<Updated> -jid alice@example.com
+        chatlist_chat_insert alice@example.com timestamp $ts
+        update idletasks
         set item [dict get $ev -item]
         list [dict get $ev -jid] [dict get $item source] \
             [expr {[dict get $item last_activity] == $ts}]
     } -result {alice@example.com free 1}
+
+test chatlist-new-tail-muc-jid-verbatim {a room's new tail is keyed by the chat JID with ?join} \
+    {*}$chatlist_common \
+    -body {
+        set got {}
+        tacky listen chatlist <Item> \
+            {apply {{ev} { set ::got [dict get $ev -jid] }}}
+        chatlist_chat_insert room@muc.example.com?join
+        update idletasks
+        set got
+    } -result {room@muc.example.com?join}
+
+test chatlist-new-tail-skips-old {backfill older than the tail emits nothing} \
+    {*}$chatlist_common \
+    -body {
+        set events {}
+        tacky listen chatlist <Item> -jid alice@example.com \
+            {apply {{ev} { lappend ::events $ev }}}
+        set now [clock microseconds]
+        chatlist_chat_insert alice@example.com timestamp $now
+        update idletasks
+        chatlist_chat_insert alice@example.com timestamp [expr {$now - 1000000}]
+        update idletasks
+        llength $events
+    } -result {1}
+
+test chatlist-new-tail-dedup {a duplicate the store skips emits nothing} \
+    {*}$chatlist_common \
+    -body {
+        set events {}
+        tacky listen chatlist <Item> -jid alice@example.com \
+            {apply {{ev} { lappend ::events $ev }}}
+        set ts [clock microseconds]
+        chatlist_chat_insert alice@example.com timestamp $ts server_id sid-dup
+        update idletasks
+        chatlist_chat_insert alice@example.com \
+            timestamp [expr {$ts + 1}] server_id sid-dup
+        update idletasks
+        llength $events
+    } -result {1}
+
+test chatlist-new-tail-debounced {a batch insert emits one <Item> per chat} \
+    {*}$chatlist_common \
+    -body {
+        set events {}
+        tacky listen chatlist <Item> -jid alice@example.com \
+            {apply {{ev} { lappend ::events $ev }}}
+        set ts [clock microseconds]
+        set msgs {}
+        for {set i 0} {$i < 5} {incr i} {
+            lappend msgs [dict create \
+                timestamp [expr {$ts + $i}] \
+                chat_jid alice@example.com \
+                from_jid alice@example.com/phone \
+                body "msg $i" \
+                server_id "" \
+                own_id "" \
+                raw_xml "" \
+                server_status ""]
+        }
+        c message messagestore store $msgs
+        update idletasks
+        llength $events
+    } -result {1}
+
+test chatlist-forget-rearms {after forget, an older message counts as new again} \
+    {*}$chatlist_common \
+    -body {
+        set now [clock microseconds]
+        chatlist_chat_insert alice@example.com timestamp $now
+        update idletasks
+        set events {}
+        tacky listen chatlist <Item> -jid alice@example.com \
+            {apply {{ev} { lappend ::events $ev }}}
+        c chatlist forget alice@example.com
+        chatlist_chat_insert alice@example.com timestamp [expr {$now - 1000000}]
+        update idletasks
+        llength $events
+    } -result {1}
 
 test chatlist-roomstate-funnel {a room_state change funnels as a single <Item> carrying room_state} \
     {*}$chatlist_common \
@@ -323,11 +402,12 @@ test chatlist-item-carries-last-message {the event path resolves the tail the sa
     {*}$chatlist_common \
     -body {
         chatlist_chat_insert alice@example.com timestamp 100 body old
-        chatlist_chat_insert alice@example.com timestamp 200 body new
+        update idletasks
         set ev {}
         tacky listen chatlist <Item> \
             {apply {{e} { set ::ev $e }}}
-        c bus publish chats:<Updated> -jid alice@example.com
+        chatlist_chat_insert alice@example.com timestamp 200 body new
+        update idletasks
         dict get [dict get [dict get $ev -item] last_message] content body
     } -result {new}
 

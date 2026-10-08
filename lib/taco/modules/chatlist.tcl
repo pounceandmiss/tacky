@@ -19,9 +19,9 @@
 # its newest message as `last_message` (a `history` dict), and `last_activity`
 # is that message's timestamp. Rendering a preview from it is the frontend's job.
 #
-# The module is the sole funnel: it consumes roster/bookmarks/chats/room-state,
-# read-watermark and tail-message signals and normalizes them into three
-# protocol-agnostic events over the flat collection:
+# The module is the sole funnel: it consumes roster/bookmarks/room-state,
+# new-message, read-watermark and tail-message signals and normalizes them
+# into three protocol-agnostic events over the flat collection:
 #   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
 #   chatlist <Remove> -jid $jid                delete
 #   chatlist <Changed>                         reset (refetch via `get`)
@@ -31,23 +31,52 @@ snit::type taco_chatlist {
     option -client -readonly yes
 
     variable client
+    variable db
+
+    # chat_jid -> newest message timestamp, so backfill emits nothing
+    variable MaxTimestamps {}
+    # chat_jid -> 1, flushed on idle: one <Item> per chat per batch
+    variable PendingTails {}
+    variable TailToken ""
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
+        set db [$client cget -db]
 
         $client bus subscribe $self roster:<Changed> [mymethod OnRosterChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnBookmarkChanged]
         $client bus subscribe $self bookmarks:<RoomState> [mymethod OnRoomState]
-        $client bus subscribe $self chats:<Updated> [mymethod OnChatUpdated]
         $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
-        # chats:<Updated> covers a new tail; these cover changes to the
+        # The trigger below covers a new tail; these cover changes to the
         # existing one.
         $client bus subscribe $self message:<Edited> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Retracted> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Status> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Confirmed> [mymethod OnTailConfirmed]
         $client bus subscribe $self blocking:<Changed> [mymethod OnBlockingChanged]
+
+        # A hole sits just past the newest message; it is not one.
+        $db eval {
+            SELECT chat_jid, MAX(timestamp) AS max_ts
+            FROM chat_message
+            WHERE kind='message'
+            GROUP BY chat_jid
+        } row {
+            dict set MaxTimestamps $row(chat_jid) $row(max_ts)
+        }
+
+        # Older databases carry this trigger under the chats module's name.
+        $db function _chatlist_on_message [mymethod OnMessage]
+        $db eval {
+            DROP TRIGGER IF EXISTS trg_chats_on_message;
+            CREATE TRIGGER IF NOT EXISTS trg_chatlist_on_message
+            AFTER INSERT ON chat_message
+            WHEN NEW.kind='message'
+            BEGIN
+                SELECT _chatlist_on_message(NEW.chat_jid, NEW.timestamp);
+            END;
+        }
     }
 
     # The last blocking:<Changed> list, to diff the next one against.
@@ -55,6 +84,7 @@ snit::type taco_chatlist {
 
     destructor {
         catch {$client bus unsubscribe $self}
+        catch {after cancel $TailToken}
     }
 
     # -- the whole list -------------------------------------------------
@@ -198,11 +228,30 @@ snit::type taco_chatlist {
         $self EmitEntry $opts(-jid)?join
     }
 
-    method OnChatUpdated {args} {
-        array set opts {-jid ""}
-        array set opts $args
-        if {$opts(-jid) eq ""} return
-        $self EmitEntry $opts(-jid)
+    # After a chat's history is dropped, any later message counts as new.
+    method forget {chatJid} {
+        dict unset MaxTimestamps $chatJid
+    }
+
+    method OnMessage {chatJid timestamp} {
+        if {[dict exists $MaxTimestamps $chatJid] &&
+            $timestamp <= [dict get $MaxTimestamps $chatJid]} {
+            return ""
+        }
+        dict set MaxTimestamps $chatJid $timestamp
+        dict set PendingTails $chatJid 1
+        after cancel $TailToken
+        set TailToken [after idle [mymethod FlushTails]]
+        return ""
+    }
+
+    method FlushTails {} {
+        set TailToken ""
+        set pending $PendingTails
+        set PendingTails [dict create]
+        dict for {chatJid _} $pending {
+            $self EmitEntry $chatJid
+        }
     }
 
     method OnOwnRead {args} {

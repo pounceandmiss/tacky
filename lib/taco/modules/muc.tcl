@@ -806,7 +806,7 @@ snit::type taco_muc {
         {*}$store setInviteDeclined $chatJid $ts 1
         if {$relayed && [{*}$store onlyDeclinedInvites $chatJid]} {
             {*}$store forgetChat $chatJid
-            $client chats forget $chatJid
+            $client chatlist forget $chatJid
         } else {
             $client message EmitMessagePatch $chatJid $ts
         }
