@@ -342,6 +342,9 @@ namespace eval ::test::groupcall_int {
             variable ROMEO
             joinCall $ROMEO
             waitUntil {[has $ROMEO <Joined>]}
+            # <Joined> goes out as our contents are sent; `count` reads them
+            # back from the room's echo, which lands on its own time.
+            waitUntil {[dict get [status $ROMEO] count] == 1}
             list [dict get [status $ROMEO] joined] [dict get [status $ROMEO] count] \
                 [peers $ROMEO] [llength [tacky calls list -acc $ROMEO]]
         } -result {1 1 {} 0}
