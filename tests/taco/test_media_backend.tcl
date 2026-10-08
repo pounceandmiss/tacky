@@ -9,17 +9,32 @@ set media_backend_env [tacky_env -capture-emit 1]
 
 # `list` is not compared exactly: a test file loaded earlier in the same
 # interpreter may have registered a mock backend alongside the real one.
-# This build has no webrtc library, so auto lands on rtc.
-test media-backend-default-is-rtc {auto falls through to the backend always linked in} -constraints !wasm \
+#
+# A library stays loaded: once any file in this process opened webrtc from
+# libtacky_webrtc.so (the group-call video tests do), it is registered for
+# good and `auto` lands on it, as it would in a build that ships the library.
+# The tests about a build without it are constrained on that.
+testConstraint webrtcRegistered [expr {"webrtc" in [::tacky::media available]}]
+testConstraint webrtcUnregistered [expr {"webrtc" ni [::tacky::media available]}]
+
+test media-backend-default-is-rtc {auto falls through to the backend always linked in} \
+    -constraints {!wasm webrtcUnregistered} \
     {*}$media_backend_env -body {
         list [tacky media backend] [expr {"rtc" in [tacky media list]}]
     } -result {rtc 1}
+
+test media-backend-default-is-webrtc-once-registered \
+    {auto reaches webrtc first when its library is already in the process} \
+    -constraints {!wasm webrtcRegistered} \
+    {*}$media_backend_env -body {
+        list [tacky media backend] [expr {"rtc" in [tacky media list]}]
+    } -result {webrtc 1}
 
 # Auto reaches for webrtc first, and most builds do not carry it. That is the
 # ordinary case, so it stays in the log rather than becoming an event every
 # frontend has to learn to ignore.
 test media-backend-auto-fallback-is-quiet {reaching for webrtc and missing says nothing} \
-    -constraints !wasm \
+    -constraints {!wasm webrtcUnregistered} \
     {*}[tacky_env -capture-emit 1 -extra-setup {
         taco_type create ::taco_mb -transient 1
     } -extra-cleanup {::taco_mb destroy}] -body {
@@ -51,7 +66,8 @@ test media-backend-unknown-falls-back {an unknown backend falls back to rtc} -co
 } -result rtc
 
 test media-backend-missing-webrtc-falls-back \
-    {webrtc with no library falls back to rtc rather than failing to start} -constraints !wasm -body {
+    {webrtc with no library falls back to rtc rather than failing to start} \
+    -constraints {!wasm webrtcUnregistered} -body {
     taco_type create ::taco_mb -transient 1 \
         -media-backend webrtc -webrtc-lib /nonexistent/libtacky_webrtc.so
     set got [::taco_mb media backend]

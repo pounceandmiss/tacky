@@ -93,7 +93,7 @@ proc tacky_test {name desc args} {
                 error "tacky_test: use -setup/-cleanup, not $opt"
             }
             -mock - -stub-emit - -capture-emit - -account - -taco-client -
-            -bound-jid - -avatarcache {
+            -taco-args - -bound-jid - -avatarcache {
                 lappend env_opts $opt [lindex $args [incr i]]
             }
             default { lappend rest $opt }
@@ -139,6 +139,10 @@ proc tacky_test {name desc args} {
 #   -capture-emit 0|1             Append emits to ::_emitted (list of {module event args}).
 #   -account JID                  `tacky account add -acc JID`; sets ::_client.
 #   -taco-client {opts...}        `taco_client c {*}$opts`.
+#   -taco-args {opts...}          Appended to the front end's create, after
+#                                 ::tacky_test_taco_args. A file about one media
+#                                 backend names it here: `auto` lands on whatever
+#                                 an earlier file left registered in the process.
 #   -bound-jid JID                After client creation, configure bound-jid + fire_ready.
 #   -avatarcache CLASS            `CLASS create avatarcache`; teardown destroys it.
 #   -extra-setup SCRIPT           Appended to setup body (no automatic undo).
@@ -153,6 +157,7 @@ proc tacky_env {args} {
         -capture-emit  0
         -account       ""
         -taco-client   ""
+        -taco-args     ""
         -bound-jid     ""
         -avatarcache   ""
         -extra-setup   ""
@@ -201,7 +206,8 @@ proc tacky_env {args} {
     # and downstream snit code that hard-references "tacky" fails.
     lassign [dict get [tacky_modes] $opts(-mode)] modeType
     lappend layers [list \
-        [list $modeType create ::tacky {*}$::tacky_test_taco_args] \
+        [list $modeType create ::tacky {*}$::tacky_test_taco_args \
+            {*}$opts(-taco-args)] \
         {tacky destroy}]
 
     if {$opts(-stub-emit)} {

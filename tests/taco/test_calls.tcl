@@ -4,7 +4,7 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 package require tacky::callshelpers
 
-set calls_env [tacky_env -mock conn -capture-emit 1 -taco-client {
+set calls_env [tacky_env -mock conn -capture-emit 1 -taco-args {-media-backend rtc} -taco-client {
     -domain test.example.com -port 5222
     -username user -password pass -resource res
 } -bound-jid user@test.example.com/res]
