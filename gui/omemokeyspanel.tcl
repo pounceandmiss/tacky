@@ -11,6 +11,9 @@
 # omemo <TrustList> event; a plain trust flip refreshes in place (no rebuild).
 #
 # Embedders supply their own section label; the panel is just the list.
+# -scroll 0 drops the panel's own scroll area, for an embedder that stacks
+# several panels in one (omemoroomkeys, one per room member); that embedder
+# then forwards wheel events itself.
 #
 # Usage:
 #   omemokeyspanel $f.keys -acc romeo@montague.lit -jid juliet@capulet.lit
@@ -24,10 +27,11 @@ snit::widget omemokeyspanel {
     option -jid -readonly yes
     option -height -default 200 -readonly yes
     option -highlight -default "" -readonly yes
+    option -scroll -default 1 -readonly yes
 
     variable isOwn 0
     variable content
-    variable scrollCanvas
+    variable scrollCanvas ""
     variable OwnFp ""
     variable OwnDev ""
     variable Rows {}
@@ -40,12 +44,17 @@ snit::widget omemokeyspanel {
         $self configurelist $args
         set isOwn [expr {$options(-jid) eq [jid bare $options(-acc)]}]
 
-        set scroll [scrollable $win.scroll]
-        set scrollCanvas $scroll.canvas
-        $scrollCanvas configure -height $options(-height)
-        set content [ttk::frame $scroll.content -padding {8 4}]
-        $scroll setwidget $content
-        pack $scroll -expand yes -fill both
+        if {$options(-scroll)} {
+            set scroll [scrollable $win.scroll]
+            set scrollCanvas $scroll.canvas
+            $scrollCanvas configure -height $options(-height)
+            set content [ttk::frame $scroll.content -padding {8 4}]
+            $scroll setwidget $content
+            pack $scroll -expand yes -fill both
+        } else {
+            set content [ttk::frame $win.content -padding {8 4}]
+            pack $content -expand yes -fill both
+        }
 
         ::tacky observe -tag $win omemo <TrustList> -acc $options(-acc) \
             -jid $options(-jid) [mymethod OnTrustList]
@@ -144,7 +153,7 @@ snit::widget omemokeyspanel {
         }
 
         # Children swallow wheel events; forward them to the scroll canvas.
-        $self ForwardWheel $content
+        if {$scrollCanvas ne ""} { $self ForwardWheel $content }
     }
 
     method ForwardWheel {w} {

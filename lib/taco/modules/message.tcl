@@ -895,10 +895,12 @@ snit::type taco_message {
     }
 
     # Intended encryption for a fresh outbound message to $chatJid:
-    # 'omemo' when it's a 1:1 chat with OMEMO enabled for that peer,
-    # else '' (plaintext). The omemo module owns the per-chat toggle.
+    # 'omemo' when OMEMO is enabled for that 1:1 chat or room, else ''
+    # (plaintext). The omemo module owns the per-chat toggle; for a room it
+    # stays on even if the room stops qualifying, and encrypting then fails
+    # the send rather than sending in the clear.
     method OutgoingEncMode {chatJid msgType} {
-        if {$msgType eq "chat" && [$client omemo IsEnabled $chatJid]} {
+        if {$msgType in {chat groupchat} && [$client omemo IsEnabled $chatJid]} {
             return omemo
         }
         return ""

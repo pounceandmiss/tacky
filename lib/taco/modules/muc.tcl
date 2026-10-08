@@ -33,7 +33,7 @@
 # tacky muc getSubject -acc $jid -jid $room
 # tacky muc occupants -acc $jid -jid $room
 # tacky muc occupant -acc $jid -jid $room -nick $nick
-#   ;# occupant: nick jid jids role affiliation show status caps, plus
+#   ;# occupant: nick jid jids role affiliation show status occupant_id caps, plus
 #   ;# fields from addOccupantField (groupcall's call)
 # tacky muc myNick -acc $jid -jid $room
 # tacky muc myRole -acc $jid -jid $room
@@ -42,6 +42,9 @@
 # tacky muc isJoined -acc $jid -jid $room
 # tacky muc isHidden -acc $jid -jid $room   ;# remembered after leaving, until rejoined
 # tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
+# tacky muc roomInfo -acc $jid -jid $room    ;# {known live members_only non_anonymous occupant_id}
+# tacky muc roomPrivacy -acc $jid -jid $room ;# why its readers aren't known, {} when they are
+# tacky muc members -acc $jid -jid $room     ;# {list $status members {$realJid $affiliation ...}}
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
 # tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1? ?-destroyed 1?
@@ -63,15 +66,33 @@
 # tacky listen muc <Destroyed> $cmd          ;# -jid $room -altRoom $jidOrEmpty -reason $text
 # tacky listen muc <VoiceRequest> $cmd       ;# -jid $room -from $jid -nick $nick -form $formDict
 # tacky listen muc <AffiliationChanged> $cmd ;# -jid $room -target $bareJid -affiliation $new
+# tacky listen muc <RoomInfo> $cmd           ;# -jid $room -info $roomInfo (disco#info answered)
+# tacky listen muc <MembersChanged> $cmd     ;# -jid $room (members or its list status changed)
 
 snit::type taco_muc {
     variable client
 
     # roomJid -> dict: nick, myOccupantId, subject, joined, leaving,
-    # occupants (dict nick->occupantDict), hidden, created.
+    # occupants (dict nick->occupantDict), hidden, created, plus what the
+    # room is and who reads it:
+    #   features      its disco#info features, once `fetched` is 1
+    #   members       real bare JID -> owner|admin|member: everyone with an
+    #                 affiliation, in the room or not (see "Membership")
+    #   memberList    none|pending|complete|partial|presence: how far the
+    #                 affiliation lists got (partial: some refused;
+    #                 presence: all refused, so members are those seen)
+    #   memberSerial  the member-list request this join is waiting on
     # Each occupantDict: {nick $n jid $fullJid jids $allItemJids role $r
-    # affiliation $a show $s status $st}, plus one key per addOccupantField.
+    # affiliation $a show $s status $st occupant_id $id}, plus one key per
+    # addOccupantField. occupant_id is only the room's word where the room
+    # vouches for occupant-ids (TrustsOccupantId).
+    # All of it goes with the room on leave: the member list is asked again
+    # at every join, so nothing reads a stale one.
     variable Rooms -array {}
+
+    # Member-list requests in flight: serial -> {left N refused N items L}.
+    variable MembersPending -array {}
+    variable MembersSerial 0
 
     # roomJid -> hidden flag of a room no longer tracked (isHidden); cleared
     # on rejoin.
@@ -164,7 +185,9 @@ snit::type taco_muc {
         set Rooms($opts(-jid)) [dict create \
             nick $opts(-nick) myOccupantId "" subject "" joined 0 \
             leaving 0 occupants [dict create] \
-            hidden [expr {$opts(-hidden) ? 1 : 0}] created 0]
+            hidden [expr {$opts(-hidden) ? 1 : 0}] created 0 \
+            features {} fetched 0 \
+            members [dict create] memberList none memberSerial 0]
 
         if {$opts(-command) ne ""} {
             set JoinCallbacks($opts(-jid)) $opts(-command)
@@ -277,6 +300,279 @@ snit::type taco_muc {
         set occs [dict get $Rooms($roomJid) occupants]
         if {![dict exists $occs $nick]} { return "" }
         return [dict get $occs $nick jid]
+    }
+
+    # =====================================================================
+    # What the room is, and who reads it
+    # =====================================================================
+    #
+    # A room's disco#info features say whether its readers are known: a
+    # members-only room admits only those with an affiliation, and a
+    # non-anonymous one tells every occupant everyone's real JID. Both
+    # together are what OMEMO needs (XEP-0384 §5.7). The features are kept
+    # per account too (setting muc.features.<room>), so a room is known for
+    # what it is before this connection has asked it.
+    #
+    # Membership: everyone the room gives an owner, admin or member
+    # affiliation, by real bare JID. The three affiliation lists are asked
+    # together once the room is known to be private; until all three have
+    # answered the list is `pending`. A room may refuse a member the lists;
+    # then the members are those its presences show (`presence`). From then
+    # on what the room says keeps it current: an occupant's presence with
+    # its real JID and affiliation, an unavailable one taking the
+    # affiliation away (321, a ban), and the room's own affiliation notices
+    # for someone not in it. Leaving the room is not losing the affiliation.
+
+    # The features that matter to reading a room, as remembered.
+    typevariable RememberedFeatures {muc_membersonly muc_nonanonymous urn:xmpp:occupant-id:0}
+
+    method NoteRoomFeatures {roomJid features} {
+        if {![info exists Rooms($roomJid)]} return
+        if {[dict get $Rooms($roomJid) hidden]} return
+        dict set Rooms($roomJid) features $features
+        dict set Rooms($roomJid) fetched 1
+        set kept {}
+        foreach f $RememberedFeatures {
+            if {$f in $features} { lappend kept $f }
+        }
+        # "-" is a room seen with none of them, unlike a room never seen.
+        set value [expr {[llength $kept] ? $kept : "-"}]
+        catch {
+            if {[$client setting get -key muc.features.$roomJid] ne $value} {
+                $client setting set -key muc.features.$roomJid -value $value
+            }
+        }
+        # Occupant-ids the presences carried are the room's word now.
+        if {[$self TrustsOccupantId $roomJid 1]} {
+            dict for {nick occ} [dict get $Rooms($roomJid) occupants] {
+                $self LearnFromOccupant $roomJid $occ
+            }
+        }
+        $self Emit $roomJid <RoomInfo> -jid $roomJid \
+            -info [$self RoomInfoOf $roomJid]
+        if {[llength [$self RoomReasons $roomJid]] == 0
+                && [dict get $Rooms($roomJid) memberList] eq "none"} {
+            $self FetchMembers $roomJid
+        }
+    }
+
+    # {known 0|1 live 0|1 members_only 0|1 non_anonymous 0|1
+    #  occupant_id 0|1}: `live` when the room answered this connection,
+    # `known` when it did or a past one did.
+    method RoomInfoOf {roomJid} {
+        set roomJid [jid norm $roomJid]
+        set feats ""
+        set live 0
+        if {[info exists Rooms($roomJid)] && [dict get $Rooms($roomJid) fetched]} {
+            set feats [dict get $Rooms($roomJid) features]
+            set live 1
+        } else {
+            catch {set feats [$client setting get -key muc.features.$roomJid]}
+        }
+        return [dict create \
+            known [expr {$feats ne ""}] live $live \
+            members_only [expr {"muc_membersonly" in $feats}] \
+            non_anonymous [expr {"muc_nonanonymous" in $feats}] \
+            occupant_id [expr {"urn:xmpp:occupant-id:0" in $feats}]]
+    }
+
+    tackymethod roomInfo {args} {
+        $self RoomInfoOf [dict get $args -jid]
+    }
+
+    # Why the room's readers are not known, as a list of words ({} when
+    # they are): unknown (the room has never said what it is),
+    # not_members_only, anonymous.
+    method RoomReasons {roomJid} {
+        set info [$self RoomInfoOf $roomJid]
+        if {![dict get $info known]} { return {unknown} }
+        set out {}
+        if {![dict get $info members_only]} { lappend out not_members_only }
+        if {![dict get $info non_anonymous]} { lappend out anonymous }
+        return $out
+    }
+
+    tackymethod roomPrivacy {args} {
+        $self RoomReasons [dict get $args -jid]
+    }
+
+    # Whether the room stamps occupant-ids (XEP-0421), which it then also
+    # strips from what occupants send: only then is an <occupant-id/> the
+    # room's word rather than the sender's. By what the room said this
+    # connection, or (unless $live) what it said before: an archive page can
+    # come in ahead of the room's disco#info. What is kept for good (the
+    # occupant map) is only learned on this connection's word.
+    method TrustsOccupantId {roomJid {live 0}} {
+        set roomJid [jid norm $roomJid]
+        if {![info exists Rooms($roomJid)]} { return 0 }
+        set info [$self RoomInfoOf $roomJid]
+        if {$live && ![dict get $info live]} { return 0 }
+        dict get $info occupant_id
+    }
+
+    # The owner, admin and member lists, asked together.
+    method FetchMembers {roomJid} {
+        if {![info exists Rooms($roomJid)]} return
+        if {[dict get $Rooms($roomJid) memberList] eq "pending"} return
+        set serial [incr MembersSerial]
+        dict set Rooms($roomJid) memberList pending
+        dict set Rooms($roomJid) memberSerial $serial
+        set MembersPending($serial) [dict create left 3 refused 0 items {}]
+        foreach affil {owner admin member} {
+            $client iq request -type get -to $roomJid \
+                -command [mymethod OnMembersPart $roomJid $serial] \
+                -payload [j query -ns http://jabber.org/protocol/muc#admin {
+                    j item -affiliation $affil
+                }]
+        }
+        $self EmitMembers $roomJid
+    }
+
+    method OnMembersPart {roomJid serial stanza} {
+        if {![info exists MembersPending($serial)]} return
+        set st $MembersPending($serial)
+        dict incr st left -1
+        if {[xsearch $stanza -get @type] eq "error"} {
+            dict incr st refused
+        } else {
+            xsearch $stanza query item -script it {
+                set ij [xsearch $it -get @jid]
+                set ia [xsearch $it -get @affiliation]
+                if {$ij eq "" || ![jid valid $ij] || $ia ni {owner admin member}} continue
+                dict lappend st items [list [jid norm [jid bare $ij]] $ia]
+            }
+        }
+        if {[dict get $st left] > 0} {
+            set MembersPending($serial) $st
+            return
+        }
+        unset MembersPending($serial)
+        # A reply to a join we have since left or redone.
+        if {![info exists Rooms($roomJid)]
+                || [dict get $Rooms($roomJid) memberSerial] != $serial} return
+        foreach item [dict get $st items] {
+            $self SetMember $roomJid {*}$item
+        }
+        set refused [dict get $st refused]
+        dict set Rooms($roomJid) memberList [expr {$refused == 3 ? "presence"
+            : $refused ? "partial" : "complete"}]
+        if {$refused} {
+            jlog inform "$roomJid: $refused of the 3 affiliation lists refused;\
+                members are also those its presences show"
+        }
+        $self EmitMembers $roomJid
+    }
+
+    # Add or drop one member on the room's word. 1 when that changed it.
+    method SetMember {roomJid real affil} {
+        set members [dict get $Rooms($roomJid) members]
+        if {$affil in {owner admin member}} {
+            if {[dict exists $members $real] && [dict get $members $real] eq $affil} {
+                return 0
+            }
+            dict set Rooms($roomJid) members $real $affil
+            return 1
+        }
+        if {![dict exists $members $real]} { return 0 }
+        dict unset members $real
+        dict set Rooms($roomJid) members $members
+        return 1
+    }
+
+    # An occupant as the room describes it: its real JID when the room
+    # says, with its affiliation, and its occupant-id.
+    method NoteOccupant {roomJid occ} {
+        if {[dict get $Rooms($roomJid) hidden]} return
+        set real [$self OccupantRealJid $occ]
+        if {$real eq ""} return
+        $self LearnFromOccupant $roomJid $occ
+        set affil [dict get $occ affiliation]
+        if {$affil eq ""} return
+        if {[$self SetMember $roomJid $real $affil]} {
+            $self EmitMembers $roomJid
+        }
+    }
+
+    method OccupantRealJid {occ} {
+        set j [dict get $occ jid]
+        if {$j eq "" || ![jid valid $j]} { return "" }
+        return [jid norm [jid bare $j]]
+    }
+
+    method LearnFromOccupant {roomJid occ} {
+        set occId [dict get $occ occupant_id]
+        if {$occId eq "" || ![$self TrustsOccupantId $roomJid 1]} return
+        set real [$self OccupantRealJid $occ]
+        if {$real ne ""} { $self LearnOccupant $roomJid $occId $real }
+    }
+
+    # The room's notice that someone's affiliation changed (XEP-0045
+    # 9.3-9.8, status 101 when they are not in the room).
+    method OnAffiliationNotice {roomJid mucX} {
+        set itemJid [xsearch $mucX item -get @jid]
+        set itemAffil [xsearch $mucX item -get @affiliation]
+        if {$itemJid eq "" || $itemAffil eq ""} return
+        if {[info exists Rooms($roomJid)] && ![dict get $Rooms($roomJid) hidden]
+                && [jid valid $itemJid]
+                && [$self SetMember $roomJid [jid norm [jid bare $itemJid]] $itemAffil]} {
+            $self EmitMembers $roomJid
+        }
+        $self Emit $roomJid <AffiliationChanged> \
+            -jid $roomJid -target $itemJid -affiliation $itemAffil
+    }
+
+    method EmitMembers {roomJid} {
+        $self Emit $roomJid <MembersChanged> -jid $roomJid
+    }
+
+    # members -jid $room -> {list none|pending|complete|partial|presence
+    #                         members {jid affiliation ...}}
+    tackymethod members {args} {
+        set roomJid [jid norm [dict get $args -jid]]
+        if {![info exists Rooms($roomJid)]} {
+            return [dict create list none members {}]
+        }
+        return [dict create list [dict get $Rooms($roomJid) memberList] \
+            members [dict get $Rooms($roomJid) members]]
+    }
+
+    # Joined rooms $realJid is a member of.
+    method roomsOfMember {realJid} {
+        set out {}
+        foreach roomJid [array names Rooms] {
+            if {[dict exists [dict get $Rooms($roomJid) members] $realJid]} {
+                lappend out $roomJid
+            }
+        }
+        return [lsort $out]
+    }
+
+    # An occupant-id the room vouched for, and the real JID its presence
+    # carried. Kept: an archived message is attributed by it. The first JID
+    # stays: XEP-0421 gives each real bare JID its own id, so another JID
+    # under the same id is the room contradicting itself.
+    method LearnOccupant {roomJid occId real} {
+        if {$occId eq "" || [string length $occId] > 128} return
+        set known [$self occupantJid $roomJid $occId]
+        if {$known eq $real} return
+        if {$known ne ""} {
+            jlog warn "$roomJid: occupant-id $occId was $known and is now\
+                said to be $real; keeping $known"
+            return
+        }
+        $client db eval {
+            INSERT OR IGNORE INTO muc_occupant(room_jid, occupant_id, real_jid)
+            VALUES($roomJid, $occId, $real)
+        }
+    }
+
+    # The real bare JID behind an occupant-id of $roomJid, "" when unknown.
+    method occupantJid {roomJid occId} {
+        if {$occId eq ""} { return "" }
+        return [$client db onecolumn {
+            SELECT real_jid FROM muc_occupant
+            WHERE room_jid=$roomJid AND occupant_id=$occId
+        }]
     }
 
     # =====================================================================
@@ -444,7 +740,8 @@ snit::type taco_muc {
         }
 
         $client iq request -type set -to $opts(-jid) \
-            -command [mymethod OnActionResult $opts(-command) $opts(-onerror)] \
+            -command [mymethod OnAffiliationResult [jid norm $opts(-jid)] \
+                $opts(-target) $opts(-affiliation) $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#admin {
                 j item {*}$itemAttrs {
                     if {$opts(-reason) ne ""} {
@@ -951,6 +1248,7 @@ snit::type taco_muc {
         # Nick may have been rewritten by service (status 210)
         dict set Rooms($roomJid) nick $nick
         dict set Rooms($roomJid) occupants $nick $occupant
+        $self NoteOccupant $roomJid $occupant
 
         # Our own occupant-id is stable across nick changes, so capture it
         # once; a stray self-presence without one must not clobber it.
@@ -977,12 +1275,14 @@ snit::type taco_muc {
                     -created [dict get $Rooms($roomJid) created]]
             }
 
-            $self Emit $roomJid <Joined> -jid $roomJid -nick $nick
-
-            # The room's avatar, for its chat list entry.
+            # What the room is (its features, for OMEMO) and its avatar,
+            # asked before <Joined> so the answer comes ahead of the
+            # archive page that <Joined> starts.
             if {![dict get $Rooms($roomJid) hidden]} {
                 $self RoomInfo $roomJid
             }
+
+            $self Emit $roomJid <Joined> -jid $roomJid -nick $nick
 
             # Status 201 = room was just created, needs configuration
             if {201 in $codes} {
@@ -1015,6 +1315,7 @@ snit::type taco_muc {
         }
         set occupant [$self ParseItem $mucX $nick $stanza]
         dict set Rooms($roomJid) occupants $nick $occupant
+        $self NoteOccupant $roomJid $occupant
         if {![dict get $Rooms($roomJid) hidden]} {
             $client avatar OnVCardPresence [xsearch $stanza -get @from] $stanza
         }
@@ -1089,6 +1390,10 @@ snit::type taco_muc {
                 [expr {![dict get $Rooms($roomJid) leaving]}] $codes
             return
         }
+
+        # Gone is not removed: a member out of the room still reads it. Only
+        # an affiliation taken away (321, a ban) makes them no member.
+        $self NoteOccupant $roomJid $occupant
 
         $self Emit $roomJid <Unavailable> \
             -jid $roomJid -nick $nick -reason $reason -codes $codes -occupant $occupant
@@ -1182,12 +1487,22 @@ snit::type taco_muc {
 
             # Config change notifications come as groupchat with muc#user status codes
             if {$mucX ne ""} {
+                # The room's own notice of an affiliation change (XEP-0045
+                # 9.3-9.8), for someone in the room or not.
+                if {$nick eq ""} {
+                    $self OnAffiliationNotice $roomJid $mucX
+                }
                 set codes [$self ParseStatusCodes $mucX]
                 if {[llength $codes] > 0} {
                     $self Emit $roomJid <ConfigChanged> -jid $roomJid -codes $codes
                     # 104: the room configuration changed, possibly its
-                    # avatar too; re-read disco#info.
-                    if {104 in $codes && [info exists Rooms($roomJid)]
+                    # avatar too; 170-174: logging, anonymity. Re-read
+                    # disco#info, which says whether OMEMO can be used.
+                    set reread 0
+                    foreach code {104 170 171 172 173 174} {
+                        if {$code in $codes} { set reread 1 }
+                    }
+                    if {$reread && [info exists Rooms($roomJid)]
                             && ![dict get $Rooms($roomJid) hidden]} {
                         $self RoomInfo $roomJid
                     }
@@ -1216,10 +1531,15 @@ snit::type taco_muc {
                 # From the room itself, never one of its occupants.
                 if {![jid valid $from] || [jid resource $from] ne ""} { return 1 }
                 set roomJid [jid norm $from]
-                set itemAffil [xsearch $mucX item -get @affiliation]
-                set itemJid [xsearch $mucX item -get @jid]
-                $self Emit $roomJid <AffiliationChanged> \
-                    -jid $roomJid -target $itemJid -affiliation $itemAffil
+                $self OnAffiliationNotice $roomJid $mucX
+                return 1
+            }
+            # The same notice without 101, from a room we are in.
+            if {[jid valid $from] && [jid resource $from] eq ""
+                    && [info exists Rooms([jid norm $from])]
+                    && [xsearch $mucX item -get @jid] ne ""
+                    && [xsearch $mucX item -get @affiliation] ne ""} {
+                $self OnAffiliationNotice [jid norm $from] $mucX
                 return 1
             }
         }
@@ -1246,6 +1566,18 @@ snit::type taco_muc {
             set isOwn [expr {$myOcc ne "" && $occ eq $myOcc}]
         } else {
             set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+        }
+        # OMEMO (XEP-0384 §5.7): read as its sender's, whom the room names.
+        # The plaintext stanza keeps every other child, so the echo of our
+        # own send still reconciles by its origin-id.
+        if {[llength [xsearch $stanza encrypted \
+                -ns eu.siacs.conversations.axolotl]]} {
+            if {[catch {$client omemo decryptRoomMessage $roomJid $stanza} plain]} {
+                jlog warn "$roomJid: OMEMO message not read: $plain"
+                return
+            }
+            if {$plain eq ""} return
+            set stanza $plain
         }
         $client message ingestLive ${roomJid}?join $stanza $isOwn
     }
@@ -1302,6 +1634,20 @@ snit::type taco_muc {
         if {$command ne ""} {
             {*}$command $stanza
         }
+    }
+
+    # The room took an affiliation change of ours: the member list follows
+    # now, without waiting for the room's notice, which not every service
+    # sends for someone not in the room (MongooseIM does not).
+    method OnAffiliationResult {roomJid target affil command onerror stanza} {
+        if {[xsearch $stanza -get @type] ne "error"
+                && [info exists Rooms($roomJid)]
+                && ![dict get $Rooms($roomJid) hidden]
+                && [jid valid $target]
+                && [$self SetMember $roomJid [jid norm [jid bare $target]] $affil]} {
+            $self EmitMembers $roomJid
+        }
+        $self OnActionResult $command $onerror $stanza
     }
 
     # Result handler for moderation actions (kick/ban/role/affiliation). On an
@@ -1381,6 +1727,11 @@ snit::type taco_muc {
             $client avatar ensureVCard $roomJid
             return
         }
+        set features {}
+        xsearch $stanza query feature -script fn {
+            lappend features [xsearch $fn -get @var]
+        }
+        $self NoteRoomFeatures $roomJid $features
         foreach formNode [xsearch $stanza query x -ns jabber:x:data] {
             set form [::tacky::forms::parse $formNode]
             foreach field [dict get $form fields] {
@@ -1460,7 +1811,8 @@ snit::type taco_muc {
             role $role \
             affiliation $affiliation \
             show $show \
-            status $statusText]
+            status $statusText \
+            occupant_id [xsearch $stanza occupant-id -ns urn:xmpp:occupant-id:0 -get @id]]
         dict for {name cmd} $OccupantFields {
             dict set occ $name [{*}$cmd $stanza]
         }

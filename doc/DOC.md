@@ -818,6 +818,26 @@ interrupting the user over is [notify](#notify)'s job.
 
     muc acceptInvite  {chat: string, timestamp: int}
     muc declineInvite {chat: string, timestamp: int, reason?: string}
+    muc roomInfo      {jid: string} -> muc_room_info
+    muc roomPrivacy   {jid: string} -> [string]   why its readers are not known; [] when they are
+    muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
+
+    muc_room_info = {known: bool, live: bool, members_only: bool,
+                     non_anonymous: bool, occupant_id: bool}
+
+Events:
+
+    muc <RoomInfo>       {jid: string, info: muc_room_info}
+    muc <MembersChanged> {jid: string}
+
+`roomInfo` is what the room's disco#info said: on this connection (`live`),
+or the last time it was asked (`known`). `members` is everyone with an
+owner, admin or member affiliation, by real JID, whether in the room or not:
+asked of the room at each join of a private room and kept current from
+then on. `list` says how far that got: `pending` while asking, `complete`,
+`partial` when the room refused some of its lists, `presence` when it refused
+all of them (the members are then those its presences show), `none` for a
+room not private or not joined.
 
 Group chat invitations arrive as messages with `content.type` `"invite"`
 (see [message](#message)). These two answer one, named by that message's
@@ -849,9 +869,10 @@ that chat is dropped with a `chatlist <Remove>`.
 A group call creates an auxiliary, hidden room under the hood; see [Group
 calls](#group-calls).
 
-An occupant is `{nick, jid, jids, role, affiliation, show, status, caps,
-call}`. `jid` is the real JID if the room shows it; `jids` lists every JID
-sharing the nick; `call` is their part in a [group call](#groupcall), `{}`
+An occupant is `{nick, jid, jids, role, affiliation, show, status,
+occupant_id, caps, call}`. `jid` is the real JID if the room shows it; `jids`
+lists every JID sharing the nick; `occupant_id` is its XEP-0421 id, "" when
+the room gives none; `call` is their part in a [group call](#groupcall), `{}`
 if none. `<NickChanged>` carries the occupant under its new nick. A
 `<Presence>` with `replay: true` only refreshes `caps` after your role
 changed.
@@ -928,10 +949,14 @@ room's.
     omemo trust {jid: string, device: int, state: string}      validates the transition
     omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
     omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
-    omemo isEnabled {jid: string}                -> bool   on for a chat never set
+    omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room
     omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles (replies on completion)
+    omemo roomStatus {jid: string}    -> omemo_room_status   jid is a room chat (room?join)
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
+    omemo_room_status = {jid: string, eligible: bool, reasons: [string],
+                         enabled: bool, member_list: string, members: [string],
+                         unreachable: [{jid: string, reason: string}]}
 
 `trust` moves freely between `undecided`, `trusted`, and `untrusted`. Only
 the system can move a device to `compromised`, and nothing moves it back. A
@@ -940,6 +965,12 @@ that doesn't exist errors with `OMEMO TRUST_NO_DEVICE`. `device` is an
 opaque row handle from `trustList` - don't show it to the user. See
 [OMEMO](#omemo-1).
 
+`trustList`, `isEnabled`, `setEnabled` and `prepareChat` take a room chat
+(`room?join`) too; see [Group chats](#group-chats). For a room, each
+`trustList` row also has `jid`, the member whose device it is, and
+`setEnabled {value: true}` on a room that doesn't qualify errors with
+`OMEMO ROOM_NOT_ELIGIBLE`.
+
 Events:
 
     omemo <TrustList>          {jid: string, trustList: [omemo_trust]}   pullable
@@ -947,7 +978,9 @@ Events:
     omemo <Enabled>            {jid: string, value: bool}                pullable
     omemo <TrustChanged>       {jid: string, device: int, state: string}
     omemo <FingerprintChanged> {jid: string, device: int, fingerprint: string}
-    omemo <DecryptFailed>      {jid: string, device: int, reason: string}
+    omemo <DecryptFailed>      {jid: string, device: int, reason: string, room?: string}
+    omemo <RoomStatus>         {jid: string, status: omemo_room_status}  pullable
+    omemo <MembersUnreachable> {jid: string, members: [{jid: string, reason: string}]}
 
 ## avatar
 
@@ -1771,7 +1804,8 @@ real fetch.
 
 ## OMEMO
 
-OMEMO 0.3 (XEP-0384) for 1:1 chats. Three concepts:
+OMEMO 0.3 (XEP-0384) for 1:1 chats, and for group chats that allow it (see
+[Group chats](#group-chats)). Three concepts:
 
 **Trust** - each device has one of four states: `undecided` (where new
 devices start), `trusted` and `untrusted` (set by the user, and freely
@@ -1797,6 +1831,39 @@ keeps a lock it no longer has.
 **Message origin** - a decrypted row carries `sender_fp`, the fingerprint of
 the peer device that sent it. Join it against `trustList` for that device's id
 and trust state.
+
+### Group chats
+
+A room can use OMEMO when it is members-only and non-anonymous: only then
+does the room tell everyone its members' real JIDs, which is what the keys
+are made for. `roomStatus` says whether a room qualifies (`eligible`, and
+`reasons` when not: `unknown`, `not_members_only`, `anonymous`), whether it
+is on, and who a message to it is keyed for.
+
+- **Off by default.** A room is encrypted only after `setEnabled` turns it
+  on, which a room that doesn't qualify refuses. A room that stops
+  qualifying while on stays on: its sends fail (`fail_reason: "encrypt"`)
+  rather than going out in the clear.
+- **Every member or nobody.** A message is keyed for every device of every
+  member - everyone the room gives an owner, admin or member affiliation,
+  in the room or not - and for your own other devices. A member none of
+  whose devices can be used (no OMEMO, every device untrusted) fails the
+  send, and `<MembersUnreachable>` names them with a `reason`
+  (`no_devices`, `no_usable_device`); the last such list stays in
+  `roomStatus` as `unreachable` until a send goes through. Show who, and
+  offer to review their keys or turn encryption off. A member whose keys
+  are still being fetched holds the send until they arrive.
+- **Who wrote it.** A room message is decrypted as the member the room
+  says sent it: by their presence, or in the archive by their occupant-id,
+  which tacky keeps so history from someone who has left still opens. A
+  message the room gives no sender for, and that none of the sessions
+  tacky holds opens, is stored as a placeholder and told as
+  `<DecryptFailed>` with `room`.
+- **Keys.** `trustList` with the room lists every member's devices, each
+  row naming its member in `jid`; `<TrustList>` for the room follows them.
+  Blind trust works as in 1:1 chats.
+
+A room's private messages (`room@service/nick`) are not encrypted.
 
 **UI.** For the encryption switch, read `isEnabled` for the peer before you
 draw it, subscribe to `omemo <Enabled>` to follow it after that, and call

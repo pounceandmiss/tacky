@@ -8,6 +8,12 @@ slixmpp_omemo 1.0.0 only wires the oldmemo backend into its SessionManager
 (see xep_0384.py:482-486), so this bot publishes a devicelist under the
 eu.siacs.conversations.axolotl namespace and never under urn:xmpp:omemo:2.
 
+Group chats: a chat message `MUCJOIN <room> <nick>` (plain or encrypted)
+makes the bot join that room. In the room it decrypts each OMEMO message
+as the occupant the room names (its real JID, from presence: the room must
+be non-anonymous) and answers `echo: <text>` to the room, encrypted for
+every occupant's real JID - what any other client in the room does.
+
 Configuration is read from environment variables so the same image can run
 in different harnesses:
 
@@ -22,6 +28,7 @@ import os
 import re
 import sys
 import traceback
+from copy import copy
 from typing import Any, Dict, FrozenSet, Literal, Optional, Union
 
 from omemo.storage import Just, Maybe, Nothing, Storage
@@ -126,6 +133,9 @@ class OmemoEchoBot(ClientXMPP):
         mto = stanza["from"]
         mtype = stanza["type"]
         log.info("RX message from=%s type=%s", mto, mtype)
+        if mtype == "groupchat":
+            await self._on_groupchat(stanza)
+            return
         if mtype not in {"chat", "normal"}:
             log.info("  skip: type not in chat/normal")
             return
@@ -133,6 +143,7 @@ class OmemoEchoBot(ClientXMPP):
         namespace = xep_0384.is_encrypted(stanza)
         log.info("  encrypted ns=%s", namespace)
         if namespace is None:
+            self._maybe_join(stanza["body"])
             return
 
         try:
@@ -144,6 +155,8 @@ class OmemoEchoBot(ClientXMPP):
         # `BURST:N` makes the bot send N unprompted encrypted messages
         # instead of echoing once - a one-sided inbound flood.
         body_text = plaintext if isinstance(plaintext, str) else plaintext["body"]
+        if self._maybe_join(body_text):
+            return
         m = re.match(r"^\s*BURST:(\d+)\s*$", body_text or "")
         if m:
             count = int(m.group(1))
@@ -159,6 +172,70 @@ class OmemoEchoBot(ClientXMPP):
             await self._encrypted_reply(mto, mtype, plaintext)
         except Exception:
             log.error("encrypted reply failed:\n%s", traceback.format_exc())
+
+    def _maybe_join(self, text: str) -> bool:
+        m = re.match(r"^\s*MUCJOIN\s+(\S+)\s+(\S+)\s*$", text or "")
+        if not m:
+            return False
+        room, nick = JID(m.group(1)), m.group(2)
+        log.info("joining %s as %s", room, nick)
+        self["xep_0045"].join_muc(room, nick)
+        return True
+
+    async def _on_groupchat(self, stanza: Message) -> None:
+        xep_0384: XEP_0384 = self["xep_0384"]
+        xep_0045 = self["xep_0045"]
+        room = stanza["from"].bare
+        nick = stanza["from"].resource
+        if not nick or nick == xep_0045.get_our_jid_in_room(room).split("/")[-1]:
+            return
+        if xep_0384.is_encrypted(stanza) is None:
+            return
+        real = xep_0045.get_jid_property(JID(room), nick, "jid")
+        if not real:
+            log.info("  groupchat from %s: the room gave no real JID", nick)
+            return
+        # slixmpp-omemo reads the sender from @from: a room message is its
+        # occupant's, by the real JID the room gave for it.
+        as_sender = copy(stanza)
+        as_sender["from"] = JID(real).bare
+        try:
+            plaintext, _device_info = await xep_0384.decrypt_message(as_sender)
+        except Exception:
+            log.error("groupchat decrypt failed:\n%s", traceback.format_exc())
+            return
+        body = plaintext if isinstance(plaintext, str) else plaintext["body"]
+        log.info("  groupchat from %s (%s): %s", nick, real, body)
+        if body.startswith("echo:"):
+            return
+        recipients = set()
+        for occupant in xep_0045.get_roster(JID(room)):
+            jid = xep_0045.get_jid_property(JID(room), occupant, "jid")
+            if jid and JID(jid).bare != self.boundjid.bare:
+                recipients.add(JID(JID(jid).bare))
+        # A room's occupants are rarely contacts, so no PEP notification
+        # brought their device lists: ask for them, as a client does on join.
+        session_manager = await xep_0384.get_session_manager()
+        for jid in recipients:
+            try:
+                await session_manager.refresh_device_lists(jid.bare)
+            except Exception:
+                log.info("device list of %s:\n%s", jid, traceback.format_exc())
+        reply = self.make_message(mto=JID(room), mtype="groupchat")
+        reply["body"] = f"echo: {body}"
+        try:
+            messages, errors = await xep_0384.encrypt_message(reply, recipients)
+        except Exception:
+            log.error("groupchat encrypt failed:\n%s", traceback.format_exc())
+            return
+        if errors:
+            log.info("non-critical encryption errors: %s", errors)
+        for namespace, message in messages.items():
+            message["eme"]["namespace"] = namespace
+            message["eme"]["name"] = self["xep_0380"].mechanisms[namespace]
+            message["type"] = "groupchat"
+            message["to"] = JID(room)
+            message.send()
 
     async def _encrypted_reply(
         self,
@@ -210,6 +287,7 @@ def main() -> None:
 
     xmpp = OmemoEchoBot(jid, password)
     xmpp.register_plugin("xep_0380")
+    xmpp.register_plugin("xep_0045")
     xmpp.register_plugin("xep_0384", module=sys.modules[__name__])
     xmpp.ca_certs = ca_path
     # slixmpp re-resolves the host with default_port and dials that, not the

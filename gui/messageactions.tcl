@@ -91,9 +91,8 @@ snit::type messageactions {
             }
         }
         $m add command -label "View XML" -command [mymethod viewxml $key]
-        # Which of the peer's devices sent this. OMEMO is 1:1 only.
-        if {!$options(-groupchat) && [dict exists $sd sender_fp]
-            && [dict get $sd sender_fp] ne ""} {
+        # Which device sent this: the peer's, or in a room, a member's.
+        if {[dict exists $sd sender_fp] && [dict get $sd sender_fp] ne ""} {
             $m add command -label "Show OMEMO key" \
                 -command [mymethod showkey [dict get $sd sender_fp]]
         }
@@ -126,8 +125,23 @@ snit::type messageactions {
     }
 
     method showkey {fp} {
-        omemokeyswindow open $options(-acc) \
-            [jid norm [jid bare $options(-chat)]] $fp
+        if {!$options(-groupchat)} {
+            omemokeyswindow open $options(-acc) \
+                [jid norm [jid bare $options(-chat)]] $fp
+            return
+        }
+        # A room message's key is a member's: find whose, by the room's list.
+        set chat ${Room}?join
+        ::tacky omemo trustList -acc $options(-acc) -jid $chat \
+            -command [list apply {{acc chat fp rows} {
+                foreach row $rows {
+                    if {[dict get $row fingerprint] eq $fp} {
+                        omemokeyswindow open $acc [dict get $row jid] $fp
+                        return
+                    }
+                }
+                omemoroomkeys open $acc $chat
+            }} $options(-acc) $chat $fp]
     }
 
     # Chip click: toggle our reaction (add if absent, retract if present).
