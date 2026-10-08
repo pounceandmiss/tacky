@@ -273,6 +273,7 @@ snit::type taco_omemo {
         $client bus subscribe $self muc:<MembersChanged> [mymethod OnMucMembers]
         $client bus subscribe $self muc:<RoomInfo>  [mymethod OnMucRoomInfo]
         $client bus subscribe $self muc:<Left>      [mymethod OnMucLeft]
+        $client muc addPersonField keys [mymethod PersonKeys]
     }
 
     destructor {
@@ -2377,30 +2378,96 @@ snit::type taco_omemo {
         return $out
     }
 
-    # {jid eligible reasons enabled member_list members unreachable}
+    # {jid eligible reasons enabled offered member_list members attention
+    # unreachable}. `offered`: whether there is a switch to show (the room
+    # qualifies, or it is on and so can be turned off). `members`: each
+    # member's MemberKeys, those needing attention first; `attention`:
+    # how many do.
     method RoomStatus {room} {
         set reasons [$self RoomReasons $room]
         set unreachable {}
         if {[dict exists $Rooms $room]} {
             set unreachable [dict get $Rooms $room unreachable]
         }
+        set enabled [$self IsRoomEnabled $room]
+        set members {}
+        set attention 0
+        foreach m [$self RoomMembers $room] {
+            set k [$self MemberKeys $room $m]
+            lappend members $k
+            if {[dict get $k attention]} { incr attention }
+        }
+        set members [lsort -command [list apply {{a b} {
+            set c [expr {[dict get $b attention] - [dict get $a attention]}]
+            if {$c} { return $c }
+            string compare [dict get $a jid] [dict get $b jid]
+        }}] $members]
         return [dict create \
             jid         ${room}?join \
             eligible    [expr {![llength $reasons]}] \
             reasons     $reasons \
-            enabled     [$self IsRoomEnabled $room] \
+            enabled     $enabled \
+            offered     [expr {$enabled || ![llength $reasons]}] \
             member_list [$self RoomMemberList $room] \
-            members     [$self RoomMembers $room] \
+            members     $members \
+            attention   $attention \
             unreachable [$self UnreachableList $unreachable]]
     }
 
-    # <RoomStatus>, when it says something new.
+    # One member's keys as a room message sees them: {jid keys trusted
+    # undecided untrusted compromised attention reason}. The counts are of
+    # devices still in their list. `reason` is why they stopped the last
+    # send (UnreachableList), "" if they did not. `attention` when they
+    # stop or would hold up a send, or a key of theirs changed: they
+    # stopped the last one, none of their devices would be keyed for
+    # (IsDeviceBlocked: none known, all distrusted, or new ones while
+    # blind trust is off), or one is compromised.
+    method MemberKeys {room member} {
+        set k [dict create jid $member keys 0 trusted 0 undecided 0 \
+            untrusted 0 compromised 0]
+        set usable 0
+        set held 0
+        foreach {device trust} [$db eval {
+            SELECT peer_device, trust FROM omemo_trust
+            WHERE account_jid=$accountJid AND peer_jid=$member AND active
+        }] {
+            dict incr k keys
+            dict incr k $trust
+            if {![$self IsDeviceBlocked $member $device]} {
+                incr usable
+            } elseif {$trust eq "undecided"} {
+                incr held
+            }
+        }
+        set reason ""
+        if {[dict exists $Rooms $room unreachable $member]} {
+            set reason [dict get $Rooms $room unreachable $member]
+        }
+        dict set k reason $reason
+        dict set k attention [expr {$reason ne "" || !$usable || $held
+            || [dict get $k compromised]}]
+        return $k
+    }
+
+    # The `keys` of a person in `muc people`: their MemberKeys where the
+    # room can be encrypted and they are a member, {} otherwise.
+    method PersonKeys {room real} {
+        if {$real eq "" || $real eq $accountJid} { return {} }
+        if {[llength [$self RoomReasons $room]]} { return {} }
+        if {[catch {$client muc members -jid $room} m]
+                || ![dict exists [dict get $m members] $real]} { return {} }
+        return [$self MemberKeys $room $real]
+    }
+
+    # <RoomStatus>, when it says something new - and then the room's
+    # people too, whose keys come from the same place.
     method EmitRoomStatus {room} {
         set status [$self RoomStatus $room]
         $self RoomEntry $room
         if {[dict get $Rooms $room shown] eq $status} return
         dict set Rooms $room shown $status
         $client emit omemo <RoomStatus> -jid ${room}?join -status $status
+        catch {$client muc peopleChanged $room}
     }
 
     # roomStatus -jid room@service?join -> RoomStatus dict: whether the
@@ -2756,11 +2823,12 @@ snit::type taco_omemo {
         $client emit omemo <TrustList> \
             -jid $peerJid \
             -trustList [$self trustList -jid $peerJid]
-        # The rooms it is a member of list its devices too.
+        # The rooms it is a member of list its devices too, and count them.
         if {[catch {$client muc roomsOfMember $peerJid} rooms]} return
         foreach room $rooms {
             $client emit omemo <TrustList> -jid ${room}?join \
                 -trustList [$self trustList -jid ${room}?join]
+            $self EmitRoomStatus $room
         }
     }
 
@@ -2780,6 +2848,10 @@ snit::type taco_omemo {
         set v [expr {!![string is true -strict $opts(-value)]}]
         $client setting set -key omemo_blindly_trust -value $v
         $client emit omemo <BlindTrust> -value $v
+        # Blind trust decides which new keys hold up a room's sends.
+        if {![catch {$client muc rooms} rooms]} {
+            foreach room $rooms { $self EmitRoomStatus $room }
+        }
         return $v
     }
 

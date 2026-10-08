@@ -8,9 +8,8 @@
 # Members who stop a send or need a decision come first and open; the rest
 # are folded to their header line, so a large room stays one screen.
 #
-# A member "needs attention" when the last send named them unreachable,
-# when they have no keys we know of, when a key of theirs changed, or (blind
-# trust off) when they have a device nobody has decided on yet.
+# Whether a member needs attention, and the counts the summary is worded
+# from, are the backend's: each member in omemo roomStatus.
 #
 # One window per account and room; `open` raises the existing one.
 #
@@ -28,11 +27,8 @@ snit::widget omemoroomkeys {
     variable room ""
     # omemo roomStatus, {} until it arrives
     variable status {}
-    # member jid -> list of its trustList rows
-    variable rowsOf -array {}
     # real bare jid -> nick, for members in the room
     variable nickOf -array {}
-    variable blindTrust 1
     # member jid -> 0|1: the user's own fold, which outlives a re-render
     variable Expanded -array {}
     variable content
@@ -73,10 +69,6 @@ snit::widget omemoroomkeys {
 
         ::tacky observe -tag $win omemo <RoomStatus> -acc $options(-acc) \
             -jid $options(-chat) [mymethod OnStatus]
-        ::tacky observe -tag $win omemo <TrustList> -acc $options(-acc) \
-            -jid $options(-chat) [mymethod OnTrustList]
-        ::tacky observe -tag $win omemo <BlindTrust> -acc $options(-acc) \
-            [mymethod OnBlindTrust]
         foreach event {<Presence> <Unavailable> <NickChanged>} {
             ::tacky listen -tag $win muc $event -acc $options(-acc) \
                 -jid $room [mymethod RefreshNicks]
@@ -97,19 +89,6 @@ snit::widget omemoroomkeys {
         $self Update
     }
 
-    method OnTrustList {ev} {
-        array unset rowsOf *
-        foreach row [dict get $ev -trustList] {
-            lappend rowsOf([dict get $row jid]) $row
-        }
-        $self Update
-    }
-
-    method OnBlindTrust {ev} {
-        set blindTrust [dict get $ev -value]
-        $self Update
-    }
-
     method RefreshNicks {args} {
         ::tacky muc occupants -acc $options(-acc) -jid $room \
             -tag $win -command [mymethod OnOccupants]
@@ -127,45 +106,32 @@ snit::widget omemoroomkeys {
 
     # --- what each member needs ---
 
+    # Each member's keys: {jid keys trusted undecided untrusted
+    # compromised attention reason}.
     method Members {} {
         if {$status eq ""} { return {} }
         return [dict get $status members]
     }
 
-    method UnreachableReason {jid} {
-        if {$status eq ""} { return "" }
-        foreach m [dict get $status unreachable] {
-            if {[dict get $m jid] eq $jid} { return [dict get $m reason] }
-        }
-        return ""
-    }
-
-    method ActiveRows {jid} {
-        if {![info exists rowsOf($jid)]} { return {} }
-        lmap r $rowsOf($jid) {expr {[dict get $r active] ? $r : [continue]}}
-    }
-
-    # {attention summary} for one member.
-    method Summary {jid} {
-        switch -- [$self UnreachableReason $jid] {
+    # {attention summary} for one member, worded from its counts.
+    method Summary {m} {
+        set attention [dict get $m attention]
+        switch -- [dict get $m reason] {
             no_devices       { return {1 "no OMEMO - can't read encrypted messages"} }
             no_usable_device { return {1 "no usable key - trust one to send"} }
         }
-        set rows [$self ActiveRows $jid]
-        set n [llength $rows]
-        if {$n == 0} { return {1 "no keys known yet"} }
-        set counts [dict create trusted 0 untrusted 0 undecided 0 compromised 0]
-        foreach r $rows { dict incr counts [dict get $r trust] }
-        if {[dict get $counts compromised]} {
-            return {1 "a key changed"}
+        set n [dict get $m keys]
+        if {$n == 0} { return [list $attention "no keys known yet"] }
+        if {[dict get $m compromised]} {
+            return [list $attention "a key changed"]
         }
-        set u [dict get $counts undecided]
-        if {$u && !$blindTrust} {
+        set u [dict get $m undecided]
+        if {$attention && $u} {
             return [list 1 [expr {$u == 1 ? "1 new key" : "$u new keys"}]]
         }
         set what [expr {$n == 1 ? "1 key" : "$n keys"}]
-        if {[dict get $counts trusted] == $n} { append what ", trusted" }
-        return [list 0 $what]
+        if {[dict get $m trusted] == $n} { append what ", trusted" }
+        return [list $attention $what]
     }
 
     method Name {jid} {
@@ -211,8 +177,9 @@ snit::widget omemoroomkeys {
     # {sortkey name jid attention summary}, attention first then by name.
     method Sorted {} {
         set out {}
-        foreach jid [$self Members] {
-            lassign [$self Summary $jid] attention summary
+        foreach m [$self Members] {
+            set jid [dict get $m jid]
+            lassign [$self Summary $m] attention summary
             lappend out [list [expr {$attention ? 0 : 1}] [$self Name $jid] \
                 $jid $attention $summary]
         }

@@ -821,14 +821,23 @@ interrupting the user over is [notify](#notify)'s job.
     muc roomInfo      {jid: string} -> muc_room_info
     muc roomPrivacy   {jid: string} -> [string]   why its readers are not known; [] when they are
     muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
+    muc people        {jid: string} -> {list: string, groups: {group: int},
+                                        me: room_caps, people: [person]}
 
     muc_room_info = {known: bool, live: bool, members_only: bool,
                      non_anonymous: bool, occupant_id: bool}
+    person    = {key: string, nick: string, jid: string, occupant: string,
+                 present: bool, self: bool, group: string, role: string,
+                 affiliation: string, show: string, status: string,
+                 occupant_id: string, caps: {...}, call: {...},
+                 keys: member_keys | {}}
+    room_caps = {request_voice: bool, destroy: bool}
 
 Events:
 
     muc <RoomInfo>       {jid: string, info: muc_room_info}
     muc <MembersChanged> {jid: string}
+    muc <PeopleChanged>  {jid: string}
 
 `roomInfo` is what the room's disco#info said: on this connection (`live`),
 or the last time it was asked (`known`). `members` is everyone with an
@@ -838,6 +847,23 @@ then on. `list` says how far that got: `pending` while asking, `complete`,
 `partial` when the room refused some of its lists, `presence` when it refused
 all of them (the members are then those its presences show), `none` for a
 room not private or not joined.
+
+`people` is who to show for a room, already in the order to show them:
+everyone in it, then every member who is not. An occupant is matched to a
+member by the real JID its presence carries. `group` is `moderator`,
+`participant`, `visitor`, `other` (no role yet) or `absent`; people are
+sorted by group, then by nick, the absent by JID, and `groups` counts each.
+`key` stays the same for one person across reads (their real JID, or
+`nick:<nick>` where the room shows none), `jid` is the bare real JID and
+`occupant` the room/nick JID, "" for someone absent. `caps` are an
+occupant's as below, all off for the absent and for yourself; `me` is what
+you may do about the room itself. `keys` is the person's
+[OMEMO keys](#group-chats) as `roomStatus` gives them, for a member of a
+room that can be encrypted, else `{}`. `list` is the member list's state
+as for `members`: where the room refused the lists, the absent are not
+known and only those present are listed. `<PeopleChanged>` says the answer
+changed - once per burst, so a join is one event - for the frontend to read
+it again; a room you are not in answers `list: none` and no people.
 
 Group chat invitations arrive as messages with `content.type` `"invite"`
 (see [message](#message)). These two answer one, named by that message's
@@ -955,8 +981,12 @@ room's.
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
     omemo_room_status = {jid: string, eligible: bool, reasons: [string],
-                         enabled: bool, member_list: string, members: [string],
+                         enabled: bool, offered: bool, member_list: string,
+                         members: [member_keys], attention: int,
                          unreachable: [{jid: string, reason: string}]}
+    member_keys = {jid: string, keys: int, trusted: int, undecided: int,
+                   untrusted: int, compromised: int, attention: bool,
+                   reason: string}
 
 `trust` moves freely between `undecided`, `trusted`, and `untrusted`. Only
 the system can move a device to `compromised`, and nothing moves it back. A
@@ -1838,7 +1868,8 @@ A room can use OMEMO when it is members-only and non-anonymous: only then
 does the room tell everyone its members' real JIDs, which is what the keys
 are made for. `roomStatus` says whether a room qualifies (`eligible`, and
 `reasons` when not: `unknown`, `not_members_only`, `anonymous`), whether it
-is on, and who a message to it is keyed for.
+is on, and who a message to it is keyed for. `offered` is whether there is
+a switch to show: the room qualifies, or it is on and can be turned off.
 
 - **Off by default.** A room is encrypted only after `setEnabled` turns it
   on, which a room that doesn't qualify refuses. A room that stops
@@ -1862,6 +1893,14 @@ is on, and who a message to it is keyed for.
 - **Keys.** `trustList` with the room lists every member's devices, each
   row naming its member in `jid`; `<TrustList>` for the room follows them.
   Blind trust works as in 1:1 chats.
+- **Who needs attention.** `members` gives each member's keys counted by
+  trust, devices no longer in their list left out, with `attention` when
+  they stop or would hold up a send or a key of theirs changed: they
+  stopped the last one (`reason`), none of their devices would be keyed
+  for (none known, all distrusted, or new ones blind trust does not
+  cover), or one is compromised. Those come first; `attention` counts
+  them. `<RoomStatus>` follows trust changes and blind trust, and the same
+  keys ride on each member in [`muc people`](#muc).
 
 A room's private messages (`room@service/nick`) are not encrypted.
 
