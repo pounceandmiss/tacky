@@ -75,7 +75,7 @@ foreach which {accounts per-account} {
         } -result {1 1}
 }
 
-test schema-accounts-upgrade {an accounts.db from before port and websocket_url gains both, rows intact} \
+test schema-accounts-upgrade {an accounts.db from before port and websocket_url gains them and the connection columns, rows intact} \
     -setup {
         sqlite3 ::_db :memory:
         ::_db eval {
@@ -88,9 +88,30 @@ test schema-accounts-upgrade {an accounts.db from before port and websocket_url 
         ::_db close
     } -body {
         taco_schema_migrate ::_db accounts
-        list [::_db eval {SELECT password, enabled, port, websocket_url FROM account}] \
+        list [::_db eval {SELECT password, enabled, port, websocket_url,
+                                 host, tls, srv FROM account}] \
              [expr {[schema_shape ::_db] eq [schema_fresh_shape accounts]}]
-    } -result {{secret 1 5222 {}} 1}
+    } -result {{secret 1 0 {} {} auto 1} 1}
+
+test schema-accounts-port-becomes-automatic {the old default 5222 becomes automatic; a chosen port stays} \
+    -setup {
+        sqlite3 ::_db :memory:
+        # Only up to the baseline
+        set dir [file tempdir tacky-schema-test]
+        file copy [file join $::taco_schema::dir accounts 0001-baseline.tcl] $dir
+        taco_schema_migrate ::_db accounts -dir $dir
+        file delete -force $dir
+        ::_db eval {
+            INSERT INTO account(jid, username, domain, port)
+                VALUES('a@example.com', 'a', 'example.com', 5222),
+                      ('b@example.com', 'b', 'example.com', 5300);
+        }
+    } -cleanup {
+        ::_db close
+    } -body {
+        taco_schema_migrate ::_db accounts
+        ::_db eval {SELECT jid, port FROM account ORDER BY jid}
+    } -result {a@example.com 0 b@example.com 5300}
 
 # The column checks the baseline took over from the modules, all at once:
 # chat_message without its invite and call columns, caps_cache from before

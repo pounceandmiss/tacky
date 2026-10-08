@@ -10,8 +10,12 @@ snit::type mock_conn {
     variable mockLastError ""
 
     # Connection options (stored, not used)
+    option -domain -default ""
     option -host -default ""
-    option -port -default 5222
+    option -port -default 0
+    option -tls -default auto
+    option -srv -default 1
+    option -nameservers -default ""
     option -transport -default tcp
     option -ws-url -default ""
     option -username -default ""

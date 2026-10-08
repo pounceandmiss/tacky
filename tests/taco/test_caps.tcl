@@ -4,7 +4,7 @@ namespace import ::tcltest::*
 package require tacky::testhelpers
 
 set caps_common [tacky_env -stub-emit 1 -mock conn -taco-client {
-    -host test.example.com -port 5222
+    -domain test.example.com -port 5222
     -username user -password pass -resource res
 }]
 

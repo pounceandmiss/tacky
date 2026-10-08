@@ -82,15 +82,22 @@ snit::type mock_bareconn {
     option -ondebugstanza -default ""
     option -transport -default tcp
     option -ws-url -default ""
+    option -domain -default ""
 
     constructor {args} {
         $self configurelist $args
         set written {}
         set writtenRaw {}
         set ::_mock_conn $self
+        set ::_mock_targets ""
     }
 
     method connect {host port} {
+        $self connectTargets [list [list $host $port starttls]]
+    }
+
+    method connectTargets {targets} {
+        set ::_mock_targets $targets
         if {$options(-onready) ne ""} {
             {*}$options(-onready)
         }
@@ -202,6 +209,9 @@ set common {
     -setup {
         rename bareconn _real_bareconn
         rename mock_bareconn bareconn
+        # No real DNS
+        set ::_saved_resolv $::dial::resolvConf
+        set ::dial::resolvConf /nonexistent
         tacky_type create ::tacky
         set ::_events {}
         tacky listen register <Form>       {apply {{ev} {lappend ::_events [list <Form> {*}$ev]}}}
@@ -213,6 +223,7 @@ set common {
         tacky destroy
         rename bareconn mock_bareconn
         rename _real_bareconn bareconn
+        set ::dial::resolvConf $::_saved_resolv
     }
 }
 
@@ -221,7 +232,7 @@ set common {
 test reg-connect-transport-and-url {the session dials over the backend's transport, where it is told} \
     {*}$common \
     -body {
-        tacky register connect -host example.com -websocket_url wss://ws.example.com/x
+        tacky register connect -domain example.com -websocket_url wss://ws.example.com/x
         list [$::_mock_conn cget -transport] [string equal [$::_mock_conn cget -transport] \
                 [tacky cget -transport]] [$::_mock_conn cget -ws-url]
     } -result {tcp 1 wss://ws.example.com/x}
@@ -229,14 +240,29 @@ test reg-connect-transport-and-url {the session dials over the backend's transpo
 test reg-connect-no-url {without one, the session leaves its endpoint to discovery} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         $::_mock_conn cget -ws-url
     } -result {}
+
+test reg-connect-needs-domain {connect without a domain is refused} \
+    {*}$common \
+    -body {
+        catch {tacky register connect -token t} msg
+        set msg
+    } -result {missing -domain}
+
+test reg-connect-host-overrides-dial {-host, -port and -tls say where to dial; the stream is to the domain} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com -host 192.0.2.7 -port 5223 -tls direct
+        set header [lindex [$::_mock_conn get_written_raw] 0]
+        list $::_mock_targets [string match "*to='example.com'*" $header]
+    } -result {{{192.0.2.7 5223 direct}} 1}
 
 test reg-connect-writes-header {connect writes stream header} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         set raw [$::_mock_conn get_written_raw]
         expr {[llength $raw] >= 1 && [string match "*<stream:stream*" [lindex $raw 0]]}
     } -result 1
@@ -244,7 +270,7 @@ test reg-connect-writes-header {connect writes stream header} \
 test reg-features-sends-query {features stanza triggers registration query} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         $::_mock_conn clear
         $::_mock_conn inject [make_reg_features]
         set written [$::_mock_conn get_written]
@@ -255,7 +281,7 @@ test reg-features-sends-query {features stanza triggers registration query} \
 test reg-no-register-fires-error {missing register feature fires <Error>} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         $::_mock_conn inject [make_noreg_features]
         set ev [lindex $::_events 0]
         list [lindex $ev 0] [dict get [lrange $ev 1 end] -message]
@@ -266,7 +292,7 @@ test reg-no-register-fires-error {missing register feature fires <Error>} \
 test reg-form-event {drive_to_form fires <Form> before <MediaReady>} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         set found 0
         foreach ev $::_events {
@@ -284,7 +310,7 @@ test reg-form-event {drive_to_form fires <Form> before <MediaReady>} \
 test reg-form-fields {form returns expected field list} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         set form [tacky register form]
         lmap field [dict get $form fields] {dict get $field var}
@@ -293,7 +319,7 @@ test reg-form-fields {form returns expected field list} \
 test reg-form-instructions {form contains instructions} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         set form [tacky register form]
         expr {[dict exists $form instructions] && [dict get $form instructions] ne ""}
@@ -304,7 +330,7 @@ test reg-form-instructions {form contains instructions} \
 test reg-media-ready-event {drive_to_form fires <MediaReady> for ocr field} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         set found 0
         foreach ev $::_events {
@@ -319,7 +345,7 @@ test reg-media-ready-event {drive_to_form fires <MediaReady> for ocr field} \
 test reg-media-returns-bytes {media returns decoded image bytes, not base64} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         set data [tacky register media -var ocr]
         string range $data 1 3
@@ -330,7 +356,7 @@ test reg-media-returns-bytes {media returns decoded image bytes, not base64} \
 test reg-submit-sends-iq {submit sends IQ set with registration query} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         $::_mock_conn clear
         tacky register submit -values {username alice password secret}
@@ -344,7 +370,7 @@ test reg-submit-legacy-var-not-a-tag \
     {*}$common \
     -body {
         set evil {q></query></iq><message to='victim@example.com' type='chat'><body>pwned</body></message><iq><x }
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_legacy_form $evil
         $::_mock_conn clear
         tacky register submit -values [list username alice $evil x]
@@ -357,7 +383,7 @@ test reg-submit-legacy-known-vars-kept \
     {legacy submit still emits the XEP-0077 fields} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_legacy_form email
         $::_mock_conn clear
         tacky register submit -values {username alice email a@b.c}
@@ -369,7 +395,7 @@ test reg-submit-legacy-known-vars-kept \
 test reg-submit-success {IQ result after submit fires <Success>} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         tacky register submit -values {username alice password secret}
         set ::_events {}
@@ -381,7 +407,7 @@ test reg-submit-success {IQ result after submit fires <Success>} \
 test reg-submit-error-text {IQ error after submit fires <Error> with message} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         drive_to_form
         tacky register submit -values {username alice password secret}
         set ::_events {}
@@ -395,7 +421,7 @@ test reg-submit-error-text {IQ error after submit fires <Error> with message} \
 test reg-iq-error-bare {IQ error without text uses child tag name} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         $::_mock_conn inject [make_reg_features]
         set ::_events {}
         $::_mock_conn inject [make_reg_error_bare]
@@ -406,7 +432,7 @@ test reg-iq-error-bare {IQ error without text uses child tag name} \
 test reg-disconnect {disconnect fires <Error> with message} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         $::_mock_conn fire_disconnect "conn lost"
         set ev [lindex $::_events 0]
         list [lindex $ev 0] [dict get [lrange $ev 1 end] -message]
@@ -423,7 +449,7 @@ test reg-form-not-ready {form before connect errors} \
 test reg-cancel {cancel destroys session so form errors} \
     {*}$common \
     -body {
-        tacky register connect -host example.com
+        tacky register connect -domain example.com
         tacky register cancel
         tacky register form
     } -returnCodes error -match glob -result {No registration session*}

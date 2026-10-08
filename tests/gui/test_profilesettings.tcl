@@ -249,3 +249,51 @@ test profilesettings-pass-follows-server-change {a server change shows up in the
     catch {destroy .chpass_[path_safe user@test.example.com]}
     mock_backend_down
 } -result {changed {Password changed on server.}}
+
+test profilesettings-connection-loads {the account's connection settings fill the fields} -setup {
+    mock_backend_up
+    tacky account set -acc user@test.example.com -host xmpp.example.com \
+        -port 5223 -tls direct
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set c .ps.connection
+    list [set [$c info vars host]] [set [$c info vars port]] \
+        [set [$c info vars mode]]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {xmpp.example.com 5223 {Direct TLS}}
+
+test profilesettings-connection-saves {Save stores the fields and says so} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set c .ps.connection
+    set [$c info vars host] 192.0.2.7
+    set [$c info vars port] ""
+    .ps SaveConnection
+    wait
+    list [tacky account get -acc user@test.example.com -field host] \
+        [tacky account get -acc user@test.example.com -field port] \
+        [.ps.status cget -text]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {192.0.2.7 0 {Server connection saved.}}
+
+test profilesettings-connection-refused {a refused value is reported, not saved} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [.ps.connection info vars host] "not a host"
+    .ps SaveConnection
+    wait
+    list [tacky account get -acc user@test.example.com -field host] \
+        [.ps.status cget -text]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {{} {Server connection error: Invalid host: not a host}}

@@ -1,17 +1,20 @@
 # taco account list ?-command $cmd?
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
-#                  ?-port ...? ?-websocket_url ...?
+#                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
+#                  ?-websocket_url ...?
 #   creates account if new; updates fields if it already exists
 # taco account remove -acc $jid
 #   error: account doesn't exist
 # taco account get -acc $jid ?-field $name? ?-command $cmd?
 #   error: account doesn't exist, invalid field
 # taco account set -acc $jid ?-password ...? ?-domain ...? ?-username ...?
-#                  ?-port ...? ?-websocket_url ...?
-#   error: account doesn't exist, invalid field
+#                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
+#                  ?-websocket_url ...?
+#   error: account doesn't exist, invalid field or value
 #
-# port: the tcp transport's port on domain. Ignored over websocket.
+# host, port, tls, srv: where and how the tcp transport reaches domain;
+# see dial.tcl. Ignored over websocket.
 # websocket_url: where the websocket transport dials; "" means discover it
 # (baseconn's ConnectWebsocket). Ignored over tcp.
 # taco account enable -acc $jid
@@ -22,7 +25,9 @@ snit::type taco_account {
     option -taco -default ""
     option -data-dir -default ""
 
-    variable valid_columns {username domain port password resource enabled websocket_url}
+    variable valid_columns {username domain host port tls srv password resource
+                            enabled websocket_url}
+    variable connection_columns {password domain host port tls srv}
     # Added by the transport when a request carries a token, not fields.
     variable transport_opts {-command -onerror -tag}
 
@@ -49,6 +54,8 @@ snit::type taco_account {
             error "Invalid JID: $jid"
         }
         set exists [$self exists -acc $jid]
+        # Before the insert, so a refused add leaves no row
+        $self CheckFields [dict remove $args -acc]
 
         if {!$exists} {
             $options(-db) eval {INSERT INTO account(jid) VALUES($jid)}
@@ -99,14 +106,42 @@ snit::type taco_account {
             error "Account doesn't exist: $jid"
         }
         $self SetFields $jid $args
-        if {[dict exists $args -password]} {
-            $self PushPassword $jid
+        foreach field $connection_columns {
+            if {[dict exists $args -$field]} {
+                $self PushConnection $jid
+                break
+            }
         }
     }
 
-    # add writes through here, skipping set's PushPassword: enabling the new
-    # account connects anyway.
+    # Empty, a DNS name or an IP address; IPv6 brackets are dropped
+    proc ValidHost {value} {
+        set h [string trim $value]
+        if {[regexp {^\[(.*)\]$} $h -> inner]} { set h $inner }
+        if {$h eq ""
+                || [regexp {^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9.])?$} $h]
+                || ([regexp {:.*:} $h] && [regexp {^[0-9A-Fa-f:.]+$} $h])} {
+            return $h
+        }
+        error "Invalid host: $value"
+    }
+
+    # add writes through here, skipping set's PushConnection: enabling the
+    # new account connects anyway.
     method SetFields {jid fields} {
+        set checked [$self CheckFields $fields]
+        dict for {field value} $checked {
+            if {$field eq "enabled"} {
+                if {$value} { $self enable -acc $jid } else { $self disable -acc $jid }
+            } else {
+                $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
+            }
+        }
+    }
+
+    # {column value ...}, normalised; errors on any bad field
+    method CheckFields {fields} {
+        set out {}
         dict for {key value} $fields {
             if {$key eq "-acc" || $key in $transport_opts} continue
             set field [string range $key 1 end]
@@ -118,25 +153,44 @@ snit::type taco_account {
                 error "Invalid websocket_url: $value"
             }
             if {$field eq "port" && !([string is entier -strict $value]
-                    && $value >= 1 && $value <= 65535)} {
+                    && $value >= 0 && $value <= 65535)} {
                 error "Invalid port: $value"
             }
-            if {$field eq "enabled"} {
-                if {$value} { $self enable -acc $jid } else { $self disable -acc $jid }
-            } else {
-                $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
+            if {$field eq "host"} {
+                set value [ValidHost $value]
             }
+            if {$field eq "tls" && $value ni {auto starttls direct none}} {
+                error "Invalid tls: $value"
+            }
+            if {$field eq "srv"} {
+                if {![string is boolean -strict $value]} {
+                    error "Invalid srv: $value"
+                }
+                set value [expr {$value ? 1 : 0}]
+            }
+            dict set out $field $value
         }
+        return $out
     }
 
-    # Hand a running client the stored password. An enabled account that is
-    # offline (e.g. after an auth error) reconnects with it; an online one
-    # keeps its session.
-    method PushPassword {jid} {
+    method ConnectionOpts {jid} {
+        $options(-db) eval {
+            SELECT password, domain, host, port, tls, srv, websocket_url
+            FROM account WHERE jid=$jid
+        } r {
+            return [list -password $r(password) -domain $r(domain) \
+                -host $r(host) -port $r(port) -tls $r(tls) -srv $r(srv) \
+                -ws-url $r(websocket_url)]
+        }
+        return {}
+    }
+
+    # An enabled account that is offline connects again with the new
+    # settings; an online one keeps its session.
+    method PushConnection {jid} {
         set client [$self liveClient -acc $jid]
         if {$client eq ""} return
-        set pw [$options(-db) onecolumn {SELECT password FROM account WHERE jid=$jid}]
-        $client configure -password $pw
+        $client configure {*}[$self ConnectionOpts $jid]
         set enabled [$options(-db) onecolumn {SELECT enabled FROM account WHERE jid=$jid}]
         if {$enabled && [$client conn state] in {disconnected waiting}} {
             $client connect
@@ -199,10 +253,7 @@ snit::type taco_account {
         set client [$options(-taco) client $jid]
 
         # Always propagate latest credentials from DB to client/conn
-        lassign [$options(-db) eval {
-            SELECT password, port, websocket_url FROM account WHERE jid=$jid
-        }] pw port url
-        $client configure -password $pw -port $port -ws-url $url
+        $client configure {*}[$self ConnectionOpts $jid]
 
         $client connect
 

@@ -24,8 +24,12 @@ snit::type taco_client {
     component db -public db
 
     # Connection options (delegated to conn)
+    delegate option -domain to conn
     delegate option -host to conn
     delegate option -port to conn
+    delegate option -tls to conn
+    delegate option -srv to conn
+    delegate option -nameservers to conn
     delegate option -transport to conn
     delegate option -ws-url to conn
     delegate option -username to conn
@@ -65,7 +69,7 @@ snit::type taco_client {
             -onstanza [mymethod OnStanza]
 
         $self configurelist $args
-        set options(-jid) "[$conn cget -username]@[$conn cget -host]"
+        set options(-jid) "[$conn cget -username]@[$conn cget -domain]"
 
         # Initialize database if not provided externally
         if {$options(-db) ne ""} {
@@ -174,7 +178,7 @@ snit::type taco_client {
             j username -body [$conn cget -username]
             j password -body $opts(-password)
         }]
-        $iq request -type set -to [$conn cget -host] \
+        $iq request -type set -to [$conn cget -domain] \
             -payload $payload \
             -command [mymethod OnPasswordChanged $opts(-password) \
                           $opts(-command) $opts(-onerror)]

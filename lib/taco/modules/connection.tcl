@@ -13,7 +13,8 @@
 #
 # Common methods:
 #   connect host port      Start async TCP+TLS connection (bareconn)
-#   connect                Start connection using -host/-port options (conn)
+#   connectTargets list    Try {host port tls} targets in order (bareconn)
+#   connect                Start connection using -domain etc. (conn)
 #   close                  Tear down the connection
 #   isReady                True when the connection is usable
 #   write data             Queue raw data (sent immediately if ready)
@@ -25,14 +26,15 @@
 #   -onready               Transport ready (bareconn) / session ready (conn)
 #   -ondisconnect cmd      Called with message string on transport error/EOF
 #   -onstanza cmd          Called with each stanza dict
-#   -starttls bool         Whether to negotiate STARTTLS (default true;
-#                          ignored on the websocket transport, where the
-#                          browser has already done TLS)
+#   -domain d              XMPP domain, required
+#   -starttls bool         Whether `connect host port` negotiates STARTTLS
+#                          (default true; ignored on the websocket
+#                          transport, where the browser has already done TLS)
 #   -transport t           tcp (default) or websocket: XMPP over a WebSocket,
 #                          RFC 7395, over ::websocket (tcllib's API); for
 #                          now only in a wasm build (modules/browserws.tcl).
 #   -ws-url url            Where the websocket transport connects; empty means
-#                          the conventional wss://$host/xmpp-websocket
+#                          the conventional wss://$domain/xmpp-websocket
 #   -header-command cmd    Called with the opening <stream:stream> element
 #   -footer-command cmd    Called with the closing </stream:stream>
 #
@@ -40,7 +42,8 @@
 #   sm                     Access the stream management component
 #
 # conn-only options:
-#   -host, -port           Server to connect to (default port 5222)
+#   -host, -port, -tls     Where and how to connect, see dial.tcl
+#   -srv bool              Look up SRV records (default 1)
 #   -username, -password   SASL credentials
 #   -resource              Requested resource for binding
 #   -onautherror cmd       Called with message on SASL/bind failure
@@ -51,13 +54,13 @@
 # Usage:
 #
 #   bareconn create bc \
-#       -starttls false \
+#       -domain example.com -starttls false \
 #       -onready       {puts "transport up"} \
 #       -ondisconnect  {apply {{msg} {puts "lost: $msg"}}}
 #   bc connect example.com 5269
 #
 #   conn create c \
-#       -host example.com -port 5222 \
+#       -domain example.com \
 #       -username alice -password secret \
 #       -onready       {apply {{resumed} {puts "ready (resumed=$resumed)"}}} \
 #       -ondisconnect  {apply {{msg} {puts "disconnected: $msg"}}} \
@@ -73,8 +76,13 @@ snit::type baseconn {
     variable socket
     # disconnected | connecting | connected
     variable state
-    # Remote hostname, set on connect
+    # The target being tried; tlsMode is starttls | direct | none
     variable host
+    variable port
+    variable tlsMode
+    # Targets left to try if this one fails
+    variable targets
+    variable attemptAfterId
     # Whether an "after idle" flush is already scheduled
     variable flushPending
     # The ::websocket socket on the websocket transport, "" otherwise
@@ -99,8 +107,15 @@ snit::type baseconn {
 
     # Callback when the transport (TCP + optional TLS) is ready for use
     option -ontransportready -default ""
-    # Whether to negotiate STARTTLS before declaring transport ready
+    # The certificate is checked against this, not the host dialled (RFC 7590)
+    option -domain -default ""
+    # Only for `connect host port`; connectTargets gives each target its mode
     option -starttls -default true
+    # Called as {*}$cmd host port tls before each target is tried
+    option -attempt-command -default ""
+    # A host that drops packets never fails on its own, so with more targets
+    # left, move on after this long
+    option -attempt-timeout -default 10000
     # tcp | websocket. The websocket transport is RFC 7395 over ::websocket (see
     # wsframing.tcl); for now it exists only in a wasm build, where there is no
     # socket to be had and the browser has already done TLS - so -starttls
@@ -125,6 +140,10 @@ snit::type baseconn {
         set socket ""
         set state disconnected
         set host ""
+        set port ""
+        set tlsMode starttls
+        set targets {}
+        set attemptAfterId ""
         set flushPending 0
         set ws ""
         set reader ""
@@ -188,44 +207,99 @@ snit::type baseconn {
         }
     }
 
-    method connect {h port} {
+    method connect {h p} {
+        $self connectTargets [list [list $h $p \
+            [expr {$options(-starttls) ? "starttls" : "none"}]]]
+    }
+
+    # -error-command hears only the last target's failure. The websocket
+    # transport ignores targets and goes by -domain.
+    method connectTargets {list} {
         if {$state ne "disconnected"} {
             return
         }
-        set host $h
         set state connecting
+        if {$options(-domain) eq ""} {
+            set state disconnected
+            after idle [list {*}$options(-error-command) "Connect failed: no domain"]
+            return
+        }
         if {$options(-transport) eq "websocket"} {
             $self ConnectWebsocket
             return
         }
+        set targets $list
+        $self NextTarget "Connect failed: no address to connect to"
+    }
+
+    method NextTarget {lastErr} {
+        if {![llength $targets]} {
+            set state disconnected
+            {*}$options(-error-command) $lastErr
+            return
+        }
+        set targets [lassign $targets target]
+        lassign $target host port tlsMode
+        set state connecting
+        if {$options(-attempt-command) ne ""} {
+            {*}$options(-attempt-command) $host $port $tlsMode
+        }
         if {[catch {
             set socket [socket -async $host $port]
         } err]} {
-            set state disconnected
-            after idle [list {*}$options(-error-command) "Connect failed: $err"]
+            set socket ""
+            # Deferred: the caller is still inside connect
+            after idle [mymethod Fail "Connect failed: $err"]
             return
         }
         fconfigure $socket -blocking 0 -buffering full -translation binary
         fileevent $socket writable [list $self OnSocketConnected]
+        if {[llength $targets] && $options(-attempt-timeout) > 0} {
+            set attemptAfterId [after $options(-attempt-timeout) \
+                [mymethod Fail "Connect failed: timed out"]]
+        }
+    }
+
+    method Fail {msg} {
+        $self CancelAttempt
+        if {$socket ne ""} {
+            fileevent $socket writable {}
+            xmpp_starttls_abort $socket
+            catch {close $socket}
+            set socket ""
+        }
+        if {$state ne "connecting"} return
+        if {[llength $targets]} {
+            jlog inform "$host:$port: $msg; trying the next address"
+        }
+        $self NextTarget $msg
+    }
+
+    method CancelAttempt {} {
+        if {$attemptAfterId ne ""} {
+            after cancel $attemptAfterId
+            set attemptAfterId ""
+        }
     }
 
     method OnSocketConnected {} {
         fileevent $socket writable {}
         set err [fconfigure $socket -error]
         if {$err ne ""} {
-            catch {close $socket}
-            set socket ""
-            set state disconnected
-            {*}$options(-error-command) "Connect failed: $err"
+            $self Fail "Connect failed: $err"
             return
         }
-        if {$options(-starttls)} {
-            xmpp_starttls $socket $host [list $self OnStarttlsComplete]
-        } else {
-            $self CreateReader
-            set state connected
-            if {$options(-ontransportready) ne ""} {
-                {*}$options(-ontransportready)
+        switch -- $tlsMode {
+            starttls {
+                xmpp_starttls $socket $options(-domain) \
+                    [list $self OnStarttlsComplete]
+            }
+            direct {
+                xmpp_directtls $socket $options(-domain) \
+                    [list $self OnStarttlsComplete]
+            }
+            default {
+                $self TransportReady
             }
         }
     }
@@ -233,21 +307,26 @@ snit::type baseconn {
     method OnStarttlsComplete {status {detail ""}} {
         if {$status eq "ok"} {
             set socket $detail
-            $self CreateReader
-            set state connected
-            if {$options(-ontransportready) ne ""} {
-                {*}$options(-ontransportready)
-            }
+            $self TransportReady
         } else {
-            catch {close $socket}
-            set socket ""
-            set state disconnected
-            if {$options(-error-command) ne "control::no-op"} {
-                set msg "TLS handshake failed"
-                if {$detail ne ""} { set msg "TLS: $detail" }
-                {*}$options(-error-command) $msg
-            }
+            set msg "TLS handshake failed"
+            if {$detail ne ""} { set msg "TLS: $detail" }
+            $self Fail $msg
         }
+    }
+
+    method TransportReady {} {
+        $self CancelAttempt
+        set targets {}
+        $self CreateReader
+        set state connected
+        if {$options(-ontransportready) ne ""} {
+            {*}$options(-ontransportready)
+        }
+    }
+
+    method tlsMode {} {
+        return $tlsMode
     }
 
     # XMPP over a WebSocket (RFC 7395). There is no connect/TLS/STARTTLS
@@ -261,14 +340,15 @@ snit::type baseconn {
             return
         }
         set url $options(-ws-url)
+        set domain $options(-domain)
         if {$url eq ""} {
-            if {![dict exists $Discovered $host]} {
+            if {![dict exists $Discovered $domain]} {
                 $self Discover
                 return
             }
-            set url [dict get $Discovered $host]
+            set url [dict get $Discovered $domain]
             if {$url eq ""} {
-                set url [::wsframing::url $host]
+                set url [::wsframing::url $domain]
             }
         }
         $self OpenWebsocket $url
@@ -277,15 +357,16 @@ snit::type baseconn {
     # XEP-0156: ask the host where its websocket is. Any failure (no
     # host-meta, timeout, CORS) falls back to the convention.
     method Discover {} {
-        set url [::wsframing::hostMetaUrl $host]
+        set domain $options(-domain)
+        set url [::wsframing::hostMetaUrl $domain]
         if {[catch {
             close [file tempfile lookupFile tacky-host-meta]
             set lookup [taco_http get $url -outfile $lookupFile \
                 -timeout $DISCOVERY_TIMEOUT -command [mymethod OnDiscovered]]
         } err]} {
-            jlog warn "host-meta for $host: $err"
+            jlog warn "host-meta for $domain: $err"
             $self DropLookup
-            $self OpenWebsocket [::wsframing::url $host]
+            $self OpenWebsocket [::wsframing::url $domain]
         }
     }
 
@@ -295,6 +376,7 @@ snit::type baseconn {
             catch {taco_http cleanup $token}
             return
         }
+        set domain $options(-domain)
         set status [taco_http status $token]
         set code [taco_http ncode $token]
         set doc ""
@@ -309,18 +391,18 @@ snit::type baseconn {
         $self DropLookup
         # A 4xx is an answer too: nothing published.
         if {$status eq "ok" && $code >= 200 && $code < 500} {
-            dict set Discovered $host [::wsframing::fromHostMeta $doc]
+            dict set Discovered $domain [::wsframing::fromHostMeta $doc]
         }
         set url ""
-        if {[dict exists $Discovered $host]} {
-            set url [dict get $Discovered $host]
+        if {[dict exists $Discovered $domain]} {
+            set url [dict get $Discovered $domain]
         }
         if {$url eq ""} {
-            jlog inform "host-meta for $host: $status $code, none named;\
+            jlog inform "host-meta for $domain: $status $code, none named;\
                 trying the conventional endpoint"
-            set url [::wsframing::url $host]
+            set url [::wsframing::url $domain]
         } else {
-            jlog inform "host-meta for $host names $url"
+            jlog inform "host-meta for $domain names $url"
         }
         $self OpenWebsocket $url
     }
@@ -439,6 +521,8 @@ snit::type baseconn {
             after cancel [mymethod FlushWrite]
             set flushPending 0
         }
+        $self CancelAttempt
+        set targets {}
         $self DestroyReader
         $self DropLookup
         if {$ws ne ""} {
@@ -521,6 +605,11 @@ snit::type bareconn {
         $base connect {*}$args
     }
 
+    method connectTargets {targets} {
+        set connState connecting
+        $base connectTargets $targets
+    }
+
     method close {} {
         $base close
         set connState disconnected
@@ -589,10 +678,13 @@ snit::type conn {
     delegate option -sm to sm as -enabled
     delegate option * to base except {-ontransportready -command -header-command -error-command}
 
-    # Remote hostname to connect to
+    option -domain -default ""
+    # See dial.tcl. -nameservers is for tests.
     option -host -default ""
-    # Remote port (default 5222 for c2s XMPP)
-    option -port -default 5222
+    option -port -default 0
+    option -tls -default auto
+    option -srv -default 1
+    option -nameservers -default ""
 
     # SASL credentials
     option -username -default ""
@@ -708,11 +800,18 @@ snit::type conn {
     variable wakeAfterId ""
     variable wakeLast 0
 
+    # The SRV lookup in flight; dialGen drops a superseded lookup's answer
+    variable dialId ""
+    variable dialGen 0
+    # host:port last dialled, for the logs
+    variable endpoint ""
+
     constructor {args} {
         install base using baseconn $self.base \
             -ontransportready [mymethod OnTransportReady] \
             -command [mymethod OnStanza] \
-            -error-command [mymethod OnTransportError]
+            -error-command [mymethod OnTransportError] \
+            -attempt-command [mymethod OnAttempt]
         install sm using sm $self.sm -write [list $self.base writeStanza] \
             -ack-command [mymethod OnSmAck] \
             -own-jid-command [list $self cget -bound-jid]
@@ -720,6 +819,7 @@ snit::type conn {
     }
 
     destructor {
+        $self CancelDial
         $self CancelReconnect
         $self CancelConnectTimeout
         $self StopKeepalive
@@ -738,9 +838,47 @@ snit::type conn {
         set authState disconnected
         set sasl {}
         set csiOffered 0
+        if {$options(-domain) eq ""} {
+            error "conn: -domain is required"
+        }
+        $self CancelDial
         $self SetConnState connecting
-        jlog inform "connecting to $options(-host):$options(-port)"
-        $base connect $options(-host) $options(-port)
+        $self ArmConnectTimeout
+        $base configure -domain $options(-domain)
+        if {[$base cget -transport] eq "websocket"} {
+            jlog inform "connecting to $options(-domain) over websocket"
+            $base connectTargets {}
+            return
+        }
+        set gen [incr dialGen]
+        set dialId [dial::targets -domain $options(-domain) \
+            -host $options(-host) -port $options(-port) -tls $options(-tls) \
+            -srv $options(-srv) -nameservers $options(-nameservers) \
+            -command [mymethod OnTargets $gen]]
+    }
+
+    method OnTargets {gen targets} {
+        if {$gen != $dialGen || $connState ne "connecting"} return
+        set dialId ""
+        $base connectTargets $targets
+    }
+
+    method CancelDial {} {
+        incr dialGen
+        if {$dialId ne ""} {
+            dial::cancel $dialId
+            set dialId ""
+        }
+    }
+
+    # Each address gets the full connect timeout
+    method OnAttempt {host port tls} {
+        set endpoint $host:$port
+        set how [dict get {starttls STARTTLS direct "direct TLS" none "no TLS"} $tls]
+        jlog inform "connecting to $host:$port for $options(-domain) ($how)"
+        if {$tls eq "none"} {
+            jlog warn "no TLS: password and messages unencrypted"
+        }
         $self ArmConnectTimeout
     }
 
@@ -751,6 +889,7 @@ snit::type conn {
     # there. No-op if already disconnected.
     method close {} {
         if {$connState eq "disconnected"} return
+        $self CancelDial
         $self CancelReconnect
         $self CancelConnectTimeout
         $self StopKeepalive
@@ -1048,7 +1187,7 @@ snit::type conn {
     method OnTransportReady {} {
         set authState authenticating
         $self SetConnState authenticating
-        $base writeNow [::jab::header "" to $options(-host)]
+        $base writeNow [::jab::header "" to $options(-domain)]
     }
 
     # Central stanza dispatcher: routes to the handler for the current
@@ -1121,7 +1260,7 @@ snit::type conn {
                 $base CreateReader
                 set authState binding
                 $self SetConnState binding
-                $base writeNow [::jab::header "" to $options(-host)]
+                $base writeNow [::jab::header "" to $options(-domain)]
             }
             failure {
                 set msg "SASL authentication failed"
@@ -1266,7 +1405,7 @@ snit::type conn {
                 set type [dict get $stanza attrs type]
                 if {$type eq "result"} {
                     set boundJid [xsearch $stanza bind jid -get body]
-                    set want $options(-username)@$options(-host)
+                    set want $options(-username)@$options(-domain)
                     if {$boundJid eq "" || ![jid matches-bare $boundJid $want]} {
                         $self OnAuthError "Server bound an unexpected JID"
                         return
@@ -1357,6 +1496,7 @@ snit::type conn {
     # Called on socket read/write errors or EOF. Tears down the session
     # and either schedules a silent reconnect or fires -ondisconnect.
     method OnTransportError {msg} {
+        $self CancelDial
         $self CancelConnectTimeout
         $self StopKeepalive
         set authState disconnected
@@ -1364,7 +1504,7 @@ snit::type conn {
         # Every transport failure arrives here - connect, TLS, read, write - so
         # one line covers them all. Without it the reason only leaves as an
         # event, and a log from a client that never connected reads as silence.
-        jlog warn "$options(-host):$options(-port): $msg"
+        jlog warn "[expr {$endpoint ne "" ? $endpoint : $options(-domain)}]: $msg"
         $sm onDisconnect
         $base close
         if {$options(-autoreconnect)} {
@@ -1423,7 +1563,7 @@ snit::type conn {
         $self StopKeepalive
         set authState disconnected
         set lastError $msg
-        jlog error "$options(-host): $msg"
+        jlog error "$options(-domain): $msg"
         $sm onDisconnect
         catch {$base writeNow "</stream:stream>"}
         $base close

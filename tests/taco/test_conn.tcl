@@ -18,6 +18,10 @@ snit::type mockbaseconn {
     option -starttls -default true
     option -transport -default tcp
     option -ws-url -default ""
+    option -domain -default ""
+    option -attempt-command -default ""
+
+    variable targets ""
 
     constructor {args} {
         $self configurelist $args
@@ -27,10 +31,22 @@ snit::type mockbaseconn {
     }
 
     method connect {host port} {
+        $self connectTargets [list [list $host $port starttls]]
+    }
+
+    method connectTargets {list} {
+        set targets $list
+        if {[llength $list] && $options(-attempt-command) ne ""} {
+            {*}$options(-attempt-command) {*}[lindex $list 0]
+        }
         set state connected
         if {$options(-ontransportready) ne ""} {
             {*}$options(-ontransportready)
         }
+    }
+
+    method get_targets {} {
+        return $targets
     }
 
     method writeStanza {stanza} {
@@ -193,7 +209,7 @@ set common {
         set _temitted {}
         jlog configure -logproc {apply {{msg} {}}}
         conn c \
-            -host test.example.com -port 5222 \
+            -domain test.example.com -port 5222 \
             -username user -password pass -resource res \
             -emit         {apply {{args} {lappend ::_temitted $args}}} \
             -onready      {apply {{resumed} {set ::_tready_resumed $resumed}}} \
@@ -700,7 +716,41 @@ test conn-connect-logs-endpoint {connect records what it dialled} \
         conn_capture_log
         c connect
         conn_logged info
-    } -result {{connecting to test.example.com:5222}}
+    } -result {{connecting to test.example.com:5222 for test.example.com (STARTTLS)}}
+
+test conn-dials-host-talks-to-domain {the host is dialled; the stream is to the domain} \
+    {*}$common \
+    -body {
+        c configure -host xmpp.example.org -port 0
+        c connect
+        set header [lindex [c.base get_written_raw] 0]
+        list [c.base get_targets] [string match "*to='test.example.com'*" $header]
+    } -result {{{xmpp.example.org 5222 starttls}} 1}
+
+test conn-direct-tls-default-port {direct TLS with no port given dials 5223} \
+    {*}$common \
+    -body {
+        c configure -host xmpp.example.org -port 0 -tls direct
+        c connect
+        c.base get_targets
+    } -result {{xmpp.example.org 5223 direct}}
+
+test conn-needs-domain {connect without a domain is an error} \
+    {*}$common \
+    -body {
+        c configure -domain ""
+        catch {c connect} msg
+        set msg
+    } -result {conn: -domain is required}
+
+test conn-none-warns {a plaintext connect says so in the log} \
+    {*}$common \
+    -body {
+        c configure -tls none
+        conn_capture_log
+        c connect
+        list [c.base get_targets] [conn_logged warning]
+    } -result {{{test.example.com 5222 none}} {{no TLS: password and messages unencrypted}}}
 
 test conn-transport-error-logs {a transport error names the endpoint and the reason} \
     {*}$common \
@@ -1352,7 +1402,7 @@ test conn-sm-queue-overflow-triggers-reconnect {SM queue overflow triggers disco
         set _temitted {}
         jlog configure -logproc {apply {{msg} {}}}
         conn c \
-            -host test.example.com -port 5222 \
+            -domain test.example.com -port 5222 \
             -username user -password pass -resource res \
             -autoreconnect 1 \
             -emit         {apply {{args} {lappend ::_temitted $args}}} \
@@ -1392,7 +1442,7 @@ test conn-sm-queue-overflow-during-flush {SM overflow during FlushWriteBuffer pr
         set _temitted {}
         jlog configure -logproc {apply {{msg} {}}}
         conn c \
-            -host test.example.com -port 5222 \
+            -domain test.example.com -port 5222 \
             -username user -password pass -resource res \
             -autoreconnect 1 \
             -emit         {apply {{args} {lappend ::_temitted $args}}} \

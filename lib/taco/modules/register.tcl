@@ -8,7 +8,7 @@ if 0 {
     tacky listen register <Success> $cmd
     tacky listen register <Error> $cmd
 
-    tacky register connect -host example.com
+    tacky register connect -domain example.com
     # → <Form> fires
     # → set data [tacky register form]
     # → user fills in fields
@@ -19,9 +19,10 @@ if 0 {
 
     == Methods ==
 
-    tacky register connect -host $h ?-port $p? ?-websocket_url $u? ?-token $tok?
+    tacky register connect -domain $d ?-host $h? ?-port $p? ?-tls $t? ?-srv $s?
+                           ?-websocket_url $u? ?-token $tok?
         → Start registration handshake. Fires <Form> on success.
-          -websocket_url works as an account's does.
+          The other options work as an account's do.
 
     tacky register form ?-token $tok?
         → Returns the form as a dict (see lib/taco/modules/form.tcl).
@@ -60,8 +61,12 @@ snit::type taco_register {
     }
 
     method connect {args} {
-        array set opts {-port 5222 -token "" -websocket_url ""}
+        array set opts {-host "" -port 0 -tls auto -srv 1 -nameservers ""
+                        -token "" -websocket_url ""}
         array set opts $args
+        if {![info exists opts(-domain)] || $opts(-domain) eq ""} {
+            error "missing -domain"
+        }
         set transport tcp
         catch {set transport [$options(-taco) cget -transport]}
 
@@ -70,7 +75,8 @@ snit::type taco_register {
         }
 
         set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
-            -host $opts(-host) -port $opts(-port) \
+            -domain $opts(-domain) -host $opts(-host) -port $opts(-port) \
+            -tls $opts(-tls) -srv $opts(-srv) -nameservers $opts(-nameservers) \
             -transport $transport -ws-url $opts(-websocket_url) \
             -callback [mymethod OnSessionEvent $opts(-token)]]
         $Sessions($opts(-token)) connect
@@ -132,8 +138,13 @@ snit::type taco_register {
 snit::type taco_register_session {
     component conn -public conn
 
+    # As conn's options of the same names
+    option -domain -default ""
     option -host -default ""
-    option -port -default 5222
+    option -port -default 0
+    option -tls -default auto
+    option -srv -default 1
+    option -nameservers -default ""
     # Passed to the bareconn; see baseconn.
     option -transport -default tcp
     option -ws-url -default ""
@@ -144,6 +155,7 @@ snit::type taco_register_session {
     variable currentForm ""
     variable mediaBytes {}
     variable submitting 0
+    variable dialId ""
 
     # The legacy branch turns a field's var into an element name, so only
     # the XEP-0077 set is allowed through; the server picks these strings.
@@ -157,6 +169,7 @@ snit::type taco_register_session {
     }
 
     destructor {
+        if {$dialId ne ""} { dial::cancel $dialId }
         if {[info commands $self.conn] ne ""} {
             $conn close
             $conn destroy
@@ -171,8 +184,21 @@ snit::type taco_register_session {
             -onready [mymethod OnReady] \
             -header-command [mymethod OnHeader] \
             -onstanza [mymethod OnStanza] \
-            -ondisconnect [mymethod OnError]
-        $conn connect $options(-host) $options(-port)
+            -ondisconnect [mymethod OnError] \
+            -domain $options(-domain)
+        if {$options(-transport) eq "websocket"} {
+            $conn connectTargets {}
+            return
+        }
+        set dialId [dial::targets -domain $options(-domain) \
+            -host $options(-host) -port $options(-port) -tls $options(-tls) \
+            -srv $options(-srv) -nameservers $options(-nameservers) \
+            -command [mymethod OnTargets]]
+    }
+
+    method OnTargets {targets} {
+        set dialId ""
+        $conn connectTargets $targets
     }
 
     method form {} {
@@ -243,7 +269,7 @@ snit::type taco_register_session {
     # --- Internal handlers ---
 
     method OnReady {} {
-        $conn write [::jab::header "" to $options(-host)]
+        $conn write [::jab::header "" to $options(-domain)]
         set headerSent 1
     }
 

@@ -40,7 +40,7 @@ proc ::test::omemo_unit::publishedSpk {written} {
     return $out
 }
 
-# taco_client's constructor derives -jid from -username + -host and
+# taco_client's constructor derives -jid from -username + -domain and
 # clobbers any constructor-provided -jid (client.tcl line 42), so we
 # always set -jid via `c configure` in -extra-setup after construction.
 set jid_common [tacky_env -taco-client {-db-path :memory:} -extra-setup {
@@ -212,7 +212,7 @@ test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} 
 test omemo-unit-offline-getters-answer {getters work without OnReady} -setup {
     tacky_type create ::tacky
     sqlite3 omemodb2 :memory:
-    taco_client c1 -db omemodb2 -username juliet -host capulet.lit
+    taco_client c1 -db omemodb2 -username juliet -domain capulet.lit
     c1 omemo OnReady
     set d1 [c1 omemo device_id]
     set fp1 [c1 omemo own_fingerprint]
@@ -222,7 +222,7 @@ test omemo-unit-offline-getters-answer {getters work without OnReady} -setup {
         VALUES('juliet@capulet.lit','juliet@capulet.lit',7,x'00','undecided',1,1)
     }
     c1 destroy
-    taco_client c2 -db omemodb2 -username juliet -host capulet.lit
+    taco_client c2 -db omemodb2 -username juliet -domain capulet.lit
 } -body {
     list dev_match [expr {[c2 omemo device_id] == $d1}] \
         fp_match [expr {[c2 omemo own_fingerprint] eq $fp1}] \

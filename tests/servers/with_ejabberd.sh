@@ -22,10 +22,11 @@ MYSQL_USER="ejabberd"
 MYSQL_PASS="ejabberd"
 MYSQL_ROOT_PASS="root"
 
-lib_pick_ports XMPP_PORT HTTP_PORT MYSQL_PORT ERL_DIST_PORT
+lib_pick_ports XMPP_PORT XMPP_TLS_PORT HTTP_PORT MYSQL_PORT ERL_DIST_PORT
 
 export XMPP_SERVER="ejabberd"
 export XMPP_PORT
+export XMPP_TLS_PORT
 # mod_stream_mgmt is in the config below: tests that need it check this.
 export XMPP_SM=1
 
@@ -84,6 +85,15 @@ listen:
     access: c2s
     starttls: true
     starttls_required: false
+  -
+    # Direct TLS (XEP-0368)
+    port: ${XMPP_TLS_PORT}
+    ip: "::"
+    module: ejabberd_c2s
+    max_stanza_size: 262144
+    shaper: c2s_shaper
+    access: c2s
+    tls: true
   -
     port: ${HTTP_PORT}
     ip: "::"

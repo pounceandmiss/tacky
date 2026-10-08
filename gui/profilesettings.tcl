@@ -1,6 +1,7 @@
 if 0 {
-    profilesettings - form for editing profile name, avatar, and the password
-    Tacky logs in with, with a way into changepassworddialog.
+    profilesettings - form for editing profile name, avatar, the password
+    Tacky logs in with (with a way into changepassworddialog), and where the
+    account connects.
 
     Usage:
         profilesettings open romeo@montague.lit
@@ -32,6 +33,8 @@ snit::widget profilesettings {
 
     # Likewise for the stored login password.
     variable savedPass ""
+
+    variable connRefused 0
 
     typemethod open {account} {
         set top .profile_[path_safe $account]
@@ -101,22 +104,31 @@ snit::widget profilesettings {
         grid $win.passentry  -row 2 -column 2 -sticky ew -padx 4 -pady 4
         grid $win.passchange -row 3 -column 2 -sticky w -padx 4 -pady 4
 
+        # --- Server connection: saved by its button ---
+        ttk::label $win.connlbl -text "Server Connection"
+        connectionfields $win.connection -collapsible 0
+        ttk::button $win.connsave -text "Save connection settings" \
+            -command [mymethod SaveConnection]
+        grid $win.connlbl    -row 4 -column 1 -sticky nw -padx 4 -pady 4
+        grid $win.connection -row 4 -column 2 -sticky ew -padx 4 -pady 4
+        grid $win.connsave   -row 5 -column 2 -sticky w -padx 4 -pady 4
+
         # --- Status label ---
         ttk::label $win.status -text ""
-        grid $win.status -row 4 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
+        grid $win.status -row 6 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
 
         # --- OMEMO own keys ---
         ttk::separator $win.omemosep -orient horizontal
-        grid $win.omemosep -row 5 -column 0 -columnspan 3 -sticky ew -pady {8 4}
+        grid $win.omemosep -row 7 -column 0 -columnspan 3 -sticky ew -pady {8 4}
         ttk::label $win.omemolbl -text "My OMEMO keys" \
             -font {Helvetica 12 bold}
-        grid $win.omemolbl -row 6 -column 0 -columnspan 3 -sticky w -padx 4
+        grid $win.omemolbl -row 8 -column 0 -columnspan 3 -sticky w -padx 4
         omemoownkeys $win.omemokeys -acc $acc
-        grid $win.omemokeys -row 7 -column 0 -columnspan 3 -sticky nsew \
+        grid $win.omemokeys -row 9 -column 0 -columnspan 3 -sticky nsew \
             -padx 4 -pady 4
 
         grid columnconfigure $win 2 -weight 1
-        grid rowconfigure $win 7 -weight 1
+        grid rowconfigure $win 9 -weight 1
 
         # Nick: load + stay live
         $t nick get -acc $acc -jid $acc \
@@ -125,6 +137,7 @@ snit::widget profilesettings {
             [mymethod OnNickChanged]
 
         $self LoadPass
+        $self LoadConnection
 
         # Avatar: load + stay live
         set img [avatarcache track \
@@ -171,6 +184,15 @@ snit::widget profilesettings {
     method OnPass {pass} {
         set savedPass $pass
         $self RevertPass
+    }
+
+    method LoadConnection {} {
+        $options(-tacky) account get -acc $options(-acc) \
+            -tag $win -command [mymethod OnConnection]
+    }
+
+    method OnConnection {fields} {
+        $win.connection load $fields
     }
 
     method OnAvatar {img} {
@@ -229,6 +251,28 @@ snit::widget profilesettings {
     method RevertPass {} {
         $win.passentry delete 0 end
         $win.passentry insert 0 $savedPass
+    }
+
+    # set replies only on error; the get queued behind it says when it's done
+    method SaveConnection {} {
+        set connRefused 0
+        $options(-tacky) account set -acc $options(-acc) \
+            {*}[$win.connection args] \
+            -tag $win -onerror [mymethod OnConnectionError]
+        $options(-tacky) account get -acc $options(-acc) \
+            -tag $win -command [mymethod OnConnectionSaved]
+    }
+
+    method OnConnectionError {message} {
+        set connRefused 1
+        $self OnResult "Server connection" [list error $message]
+    }
+
+    method OnConnectionSaved {fields} {
+        $win.connection load $fields
+        if {!$connRefused} {
+            $self OnResult "Server connection" [list ok ""]
+        }
     }
 
     method OnPassSaved {args} {
