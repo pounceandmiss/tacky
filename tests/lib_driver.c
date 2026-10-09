@@ -92,12 +92,59 @@ static int churn_cycle(int n) {
     return 1;
 }
 
+/* No callback after tacky_destroy returns, even when a deep queue outlasts
+ * its bounded wait. */
+struct late_ctx {
+    volatile int destroyed;
+    volatile int late;   /* callbacks that ran after destroy returned */
+};
+
+static void on_emit_late(void *ud, const char *json, size_t len) {
+    struct late_ctx *c = (struct late_ctx *)ud;
+    (void)json;
+    (void)len;
+    if (c->destroyed)
+        c->late++;
+}
+
+static int late_cycle(int n) {
+    /* Static: a leaked callback would write here after we return. */
+    static struct late_ctx c;
+    char req[64];
+    int i;
+
+    printf("cycle %d: destroy with a deep queue\n", n);
+    tacky *t = tacky_create(NULL, on_emit_late, &c);
+    if (!t) {
+        fprintf(stderr, "cycle %d: FAIL tacky_create returned NULL\n", n);
+        return 0;
+    }
+    for (i = 1; i <= 200000; i++) {
+        snprintf(req, sizeof req, "[\"account\",\"list\",{},%d]", i);
+        tacky_send(t, req, strlen(req));
+    }
+    tacky_destroy(t);
+    c.destroyed = 1;
+
+    /* Longer than the queue takes to drain on a slow machine. */
+    struct timespec pause = {5, 0};
+    nanosleep(&pause, NULL);
+    if (c.late) {
+        fprintf(stderr, "cycle %d: FAIL %d callbacks after tacky_destroy\n", n, c.late);
+        return 0;
+    }
+    printf("cycle %d: ok\n", n);
+    return 1;
+}
+
 int main(void) {
     for (int i = 1; i <= 3; i++) {
         if (!one_cycle(i))
             return 1;
     }
     if (!churn_cycle(4))
+        return 1;
+    if (!late_cycle(5))
         return 1;
     printf("PASS: all cycles ok\n");
     return 0;
