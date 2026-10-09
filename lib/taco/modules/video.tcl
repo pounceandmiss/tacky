@@ -31,9 +31,8 @@ snit::type taco_video {
         $self configurelist $args
     }
 
-    # Plain method, not tackymethod: asynchronous, for the reasons in
-    # taco_audio's enumerateDevices.
-    method enumerateCameras {args} {
+    # -async, for the reasons in taco_audio's enumerateDevices.
+    tackymethod -async enumerateCameras {args} {
         set cmd ""
         if {[dict exists $args -command]} { set cmd [dict get $args -command] }
         set Enumerated {}

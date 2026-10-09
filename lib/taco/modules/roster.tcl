@@ -80,7 +80,7 @@ snit::type taco_roster {
     }
 
     # Request roster from server
-    method request {args} {
+    tackymethod -noreturn request {args} {
         set verAttr {}
         $client db eval {SELECT value FROM roster_ver} {
             dict set verAttr -ver $value
@@ -91,7 +91,7 @@ snit::type taco_roster {
     }
 
     # Add or update a roster item (atomic replace per RFC 6121 2.4)
-    method item {args} {
+    tackymethod -noreturn item {args} {
         set jid [jid norm [dict get $args -jid]]
         set hasGroups [dict exists $args -groups]
         array set opts {-name "" -groups {}}
@@ -125,7 +125,7 @@ snit::type taco_roster {
     }
 
     # Remove a roster item
-    method remove {args} {
+    tackymethod -noreturn remove {args} {
         set jid [jid norm [dict get $args -jid]]
         $client iq request -type set -payload [j query -ns jabber:iq:roster {
             j item -jid $jid -subscription remove
@@ -223,29 +223,30 @@ snit::type taco_roster {
         }
     }
 
-    method subscribe {args} {
+    tackymethod -noreturn subscribe {args} {
         set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type subscribe -to $jid]
     }
 
-    method approve {args} {
+    tackymethod -noreturn approve {args} {
         set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type subscribed -to $jid]
     }
 
-    method unsubscribe {args} {
+    tackymethod -noreturn unsubscribe {args} {
         set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type unsubscribe -to $jid]
     }
 
-    method deny {args} {
+    tackymethod -noreturn deny {args} {
         set jid [jid norm [dict get $args -jid]]
         $client write [j presence -type unsubscribed -to $jid]
     }
 
     # Convenience: add roster item + request subscription in one call
-    method add {args} {
-        $self item {*}$args
+    tackymethod -noreturn add {args} {
+        # add answers itself, not item.
+        $self item {*}[dict remove $args -command -onerror]
         $self subscribe -jid [dict get $args -jid]
     }
 

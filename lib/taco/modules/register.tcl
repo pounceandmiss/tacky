@@ -60,7 +60,7 @@ snit::type taco_register {
         }
     }
 
-    method connect {args} {
+    tackymethod -noreturn connect {args} {
         array set opts {-host "" -port 0 -tls auto -srv 1 -nameservers ""
                         -token "" -websocket_url ""}
         array set opts $args
@@ -96,14 +96,14 @@ snit::type taco_register {
         $Sessions($opts(-token)) media -var $opts(-var)
     }
 
-    method submit {args} {
+    tackymethod -noreturn submit {args} {
         array set opts {-token ""}
         array set opts $args
         $self RequireSession $opts(-token)
         $Sessions($opts(-token)) submit -values $opts(-values)
     }
 
-    method cancel {args} {
+    tackymethod -noreturn cancel {args} {
         array set opts {-token ""}
         array set opts $args
         if {[info exists Sessions($opts(-token))]} {

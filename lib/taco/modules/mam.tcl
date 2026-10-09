@@ -102,11 +102,8 @@ snit::type taco_mam {
             $self SendQuery $queryId $opts
         } elseif {$ftVal ne "" && ![info exists FieldCache($cacheKey)]} {
             # Discover fulltext field before sending query
-            set ffArgs [list -command [mymethod OnFieldsThenQuery $queryId $opts]]
-            if {$cacheKey ne ""} {
-                lappend ffArgs -to $cacheKey
-            }
-            $self formfields {*}$ffArgs
+            $self RequestFields $cacheKey \
+                [mymethod OnFieldsThenQuery $queryId $opts] ""
         } else {
             $self SendQuery $queryId $opts
         }
@@ -126,11 +123,7 @@ snit::type taco_mam {
             return
         }
 
-        set ffArgs [list -command [mymethod OnDiscoverFields $toJid]]
-        if {$toJid ne ""} {
-            lappend ffArgs -to $toJid
-        }
-        $self formfields {*}$ffArgs
+        $self RequestFields $toJid [mymethod OnDiscoverFields $toJid] ""
     }
 
     # fulltextVar ?target?
@@ -142,12 +135,13 @@ snit::type taco_mam {
         return ""
     }
 
-    # fulltextSupported -chat $jid -command cb
+    # fulltextSupported -chat $jid -command cb ?-onerror cb?
     # Whether this chat's archive advertises a fulltext field, discovering
     # and caching it first when unknown. Routes like queryChat: a room asks
-    # its own archive, a DM the user's. Callback receives a boolean.
-    method fulltextSupported {args} {
-        set defaults [dict create -chat "" -command ""]
+    # its own archive, a DM the user's. Callback receives a boolean; an IQ
+    # error goes to -onerror and isn't cached.
+    tackymethod -async fulltextSupported {args} {
+        set defaults [dict create -chat "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
         set callback [dict get $opts -command]
         if {![regexp {(.*)\?join$} [dict get $opts -chat] -> target]} {
@@ -159,11 +153,9 @@ snit::type taco_mam {
             return
         }
 
-        set ffArgs [list -command [mymethod OnSupportedFields $target $callback]]
-        if {$target ne ""} {
-            lappend ffArgs -to $target
-        }
-        $self formfields {*}$ffArgs
+        $self RequestFields $target \
+            [mymethod OnSupportedFields $target $callback] \
+            [dict get $opts -onerror]
     }
 
     method OnSupportedFields {target callback fields} {
@@ -304,20 +296,21 @@ snit::type taco_mam {
         set FieldCache($cacheKey) ""
     }
 
-    # metadata ?-to jid? -command cmd
+    # metadata ?-to jid? -command cmd ?-onerror cmd?
     # Queries the MAM archive metadata (oldest/newest message info).
     # Callback receives dict: start_id start_timestamp end_id end_timestamp
     # Empty archive: all values are empty strings.
-    # IQ error: dict includes {error 1}.
-    method metadata {args} {
-        set defaults [dict create -to "" -command ""]
+    # IQ error: -onerror, with the server's text or condition.
+    tackymethod -async metadata {args} {
+        set defaults [dict create -to "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
 
         set payload [j metadata -ns urn:xmpp:mam:2]
 
         set iqArgs [list -type get \
                         -payload $payload \
-                        -command [mymethod OnMetadataResponse [dict get $opts -command]]]
+                        -command [mymethod OnMetadataResponse \
+                            [dict get $opts -command] [dict get $opts -onerror]]]
         set toJid [dict get $opts -to]
         if {$toJid ne ""} {
             lappend iqArgs -to $toJid
@@ -326,20 +319,10 @@ snit::type taco_mam {
         $client iq request {*}$iqArgs
     }
 
-    method OnMetadataResponse {callback stanza} {
+    method OnMetadataResponse {callback onerror stanza} {
         set iqType [xsearch $stanza -get @type]
         if {$iqType eq "error"} {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} {
-                set errChild [xsearch $stanza error 0 -get node]
-                if {$errChild ne ""} {
-                    set errText [dict get $errChild tag]
-                }
-            }
-            {*}$callback [dict create \
-                start_id "" start_timestamp "" \
-                end_id "" end_timestamp "" \
-                error 1 error_text $errText]
+            if {$onerror ne ""} { {*}$onerror [stanza_error_text $stanza] }
             return
         }
 
@@ -370,32 +353,38 @@ snit::type taco_mam {
             end_id $endId end_timestamp $endTs]
     }
 
-    # formfields ?-to jid? -command cmd
+    # formfields ?-to jid? -command cmd ?-onerror cmd?
     # Queries the MAM archive for supported query filter fields.
     # Callback receives a list of field var names
     # (e.g. {with start end {{urn:xmpp:fulltext:0}fulltext}}).
-    # On error, callback receives empty list.
-    method formfields {args} {
-        set defaults [dict create -to "" -command ""]
+    # IQ error: -onerror, with the server's text or condition.
+    tackymethod -async formfields {args} {
+        set defaults [dict create -to "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
+        $self RequestFields [dict get $opts -to] \
+            [dict get $opts -command] [dict get $opts -onerror]
+    }
 
-        set payload [j query -ns urn:xmpp:mam:2]
-
+    # Field list of $toJid's archive ("" = ours). Without $onerror, an IQ
+    # error answers {} - "no fulltext" to our own callers.
+    method RequestFields {toJid command onerror} {
         set iqArgs [list -type get \
-                        -payload $payload \
-                        -command [mymethod OnFormFields [dict get $opts -command]]]
-        set toJid [dict get $opts -to]
+                        -payload [j query -ns urn:xmpp:mam:2] \
+                        -command [mymethod OnFormFields $command $onerror]]
         if {$toJid ne ""} {
             lappend iqArgs -to $toJid
         }
-
         $client iq request {*}$iqArgs
     }
 
-    method OnFormFields {callback stanza} {
+    method OnFormFields {callback onerror stanza} {
         set iqType [xsearch $stanza -get @type]
         if {$iqType eq "error"} {
-            {*}$callback {}
+            if {$onerror ne ""} {
+                {*}$onerror [stanza_error_text $stanza]
+            } else {
+                {*}$callback {}
+            }
             return
         }
 

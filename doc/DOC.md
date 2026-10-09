@@ -178,10 +178,12 @@ either comes back as an error reply.
     ["account", "add", {"acc": "user@example.com", "password": "secret"}]
     ["account", "list", {}, 1]
 
-A request with a token gets at most one reply: a result if it worked, an
-error if it didn't, or nothing at all if you cancelled it. Not every
-method replies - `message send` does its work through the event stream and
-never answers the token.
+A request with a token gets exactly one reply: a result if it worked, an
+error if it didn't. A method shown here without `->` replies `""` once it
+has done its part - which for most of them is to start something whose
+outcome arrives as events. A request cancelled by its `tag` is answered
+with the error `cancelled`, and disabling or removing an account answers
+the requests still waiting on it with an error.
 
 A request that needs the server waits for one minute of connected time
 before giving up with an error. The clock stops while the account is
@@ -661,13 +663,12 @@ next connect.
 ## caps
 
     caps softwareVersion {to: string} -> {name: string, version: string,
-                                          os: string, error: bool,
-                                          error_text: string}
+                                          os: string}
 
 XEP-0092: what software an entity runs, self-reported as a free-text name and
 version. `to` is a full JID - a bare one answers for the account itself,
-omitting it asks your own server. An entity that will not answer comes back as
-`error: true` with a reason in `error_text`, not as an `["error", ...]` reply.
+omitting it asks your own server. An entity that will not answer is an error
+reply, with the reason it gave.
 
 One round trip per resource, so it is a request rather than something the
 backend collects. What a resource supports needs no call: `presence resources`
@@ -675,8 +676,8 @@ carries it in `client`.
 
 ## message
 
-    message send {chat: string, body: string, reply_to_ts?: int}
-    message sendFile {chat: string, path: string}
+    message send {chat: string, body: string, reply_to_ts?: int}            -> int   the new row's timestamp
+    message sendFile {chat: string, path: string}                           -> int   the new row's timestamp
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
     message goto {chat: string, date: int, source: "local" | "remote", limit?: int, tag?: string}  -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}            -> goto_result
@@ -722,8 +723,7 @@ carries it in `client`.
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool,
-                     last: int, last_chat_jid: string, last_id: string,
-                     error?: bool, unsupported?: bool}
+                     last: int, last_chat_jid: string, last_id: string}
 
 An incoming text message, as it arrives on `<New>`:
 
@@ -851,6 +851,14 @@ interrupting the user over is [notify](#notify)'s job.
 
     muc acceptInvite  {chat: string, timestamp: int}
     muc declineInvite {chat: string, timestamp: int, reason?: string}
+    muc invite        {jid: string, to: string, reason?: string}
+    muc requestVoice  {jid: string}
+    muc kick          {jid: string, nick: string, reason?: string}
+    muc role          {jid: string, nick: string, role: string, reason?: string}
+    muc affiliation   {jid: string, target: string, affiliation: string, reason?: string}
+    muc createInstant {jid: string}        create the room with its default config
+    muc destroyRoom   {jid: string, reason?: string, altRoom?: string, password?: string}
+    muc discoverRooms {jid: string}     -> [room_item]   rooms a service lists
     muc roomInfo      {jid: string} -> muc_room_info
     muc roomPrivacy   {jid: string} -> [string]   why its readers are not known; [] when they are
     muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
@@ -865,12 +873,17 @@ interrupting the user over is [notify](#notify)'s job.
                  occupant_id: string, caps: {...}, call: {...},
                  keys: member_keys | {}}
     room_caps = {request_voice: bool, destroy: bool}
+    room_item = {jid: string, name: string, occupants: int | ""}
 
 Events:
 
     muc <RoomInfo>       {jid: string, info: muc_room_info}
     muc <MembersChanged> {jid: string}
     muc <PeopleChanged>  {jid: string}
+
+`kick`, `role`, `affiliation`, `createInstant` and `destroyRoom` answer
+`""` once the room has accepted, and an error reply with a reason when it
+refuses.
 
 `roomInfo` is what the room's disco#info said: on this connection (`live`),
 or the last time it was asked (`known`). `members` is everyone with an
@@ -993,9 +1006,11 @@ room's.
 - `fulltextSupported` - whether a server-side search is worth offering (see
   [The chat window](#the-chat-window)).
 - `metadata` - the oldest and newest entries; every value `""` for an empty
-  archive, plus an `error: true` key on an IQ error.
-- `formfields` - the filter fields the archive advertises, empty on error. A
-  fulltext field among them is what `fulltextSupported` checks for.
+  archive.
+- `formfields` - the filter fields the archive advertises. A fulltext field
+  among them is what `fulltextSupported` checks for.
+
+An archive that refuses or can't be reached is an error reply for all three.
 
 ## omemo
 
@@ -1009,7 +1024,7 @@ room's.
     omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
     omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
     omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room
-    omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles (replies on completion)
+    omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles; replies on completion
     omemo roomStatus {jid: string}    -> omemo_room_status   jid is a room chat (room?join)
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
@@ -1127,7 +1142,7 @@ Event:
 
     file download {acc: string, url?: string, path?: string, auto?: bool,
                    from?: string}
-                                                -> string  local path ("" on failure)
+                                                -> string  local path ("" when held back)
     file cancel {acc: string, id: int}
     file cancel {acc: string, url?: string, path?: string}
     file uncache {acc: string, url?: string, path?: string}
@@ -1139,8 +1154,10 @@ served from the copy already there. A `url` is never opened as a path, and only
 `http`, `https` and `aesgcm` are fetched; anything else fails. An attachment
 with both is served from its `path` while that file exists and from its `url`
 once it does not. Two downloads of the same source collapse into one. It
-handles the `aesgcm://` scheme (XEP-0454) for you. `cancel` aborts a transfer
-in either direction - it ends `idle`. Cancel an upload by `id`, a download by
+handles the `aesgcm://` scheme (XEP-0454) for you. A download that fails is
+an error reply; one that `auto` holds back (autofetch policy or size) answers
+`""`. `cancel` aborts a transfer in either direction - it ends `idle`, and a
+download waiting on it is answered with the error `cancelled`. Cancel an upload by `id`, a download by
 the source you gave it - which stops the coalesced fetch for every caller
 waiting on it. `uncache` deletes the downloaded file; it only
 ever touches the cache, never the file a `path` names. See
@@ -1758,9 +1775,8 @@ Retracted messages never match.
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
 `before_id: last_id`, the archive's own cursor.
 Few servers implement the field, so check first with `mam fulltextSupported
-{chat: string} -> bool`; a search against an archive that advertises none comes
-back empty with `error: true` and `unsupported: true` rather than silently
-matching everything. `field` selects the full-text form field explicitly.
+{chat: string} -> bool`; a search against an archive that advertises none is an
+error reply rather than a silent match of everything. `field` selects the full-text form field explicitly.
 
 `source: both` runs the remote leg for its cache-filling effect - hits are
 stored on the way through - and then answers from the store, so one matching

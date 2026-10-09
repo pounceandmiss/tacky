@@ -183,12 +183,14 @@ jsonify_type jsonify \
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
     } \
     -schemas {
+        message/send            int
+        message/sendFile        int
         message/history         {list message}
         message/goto            goto_result
         message/gotoReply       goto_result
-        message/search          {dict {messages {list message} complete bool last int last_chat_jid string last_id string error bool unsupported bool}}
+        message/search          {dict {messages {list message} complete bool last int last_chat_jid string last_id string}}
         muc/getList             {list {dict {}}}
-        muc/discoverRooms       {list {dict {}}}
+        muc/discoverRooms       {list {dict {occupants int}}}
         muc/reservedNick        string
         muc/getSubject          string
         muc/myNick              string
@@ -224,7 +226,7 @@ jsonify_type jsonify \
         presence/get            presence
         presence/isOnline       bool
         presence/resources      {map presence}
-        caps/softwareVersion    {dict {error bool}}
+        caps/softwareVersion    {dict {}}
         audio/getVolume         double
         audio/getPreferredDevice string
         audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
@@ -255,7 +257,7 @@ jsonify_type jsonify \
         message/rawxml          string
         message/ownRead         {dict {timestamp int unread int}}
         mam/query               {dict {messages list complete bool}}
-        mam/metadata            {dict {start_timestamp int end_timestamp int error bool}}
+        mam/metadata            {dict {start_timestamp int end_timestamp int}}
         mam/formfields          list
         mam/fulltextSupported   bool
         omemo/trustList         {list omemo_trust}

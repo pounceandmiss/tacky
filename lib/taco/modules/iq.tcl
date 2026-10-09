@@ -183,6 +183,20 @@ snit::type iq {
     # Answer with the error stanza a refusing server would have sent, so
     # existing error branches handle it unchanged.
     method OnTimeout {key} {
+        $self AnswerError $key wait remote-server-timeout \
+            "No response from the server"
+    }
+
+    # Fails every outstanding request: the account is going away. Not
+    # service-unavailable, which callers read as a missing feature.
+    method failAll {text} {
+        foreach key [array names ResponseHandlers] {
+            if {![info exists Pending($key)]} continue
+            $self AnswerError $key cancel undefined-condition $text
+        }
+    }
+
+    method AnswerError {key errType condition text} {
         if {![info exists ResponseHandlers($key)]} return
         set handler $ResponseHandlers($key)
         lassign $Pending($key) _timeout to id
@@ -192,10 +206,9 @@ snit::type iq {
             set optionalFrom [list -from $to]
         }
         {*}$handler [j iq {*}$optionalFrom -type error -id $id {
-            j error -type wait {
-                j remote-server-timeout -ns urn:ietf:params:xml:ns:xmpp-stanzas
-                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas \
-                    -body "No response from the server"
+            j error -type $errType {
+                j $condition -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                j text -ns urn:ietf:params:xml:ns:xmpp-stanzas -body $text
             }
         }]
     }

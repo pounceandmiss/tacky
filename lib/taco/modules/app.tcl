@@ -11,7 +11,7 @@ snit::type taco_app {
         $self configurelist $args
     }
 
-    method setActive {args} {
+    tackymethod -noreturn setActive {args} {
         set now [string is true -strict [dict get $args -active]]
         if {$now == $active} return
         set active $now

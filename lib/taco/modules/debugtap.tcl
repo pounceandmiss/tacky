@@ -28,7 +28,7 @@ snit::type taco_debugtap {
         return $id
     }
 
-    method off {args} {
+    tackymethod -noreturn off {args} {
         set tapId [dict get $args -tap]
         if {![info exists Taps($tapId)]} return
         set connKey [dict get $Taps($tapId) connKey]
@@ -46,9 +46,19 @@ snit::type taco_debugtap {
         unset Taps($tapId)
     }
 
-    method write {args} {
+    tackymethod -noreturn write {args} {
         array set opts $args
-        {*}[dict get $Taps($opts(-tap)) conn] writeStanza $opts(-stanza)
+        if {![info exists Taps($opts(-tap))]} {
+            error "no debug tap $opts(-tap)"
+        }
+        # A parsed node, or XML text from a JSON frontend.
+        set stanza $opts(-stanza)
+        if {[string match <* [string trimleft $stanza]]} {
+            if {[catch {xmppreader string -zap yes $stanza} stanza]} {
+                error "not a stanza: $stanza"
+            }
+        }
+        {*}[dict get $Taps($opts(-tap)) conn] writeStanza $stanza
     }
 
     method OnDebugStanza {connKey dir stanza} {

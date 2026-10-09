@@ -87,9 +87,8 @@ snit::type taco_blocking {
     tackymethod supported {args} { return $Supported }
     tackymethod list {args} { return $BlockedList }
 
-    # Not tackymethods: they answer with the IQ result, so -command and
-    # -onerror are handled in OnOperationResult, as in taco_avatar.
-    method block {args} {
+    # -async: OnOperationResult answers.
+    tackymethod -async block {args} {
         array set opts {-jid {} -command "" -onerror ""}
         array set opts $args
         if {[llength $opts(-jid)] == 0} {
@@ -105,7 +104,7 @@ snit::type taco_blocking {
     }
 
     # Empty -jid unblocks everyone (XEP-0191 §3.4).
-    method unblock {args} {
+    tackymethod -async unblock {args} {
         array set opts {-jid {} -command "" -onerror ""}
         array set opts $args
         set jids {}
@@ -117,7 +116,7 @@ snit::type taco_blocking {
             -command [mymethod OnOperationResult $opts(-command) $opts(-onerror)]
     }
 
-    method unblockAll {args} {
+    tackymethod -async unblockAll {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
         $self unblock -command $opts(-command) -onerror $opts(-onerror)

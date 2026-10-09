@@ -3106,24 +3106,23 @@ test message-search-cancel-suppresses-callback {cancel tag prevents search callb
         set ::result
     } -result UNTOUCHED
 
-test message-search-error-returns-error-dict {search error returns error dict} \
+test message-search-error-is-an-error {an archive error answers -onerror, not -command} \
     {*}$msg_common \
     -body {
         msg_prime_search
-        set result {}
+        set ::result {}
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" \
-            -command [list apply {{r} { set ::result $r }}]
+            -command [list apply {{r} { set ::result [list ok $r] }}] \
+            -onerror [list apply {{m} { set ::result [list error $m] }}]
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         $::_client iq feed [j iq -type error -id $iqId {
             j error -type cancel { j feature-not-implemented }
         }]
 
-        list [dict get $result error] \
-             [dict get $result messages] \
-             [dict get $result complete]
-    } -result {1 {} 0}
+        set ::result
+    } -result {error {This server keeps no message archive}}
 
 # Search: hole wrapping
 #
@@ -3449,12 +3448,10 @@ test message-search-remote-unsupported-sends-no-query {an archive advertising no
         set ::result {}
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
-            -command [list apply {{r} { set ::result $r }}]
-        list [mam_query_count] \
-             [dict get $::result error] \
-             [dict get $::result unsupported] \
-             [llength [dict get $::result messages]]
-    } -result {0 1 1 0}
+            -command [list apply {{r} { set ::result [list ok $r] }}] \
+            -onerror [list apply {{m} { set ::result [list error $m] }}]
+        list [mam_query_count] $::result
+    } -result {0 {error {This server can't search its archive}}}
 
 test message-search-remote-unsupported-leaves-cache-alone {a search the archive cannot run stores nothing and holes nothing} \
     {*}$msg_common \

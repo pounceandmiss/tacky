@@ -101,7 +101,7 @@ snit::type taco_bookmarks {
     }
 
     # Request all bookmarks from server
-    method request {args} {
+    tackymethod -noreturn request {args} {
         $client iq request -type get \
             -payload [j pubsub -ns http://jabber.org/protocol/pubsub {
                 j items -node urn:xmpp:bookmarks:1
@@ -111,7 +111,7 @@ snit::type taco_bookmarks {
     # Add or update a bookmark
     # Omitted options are preserved from the DB if the bookmark exists.
     # If -nick is omitted for a new bookmark, defaults to defaultNick.
-    method item {args} {
+    tackymethod -noreturn item {args} {
         # Load existing bookmark or defaults
         array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
         # jid bare canonicalizes chat-JID input (drops a ?join suffix);
@@ -251,7 +251,7 @@ snit::type taco_bookmarks {
     # the bookmark is updated only once the room accepts the nick
     # (OnMucNickChanged); if the room refused it, the next autojoin would
     # otherwise request the refused nick.
-    method nick {args} {
+    tackymethod -noreturn nick {args} {
         array set opts $args
         set opts(-jid) [jid norm [jid bare $opts(-jid)]]
         if {[$client muc isJoined -jid $opts(-jid)]} {
@@ -278,7 +278,7 @@ snit::type taco_bookmarks {
     }
 
     # Leave a room and disable autojoin.
-    method leave {args} {
+    tackymethod -noreturn leave {args} {
         set jid [jid norm [jid bare [dict get $args -jid]]]
         $self item -jid $jid -autojoin 0
         $client muc leave -jid $jid
@@ -468,7 +468,7 @@ snit::type taco_bookmarks {
 
     # Remove a bookmark, leaving the room first if currently joined unless
     # -leave 0 asks to just unstar it and stay.
-    method remove {args} {
+    tackymethod -noreturn remove {args} {
         array set opts {-leave 1}
         array set opts $args
         set jid [jid norm [jid bare $opts(-jid)]]

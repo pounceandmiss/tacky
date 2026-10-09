@@ -348,6 +348,7 @@ snit::type taco_client {
     }
 
     destructor {
+        catch {$iq failAll "account closed"}
         foreach mod $_modules {
             catch {$self.$mod destroy}
         }

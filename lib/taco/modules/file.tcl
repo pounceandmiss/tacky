@@ -150,10 +150,14 @@ snit::type taco_file {
         $self Terminal $id $state $reason
     }
 
-    # Single terminal point for both directions: set state, emit, invoke the
-    # per-transfer commands with the result (getUrl for upload, localpath for
-    # download; "" on anything but done), then drop the registry entry. The
-    # reason is diagnostic; only a failure puts it on the event.
+    method AddWaiter {id command onerror} {
+        if {$command eq "" && $onerror eq ""} return
+        dict lappend Transfers($id) cmds [list $command $onerror]
+    }
+
+    # Single terminal point for both directions. done: -command gets the
+    # url/localpath; failed or cancelled: -onerror (or "" to -command when
+    # there is none); held back: "" to -command.
     method Terminal {id state {reason ""}} {
         if {![info exists Transfers($id)]} return
         if {[dict get $Transfers($id) done]} return
@@ -173,20 +177,31 @@ snit::type taco_file {
             jlog inform "file transfer $state: $reason"
         }
         $self EmitUpdate $id
+        set res ""
+        set err ""
         if {$state eq "done"} {
             set res [expr {[dict get $t direction] eq "upload"
                 ? [dict get $t url] : [dict get $t localpath]}]
-        } else {
-            set res ""
+        } elseif {$state eq "failed"} {
+            set err [expr {$reason ne "" ? $reason : "transfer failed"}]
+        } elseif {$reason eq "cancelled"} {
+            set err cancelled
         }
-        foreach c [dict get $t cmds] { {*}$c $res }
+        foreach w [dict get $t cmds] {
+            lassign $w command onerror
+            if {$err ne "" && $onerror ne ""} {
+                {*}$onerror $err
+            } elseif {$command ne ""} {
+                {*}$command $res
+            }
+        }
         if {[dict get $t direction] eq "download"} {
             catch {unset DownloadByUrl([dict get $t url])}
         }
         unset Transfers($id)
     }
 
-    method cancel {args} {
+    tackymethod -noreturn cancel {args} {
         array set opts {-id "" -url "" -path ""}
         array set opts $args
         set id $opts(-id)
@@ -233,31 +248,30 @@ snit::type taco_file {
     }
 
     # Resolve a download from a file already on disk.
-    method ServeLocal {srcKey src cmd} {
+    method ServeLocal {srcKey src cmd err} {
         set id [$self NewTransfer download $srcKey]
-        if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+        $self AddWaiter $id $cmd $err
         dict set Transfers($id) localpath $src
         $self Terminal $id done
     }
 
-    method download {args} {
-        array set opts {-url "" -path "" -command "" -auto 0 -from ""}
+    tackymethod -async download {args} {
+        array set opts {-url "" -path "" -command "" -onerror "" -auto 0 -from ""}
         array set opts $args
         set url $opts(-url)
         set cmd $opts(-command)
+        set err $opts(-onerror)
         set srcKey [$self SourceKey $opts(-url) $opts(-path)]
 
         # Join an in-flight download of the same source.
         if {[info exists DownloadByUrl($srcKey)]} {
-            if {$cmd ne ""} {
-                dict lappend Transfers($DownloadByUrl($srcKey)) cmds $cmd
-            }
+            $self AddWaiter $DownloadByUrl($srcKey) $cmd $err
             return
         }
 
         # Our own file, while we still have it, is served where it lies.
         if {$opts(-path) ne "" && [file isfile $opts(-path)]} {
-            $self ServeLocal $srcKey $opts(-path) $cmd
+            $self ServeLocal $srcKey $opts(-path) $cmd $err
             return
         }
 
@@ -265,7 +279,7 @@ snit::type taco_file {
         # send whose file has since been deleted. One we cannot fetch ends here.
         if {![is_remote_attachment_url $url]} {
             set id [$self NewTransfer download $srcKey]
-            if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+            $self AddWaiter $id $cmd $err
             $self Terminal $id failed [expr {$url eq ""
                 ? "file not readable" : "unsupported url scheme"}]
             return
@@ -275,7 +289,7 @@ snit::type taco_file {
         # opened where it points.
         set full [$self AttachPath $url]
         if {[file isfile $full]} {
-            $self ServeLocal $srcKey [$self PlainPath $full] $cmd
+            $self ServeLocal $srcKey [$self PlainPath $full] $cmd $err
             return
         }
 
@@ -283,7 +297,7 @@ snit::type taco_file {
         # an image already fetched.
         if {$opts(-auto) && ![$self AutofetchAllowed $opts(-from)]} {
             set id [$self NewTransfer download $srcKey]
-            if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+            $self AddWaiter $id $cmd $err
             $self Terminal $id idle autofetch-blocked
             return
         }
@@ -292,7 +306,7 @@ snit::type taco_file {
         # the ciphertext lands in .part and is decrypted in OnDownloaded.
         set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
         set id [$self NewTransfer download $srcKey "" $max]
-        if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+        $self AddWaiter $id $cmd $err
         set DownloadByUrl($srcKey) $id
         set fetchUrl $url
         set parsed [aesgcm_parse $url]
@@ -301,12 +315,12 @@ snit::type taco_file {
             dict set Transfers($id) mediakey $key
             dict set Transfers($id) mediaiv  $iv
         }
-        file mkdir [file dirname $full]
         # Terminal drops tmpfile, covering every failure path including an
         # abort from inside ProgressCb.
         dict set Transfers($id) tmpfile $full.part
         $self EmitUpdate $id
         if {[catch {
+            file mkdir [file dirname $full]
             set tok [taco_http get $fetchUrl -outfile $full.part \
                 -timeout $TIMEOUT_MS \
                 -progress [mymethod ProgressCb $id] \
@@ -488,7 +502,7 @@ snit::type taco_file {
         set cmd $opts(-command)
 
         set id [$self NewTransfer upload "" $id]
-        if {$cmd ne ""} { dict set Transfers($id) cmds [list $cmd] }
+        $self AddWaiter $id $cmd ""
 
         if {![file isfile $path] || ![file readable $path]} {
             $self Terminal $id failed "file not readable"
@@ -693,7 +707,7 @@ snit::type taco_file {
 
     # Drop the downloaded original for a source. Only ever touches hash-derived
     # paths under our own roots, so the file behind a -path is never at risk.
-    method uncache {args} {
+    tackymethod -noreturn uncache {args} {
         array set opts {-url "" -path ""}
         array set opts $args
         set srcKey [$self SourceKey $opts(-url) $opts(-path)]
