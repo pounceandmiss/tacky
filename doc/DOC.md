@@ -1893,7 +1893,10 @@ keeps a lock it no longer has.
 
 **Message origin** - a decrypted row carries `sender_fp`, the fingerprint of
 the peer device that sent it. Join it against `trustList` for that device's id
-and trust state.
+and trust state. Messages are decrypted and stored whatever the sender's trust;
+flag an `untrusted` or `compromised` sender at draw time, so a later trust
+change applies to old messages too. A `compromised` device's messages arrive as
+an "identity key changed" placeholder rather than their text.
 
 ### Group chats
 

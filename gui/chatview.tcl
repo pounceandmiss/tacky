@@ -83,6 +83,10 @@ snit::widget chatview {
     variable NewestIncoming ""
     variable LastMarkedRead ""
 
+    # Each observed trust list as a dict of fingerprint -> current trust.
+    # In memory only: a row's distrust is read from here at draw time.
+    variable TrustLists -array {}
+
     constructor args {
         $self configurelist $args
         install area using chatarea $win.ca \
@@ -130,6 +134,15 @@ snit::widget chatview {
             -acc $options(-acc) [mymethod OnCatchupDone]
         ::tacky observe -tag $win message <Tail> \
             -acc $options(-acc) -jid $options(-jid) [mymethod OnTail]
+        # The chat's senders, and our own other devices, which the peer's
+        # list doesn't hold.
+        set trustJids [list [expr {$IsMuc
+            ? "[jid bare $options(-jid)]?join" : $options(-jid)}]]
+        if {$options(-acc) ni $trustJids} { lappend trustJids $options(-acc) }
+        foreach tj $trustJids {
+            ::tacky observe -tag $win omemo <TrustList> \
+                -acc $options(-acc) -jid $tj [mymethod OnTrustList]
+        }
         install actions using messageactions ${selfns}::actions \
             -acc $options(-acc) -chat $options(-jid) -tag $win/actions \
             -groupchat $IsMuc -widget $win \
@@ -579,12 +592,51 @@ snit::widget chatview {
             }
         }
         set emsg [$self EnrichMessage $msg]
+        dict set emsg distrusted [$self Distrusted $msg]
         set ajid [dict get $emsg avatar_jid]
         if {$ajid ne ""} {
             $avatars track $ajid
         }
         dict set emsg payload $msg
         return $emsg
+    }
+
+    method Distrusted {msg} {
+        set fp [dict getdef $msg sender_fp ""]
+        if {$fp eq ""} { return 0 }
+        foreach {jid fps} [array get TrustLists] {
+            if {[dict getdef $fps $fp ""] in {untrusted compromised}} {
+                return 1
+            }
+        }
+        return 0
+    }
+
+    # A trust list changed: redraw the rows whose sender went between
+    # distrusted and not.
+    method OnTrustList {ev} {
+        set jid [dict get $ev -jid]
+        set flagged [dict create]
+        foreach key [$area messages keys] {
+            set msg [$area messages get $key]
+            if {[dict getdef $msg sender_fp ""] ne ""} {
+                dict set flagged $key [$self Distrusted $msg]
+            }
+        }
+        set fps [dict create]
+        foreach row [dict get $ev -trustList] {
+            dict set fps [dict get $row fingerprint] [dict get $row trust]
+        }
+        set TrustLists($jid) $fps
+        set changed [dict filter $flagged script {key was} {
+            expr {[$self Distrusted [$area messages get $key]] != $was}
+        }]
+        if {[dict size $changed] == 0} return
+        $self KeepingTail {
+            foreach key [dict keys $changed] {
+                $self Redraw $key [$area messages get $key]
+            }
+        }
     }
 
     # A finished image download is thumbnailed off-thread.

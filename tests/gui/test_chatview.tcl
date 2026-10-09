@@ -1848,3 +1848,48 @@ test chatview-plaintext-resend-drops-the-padlock \
         wait
         list before=$before after=[cv_lock_count]
     } -result {before=1 after=0}
+
+proc cv_distrust_shown {} {
+    expr {[string first "Not trusted" [[.cv textwidget] get 1.0 end]] >= 0}
+}
+
+test chatview-distrusted-sender-follows-trust-list \
+    {a message from a device the trust list distrusts is flagged, and unflagged once trusted} \
+    -setup { cv_setup } -cleanup cv_cleanup \
+    -body {
+        set ts [ParseTimestamp 2024-01-01T10:00:00Z]
+        $::_client message messagestore store [list [dict create \
+            timestamp $ts chat_jid alice@example.com \
+            from_jid alice@example.com body "hi" \
+            server_id s-trust own_id "" raw_xml "" \
+            server_status "" encryption omemo sender_fp fp-a]]
+        cv_create -pack
+        wait
+        set unknown [cv_distrust_shown]
+        tacky emit omemo <TrustList> -acc $::acc -jid alice@example.com \
+            -trustList {{device 1 trust untrusted active 1 fingerprint fp-a}}
+        wait
+        set untrusted [list [cv_distrust_shown] [cv_lock_count]]
+        tacky emit omemo <TrustList> -acc $::acc -jid alice@example.com \
+            -trustList {{device 1 trust trusted active 1 fingerprint fp-a}}
+        wait
+        list $unknown $untrusted [list [cv_distrust_shown] [cv_lock_count]]
+    } -result {0 {1 0} {0 1}}
+
+test chatview-own-device-distrust-from-own-list \
+    {our own other device's message is flagged from our own trust list} \
+    -setup { cv_setup } -cleanup cv_cleanup \
+    -body {
+        set ts [ParseTimestamp 2024-01-01T10:00:00Z]
+        $::_client message messagestore store [list [dict create \
+            timestamp $ts chat_jid alice@example.com \
+            from_jid $::acc body "from my phone" \
+            server_id s-own own_id oid-own raw_xml "" \
+            server_status "" encryption omemo sender_fp fp-me]]
+        cv_create -pack
+        wait
+        tacky emit omemo <TrustList> -acc $::acc -jid $::acc \
+            -trustList {{device 2 trust untrusted active 1 fingerprint fp-me}}
+        wait
+        cv_distrust_shown
+    } -result 1

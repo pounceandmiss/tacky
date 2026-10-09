@@ -1381,17 +1381,6 @@ snit::type taco_omemo {
         set peerJid [expr {$fromBare eq "" ? $accountJid : $fromBare}]
         set peerDev $sid
 
-        # Trust guard.
-        set trust [$db onecolumn {
-            SELECT trust FROM omemo_trust
-            WHERE account_jid=$accountJid
-              AND peer_jid=$peerJid AND peer_device=$peerDev
-        }]
-        if {$trust in {compromised untrusted}} {
-            jlog warn "OMEMO drop: peer device $peerJid/$peerDev marked $trust"
-            return 1
-        }
-
         $self DispatchDecrypt $stanza $encNode $peerJid $peerDev
         return 1
     }
@@ -1888,7 +1877,7 @@ snit::type taco_omemo {
             set r [$self RoomDecrypt [jid norm [jid bare $from]] $msgNode $encNode 1]
             if {$r eq ""} { return [$self SynthesisePlain $msgNode ""] }
             lassign $r kind body fp
-            if {$kind in {keytransport duplicate dropped own}} {
+            if {$kind in {keytransport duplicate own}} {
                 return [$self SynthesisePlain $msgNode ""]
             }
             return [$self SynthesisePlain $msgNode $body $fp]
@@ -1919,17 +1908,6 @@ snit::type taco_omemo {
         }
         set peerJid [expr {$fromBare eq "" ? $accountJid : $fromBare}]
         set peerDev $sid
-        # Match the live path's trust gate (OnMessage drops silently on
-        # untrusted/compromised). MAM must not store the EME fallback
-        # body either.
-        set trust [$db onecolumn {
-            SELECT trust FROM omemo_trust
-            WHERE account_jid=$accountJid
-              AND peer_jid=$peerJid AND peer_device=$peerDev
-        }]
-        if {$trust in {compromised untrusted}} {
-            return [$self SynthesisePlain $msgNode ""]
-        }
         set res [$self DoDecrypt $encNode $peerJid $peerDev 1]
         if {$res eq ""} {
             return [$self SynthesisePlain $msgNode ""]
@@ -1967,10 +1945,9 @@ snit::type taco_omemo {
     # BTBV also stops applying per-peer once any of their devices is
     # verified, matching Conversations' hasVerifiedKeys check.
     #
-    # Inbound (OnMessage / decryptForwarded) ignores this and always
-    # decrypts from undecided devices, since dropping silently would
-    # lose messages and we have no "from unverified device" badge UI
-    # yet.
+    # Outbound only. Inbound decrypts from every device whatever its
+    # trust, as Conversations does; the frontend flags the sender by
+    # joining the row's sender_fp against trustList.
     method IsDeviceBlocked {peerJid peerDev} {
         set row [$db eval {
             SELECT trust, active FROM omemo_trust
@@ -2590,8 +2567,7 @@ snit::type taco_omemo {
     # One room message's <encrypted> through DoDecrypt, as its sender:
     # {kind body fingerprint sender}, kind one of DoDecrypt's, `own` (this
     # device's own message, reflected: its row already holds the text, as
-    # for our own 1:1 echo) or `dropped` (a device we refuse); "" for a
-    # malformed element. A sender the room has not named and no session
+    # for our own 1:1 echo); "" for a malformed element. A sender the room has not named and no session
     # identifies is a decrypt_error.
     method RoomDecrypt {room stanza encNode isMam} {
         set sid [xsearch $encNode header -get @sid]
@@ -2621,16 +2597,6 @@ snit::type taco_omemo {
             if {$pre ne ""} { catch {[lindex $pre 0] destroy} }
             return [list own "" "" $sender]
         }
-        set trust [$db onecolumn {
-            SELECT trust FROM omemo_trust
-            WHERE account_jid=$accountJid
-              AND peer_jid=$sender AND peer_device=$sid
-        }]
-        if {$trust in {compromised untrusted}} {
-            jlog warn "OMEMO drop: $room message from $sender/$sid marked $trust"
-            if {$pre ne ""} { catch {[lindex $pre 0] destroy} }
-            return [list dropped "" "" $sender]
-        }
         set r [$self DoDecrypt $encNode $sender $sid $isMam $pre]
         if {$r eq ""} { return "" }
         lassign $r kind body fp
@@ -2640,7 +2606,7 @@ snit::type taco_omemo {
     # A live groupchat message, from muc: the stanza to take in -- the
     # message itself when it carries no OMEMO element, else the plaintext
     # one made from it (SynthesisePlain) -- or "" when there is nothing to
-    # show (a key transport, a redelivery, a refused device). A failure is
+    # show (a key transport, a redelivery). A failure is
     # told as <DecryptFailed> with the room, and the chat gets its
     # placeholder, as in 1:1.
     method decryptRoomMessage {room stanza} {
@@ -2656,7 +2622,7 @@ snit::type taco_omemo {
         }
         lassign $r kind body fp sender
         switch -- $kind {
-            keytransport - duplicate - dropped {
+            keytransport - duplicate {
                 jlog debug "OMEMO $kind in $room from $sender"
                 return ""
             }

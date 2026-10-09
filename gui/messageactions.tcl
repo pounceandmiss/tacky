@@ -94,7 +94,8 @@ snit::type messageactions {
         # Which device sent this: the peer's, or in a room, a member's.
         if {[dict exists $sd sender_fp] && [dict get $sd sender_fp] ne ""} {
             $m add command -label "Show OMEMO key" \
-                -command [mymethod showkey [dict get $sd sender_fp]]
+                -command [mymethod showkey [dict get $sd sender_fp] \
+                    [dict getdef $sd from_jid ""]]
         }
         $m add command -label "Find in Chat" \
             -command [mymethod Announce <<FindInChat>>]
@@ -124,10 +125,14 @@ snit::type messageactions {
             }}}
     }
 
-    method showkey {fp} {
+    method showkey {fp {from ""}} {
         if {!$options(-groupchat)} {
-            omemokeyswindow open $options(-acc) \
-                [jid norm [jid bare $options(-chat)]] $fp
+            # Our own other device's key is in our own list, not the peer's.
+            set owner [jid norm [jid bare $options(-chat)]]
+            if {$from ne "" && [jid norm [jid bare $from]] eq [jid norm $options(-acc)]} {
+                set owner [jid norm $options(-acc)]
+            }
+            omemokeyswindow open $options(-acc) $owner $fp
             return
         }
         # A room message's key is a member's: find whose, by the room's list.
