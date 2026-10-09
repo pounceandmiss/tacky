@@ -61,9 +61,14 @@ namespace eval ::test::message_int {
         set var [namespace current]::_search_[incr [namespace current]::_awaitCounter]
         set ${var}_done 0
 
+        # A refused search comes back as {error <message>}.
         tacky message search {*}$args \
             -command [list apply {{dv rv result} {
                 set $rv $result
+                set $dv 1
+            }} ${var}_done $var] \
+            -onerror [list apply {{dv rv message} {
+                set $rv [dict create error $message]
                 set $dv 1
             }} ${var}_done $var]
 
@@ -229,10 +234,9 @@ namespace eval ::test::message_int {
             sendAndReceive "another needle"
             historyWait -acc $ROMEO -chat $JULIET -limit 50
 
-            set r [searchWait -acc $ROMEO -chat $JULIET \
-                       -query "no-such-text-anywhere" -source remote]
-            list [dict exists $r unsupported] [llength [dict get $r messages]]
-        } -result {1 0}
+            searchWait -acc $ROMEO -chat $JULIET \
+                -query "no-such-text-anywhere" -source remote
+        } -result {error {This server can't search its archive}}
 
     test message-int-search-both-falls-back-to-store \
         {both still answers from the store when the archive cannot search} \

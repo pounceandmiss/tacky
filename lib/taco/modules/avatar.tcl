@@ -75,7 +75,6 @@ snit::type taco_avatar {
         set PendingPubSubHash [dict create]
         set RefetchedHash [dict create]
         set InflightVCard [dict create]
-        array unset ActiveTags
     }
 
     destructor {
@@ -116,7 +115,7 @@ snit::type taco_avatar {
     # Publish own avatar. -data is stored and sent verbatim - the frontend
     # crops/scales/encodes before calling. -type/-width/-height describe those
     # bytes and are advertised in the XEP-0084 <info>.
-    method publish {args} {
+    tackymethod -async publish {args} {
         array set opts {-type image/png -width "" -height "" \
                         -command "" -onerror "" -tag ""}
         array set opts $args
@@ -125,7 +124,7 @@ snit::type taco_avatar {
         }
         # A failure before the wire still owes the caller an answer.
         if {[catch {$self StartPublish [array get opts]} err]} {
-            $self Answer $opts(-tag) $opts(-onerror) $err
+            $self Answer $opts(-tag) $opts(-onerror) $opts(-onerror) $err
         }
     }
 
@@ -175,7 +174,7 @@ snit::type taco_avatar {
     method OnDataPublished {infoAttrs hash publishCtx tag command onerror stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
-            $self Answer $tag $onerror \
+            $self Answer $tag $onerror $onerror \
                 [$self ErrorText $stanza "Avatar data publish failed"]
             return
         }
@@ -195,7 +194,7 @@ snit::type taco_avatar {
 
     method OnPublishComplete {publishCtx tag command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
-            $self Answer $tag $onerror \
+            $self Answer $tag $onerror $onerror \
                 [$self ErrorText $stanza "Avatar publish failed"]
             return
         }
@@ -217,18 +216,18 @@ snit::type taco_avatar {
             VALUES ($jid, $hash, $type_, $bytes, $width, $height, 'pubsub')
         }
         $client emit avatar <Update> -jid $jid -hash $hash
-        $self Answer $tag $command ""
+        $self Answer $tag $command $onerror ""
     }
 
     # Disable own avatar: publish an empty <metadata/>.
-    method disable {args} {
+    tackymethod -async disable {args} {
         array set opts {-command "" -onerror "" -tag ""}
         array set opts $args
         if {$opts(-tag) ne ""} {
             set ActiveTags($opts(-tag)) 1
         }
         if {[catch {$self StartDisable [array get opts]} err]} {
-            $self Answer $opts(-tag) $opts(-onerror) $err
+            $self Answer $opts(-tag) $opts(-onerror) $opts(-onerror) $err
         }
     }
 
@@ -249,12 +248,12 @@ snit::type taco_avatar {
 
     method OnDisableComplete {tag command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
-            $self Answer $tag $onerror \
+            $self Answer $tag $onerror $onerror \
                 [$self ErrorText $stanza "Avatar disable failed"]
             return
         }
         $self Forget [jid norm [jid bare [$client cget -jid]]]
-        $self Answer $tag $command ""
+        $self Answer $tag $command $onerror ""
     }
 
     # The server's <text>, or $fallback when it sent none.
@@ -276,14 +275,16 @@ snit::type taco_avatar {
         }
     }
 
-    # Run a -command/-onerror prefix unless the call was cancelled by tag.
-    method Answer {tag callback message} {
-        if {$callback eq ""} return
-        if {$tag ne "" && ![info exists ActiveTags($tag)]} return
-        {*}$callback $message
+    # Run $callback, or answer "cancelled" if the tag was cancelled.
+    method Answer {tag callback onerror message} {
+        if {$tag ne "" && ![info exists ActiveTags($tag)]} {
+            set callback $onerror
+            set message cancelled
+        }
+        if {$callback ne ""} { {*}$callback $message }
     }
 
-    method cancel {args} {
+    tackymethod -noreturn cancel {args} {
         unset -nocomplain ActiveTags([dict get $args -tag])
     }
 
@@ -368,7 +369,7 @@ snit::type taco_avatar {
     # into one mark.  Every mark primes, not only the first: a frontend rebuilt
     # over a backend that kept running - the ordinary Android lifecycle - has no
     # other way back to what the cache holds.
-    method visible {args} {
+    tackymethod -noreturn visible {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
         set VisibleJids($jid) 1
 
@@ -440,7 +441,7 @@ snit::type taco_avatar {
         }
     }
 
-    method invisible {args} {
+    tackymethod -noreturn invisible {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
         unset -nocomplain VisibleJids($jid)
     }
@@ -539,7 +540,7 @@ snit::type taco_avatar {
     # Force a re-fetch from the server, bypassing the hash cache.  Re-requests
     # the PEP metadata node; the result is parsed by the same code as a PEP
     # notification, which then re-fetches the data when the hash differs.
-    method refresh {args} {
+    tackymethod -noreturn refresh {args} {
         set jid [jid norm [jid noquery [dict get $args -jid]]]
         $client iq request -to $jid -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {

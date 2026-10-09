@@ -43,8 +43,7 @@ snit::type taco_audio {
         $self configurelist $args
     }
 
-    # Plain method, not tackymethod: the backend answers when it answers,
-    # so the reply goes out from its callback rather than from a return.
+    # -async: the backend answers from its callback.
     # A backend that cannot enumerate reports no devices, which the picker
     # renders as "system default only".
     #
@@ -52,7 +51,7 @@ snit::type taco_audio {
     # the same frame, which the in-process ones do; a host backend needs the
     # callback form. Every caller on the wire has one, since a tokenized
     # request always carries -command.
-    method enumerateDevices {args} {
+    tackymethod -async enumerateDevices {args} {
         set cmd ""
         if {[dict exists $args -command]} { set cmd [dict get $args -command] }
         set Enumerated [dict create capture {} playback {}]

@@ -162,16 +162,20 @@ Each subsystem in `lib/taco/modules/` is a `snit::type` named `taco_<thing>`,
 taking `-client` and registering its handlers in the constructor. `taco.tcl`
 sources every file in the directory at load time.
 
-Most public methods should be declared with the `tackymethod` macro rather than
-`method`. It gives every method the same completion contract: a synchronous
-result when called plainly, a `-command` callback when one is passed, and errors
-routed to `-onerror` or to an `error <MethodError>` event instead of escaping
-into a background handler.
+A method a frontend may call is declared with `tackymethod`; a plain `method`
+is internal, by convention. Every request with a token gets exactly one reply,
+and the declaration says where it comes from:
 
-A method that genuinely cannot answer in the same frame is a plain `method`
-that handles `-command` itself: `taco_muc join` and `taco_audio
-enumerateDevices` are the pattern. `tackymethod` always completes on return,
-so it cannot defer.
+- `tackymethod name {args} body` - the return value.
+- `tackymethod -noreturn name {args} body` - `""` (an in-process caller still
+  gets the return value).
+- `tackymethod -async name {args} body` - the body calls `-command` or
+  `-onerror` once, later. `taco_blocking block` is the pattern.
+
+A thrown error (including `return -code error`) goes to `-onerror`, or to
+`error <MethodError>`. A failure is always `-onerror`, never a result shaped
+like one. `tests/tackyd-json/test_reply.tcl` checks that bodies which answer
+`-command` themselves are declared `-async`.
 
 ## Media backends
 

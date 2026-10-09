@@ -733,7 +733,7 @@ snit::type taco_muc {
     # Invitations
     # =====================================================================
 
-    method invite {args} {
+    tackymethod -noreturn invite {args} {
         array set opts {-reason ""}
         array set opts $args
 
@@ -769,7 +769,7 @@ snit::type taco_muc {
 
     # Bookmark the room with autojoin and the invite's password, undoing an
     # earlier decline.
-    method acceptInvite {args} {
+    tackymethod -noreturn acceptInvite {args} {
         set chatJid [dict get $args -chat]
         set ts [dict get $args -timestamp]
         set row [$client message messagestore inviteAt $chatJid $ts]
@@ -789,7 +789,7 @@ snit::type taco_muc {
     # A relayed invite's decline goes to the inviter through the room; a
     # direct one (XEP-0249 has no decline) is only marked. A room chat left
     # holding only declined invites is dropped, and leaves the chat list.
-    method declineInvite {args} {
+    tackymethod -noreturn declineInvite {args} {
         array set opts {-reason ""}
         array set opts $args
         set chatJid $opts(-chat)
@@ -817,7 +817,7 @@ snit::type taco_muc {
     # Voice
     # =====================================================================
 
-    method requestVoice {args} {
+    tackymethod -noreturn requestVoice {args} {
         set jid [dict get $args -jid]
         $client write [j message -to $jid {
             j x -ns jabber:x:data -type submit {
@@ -835,11 +835,11 @@ snit::type taco_muc {
     # Role management (by nick, muc#admin)
     # =====================================================================
 
-    method kick {args} {
+    tackymethod -async kick {args} {
         $self role {*}[dict set args -role none]
     }
 
-    method role {args} {
+    tackymethod -async role {args} {
         array set opts {-reason "" -command "" -onerror ""}
         array set opts $args
 
@@ -860,7 +860,7 @@ snit::type taco_muc {
     # Affiliation management (by bare JID, muc#admin)
     # =====================================================================
 
-    method affiliation {args} {
+    tackymethod -async affiliation {args} {
         array set opts {-reason "" -nick "" -command "" -onerror ""}
         array set opts $args
 
@@ -933,12 +933,12 @@ snit::type taco_muc {
             }]
     }
 
-    method createInstant {args} {
-        array set opts {-command ""}
+    tackymethod -async createInstant {args} {
+        array set opts {-command "" -onerror ""}
         array set opts $args
 
         $client iq request -type set -to $opts(-jid) \
-            -command [mymethod OnIqResult $opts(-command)] \
+            -command [mymethod OnOwnerResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#owner {
                 j x -ns jabber:x:data -type submit
             }]
@@ -1067,8 +1067,8 @@ snit::type taco_muc {
     # Room destruction (muc#owner)
     # =====================================================================
 
-    method destroyRoom {args} {
-        array set opts {-altRoom "" -reason "" -password "" -command ""}
+    tackymethod -async destroyRoom {args} {
+        array set opts {-altRoom "" -reason "" -password "" -command "" -onerror ""}
         array set opts $args
 
         set destroyAttrs {}
@@ -1077,7 +1077,7 @@ snit::type taco_muc {
         }
 
         $client iq request -type set -to $opts(-jid) \
-            -command [mymethod OnIqResult $opts(-command)] \
+            -command [mymethod OnOwnerResult $opts(-command) $opts(-onerror)] \
             -payload [j query -ns http://jabber.org/protocol/muc#owner {
                 j destroy {*}$destroyAttrs {
                     if {$opts(-reason) ne ""} {
@@ -1118,7 +1118,7 @@ snit::type taco_muc {
     # Discovery helpers
     # =====================================================================
 
-    method discoverRooms {args} {
+    tackymethod -async discoverRooms {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -1788,12 +1788,21 @@ snit::type taco_muc {
     }
 
     # Result handler for moderation actions (kick/ban/role/affiliation). On an
-    # error stanza it hands -onerror a ready message; success goes to -command.
+    # error stanza it hands -onerror a ready message; success answers "".
     method OnActionResult {command onerror stanza} {
         if {[$self ReportActionError $onerror $stanza]} return
         if {$command ne ""} {
-            {*}$command $stanza
+            {*}$command ""
         }
+    }
+
+    # createInstant/destroyRoom: "" on success, error text on failure.
+    method OnOwnerResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            if {$onerror ne ""} { {*}$onerror [stanza_error_text $stanza] }
+            return
+        }
+        if {$command ne ""} { {*}$command "" }
     }
 
     # 1 if $stanza is an error (and $onerror, when set, has been told).

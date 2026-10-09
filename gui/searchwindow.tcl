@@ -85,7 +85,8 @@ snit::widget searchwindow {
             $self Authors $options(-jid)
             ::tacky mam fulltextSupported -acc $options(-acc) \
                 -chat $options(-jid) -tag $searchTag \
-                -command [mymethod OnRemoteCapability]
+                -command [mymethod OnRemoteCapability] \
+                -onerror [mymethod OnRemoteCapability 0]
         }
 
         focus $top.entry
@@ -142,7 +143,7 @@ snit::widget searchwindow {
         return "[regsub {\?join$} $chat {}] - $name"
     }
 
-    method OnRemoteCapability {supported} {
+    method OnRemoteCapability {supported args} {
         if {![winfo exists $win]} return
         if {$supported} {
             $win.top.remote configure -state normal
@@ -170,7 +171,8 @@ snit::widget searchwindow {
         ::tacky message search -acc $options(-acc) \
             {*}[$self ChatArgs] -query $query \
             -source [expr {$alsoRemote ? "both" : "local"}] \
-            -tag $searchTag -command [mymethod OnResults]
+            -tag $searchTag -command [mymethod OnResults] \
+            -onerror [mymethod OnFailed]
     }
 
     # The remote leg runs on the first page only; the rest walks the store.
@@ -180,7 +182,7 @@ snit::widget searchwindow {
         ::tacky message search -acc $options(-acc) \
             {*}[$self ChatArgs] -query $query -source local \
             {*}[$self CursorArgs] -tag $searchTag \
-            -command [mymethod OnResults]
+            -command [mymethod OnResults] -onerror [mymethod OnFailed]
     }
 
     method ChatArgs {} {
@@ -196,14 +198,15 @@ snit::widget searchwindow {
         return [list -before $lastTs]
     }
 
+    # "cancelled" is our own cancel.
+    method OnFailed {message} {
+        if {![winfo exists $win] || $message eq "cancelled"} return
+        $win.bot.status configure -text "Search failed."
+    }
+
     method OnResults {result} {
         if {![winfo exists $win]} return
         $win.bot.status configure -text ""
-
-        if {[dict exists $result error] && [dict get $result error]} {
-            $win.bot.status configure -text "Search failed."
-            return
-        }
 
         set lastTs [dict get $result last]
         set lastChat [dict get $result last_chat_jid]

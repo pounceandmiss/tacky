@@ -48,6 +48,9 @@ snit::type taco_message {
     variable client
     variable PendingRetry
     variable ActiveTags
+    # Tagged requests not yet answered: id -> {tag command onerror}.
+    variable TagPending -array {}
+    variable TagSeq 0
 
     # Syncs that have emitted <CatchupStarted> and still owe a
     # <CatchupDone>, keyed by room chat jid or "" for the account archive.
@@ -930,7 +933,8 @@ snit::type taco_message {
     #
     # On reconnect, `RetryPending` resends any still-pending messages
     # with the same id, so the echo/ack cycle can complete.
-    method send {args} {
+    # Returns the stored row's timestamp.
+    tackymethod send {args} {
         array set opts $args
 
         set ts [clock microseconds]
@@ -1014,6 +1018,7 @@ snit::type taco_message {
             $self MarkWired $oid
             $client write $stanza
         }
+        return [dict get $dbMsg timestamp]
     }
 
     # Look up the replied-to row and resolve its reply id (reply::pick_id).
@@ -1041,7 +1046,7 @@ snit::type taco_message {
     #   3. on success promote to 'pending' with the public URL + OOB stanza and
     #      transmit (echo/ack then confirms);
     #   4. on failure mark 'failed' (the file module's <Update> shows it).
-    method sendFile {args} {
+    tackymethod sendFile {args} {
         array set opts $args
         set chatJid $opts(-chat)
         set path $opts(-path)
@@ -1062,6 +1067,7 @@ snit::type taco_message {
         $self EmitTail $chatJid
         $self AdvanceOwnRead $chatJid $ts
         $self StartUpload $chatJid $oid $ts $path $encMode
+        return $ts
     }
 
     # The transfer id is the message id (== own_id == timestamp), so the GUI,
@@ -1112,7 +1118,7 @@ snit::type taco_message {
     # Re-attempt a failed upload using the local file recorded on the row. A
     # missing source surfaces as a `file <Update>` failed (file upload checks
     # readability), so no separate guard is needed here.
-    method retryUpload {args} {
+    tackymethod -noreturn retryUpload {args} {
         array set opts $args
         set chatJid $opts(-chat)
         set ts $opts(-timestamp)
@@ -1363,7 +1369,7 @@ snit::type taco_message {
     # Does NOT touch the chat toggle: downgrading one message leaves the
     # chat's default encryption for future messages unchanged. Fire-and-
     # forget; the outcome surfaces via <Status> like any other send.
-    method resend {args} {
+    tackymethod -noreturn resend {args} {
         array set opts {-plaintext 0}
         array set opts $args
         set chatJid $opts(-chat)
@@ -1620,8 +1626,8 @@ snit::type taco_message {
     # retract a message. We do NOT tombstone here - the room's broadcast
     # drives it through the receive path, so a rejected request leaves the
     # message intact. Role is enforced by the service (and gated in the GUI).
-    tackymethod moderate {args} {
-        array set opts {-reason "" -onerror ""}
+    tackymethod -async moderate {args} {
+        array set opts {-reason "" -command "" -onerror ""}
         array set opts $args
         set chatJid $opts(-chat)
         set targetId [$self ReferenceId $chatJid $opts(-timestamp)]
@@ -1635,17 +1641,19 @@ snit::type taco_message {
         set roomJid [jid bare $roomJid]
         set reason $opts(-reason)
         $client iq request -type set -to $roomJid \
-            -command [mymethod OnModerateResult $opts(-onerror)] \
+            -command [mymethod OnModerateResult $opts(-command) $opts(-onerror)] \
             -payload [j moderate -ns urn:xmpp:message-moderate:1 -id $targetId {
                 j retract -ns urn:xmpp:message-retract:1
                 if {$reason ne ""} { j reason -body $reason }
             }]
     }
 
-    # Success needs no handling: the room broadcasts the retraction and the
-    # receive path tombstones. Only a rejection has to reach the caller.
-    method OnModerateResult {onerror stanza} {
-        if {[xsearch $stanza -get @type] ne "error"} return
+    # The room's broadcast does the tombstoning; success just answers.
+    method OnModerateResult {command onerror stanza} {
+        if {[xsearch $stanza -get @type] ne "error"} {
+            if {$command ne ""} { {*}$command "" }
+            return
+        }
         set condition [dict get [stanza_error $stanza] condition]
         jlog debug "moderate rejected: $condition"
         if {$onerror ne ""} {
@@ -1782,7 +1790,7 @@ snit::type taco_message {
         }
     }
 
-    method history {args} {
+    tackymethod -async history {args} {
         set defaults [dict create -before "" -after "" -limit 50 \
             -command "" -onerror "" -tag ""]
         set opts [dict merge $defaults $args]
@@ -1797,6 +1805,7 @@ snit::type taco_message {
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
+            lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
         set local [$self GetLocal $chatJid $before $after $limit]
@@ -2018,9 +2027,31 @@ snit::type taco_message {
         }
     }
 
-    method cancel {args} {
+    tackymethod -noreturn cancel {args} {
         set tag [dict get $args -tag]
         unset -nocomplain ActiveTags($tag)
+        foreach id [lsort -integer [array names TagPending]] {
+            lassign $TagPending($id) t _ onerror
+            if {$t ne $tag} continue
+            unset TagPending($id)
+            if {$onerror ne ""} { {*}$onerror cancelled }
+        }
+    }
+
+    # Wraps a tagged request's callbacks so that it, or `cancel`, answers
+    # once. An empty callback stays empty.
+    method TagWrap {tag command onerror} {
+        set id [incr TagSeq]
+        set TagPending($id) [list $tag $command $onerror]
+        list [expr {$command eq "" ? "" : [mymethod TagSettle $id 1]}] \
+             [expr {$onerror eq "" ? "" : [mymethod TagSettle $id 2]}]
+    }
+
+    method TagSettle {id which value} {
+        if {![info exists TagPending($id)]} return
+        set cb [lindex $TagPending($id) $which]
+        unset TagPending($id)
+        {*}$cb $value
     }
 
     # goto -chat $jid -date $ts -source local|remote -limit 50
@@ -2028,7 +2059,7 @@ snit::type taco_message {
     # Jump to a point in time. Returns {messages $list anchor $ts}.
     #   local:  get around from local store
     #   remote: MAM fetch from -start $date, store, then get around
-    method goto {args} {
+    tackymethod -async goto {args} {
         set defaults [dict create -source local -limit 50 -tag "" -onerror ""]
         set opts [dict merge $defaults $args]
 
@@ -2042,6 +2073,7 @@ snit::type taco_message {
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
+            lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
         if {$source eq "local"} {
@@ -2097,7 +2129,7 @@ snit::type taco_message {
     # Resolve an XEP-0461 reply target in the local store and jump to it
     # via `goto`. An uncached target yields an empty result; remote fetch
     # by stanza-id is not implemented.
-    method gotoReply {args} {
+    tackymethod -async gotoReply {args} {
         set defaults [dict create -limit 50 -tag "" -reply_to ""]
         set opts [dict merge $defaults $args]
 
@@ -2144,7 +2176,7 @@ snit::type taco_message {
     # already fetched, so it skips the remote leg.
     # -before with -before_chat_jid pages the store, -before_id the archive.
     # Callback receives dict: messages, complete, last, last_chat_jid, last_id
-    method search {args} {
+    tackymethod -async search {args} {
         array set opts {-limit 20 -tag "" -field "" -source local -chat "" \
             -before "" -before_chat_jid "" -before_id ""}
         array set opts $args
@@ -2155,6 +2187,7 @@ snit::type taco_message {
             error "search: -source \"$source\" needs a -chat"
         }
         set callback $opts(-command)
+        set onerror [expr {[info exists opts(-onerror)] ? $opts(-onerror) : ""}]
         set tag $opts(-tag)
         set query $opts(-query)
         set limit $opts(-limit)
@@ -2166,6 +2199,7 @@ snit::type taco_message {
 
         if {$tag ne ""} {
             set ActiveTags($tag) 1
+            lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
         switch -exact -- $source {
@@ -2184,7 +2218,7 @@ snit::type taco_message {
             }
             remote {
                 $self MamSearch $chatJid $query $limit $beforeId $opts(-field) \
-                    [mymethod OnSearch $chatJid $query $callback $tag]
+                    [mymethod OnSearch $chatJid $query $callback $onerror $tag]
             }
             default {
                 error "search: unknown -source \"$source\""
@@ -2279,15 +2313,14 @@ snit::type taco_message {
         $self LocalSearch $chatJid $query $limit "" "" $callback
     }
 
-    method OnSearch {chatJid query callback tag mamResult} {
+    method OnSearch {chatJid query callback onerror tag mamResult} {
         if {[dict exists $mamResult error]} {
-            set err [dict create messages {} complete 0 \
-                last "" last_chat_jid "" last_id "" error 1]
-            if {[dict exists $mamResult error_condition]
-                && [dict get $mamResult error_condition] eq "fulltext-unsupported"} {
-                dict set err unsupported 1
+            set cond [dict getdef $mamResult error_condition ""]
+            if {$onerror ne ""} {
+                {*}$onerror [expr {$cond eq "fulltext-unsupported"
+                    ? "This server can't search its archive"
+                    : [$self ArchiveErrorText $cond]}]
             }
-            {*}$callback $err
             return
         }
 

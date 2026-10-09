@@ -63,16 +63,17 @@ snit::type taco_caps {
         catch {$client iq unhandler get http://jabber.org/protocol/disco#info}
     }
 
-    # softwareVersion -to jid -command cmd
+    # softwareVersion -to jid -command cmd ?-onerror cmd?
     # Queries XEP-0092 Software Version of a target entity.
-    # Callback receives dict: name version os (or error 1 error_text msg).
-    method softwareVersion {args} {
-        set defaults [dict create -to "" -command ""]
+    # Callback receives dict: name version os; failures go to -onerror.
+    tackymethod -async softwareVersion {args} {
+        set defaults [dict create -to "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
 
         set payload [j query -ns jabber:iq:version]
         set iqArgs [list -type get -payload $payload \
-            -command [mymethod OnSoftwareVersion [dict get $opts -command]]]
+            -command [mymethod OnSoftwareVersion [dict get $opts -command] \
+                [dict get $opts -onerror]]]
         set toJid [dict get $opts -to]
         if {$toJid ne ""} {
             lappend iqArgs -to $toJid
@@ -80,33 +81,23 @@ snit::type taco_caps {
         $client iq request {*}$iqArgs
     }
 
-    method OnSoftwareVersion {callback stanza} {
+    method OnSoftwareVersion {callback onerror stanza} {
         set type_ [xsearch $stanza -get @type]
         if {$type_ eq "error"} {
-            set errText [xsearch $stanza error text -get body]
-            if {$errText eq ""} {
-                set errChild [xsearch $stanza error 0 -get node]
-                if {$errChild ne ""} {
-                    set errText [dict get $errChild tag]
-                }
-            }
-            {*}$callback [dict create name "" version "" os "" \
-                error 1 error_text $errText]
+            if {$onerror ne ""} { {*}$onerror [stanza_error_text $stanza] }
             return
         }
 
         set queryNode [xsearch $stanza query -ns jabber:iq:version]
         if {$queryNode eq ""} {
-            {*}$callback [dict create name "" version "" os "" \
-                error 1 error_text "No version info"]
+            if {$onerror ne ""} { {*}$onerror "No version info" }
             return
         }
         set queryNode [lindex $queryNode 0]
         set name    [xsearch $queryNode name -get body]
         set version [xsearch $queryNode version -get body]
         set os      [xsearch $queryNode os -get body]
-        {*}$callback [dict create name $name version $version os $os \
-            error 0 error_text ""]
+        {*}$callback [dict create name $name version $version os $os]
     }
 
     # Register an additional disco feature (e.g. namespace+notify for PEP).

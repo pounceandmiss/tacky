@@ -36,17 +36,18 @@ snit::type taco_nick {
 
     # Set own nick via PEP, vcard-temp, and bookmarks.
     # Updates all existing bookmarks and joined rooms unless -bookmarks skip.
-    method set {args} {
+    tackymethod -async set {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
-        $self publish -nick $opts(-nick) \
-            -command $opts(-command) -onerror $opts(-onerror)
         $client vcard setNick -nick $opts(-nick)
         if {[dict getdef $args -bookmarks ""] eq "skip"} {
             $client bookmarks defaultNick -nick $opts(-nick)
         } else {
             $client bookmarks setNickAll -nick $opts(-nick)
         }
+        # Last: an error above must not answer the caller twice.
+        $self publish -nick $opts(-nick) \
+            -command $opts(-command) -onerror $opts(-onerror)
     }
 
     # Get cached nick for a JID.  Returns the nick string or "".
@@ -56,7 +57,7 @@ snit::type taco_nick {
     }
 
     # Publish own nick via PubSub.
-    method publish {args} {
+    tackymethod -async publish {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -75,7 +76,7 @@ snit::type taco_nick {
     }
 
     # Fetch nick from server (IQ get on the PEP node).
-    method fetch {args} {
+    tackymethod -noreturn fetch {args} {
         set jid [jid norm [dict get $args -jid]]
         $client iq request -to $jid -payload \
             [j pubsub -ns http://jabber.org/protocol/pubsub {
@@ -99,7 +100,7 @@ snit::type taco_nick {
         }
         $client emit nick <Changed> -jid $jid
         if {$userCmd ne ""} {
-            {*}$userCmd $stanza
+            {*}$userCmd ""
         }
     }
 

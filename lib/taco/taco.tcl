@@ -38,6 +38,13 @@ proc stanza_error {stanza} {
         text [xsearch $stanza error text -get body]]
 }
 
+# What to tell a person about an error response: the server's <text>, else
+# its condition.
+proc stanza_error_text {stanza} {
+    set e [stanza_error $stanza]
+    expr {[dict get $e text] ne "" ? [dict get $e text] : [dict get $e condition]}
+}
+
 # PRAGMA rejects a bound $var (syntax error) - only a literal in the SQL
 # text - so quote it by hand: double any embedded single quotes.
 proc taco_sql_quote {s} {
@@ -167,33 +174,60 @@ proc taco_install_bgerror {} {
     proc ::bgerror {message} {::taco_bg::report $message}
 }
 
-snit::macro tackymethod {name arglist body} {
-    method $name $arglist [string map [list %BODY% $body %NAME% $name] {
+# A method a frontend may call; a plain `method` is internal. -command gets:
+#   tackymethod name arglist body            the return value
+#   tackymethod -noreturn name arglist body  ""
+#   tackymethod -async name arglist body     nothing: the body answers later
+# A thrown error goes to -onerror, else <MethodError>, else the caller.
+snit::macro tackymethod {args} {
+    set kind sync
+    if {[lindex $args 0] in {-async -noreturn}} {
+        set kind [string range [lindex $args 0] 1 end]
+        set args [lrange $args 1 end]
+    }
+    if {[llength $args] != 3} {
+        error "usage: tackymethod ?-async|-noreturn? name arglist body"
+    }
+    lassign $args name arglist body
+    set reply [dict get {
+        sync     {{*}[dict get $args -command] $_result; return}
+        noreturn {{*}[dict get $args -command] ""; return}
+        async    {}
+    } $kind]
+    method $name $arglist [string map [list %BODY% $body %NAME% $name \
+            %REPLY% $reply] {
         set _code [catch {%BODY%} _result _opts]
+        # `return -code error` is caught as code 2 carrying -code 1.
+        if {$_code == 2 && [dict get $_opts -code] == 1} {
+            set _code 1
+            dict set _opts -code 1
+            dict set _opts -level 0
+        }
         if {$_code == 1} {
+            if {![dict exists $_opts -errorinfo]} {
+                dict set _opts -errorinfo $_result
+            }
+            if {[dict exists $args -onerror]} {
+                {*}[dict get $args -onerror] $_result
+                return
+            }
             if {[dict exists $args -command]} {
-                if {[dict exists $args -onerror]} {
-                    {*}[dict get $args -onerror] $_result
-                } else {
-                    set _extra {}
-                    if {[dict exists $args -acc]} {
-                        lappend _extra -acc [dict get $args -acc]
-                    }
-                    tacky emit error <MethodError> \
-                        -module [regsub {^::taco_} $type {}] \
-                        -method %NAME% \
-                        -message $_result \
-                        -errorinfo [dict get $_opts -errorinfo] \
-                        {*}$_extra
+                set _extra {}
+                if {[dict exists $args -acc]} {
+                    lappend _extra -acc [dict get $args -acc]
                 }
+                tacky emit error <MethodError> \
+                    -module [regsub {^::taco_} $type {}] \
+                    -method %NAME% \
+                    -message $_result \
+                    -errorinfo [dict get $_opts -errorinfo] \
+                    {*}$_extra
                 return
             }
             return -options $_opts $_result
         }
-        
         if {[dict exists $args -command]} {
-            {*}[dict get $args -command] $_result
-            return
+            %REPLY%
         }
         return -options $_opts $_result
     }]

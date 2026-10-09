@@ -23,7 +23,7 @@
 #   (trustList, setEnabled, isEnabled and prepareChat take a room chat,
 #   room@service?join, too: see "Group chats (XEP-0384 §5.7)" below)
 #
-# Async (plain method; pass -command):
+# Async (tackymethod -async; pass -command):
 #   $client omemo prepareChat -jid $j ?-command cb?         -> warms peer cache
 #
 # Internal (caller is taco_message):
@@ -2724,14 +2724,14 @@ snit::type taco_omemo {
     # +notify arrival populates the devicelist cache for roster
     # contacts; this method is mainly for tests that need to warm
     # against the OMEMO bot without sending a real message.
-    method prepareChat {args} {
+    tackymethod -async prepareChat {args} {
         array set opts {-command {apply {args {}}}}
         array set opts $args
         set peerJid $opts(-jid)
         set room [::taco::omemo::roomOf $peerJid]
         if {$room ne ""} {
             $self WarmRoom $room
-            {*}$opts(-command) $peerJid [$self RoomMembers $room]
+            {*}$opts(-command) ""
             return
         }
         $self FetchDevicelist $peerJid \
@@ -2742,7 +2742,7 @@ snit::type taco_omemo {
         foreach d $devices {
             $self EnsureSessionSync $peerJid $d
         }
-        {*}$cb $peerJid $devices
+        {*}$cb ""
     }
 
     # trustList -jid $peerJid -> list of dicts

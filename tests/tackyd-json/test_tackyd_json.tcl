@@ -66,12 +66,12 @@ test json-backend-callback-search {callback result with schema} -setup {
             [json::write object timestamp 100 body {"hi"} is_outgoing false]] \
         complete true]]
 
-test json-backend-callback-search-unsupported {search error flags are booleans} -setup {
+test json-backend-callback-search-result {a search result's flags and cursor are typed} -setup {
     _test_clear
 } -body {
     set result [dict create \
         messages {} complete 0 \
-        last "" last_chat_jid "" last_id "" error 1 unsupported 1]
+        last "" last_chat_jid "" last_id ""]
     _test_on_result 42 message/search $result
     lindex [_test_sent] 0
 } -result [json::write array \
@@ -81,9 +81,7 @@ test json-backend-callback-search-unsupported {search error flags are booleans} 
         complete false \
         last null \
         last_chat_jid {""} \
-        last_id {""} \
-        error true \
-        unsupported true]]
+        last_id {""}]]
 
 test json-backend-callback-list {callback with list of ints} -setup {
     _test_clear
@@ -183,16 +181,16 @@ test json-backend-callback-resources {resources is a map of presence objects} -s
             client [json::write object name {"Dino"} features \
                 [json::write array {"urn:xmpp:ping"} {"urn:xmpp:time"}]]]]]
 
-test json-backend-callback-software-version {softwareVersion is an object with a bool error} -setup {
+test json-backend-callback-software-version {softwareVersion is an object} -setup {
     _test_clear
 } -body {
     _test_on_result 12 caps/softwareVersion \
-        [dict create name Dino version 0.5 os Linux error 0 error_text ""]
+        [dict create name Dino version 0.5 os Linux]
     lindex [_test_sent] 0
 } -result [json::write array \
     {"result"} 12 \
     [json::write object \
-        name {"Dino"} version {"0.5"} os {"Linux"} error false error_text {""}]]
+        name {"Dino"} version {"0.5"} os {"Linux"}]]
 
 test json-backend-callback-call-start {start returns a scalar sid string} -setup {
     _test_clear

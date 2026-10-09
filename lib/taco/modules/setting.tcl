@@ -14,7 +14,7 @@ snit::type taco_setting {
         return ""
     }
 
-    method set {args} {
+    tackymethod -noreturn set {args} {
         array set opts $args
         $options(-db) eval {
             INSERT INTO setting(key, value) VALUES($opts(-key), $opts(-value))

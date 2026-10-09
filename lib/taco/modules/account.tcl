@@ -48,7 +48,7 @@ snit::type taco_account {
         $options(-db) eval {SELECT jid FROM account}
     }
 
-    method add {args} {
+    tackymethod -noreturn add {args} {
         set jid [dict get $args -acc]
         if {![jid valid-account $jid]} {
             error "Invalid JID: $jid"
@@ -100,7 +100,7 @@ snit::type taco_account {
         return $result
     }
 
-    method set {args} {
+    tackymethod -noreturn set {args} {
         set jid [dict get $args -acc]
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
@@ -226,7 +226,7 @@ snit::type taco_account {
         return "tacky.[format %08x [expr {int(rand()*0x100000000)}]]"
     }
 
-    method remove {args} {
+    tackymethod -noreturn remove {args} {
         set jid [dict get $args -acc]
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
@@ -235,6 +235,7 @@ snit::type taco_account {
         set client [$self liveClient -acc $jid]
         if {$client ne ""} {
             catch {$client disconnect}
+            catch {$client iq failAll "account removed"}
             catch {$client destroy}
         }
 
@@ -248,7 +249,7 @@ snit::type taco_account {
         $options(-taco) emit account <Removed> -acc $jid
     }
 
-    method enable {args} {
+    tackymethod -noreturn enable {args} {
         set jid [dict get $args -acc]
         set client [$options(-taco) client $jid]
 
@@ -266,18 +267,19 @@ snit::type taco_account {
 
     # Server-side password change (XEP-0077), delegates to client.
     # tacky account changePassword -acc $jid -password $new ?-command $cb? ?-onerror $ecb?
-    method changePassword {args} {
+    tackymethod -async changePassword {args} {
         set jid [dict get $args -acc]
         set client [$options(-taco) client $jid]
         $client changePassword {*}[dict remove $args -acc]
     }
 
-    method disable {args} {
+    tackymethod -noreturn disable {args} {
         set jid [dict get $args -acc]
         $options(-taco) emit account <Disabled> -acc $jid
         set client [$self liveClient -acc $jid]
         if {$client ne ""} {
             catch {$client disconnect}
+            catch {$client iq failAll "account disabled"}
         }
         $options(-db) eval {UPDATE account SET enabled=0 WHERE jid=$jid}
     }

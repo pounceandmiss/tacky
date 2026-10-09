@@ -112,7 +112,8 @@ snit::widget maminfo {
             set versionTo [jid domain $options(-acc)]
         }
         ::tacky caps softwareVersion -acc $options(-acc) \
-            -to $versionTo -tag $win -command [mymethod OnVersion]
+            -to $versionTo -tag $win -command [mymethod OnVersion] \
+            -onerror [mymethod OnVersionError]
 
         # Metadata and form fields
         set mamArgs [list -acc $options(-acc)]
@@ -120,9 +121,11 @@ snit::widget maminfo {
             lappend mamArgs -to $target
         }
         ::tacky mam metadata {*}$mamArgs \
-            -tag $win -command [mymethod OnMetadata]
+            -tag $win -command [mymethod OnMetadata] \
+            -onerror [mymethod OnMetadataError]
         ::tacky mam formfields {*}$mamArgs \
-            -tag $win -command [mymethod OnFields]
+            -tag $win -command [mymethod OnFields] \
+            -onerror [mymethod OnFieldsError]
     }
 
     # --- Callbacks ---
@@ -130,31 +133,37 @@ snit::widget maminfo {
     method OnVersion {d} {
         if {![winfo exists $win]} return
         incr pending -1
-        if {[dict exists $d error] && [dict get $d error]} {
-            set version_text ""
-            set version_error [dict getdef $d error_text "Version query failed"]
-        } else {
-            set parts {}
-            foreach key {name version os} {
-                set v [dict get $d $key]
-                if {$v ne ""} { lappend parts $v }
-            }
-            set version_text [join $parts " "]
-            set version_error ""
+        set parts {}
+        foreach key {name version os} {
+            set v [dict get $d $key]
+            if {$v ne ""} { lappend parts $v }
         }
+        set version_text [join $parts " "]
+        set version_error ""
+        $self Render
+    }
+
+    method OnVersionError {message} {
+        if {![winfo exists $win]} return
+        incr pending -1
+        set version_text ""
+        set version_error [expr {$message ne "" ? $message : "Version query failed"}]
         $self Render
     }
 
     method OnMetadata {d} {
         if {![winfo exists $win]} return
         incr pending -1
-        if {[dict exists $d error] && [dict get $d error]} {
-            set metadata_error "Not supported"
-            set metadata_dict {}
-        } else {
-            set metadata_dict $d
-            set metadata_error ""
-        }
+        set metadata_dict $d
+        set metadata_error ""
+        $self Render
+    }
+
+    method OnMetadataError {message} {
+        if {![winfo exists $win]} return
+        incr pending -1
+        set metadata_error "Not supported"
+        set metadata_dict {}
         $self Render
     }
 
@@ -163,6 +172,10 @@ snit::widget maminfo {
         incr pending -1
         set fields_list $fields
         $self Render
+    }
+
+    method OnFieldsError {message} {
+        $self OnFields {}
     }
 
     method Render {} {
