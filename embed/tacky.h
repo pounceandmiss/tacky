@@ -51,7 +51,8 @@ tacky *tacky_create(const char *const *backend_args,
 void tacky_send(tacky *t, const char *json, size_t len);
 
 /* Tear down: destroy the backend, stop its event loop, join the thread, and
- * free the handle. No callbacks fire after this returns. */
+ * free the handle. No callback is running once this returns, and none fires
+ * after. Requests already queued still run, unanswered. */
 void tacky_destroy(tacky *t);
 
 #ifdef __cplusplus

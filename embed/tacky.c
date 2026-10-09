@@ -44,6 +44,9 @@ struct tacky {
     char        **args;     /* NULL-terminated copy of backend_args */
     char         *err;      /* init failure message for the <Dead> event */
 
+    /* Held across every emit; tacky_destroy takes it to clear emit. */
+    Tcl_Mutex     gate;
+
     /* create()/teardown handshake (lock+cond guard ready, then done) */
     Tcl_Mutex     lock;
     Tcl_Condition cond;
@@ -96,6 +99,15 @@ static int StopEventProc(Tcl_Event *evPtr, int flags) {
 
 /* ---- the C command the Tcl side calls to emit a message out ---- */
 
+/* The one way out to the host, under the gate. */
+static void deliver(tacky *c, const char *json, size_t len) {
+    Tcl_MutexLock(&c->gate);
+    if (c->emit) {
+        c->emit(c->ud, json, len);
+    }
+    Tcl_MutexUnlock(&c->gate);
+}
+
 static int EmitCmd(void *cd, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]) {
     tacky *c = (tacky *)cd;
     Tcl_Size len;
@@ -106,9 +118,7 @@ static int EmitCmd(void *cd, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]
         return TCL_ERROR;
     }
     s = Tcl_GetStringFromObj(objv[1], &len);
-    if (c->emit) {
-        c->emit(c->ud, s, (size_t)len);
-    }
+    deliver(c, s, (size_t)len);
     return TCL_OK;
 }
 
@@ -134,7 +144,6 @@ static void emit_dead(tacky *c) {
     size_t n = strlen(msg), w, i;
     char *buf;
 
-    if (!c->emit) return;
     buf = (char *)malloc(n * 6 + 64);
     if (!buf) return;
     w = (size_t)sprintf(buf, "[\"event\",\"backend\",\"Dead\",{\"error\":\"");
@@ -150,7 +159,7 @@ static void emit_dead(tacky *c) {
         }
     }
     w += (size_t)sprintf(buf + w, "\"}]");
-    c->emit(c->ud, buf, w);
+    deliver(c, buf, w);
     free(buf);
 }
 
@@ -285,6 +294,7 @@ static void reap(tacky *c) {
 
     if (!done) return;   /* backend still running; leaking beats a use-after-free */
 
+    Tcl_MutexFinalize(&c->gate);
     Tcl_MutexFinalize(&c->lock);
     Tcl_ConditionFinalize(&c->cond);
     free_args(c->args);
@@ -350,6 +360,11 @@ void tacky_send(tacky *c, const char *json, size_t len) {
 void tacky_destroy(tacky *c) {
     StopEvent *ev;
     if (!c) return;
+
+    /* Close the gate first: reap() may give up on a busy backend. */
+    Tcl_MutexLock(&c->gate);
+    c->emit = NULL;
+    Tcl_MutexUnlock(&c->gate);
 
     ev = (StopEvent *)Tcl_Alloc(sizeof *ev);
     ev->header.proc = StopEventProc;
