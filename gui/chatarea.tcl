@@ -366,6 +366,7 @@ snit::widget chatarea {
             -font "$font italic" -lmargin1 40 -lmargin2 40 -spacing3 6
         # XEP-0308 "(edited)" marker and XEP-0424/0425 retraction tombstone
         $text tag configure edited -foreground [palette dim]
+        $text tag configure distrusted -foreground [palette error] -font $tiny
         $text tag configure tombstone -foreground [palette system] \
             -font "$font italic"
     }
@@ -528,8 +529,15 @@ snit::widget chatarea {
         $self DrawHeader $msg $tag
         if {[dict getdef $msg encryption ""] eq "omemo"} {
             $text ins msgins " " [list $tag timestamp]
-            set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
-            $text tag add $tag $lockId
+            if {[dict getdef $msg distrusted 0]} {
+                set lockId [$text image create msgins \
+                    -image mate/16x16/status/dialog-warning.png]
+                $text tag add $tag $lockId
+                $text ins msgins " Not trusted" [list $tag distrusted]
+            } else {
+                set lockId [$text image create msgins -image mate/16x16/status/stock_lock.png]
+                $text tag add $tag $lockId
+            }
         }
         $text ins msgins \n $tag
 

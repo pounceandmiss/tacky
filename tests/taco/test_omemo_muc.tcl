@@ -796,17 +796,51 @@ test omemo-muc-our-other-device-is-read {a message our other device wrote to the
         lrange [::t::rows] 0 1
     } -result {{from my phone} omemo}
 
-test omemo-muc-untrusted-sender-dropped {a message from a device we refuse is dropped, with nothing shown} \
+test omemo-muc-untrusted-sender-read {a message from a device we distrust is still read and stored} \
     {*}$mucenv -body {
         ::t::device $::t::ROMEO 101 -nosession
         ::t::join [list [list romeo $::t::ROMEO occ-r]]
+        set ik [$::t::Store($::t::ROMEO,101) identity_pub]
         c db eval {INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
             identity_pk, trust, active, last_activation)
-            VALUES($::t::JBARE, $::t::ROMEO, 101, 'x', 'untrusted', 1, 0)}
+            VALUES($::t::JBARE, $::t::ROMEO, 101, $ik, 'untrusted', 1, 0)}
         c.conn feed [::t::roomMessage romeo \
-            [::t::encryptedFrom $::t::ROMEO 101 "hidden"] occ occ-r]
-        list [::t::rows] [::t::emitted omemo <DecryptFailed>]
-    } -result {{} {}}
+            [::t::encryptedFrom $::t::ROMEO 101 "not hidden"] occ occ-r]
+        list [lrange [::t::rows] 0 1] [::t::emitted omemo <DecryptFailed>]
+    } -result {{{not hidden} omemo} {}}
+
+proc ::t::distrust {jid dev} {
+    set ik [$::t::Store($jid,$dev) identity_pub]
+    c db eval {INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
+        identity_pk, trust, active, last_activation)
+        VALUES($::t::JBARE, $jid, $dev, $ik, 'untrusted', 1, 0)}
+}
+
+proc ::t::chatMessage {from enc} {
+    j message -from $from -to $::t::JFULL -type chat -id m[incr ::t::seq] {
+        j #as-is $enc
+        j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+    }
+}
+
+test omemo-untrusted-1to1-live-read {a live 1:1 message from a distrusted device is read and stored with its sender_fp} \
+    {*}$mucenv -body {
+        ::t::device $::t::ROMEO 101 -nosession
+        ::t::distrust $::t::ROMEO 101
+        c.conn feed [::t::chatMessage $::t::ROMEO/phone \
+            [::t::encryptedFrom $::t::ROMEO 101 "still here"]]
+        c db eval {SELECT body, sender_fp != '' FROM chat_message
+            WHERE chat_jid=$::t::ROMEO AND kind='message'}
+    } -result {{still here} 1}
+
+test omemo-untrusted-1to1-archive-read {an archived 1:1 message from a distrusted device is read} \
+    {*}$mucenv -body {
+        ::t::device $::t::ROMEO 101 -nosession
+        ::t::distrust $::t::ROMEO 101
+        set out [c omemo decryptForwarded [::t::chatMessage $::t::ROMEO/phone \
+            [::t::encryptedFrom $::t::ROMEO 101 "from the archive"]]]
+        list [xsearch $out body -get body] [expr {[dict get $out sender_fp] ne ""}]
+    } -result {{from the archive} 1}
 
 test omemo-muc-not-keyed-for-us {a room message keyed for none of our devices is a placeholder} \
     {*}$mucenv -body {

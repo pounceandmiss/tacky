@@ -500,35 +500,6 @@ test omemo-unit-mam-self-sent-blanks-body \
         xsearch $out body -get body
     } -result {}
 
-test omemo-unit-mam-untrusted-blanks-body \
-    {decryptForwarded with peer device untrusted emits empty body (matches live drop)} \
-    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
-        c configure -jid $::test::omemo_unit::JULIET
-        c omemo OnReady
-        c db eval {
-            INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
-                identity_pk, trust, active, last_activation)
-            VALUES('juliet@capulet.lit','romeo@montague.lit',77,x'00',
-                'untrusted',1,1)
-        }
-    }] -body {
-        set msg [j message \
-                -from $::test::omemo_unit::ROMEO \
-                -to   $::test::omemo_unit::JULIET_BARE \
-                -type chat -id wire-3 {
-            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
-            j encrypted -ns eu.siacs.conversations.axolotl {
-                j header -sid 77 {
-                    j key -rid 1 -body Zm9v
-                    j iv -body AAAAAAAAAAAAAAAA
-                }
-                j payload -body Zm9v
-            }
-        }]
-        set out [c omemo decryptForwarded $msg]
-        xsearch $out body -get body
-    } -result {}
-
 test omemo-unit-mam-no-header-blanks-body \
     {decryptForwarded on malformed encrypted (no <header>) emits empty body} \
     {*}$jid_common -body {
