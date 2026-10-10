@@ -112,6 +112,16 @@ test wsframing-reader {a framed session parses as a stream} -setup {
     wsr destroy
 } -result {stream {{http://www.w3.org/XML/1998/namespace lang} en version 1.0 from example.com id c2s1} 2 features message hi 1}
 
+# The reader holds a framed stream to the same header rule as a TCP one:
+# <open/> becomes a jabber:client stream header and passes, but a stanza
+# sent before any <open/> is not a stream.
+test wsframing-reader-needs-open {a framed session that does not begin with <open/> is refused} -body {
+    xmppreader wsr2
+    set first [catch {wsr2 feed [::wsframing::in {<message xmlns='jabber:client'><body>hi</body></message>}]} err]
+    wsr2 destroy
+    list $first [string match "*not a stream header*" $err]
+} -result {1 1}
+
 test wsframing-roundtrip {what we send is what the other side would read back} -body {
     set stanza [j iq -id bind -type set {
         j bind -ns urn:ietf:params:xml:ns:xmpp-bind {

@@ -36,7 +36,8 @@
 #   -ws-url url            Where the websocket transport connects; empty means
 #                          the conventional wss://$domain/xmpp-websocket
 #   -header-command cmd    Called with the opening <stream:stream> element
-#   -footer-command cmd    Called with the closing </stream:stream>
+#   -footer-command cmd    Called with the closing </stream:stream> (bareconn;
+#                          conn answers it itself and closes)
 #
 # conn-only methods:
 #   sm                     Access the stream management component
@@ -683,7 +684,7 @@ snit::type conn {
     # 0 negotiates no stream management even when the server offers it: for
     # tests of the path without it, and for a server whose SM misbehaves.
     delegate option -sm to sm as -enabled
-    delegate option * to base except {-ontransportready -command -header-command -error-command}
+    delegate option * to base except {-ontransportready -command -header-command -footer-command -error-command}
 
     option -domain -default ""
     # See dial.tcl. -nameservers is for tests.
@@ -818,6 +819,7 @@ snit::type conn {
             -ontransportready [mymethod OnTransportReady] \
             -command [mymethod OnStanza] \
             -error-command [mymethod OnTransportError] \
+            -footer-command [mymethod OnStreamFooter] \
             -attempt-command [mymethod OnAttempt]
         install sm using sm $self.sm -write [list $self.base writeStanza] \
             -ack-command [mymethod OnSmAck] \
@@ -1529,6 +1531,16 @@ snit::type conn {
                 {*}$options(-ondisconnect) $msg
             }
         }
+    }
+
+    # The server's </stream:stream> (a WebSocket's <close/>, translated). RFC
+    # 6120 4.4: answer with ours and close. Otherwise this is a TCP close
+    # like any other - reconnect and resume included - only it comes now
+    # rather than when the server drops the socket or the keepalive gives up.
+    method OnStreamFooter {args} {
+        if {[$base state] ne "connected"} return
+        catch {$base writeNow "</stream:stream>"}
+        $self OnTransportError "server closed the connection"
     }
 
     # RFC 6120 §4.9 stream errors. not-authorized is an auth error.
