@@ -204,6 +204,28 @@ test xmpprw-normal-stanza-under-caps-still-parses \
     } -cleanup _xrwCleanup \
     -result {message 0}
 
+# Character data between stanzas belongs to no stanza. Kept on the stream
+# root it grew for the life of the stream: whitespace keepalives, or a
+# server sending text between every pair of stanzas.
+test xmpprw-stream-level-text-is-not-kept \
+    {text between stanzas is dropped, not appended to the stream root} \
+    -body {
+        set ::_xrwLevelGot {}
+        xmppreader ::_xrwLevelR \
+            -command {apply {n {lappend ::_xrwLevelGot [dict get $n tag]}}}
+        ::_xrwLevelR feed [::jab::header]
+        set chunk [string repeat " \n" 2048]
+        for {set i 0} {$i < 600} {incr i} {
+            ::_xrwLevelR feed "<iq id='$i'/>${chunk}text$i"
+        }
+        ::_xrwLevelR feed "<message/>"
+        set root [lindex [set [::_xrwLevelR info vars NodeList]] 0]
+        list [llength $::_xrwLevelGot] [string length [dict get $root body]]
+    } -cleanup {
+        ::_xrwLevelR destroy
+        unset -nocomplain ::_xrwLevelGot
+    } -result {601 0}
+
 # The key dispatch has to match whole keys: it used to be a switch -regexp with
 # unanchored patterns, where a key merely containing "-ns" or ending in "body"
 # landed on the wrong field.
