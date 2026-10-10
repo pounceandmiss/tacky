@@ -461,9 +461,18 @@ snit::type taco_omemo {
     # bundle we published before the first. A failed write also rolls the
     # in-memory store back, or OnReady's publish advertises a signed prekey
     # whose private half never reached disk.
+    #
+    # A stamp ahead of the clock (the clock set back since) would hold
+    # rotation until the clock caught up, for as long as the step: it is
+    # taken back to now, so the key rotates SPK_ROTATE_MS later at most.
     method MaybeRotateSignedPreKey {} {
         if {$store eq ""} return
         set last [$self SpkRotatedAt]
+        if {$last ne "" && $last > [clock milliseconds]} {
+            jlog debug "OMEMO signed prekey stamp is ahead of the clock; counting from now"
+            $self StampSpkRotation
+            return
+        }
         if {$last ne "" && [clock milliseconds] - $last \
                 < $::taco::omemo::SPK_ROTATE_MS} {
             return
