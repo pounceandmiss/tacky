@@ -90,6 +90,8 @@ snit::type mock_bareconn {
         set writtenRaw {}
         set ::_mock_conn $self
         set ::_mock_targets ""
+        # One per dial: a dial again reuses the name, so tests count.
+        incr ::_mock_made
     }
 
     method connect {host port} {
@@ -453,3 +455,121 @@ test reg-cancel {cancel destroys session so form errors} \
         tacky register cancel
         tacky register form
     } -returnCodes error -match glob -result {No registration session*}
+
+# -- The server closes an idle registration stream --------------------------
+#
+# Nothing goes on the wire between the form and the submit, and a server
+# closes an unauthenticated stream after a while (ejabberd's
+# negotiation_timeout, 120 s): the close is no error while the form is
+# merely open, and the submit dials again, asks for the form again and
+# sends the answers in it, without the user unless the new form needs them.
+
+namespace eval ::test::reg_idle {}
+
+# The answer to the form query: the user's two fields and the server's
+# hidden challenge.
+proc ::test::reg_idle::form {challenge} {
+    j iq -type result -id reg-1 {
+        j query -ns jabber:iq:register {
+            j x -ns jabber:x:data -type form {
+                j field -var FORM_TYPE -type hidden { j value -body jabber:iq:register }
+                j field -var username -type text-single -label User { j required }
+                j field -var password -type text-private -label Password { j required }
+                j field -var challenge -type hidden { j value -body $challenge }
+            }
+        }
+    }
+}
+
+# The {var value ...} of the submit written last, {} when there is none.
+proc ::test::reg_idle::submitted {} {
+    set iq [lindex [$::_mock_conn get_written] end]
+    if {$iq eq "" || [xsearch $iq -get @type] ne "set"} { return {} }
+    set vals {}
+    xsearch $iq query x field -script f {
+        dict set vals [xsearch $f -get @var] [xsearch $f value -get body]
+    }
+    return $vals
+}
+
+proc ::test::reg_idle::events {} { lmap e $::_events { lindex $e 0 } }
+
+test reg-closed-while-the-form-is-open-is-no-error {the server closing the stream while the user fills the form is no <Error>, and the form is still there} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c1]
+        set ::_events {}
+        $::_mock_conn fire_disconnect "stream error: connection-timeout: Idle connection"
+        list [::test::reg_idle::events] [llength [dict get [tacky register form] fields]]
+    } -result {{} 4}
+
+test reg-submit-after-the-server-closed-dials-again-and-sends {a submit on a closed stream dials again, asks for the form again and sends the answers with the new form's challenge, with no new <Form>} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c1]
+        $::_mock_conn fire_disconnect "stream error: connection-timeout: Idle connection"
+        set ::test::reg_idle::regDials $::_mock_made
+        set ::_events {}
+        tacky register submit -values {username alice password secret challenge c1}
+        set ::test::reg_idle::regDials [expr {$::_mock_made - $::test::reg_idle::regDials}]
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c2]
+        set ::test::reg_idle::regVals [::test::reg_idle::submitted]
+        $::_mock_conn inject [make_reg_success]
+        list $::test::reg_idle::regDials [dict get $::test::reg_idle::regVals username] [dict get $::test::reg_idle::regVals password] \
+            [dict get $::test::reg_idle::regVals challenge] [::test::reg_idle::events]
+    } -result {1 alice secret c2 <Success>}
+
+test reg-dialling-again-fails-with-a-plain-error {when the dial a submit makes after a close fails too, the <Error> says the server closed the connection} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c1]
+        $::_mock_conn fire_disconnect "stream error: connection-timeout: Idle connection"
+        set ::_events {}
+        tacky register submit -values {username alice password secret}
+        $::_mock_conn fire_disconnect "connect: connection refused"
+        list [::test::reg_idle::events] \
+            [dict get [lrange [lindex $::_events 0] 1 end] -message]
+    } -result {<Error> {The server closed the connection, try again}}
+
+test reg-closed-before-the-submit-is-answered-is-a-plain-error {a close while the submit waits for its answer is an <Error> in plain words, and the next submit dials again} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c1]
+        tacky register submit -values {username alice password secret}
+        set ::_events {}
+        $::_mock_conn fire_disconnect "stream error: connection-timeout: Idle connection"
+        set ::test::reg_idle::regFirst [list [::test::reg_idle::events] \
+            [dict get [lrange [lindex $::_events 0] 1 end] -message]]
+        set ::test::reg_idle::regDials $::_mock_made
+        tacky register submit -values {username alice password secret}
+        list $::test::reg_idle::regFirst [expr {$::_mock_made - $::test::reg_idle::regDials}]
+    } -result {{<Error> {The server closed the connection, try again}} 1}
+
+test reg-new-form-with-a-captcha-is-asked-again {when the form fetched again carries a captcha image, the user is asked again, with what they typed kept, and nothing is sent} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [::test::reg_idle::form c1]
+        $::_mock_conn fire_disconnect "stream error: connection-timeout: Idle connection"
+        set ::_events {}
+        tacky register submit -values {username alice password secret}
+        $::_mock_conn inject [make_reg_features]
+        $::_mock_conn inject [make_reg_result]
+        set ::test::reg_idle::regForm [tacky register form]
+        list [::test::reg_idle::events] \
+            [lmap iq [$::_mock_conn get_written] { xsearch $iq -get @type }] \
+            [lmap f [dict get $::test::reg_idle::regForm fields] {
+                if {[dict get $f var] ni {username ocr}} continue
+                list [dict get $f var] [dict get $f value]
+            }]
+    } -result {{<Form> <MediaReady>} get {{username alice} {ocr {}}}}

@@ -31,7 +31,10 @@ if 0 {
         → Returns raw media bytes for field $v, or "".
 
     tacky register submit ?-token $tok? -values {var val ...}
-        → Submit filled form. Fires <Success> or <Error>.
+        → Submit filled form. Fires <Success> or <Error>. If the server
+          closed the stream while the form was open (its idle timeout),
+          dials again first and fetches the form again; the values go in
+          the new one, with no new <Form> unless it needs the user.
 
     tacky register cancel ?-token $tok?
         → Destroy session and clean up.
@@ -157,6 +160,19 @@ snit::type taco_register_session {
     variable submitting 0
     variable dialId ""
 
+    # A server closes an unauthenticated stream after a while (ejabberd's
+    # negotiation_timeout, 120 s), and nothing goes on the wire between the
+    # form and the submit. That close is no error: FormLive says the
+    # current stream brought the form, Lost that it has ended since, and
+    # the submit dials again, fetches the form again and sends the values
+    # held in Resubmit while Redialling. A close before the submit is
+    # answered, or a dial again that fails, is the <Error> ClosedText.
+    variable FormLive 0
+    variable Lost 0
+    variable Redialling 0
+    variable Resubmit {}
+    typevariable ClosedText "The server closed the connection, try again"
+
     # The legacy branch turns a field's var into an element name, so only
     # the XEP-0077 set is allowed through; the server picks these strings.
     typevariable LegacyFields {
@@ -178,6 +194,16 @@ snit::type taco_register_session {
 
     method connect {} {
         set headerSent 0
+        set FormLive 0
+        set Lost 0
+        if {$dialId ne ""} {
+            dial::cancel $dialId
+            set dialId ""
+        }
+        if {[info commands $self.conn] ne ""} {
+            $conn close
+            $conn destroy
+        }
         install conn using bareconn $self.conn \
             -transport $options(-transport) \
             -ws-url $options(-ws-url) \
@@ -224,6 +250,43 @@ snit::type taco_register_session {
         if {$currentForm eq ""} {
             error "No registration form available"
         }
+        if {$Redialling} {
+            # Already dialling again for an earlier submit: these values
+            # go instead, once the form is back.
+            set Resubmit $values
+            return
+        }
+        if {$Lost} {
+            jlog debug "register: the server closed the stream; dialling again to send the form"
+            set Resubmit $values
+            set Redialling 1
+            $self connect
+            return
+        }
+        $self Submit $values
+    }
+
+    # The values to send in the form fetched again, or "" when it needs the
+    # user: a captcha to read, or a required field the values leave empty.
+    # Its hidden and fixed fields are the server's (a new challenge among
+    # them), so whatever the values held for those is dropped.
+    method Resendable {values} {
+        if {[llength [::tacky::forms::mediaMap $currentForm]]} { return "" }
+        set out {}
+        foreach field [dict get $currentForm fields] {
+            set var [dict get $field var]
+            if {[dict get $field type] in {hidden fixed} || ![dict exists $values $var]} continue
+            dict set out $var [dict get $values $var]
+        }
+        foreach field [dict get [::tacky::forms::apply $currentForm $out] fields] {
+            if {[dict get $field required] && [join [dict get $field value] ""] eq ""} {
+                return ""
+            }
+        }
+        return [list ok $out]
+    }
+
+    method Submit {values} {
         set filled [::tacky::forms::apply $currentForm $values]
         set submitting 1
         set id [incr idCounter]
@@ -327,6 +390,7 @@ snit::type taco_register_session {
                         set errText "Registration failed"
                     }
                 }
+                set submitting 0
                 $self FireEvent <Error> -message $errText
             }
         }
@@ -355,10 +419,35 @@ snit::type taco_register_session {
         }
 
         if {$currentForm ne ""} {
-            set form [::tacky::forms::restore $currentForm $form]
+            set old $currentForm
+            if {$Redialling} {
+                # What the user typed, but for what only the old form's
+                # captcha or the server could say.
+                set typed {}
+                foreach field [dict get $old fields] {
+                    set var [dict get $field var]
+                    if {[dict get $field type] in {hidden fixed} || [dict exists $field media]
+                            || ![dict exists $Resubmit $var]} continue
+                    dict set typed $var [dict get $Resubmit $var]
+                }
+                set old [::tacky::forms::apply $old $typed]
+            }
+            set form [::tacky::forms::restore $old $form]
         }
         set currentForm $form
         set mediaBytes {}
+        set FormLive 1
+
+        if {$Redialling} {
+            set Redialling 0
+            set resend [$self Resendable $Resubmit]
+            set Resubmit {}
+            if {$resend ne ""} {
+                $self Submit [lindex $resend 1]
+                return
+            }
+            jlog debug "register: the form fetched again asks the user again"
+        }
 
         # Extract inline BOB <data> elements and push media data.
         # Collect media vars first, then emit <Form> before <MediaReady>
@@ -416,11 +505,37 @@ snit::type taco_register_session {
         }
     }
 
+    # The stream ended: an error before the form, as the transport said
+    # it; nothing while the form is merely open (the submit dials again);
+    # ClosedText when the submit's answer, or the form fetched again, can
+    # no longer come.
     method OnError {msg} {
-        $self FireEvent <Error> -message $msg
+        if {$Redialling} {
+            jlog warn "register: dialling again failed: $msg"
+            set Lost 1
+            $self FireEvent <Error> -message $ClosedText
+            return
+        }
+        if {!$FormLive} {
+            $self FireEvent <Error> -message $msg
+            return
+        }
+        set FormLive 0
+        set Lost 1
+        if {$submitting} {
+            set submitting 0
+            jlog warn "register: the server closed the stream before answering the submit: $msg"
+            $self FireEvent <Error> -message $ClosedText
+            return
+        }
+        jlog debug "register: the server closed the stream while the form is open ($msg)"
     }
 
     method FireEvent {event args} {
+        if {$event eq "<Error>"} {
+            set Redialling 0
+            set Resubmit {}
+        }
         if {$options(-callback) ne ""} {
             {*}$options(-callback) $event {*}$args
         }
