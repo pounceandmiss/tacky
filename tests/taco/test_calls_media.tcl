@@ -614,6 +614,33 @@ test media-caller-holds-candidates-until-accept \
         list $before [lrange $order end-1 end]
     } -result {0 {::rtc::pc::set-remote-description ::rtc::pc::add-remote-candidate}}
 
+# -- Media setup refused --
+#
+# Setup runs from the extdisco callback; a backend that refuses the pc (an
+# ICE URL it cannot parse, say) fails the call there and then, rather than
+# raising into bgerror and leaving the call hanging.
+
+test media-pc-refused-fails-the-caller {a refused createPeer after the proceed fails the call and terminates} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtc::pc::new "bad ICE server URL"
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_jmi_in proceed $sid $::MEDIA_PEER]
+        media_answer_extdisco
+        string map [list $sid SID] [list [lindex [calls_events] end] \
+            [dict exists [calls_state] $sid] \
+            [xsearch [media_jingle_sent] -get @action]]
+    } -result {{<Failed> -sid SID -reason {media setup failed: bad ICE server URL}} 0 session-terminate}
+
+test media-pc-refused-fails-the-callee {a refused createPeer after the initiate fails the call} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtc::pc::new "bad ICE server URL"
+        c.conn feed [calls_jmi_in propose tk-s10 $::MEDIA_PEER]
+        c.calls accept -sid tk-s10
+        c.conn feed [media_session_initiate tk-s10 $::MEDIA_PEER]
+        media_answer_extdisco
+        list [lindex [calls_events] end] [dict exists [calls_state] tk-s10]
+    } -result {{<Failed> -sid tk-s10 -reason {media setup failed: bad ICE server URL}} 0}
+
 # -- The peer reports a fault --
 
 proc media_terminate {sid reason} {
