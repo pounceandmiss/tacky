@@ -162,6 +162,14 @@ snit::type taco_calls {
     # drops ICE first, and its session-terminate lands inside this.
     typevariable DISCONNECT_GRACE_MS 2000
 
+    # The XEP-0166 conditions that say a session broke rather than ended:
+    # a peer ending with one of them failed, and the call fails here too.
+    typevariable FAULTS {
+        connectivity-error failed-application failed-transport general-error
+        incompatible-parameters media-error security-error timeout
+        unsupported-applications unsupported-transports
+    }
+
     # Conversations' namespace. "dlts" is a typo, but it is what goes on the
     # wire; don't correct it.
     typevariable NS_VERIFY http://gultsch.de/xmpp/drafts/omemo/dlts-srtp-verification
@@ -1075,7 +1083,7 @@ snit::type taco_calls {
                 ringing { $self HandleJmiRinging $stanza $sid $from }
                 reject  { $self HandleJmiReject  $stanza $sid $from }
                 retract { $self HandleJmiRetract $stanza $sid $from }
-                finish  { # XEP-0353: out of scope, ignored on receipt. }
+                finish  { $self HandleJmiFinish  $stanza $sid $from }
             }
             return 1
         }
@@ -1234,6 +1242,15 @@ snit::type taco_calls {
             $client emit calls <Ended> -sid $sid
             $self Cleanup $sid
         }
+    }
+
+    # <finish/> (XEP-0353 §3.5): the session is over. Its session-terminate
+    # normally said so first; if we still hold the call, it ends here.
+    method HandleJmiFinish {stanza sid from} {
+        if {![$self PeerMatches $sid $from]} return
+        if {[dict get $Calls $sid state] in {proposed ringing}} return
+        set child [xsearch $stanza finish -ns urn:xmpp:jingle-message:0 -get node]
+        $self PeerEnded $sid [lindex [xsearch $child reason * -get tag] 0]
     }
 
     # $device: our OMEMO device id to announce, if any.
@@ -1564,8 +1581,20 @@ snit::type taco_calls {
     method HandleSessionTerminate {stanza jingle sid from} {
         $self AckIq $stanza
         if {![$self PeerMatches $sid $from]} return
+        $self PeerEnded $sid [lindex [xsearch $jingle reason * -get tag] 0]
+    }
+
+    # The peer ended the session (session-terminate or JMI <finish/>) with
+    # the XEP-0166 condition $reason: one of FAULTS fails the call here
+    # too, anything else ends it.
+    method PeerEnded {sid reason} {
         $self TeardownMedia $sid
-        $client emit calls <Ended> -sid $sid
+        if {$reason in $FAULTS} {
+            $client emit calls <Failed> -sid $sid \
+                -reason "the peer reported $reason"
+        } else {
+            $client emit calls <Ended> -sid $sid
+        }
         $self Cleanup $sid
     }
 

@@ -24,11 +24,15 @@ proc calls_last_written {} {
     return [lindex [c.conn get_written] end]
 }
 
-proc calls_jmi_in {action sid from} {
+# $reason: the XEP-0166 condition a <reason/> child carries, if any.
+proc calls_jmi_in {action sid from {reason ""}} {
     j message -from $from -to user@test.example.com -type chat {
         j $action -ns urn:xmpp:jingle-message:0 -id $sid {
             if {$action eq "propose"} {
                 j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio
+            }
+            if {$reason ne ""} {
+                j reason -ns urn:xmpp:jingle:1 { j $reason }
             }
         }
     }
