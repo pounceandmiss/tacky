@@ -1480,6 +1480,18 @@ test messagestore-alias-follows-confirmed-row \
         store resolveTargetTs alice@example.com oc
     } -result {500}
 
+# A peer that copies the origin-id of our message into one of its own does
+# not have what names that id land on its row: our send's own_id wins.
+test messagestore-own-target-wins-over-a-copied-origin-id {an id that is our own_id and a peer's copied origin-id resolves to our row} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list \
+            [ms_msg timestamp 100 origin_id copied-x body "peer's copy" server_id s-peer] \
+            [ms_msg timestamp 200 own_id copied-x origin_id copied-x \
+                from_jid juliet@example.com/pc body mine server_id s-mine]]
+        store resolveTargetTs alice@example.com copied-x
+    } -result 200
+
 test messagestore-forget-chat-drops-aliases {forgetting a chat drops its aliases too} \
     {*}$ms_common \
     -body {
