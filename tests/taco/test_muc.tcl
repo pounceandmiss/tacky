@@ -1753,6 +1753,33 @@ test muc-groupchat-other-id-no-false-confirm {other user's @id matching pending 
         }
     } -result {pending}
 
+# In a room with no occupant-ids, the history replayed on join from the
+# nick we now hold may be whoever held it before: it is ours only when it
+# names a send of ours. Live, the nick is ours alone.
+test muc-groupchat-history-on-our-nick-is-not-ours \
+    {a delayed message from our nick is not ours unless it names our send; a live one is} \
+    {*}$muc_common \
+    -body {
+        muc_join room@muc.example.com me
+        c message send -chat room@muc.example.com?join -body "mine"
+        set oid [dict get [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0] own_id]
+        c.conn feed [j message -type groupchat -id eve-1 -from room@muc.example.com/me {
+            j body -body "eve, yesterday"
+            j delay -ns urn:xmpp:delay -from room@muc.example.com -stamp 2024-01-01T00:00:00Z
+        }]
+        c.conn feed [j message -type groupchat -id $oid -from room@muc.example.com/me {
+            j body -body "mine"
+            j origin-id -ns urn:xmpp:sid:0 -id $oid
+            j delay -ns urn:xmpp:delay -from room@muc.example.com -stamp 2024-01-01T00:01:00Z
+        }]
+        c.conn feed [j message -type groupchat -id live-1 -from room@muc.example.com/me {
+            j body -body "live"
+        }]
+        string map [list $oid OID] [lsort [lmap m [dict get [c message messagestore get latest room@muc.example.com?join] messages] {
+            list [dict get $m content body] [dict get $m own_id]
+        }]]
+    } -result {{live live-1} {mine OID} {{eve, yesterday} {}}}
+
 test muc-groupchat-occupant-id-not-own-without-self-id \
     {a stanza with an occupant-id is not own while our own occupant-id is unknown} \
     {*}$muc_common \
@@ -2546,6 +2573,29 @@ test muc-error-removal-leaves-room {110 with role none in an error puts us out} 
              [dict get $::got -involuntary] \
              [c muc isJoined -jid room@muc.example.com]
     } -result {room@muc.example.com me 1 0}
+
+test muc-error-removal-from-the-room-leaves-at-once {110 with role none in an error from the room's bare JID puts us out} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error from room@muc.example.com]
+        list [dict get $::got -involuntary] [c muc isJoined -jid room@muc.example.com]
+    } -result {1 0}
+
+# From another occupant's room JID the notice may be that occupant's own
+# error relayed by the service, not the room's word: it does not put us out.
+test muc-error-from-an-occupant-does-not-remove-us {110 with role none in an error from another occupant leaves us joined} \
+    {*}$muc_common \
+    -body {
+        set ::got {}
+        tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
+        muc_join room@muc.example.com me
+        c.conn feed [muc_error from room@muc.example.com/mallory]
+        list $::got [c muc isJoined -jid room@muc.example.com] \
+             [c db onecolumn {SELECT count(*) FROM chat_message}]
+    } -result {{} 1 0}
 
 test muc-error-without-removal-notice-stays {an error with no 110 leaves us joined} \
     {*}$muc_common \

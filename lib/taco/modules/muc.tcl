@@ -1554,7 +1554,7 @@ snit::type taco_muc {
         if {$type_ eq "error" && [jid valid $from]} {
             set errRoom [jid norm [jid bare $from]]
             if {[info exists Rooms($errRoom)]} {
-                $self OnRoomError $errRoom $stanza
+                $self OnRoomError $errRoom $stanza [jid resource $from]
                 return 1
             }
         }
@@ -1699,10 +1699,13 @@ snit::type taco_muc {
         # Fail closed: with an occupant-id on the stanza but none captured for
         # ourselves, nick equality would let another occupant take our nick and
         # forge a first-person message.
+        # Without one, by our nick, though history replayed on join may be
+        # whoever held it before us (message NickIsOurs).
         if {$occ ne ""} {
             set isOwn [expr {$myOcc ne "" && $occ eq $myOcc}]
         } else {
-            set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+            set isOwn [expr {$nick eq [dict get $Rooms($roomJid) nick]
+                && [$client message NickIsOurs ${roomJid}?join $stanza]}]
         }
         # OMEMO (XEP-0384 §5.7): read as its sender's, whom the room names.
         # The plaintext stanza keeps every other child, so the echo of our
@@ -2074,13 +2077,21 @@ snit::type taco_muc {
     # way instead of with the <presence type='unavailable'> XEP-0045 7.14
     # asks for. Unhandled, the room stays marked joined for the session, so
     # isJoined holds every rejoin path off it and its messages are lost.
-    method OnRoomError {roomJid stanza} {
+    # Only the room's word counts: the notice from its bare JID or our own
+    # nick. From another occupant's nick it may be that occupant's own
+    # error, relayed by the service, so it leaves a joined room alone.
+    method OnRoomError {roomJid stanza fromNick} {
         set mucX [lindex [xsearch $stanza x \
             -ns http://jabber.org/protocol/muc#user] 0]
         if {$mucX eq ""} return
         set codes [$self ParseStatusCodes $mucX]
         if {110 ni $codes} return
         if {[xsearch $mucX item -get @role] ne "none"} return
+        if {$fromNick ne "" && $fromNick ne [dict get $Rooms($roomJid) nick]
+                && [dict get $Rooms($roomJid) joined]} {
+            jlog inform "$roomJid: ignoring a removal notice from $fromNick"
+            return
+        }
         jlog inform "$roomJid: removed by an error stanza\
             ([dict get [stanza_error $stanza] condition])"
         # A room may answer a leave we asked for this way; re-entering

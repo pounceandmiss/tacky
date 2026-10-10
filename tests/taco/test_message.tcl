@@ -2855,6 +2855,33 @@ test message-room-archive-holds-only-the-room \
             [lsort -unique $::_opened]
     } -result {{{the room's own}} 0 room@muc.example.com/bob}
 
+# A room's archived correction from the nick we now hold, with no
+# occupant-id, is whoever held the nick then -- not us -- so it may not
+# correct our message.
+test message-room-archive-our-nick-is-not-us \
+    {a room's archived correction from our nick, naming no send of ours, does not edit our message} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        msg_store [list [msg_msg chat_jid room@muc.example.com?join timestamp 5000000 \
+            from_jid room@muc.example.com/me body original own_id mine-1 server_id s-mine]]
+        set rn [j result -ns urn:xmpp:mam:2 -id s-eve {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+                j message -type groupchat -from room@muc.example.com/me -id eve-fix {
+                    j body -body forged
+                    j replace -ns urn:xmpp:message-correct:0 -id mine-1
+                }
+            }
+        }]
+        $::_client message CatchupPage [dict create complete 1 messages [list $rn]] \
+            room@muc.example.com?join
+        lmap m [msg_store_latest room@muc.example.com?join] {
+            list [dict get $m content body] [dict get $m own_id]
+        }
+    } -result {{original mine-1}}
+
 test message-catchup-overlap-clears-reconnect-hole {catchup overlap sweeps the reconnect hole} \
     {*}$msg_common \
     -body {
