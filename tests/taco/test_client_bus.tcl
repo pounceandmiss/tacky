@@ -76,3 +76,25 @@ test bus-unsubscribe-preserves-others {unsubscribe one tag preserves other tags 
         testbus publish <Foo>
         set got
     } -result {t2}
+
+# A subscriber's error stays its own: the ones after it still get the event,
+# publish returns normally, and the error goes to the background handler.
+test bus-subscriber-error-isolated {a failing subscriber does not stop the next one or the publisher} \
+    -setup {
+        taco_client_bus create testbus
+        set ::_busSavedBgerror [interp bgerror {}]
+        interp bgerror {} {apply {{msg opts} { lappend ::_busBgerrors $msg }}}
+    } \
+    -cleanup {
+        interp bgerror {} $::_busSavedBgerror
+        unset ::_busSavedBgerror ::_busBgerrors
+        testbus destroy
+    } \
+    -body {
+        set got {}
+        set ::_busBgerrors {}
+        testbus subscribe t1 <Foo> {apply {{args} { error "store is locked" }}}
+        testbus subscribe t2 <Foo> {apply {{args} { lappend ::got $args }}}
+        set r [catch {testbus publish <Foo> -x 1}]
+        list $r $got $::_busBgerrors
+    } -result {0 {{-x 1}} {{store is locked}}}

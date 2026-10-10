@@ -394,10 +394,15 @@ snit::type taco_client_bus {
         }
     }
 
+    # A subscriber's error is reported to the background error handler and
+    # costs nobody else the event: not the subscribers after it, and not
+    # emit's host, which hears of the event after the bus.
     method publish {event args} {
         if {![dict exists $Subs $event]} return
         foreach entry [dict get $Subs $event] {
-            {*}[lindex $entry 1] {*}$args
+            if {[catch {{*}[lindex $entry 1] {*}$args} err opts] == 1} {
+                catch {{*}[interp bgerror {}] $err $opts}
+            }
         }
     }
 }
