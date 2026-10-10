@@ -914,6 +914,55 @@ test file-autofetch-max-live-request {an over-cap fetch on the wire ends idle, n
         set res
     } -result {idle {} part=0 onDisk=0}
 
+# The user's own download joining an automatic one takes the autofetch cap
+# off it: what the user asked for is never gated.
+test file-download-joining-autofetch-lifts-the-cap {a manual download joining an automatic one in flight removes its size cap} \
+    -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        af_policy everyone
+        tacky setting set -key attachment_autofetch_max -value 4096
+        lassign [cx_start silent] srv port
+        set url http://127.0.0.1:$port/joined.png
+        $::_client file download -url $url -auto 1 -from friend@test.example.com
+        set byUrl [lindex [$::_client file info vars DownloadByUrl] 0]
+        set transfers [lindex [$::_client file info vars Transfers] 0]
+        set id [set ${byUrl}($url)]
+        set before [dict get [set ${transfers}($id)] maxbytes]
+        $::_client file download -url $url
+        set after [dict get [set ${transfers}($id)] maxbytes]
+        $::_client file cancel -url $url
+        cx_stop $srv
+        list $before $after
+    } -result {4096 0}
+
+# Terminal drops the transfer before its callbacks run: one of them may start
+# the next transfer under the same id (an album's next file), which must not
+# be deleted with the finished one. A callback's error costs the others
+# nothing.
+test file-terminal-callback-reuses-the-id {a callback starting a transfer under the finished one's id keeps it, and a failing callback stops no other} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set id [$::_client file NewTransfer upload "" 9200000]
+        $::_client file AddWaiter $id {apply {{r} {
+            $::_client file NewTransfer upload "" 9200000
+            error "callback blew up"
+        }}} ""
+        $::_client file AddWaiter $id {apply {{r} { set ::_ftNext ran }}} ""
+        set ::_ftNext ""
+        set code [catch {$::_client file Terminal $id done}]
+        set transfers [lindex [$::_client file info vars Transfers] 0]
+        set live [info exists ${transfers}(9200000)]
+        $::_client file Terminal 9200000 idle cancelled
+        list $code $live $::_ftNext
+    } -result {0 1 ran}
+
+test file-new-transfer-refuses-a-live-id {a caller's id still in flight is refused, not overwritten} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        $::_client file NewTransfer upload "" 9300000
+        set r [list [catch {$::_client file NewTransfer upload "" 9300000} err] $err]
+        $::_client file Terminal 9300000 idle cancelled
+        set r
+    } -result {1 {transfer 9300000 is already in progress}}
+
 proc up_last_url {} {
     set out ""
     foreach e $::_emitted {
