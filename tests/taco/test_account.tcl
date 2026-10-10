@@ -206,6 +206,29 @@ tacky_test account-add-refused-stores-nothing {an add with a bad field leaves no
              [wait_call tacky account exists -acc new@example.com]
     } -result {{Invalid host: https://x} 0}
 
+# The row exists once the INSERT is done; a failure after it (here the
+# enable's connect) must still announce it, or a retry finds it and says
+# nothing.
+tacky_test account-add-announced-when-enable-throws {an add whose enable fails still emits <Added>} \
+    -modes direct \
+    -setup {
+        set ::_acctThrowsAdded {}
+        tacky listen account <Added> {apply {{eargs} {lappend ::_acctThrowsAdded $eargs}}}
+        # taco's own name for the client it would build
+        set ::_acctThrowsClient \
+            [set [info object namespace ::tacky]::Taco].client(throws@example.com)
+        proc $::_acctThrowsClient {args} {
+            if {[lindex $args 0] eq "connect"} { error "connect failed" }
+        }
+    } -cleanup {
+        rename $::_acctThrowsClient {}
+        unset ::_acctThrowsClient ::_acctThrowsAdded
+    } -body {
+        list [wait_call_error tacky account add -acc throws@example.com -enabled 1] \
+             [wait_call tacky account exists -acc throws@example.com] \
+             $::_acctThrowsAdded
+    } -result {{connect failed} 1 {{-acc throws@example.com}}}
+
 tacky_test account-connection-defaults {a new account connects automatically} \
     {*}$common \
     -body {

@@ -70,12 +70,16 @@ snit::type taco_account {
                 dict set fields -username [jid username $jid]
             }
         }
-        if {[dict size $fields] > 0} {
-            $self SetFields $jid $fields
-        }
-
-        if {!$exists} {
-            $options(-taco) emit account <Added> -acc $jid
+        # The row is made: announce it even when what follows fails (an
+        # enable whose connect throws), or a retry finds it and says nothing.
+        try {
+            if {[dict size $fields] > 0} {
+                $self SetFields $jid $fields
+            }
+        } finally {
+            if {!$exists} {
+                $options(-taco) emit account <Added> -acc $jid
+            }
         }
     }
 
