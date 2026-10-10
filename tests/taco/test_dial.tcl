@@ -87,11 +87,38 @@ test dial-srv-port-zero-dropped {a record with port 0 is not dialled} \
         }
     } -result {{ok.example.org 5222 starttls} {example.org 5222 starttls}}
 
-test dial-srv-dot-means-none {a "." target leaves only the domain} \
+# RFC 6120 3.2.1: a "." is judged per name
+test dial-srv-dot-means-none {"." under both names: nothing to dial, not even the domain} \
     {*}$dial_common -body {
         dial_with {
             _xmpps-client._tcp.example.org {{0 0 0 .}}
             _xmpp-client._tcp.example.org  {{0 0 0 .}}
+        }
+    } -result {}
+
+test dial-srv-dot-under-xmpp-no-fallback {"." under _xmpp-client with no _xmpps-client: no domain fallback} \
+    {*}$dial_common -body {
+        list [dial_with {
+            _xmpps-client._tcp.example.org nx
+            _xmpp-client._tcp.example.org  {{0 0 0 .}}
+        }] [dial_with {
+            _xmpp-client._tcp.example.org  {{0 0 0 .}}
+        } -tls starttls]
+    } -result {{} {}}
+
+test dial-srv-dot-under-xmpp-keeps-direct {"." under _xmpp-client: the _xmpps-client targets only} \
+    {*}$dial_common -body {
+        dial_with {
+            _xmpps-client._tcp.example.org {{0 0 443 tls.example.org}}
+            _xmpp-client._tcp.example.org  {{0 0 0 .}}
+        }
+    } -result {{tls.example.org 443 direct}}
+
+test dial-srv-dot-under-xmpps-falls-back {"." under _xmpps-client alone: still the domain on 5222} \
+    {*}$dial_common -body {
+        dial_with {
+            _xmpps-client._tcp.example.org {{0 0 0 .}}
+            _xmpp-client._tcp.example.org  nx
         }
     } -result {{example.org 5222 starttls}}
 

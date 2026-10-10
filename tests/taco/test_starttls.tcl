@@ -198,3 +198,11 @@ test baseconn-targets-need-a-domain {without a domain nothing is dialled} \
         st_wait ::_st_ready
         list $::_st_ready $::_st_errors $::_st_attempts
     } -result {error {{Connect failed: no domain}} {}}
+
+test baseconn-targets-none-left {no target at all: the domain publishes no service, said once, later} \
+    {*}$targets_common -body {
+        bc connectTargets {}
+        set now $::_st_ready
+        st_wait ::_st_ready
+        list $now $::_st_ready $::_st_errors $::_st_attempts
+    } -result {{} error {{Connect failed: example.com publishes no XMPP service}} {}}
