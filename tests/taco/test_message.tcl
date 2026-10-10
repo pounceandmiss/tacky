@@ -418,6 +418,69 @@ test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
         expr {[dict get $msg timestamp] == $expected}
     } -result {1}
 
+# Our server stamps what it held while we were offline, but a peer can put
+# the same <delay from='our.domain'/> on its own message. Nothing the server
+# held predates the end of our previous session (less a clock skew), so a
+# stamp before that is the peer's and the row gets its arrival time.
+test message-live-forged-server-delay-is-floored \
+    {a server delay from before our previous session ended is not trusted} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_disconnect gone
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "backdated"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp 1970-01-02T00:00:00Z
+        }]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "two hours back"
+            j delay -ns urn:xmpp:delay -from user@test.example.com \
+                -stamp [FormatTimestampISO [expr {$before - 7200 * 1000000}]]
+        }]
+        list [expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}] \
+             [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] >= $before}]
+    } -result {1 1}
+
+test message-live-offline-stamp-after-the-floor-is-kept \
+    {a server delay from after our previous session ended is kept} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_disconnect gone
+        msg_ready
+        set ts [expr {([clock seconds] - 60) * 1000000}]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "stored while we were away"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] == $ts}
+    } -result {1}
+
+test message-live-offline-floor-from-the-store \
+    {a first session floors server delays at the newest message stored} \
+    {*}$msg_common \
+    -body {
+        set dayAgo [expr {[clock microseconds] - 86400 * 1000000}]
+        msg_store [list [msg_msg chat_jid carol@example.com timestamp $dayAgo \
+            server_id s-old body old]]
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "backdated"
+            j delay -ns urn:xmpp:delay -from test.example.com \
+                -stamp [FormatTimestampISO [expr {$dayAgo - 86400 * 1000000}]]
+        }]
+        set ts [expr {([clock seconds] - 3600) * 1000000}]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "stored while we were away"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        list [expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}] \
+             [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] == $ts}]
+    } -result {1 1}
+
 test message-live-unparseable-stamp-uses-arrival \
     {a delay stamp we cannot parse falls back to arrival time} \
     {*}$msg_common \
