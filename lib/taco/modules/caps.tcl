@@ -275,6 +275,20 @@ snit::type taco_caps {
         return $s
     }
 
+    # Why an answer cannot be hashed, or "": a <feature/> or a form field
+    # with no var has nothing for the verification string.
+    proc Malformed {queryNode} {
+        foreach n [xsearch $queryNode feature] {
+            if {[xsearch $n -get @var] eq ""} { return "a feature with no var" }
+        }
+        foreach form [xsearch $queryNode x -ns jabber:x:data] {
+            foreach field [xsearch $form field] {
+                if {[xsearch $field -get @var] eq ""} { return "a form field with no var" }
+            }
+        }
+        return ""
+    }
+
     proc GetFormType {form} {
         set valNodes [xsearch $form field @var FORM_TYPE value]
         if {[llength $valNodes] > 0} {
@@ -329,6 +343,12 @@ snit::type taco_caps {
 
         set queryNode [lindex [xsearch $stanza query] 0]
         if {$queryNode eq ""} return
+
+        set why [Malformed $queryNode]
+        if {$why ne ""} {
+            jlog debug "Caps answer from $from for $expectedVer has $why; not cached"
+            return
+        }
 
         # Validate: recompute hash and compare
         set computedVer [$self HashDiscoQuery $queryNode]

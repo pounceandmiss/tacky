@@ -162,6 +162,37 @@ test caps-disco-coalesced {presences sharing an unresolved hash ask once} {*}$ca
     set queries
 } -result 1
 
+# A <feature/> or a form <field/> with no var is a malformed answer: refused,
+# not a throw on every presence naming the ver.
+test caps-feature-without-var-is-not-cached {an answer with a bare <feature/>, or a form field with no var, caches nothing and does not throw} {*}$caps_common -body {
+    set ver [c.caps HashDiscoQuery [j query -ns http://jabber.org/protocol/disco#info {
+        j identity -category client -type pc -name X
+        j feature -var urn:xmpp:jingle:1
+    }]]
+    set bare [j query -ns http://jabber.org/protocol/disco#info {
+        j identity -category client -type pc -name X
+        j feature
+    }]
+    set noVarField [j query -ns http://jabber.org/protocol/disco#info {
+        j identity -category client -type pc -name X
+        j x -ns jabber:x:data -type result {
+            j field -var FORM_TYPE -type hidden { j value -body urn:x }
+            j field { j value -body y }
+        }
+    }]
+    set codes {}
+    foreach {who answer} [list a@example.com/x $bare b@example.com/y $noVarField] {
+        c.conn feed [j presence -from $who {
+            j c -ns http://jabber.org/protocol/caps -hash sha-1 -node http://x -ver $ver
+        }]
+        set id [xsearch [lindex [c.conn get_written] end] -get @id]
+        lappend codes [catch {
+            c.conn feed [j iq -type result -from $who -id $id { j #as-is $answer }]
+        }]
+    }
+    list $codes [c.caps discoFor $ver]
+} -result {{0 0} {}}
+
 test caps-disco-unknown {an unresolved hash reports nothing} {*}$caps_common -body {
     c.caps discoFor sha-1-nobody-published-this
 } -result {}
