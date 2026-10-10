@@ -6,8 +6,6 @@ snit::type taco_debugtap {
     variable ConnTaps -array {}   ;# connKey -> list of tap IDs
 
     tackymethod on {args} {
-        set id [incr TapId]
-
         if {[dict exists $args -acc]} {
             set jid [dict get $args -acc]
             set connKey acc:$jid
@@ -17,8 +15,11 @@ snit::type taco_debugtap {
             set connKey reg:$tok
             set session [$options(-taco) register session -token $tok]
             set connCmd [list $session conn]
+        } else {
+            error "debugtap on needs -acc or -token"
         }
 
+        set id [incr TapId]
         set Taps($id) [dict create connKey $connKey conn $connCmd]
         lappend ConnTaps($connKey) $id
         if {[llength $ConnTaps($connKey)] == 1} {
