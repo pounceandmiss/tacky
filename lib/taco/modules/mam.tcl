@@ -29,6 +29,14 @@ snit::type taco_mam {
     variable Results     ;# array: Results($queryId) = list of <result> node dicts
     variable Callbacks   ;# array: Callbacks($queryId) = command prefix
     variable Archives    ;# array: Archives($queryId) = bare archive JID ("" = own archive)
+    # Limits($queryId): the most <result/>s a query takes, its -max plus
+    # RESULT_MARGIN (DEFAULT_RESULT_CAP without one), so an archive
+    # streaming more for a query it knows is not buffered without bound
+    # until the <fin/>. The rest are dropped, said once (Capped).
+    variable Limits -array {}
+    variable Capped -array {}
+    typevariable RESULT_MARGIN 10
+    typevariable DEFAULT_RESULT_CAP 1000
     variable FieldCache  ;# array: FieldCache($target) = fulltext field name or ""
 
     # The resource is persisted (account.tcl `resource`), so a later run or a
@@ -88,6 +96,9 @@ snit::type taco_mam {
         }
 
         set Results($queryId) {}
+        set max [dict get $opts -max]
+        set Limits($queryId) [expr {[string is integer -strict $max] && $max >= 0
+            ? $max + $RESULT_MARGIN : $DEFAULT_RESULT_CAP}]
         set Callbacks($queryId) [dict get $opts -command]
         set archiveTo [dict get $opts -to]
         set Archives($queryId) [expr {$archiveTo eq "" \
@@ -174,9 +185,13 @@ snit::type taco_mam {
     }
 
     method cancel {queryId} {
-        unset -nocomplain Results($queryId)
-        unset -nocomplain Callbacks($queryId)
-        unset -nocomplain Archives($queryId)
+        $self Forget $queryId
+    }
+
+    method Forget {queryId} {
+        foreach a {Results Callbacks Archives Limits Capped} {
+            unset -nocomplain ${a}($queryId)
+        }
     }
 
     # =================================================================
@@ -211,9 +226,7 @@ snit::type taco_mam {
         # if every message matched.
         if {$ftVal ne "" && $ftVar eq ""} {
             set callback $Callbacks($queryId)
-            unset -nocomplain Results($queryId)
-            unset -nocomplain Callbacks($queryId)
-            unset -nocomplain Archives($queryId)
+            $self Forget $queryId
             {*}$callback [dict create messages {} complete 0 first "" last "" \
                 error 1 error_condition fulltext-unsupported]
             $client emit mam <QueryEnd> -id $queryId
@@ -442,6 +455,14 @@ snit::type taco_mam {
             return 1
         }
 
+        if {[info exists Limits($queryId)]
+                && [llength $Results($queryId)] >= $Limits($queryId)} {
+            if {![info exists Capped($queryId)]} {
+                set Capped($queryId) 1
+                jlog warn "MAM query $queryId: more than $Limits($queryId) results; the rest dropped"
+            }
+            return 1
+        }
         lappend Results($queryId) $resultNode
         return 1
     }
@@ -482,9 +503,7 @@ snit::type taco_mam {
         set iqType [xsearch $stanza -get @type]
 
         # Cleanup
-        unset -nocomplain Results($queryId)
-        unset -nocomplain Callbacks($queryId)
-        unset -nocomplain Archives($queryId)
+        $self Forget $queryId
 
         if {$iqType eq "error"} {
             set errCond ""

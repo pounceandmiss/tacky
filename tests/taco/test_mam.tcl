@@ -209,3 +209,19 @@ test mam-query-ids-do-not-collide-across-sessions {a second session mints its ow
         }
         list [llength $ids] [llength [lsort -unique $ids]]
     } -result {6 6}
+
+# An archive streaming results past what was asked for is not buffered
+# without bound: past -max plus a margin of ten the rest are dropped.
+test mam-results-are-capped-past-max {a page holds at most -max plus the margin, however many results the archive sends} \
+    {*}$mam_common \
+    -body {
+        c configure -jid user@test.example.com/res
+        set ::got NEVER
+        c mam query -with peer@example.com -max 2 \
+            -command {apply {{r} { set ::got $r }}}
+        set req [lindex [c.conn get_written] end]
+        for {set i 1} {$i <= 40} {incr i} { mam_feed_result $req r$i }
+        mam_feed_fin $req
+        set ids [mam_result_ids $::got]
+        list [llength $ids] [lindex $ids 0] [lindex $ids end]
+    } -result {12 r1 r12}
