@@ -171,6 +171,28 @@ test omemo-unit-spk-rotates-once {a rotation stamps, so the next connect is a no
             stable [expr {$spkFirst eq $spkSecond}]
     } -result {restamped 1 stable 1}
 
+# A stamp ahead of the clock (the clock set back since) would hold rotation
+# until the clock caught up; it is taken back to now instead.
+test omemo-unit-spk-future-stamp-reset {a stamp ahead of the clock counts from now} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set spkAhead [expr {[clock milliseconds] + 10 * $::taco::omemo::SPK_ROTATE_MS}]
+        c db eval {UPDATE omemo_spk SET rotated_at=$spkAhead}
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkFirst [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        c omemo MaybeRotateSignedPreKey
+        set spkBefore [llength [c conn get_written]]
+        c omemo DoPublishBundle
+        set spkSecond [::test::omemo_unit::publishedSpk \
+            [lrange [c conn get_written] $spkBefore end]]
+        list reset [expr {[c omemo SpkRotatedAt] <= [clock milliseconds]}] \
+            stable [expr {$spkFirst eq $spkSecond}]
+    } -result {reset 1 stable 1}
+
 # A rotated signed prekey must reach disk before it is advertised, or
 # peers build sessions against a key whose private half we no longer have.
 test omemo-unit-spk-rotation-persists {a rotated signed prekey survives reload} -setup {
