@@ -1577,9 +1577,16 @@ snit::type taco_omemo {
         # one and adopt that, as libsignal does. The usual cause: we started
         # a session from their bundle while they started theirs from ours,
         # both warming ahead of the first message (EnsureBundlesForDevicelist;
-        # every member of a room does it for every other). Their identity key
-        # is still checked against the stored one below (EnsureTrustRow), and
-        # a failed attempt leaves the held session as it was.
+        # every member of a room does it for every other). A failed attempt
+        # leaves the held session as it was.
+        #
+        # Anyone who can put a stanza in our stream as the peer can build a
+        # valid exchange from our public bundle under an identity of their
+        # own, so the fresh session is adopted only under the identity
+        # pinned for the device (its trust row, else the held session's).
+        # Under another, the held session stays, the fresh one is dropped
+        # unstored, and the device goes the way of any changed identity
+        # (EnsureTrustRow: compromised, the changed-key placeholder).
         if {!$ok && $hadSession} {
             foreach pair $candidates {
                 lassign $pair isPrekey enc
@@ -1588,6 +1595,17 @@ snit::type taco_omemo {
                 if {![catch {
                     $fresh decrypt_key $store $enc -prekey 1
                 } out opts]} {
+                    set claimed [$fresh remote_identity]
+                    set pinned [$self PinnedIdentity $peerJid $peerDev $sess]
+                    if {$pinned ne "" && $claimed ne $pinned} {
+                        catch {$fresh destroy}
+                        jlog warn "OMEMO $peerJid/$peerDev: prekey message under\
+                            another identity than the device's; session kept"
+                        $self EnsureTrustRow $peerJid $peerDev $claimed
+                        if {!$hasPayload} { return [list keytransport ""] }
+                        return [list decrypt_error \
+                            "\[OMEMO\] Sender's identity key changed - possible MITM"]
+                    }
                     jlog debug "OMEMO $peerJid/$peerDev: prekey message opened\
                         on a fresh session; adopting it"
                     catch {$sess destroy}
@@ -1680,6 +1698,23 @@ snit::type taco_omemo {
         # Strip Conversations-style privacy padding (trailing whitespace).
         set plain [string trimright $plain " \t"]
         return [list plaintext $plain $senderFp]
+    }
+
+    # The identity key a new session with (peerJid, peerDev) must have: the
+    # trust row's, else that of $sess, the session held; "" when neither
+    # names one.
+    method PinnedIdentity {peerJid peerDev sess} {
+        set ik [$db onecolumn {
+            SELECT identity_pk FROM omemo_trust
+            WHERE account_jid=$accountJid
+              AND peer_jid=$peerJid AND peer_device=$peerDev
+        }]
+        if {$ik ne ""} { return $ik }
+        if {[catch {$sess remote_identity} ik]
+                || $ik eq [string repeat \x00 32]} {
+            return ""
+        }
+        return $ik
     }
 
     # Ensure a trust row for (peerJid, peerDev) anchored to $ik.
