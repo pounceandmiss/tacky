@@ -1863,7 +1863,6 @@ snit::type taco_message {
         set tag [dict get $opts -tag]
 
         if {$tag ne ""} {
-            set ActiveTags($tag) 1
             lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
@@ -2098,18 +2097,25 @@ snit::type taco_message {
     }
 
     # Wraps a tagged request's callbacks so that it, or `cancel`, answers
-    # once. An empty callback stays empty.
+    # once. An empty callback stays empty. ActiveTags($tag) counts the
+    # tag's requests in flight, and goes with the last one's answer.
     method TagWrap {tag command onerror} {
+        if {$command eq "" && $onerror eq ""} { return {{} {}} }
         set id [incr TagSeq]
         set TagPending($id) [list $tag $command $onerror]
+        incr ActiveTags($tag)
         list [expr {$command eq "" ? "" : [mymethod TagSettle $id 1]}] \
              [expr {$onerror eq "" ? "" : [mymethod TagSettle $id 2]}]
     }
 
     method TagSettle {id which value} {
         if {![info exists TagPending($id)]} return
+        set tag [lindex $TagPending($id) 0]
         set cb [lindex $TagPending($id) $which]
         unset TagPending($id)
+        if {[info exists ActiveTags($tag)] && [incr ActiveTags($tag) -1] <= 0} {
+            unset ActiveTags($tag)
+        }
         {*}$cb $value
     }
 
@@ -2131,7 +2137,6 @@ snit::type taco_message {
         set onerror  [dict get $opts -onerror]
 
         if {$tag ne ""} {
-            set ActiveTags($tag) 1
             lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
@@ -2257,7 +2262,6 @@ snit::type taco_message {
         $self CheckCursor $source $chatJid $before $beforeChat $beforeId
 
         if {$tag ne ""} {
-            set ActiveTags($tag) 1
             lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 

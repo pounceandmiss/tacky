@@ -2283,6 +2283,22 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
         list [llength $local] [dict get [lindex $local 0] content body]
     } -result {1 {stored msg}}
 
+# A tag lives while its call is in flight and goes when the call answers, so
+# a host naming every call afresh does not grow the table.
+test message-history-tag-goes-when-answered {tagged history calls answered from the store leave no tag behind} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 1000000 body a]]
+        set ::_answers 0
+        foreach t {t1 t2 t3} {
+            tacky message history -acc $acc -chat alice@example.com -limit 1 -tag $t \
+                -command {apply {{r} { incr ::_answers }}}
+        }
+        tacky message goto -acc $acc -chat alice@example.com -date 1000000 \
+            -tag t4 -command {apply {{r} { incr ::_answers }}}
+        list $::_answers [array names [$::_client message info vars ActiveTags]]
+    } -result {4 {}}
+
 test message-history-no-tag-unaffected-by-cancel {cancel with unknown tag is harmless} \
     {*}$msg_common \
     -body {
