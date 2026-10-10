@@ -87,7 +87,11 @@ namespace eval ::taco::omemo {
     variable NS_EME urn:xmpp:eme:0
     # The placeholder for an <encrypted/> that cannot be read at all.
     variable MALFORMED {[OMEMO] Could not read message payload}
+    # Skipped message keys kept per peer device, the oldest dropped past
+    # it; and the most one message may skip (picomemo's n), past which it
+    # is refused, as libsignal's MAX_SKIP. One message's skip always fits.
     variable SKIPPED_CAP 2000
+    variable MAX_SKIP 1000
     # Curve25519 public-key type tag (= libsignal Curve.DJB_TYPE): the
     # one-byte prefix on the 33-byte wire form of a key.
     variable DJB_TYPE "\x05"
@@ -607,23 +611,56 @@ snit::type taco_omemo {
         return [lindex $rows 0]
     }
 
+    # n is how many keys the message skips in all, counting this one: a
+    # message skipping more than MAX_SKIP is refused. Past SKIPPED_CAP for
+    # the device the oldest key goes. Both callbacks run inside Decrypt's
+    # savepoint, so a message that then fails its MAC changes nothing.
     method OnStoreSkipped {peerJid peerDev dh nr mk n} {
-        # n is picomemo's hint for the size of the current skip batch;
-        # we enforce a per-(peer,device) total cap instead.
-        set count [$db onecolumn {
+        if {$n > $::taco::omemo::MAX_SKIP} {
+            error "message skips $n keys, over $::taco::omemo::MAX_SKIP"
+        }
+        set over [expr {[$db onecolumn {
             SELECT COUNT(*) FROM omemo_skipped
             WHERE account_jid=$accountJid
               AND peer_jid=$peerJid
               AND peer_device=$peerDev
-        }]
-        if {$count >= $::taco::omemo::SKIPPED_CAP} {
-            error "skipped key cap reached for $peerJid/$peerDev"
+        }] - $::taco::omemo::SKIPPED_CAP + 1}]
+        if {$over > 0} {
+            $db eval {
+                DELETE FROM omemo_skipped WHERE rowid IN (
+                    SELECT rowid FROM omemo_skipped
+                    WHERE account_jid=$accountJid
+                      AND peer_jid=$peerJid
+                      AND peer_device=$peerDev
+                    ORDER BY rowid LIMIT $over)
+            }
         }
         $db eval {
             INSERT OR REPLACE INTO omemo_skipped
                 (account_jid, peer_jid, peer_device, dh, nr, mk)
             VALUES($accountJid, $peerJid, $peerDev, $dh, $nr, $mk)
         }
+    }
+
+    # $sess decrypt_key in a savepoint. picomemo takes skipped keys out
+    # (OnLoadSkipped) and stores the ones it passes (OnStoreSkipped) before
+    # checking the message's MAC, and on failure restores only the session:
+    # here a failure rolls the table back too, so a forged message can
+    # neither spend the key a delayed message needs nor leave keys behind.
+    # With $keep, a decrypt that worked is kept only if {*}$keep $sess says
+    # so, else rolled back as well and refused with {OMEMO REFUSED} ($sess
+    # is then as the decrypt left it, for the caller to read and drop).
+    method Decrypt {sess enc isPrekey {keep {}}} {
+        $db eval {SAVEPOINT omemo_decrypt}
+        set code [catch {$sess decrypt_key $store $enc -prekey $isPrekey} out opts]
+        if {!$code && $keep ne "" && ![{*}$keep $sess]} {
+            set code 1
+            set out "refused"
+            set opts [dict create -code error -errorcode {OMEMO REFUSED}]
+        }
+        if {$code} { $db eval {ROLLBACK TO omemo_decrypt} }
+        $db eval {RELEASE omemo_decrypt}
+        return -options $opts $out
     }
 
     # =====================================================================
@@ -1563,7 +1600,7 @@ snit::type taco_omemo {
         foreach pair $candidates {
             lassign $pair isPrekey enc
             if {![catch {
-                $sess decrypt_key $store $enc -prekey $isPrekey
+                $self Decrypt $sess $enc $isPrekey
             } out opts]} {
                 set decKey $out
                 set ok 1
@@ -1592,20 +1629,11 @@ snit::type taco_omemo {
                 lassign $pair isPrekey enc
                 if {!$isPrekey} continue
                 set fresh [$self CreateSessionHandle $peerJid $peerDev]
+                set pinned [$self PinnedIdentity $peerJid $peerDev $sess]
                 if {![catch {
-                    $fresh decrypt_key $store $enc -prekey 1
+                    $self Decrypt $fresh $enc 1 \
+                        [mymethod UnderIdentity $pinned]
                 } out opts]} {
-                    set claimed [$fresh remote_identity]
-                    set pinned [$self PinnedIdentity $peerJid $peerDev $sess]
-                    if {$pinned ne "" && $claimed ne $pinned} {
-                        catch {$fresh destroy}
-                        jlog warn "OMEMO $peerJid/$peerDev: prekey message under\
-                            another identity than the device's; session kept"
-                        $self EnsureTrustRow $peerJid $peerDev $claimed
-                        if {!$hasPayload} { return [list keytransport ""] }
-                        return [list decrypt_error \
-                            "\[OMEMO\] Sender's identity key changed - possible MITM"]
-                    }
                     jlog debug "OMEMO $peerJid/$peerDev: prekey message opened\
                         on a fresh session; adopting it"
                     catch {$sess destroy}
@@ -1614,6 +1642,16 @@ snit::type taco_omemo {
                     set decKey $out
                     set ok 1
                     break
+                }
+                if {[dict get $opts -errorcode] eq {OMEMO REFUSED}} {
+                    set claimed [$fresh remote_identity]
+                    catch {$fresh destroy}
+                    jlog warn "OMEMO $peerJid/$peerDev: prekey message under\
+                        another identity than the device's; session kept"
+                    $self EnsureTrustRow $peerJid $peerDev $claimed
+                    if {!$hasPayload} { return [list keytransport ""] }
+                    return [list decrypt_error \
+                        "\[OMEMO\] Sender's identity key changed - possible MITM"]
                 }
                 catch {$fresh destroy}
                 set lastErr $out
@@ -1715,6 +1753,12 @@ snit::type taco_omemo {
             return ""
         }
         return $ik
+    }
+
+    # Decrypt's keep for a new session: 1 when $sess is under $pinned, or
+    # nothing is pinned.
+    method UnderIdentity {pinned sess} {
+        expr {$pinned eq "" || [$sess remote_identity] eq $pinned}
     }
 
     # Ensure a trust row for (peerJid, peerDev) anchored to $ik.
@@ -2758,9 +2802,13 @@ snit::type taco_omemo {
         foreach pair $mine {
             lassign $pair isPrekey enc
             if {!$isPrekey} continue
+            # Only the identity is wanted: whatever the decrypt stored is
+            # rolled back (DoDecrypt opens the message again as its sender).
             set tmp [$self CreateSessionHandle $room $sid]
             set ik ""
-            if {![catch {$tmp decrypt_key $store $enc -prekey 1}]} {
+            if {[catch {$self Decrypt $tmp $enc 1 {apply {s {return 0}}}} \
+                    - opts]
+                    && [dict get $opts -errorcode] eq {OMEMO REFUSED}} {
                 set ik [$tmp remote_identity]
             }
             catch {$tmp destroy}
@@ -2794,7 +2842,7 @@ snit::type taco_omemo {
                     catch {$tmp destroy}
                     continue
                 }
-                if {![catch {$tmp decrypt_key $store $enc -prekey 0} key]} {
+                if {![catch {$self Decrypt $tmp $enc 0} key]} {
                     return [list $jid [list $tmp $key]]
                 }
                 catch {$tmp destroy}
