@@ -13,6 +13,9 @@
 #   taco_http reset   TOKEN    cancel it
 #   taco_http cleanup TOKEN    drop it
 #
+# -timeout is how long a request may go without moving a byte, not how long it
+# may take: a large file over a slow link is still a transfer.
+#
 # -command is called with the token, -progress with `token total current`. A
 # request is always asynchronous - the browser has no other kind, and the
 # native side opens and closes its own channel around a callback - so a caller
@@ -31,6 +34,9 @@ namespace eval ::taco_http {
     variable Requests
     array set Requests {}
     variable Next 0
+    # Native requests with a -timeout: token -> the after that resets it.
+    variable Idle
+    array set Idle {}
 }
 
 proc taco_http {op args} {
@@ -174,7 +180,10 @@ proc ::taco_http::NativeRequest {method url optsVar} {
     upvar 1 $optsVar o
 
     NativeInit
-    set opts [list -timeout $o(-timeout)]
+    # Not the http package's -timeout: that is armed once at connect and is a
+    # deadline on the whole transfer. Ours is re-armed on every block.
+    set ms $o(-timeout)
+    set opts {}
     set headers $o(-headers)
     # The file is wanted byte for byte, and -progress counts decoded bytes
     # against a compressed Content-Length.
@@ -183,12 +192,15 @@ proc ::taco_http::NativeRequest {method url optsVar} {
     if {$method eq "PUT"} {
         set fh [open $o(-infile) rb]
         lappend opts -method PUT -querychannel $fh -queryblocksize 65536
-        if {$o(-type) ne ""}     { lappend opts -type $o(-type) }
-        if {$o(-progress) ne ""} { lappend opts -queryprogress $o(-progress) }
+        if {$o(-type) ne ""} { lappend opts -type $o(-type) }
+        # The body going up, then the answer coming down.
+        lappend opts \
+            -queryprogress [list ::taco_http::NativeProgress $ms $o(-progress)] \
+            -progress [list ::taco_http::NativeProgress $ms ""]
     } else {
         set fh [open $o(-outfile) wb]
-        lappend opts -channel $fh -binary 1 -blocksize 65536
-        if {$o(-progress) ne ""} { lappend opts -progress $o(-progress) }
+        lappend opts -channel $fh -binary 1 -blocksize 65536 \
+            -progress [list ::taco_http::NativeProgress $ms $o(-progress)]
     }
     # The channel is ours, so closing it is too - before the caller's -command
     # runs and looks at the file.
@@ -197,10 +209,44 @@ proc ::taco_http::NativeRequest {method url optsVar} {
         catch {close $fh}
         return -code error $token
     }
+    # Unless it is over already: geturl can finish a request before returning.
+    if {[::http::status $token] eq ""} {
+        NativeIdle $token $ms
+    }
     return $token
 }
 
+# (Re)arm the reset that ends a request quiet for $ms. A reset as timeout
+# runs -command, so the caller sees it as it saw the http package's own.
+proc ::taco_http::NativeIdle {token ms} {
+    variable Idle
+    if {$ms <= 0} return
+    if {[info exists Idle($token)]} {
+        after cancel $Idle($token)
+    }
+    set Idle($token) [after $ms [list ::taco_http::NativeExpire $token]]
+}
+
+# The caller may have cleaned the token up without waiting for its end.
+proc ::taco_http::NativeExpire {token} {
+    variable Idle
+    unset -nocomplain Idle($token)
+    catch {::http::reset $token timeout}
+}
+
+proc ::taco_http::NativeProgress {ms cmd token total current} {
+    NativeIdle $token $ms
+    if {$cmd ne ""} {
+        {*}$cmd $token $total $current
+    }
+}
+
 proc ::taco_http::NativeDone {fh cmd token} {
+    variable Idle
+    if {[info exists Idle($token)]} {
+        after cancel $Idle($token)
+        unset Idle($token)
+    }
     catch {close $fh}
     if {$cmd ne ""} {
         {*}$cmd $token

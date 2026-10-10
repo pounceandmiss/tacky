@@ -595,6 +595,10 @@ snit::type taco_file {
             $self Terminal $id failed "server returned no slot"
             return
         }
+        # The timer has seen the upload to its slot; from here the PUT's
+        # own timeout ends it if it stalls, and a long one is no stall.
+        catch {after cancel [dict get $Transfers($id) timer]}
+        dict set Transfers($id) timer ""
         if {[catch {
             set tok [taco_http put $putUrl -infile $path \
                 -type $mime -headers $headers -timeout $TIMEOUT_MS \

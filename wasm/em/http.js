@@ -8,6 +8,9 @@
 // (Emscripten paths; either may be ""). Resolves with the HTTP status code of
 // a completed request; rejects with "timed out", "aborted" or what went
 // wrong. ctx.signal cancels, ctx.progress reports (total, loaded).
+// timeoutMs is how long it may go without moving a byte, not how long it may
+// take, so it is our own timer, re-armed on each progress event, rather than
+// xhr.timeout, which is a deadline on the whole request.
 //
 // XMLHttpRequest rather than fetch, for upload progress.
 
@@ -40,13 +43,30 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
             return;
         }
         xhr.responseType = 'arraybuffer';
-        if (ms > 0) xhr.timeout = ms;
+        let idle = null;
+        let timedOut = false;
+        const quiet = () => {
+            if (ms <= 0) return;
+            clearTimeout(idle);
+            idle = setTimeout(() => {
+                timedOut = true;
+                xhr.abort();
+            }, ms);
+        };
+        const settle = (then) => (...args) => {
+            clearTimeout(idle);
+            then(...args);
+        };
         for (let i = 0; i + 1 < headers.length; i += 2) {
             try { xhr.setRequestHeader(headers[i], headers[i + 1]); } catch (err) { /* forbidden */ }
         }
-        xhr.onprogress = (ev) => ctx.progress(ev.total || 0, ev.loaded || 0);
-        if (xhr.upload) xhr.upload.onprogress = (ev) => ctx.progress(ev.total || 0, ev.loaded || 0);
-        xhr.onload = () => {
+        const progress = (ev) => {
+            quiet();
+            ctx.progress(ev.total || 0, ev.loaded || 0);
+        };
+        xhr.onprogress = progress;
+        if (xhr.upload) xhr.upload.onprogress = progress;
+        xhr.onload = settle(() => {
             try {
                 save(new Uint8Array(xhr.response ?? new ArrayBuffer(0)));
             } catch (err) {
@@ -54,15 +74,16 @@ Module.zippyCalls.tackyHttp = (method, url, outfile, infile, timeout, ...rest) =
                 return;
             }
             resolve(String(xhr.status));
-        };
+        });
         // A page is not told why a cross-origin request failed.
-        xhr.onerror = () => fail('network error');
-        xhr.ontimeout = () => fail('timed out');
-        xhr.onabort = () => fail('aborted');
+        xhr.onerror = settle(() => fail('network error'));
+        xhr.onabort = settle(() => fail(timedOut ? 'timed out' : 'aborted'));
         ctx.signal.addEventListener('abort', () => xhr.abort());
         try {
+            quiet();
             xhr.send(body);
         } catch (err) {
+            clearTimeout(idle);
             fail(String(err));
         }
     });

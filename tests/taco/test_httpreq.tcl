@@ -66,6 +66,10 @@ proc ::test::httpreq::route {ch method path body} {
         respond $ch 200 $::test::httpreq::AcceptEncoding
     } elseif {$route eq "slow"} {
         after 3000 [list ::test::httpreq::respond $ch 200 slow]
+    } elseif {$route eq "trickle"} {
+        trickle $ch $arg $arg
+    } elseif {$route eq "stall"} {
+        trickle $ch 2 1
     } else {
         respond $ch 404 "no $path"
     }
@@ -77,6 +81,26 @@ proc ::test::httpreq::respond {ch code body} {
         puts -nonewline $ch "Connection: close\r\n\r\n$body"
         close $ch
     }
+}
+
+# Headers for $blocks 64 KiB blocks, then one block every 100 ms until $sent
+# have gone, then close - after 3 s if that left it short.
+proc ::test::httpreq::trickle {ch blocks sent} {
+    catch {
+        puts -nonewline $ch "HTTP/1.1 200 X\r\nContent-Length: [expr {$blocks * 65536}]\r\n"
+        puts -nonewline $ch "Connection: close\r\n\r\n"
+        flush $ch
+    }
+    after 100 [list ::test::httpreq::block $ch $sent [expr {$blocks - $sent}]]
+}
+
+proc ::test::httpreq::block {ch left short} {
+    if {$left == 0} {
+        after [expr {$short ? 3000 : 0}] [list catch [list close $ch]]
+        return
+    }
+    if {[catch {puts -nonewline $ch [string repeat x 65536]; flush $ch}]} return
+    after 100 [list ::test::httpreq::block $ch [expr {$left - 1}] $short]
 }
 
 if {$::tacky_test_http_base eq "" && ![testConstraint wasm]} {
@@ -182,6 +206,25 @@ test httpreq-timeout {a request past its -timeout ends as timeout} \
         set status
     } -result timeout
 
+# -timeout is how long a request may go without moving a byte, not how long
+# it may take.
+test httpreq-timeout-is-idle {a request still moving bytes past its -timeout completes} \
+    -constraints httpBase -body {
+        set token [::test::httpreq::run get /_t/trickle/6 -timeout 300 \
+            -outfile [::test::httpreq::file trickle]]
+        list {*}[::test::httpreq::finish $token] \
+            [::file size [::test::httpreq::file trickle]]
+    } -result {ok 200 393216}
+
+test httpreq-timeout-stalled-midway {a request that stops moving bytes ends as timeout} \
+    -constraints httpBase -body {
+        set token [::test::httpreq::run get /_t/stall -timeout 300 \
+            -outfile [::test::httpreq::file stall]]
+        set status [taco_http status $token]
+        taco_http cleanup $token
+        set status
+    } -result timeout
+
 test httpreq-reset {a reset request still calls back, as reset} \
     -constraints httpBase -body {
         set ::test::httpreq::done 0
@@ -195,7 +238,7 @@ test httpreq-reset {a reset request still calls back, as reset} \
         list $::test::httpreq::done $status
     } -result {1 reset}
 
-foreach name {up down big bigdown ae 404 slow reset} {
+foreach name {up down big bigdown ae 404 slow trickle stall reset} {
     ::file delete [::test::httpreq::file $name]
 }
 if {$::test::httpreq::Server ne ""} {
