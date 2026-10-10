@@ -9,8 +9,8 @@
 #   it has already called back.
 #
 # A host, a port or -srv 0 skips SRV. Otherwise _xmpps-client and
-# _xmpp-client records come first, in RFC 2782 order, then the domain. auto
-# is never none.
+# _xmpp-client records come first, in RFC 2782 order and at most 16 of them
+# (records with port 0 are skipped), then the domain. auto is never none.
 #
 # The query goes over TCP (UDP needs an extension we don't build) by the
 # client at the end of this file: tcllib's dns fails on an answer split
@@ -24,6 +24,9 @@ namespace eval dial {
     variable seq 0
     variable queries {}
     variable qseq 0
+    # Targets taken from an answer, after ordering: one over TCP can carry
+    # some 2,000, each a connect attempt; real domains publish a handful.
+    variable maxSrv 16
 }
 
 proc dial::defaultPort {tls} {
@@ -118,6 +121,7 @@ proc dial::OnAnswer {id kind outcome} {
 # records: {priority weight target port}
 proc dial::Done {id kind records} {
     variable lookups
+    variable maxSrv
     if {![dict exists $lookups $id]} return
     set st [dict get $lookups $id]
     # A lone "." target: RFC 2782 "decidedly not available"
@@ -126,7 +130,7 @@ proc dial::Done {id kind records} {
     }
     foreach r $records {
         lassign $r prio weight target port
-        if {$target eq ""} continue
+        if {$target eq "" || $port == 0} continue
         dict lappend st records [list $prio $weight $target $port $kind]
     }
     dict incr st pending -1
@@ -136,7 +140,7 @@ proc dial::Done {id kind records} {
     set tls [dict get $st tls]
     set domain [dict get $st domain]
     set out {}
-    foreach r [Order [dict get $st records]] {
+    foreach r [lrange [Order [dict get $st records]] 0 $maxSrv-1] {
         lassign $r prio weight target port kind
         set t [expr {$tls eq "none" ? "none" : $kind}]
         lappend out [list $target $port $t]

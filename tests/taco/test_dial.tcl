@@ -68,6 +68,25 @@ test dial-srv-asks-only-what-it-can-use {a forced mode does not even ask for the
         dnsresp::queries
     } -result {_xmpps-client._tcp.example.org}
 
+test dial-srv-capped {a long answer is cut to its first 16 targets in priority order, then the domain} \
+    {*}$dial_common -body {
+        apply {{} {
+            set recs {}
+            for {set i 40} {$i > 0} {incr i -1} {
+                lappend recs [list $i 0 5222 h$i.example.org]
+            }
+            set out [dial_with [list _xmpp-client._tcp.example.org $recs]]
+            list [llength $out] [lmap t [lrange $out 0 end-1] {lindex $t 0}] [lindex $out end]
+        }}
+    } -result {17 {h1.example.org h2.example.org h3.example.org h4.example.org h5.example.org h6.example.org h7.example.org h8.example.org h9.example.org h10.example.org h11.example.org h12.example.org h13.example.org h14.example.org h15.example.org h16.example.org} {example.org 5222 starttls}}
+
+test dial-srv-port-zero-dropped {a record with port 0 is not dialled} \
+    {*}$dial_common -body {
+        dial_with {
+            _xmpp-client._tcp.example.org {{0 0 0 zero.example.org} {1 0 5222 ok.example.org}}
+        }
+    } -result {{ok.example.org 5222 starttls} {example.org 5222 starttls}}
+
 test dial-srv-dot-means-none {a "." target leaves only the domain} \
     {*}$dial_common -body {
         dial_with {
