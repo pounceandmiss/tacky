@@ -92,6 +92,8 @@ namespace eval ::taco::omemo {
     # Min interval between heals to one peer-device. Survives
     # reconnect (see HealAt) to stop a re-key ping-pong.
     variable HEAL_WINDOW_MS 60000
+    # How many peer-devices may be inside their heal window at once.
+    variable HEAL_MAX 512
     # Give-up deadline for a bundle fetch. encrypt() blocks a send while
     # any candidate device is still warming, and `iq request` never times
     # out on its own, so a server that swallows the IQ would wedge the
@@ -694,6 +696,19 @@ snit::type taco_omemo {
         }
         dict set DevicelistFetchWaiters $peerJid [list $command]
         $self SendDevicelistFetch $peerJid
+    }
+
+    # Ask for $jid's list again, then {*}$then $jid $devices. Our own list
+    # is cached by AfterOwnDevicelistFetch, so a fetch of it goes through
+    # that too.
+    method RefetchDevicelist {jid {then {apply {args {}}}}} {
+        if {$jid eq $accountJid} {
+            set own [mymethod AfterOwnDevicelistFetch]
+            if {$own ni [dict getdef $DevicelistFetchWaiters $jid {}]} {
+                $self FetchDevicelist $jid $own
+            }
+        }
+        $self FetchDevicelist $jid $then
     }
 
     method SendDevicelistFetch {peerJid} {
@@ -1773,19 +1788,46 @@ snit::type taco_omemo {
     # deletes - picomemo restores the session across a failed decrypt, and
     # BuildSessionFromBundle swaps it atomically. Rate-limited (HealAt)
     # to avoid a re-key ping-pong.
+    #
+    # Only a device the peer lists is healed, its list fetched first when
+    # not known: the sid is the sender's to choose, and each heal fetches a
+    # bundle and keeps a deadline. Deadlines that have passed are dropped,
+    # and so is one further ahead than a window, which only a clock set back
+    # since can have made (it would block the device's heals for the whole
+    # step). Past HEAL_MAX deadlines, no heal is run.
     method Heal {peerJid peerDev} {
-        set key "$peerJid|$peerDev"
-        set now [clock milliseconds]
-        if {[dict exists $HealAt $key] && $now < [dict get $HealAt $key]} {
+        if {![dict exists $DeviceLists $peerJid]} {
+            $self RefetchDevicelist $peerJid [mymethod HealIfListed $peerDev]
             return
         }
-        dict set HealAt $key \
-            [expr {$now + $::taco::omemo::HEAL_WINDOW_MS}]
+        if {$peerDev ni [dict get $DeviceLists $peerJid]} {
+            jlog debug "OMEMO heal $peerJid/$peerDev: not on the devicelist, not healed"
+            return
+        }
+        set key "$peerJid|$peerDev"
+        set now [clock milliseconds]
+        set window $::taco::omemo::HEAL_WINDOW_MS
+        set HealAt [dict filter $HealAt script {k at} {
+            expr {$at > $now && $at - $now <= $window}
+        }]
+        if {[dict exists $HealAt $key]} return
+        if {[dict size $HealAt] >= $::taco::omemo::HEAL_MAX} {
+            jlog warn "OMEMO heal $peerJid/$peerDev: [dict size $HealAt] heals in their window, skipped"
+            return
+        }
+        dict set HealAt $key [expr {$now + $window}]
         jlog debug "OMEMO heal $peerJid/$peerDev: fetching bundle to re-key + KeyTransport"
         # Force a fresh fetch (EnsureSession would short-circuit on the
         # existing broken session); the cached bundle may also be stale.
         dict unset Bundles $key
         $self FetchBundle $peerJid $peerDev [mymethod AfterHeal]
+    }
+
+    # The list a heal waited for: heal if it names the device.
+    method HealIfListed {peerDev peerJid devices} {
+        if {$peerDev in $devices && [dict exists $DeviceLists $peerJid]} {
+            $self Heal $peerJid $peerDev
+        }
     }
 
     method AfterHeal {peerJid peerDev bundle err} {
