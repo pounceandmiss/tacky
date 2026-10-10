@@ -1603,6 +1603,75 @@ test omemo-unit-event-doubled-encrypted-is-a-placeholder \
         ::test::omemo_unit::emittedOmemo <DecryptFailed>
     } -result {{-acc juliet@capulet.lit -jid romeo@montague.lit -device 42 -reason {[OMEMO] Could not read message payload}}}
 
+# A device id written another way (0x2a, 042, +42) is device 42, not a
+# device of its own with a session and trust row under that spelling.
+test omemo-unit-event-sid-is-canonical \
+    {a sid written in hex is read as the decimal device id} \
+    {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+    }] -body {
+        c omemo OnMessage [j message \
+                -from $::test::omemo_unit::ROMEO \
+                -to   $::test::omemo_unit::JULIET_BARE \
+                -type chat -id wire-hex1 {
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid 0x2a {
+                    j key -rid 99 -body Zm9v
+                    j iv -body AAAAAAAAAAAAAAAA
+                }
+                j payload -body Zm9v
+            }
+        }]
+        lmap e [::test::omemo_unit::emittedOmemo <DecryptFailed>] {dict get $e -device}
+    } -result 42
+
+test omemo-unit-event-sid-out-of-range-is-malformed \
+    {a sid outside 1..2^31-1 is no device: the malformed placeholder} \
+    {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+    }] -body {
+        foreach sidOdd {0 -5 2147483648} {
+            c omemo OnMessage [j message \
+                    -from $::test::omemo_unit::ROMEO \
+                    -to   $::test::omemo_unit::JULIET_BARE \
+                    -type chat -id wire-range-$sidOdd {
+                j encrypted -ns eu.siacs.conversations.axolotl {
+                    j header -sid $sidOdd {
+                        j key -rid 99 -body Zm9v
+                        j iv -body AAAAAAAAAAAAAAAA
+                    }
+                    j payload -body Zm9v
+                }
+            }]
+        }
+        unset sidOdd
+        lmap e [::test::omemo_unit::emittedOmemo <DecryptFailed>] {
+            list [dict get $e -device] [dict get $e -reason]
+        }
+    } -result [lrepeat 3 {0 {[OMEMO] Could not read message payload}}]
+
+test omemo-unit-devicelist-ids-canonical \
+    {a device list's ids are read as decimal numbers, once each; what is no device id is left out} \
+    {*}$jid_common -body {
+        c omemo ParseDevicelist [j iq -type result -from $::test::omemo_unit::ROMEO {
+            j pubsub -ns http://jabber.org/protocol/pubsub {
+                j items -node eu.siacs.conversations.axolotl.devicelist {
+                    j item -id current {
+                        j list -ns eu.siacs.conversations.axolotl {
+                            foreach id {016 0x10 abc 0 5 +5 2147483647 2147483648} {
+                                j device -id $id
+                            }
+                        }
+                    }
+                }
+            }
+        }]
+    } -result {16 5 2147483647}
+
 test omemo-unit-event-blindtrust \
     {setBlindTrust persists value and emits <BlindTrust>} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
