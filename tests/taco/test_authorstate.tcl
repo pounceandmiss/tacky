@@ -143,3 +143,28 @@ test author-emit-only-for-tracked-chats {events for untracked chats do not emit}
         $::_client emit roster <Changed> -action update -jid bob@example.com
         set ::_got
     } -result {NONE}
+
+# A nick the room showed only by presence goes when the occupant leaves or
+# changes nick, or when we leave; one the store has messages from stays for
+# the history.
+test author-muc-presence-only-nick-goes-with-the-occupant \
+    {a presence-only author goes on leave or nick change, an author with stored messages stays} \
+    {*}$author_common \
+    -body {
+        set room room@muc.example.com
+        insert_msg $room?join $room/talker
+        tacky author get -acc $acc -chat $room?join
+        foreach n {lurker cycler talker stayer} {
+            $::_client emit muc <Presence> -jid $room -nick $n -occupant {}
+        }
+        $::_client emit muc <Presence> -jid $room -nick cycler2 -occupant {}
+        $::_client emit muc <NickChanged> -jid $room -oldNick cycler -newNick cycler2 \
+            -self 0 -occupant {}
+        $::_client emit muc <Unavailable> -jid $room -nick lurker -reason "" \
+            -codes {} -occupant {}
+        $::_client emit muc <Unavailable> -jid $room -nick talker -reason "" \
+            -codes {} -occupant {}
+        set mid [lsort [dict keys [tacky author get -acc $acc -chat $room?join]]]
+        $::_client emit muc <Left> -jid $room -nick me -involuntary 0 -codes {}
+        list $mid [lsort [dict keys [tacky author get -acc $acc -chat $room?join]]]
+    } -result {{room@muc.example.com/cycler2 room@muc.example.com/stayer room@muc.example.com/talker} room@muc.example.com/talker}

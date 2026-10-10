@@ -62,6 +62,28 @@ test presence-resource-cap {resources past the cap are dropped, not tracked} \
         }
     } -result 3
 
+# Anyone can send us a directed presence: JIDs nothing vouches for are
+# tracked up to MaxStrangers, a contact always, and a stranger going
+# unavailable makes room.
+test presence-stranger-cap {strangers past the cap are not tracked; contacts are; an unavailable stranger frees its slot} \
+    {*}$presence_common -body {
+        set ::taco_presence::MaxStrangers 3
+        try {
+            c roster StoreItem [j item -jid friend@example.com -subscription both]
+            for {set i 0} {$i < 5} {incr i} {
+                c.conn feed [presence_available s$i@example.com/r]
+            }
+            c.conn feed [presence_available friend@example.com/r]
+            set first [lmap i {0 1 2 3 4} {c presence isOnline -jid s$i@example.com}]
+            set friend [c presence isOnline -jid friend@example.com]
+            c.conn feed [j presence -type unavailable -from s0@example.com/r]
+            c.conn feed [presence_available s4@example.com/r]
+            list $first $friend [c presence isOnline -jid s4@example.com]
+        } finally {
+            set ::taco_presence::MaxStrangers 256
+        }
+    } -result {{1 1 1 0 0} 1 1}
+
 test presence-idle-since {XEP-0319 idle timestamp lands as microseconds} \
     {*}$presence_common -body {
         c.conn feed [presence_available peer@example.com/phone \

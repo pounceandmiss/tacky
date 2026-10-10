@@ -26,13 +26,24 @@ snit::type taco_author {
     # Populated lazily on first `get` for a chat.
     variable State
 
+    # dict chatJid -> dict from_jid -> 1: the room entries of State there
+    # because the occupant is present, not because the store has a message
+    # from it. They go when the occupant leaves or changes nick, unless the
+    # store has a message from it by then; otherwise every nick a room ever
+    # showed stays for the life of the client.
+    variable PresenceOnly
+
     constructor args {
         $self configurelist $args
         set client $options(-client)
         set State [dict create]
+        set PresenceOnly [dict create]
         $client bus subscribe $self roster:<Changed>  [mymethod OnRosterChanged]
         $client bus subscribe $self nick:<Changed>    [mymethod OnNickChanged]
         $client bus subscribe $self muc:<Presence>    [mymethod OnMucPresence]
+        $client bus subscribe $self muc:<Unavailable> [mymethod OnMucUnavailable]
+        $client bus subscribe $self muc:<NickChanged> [mymethod OnMucNickChanged]
+        $client bus subscribe $self muc:<Left>        [mymethod OnMucLeft]
     }
 
     destructor {
@@ -50,28 +61,23 @@ snit::type taco_author {
     method Build {chatJid} {
         set d [dict create]
         if {[IsMucChatJid $chatJid]} {
-            # Strip ?join (groupchat) or /nick (PM) to get the room JID
-            if {[string match {*\?join} $chatJid]} {
-                regsub {\?join$} $chatJid {} roomJid
-            } else {
-                set roomJid [jid bare $chatJid]
-            }
+            set roomJid [RoomOf $chatJid]
             # Currently-joined occupants
+            set present [dict create]
             foreach occ [$client muc occupants -jid $roomJid] {
                 set nick [dict get $occ nick]
                 dict set d $roomJid/$nick $nick
+                dict set present $roomJid/$nick 1
             }
             # Historical authors from message store (occupants who left
             # but whose messages we still display)
-            $client db eval {
-                SELECT DISTINCT from_jid FROM chat_message
-                WHERE chat_jid = $chatJid AND kind='message'
-            } row {
-                set f $row(from_jid)
+            foreach f [$self StoredAuthors $chatJid] {
+                dict unset present $f
                 if {![dict exists $d $f]} {
                     dict set d $f [jid resource $f]
                 }
             }
+            dict set PresenceOnly $chatJid $present
         } else {
             # 1:1: own + peer. Both stored from_jids are bare after
             # Phase 1 normalization.
@@ -81,6 +87,22 @@ snit::type taco_author {
             dict set d $peerBare [$self ResolveBareName $peerBare]
         }
         return $d
+    }
+
+    method StoredAuthors {chatJid} {
+        $client db eval {
+            SELECT DISTINCT from_jid FROM chat_message
+            WHERE chat_jid = $chatJid AND kind='message'
+        }
+    }
+
+    # Strip ?join (groupchat) or /nick (PM) to get the room JID
+    proc RoomOf {chatJid} {
+        if {[string match {*\?join} $chatJid]} {
+            regsub {\?join$} $chatJid {} roomJid
+            return $roomJid
+        }
+        return [jid bare $chatJid]
     }
 
     # roster name → PEP nick → bare itself.
@@ -138,8 +160,9 @@ snit::type taco_author {
 
     # New MUC participant (or presence update): add an entry if missing.
     # NickChanged is handled implicitly — the new nick generates a fresh
-    # <Presence>; the old nick's entry stays so historical messages keep
-    # rendering correctly.
+    # <Presence>; the old nick's entry stays while the store has messages
+    # from it, so historical messages keep rendering correctly
+    # (OccupantsGone).
     method OnMucPresence {args} {
         # A hidden room (see muc join -hidden) is none of ours.
         if {[$client muc isHidden -jid [dict get $args -jid]]} return
@@ -150,16 +173,51 @@ snit::type taco_author {
         # `room@muc?join` plus zero or more `room@muc/nick` PMs).
         dict for {chatJid entries} $State {
             if {![IsMucChatJid $chatJid]} continue
-            if {[string match {*\?join} $chatJid]} {
-                regsub {\?join$} $chatJid {} chatRoom
-            } else {
-                set chatRoom [jid bare $chatJid]
-            }
-            if {$chatRoom ne $roomJid} continue
+            if {[RoomOf $chatJid] ne $roomJid} continue
             if {[dict exists $entries $fromJid]} continue
             dict set State $chatJid $fromJid $nick
+            dict set PresenceOnly $chatJid $fromJid 1
             $client emit author <Changed> \
                 -chat $chatJid -from $fromJid -name $nick
+        }
+    }
+
+    method OnMucUnavailable {args} {
+        set roomJid [dict get $args -jid]
+        $self OccupantsGone $roomJid [list $roomJid/[dict get $args -nick]]
+    }
+
+    method OnMucNickChanged {args} {
+        set roomJid [dict get $args -jid]
+        $self OccupantsGone $roomJid [list $roomJid/[dict get $args -oldNick]]
+    }
+
+    # We left: nobody in the room is present any more
+    method OnMucLeft {args} {
+        $self OccupantsGone [dict get $args -jid] *
+    }
+
+    # Occupants of $roomJid gone ($fromJids, or * for all): their
+    # presence-only entries go from every tracked chat of the room, unless
+    # the store has a message from them now.
+    method OccupantsGone {roomJid fromJids} {
+        dict for {chatJid marks} $PresenceOnly {
+            if {[RoomOf $chatJid] ne $roomJid} continue
+            if {$fromJids eq "*"} {
+                set gone [dict keys $marks]
+            } else {
+                set gone {}
+                foreach f $fromJids {
+                    if {[dict exists $marks $f]} { lappend gone $f }
+                }
+            }
+            if {![llength $gone]} continue
+            set authors [$self StoredAuthors $chatJid]
+            foreach f $gone {
+                dict unset PresenceOnly $chatJid $f
+                if {$f in $authors} continue
+                if {[dict exists $State $chatJid]} { dict unset State $chatJid $f }
+            }
         }
     }
 }

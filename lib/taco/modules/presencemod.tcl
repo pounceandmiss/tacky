@@ -33,6 +33,13 @@ snit::type taco_presence {
     # Cap on resources tracked per bare JID; new ones past it are dropped.
     typevariable MaxResources 50
 
+    # Bare JIDs tracked that nothing vouches for (not our own, not in the
+    # roster, not a known room): anyone can send us a directed presence.
+    # Past MaxStrangers a new one is not tracked; one going unavailable
+    # leaves the count. The roster is not counted.
+    variable Strangers -array {}
+    typevariable MaxStrangers 256
+
     option -client -readonly yes
 
     constructor args {
@@ -48,6 +55,7 @@ snit::type taco_presence {
 
     method OnDisconnect {args} {
         array unset Presence *
+        array unset Strangers *
         $client emit presence <Changed> -action clear
     }
 
@@ -124,6 +132,13 @@ snit::type taco_presence {
         info exists Presence($bareJid)
     }
 
+    # Our own bare JID, a roster item of any subscription, or a known room
+    method Vouched {bare} {
+        if {$bare eq [jid norm [jid bare [$client cget -jid]]]} { return 1 }
+        if {[$client roster subscription -jid $bare] ne ""} { return 1 }
+        return [$client muc isKnownRoom -jid $bare]
+    }
+
     method OnPresence {stanza} {
         set from [xsearch $stanza -get @from]
         if {$from eq ""} return
@@ -143,11 +158,13 @@ snit::type taco_presence {
                     dict unset d $resource
                     if {[dict size $d] == 0} {
                         unset Presence($bare)
+                        unset -nocomplain Strangers($bare)
                     } else {
                         set Presence($bare) $d
                     }
                 } else {
                     unset Presence($bare)
+                    unset -nocomplain Strangers($bare)
                 }
             }
         } else {
@@ -169,6 +186,14 @@ snit::type taco_presence {
                 caps_ver [xsearch $stanza c -ns $capsNs -get @ver]]
 
             if {![info exists Presence($bare)]} {
+                if {![$self Vouched $bare]} {
+                    if {[array size Strangers] >= $MaxStrangers} {
+                        jlog debug "presence: $MaxStrangers strangers tracked;\
+                            not tracking $bare"
+                        return
+                    }
+                    set Strangers($bare) 1
+                }
                 set Presence($bare) [dict create $resource $info]
             } else {
                 if {![dict exists $Presence($bare) $resource]

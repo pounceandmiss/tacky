@@ -340,6 +340,42 @@ test avatar-vcard-presence-clears-vcard {an empty vCard photo does clear a vCard
         list [avatar_row room@muc.example.com/nick] $::avatar_updates
     } -result {{} {{room@muc.example.com/nick {}}}}
 
+# Parked vCard hashes, mostly room occupants', are pruned: capped (oldest
+# out first), and an occupant's goes when it leaves or changes nick.
+proc avatar_pending {} {
+    set var [lindex [c avatar info vars PendingVCardHash] 0]
+    dict keys [set $var]
+}
+
+test avatar-parked-vcard-hashes-are-capped {past MaxPendingVCard the oldest parked hash goes} \
+    {*}$avatar_common \
+    -body {
+        set ::taco_avatar::MaxPendingVCard 3
+        try {
+            for {set i 0} {$i < 5} {incr i} {
+                c avatar OnVCardPresence room@muc.example.com/n$i \
+                    [vcard_presence room@muc.example.com/n$i h$i]
+            }
+            avatar_pending
+        } finally {
+            set ::taco_avatar::MaxPendingVCard 512
+        }
+    } -result {room@muc.example.com/n2 room@muc.example.com/n3 room@muc.example.com/n4}
+
+test avatar-parked-vcard-hash-goes-with-the-occupant {an occupant leaving or changing nick takes its parked hash with it} \
+    {*}$avatar_common \
+    -body {
+        foreach n {a b c} {
+            c avatar OnVCardPresence room@muc.example.com/$n \
+                [vcard_presence room@muc.example.com/$n h$n]
+        }
+        c bus publish muc:<Unavailable> -jid room@muc.example.com -nick a \
+            -reason "" -codes {} -occupant {}
+        c bus publish muc:<NickChanged> -jid room@muc.example.com -oldNick b \
+            -newNick bb -self 0 -occupant {}
+        avatar_pending
+    } -result {room@muc.example.com/c}
+
 # inject: offline cache seeding
 
 test avatar-inject-seeds-cache {inject caches bytes and metadata and emits <Update>} \
