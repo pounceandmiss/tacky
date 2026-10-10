@@ -339,7 +339,7 @@ test omemo-unit-devicelist-deactivates-dropped {dropped devices go active=0} \
         list active1 $a1 active2 $a2 trust2 $t2
     } -result {active1 1 active2 0 trust2 trusted}
 
-test omemo-unit-skipped-cap-enforced {OnStoreSkipped errors at the 2000th entry} \
+test omemo-unit-skipped-cap-drops-oldest {past SKIPPED_CAP a stored key makes room by dropping the oldest} \
     {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
@@ -354,12 +354,28 @@ test omemo-unit-skipped-cap-enforced {OnStoreSkipped errors at the 2000th entry}
             }
         }
     }] -body {
-        set code [catch {
+        c omemo OnStoreSkipped romeo@montague.lit 1 [binary decode hex 00] \
+            9999 [binary decode hex 00] 1
+        c db eval {
+            SELECT COUNT(*), MIN(nr), MAX(nr) FROM omemo_skipped
+            WHERE peer_jid='romeo@montague.lit' AND peer_device=1
+        }
+    } -result {2000 1 9999}
+
+test omemo-unit-skipped-max-skip {a message skipping more than MAX_SKIP keys is refused} \
+    {*}$jid_common -body {
+        set ok [catch {
             c omemo OnStoreSkipped romeo@montague.lit 1 [binary decode hex 00] \
-                9999 [binary decode hex 00] 1
+                1 [binary decode hex 00] $::taco::omemo::MAX_SKIP
+        }]
+        set over [catch {
+            c omemo OnStoreSkipped romeo@montague.lit 1 [binary decode hex 00] \
+                2 [binary decode hex 00] [expr {$::taco::omemo::MAX_SKIP + 1}]
         } err]
-        list code $code msg $err
-    } -result {code 1 msg {skipped key cap reached for romeo@montague.lit/1}}
+        list $ok $over $err \
+            [c db onecolumn {SELECT COUNT(*) FROM omemo_skipped}] \
+            [expr {$::taco::omemo::MAX_SKIP < $::taco::omemo::SKIPPED_CAP}]
+    } -result {0 1 {message skips 1001 keys, over 1000} 1 1}
 
 test omemo-unit-reflected-guard-drops-own-echo {server echo of our send is dropped} \
     {*}$jid_common -body {
@@ -2443,6 +2459,59 @@ test omemo-unit-prekey-from-another-identity-keeps-the-session \
             [expr {[$held serialize] eq $before}] \
             [::test::omemo_unit::openOnBlob $before $next]
     } -result {one {decrypt_error {[OMEMO] Sender's identity key changed - possible MITM}} compromised 1 1 two}
+
+# ENC with the last byte of its key, the message's MAC, flipped: the header
+# reads as before, but the message does not verify.
+proc ::test::omemo_unit::tamperMac {enc} {
+    set header [xsearch $enc header -get node]
+    set kids [list]
+    foreach kn [dict get $header children] {
+        if {[dict get $kn tag] eq "key"} {
+            set k [base64::decode [dict get $kn body]]
+            binary scan [string index $k end] cu b
+            set k [string replace $k end end [binary format cu [expr {$b ^ 1}]]]
+            dict set kn body [base64::encode -wrapchar "" $k]
+        }
+        lappend kids $kn
+    }
+    dict set header children $kids
+    dict replace $enc children [list $header [xsearch $enc payload -get node]]
+}
+
+proc ::test::omemo_unit::skippedRows {} {
+    c db onecolumn {SELECT COUNT(*) FROM omemo_skipped}
+}
+
+# A forged message runs the ratchet as far as its MAC before failing: it
+# may take a skipped key out to try it, or skip ahead and store the keys
+# it passed. None of that stays: the key a delayed message needs is still
+# there for it, and no junk keys are left behind.
+test omemo-unit-forged-message-leaves-skipped-keys \
+    {a message that fails its MAC neither spends a skipped key nor stores any} \
+    {*}$::test::omemo_unit::single_env -body {
+        set me [c omemo device_id]
+        set R $::test::omemo_unit::ROMEO
+        ::test::omemo_unit::romeoHeardFrom
+        set skipMsgs [dict create]
+        foreach t {m1 m2 m3 m4 m5} {
+            dict set skipMsgs $t [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me $t]
+        }
+        set out [list]
+        lappend out [dict get [c omemo decryptFrom [dict get $skipMsgs m1] $R] plaintext] \
+            [::test::omemo_unit::skippedRows]
+        lappend out [dict get [c omemo decryptFrom \
+            [::test::omemo_unit::tamperMac [dict get $skipMsgs m5]] $R] status] \
+            [::test::omemo_unit::skippedRows]
+        lappend out [dict get [c omemo decryptFrom [dict get $skipMsgs m3] $R] plaintext] \
+            [::test::omemo_unit::skippedRows]
+        lappend out [dict get [c omemo decryptFrom \
+            [::test::omemo_unit::tamperMac [dict get $skipMsgs m2]] $R] status] \
+            [::test::omemo_unit::skippedRows]
+        foreach t {m2 m4 m5} {
+            lappend out [dict getdef [c omemo decryptFrom [dict get $skipMsgs $t] $R] plaintext -]
+        }
+        lappend out [::test::omemo_unit::skippedRows]
+    } -result {m1 0 error 0 m3 1 error 1 m2 m4 m5 0}
 
 test omemo-unit-encryptfor-refetches-given-up-bundle \
     {a device whose bundle fetch was given up on is fetched again by encryptFor} \
