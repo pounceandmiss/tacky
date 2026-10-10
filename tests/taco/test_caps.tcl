@@ -162,6 +162,23 @@ test caps-disco-coalesced {presences sharing an unresolved hash ask once} {*}$ca
     set queries
 } -result 1
 
+# Only a contact's presence is kept with its caps (presence resources); a
+# room occupant's is muc's, and nothing reads its caps, so none is asked.
+test caps-occupant-not-asked {a room occupant's caps are not asked for} {*}$caps_common -body {
+    set before [llength [c.conn get_written]]
+    c.conn feed [j presence -from room@conference.example.com/someone {
+        j c -ns http://jabber.org/protocol/caps -hash sha-1 \
+            -node http://tacky.example -ver occupant-ver=
+        j x -ns http://jabber.org/protocol/muc#user {
+            j item -affiliation none -role participant
+        }
+    }]
+    llength [lmap s [lrange [c.conn get_written] $before end] {
+        if {![llength [xsearch $s query -ns http://jabber.org/protocol/disco#info]]} continue
+        set s
+    }]
+} -result 0
+
 # A <feature/> or a form <field/> with no var is a malformed answer: refused,
 # not a throw on every presence naming the ver.
 test caps-feature-without-var-is-not-cached {an answer with a bare <feature/>, or a form field with no var, caches nothing and does not throw} {*}$caps_common -body {

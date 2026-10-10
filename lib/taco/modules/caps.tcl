@@ -323,7 +323,7 @@ snit::type taco_caps {
         if {$cached} return
 
         # Nothing is cached until the first reply lands, so without this a
-        # roomful of occupants running one client asks each of them.
+        # rosterful of contacts running one client asks each of them.
         if {[info exists Resolving($ver)]} return
         set Resolving($ver) 1
 

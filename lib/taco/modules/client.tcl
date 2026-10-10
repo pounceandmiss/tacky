@@ -326,7 +326,6 @@ snit::type taco_client {
                 }
             }
             presence {
-                $caps OnPresence $stanza
                 set type_ [xsearch $stanza -get @type]
                 if {$type_ in {subscribe subscribed unsubscribe unsubscribed}} {
                     $roster OnSubscription $stanza
@@ -336,10 +335,13 @@ snit::type taco_client {
                     # Occupant presence is muc's only. Otherwise each nick is
                     # recorded as a resource of the room's bare jid. The
                     # same goes for a room's own bare-jid presence, which has
-                    # no muc#user and would show the room as online.
+                    # no muc#user and would show the room as online. Caps
+                    # are asked only for the presence kept here: nothing
+                    # reads an occupant's.
                     if {[llength [xsearch $stanza x \
                             -ns http://jabber.org/protocol/muc#user]] == 0
                             && ![$muc isTracked -jid [xsearch $stanza -get @from]]} {
+                        $caps OnPresence $stanza
                         $presence OnPresence $stanza
                     }
                 }
