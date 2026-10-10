@@ -188,6 +188,13 @@ snit::type taco_muc {
         array set opts {-password "" -history {} -command "" -hidden 0}
         array set opts $args
         set opts(-jid) [jid norm $opts(-jid)]
+        # A hidden join never takes over a room we are in or joining as
+        # ourselves: it would drop the room's messages, and its leave would
+        # take us out of the room.
+        if {$opts(-hidden) && [info exists Rooms($opts(-jid))]
+                && ![dict get $Rooms($opts(-jid)) hidden]} {
+            error "muc join: $opts(-jid) is a room we are in or joining"
+        }
 
         # Initialize room tracking state
         unset -nocomplain WasHidden($opts(-jid))
