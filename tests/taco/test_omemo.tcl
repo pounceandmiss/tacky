@@ -450,6 +450,7 @@ test omemo-unit-keytransport-undecryptable-does-not-heal \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set ourDev [c omemo device_id]
         set msg [j message \
@@ -965,6 +966,7 @@ test omemo-unit-recover-no-session-heals \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
@@ -980,6 +982,7 @@ test omemo-unit-recover-broken-preserves-session \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
         c db eval {
             INSERT INTO omemo_sessions(account_jid, peer_jid, peer_device, blob)
             VALUES('juliet@capulet.lit', 'romeo@montague.lit', 648103571, x'00')
@@ -1003,6 +1006,7 @@ test omemo-unit-recover-rate-limited-per-device \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
@@ -1020,11 +1024,13 @@ test omemo-unit-recover-rate-limit-survives-reconnect \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
             {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
         c omemo OnDisconnect
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
             {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
         ::test::omemo_unit::bundleFetches \
@@ -1038,6 +1044,7 @@ test omemo-unit-recover-skips-during-mam \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
@@ -1052,6 +1059,7 @@ test omemo-unit-recover-skips-prekey-failure \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
@@ -1103,6 +1111,7 @@ test omemo-unit-recover-mam-heal-flushes-at-queryend \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
     }] -body {
         set before [llength [c conn get_written]]
         # MAM-origin failure: deferred, no heal yet.
@@ -1116,6 +1125,116 @@ test omemo-unit-recover-mam-heal-flushes-at-queryend \
             [lrange [c conn get_written] $before end] 648103571]
         list deferred $deferred flushed $flushed
     } -result {deferred 0 flushed 1}
+
+# The sid is the sender's to choose: only a device the peer lists is
+# healed, and while the list is unknown it is fetched first.
+test omemo-unit-heal-unlisted-device-not-healed \
+    {a device the peer's list does not name is not healed} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 1111
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 0
+
+test omemo-unit-heal-waits-for-the-list \
+    {with the list unknown, a heal fetches it and goes ahead once it names the device} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        set healEarly [::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571]
+        c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO \
+            [j iq -type result -from $::test::omemo_unit::ROMEO {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist {
+                        j item -id current {
+                            j list -ns eu.siacs.conversations.axolotl {
+                                j device -id 648103571
+                            }
+                        }
+                    }
+                }
+            }]
+        list early $healEarly after [::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571]
+    } -result {early 0 after 1}
+
+# A deadline further ahead than a window was set before the clock went
+# back; kept, it would block the device's heals for the whole step.
+test omemo-unit-heal-own-device-waits-for-our-list \
+    {with our own list unknown, a heal of our other device goes ahead once the list names it} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        dict unset [c omemo info vars DeviceLists] $::test::omemo_unit::JULIET_BARE
+        dict unset [c omemo info vars DevicelistFetchWaiters] $::test::omemo_unit::JULIET_BARE
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::JULIET_BARE 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        c omemo OnFetchedDevicelist $::test::omemo_unit::JULIET_BARE \
+            [j iq -type result {
+                j pubsub -ns http://jabber.org/protocol/pubsub {
+                    j items -node eu.siacs.conversations.axolotl.devicelist {
+                        j item -id current {
+                            j list -ns eu.siacs.conversations.axolotl {
+                                j device -id 648103571
+                                j device -id [c omemo device_id]
+                            }
+                        }
+                    }
+                }
+            }]
+        dict exists [set [c omemo info vars HealAt]] \
+            "$::test::omemo_unit::JULIET_BARE|648103571"
+    } -result 1
+
+test omemo-unit-heal-ignores-deadline-from-before-a-clock-step \
+    {a heal deadline further ahead than one window does not hold the heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
+    }] -body {
+        dict set [c omemo info vars HealAt] "$::test::omemo_unit::ROMEO|648103571" \
+            [expr {[clock milliseconds] + 100 * $::taco::omemo::HEAL_WINDOW_MS}]
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 1
+
+test omemo-unit-heal-table-capped \
+    {past HEAL_MAX devices in their window, no further heal; past deadlines are pruned} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
+    }] -body {
+        set healVar [c omemo info vars HealAt]
+        set healSoon [expr {[clock milliseconds] + $::taco::omemo::HEAL_WINDOW_MS / 2}]
+        for {set i 1} {$i <= $::taco::omemo::HEAL_MAX} {incr i} {
+            dict set $healVar "x@example.org|$i" $healSoon
+        }
+        dict set $healVar "y@example.org|1" 1
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO ECORRUPT} "bad mac" {{0 keydata}} 0
+        list fetches [::test::omemo_unit::bundleFetches \
+                [lrange [c conn get_written] $before end] 648103571] \
+            size [dict size [set $healVar]]
+    } -result [list fetches 0 size $::taco::omemo::HEAL_MAX]
 
 # Self-chat (chatJid == our own jid): encrypt must never include our own
 # current device, and must not double-list other own devices. With only
