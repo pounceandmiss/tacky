@@ -121,6 +121,17 @@ namespace eval ::taco::omemo {
         return $bytes
     }
 
+    # A device id off the wire as the decimal number it names, or "" when
+    # it names none in 1..2^31-1. `string is integer` takes 016, +16, 0x10
+    # and 1_6 as 16 too; used as written, each would be a device of its
+    # own, with a session and a trust row under that spelling.
+    proc deviceId {id} {
+        if {![string is entier -strict $id]} { return "" }
+        set id [expr {$id + 0}]
+        if {$id < 1 || $id > 0x7fffffff} { return "" }
+        return $id
+    }
+
     # The room of a room chat (room@service?join), normalized, or "" for
     # any other chat - a 1:1 chat, or a room's private message
     # (room@service/nick), which is keyed per peer like a 1:1 chat.
@@ -828,9 +839,11 @@ snit::type taco_omemo {
         }
         if {$listNode eq ""} { return $devices }
         set found 1
+        # One unusable id does not condemn the rest; an id listed twice
+        # (or written two ways) is one device.
         xsearch $listNode device -script dn {
-            set id [xsearch $dn -get @id]
-            if {$id ne ""} { lappend devices $id }
+            set id [::taco::omemo::deviceId [xsearch $dn -get @id]]
+            if {$id ne "" && $id ni $devices} { lappend devices $id }
         }
         return $devices
     }
@@ -1395,9 +1408,10 @@ snit::type taco_omemo {
             $self DispatchMalformed $stanza $peerJid 0 "missing <header>"
             return 1
         }
-        set sid [xsearch $headerNode -get @sid]
-        if {$sid eq "" || ![string is integer -strict $sid]} {
-            $self DispatchMalformed $stanza $peerJid 0 "invalid sid '$sid'"
+        set sid [::taco::omemo::deviceId [xsearch $headerNode -get @sid]]
+        if {$sid eq ""} {
+            $self DispatchMalformed $stanza $peerJid 0 \
+                "invalid sid '[xsearch $headerNode -get @sid]'"
             return 1
         }
         if {$fromBare eq $accountJid && $sid == $deviceId} {
@@ -1963,8 +1977,8 @@ snit::type taco_omemo {
         if {$store eq ""} {
             return [dict create status error reason "OMEMO is not set up yet"]
         }
-        set peerDev [xsearch $encNode header -get @sid]
-        if {![string is integer -strict $peerDev]} {
+        set peerDev [::taco::omemo::deviceId [xsearch $encNode header -get @sid]]
+        if {$peerDev eq ""} {
             return [dict create status error reason "no sending device"]
         }
         if {[$self DeviceTrust $peerJid $peerDev] in {untrusted compromised}} {
@@ -2081,12 +2095,12 @@ snit::type taco_omemo {
         if {$headerNode eq ""} {
             return [$self SynthesisePlain $msgNode ""]
         }
-        set sid [xsearch $headerNode -get @sid]
+        set sid [::taco::omemo::deviceId [xsearch $headerNode -get @sid]]
         # Our own outgoing stanza echoed via MAM: we never encrypted to
         # ourselves, so DoDecrypt would just emit a "no key for us"
         # placeholder. The pending row from `taco_message send` already
         # holds the plaintext; nothing useful to surface here.
-        if {$sid eq "" || ![string is integer -strict $sid]} {
+        if {$sid eq ""} {
             return [$self SynthesisePlain $msgNode ""]
         }
         if {$fromBare eq $accountJid && $sid == $deviceId} {
@@ -2756,8 +2770,8 @@ snit::type taco_omemo {
     # for our own 1:1 echo); "" for a malformed element. A sender the room has not named and no session
     # identifies is a decrypt_error.
     method RoomDecrypt {room stanza encNode isMam} {
-        set sid [xsearch $encNode header -get @sid]
-        if {$sid eq "" || ![string is integer -strict $sid] || $sid <= 0} {
+        set sid [::taco::omemo::deviceId [xsearch $encNode header -get @sid]]
+        if {$sid eq ""} {
             return ""
         }
         set sender [$self RoomSender $room $stanza $isMam]
@@ -2820,8 +2834,9 @@ snit::type taco_omemo {
             own { return [$self SynthesisePlain $stanza ""] }
             decrypt_error {
                 set who [expr {$sender ne "" ? $sender : [xsearch $stanza -get @from]}]
+                set dev [::taco::omemo::deviceId [xsearch $encNode header -get @sid]]
                 $client emit omemo <DecryptFailed> -jid $who \
-                    -device [xsearch $encNode header -get @sid] \
+                    -device [expr {$dev eq "" ? 0 : $dev}] \
                     -reason $body -room ${room}?join
             }
         }
