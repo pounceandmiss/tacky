@@ -82,6 +82,25 @@ test iq-ping-answered "a ping gets an empty result" {*}$common -body {
     list [xsearch $sent -get {@type @id @to}] [llength [dict get $sent children]]
 } -result {{result p1 server.example.org} 0}
 
+test iq-handler-throws-answered "a handler that throws is answered internal-server-error, and the error goes on" {*}$common -body {
+    .iq handler get urn:test {apply {{stanza} { error "handler blew up" }}}
+    set code [catch {
+        .iq feed [j iq -type get -id 9 -from user@example.org {j query -ns urn:test}]
+    } msg]
+    set sent [lindex $iq_test_sent 0]
+    list $code $msg [llength $iq_test_sent] \
+        [xsearch $sent -get {@type @id @to}] [xsearch $sent error * -get tag]
+} -result {1 {handler blew up} 1 {error 9 user@example.org} internal-server-error}
+
+test iq-handler-answered-then-throws "a handler that answered before it threw is not answered twice" {*}$common -body {
+    .iq handler get urn:test {apply {{stanza} {
+        .iq respond -for $stanza -payload [j query -ns urn:test]
+        error "handler blew up"
+    }}}
+    catch {.iq feed [j iq -type get -id 9 -from user@example.org {j query -ns urn:test}]}
+    list [llength $iq_test_sent] [xsearch [lindex $iq_test_sent 0] -get @type]
+} -result {1 result}
+
 # --- feed response tests ---
 
 test iq-feed-response-result "feed calls response handler for result" {*}$common -body {
