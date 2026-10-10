@@ -623,6 +623,24 @@ test media-caller-holds-candidates-until-accept \
         list $before [lrange $order end-1 end]
     } -result {0 {::rtc::pc::set-remote-description ::rtc::pc::add-remote-candidate}}
 
+test media-sdp-logged-without-ice-pwd {the SDP a call logs has its ICE password blanked} \
+    {*}$media_env -body {
+        set saved [list [jlog cget -defaultlevel] [jlog cget -logproc]]
+        set ::media_logged {}
+        jlog configure -defaultlevel debug \
+            -logproc {apply {{opts} {lappend ::media_logged [dict get $opts -text]}}}
+        try {
+            set sid [media_caller]
+            mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+        } finally {
+            jlog configure -defaultlevel [lindex $saved 0] -logproc [lindex $saved 1]
+        }
+        set sdpLines [lsearch -all -inline $::media_logged "SDP offer*"]
+        unset ::media_logged
+        list [llength $sdpLines] [string match *xyzxyzxyzxyz* $sdpLines] \
+            [string match {*a=ice-pwd:\[redacted\]*} $sdpLines]
+    } -result {1 0 1}
+
 # -- Media setup refused --
 #
 # Setup runs from the extdisco callback; a backend that refuses the pc (an

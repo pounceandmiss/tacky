@@ -428,6 +428,32 @@ test jlog-redacts-secrets {passwords, SASL bodies and secret form fields never r
          [string match *AGp1bGlldABodW50ZXIy* $auth]
 } -result {0 0 1 1 0}
 
+test jlog-redacts-transport-credentials {an ICE pwd, a TURN password or credential, a <secret/> and a private field never reach a log} -body {
+    set line [jlog FormatLine [list -text out -stanza [j iq -type set {
+        j jingle -ns urn:xmpp:jingle:1 -action session-accept -sid s1 {
+            j content -creator initiator -name audio {
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
+                    -ufrag wxyz -pwd PeerIcePwd789
+            }
+        }
+        j services -ns urn:xmpp:extdisco:2 {
+            j service -type turn -host turn.example.com -port 3478 \
+                -username u -password TurnPa55word
+            j service -type turn -host turn2.example.com -credential TurnCred42
+        }
+        j secret -body Secr3tElement
+        j x -ns jabber:x:data -type submit {
+            j field -var pin2 -type text-private { j value -body Pr1vateField }
+        }
+    }]]]
+    lmap s {PeerIcePwd789 TurnPa55word TurnCred42 Secr3tElement Pr1vateField
+            turn.example.com} {string match *$s* $line}
+} -result {0 0 0 0 0 1}
+
+test jlog-redacts-sdp {an SDP's ICE password is blanked, the rest of it kept} -body {
+    jlog_redact_sdp "a=ice-ufrag:abc\r\na=ice-pwd:xyzxyzxyzxyz\r\na=mid:audio\r\n"
+} -result "a=ice-ufrag:abc\r\na=ice-pwd:\[redacted\]\r\na=mid:audio\r\n"
+
 proc jlog_redacted_message {} {
     j message -id m1 -type chat {
         j body -body {meet at the bench}

@@ -411,18 +411,29 @@ snit::type taco_log {
 }
 
 # A stanza as it may be written to a log: secrets replaced. Covers what a
-# stanza can carry in the clear - SASL exchanges, a <password/> (account
-# registration and password change, a room's join), data form fields named
-# for a password or secret (room configuration, registration forms), and the
-# headers of an upload slot.
+# stanza can carry in the clear - SASL exchanges, a <password/> or <secret/>
+# (account registration and password change, a room's join), data form
+# fields that are text-private or named for a password or secret (room
+# configuration, registration forms), attributes named for one (a Jingle
+# ICE transport's pwd, an XEP-0215 TURN service's password or credential),
+# and the headers of an upload slot.
 #
 # With content set, what a person wrote or shared is replaced too. Best
 # effort: only the elements named below, and nothing a server or a newer
 # extension puts elsewhere.
 proc jlog_redact {node {content 1}} {
+    if {[dict exists $node attrs]} {
+        dict set node attrs [dict map {k v} [dict get $node attrs] {
+            if {[string tolower $k] in {pwd password passwd credential secret}} {
+                string cat {[redacted]}
+            } else {
+                set v
+            }
+        }]
+    }
     set tag [dict get $node tag]
     set ns [expr {[dict exists $node ns] ? [dict get $node ns] : ""}]
-    if {$tag eq "password"
+    if {$tag in {password secret}
             || $ns eq "urn:ietf:params:xml:ns:xmpp-sasl"
             && $tag in {auth response success challenge}} {
         set node [jlog_redact_text $node]
@@ -480,7 +491,9 @@ proc jlog_redact {node {content 1}} {
         set var ""
         if {[dict exists $node attrs var]} { set var [dict get $node attrs var] }
         if {[string match -nocase *password* $var]
-                || [string match -nocase *secret* $var]} {
+                || [string match -nocase *secret* $var]
+                || [dict exists $node attrs type]
+                && [dict get $node attrs type] eq "text-private"} {
             set kids {}
             foreach c [dict get $node children] {
                 if {[dict get $c tag] eq "value"} { dict set c body "\[redacted\]" }
@@ -496,6 +509,12 @@ proc jlog_redact {node {content 1}} {
     }
     dict set node children $kids
     return $node
+}
+
+# An SDP as it may be written to a log: its ICE password blanked.
+proc jlog_redact_sdp {sdp} {
+    regsub -all -line {^(a=ice-pwd:)[^\r\n]*} $sdp {\1[redacted]} sdp
+    return $sdp
 }
 
 # Empty text stays empty, so a bodyless stanza still reads as one. The length

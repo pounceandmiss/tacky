@@ -700,7 +700,7 @@ snit::type taco_calls {
             regsub -all -line {^a=rtcp-fb:[^ ]+ transport-cc.*\n} $sdp "" sdp
         }
 
-        jlog debug "SDP $sdpType to [dict get $call peer] (sid=$sid)\n$sdp"
+        jlog debug "SDP $sdpType to [dict get $call peer] (sid=$sid)\n[jlog_redact_sdp $sdp]"
 
         # Kept for the candidates that trickle after it: XEP-0176 5.3 has
         # every transport-info carry them.
@@ -1447,7 +1447,7 @@ snit::type taco_calls {
             $self Cleanup $sid
             return
         }
-        jlog debug "SDP offer from $from (sid=$sid)\n$sdp"
+        jlog debug "SDP offer from $from (sid=$sid)\n[jlog_redact_sdp $sdp]"
         dict set Calls $sid peer $from
         dict set Calls $sid state new
         $self AckIq $stanza
