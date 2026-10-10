@@ -264,4 +264,11 @@ test reply-dispatch-debugtap-write {debugtap write takes XML text, and refuses a
              [rsRequest debugtap write [list tap nosuch stanza <presence/>] 3]
     } -result {{{result {}}} {{error {no debug tap nosuch}}}}
 
+test reply-dispatch-debugtap-on-needs-a-stream {debugtap on with neither -acc nor -token is refused and takes no tap id} \
+    -setup rsSetup -cleanup rsCleanup -body {
+        set refused [rsRequest debugtap on {} 1]
+        set tap [lindex [rsRequest debugtap on [list acc $::rsAcc] 2] 0 1]
+        list $refused $tap
+    } -result {{{error {debugtap on needs -acc or -token}}} 1}
+
 cleanupTests
