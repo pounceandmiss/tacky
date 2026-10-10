@@ -1397,6 +1397,32 @@ test messagestore-reaction-aggregate {reactions aggregate per emoji with reactor
              [dict get $agg ❤️ reactors]
     } -result {{bob@x carol@x} 0 bob@x}
 
+# Reactions whose target is not stored are kept for when it is, capped per
+# reactor and per chat, the oldest going first; a reaction on a stored
+# message is never counted.
+test messagestore-orphan-reactions-are-capped {orphan reactions past the per-sender and per-chat caps go oldest first} \
+    {*}$ms_common \
+    -body {
+        set saved [list $::taco_messagestore::MaxOrphanReactionsPerSender \
+            $::taco_messagestore::MaxOrphanReactions]
+        set ::taco_messagestore::MaxOrphanReactionsPerSender 3
+        set ::taco_messagestore::MaxOrphanReactions 5
+        try {
+            ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
+            store applyReaction alice@example.com sid1 mallory@x mallory@x 0 {👍} 1
+            for {set i 1} {$i <= 5} {incr i} {
+                store applyReaction alice@example.com o$i mallory@x mallory@x 0 {👍} [expr {100 + $i}]
+            }
+            for {set i 1} {$i <= 4} {incr i} {
+                store applyReaction alice@example.com e$i eve@x eve@x 0 {👍} [expr {200 + $i}]
+            }
+            testdb eval {SELECT target_id FROM message_reaction ORDER BY ts}
+        } finally {
+            lassign $saved ::taco_messagestore::MaxOrphanReactionsPerSender \
+                ::taco_messagestore::MaxOrphanReactions
+        }
+    } -result {sid1 o4 o5 e2 e3 e4}
+
 test messagestore-reaction-mine-flag {our own reaction marks the emoji as mine} \
     {*}$ms_common \
     -body {

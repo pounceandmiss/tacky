@@ -84,6 +84,11 @@ snit::type taco_messagestore {
                           invite, invite_declined, call, call_state}
     # Deferred corrections/retractions kept per chat (see `defer`).
     typevariable MaxDeferred 500
+    # Reactions whose target is not stored, kept for when it is: at most
+    # this many per reactor in a chat, and in all per chat, the oldest
+    # going first (CapOrphanReactions).
+    typevariable MaxOrphanReactionsPerSender 100
+    typevariable MaxOrphanReactions 500
 
     constructor args {
         $self configurelist $args
@@ -1146,7 +1151,36 @@ snit::type taco_messagestore {
             VALUES($chatJid, $targetId, $senderId, $senderLabel, $isOwn,
                    $emojis, $ts, $clock, $after)
         }
-        return [$self resolveTargetTs $chatJid $targetId]
+        set targetTs [$self resolveTargetTs $chatJid $targetId]
+        if {$targetTs eq ""} { $self CapOrphanReactions $chatJid $senderId }
+        return $targetTs
+    }
+
+    # Keep a chat's orphan reactions (no stored message goes by their
+    # target id) under the caps: a reactor naming fresh ids would add a
+    # row each that only forgetting the chat removed.
+    method CapOrphanReactions {chatJid senderId} {
+        foreach who [list $senderId ""] \
+                cap [list $MaxOrphanReactionsPerSender $MaxOrphanReactions] {
+            $options(-db) eval {
+                DELETE FROM message_reaction WHERE rowid IN (
+                    SELECT r.rowid FROM message_reaction r
+                    WHERE r.chat_jid=$chatJid
+                      AND ($who = '' OR r.sender_id=$who)
+                      AND NOT EXISTS (SELECT 1 FROM chat_message m
+                          WHERE m.chat_jid=r.chat_jid AND m.server_id != ''
+                            AND m.server_id=r.target_id)
+                      AND NOT EXISTS (SELECT 1 FROM chat_message m
+                          WHERE m.chat_jid=r.chat_jid AND m.origin_id != ''
+                            AND m.origin_id=r.target_id)
+                      AND NOT EXISTS (SELECT 1 FROM chat_message m
+                          WHERE m.chat_jid=r.chat_jid AND m.own_id != ''
+                            AND m.own_id=r.target_id)
+                      AND NOT EXISTS (SELECT 1 FROM message_alias a
+                          WHERE a.chat_jid=r.chat_jid AND a.alias_id=r.target_id)
+                    ORDER BY r.ts DESC LIMIT -1 OFFSET $cap)
+            }
+        }
     }
 
     # My current emoji set for a target - the toggle source of truth.
