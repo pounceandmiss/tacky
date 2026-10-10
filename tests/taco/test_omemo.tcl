@@ -2513,6 +2513,39 @@ test omemo-unit-forged-message-leaves-skipped-keys \
         lappend out [::test::omemo_unit::skippedRows]
     } -result {m1 0 error 0 m3 1 error 1 m2 m4 m5 0}
 
+# The same prekey message again, as a resend under new ids (the stanza-id
+# dedup does not see it): the session it made has spent its key (EKEYGONE)
+# and its one-time prekey is gone, so a fresh session cannot open it
+# either. It is a duplicate, dropped, not a decrypt failure.
+test omemo-unit-prekey-message-again-is-a-duplicate \
+    {a prekey message delivered again is dropped as a duplicate, not shown as undecryptable} \
+    {*}[tacky_env -mock conn -capture-emit 1 \
+        -taco-client {-db-path :memory:} -extra-setup {
+            c configure -jid $::test::omemo_unit::JULIET
+            c omemo OnReady
+            omemopeer::create romeo -device 111
+            c omemo BuildSessionFromBundle $::test::omemo_unit::ROMEO 111 \
+                [omemopeer::bundle romeo]
+        } -extra-cleanup {
+            omemopeer::destroy romeo
+        }] -body {
+        omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
+            [[set [c.omemo info vars store]] bundle]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] "first words"]
+        foreach id {m1 m1-resent} {
+            c conn feed [j message -from $::test::omemo_unit::ROMEO/phone \
+                -to $::test::omemo_unit::JULIET -type chat -id $id {
+                    j stanza-id -ns urn:xmpp:sid:0 -id s-$id \
+                        -by $::test::omemo_unit::JULIET_BARE
+                    j #as-is $enc
+                }]
+        }
+        list [c db eval {SELECT body FROM chat_message
+                         WHERE chat_jid='romeo@montague.lit'}] \
+            [llength [::test::omemo_unit::emittedOmemo <DecryptFailed>]]
+    } -result {{{first words}} 0}
+
 test omemo-unit-encryptfor-refetches-given-up-bundle \
     {a device whose bundle fetch was given up on is fetched again by encryptFor} \
     {*}$::test::omemo_unit::single_env -body {

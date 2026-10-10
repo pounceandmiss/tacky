@@ -1654,6 +1654,11 @@ snit::type taco_omemo {
                         "\[OMEMO\] Sender's identity key changed - possible MITM"]
                 }
                 catch {$fresh destroy}
+                # EKEYGONE from the held session means it has opened this
+                # message before: a prekey message delivered again, whose
+                # one-time prekey is spent, so the fresh session fails too.
+                # That is a duplicate, not the fresh attempt's failure.
+                if {[lindex $lastEcode 1] eq "EKEYGONE"} continue
                 set lastErr $out
                 set lastEcode [dict get $opts -errorcode]
             }
