@@ -4517,6 +4517,50 @@ test message-retract-own-1to1 {retract tombstones our message and sends <retract
              [dict get $m retracted]
     } -result {1 1}
 
+# A retracted picture must not stay on disk, readable with its key: the
+# retraction drops the downloaded copy and its at-rest key row. Puts a
+# downloaded file and a key in place for $url, and says which are left.
+namespace eval ::msgretract {
+    proc cache {url} {
+        set full [$::_client file AttachPath $url]
+        file mkdir [file dirname $full]
+        close [open $full w]
+        $::_client file StoreAttachKey [attachment_url_hash $url] iv key
+        return $full
+    }
+    proc left {url full} {
+        set hash [attachment_url_hash $url]
+        list [file exists $full] [$::_client db onecolumn {
+            SELECT COUNT(*) FROM attachment_key WHERE hash=$hash}]
+    }
+}
+
+test message-retract-incoming-drops-the-file {a peer's retraction drops the downloaded file and its key} \
+    {*}$msg_common -body {
+        set url https://up.example.com/x/retracted.png
+        set full [::msgretract::cache $url]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id m1 {
+            j origin-id -ns urn:xmpp:sid:0 -id m1
+            j body -body $url
+            j x -ns jabber:x:oob { j url -body $url }
+        }]
+        set before [::msgretract::left $url $full]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j retract -ns urn:xmpp:message-retract:1 -id m1
+        }]
+        list $before [::msgretract::left $url $full]
+    } -result {{1 1} {0 0}}
+
+test message-retract-own-drops-the-file {our own retraction drops the downloaded file and its key} \
+    {*}$msg_common -body {
+        set url https://up.example.com/x/mine.png
+        set full [::msgretract::cache $url]
+        msg_store [list [msg_msg from_jid $acc own_id o1 body $url timestamp 5000000 \
+            attachments [list [list url $url type image name mine.png size "" mime ""]]]]
+        tacky message retract -acc $acc -chat alice@example.com -timestamp 5000000
+        ::msgretract::left $url $full
+    } -result {0 0}
+
 # Helper: store an incoming room message and return its timestamp. Enters via
 # ingestLive, the same door the MUC module uses for groupchat.
 proc msg_feed_room {{id srv1}} {
