@@ -107,7 +107,8 @@ snit::type taco_muc {
     # roomJid -> the after token of a <PeopleChanged> still to go out.
     variable PeopleDue -array {}
 
-    # roomJid -> join -command callback (pending joins)
+    # roomJid -> the join -command callbacks of a pending join, one per
+    # join asked while it was pending; all answered together (AnswerJoin).
     variable JoinCallbacks -array {}
     # roomJid -> the after token giving up on a join the room never answers
     variable JoinTimers -array {}
@@ -165,10 +166,17 @@ snit::type taco_muc {
             after cancel $JoinTimers($roomJid)
             unset JoinTimers($roomJid)
         }
+        $self AnswerJoin $roomJid [list -jid $roomJid -error $error]
+    }
+
+    # Answer every caller of a pending join with $result, once. They are
+    # taken off the room first, so one that joins again from its answer
+    # starts afresh.
+    method AnswerJoin {roomJid result} {
         if {![info exists JoinCallbacks($roomJid)]} return
-        set cmd $JoinCallbacks($roomJid)
+        set cmds $JoinCallbacks($roomJid)
         unset JoinCallbacks($roomJid)
-        {*}$cmd [list -jid $roomJid -error $error]
+        foreach cmd $cmds { {*}$cmd $result }
     }
 
     method JoinTimedOut {roomJid} {
@@ -206,7 +214,7 @@ snit::type taco_muc {
             members [dict create] memberList none memberSerial 0]
 
         if {$opts(-command) ne ""} {
-            set JoinCallbacks($opts(-jid)) $opts(-command)
+            lappend JoinCallbacks($opts(-jid)) $opts(-command)
         }
         if {[info exists JoinTimers($opts(-jid))]} {
             after cancel $JoinTimers($opts(-jid))
@@ -1372,11 +1380,8 @@ snit::type taco_muc {
             after cancel $JoinTimers($roomJid)
             unset JoinTimers($roomJid)
         }
-        if {[info exists JoinCallbacks($roomJid)]} {
-            set cmd $JoinCallbacks($roomJid)
-            unset JoinCallbacks($roomJid)
-            {*}$cmd [list -jid $roomJid -error $errorType -stanza $stanza]
-        }
+        $self AnswerJoin $roomJid \
+            [list -jid $roomJid -error $errorType -stanza $stanza]
 
         # Clean up room tracking if we never joined
         if {[info exists Rooms($roomJid)] && ![dict get $Rooms($roomJid) joined]} {
@@ -1412,12 +1417,8 @@ snit::type taco_muc {
             # the join callback, which reads it.
             dict set Rooms($roomJid) created [expr {201 in $codes}]
 
-            if {[info exists JoinCallbacks($roomJid)]} {
-                set cmd $JoinCallbacks($roomJid)
-                unset JoinCallbacks($roomJid)
-                {*}$cmd [list -jid $roomJid -nick $nick \
-                    -created [dict get $Rooms($roomJid) created]]
-            }
+            $self AnswerJoin $roomJid [list -jid $roomJid -nick $nick \
+                -created [dict get $Rooms($roomJid) created]]
 
             # What the room is (its features, for OMEMO) and its avatar,
             # asked before <Joined> so the answer comes ahead of the
