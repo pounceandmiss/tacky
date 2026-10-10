@@ -62,6 +62,17 @@ snit::type taco_message {
     # turning a first login on a busy account into a full archive pull.
     typevariable MaxCatchupPages 5
 
+    # The earliest stamp our server or account may put on a live 1:1
+    # stanza this session (TrustedStamp), "" for none: what the server held
+    # for us while we were offline postdates our previous session.
+    variable OfflineFloorUs ""
+    # When our previous session in this run ended.
+    variable LastOnlineUs ""
+    # Room for the server's clock running behind ours.
+    typevariable OfflineSkewUs [expr {5 * 60 * 1000000}]
+    # How far back a first session, with nothing stored, takes the floor.
+    typevariable OfflineFloorBoundUs [expr {30 * 86400 * 1000000}]
+
     constructor {args} {
         $self configurelist $args
         set client $options(-client)
@@ -108,6 +119,7 @@ snit::type taco_message {
         # resumption), which is exactly right - across a resume SM still holds
         # those stanzas, so the set must survive.
         set WiredNow [dict create]
+        $self SetOfflineFloor
         $self PlaceReconnectHoles
         # RetryPending runs from OnCatchup, not here. Catchup confirms
         # whatever the server actually archived, so the retry only has to
@@ -117,6 +129,22 @@ snit::type taco_message {
         # message module is constructed before omemo, so its <SessionStart>
         # handler runs first).
         $self DoCatchup
+    }
+
+    # Our previous session ended when this run saw it end or, on the run's
+    # first, no earlier than the newest message stored.
+    method SetOfflineFloor {} {
+        set now [clock microseconds]
+        set last $LastOnlineUs
+        if {$last eq ""} {
+            set last [$client db onecolumn {
+                SELECT MAX(timestamp) FROM chat_message WHERE kind='message'
+            }]
+        }
+        if {$last eq "" || $last > $now} {
+            set last [expr {$now - $OfflineFloorBoundUs}]
+        }
+        set OfflineFloorUs [expr {$last - $OfflineSkewUs}]
     }
 
     # Bracket any history that arrived during the disconnect window:
@@ -416,6 +444,7 @@ snit::type taco_message {
     }
 
     method OnDisconnect {args} {
+        set LastOnlineUs [clock microseconds]
         array unset PendingRetry
         # The query settles these itself, but not until the session is back -
         # too long to leave a sync showing as running.
@@ -670,19 +699,28 @@ snit::type taco_message {
     # history. Anyone else's would let a sender date a message as it likes
     # (2099 pins it as the chat's newest and moves the read point past
     # everything after it). "" when there is none.
+    # A peer can write our server's or account's name on a delay too, so
+    # those stamps count only from OfflineFloorUs on: the server held
+    # nothing for us from before our previous session.
     method TrustedStamp {chatJid stanza} {
         set me [jid bare [$client cget -jid]]
         jid explode $me e
-        set trusted [list [jid norm $e(domain)] [jid norm $me]]
+        set ours [list [jid norm $e(domain)] [jid norm $me]]
+        set room ""
         if {[string match *?join $chatJid]} {
-            lappend trusted [jid norm [string range $chatJid 0 end-5]]
+            set room [jid norm [string range $chatJid 0 end-5]]
         }
         foreach d [xsearch $stanza delay -ns urn:xmpp:delay] {
             set from [xsearch $d -get @from]
             if {$from eq "" || [catch {jid norm $from} from]} continue
-            if {$from in $trusted} {
-                return [xsearch $d -get @stamp]
+            set stamp [xsearch $d -get @stamp]
+            if {$from eq $room} { return $stamp }
+            if {$from ni $ours} continue
+            set ts [ParseTimestamp $stamp]
+            if {$OfflineFloorUs ne "" && $ts ne "" && $ts < $OfflineFloorUs} {
+                continue
             }
+            return $stamp
         }
         return ""
     }
