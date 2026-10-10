@@ -2041,6 +2041,10 @@ snit::type taco_omemo {
         set out [dict create tag message body {} tail {} children {} \
             ns [dict get $origStanza ns] attrs $attrs \
             decrypted 1 sender_fp $senderFp]
+        # An archive's node stays one (message NickIsOurs).
+        if {[dict exists $origStanza archived]} {
+            dict set out archived [dict get $origStanza archived]
+        }
         set bodyChild [dict create tag body body $plaintext tail {} \
             children {} ns {} attrs {}]
         set emeChild [dict create tag encryption body {} tail {} \

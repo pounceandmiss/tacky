@@ -2434,6 +2434,8 @@ snit::type taco_message {
                 target_id $serverId]
         }
         set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
+        # History, not live traffic (NickIsOurs).
+        dict set msgNode archived 1
         return [$self Classify $chatJid $msgNode $ts $ids $tsClock]
     }
 
@@ -2588,7 +2590,8 @@ snit::type taco_message {
         if {$occ ne "" && $myOcc ne ""} {
             set isOwn [expr {$occ eq $myOcc}]
         } else {
-            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]}]
+            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]
+                && [$self NickIsOurs $chatJid $msgNode]}]
         }
         # Key on the occupant-id whenever the stanza carries one (stable, ours
         # and peers'); else our nick for our own row (fail-open); else "" -
@@ -2601,6 +2604,28 @@ snit::type taco_message {
             set senderId ""
         }
         return [dict create sender_id $senderId is_own $isOwn]
+    }
+
+    # Whether a room stanza from the nick we hold, with no occupant-id to go
+    # by, is ours. Live it is: nicks are unique among those present. History
+    # (a join replay with <delay/>, or the archive's, marked `archived`) may
+    # be whoever held the nick before us, and is ours only when its
+    # origin-id or id names a send of ours stored in the chat.
+    method NickIsOurs {chatJid msgNode} {
+        if {![dict exists $msgNode archived]
+                && ![llength [xsearch $msgNode delay -ns urn:xmpp:delay]]} {
+            return 1
+        }
+        foreach id [list \
+                [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id] \
+                [xsearch $msgNode -get @id]] {
+            if {$id ne "" && [$client db exists {
+                    SELECT 1 FROM chat_message
+                    WHERE chat_jid=$chatJid AND own_id=$id}]} {
+                return 1
+            }
+        }
+        return 0
     }
 
     # The stored messages a correction or retraction may target, matched by
