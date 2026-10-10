@@ -2822,6 +2822,39 @@ test message-muc-catchup-dedups-join-replay {a replayed message already stored i
         llength [msg_store_latest room@muc.example.com?join]
     } -result {1}
 
+# A room's archive speaks for that room alone: a chat message it claims is
+# from a contact, or a groupchat from another room, is dropped before
+# anything files or opens it (omemo would read it under the contact's
+# identity, or under the other room's occupant-ids).
+test message-room-archive-holds-only-the-room \
+    {a room's catch-up drops a result not from the room or its occupants} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        set ::_opened {}
+        set probe {apply {{cmd op} {lappend ::_opened [xsearch [lindex $cmd end] -get @from]}}}
+        trace add execution ::taco_omemo::Snit_methoddecryptForwarded enter $probe
+        try {
+            msg_mam_finish $iq [list \
+                [mam_result id r1 queryid $qid from alice@example.com/phone \
+                    type chat body "from alice" stamp 2024-01-01T10:00:00Z] \
+                [mam_result id r2 queryid $qid from other@muc.example.com/eve \
+                    type groupchat body "from another room" \
+                    stamp 2024-01-01T10:01:00Z] \
+                [mam_result id r3 queryid $qid from room@muc.example.com/bob \
+                    type groupchat body "the room's own" \
+                    stamp 2024-01-01T10:02:00Z]]
+        } finally {
+            trace remove execution ::taco_omemo::Snit_methoddecryptForwarded enter $probe
+        }
+        list [lmap m [msg_store_latest room@muc.example.com?join] {dict get $m content body}] \
+            [llength [msg_store_latest alice@example.com]] \
+            [lsort -unique $::_opened]
+    } -result {{{the room's own}} 0 room@muc.example.com/bob}
+
 test message-catchup-overlap-clears-reconnect-hole {catchup overlap sweeps the reconnect hole} \
     {*}$msg_common \
     -body {

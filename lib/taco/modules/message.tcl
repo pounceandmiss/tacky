@@ -357,7 +357,8 @@ snit::type taco_message {
                 if {$inviteChat ne ""} { set chatJid $inviteChat }
             }
 
-            set r [$self ParseResultNode $resultNode $chatJid]
+            set r [$self ParseResultNode $resultNode $chatJid \
+                [expr {$fixedChatJid eq ""}]]
             set verdict [dict get $r verdict]
             if {[dict exists $r timestamp]} {
                 set rts [dict get $r timestamp]
@@ -2390,7 +2391,10 @@ snit::type taco_message {
 
     # MAM preamble: pull the envelope (archive id, server stamp, ids) off one
     # <result>/<forwarded> wrapper, then hand to the shared Classify core.
-    method ParseResultNode {resultNode chatJid} {
+    # $accountArchive is 1 when the result came from our own archive, where
+    # a room chat is routed by envelope (a relayed invite); otherwise a
+    # room chat's result came from the room's archive.
+    method ParseResultNode {resultNode chatJid {accountArchive 0}} {
         set serverId [xsearch $resultNode -get @id]
         set fwdNode [lindex [xsearch $resultNode forwarded -ns urn:xmpp:forward:0] 0]
         set ts [ParseTimestamp \
@@ -2408,6 +2412,18 @@ snit::type taco_message {
             jlog warn "MAM: skipping result with unroutable address" \
                 -stanza $resultNode
             return [dict create verdict drop timestamp $ts]
+        }
+        # A room's archive speaks for the room and its occupants only. A
+        # result from anyone else (a chat message "from" a contact, a
+        # groupchat from another room) is the room service putting words
+        # in their mouth: never filed, nor decrypted under their identity.
+        if {!$accountArchive && [IsRoomChatJid $chatJid]} {
+            set room [jid norm [string range $chatJid 0 end-5]]
+            set from [xsearch $msgNode -get @from]
+            if {![jid valid $from] || [jid norm [jid bare $from]] ne $room} {
+                jlog warn "MAM: $room's archive holds a message from '$from'; dropped"
+                return [dict create verdict drop timestamp $ts]
+            }
         }
         # A message retracted or moderated after archiving comes back as a
         # tombstone under its archive id; it's the only notice a client that
