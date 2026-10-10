@@ -208,6 +208,13 @@ snit::type taco_groupcall {
             $self BeginJoin $room $video
             return
         }
+        # A hosted call's room is never one of our group chats: anyone who
+        # can post an invite may name one, and entering it hidden would
+        # drop its messages and leave it with the call.
+        if {([$client muc isTracked -jid $room] && ![$client muc isHidden -jid $room])
+                || [$client muc isKnownRoom -jid $room]} {
+            error "join: $room is one of your group chats, not a call's room"
+        }
         # A hosted call: its room, under a nick no other device of ours has.
         set chat [expr {$opts(-chat) eq "" ? ""
                         : [jid norm [regsub {\?join$} $opts(-chat) {}]]}]

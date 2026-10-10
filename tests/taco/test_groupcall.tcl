@@ -1062,6 +1062,26 @@ test groupcall-join-from-invite-ended {answering an invite to a call that is ove
         gc_call_state bob@example.com
     } -result ended
 
+# Anyone who can post an invite may name one of our group chats; entering it
+# hidden for the call would drop its messages and leave it with the call.
+test groupcall-join-own-room-refused {an invite naming a room we are joining or have bookmarked is refused} \
+    {*}$groupcall_env -body {
+        c muc join -jid $ROOM -nick me
+        c db eval {
+            INSERT OR REPLACE INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('marked@muc.example.com', 'Marked', 0, 'me', '')
+        }
+        c.conn feed [gc_call_invite $BOB chat -room $ROOM -id inv1]
+        c.conn feed [gc_call_invite $CAROL chat -room marked@muc.example.com -id inv2]
+        set ts1 [lindex [gc_call_rows bob@example.com] 0 0]
+        set ts2 [lindex [gc_call_rows carol@example.com] 0 0]
+        c.conn clear
+        list [catch {c.groupcall join -chat bob@example.com -timestamp $ts1} err1] $err1 \
+            [catch {c.groupcall join -chat carol@example.com -timestamp $ts2} err2] $err2 \
+            [c muc isHidden -jid $ROOM] [gc_last_join]
+    } -result [list 1 "join: $ROOM is one of your group chats, not a call's room" \
+        1 "join: marked@muc.example.com is one of your group chats, not a call's room" 0 ""]
+
 test groupcall-call-row-active {a call row reads active while we are in its call} \
     {*}$groupcall_env -body {
         c.conn feed [gc_call_invite $BOB chat -room call@muc.example.com]

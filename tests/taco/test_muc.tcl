@@ -207,6 +207,19 @@ test muc-hidden-join-error-stays-out-of-bookmarks {a refused join to a hidden ro
         list $::got [c muc isHidden -jid call@muc.example.com]
     } -result {{} 1}
 
+test muc-hidden-join-over-own-room-refused {a hidden join of a room we are joining as ourselves is refused, and our join goes on} \
+    {*}$muc_common \
+    -body {
+        c muc join -jid room@muc.example.com -nick me
+        c.conn clear
+        set r [catch {c muc join -jid room@muc.example.com -nick h1 -hidden 1} err]
+        set written [llength [c.conn get_written]]
+        c.conn feed [muc_presence from room@muc.example.com/me self 1]
+        list $r $err $written \
+            [c muc isHidden -jid room@muc.example.com] \
+            [c muc isJoined -jid room@muc.example.com]
+    } -result {1 {muc join: room@muc.example.com is a room we are in or joining} 0 0 1}
+
 test muc-hidden-known-after-leaving {isHidden still answers for a room just left, until it is joined again} \
     {*}$muc_common \
     -body {
