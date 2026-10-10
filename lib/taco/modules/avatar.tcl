@@ -51,6 +51,12 @@ snit::type taco_avatar {
     # disco#info can both ask for the same fetch on join.
     variable InflightVCard
 
+    # Parked hashes are mostly room occupants', one per room@muc/nick that
+    # announced one. An occupant's goes when it leaves or changes nick;
+    # past this many the oldest goes, and its JID waits for its next
+    # presence.
+    typevariable MaxPendingVCard 512
+
     option -client -readonly yes
 
     constructor args {
@@ -67,6 +73,19 @@ snit::type taco_avatar {
         $client caps addFeature urn:xmpp:avatar:metadata+notify
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
         $client bus subscribe $self <SessionStart> [mymethod OnReady]
+        $client bus subscribe $self muc:<Unavailable> [mymethod OnOccupantGone]
+        $client bus subscribe $self muc:<NickChanged> [mymethod OnOccupantNick]
+    }
+
+    # Nothing parked for a room@muc/nick no longer there will be shown
+    method OnOccupantGone {args} {
+        dict unset PendingVCardHash \
+            [jid norm "[dict get $args -jid]/[dict get $args -nick]"]
+    }
+
+    method OnOccupantNick {args} {
+        dict unset PendingVCardHash \
+            [jid norm "[dict get $args -jid]/[dict get $args -oldNick]"]
     }
 
     # VisibleJids survives: it tracks what the frontend displays, not the session.
@@ -483,7 +502,11 @@ snit::type taco_avatar {
         if {[$self IsVisible $jid]} {
             $self FetchVCard $jid
         } else {
+            dict unset PendingVCardHash $jid
             dict set PendingVCardHash $jid $hash
+            if {[dict size $PendingVCardHash] > $MaxPendingVCard} {
+                dict unset PendingVCardHash [lindex [dict keys $PendingVCardHash] 0]
+            }
         }
     }
 
