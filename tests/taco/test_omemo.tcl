@@ -2387,6 +2387,63 @@ test omemo-unit-prekey-beside-own-session-is-a-message \
         c db onecolumn {SELECT body FROM chat_message WHERE chat_jid='romeo@montague.lit'}
     } -result {first words}
 
+# The stored session with Romeo's 111, as a blob.
+proc ::test::omemo_unit::sessionBlob {dev} {
+    c db onecolumn {
+        SELECT blob FROM omemo_sessions
+        WHERE peer_jid='romeo@montague.lit' AND peer_device=$dev
+    }
+}
+
+# ENC's text, opened on a copy of BLOB with Juliet's store: what the
+# session we keep would read.
+proc ::test::omemo_unit::openOnBlob {blob enc} {
+    set s [c omemo CreateSessionHandle $::test::omemo_unit::ROMEO 111]
+    $s deserialize $blob
+    set kn [lindex [xsearch $enc header key] 0]
+    try {
+        set mk [$s decrypt_key [set [c omemo info vars store]] \
+            [base64::decode [dict get $kn body]] -prekey 0]
+    } finally {
+        $s destroy
+    }
+    encoding convertfrom utf-8 [omemo::decrypt_message $mk \
+        [base64::decode [xsearch $enc header iv -get body]] \
+        [base64::decode [xsearch $enc payload -get body]]]
+}
+
+# Mallory, who can put a stanza in Juliet's stream as Romeo, builds a key
+# exchange from Juliet's public bundle under an identity of her own and
+# Romeo's device id. The exchange verifies (it is hers), but its identity
+# is not the one pinned for the device: the session with Romeo is kept as
+# it was and the forged one is never stored. The device is marked
+# compromised and the message shows as a changed key, as for any identity
+# change on a device id (the server can do as much by serving another
+# bundle); what the forger cannot do is take the session.
+test omemo-unit-prekey-from-another-identity-keeps-the-session \
+    {a key exchange under another identity than the device's does not replace the session we hold} \
+    {*}$::test::omemo_unit::single_env -body {
+        set me [c omemo device_id]
+        set R $::test::omemo_unit::ROMEO
+        ::test::omemo_unit::romeoHeardFrom
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me one]
+        set first [dict get [c omemo decryptFrom $enc $R] plaintext]
+        c omemo trust -jid $R -device 111 -state trusted
+        set before [::test::omemo_unit::sessionBlob 111]
+        omemopeer::create mallory -device 111
+        omemopeer::learn mallory $::test::omemo_unit::JULIET_BARE $me \
+            [[set [c omemo info vars store]] bundle]
+        set forged [omemopeer::encrypt mallory $::test::omemo_unit::JULIET_BARE $me evil]
+        set r [c omemo DoDecrypt $forged $R 111 0]
+        omemopeer::destroy mallory
+        set held [dict get [set [c omemo info vars Sessions]] $R|111]
+        set next [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me two]
+        list $first $r [c omemo DeviceTrust $R 111] \
+            [expr {[::test::omemo_unit::sessionBlob 111] eq $before}] \
+            [expr {[$held serialize] eq $before}] \
+            [::test::omemo_unit::openOnBlob $before $next]
+    } -result {one {decrypt_error {[OMEMO] Sender's identity key changed - possible MITM}} compromised 1 1 two}
+
 test omemo-unit-encryptfor-refetches-given-up-bundle \
     {a device whose bundle fetch was given up on is fetched again by encryptFor} \
     {*}$::test::omemo_unit::single_env -body {
