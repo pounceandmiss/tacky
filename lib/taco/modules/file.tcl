@@ -92,8 +92,14 @@ snit::type taco_file {
 
     # --- Transfer registry ----------------------------------------------
 
+    # A caller's id (an upload's row) still live is refused: taking it over
+    # would hand the first transfer's timer and callbacks to the second.
     method NewTransfer {direction url {id ""} {maxbytes 0}} {
-        if {$id eq ""} { set id [incr Counter] }
+        if {$id eq ""} {
+            set id [incr Counter]
+        } elseif {[info exists Transfers($id)]} {
+            error "transfer $id is already in progress"
+        }
         set Transfers($id) [dict create \
             direction $direction state active loaded 0 total 0 \
             url $url localpath "" error "" \
@@ -187,18 +193,28 @@ snit::type taco_file {
         } elseif {$reason eq "cancelled"} {
             set err cancelled
         }
-        foreach w [dict get $t cmds] {
-            lassign $w command onerror
-            if {$err ne "" && $onerror ne ""} {
-                {*}$onerror $err
-            } elseif {$command ne ""} {
-                {*}$command $res
-            }
-        }
-        if {[dict get $t direction] eq "download"} {
-            catch {unset DownloadByUrl([dict get $t url])}
+        # Gone before the callbacks run: one may start the next transfer
+        # under this id (an album's next file) or download this url again,
+        # and that one must not be deleted here.
+        set url [dict get $t url]
+        if {[dict get $t direction] eq "download"
+                && [info exists DownloadByUrl($url)]
+                && $DownloadByUrl($url) eq $id} {
+            unset DownloadByUrl($url)
         }
         unset Transfers($id)
+        foreach w [dict get $t cmds] {
+            lassign $w command onerror
+            if {[catch {
+                if {$err ne "" && $onerror ne ""} {
+                    {*}$onerror $err
+                } elseif {$command ne ""} {
+                    {*}$command $res
+                }
+            } cbErr]} {
+                jlog error "file transfer $id: a callback failed: $cbErr"
+            }
+        }
     }
 
     tackymethod -noreturn cancel {args} {
@@ -263,9 +279,15 @@ snit::type taco_file {
         set err $opts(-onerror)
         set srcKey [$self SourceKey $opts(-url) $opts(-path)]
 
-        # Join an in-flight download of the same source.
+        # Join an in-flight download of the same source. The user's own
+        # download lifts an automatic one's size cap: what the user asked
+        # for is never gated.
         if {[info exists DownloadByUrl($srcKey)]} {
-            $self AddWaiter $DownloadByUrl($srcKey) $cmd $err
+            set live $DownloadByUrl($srcKey)
+            $self AddWaiter $live $cmd $err
+            if {!$opts(-auto)} {
+                dict set Transfers($live) maxbytes 0
+            }
             return
         }
 
