@@ -42,6 +42,11 @@ snit::type iq {
     # until connect, and sent ones are replayed by stream management.
     variable Live 0
 
+    # {from id answered} of the request whose handler is running; respond
+    # sets answered, so a handler that answered and then threw is not
+    # answered twice
+    variable Current ""
+
     constructor args {
         $self configurelist $args
         # XEP-0199: a ping is answered with an empty result.
@@ -72,7 +77,21 @@ snit::type iq {
             "get" -
             "set" {
                 if {[info exists RequestHandlers($type_,$ns)]} {
-                    {*}$RequestHandlers($type_,$ns) $stanza
+                    set saved $Current
+                    set Current [list $from $id 0]
+                    set code [catch {{*}$RequestHandlers($type_,$ns) $stanza} msg opts]
+                    set answered [lindex $Current 2]
+                    set Current $saved
+                    if {$code == 1 && !$answered} {
+                        # RFC 6120 8.3: the requester gets an answer; the
+                        # error still goes on to be reported
+                        $self respond -for $stanza -type error -payload [j error -type cancel {
+                            j internal-server-error -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                        }]
+                    }
+                    if {$code != 0} {
+                        return -options $opts $msg
+                    }
                 } else {
                     jlog debug "Unknown stanza" -stanza $stanza
                     # RFC 6120 8.4: a payload nobody here understands.
@@ -254,6 +273,9 @@ snit::type iq {
         array set opts $args
 
         lassign [xsearch $opts(-for) -get {@from @id}] from id
+        if {$Current ne "" && [lrange $Current 0 1] eq [list $from $id]} {
+            lset Current 2 1
+        }
         if {$from ne ""} {
             set params(-to) $from
         }
