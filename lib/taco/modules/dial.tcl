@@ -11,6 +11,8 @@
 # A host, a port or -srv 0 skips SRV. Otherwise _xmpps-client and
 # _xmpp-client records come first, in RFC 2782 order and at most 16 of them
 # (records with port 0 are skipped), then the domain. auto is never none.
+# Only "." under _xmpp-client means no domain either: the targets can then
+# be none, and baseconn fails with "publishes no XMPP service".
 #
 # The query goes over TCP (UDP needs an extension we don't build) by the
 # client at the end of this file: tcllib's dns fails on an answer split
@@ -124,9 +126,12 @@ proc dial::Done {id kind records} {
     variable maxSrv
     if {![dict exists $lookups $id]} return
     set st [dict get $lookups $id]
-    # A lone "." target: RFC 2782 "decidedly not available"
-    if {[llength $records] == 1 && [lindex $records 0 2] eq ""} {
-        set records {}
+    # Only "." targets: RFC 6120 3.2.1 "decidedly not available". Under
+    # _xmpp-client that means no domain fallback either; under
+    # _xmpps-client only no direct TLS.
+    if {[llength $records] && $kind eq "starttls"
+            && [llength [lsearch -all -exact -index 2 $records ""]] == [llength $records]} {
+        dict set st noService 1
     }
     foreach r $records {
         lassign $r prio weight target port
@@ -145,9 +150,15 @@ proc dial::Done {id kind records} {
         set t [expr {$tls eq "none" ? "none" : $kind}]
         lappend out [list $target $port $t]
     }
-    set t [effectiveTls $tls]
-    set fallback [list $domain [defaultPort $t] $t]
-    if {$fallback ni $out} { lappend out $fallback }
+    if {[dict exists $st noService]} {
+        if {![llength $out]} {
+            jlog warn "$domain publishes no XMPP service (SRV \".\")"
+        }
+    } else {
+        set t [effectiveTls $tls]
+        set fallback [list $domain [defaultPort $t] $t]
+        if {$fallback ni $out} { lappend out $fallback }
+    }
     {*}[dict get $st cb] $out
 }
 

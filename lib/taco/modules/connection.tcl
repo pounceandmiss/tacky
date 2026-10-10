@@ -229,6 +229,13 @@ snit::type baseconn {
             return
         }
         set targets $list
+        if {![llength $targets]} {
+            # dial gives none only when the domain's SRV says "."
+            set state disconnected
+            after idle [list {*}$options(-error-command) \
+                "Connect failed: $options(-domain) publishes no XMPP service"]
+            return
+        }
         $self NextTarget "Connect failed: no address to connect to"
     }
 
