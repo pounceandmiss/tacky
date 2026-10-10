@@ -104,6 +104,8 @@ namespace eval ::tacky::media {
     variable Caps {}
     variable PcCb          ;# pc -> event callback
     array set PcCb {}
+    variable Previews      ;# preview name -> 1: the PcCb entries that are no pc
+    array set Previews {}
 
     # Every flag any backend may declare. An omitted one is 0; an unknown one
     # is a typo and throws at open time.
@@ -177,9 +179,11 @@ proc ::tacky::media::close {} {
     variable ActiveCmd
     variable Caps
     variable PcCb
+    variable Previews
     if {$Active eq ""} return
     catch {{*}$ActiveCmd Close}
     array unset PcCb
+    array unset Previews
     set Active ""
     set ActiveCmd ""
     set Caps {}
@@ -324,6 +328,7 @@ proc ::tacky::media::setVideoDevice {pc args} {
 
 proc ::tacky::media::openPreview {name args} {
     variable PcCb
+    variable Previews
     set opts [dict merge {-command "" -device-id ""} $args]
     if {[dict get $opts -command] eq ""} {
         error "openPreview: -command required"
@@ -331,10 +336,16 @@ proc ::tacky::media::openPreview {name args} {
     if {![capability preview]} {
         error "openPreview: the [backend] backend has no preview"
     }
+    # A live pc's name: the preview would take over its callback, and
+    # closing it would release the pc's camera.
+    if {[info exists PcCb($name)] && ![info exists Previews($name)]} {
+        error "openPreview: $name is in use"
+    }
     set PcCb($name) [dict get $opts -command]
+    set Previews($name) 1
     if {[catch {Dispatch OpenPreview $name \
             -device-id [dict get $opts -device-id]} err]} {
-        unset -nocomplain PcCb($name)
+        unset -nocomplain PcCb($name) Previews($name)
         error $err
     }
     return
@@ -342,8 +353,11 @@ proc ::tacky::media::openPreview {name args} {
 
 proc ::tacky::media::closePreview {name} {
     variable PcCb
+    variable Previews
+    # Not an open preview (a pc's name, or closed already): nothing to do.
+    if {![info exists Previews($name)]} return
     if {[capability preview]} { catch {Dispatch ClosePreview $name} }
-    unset -nocomplain PcCb($name)
+    unset -nocomplain PcCb($name) Previews($name)
     return
 }
 

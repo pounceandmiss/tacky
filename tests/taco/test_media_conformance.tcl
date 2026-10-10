@@ -226,6 +226,25 @@ test media-rtc-preview-falls-back {a camera that will not open falls back to the
 
 # The app keeps the camera, so a preview is a command to it and a channel
 # named after the preview; its own error comes back on the preview.
+test media-preview-refuses-a-live-pc-name {openPreview under a live pc's name throws, and closePreview of it leaves the pc alone} -setup {
+    mockmedia::reset
+    ::tacky::media open mock
+    set ::pvEvents {}
+    set ::pcEvents {}
+} -cleanup {
+    ::tacky::media close
+    unset -nocomplain ::pvEvents ::pcEvents
+} -body {
+    ::tacky::media createPeer pc1 -command {apply {ev {lappend ::pcEvents $ev}}}
+    set r [list [catch {::tacky::media openPreview pc1 \
+        -command {apply {ev {lappend ::pvEvents $ev}}}} err] $err \
+        [llength [mockmedia::calls OpenPreview]]]
+    ::tacky::media closePreview pc1
+    ::tacky::media::emit pc1 error op x reason y fatal 0
+    lappend r [llength [mockmedia::calls ClosePreview]] \
+        [llength $::pvEvents] [llength $::pcEvents]
+} -result {1 {openPreview: pc1 is in use} 0 0 0 1}
+
 test media-host-preview {openPreview and closePreview go to the app; the channel is the preview's name} -setup {
     set ::hostCmds {}
     set ::pvEvents {}

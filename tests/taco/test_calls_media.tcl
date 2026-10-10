@@ -384,6 +384,15 @@ test media-attach-error-without-fatal-warns {an attachAudio error with no fatal 
             [lindex [calls_events] end] [dict exists [calls_state] $sid]]
     } -result {{<Warning> -sid SID -reason {output device could not be opened: no device}} 1}
 
+test media-output-start-fails-destroys-device {a speaker that attaches but will not start is destroyed, not leaked, and the call warns} \
+    {*}$media_env -body {
+        mockrtc::fail ::rtcma::player::start "device busy"
+        set from [llength [mockrtc::log]]
+        set sid [media_caller]
+        string map [list $sid SID] [list [media_side_calls player $from] \
+            [lindex [calls_events] end]]
+    } -result {{new attach start destroy} {<Warning> -sid SID -reason {output device could not be opened: player start failed: device busy}}}
+
 test media-output-unopenable-warns {no speaker at all warns and the call runs on} \
     {*}$media_env -body {
         mockrtc::fail ::rtcma::player::new "no device" "*"
