@@ -787,6 +787,19 @@ test omemo-muc-occupant-id-mismatch-is-not-read-as-the-nick {a message under a n
             [c db eval {SELECT peer_jid FROM omemo_trust}]
     } -result {1 {}}
 
+test omemo-muc-malformed-is-a-placeholder {a room message whose <encrypted/> has no header, or that carries two, is a placeholder and a <DecryptFailed>} \
+    {*}$mucenv -body {
+        ::t::device $::t::ROMEO 101 -nosession
+        ::t::join [list [list romeo $::t::ROMEO occ-r]]
+        c.conn feed [::t::roomMessage romeo \
+            [j encrypted -ns $::t::NS_AX { j payload -body Zm9v }] occ occ-r]
+        set enc [::t::encryptedFrom $::t::ROMEO 101 "twice"]
+        c.conn feed [::t::roomMessage romeo $enc occ occ-r extra $enc]
+        list [lmap {b e f s} [::t::rows] {set b}] \
+            [lmap f [::t::emitted omemo <DecryptFailed>] {dict get $f -reason}]
+    } -result [list [lrepeat 2 {[OMEMO] Could not read message payload}] \
+        [lrepeat 2 {[OMEMO] Could not read message payload}]]
+
 test omemo-muc-our-other-device-is-read {a message our other device wrote to the room is read as ours} \
     {*}$mucenv -body {
         ::t::device $::t::JBARE 301 -nosession

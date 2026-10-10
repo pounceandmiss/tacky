@@ -85,6 +85,8 @@ namespace eval ::taco::omemo {
     variable NS_PUBSUB http://jabber.org/protocol/pubsub
     variable NS_PUBSUB_OWNER http://jabber.org/protocol/pubsub#owner
     variable NS_EME urn:xmpp:eme:0
+    # The placeholder for an <encrypted/> that cannot be read at all.
+    variable MALFORMED {[OMEMO] Could not read message payload}
     variable SKIPPED_CAP 2000
     # Curve25519 public-key type tag (= libsignal Curve.DJB_TYPE): the
     # one-byte prefix on the 33-byte wire form of a key.
@@ -1387,23 +1389,27 @@ snit::type taco_omemo {
         # (same bare JID AND same device id in the header sid). Carbons
         # from our OTHER devices have a different sid and pass through.
         set fromBare [jid bare [xsearch $stanza -get @from]]
+        set peerJid [expr {$fromBare eq "" ? $accountJid : $fromBare}]
         set headerNode [lindex [xsearch $encNode header] 0]
         if {$headerNode eq ""} {
-            jlog warn "OMEMO drop: missing <header>" -stanza $stanza
+            $self DispatchMalformed $stanza $peerJid 0 "missing <header>"
             return 1
         }
         set sid [xsearch $headerNode -get @sid]
         if {$sid eq "" || ![string is integer -strict $sid]} {
-            jlog warn "OMEMO drop: invalid sid '$sid'" -stanza $stanza
+            $self DispatchMalformed $stanza $peerJid 0 "invalid sid '$sid'"
             return 1
         }
         if {$fromBare eq $accountJid && $sid == $deviceId} {
             jlog debug "OMEMO drop: reflected own stanza (sid=$sid)"
             return 1
         }
-
-        set peerJid [expr {$fromBare eq "" ? $accountJid : $fromBare}]
         set peerDev $sid
+        # Two elements: which one the sender meant is anyone's guess.
+        if {[llength $encNodes] > 1} {
+            $self DispatchMalformed $stanza $peerJid $peerDev "[llength $encNodes] <encrypted/>"
+            return 1
+        }
 
         $self DispatchDecrypt $stanza $encNode $peerJid $peerDev
         return 1
@@ -1416,7 +1422,8 @@ snit::type taco_omemo {
     #
     # DoDecrypt result shapes. $fp is the sender fingerprint, set once a
     # key decrypt has succeeded:
-    #   {}                       -> truly silent drop (malformed wire)
+    #   {}                       -> malformed wire: a placeholder
+    #                               (DispatchMalformed)
     #   {plaintext $text $fp}    -> decrypted payload; render as message
     #   {decrypt_error $reason ?$fp?}
     #                            -> user-facing failure; surface as a
@@ -1429,8 +1436,7 @@ snit::type taco_omemo {
     method DispatchDecrypt {stanza encNode peerJid peerDev} {
         set result [$self DoDecrypt $encNode $peerJid $peerDev 0]
         if {$result eq ""} {
-            jlog warn "OMEMO drop: DoDecrypt returned empty (malformed wire)" \
-                -stanza $stanza
+            $self DispatchMalformed $stanza $peerJid $peerDev "unreadable <encrypted/>"
             return
         }
         lassign $result kind body senderFp
@@ -1447,6 +1453,19 @@ snit::type taco_omemo {
         # re-enter OMEMO); jump directly to message.
         set plain [$self SynthesisePlain $stanza $body $senderFp]
         $client message OnMessage $plain
+    }
+
+    # A live <encrypted/> that cannot be read at all (no header, no sid,
+    # two of them): a message the sender meant us to see does not vanish
+    # with a log line, it gets a placeholder like any other failure.
+    # $peerDev is 0 when there is no usable sid.
+    method DispatchMalformed {stanza peerJid peerDev why} {
+        jlog warn "OMEMO: malformed message ($why); a placeholder in its place" \
+            -stanza $stanza
+        set body $::taco::omemo::MALFORMED
+        $client emit omemo <DecryptFailed> \
+            -jid $peerJid -device $peerDev -reason $body
+        $client message OnMessage [$self SynthesisePlain $stanza $body]
     }
 
     # Run the full multi-key decrypt + side-effect path for one
@@ -2777,15 +2796,20 @@ snit::type taco_omemo {
     # told as <DecryptFailed> with the room, and the chat gets its
     # placeholder, as in 1:1.
     method decryptRoomMessage {room stanza} {
-        set encNode [lindex [xsearch $stanza encrypted \
-            -ns $::taco::omemo::NS_AXOLOTL] 0]
+        set encNodes [xsearch $stanza encrypted -ns $::taco::omemo::NS_AXOLOTL]
+        set encNode [lindex $encNodes 0]
         if {$encNode eq ""} { return $stanza }
         if {[xsearch $stanza -get @type] eq "error"} { return $stanza }
         set room [jid norm $room]
-        set r [$self RoomDecrypt $room $stanza $encNode 0]
+        set r ""
+        if {[llength $encNodes] == 1} {
+            set r [$self RoomDecrypt $room $stanza $encNode 0]
+        }
         if {$r eq ""} {
-            jlog warn "OMEMO drop: malformed <encrypted/> in $room" -stanza $stanza
-            return ""
+            # As in 1:1 (DispatchMalformed): a placeholder, not silence.
+            jlog warn "OMEMO: malformed <encrypted/> in $room; a placeholder in its place" \
+                -stanza $stanza
+            set r [list decrypt_error $::taco::omemo::MALFORMED "" ""]
         }
         lassign $r kind body fp sender
         switch -- $kind {

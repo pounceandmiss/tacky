@@ -1557,6 +1557,52 @@ test omemo-unit-event-decrypt-failed \
         ::test::omemo_unit::emittedOmemo <DecryptFailed>
     } -result {{-acc juliet@capulet.lit -jid romeo@montague.lit -device 42 -reason {[OMEMO] Message not encrypted for this device}}}
 
+# A live message whose <encrypted/> cannot be read at all (no header, or
+# two elements) is a placeholder and a <DecryptFailed>, not silence.
+test omemo-unit-event-malformed-is-a-placeholder \
+    {an <encrypted/> without a header gets the malformed placeholder} \
+    {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+    }] -body {
+        c omemo OnMessage [j message \
+                -from $::test::omemo_unit::ROMEO \
+                -to   $::test::omemo_unit::JULIET_BARE \
+                -type chat -id wire-mf1 {
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j payload -body Zm9v
+            }
+        }]
+        ::test::omemo_unit::emittedOmemo <DecryptFailed>
+    } -result {{-acc juliet@capulet.lit -jid romeo@montague.lit -device 0 -reason {[OMEMO] Could not read message payload}}}
+
+test omemo-unit-event-doubled-encrypted-is-a-placeholder \
+    {a message with two <encrypted/> elements gets the malformed placeholder} \
+    {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+    }] -body {
+        set ourDev [c omemo device_id]
+        c omemo OnMessage [j message \
+                -from $::test::omemo_unit::ROMEO \
+                -to   $::test::omemo_unit::JULIET_BARE \
+                -type chat -id wire-mf2 {
+            foreach _ {1 2} {
+                j encrypted -ns eu.siacs.conversations.axolotl {
+                    j header -sid 42 {
+                        j key -rid $ourDev -body Zm9v
+                        j iv -body AAAAAAAAAAAAAAAA
+                    }
+                    j payload -body Zm9v
+                }
+            }
+        }]
+        unset -nocomplain _
+        ::test::omemo_unit::emittedOmemo <DecryptFailed>
+    } -result {{-acc juliet@capulet.lit -jid romeo@montague.lit -device 42 -reason {[OMEMO] Could not read message payload}}}
+
 test omemo-unit-event-blindtrust \
     {setBlindTrust persists value and emits <BlindTrust>} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
