@@ -489,7 +489,10 @@ proc ::tacky::media::rtc::OpenSide {h which kind id} {
         return -code error -errorcode {TACKY MEDIA ATTACH} \
             "$which attach failed: $err"
     }
-    ::rtcma::${which}::start $dev
+    if {[catch {::rtcma::${which}::start $dev} err]} {
+        catch {::rtcma::${which}::destroy $dev}
+        return -code error "$which start failed: $err"
+    }
     catch {::rtcma::${which}::set-volume $dev [dict get $Audio($h) volume $kind]}
     dict set Audio($h) $which $dev
     return
