@@ -1991,3 +1991,153 @@ test omemo-unit-stale-bundle-reply-ignored {a bundle reply from before a reconne
         c omemo BundleGaveUp $::test::omemo_unit::ROMEO 5
     } -result 0
 
+
+# =====================================================================
+# encryptFor / decryptFrom: one element for one device, as calls use
+# them. Romeo is a plain picomemo peer.
+package require tacky::omemopeer
+
+# Juliet with a session to Romeo's device 111 (and 222, which must never
+# be keyed for), built from Romeo's real bundle.
+set ::test::omemo_unit::single_env [tacky_env -mock conn \
+    -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        omemopeer::create romeo -device 111
+        c omemo BuildSessionFromBundle $::test::omemo_unit::ROMEO 111 \
+            [omemopeer::bundle romeo]
+        ::test::omemo_unit::giveSession $::test::omemo_unit::ROMEO 222
+        ::test::omemo_unit::injectDevicelist $::test::omemo_unit::ROMEO {111 222}
+    } -extra-cleanup {
+        omemopeer::destroy romeo
+    }]
+
+# encryptFor's result, waited for.
+proc ::test::omemo_unit::encryptFor {jid dev text} {
+    set ::_ef ""
+    c omemo encryptFor $jid $dev $text {apply {args { set ::_ef $args }}}
+    if {$::_ef eq ""} { vwait ::_ef }
+    return $::_ef
+}
+
+# Juliet encrypts to Romeo's 111 once, so Romeo has a session to answer on.
+proc ::test::omemo_unit::romeoHeardFrom {} {
+    lassign [encryptFor $::test::omemo_unit::ROMEO 111 AA:BB] status enc
+    omemopeer::open romeo $::test::omemo_unit::JULIET_BARE $enc
+}
+
+test omemo-unit-encryptfor-one-device \
+    {encryptFor keys the payload for the named device alone, and it opens there} \
+    {*}$::test::omemo_unit::single_env -body {
+        lassign [::test::omemo_unit::encryptFor \
+            $::test::omemo_unit::ROMEO 111 AA:BB:CC] status enc
+        list $status [::test::omemo_unit::keyRids $enc] \
+            [expr {[xsearch $enc header -get @sid] == [c omemo device_id]}] \
+            [omemopeer::open romeo $::test::omemo_unit::JULIET_BARE $enc]
+    } -result {ok 111 1 AA:BB:CC}
+
+test omemo-unit-decryptfrom-names-the-device \
+    {decryptFrom opens a peer's element and names the device, its key and trust} \
+    {*}$::test::omemo_unit::single_env -body {
+        ::test::omemo_unit::romeoHeardFrom
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] EE:FF]
+        set r [c omemo decryptFrom $enc $::test::omemo_unit::ROMEO]
+        list [dict get $r status] [dict get $r plaintext] [dict get $r device] \
+            [expr {[dict get $r fingerprint] eq [omemopeer::fingerprint romeo]}] \
+            [dict get $r trust] [dict get $r accepted]
+    } -result {ok EE:FF 111 1 undecided 1}
+
+test omemo-unit-device-accepted-follows-message-rule \
+    {deviceAccepted is the rule messages are sent by: blind trust, then verification} \
+    {*}$::test::omemo_unit::single_env -body {
+        ::test::omemo_unit::romeoHeardFrom
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] 01]
+        c omemo decryptFrom $enc $::test::omemo_unit::ROMEO
+        set R $::test::omemo_unit::ROMEO
+        set blind [c omemo deviceAccepted $R 111]
+        c omemo setBlindTrust -value 0
+        set strict [c omemo deviceAccepted $R 111]
+        c omemo trust -jid $R -device 111 -state trusted
+        set trusted [c omemo deviceAccepted $R 111]
+        c omemo trust -jid $R -device 111 -state untrusted
+        list $blind $strict $trusted [c omemo deviceAccepted $R 111] \
+            [expr {[c omemo deviceAccepted $R 111] == ![c omemo IsDeviceBlocked $R 111]}]
+    } -result {1 0 1 0 1}
+
+test omemo-unit-decryptfrom-follows-trust \
+    {a device marked trusted opens as trusted; one marked untrusted is refused} \
+    {*}$::test::omemo_unit::single_env -body {
+        ::test::omemo_unit::romeoHeardFrom
+        set me [c omemo device_id]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me 01]
+        c omemo decryptFrom $enc $::test::omemo_unit::ROMEO
+        c omemo trust -jid $::test::omemo_unit::ROMEO -device 111 -state trusted
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me 02]
+        set trusted [dict get [c omemo decryptFrom $enc $::test::omemo_unit::ROMEO] trust]
+        c omemo trust -jid $::test::omemo_unit::ROMEO -device 111 -state untrusted
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me 03]
+        set r [c omemo decryptFrom $enc $::test::omemo_unit::ROMEO]
+        list $trusted [dict get $r status] \
+            [lindex [::test::omemo_unit::encryptFor \
+                $::test::omemo_unit::ROMEO 111 AA] 0]
+    } -result {trusted error error}
+
+test omemo-unit-decryptfrom-refuses-keyless \
+    {an element with our key stripped, or a forged payload, does not open} \
+    {*}$::test::omemo_unit::single_env -body {
+        ::test::omemo_unit::romeoHeardFrom
+        set me [c omemo device_id]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me AA]
+        set header [xsearch $enc header -get node]
+        set stripped [dict replace $enc children [list [dict replace $header \
+            children [xsearch $header iv -gather node]] \
+            [xsearch $enc payload -get node]]]
+        set keyless [dict get [c omemo decryptFrom $stripped $::test::omemo_unit::ROMEO] status]
+        set forged [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me BB]
+        set other [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE $me CCCCCC]
+        set payload [xsearch $other payload -get node]
+        set forged [dict replace $forged children [list \
+            [xsearch $forged header -get node] $payload]]
+        list $keyless [dict get [c omemo decryptFrom $forged $::test::omemo_unit::ROMEO] status]
+    } -result {error error}
+
+# Both sides built a session from the other's bundle (as learning a
+# devicelist does) and Romeo writes first. His prekey message doesn't open
+# with our session, so it is opened on a fresh one, which replaces ours.
+test omemo-unit-prekey-opens-beside-own-session \
+    {a prekey message opens though we hold a session of our own with the device, and we answer in the sender's} \
+    {*}$::test::omemo_unit::single_env -body {
+        omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
+            [[set [c.omemo info vars store]] bundle]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] hello]
+        set r [c omemo decryptFrom $enc $::test::omemo_unit::ROMEO]
+        lassign [::test::omemo_unit::encryptFor $::test::omemo_unit::ROMEO 111 back] status reply
+        list [dict get $r status] [dict get $r plaintext] $status \
+            [omemopeer::open romeo $::test::omemo_unit::JULIET_BARE $reply]
+    } -result {ok hello ok back}
+
+test omemo-unit-prekey-beside-own-session-is-a-message \
+    {the same, as a chat message: it is read, not a decrypt failure} \
+    {*}$::test::omemo_unit::single_env -body {
+        omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
+            [[set [c.omemo info vars store]] bundle]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] "first words"]
+        c conn feed [j message -from $::test::omemo_unit::ROMEO/phone \
+            -to $::test::omemo_unit::JULIET -type chat -id m1 { j #as-is $enc }]
+        c db onecolumn {SELECT body FROM chat_message WHERE chat_jid='romeo@montague.lit'}
+    } -result {first words}
+
+test omemo-unit-encryptfor-refetches-given-up-bundle \
+    {a device whose bundle fetch was given up on is fetched again by encryptFor} \
+    {*}$::test::omemo_unit::single_env -body {
+        c omemo FetchBundle $::test::omemo_unit::ROMEO 333 {apply {args {}}}
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 333
+        set gaveUp [c omemo BundleGaveUp $::test::omemo_unit::ROMEO 333]
+        c conn clear
+        c omemo encryptFor $::test::omemo_unit::ROMEO 333 AA {apply {args {}}}
+        list $gaveUp [::test::omemo_unit::bundleFetches [c conn get_written] 333]
+    } -result {1 1}

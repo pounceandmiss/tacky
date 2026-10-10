@@ -377,6 +377,29 @@ test json-backend-emit-retracted {retraction emits lean jid + int timestamp, no 
     [json::write object \
         jid {"room@conf.example.com"} timestamp 1700]]
 
+# "verified" must be a real bool: the string "0" is truthy in JS.
+test json-backend-emit-call-verified {calls <Verified> carries a real bool} -setup {
+    _test_clear
+} -body {
+    _test_emit calls <Verified> -sid tk-1 -verified 1 -fingerprint 05ab12cd
+    _test_emit calls <Verified> -sid tk-2 -verified 0 -fingerprint ""
+    _test_sent
+} -result [list \
+    [json::write array {"event"} {"calls"} {"Verified"} \
+        [json::write object sid {"tk-1"} verified true fingerprint {"05ab12cd"}]] \
+    [json::write array {"event"} {"calls"} {"Verified"} \
+        [json::write object sid {"tk-2"} verified false fingerprint {""}]]]
+
+test json-backend-call-row-verified {a live call's row types verified and video as bools} -setup {
+    _test_clear
+} -body {
+    _test_on_result 14 calls/list [list [dict create sid tk-1 peer a@b \
+        peer_ringing 0 video_local 1 video_remote 0 verified 1 fingerprint 05ab]]
+    lindex [_test_sent] 0
+} -result [json::write array {"result"} 14 [json::write array \
+    [json::write object sid {"tk-1"} peer {"a@b"} peer_ringing false \
+        video_local true video_remote false verified true fingerprint {"05ab"}]]]
+
 test json-backend-emit-no-schema {emit event without schema, dashless keys} -setup {
     _test_clear
 } -body {

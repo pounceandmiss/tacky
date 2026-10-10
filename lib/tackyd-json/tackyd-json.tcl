@@ -175,7 +175,7 @@ jsonify_type jsonify \
         muc_room_info {known bool live bool members_only bool non_anonymous bool occupant_id bool}
         audio_device {default bool}
         camera      {facing int}
-        call_row    {peer_ringing bool}
+        call_row    {peer_ringing bool video_local bool video_remote bool verified bool}
         payload     {id int clockrate int channels int}
         groupcall_row  {count int video bool hosted bool preview {dict {name string id string}} sessions {map string}}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
@@ -296,6 +296,8 @@ jsonify_type jsonify \
         notify/<Settings>       {dict {muted bool mentions bool}}
         groupcall/<Invited>     {dict {timestamp int video bool}}
         groupcall/<Session>     {dict {video bool}}
+        calls/<Incoming>        {dict {video bool}}
+        calls/<Verified>        {dict {verified bool}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}
         omemo/<BlindTrust>         {dict {value bool}}

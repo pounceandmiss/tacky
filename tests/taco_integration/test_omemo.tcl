@@ -397,4 +397,56 @@ namespace eval ::test::omemo_int {
                 api_refuses_compromised $comprRefused \
                 compromised_sticky $stickyRefused
         } -result {send_failed_when_untrusted 1 roundtrip_after_retrust {after re-trust} api_refuses_compromised 1 compromised_sticky 1}
+
+    # A call's fingerprint is encrypted for one device (encryptFor) and
+    # opened with decryptFrom; here both meet an independent OMEMO stack.
+    # The bot opens ours like any message and echoes the text back,
+    # encrypted by slixmpp-omemo; the echo is taken before the message path
+    # and opened with decryptFrom.
+    test omemo-int-one-device-interop \
+        {encryptFor is opened by an independent OMEMO stack, and decryptFrom opens what it sends} \
+        {*}$common -body {
+            variable BOT
+            variable TESTER
+            set client [tacky client $TESTER]
+            set botDev [lindex [$client omemo devicelist -jid $BOT] 0]
+            set ::_ef ""
+            $client omemo encryptFor $BOT $botDev AA:BB:CC:DD \
+                [list apply {args { set ::_ef $args }}]
+            if {$::_ef eq ""} { vwait ::_ef }
+            lassign $::_ef status enc
+
+            # Claim the bot's encrypted echo before the message path does.
+            set omemo [set [$client info vars omemo]]
+            rename $omemo ${omemo}__real
+            set ::_echo ""
+            proc $omemo {method args} [string map [list @REAL@ ${omemo}__real] {
+                if {$method eq "OnMessage"} {
+                    set stanza [lindex $args 0]
+                    set encNode [xsearch $stanza encrypted \
+                        -ns eu.siacs.conversations.axolotl -get node]
+                    # The echo, not the KeyTransport python-omemo sends
+                    # first to complete the session.
+                    if {$encNode ne "" && [xsearch $encNode payload] ne ""
+                            && [string match bot@* [xsearch $stanza -get @from]]} {
+                        set ::_echo [@REAL@ decryptFrom $encNode bot@example.local]
+                        return 1
+                    }
+                }
+                @REAL@ $method {*}$args
+            }]
+            try {
+                $client write [j message -to $BOT -type chat {
+                    j #as-is $enc
+                    j store -ns urn:xmpp:hints
+                }]
+                wait_var ::_echo $::test::omemo_int::TIMEOUT
+            } finally {
+                rename $omemo ""
+                rename ${omemo}__real $omemo
+            }
+            list $status [llength [xsearch $enc header key]] \
+                [dict get $::_echo status] [dict get $::_echo plaintext] \
+                [expr {[dict get $::_echo device] == $botDev}]
+        } -result {ok 1 ok AA:BB:CC:DD 1}
 }

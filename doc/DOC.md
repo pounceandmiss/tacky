@@ -1194,7 +1194,7 @@ source: the `url` you passed, or the `path` when you passed no `url`.
 
     call_row = {sid: string, peer: string, direction: string, state: string,
                 peer_ringing: bool, group: string, video_local: bool,
-                video_remote: bool}
+                video_remote: bool, verified: bool, fingerprint: string}
 
 `start` rings the peer; `video: true` offers a video track alongside audio.
 Take the session id from `<Outgoing>`.
@@ -1215,6 +1215,7 @@ offered/is sending video; `video_remote` is whether the peer did. `group` is
 the room JID when the call is one of a [group call](#groupcall)'s sessions, else `""`.
 Group-call sessions are listed like any call, so a restarted frontend finds them, but they
 raise `groupcall <Session>` instead of `<Outgoing>`/`<Incoming>`.
+`verified` and `fingerprint` are as in the last `<Verified>`.
 
 Events:
 
@@ -1225,6 +1226,7 @@ Events:
     calls <Ended>        {sid: string}
     calls <Failed>       {sid: string, reason: string}
     calls <Warning>      {sid: string, reason: string}
+    calls <Verified>     {sid: string, verified: bool, fingerprint: string}
     calls <VideoTrack>   {sid: string, mid: string, direction: string} & frame_stream
     calls <VideoPreview> {sid: string, direction: string}            & frame_stream
     calls <VideoEnded>   {sid: string, mid: string}
@@ -1233,6 +1235,20 @@ Events:
 
 A call ends on exactly one of `<Ended>` or `<Failed>`. `<Warning>` is just
 informational and doesn't end anything.
+
+`<Verified>` says whether to show the call as secure. Calls are verified
+the way Conversations does it: each side sends its DTLS fingerprint
+OMEMO-encrypted, so a server can't swap in its own certificate. `verified`
+is true when the peer's device is one we would encrypt messages to: trusted,
+or undecided while [blind trust](#omemo) is on. `fingerprint` is that
+device's OMEMO key in the format [`omemo trustList`](#omemo) uses, or `""`
+for a plain call (OMEMO off for the chat, or the peer doesn't support
+this). The event comes before `<Active>` and again whenever the result
+changes during the call: the key gets trusted or distrusted, another of the
+peer's keys gets verified (which ends blind trust for the rest), or blind
+trust is switched. If the fingerprint should be encrypted but isn't,
+doesn't decrypt, or comes from an untrusted key, the call ends with
+`<Failed>`. Group-call sessions don't use this.
 
 `<VideoTrack>` (`direction: "incoming"`) and `<VideoPreview>`
 (`direction: "preview"`, the local camera) each name a stream of I420 frames

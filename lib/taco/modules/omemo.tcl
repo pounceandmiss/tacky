@@ -1824,6 +1824,122 @@ snit::type taco_omemo {
         $client write $msg
     }
 
+    # =====================================================================
+    # Single-device encrypt/decrypt (used by calls)
+    # =====================================================================
+
+    # encryptFor $peerJid $peerDev $plaintext $cb - build an <encrypted>
+    # node for that one device. Async, since the bundle may need fetching.
+    # Calls `{*}$cb ok $node` or `{*}$cb error $reason`. Untrusted and
+    # compromised devices are refused; blind trust doesn't apply, because
+    # the plaintext isn't secret (calls use this for authentication).
+    method encryptFor {peerJid peerDev plaintext cb} {
+        if {$store eq ""} {
+            {*}$cb error "OMEMO is not set up yet"
+            return
+        }
+        if {[$self DeviceTrust $peerJid $peerDev] in {untrusted compromised}} {
+            {*}$cb error "the device is not trusted"
+            return
+        }
+        $self readySession $peerJid $peerDev \
+            [mymethod AfterSessionForEncrypt $plaintext $cb]
+    }
+
+    # readySession $peerJid $peerDev ?$cb? - EnsureSession, but retry the
+    # bundle fetch even if an earlier one failed on this connection. For a
+    # device we just heard from, e.g. one named in a call.
+    method readySession {peerJid peerDev {cb {apply {args {}}}}} {
+        if {[$self BundleGaveUp $peerJid $peerDev]} {
+            dict unset BundleFetchState "$peerJid|$peerDev"
+        }
+        $self EnsureSession $peerJid $peerDev $cb
+    }
+
+    method AfterSessionForEncrypt {plaintext cb peerJid peerDev sess err} {
+        if {$sess eq ""} {
+            {*}$cb error "no OMEMO session with the device: $err"
+            return
+        }
+        if {[catch {
+            set enc [omemo::encrypt_message [encoding convertto utf-8 $plaintext]]
+            set wrap [$sess encrypt_key [dict get $enc key]]
+        } e]} {
+            {*}$cb error "OMEMO encryption failed: $e"
+            return
+        }
+        $self PersistSession $peerJid $peerDev $sess
+        set p [base64::encode -wrapchar "" [dict get $wrap p]]
+        set isPrekey [dict get $wrap isprekey]
+        {*}$cb ok [j encrypted -ns $::taco::omemo::NS_AXOLOTL {
+            j header -sid $deviceId {
+                if {$isPrekey} {
+                    j key -rid $peerDev -prekey true -body $p
+                } else {
+                    j key -rid $peerDev -body $p
+                }
+                j iv -body [base64::encode -wrapchar "" [dict get $enc iv]]
+            }
+            j payload -body [base64::encode -wrapchar "" [dict get $enc ct]]
+        }]
+    }
+
+    # decryptFrom $encNode $peerJid - decrypt an <encrypted> node from
+    # $peerJid (the stanza's sender; the device is the header's sid), with
+    # the same checks as a message. Returns
+    # {status ok plaintext P device D fingerprint F trust T accepted A}
+    # or {status error reason R ?device D?}.
+    method decryptFrom {encNode peerJid} {
+        if {$store eq ""} {
+            return [dict create status error reason "OMEMO is not set up yet"]
+        }
+        set peerDev [xsearch $encNode header -get @sid]
+        if {![string is integer -strict $peerDev]} {
+            return [dict create status error reason "no sending device"]
+        }
+        if {[$self DeviceTrust $peerJid $peerDev] in {untrusted compromised}} {
+            return [dict create status error device $peerDev \
+                reason "the device is not trusted"]
+        }
+        lassign [$self DoDecrypt $encNode $peerJid $peerDev 0] kind plain
+        if {$kind ne "plaintext"} {
+            set why [expr {$kind eq "decrypt_error" ? $plain : "nothing to decrypt"}]
+            return [dict create status error device $peerDev reason $why]
+        }
+        # DoDecrypt has created the trust row if it was missing.
+        set row [$self deviceTrust $peerJid $peerDev]
+        dict create status ok plaintext $plain device $peerDev \
+            fingerprint [dict get $row fingerprint] trust [dict get $row trust] \
+            accepted [$self deviceAccepted $peerJid $peerDev]
+    }
+
+    # deviceAccepted $peerJid $peerDev -> 1 if we would encrypt messages to
+    # the device: trusted, or undecided under blind trust (IsDeviceBlocked).
+    # Calls use the same rule for "verified".
+    method deviceAccepted {peerJid peerDev} {
+        expr {![$self IsDeviceBlocked $peerJid $peerDev]}
+    }
+
+    # deviceTrust $peerJid $peerDev -> {trust T fingerprint F} from the
+    # device's trustList row; trust is "" if there is no row.
+    method deviceTrust {peerJid peerDev} {
+        set trust ""
+        set fp ""
+        $db eval {
+            SELECT trust, identity_pk FROM omemo_trust
+            WHERE account_jid=$accountJid
+              AND peer_jid=$peerJid AND peer_device=$peerDev
+        } row {
+            set trust $row(trust)
+            if {[catch {omemo::fingerprint $row(identity_pk)} fp]} { set fp "" }
+        }
+        dict create trust $trust fingerprint $fp
+    }
+
+    method DeviceTrust {peerJid peerDev} {
+        dict get [$self deviceTrust $peerJid $peerDev] trust
+    }
+
     # Build a synthesised plaintext <message> from the original encrypted
     # stanza. Preserves @from, @to, @type, @id; replaces the <encrypted>
     # node and any cleartext fallback <body> with <body>plaintext</body>

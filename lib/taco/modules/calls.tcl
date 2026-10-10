@@ -14,6 +14,7 @@
 #
 # tacky calls list   -acc $jid ?-command $cb?
 #   ;# -> one dict per live call: sid peer direction state peer_ringing
+#   ;#    group video_local video_remote verified fingerprint
 #
 # Enumeration and the persisted preferred device + volume live on the
 # process-global `audio` module (see lib/taco/modules/audio.tcl). Volume
@@ -26,6 +27,20 @@
 # tacky listen calls <Ended>           $cmd  ;# -sid $sid          (terminal — normal teardown)
 # tacky listen calls <Failed>          $cmd  ;# -sid $sid -reason $text  (terminal — unrecoverable)
 # tacky listen calls <Warning>         $cmd  ;# -sid $sid -reason $text  (non-fatal; call continues)
+# tacky listen calls <Verified>        $cmd  ;# -sid $sid -verified 0|1 -fingerprint $fp
+#
+# Verification, as in Conversations. When OMEMO is on for the chat, each side
+# puts its OMEMO device id in <propose>/<proceed> and sends its DTLS
+# fingerprint OMEMO-encrypted for the other side's device instead of in
+# plain text. The fingerprint then arrives authenticated by that device, so
+# a server can't substitute its own certificate.
+# <Verified> is emitted once the peer's fingerprint is taken and again when
+# the result changes. -verified is 1 when the device that sent it is one we
+# would encrypt messages to (omemo deviceAccepted). -fingerprint is that
+# device's OMEMO key as `omemo trustList` shows it, "" for a plain call.
+# A fingerprint that should be encrypted but isn't, doesn't decrypt, or
+# comes from an untrusted device fails the call with security-error.
+# Group-call sessions don't use this.
 #
 # Caller:
 #   start
@@ -111,6 +126,14 @@
 #     pc yet, or the caller's pc before session-accept); drained and unset
 #     once it is set (DrainPendingCandidates)
 #   remote_set : present once the peer's description is applied
+#   Verification fields, set only when they apply:
+#   announced   : our <propose>/<proceed> carried our OMEMO device
+#   peer_device : OMEMO device from the peer's <propose>/<proceed>
+#   fingerprint_encrypted : our description went out encrypted
+#   describing  : our description is being encrypted; local candidates
+#     wait in held_candidates until it is sent
+#   omemo_device, fingerprint, verified : the peer's device that sent its
+#     fingerprint, that device's key, and whether we accept it
 #
 # The pc handle is this instance plus the sid, so two accounts in one
 # process that end up on either side of the same call do not collide.
@@ -139,6 +162,11 @@ snit::type taco_calls {
     # drops ICE first, and its session-terminate lands inside this.
     typevariable DISCONNECT_GRACE_MS 2000
 
+    # Conversations' namespace. "dlts" is a typo, but it is what goes on the
+    # wire; don't correct it.
+    typevariable NS_VERIFY http://gultsch.de/xmpp/drafts/omemo/dlts-srtp-verification
+    typevariable NS_AXOLOTL eu.siacs.conversations.axolotl
+
     variable client
     variable Calls           ;# sid -> dict (see file header)
     variable SdpErrors       ;# sid -> reason, see TakeSdpError
@@ -150,6 +178,8 @@ snit::type taco_calls {
         set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
         $client bus subscribe $self <SessionStart> [mymethod OnFreshStream]
+        $client bus subscribe $self omemo:<TrustChanged> [mymethod OnTrustChanged]
+        $client bus subscribe $self omemo:<BlindTrust> [mymethod OnBlindTrust]
 
         $client caps addFeature urn:xmpp:jingle:1
         $client caps addFeature urn:xmpp:jingle:apps:rtp:1
@@ -181,7 +211,8 @@ snit::type taco_calls {
         set wantVideo [expr {$opts(-video) ? 1 : 0}]
         dict set Calls $sid [$self NewCallDict $bare 1 proposed $wantVideo]
         $client emit calls <Outgoing> -sid $sid -to $bare
-        $client write [$self BuildJmiMessage $bare propose $sid 1 $wantVideo]
+        $client write [$self BuildJmiMessage $bare propose $sid 1 $wantVideo \
+            [$self AnnounceDevice $sid]]
         return $sid
     }
 
@@ -227,7 +258,8 @@ snit::type taco_calls {
             # JMI: tell the caller we're picking up; flip to proceeded.
             # Media setup is deferred until session-initiate arrives.
             set peer [dict get $call peer]
-            $client write [$self BuildJmiMessage $peer proceed $opts(-sid) 0]
+            $client write [$self BuildJmiMessage $peer proceed $opts(-sid) 0 0 \
+                [$self AnnounceDevice $opts(-sid)]]
             dict set Calls $opts(-sid) state proceeded
             return
         }
@@ -282,10 +314,140 @@ snit::type taco_calls {
     method FailCall {sid reason jingleReason} {
         if {![dict exists $Calls $sid]} return
         set peer [dict get $Calls $sid peer]
+        jlog warn "call $sid with $peer failed: $reason"
         $client emit calls <Failed> -sid $sid -reason $reason
         $self TeardownMedia $sid
         $self SendTerminate $sid $peer $jingleReason
         $self Cleanup $sid
+    }
+
+    # =========================================================================
+    # Verification (see the file header)
+    # =========================================================================
+
+    # Our OMEMO device, if OMEMO is on for the chat with $peer and set up.
+    method OwnDevice {peer} {
+        if {[catch {
+            set dev [$client omemo device_id]
+            set on [$client omemo isEnabled -jid [jid bare $peer]]
+        }]} { return "" }
+        expr {$on && [string is integer -strict $dev] && $dev > 0 ? $dev : ""}
+    }
+
+    # Our device for <propose>/<proceed>, or "". Records that we sent it.
+    method AnnounceDevice {sid} {
+        set dev [$self OwnDevice [dict get $Calls $sid peer]]
+        if {$dev ne ""} { dict set Calls $sid announced 1 }
+        return $dev
+    }
+
+    # Record the device from the peer's <propose>/<proceed> $child. The
+    # caller also starts the session now so the offer doesn't wait on a
+    # bundle fetch. The callee doesn't: the caller's prekey message will
+    # create the session.
+    method NotePeerDevice {sid child} {
+        set dev [xsearch $child device -ns $NS_VERIFY -get @id]
+        if {![string is integer -strict $dev] || $dev <= 0} return
+        dict set Calls $sid peer_device $dev
+        set peer [jid bare [dict get $Calls $sid peer]]
+        if {[dict get $Calls $sid initiator] && [$self OwnDevice $peer] ne ""} {
+            catch {$client omemo readySession $peer $dev}
+        }
+    }
+
+    # Decrypt the fingerprints in the peer's session-initiate/accept and
+    # return the jingle with plain ones, or "" if the call was failed.
+    # $expect: the fingerprint must be encrypted (ours was).
+    method TakeFingerprints {sid stanza jingle from expect} {
+        if {[dict get $Calls $sid group] ne ""} { return $jingle }
+        set peer [jid bare $from]
+        set encrypted 0
+        set plain 0
+        set by ""
+        foreach slot [::taco_calls::verify::transports $jingle] {
+            set transport [::taco_calls::verify::get $jingle $slot]
+            set fp [::taco_calls::verify::plain $transport]
+            set efp [xsearch $transport fingerprint -ns $NS_VERIFY -get node]
+            if {$efp eq ""} { incr plain; continue }
+            if {$fp ne ""} {
+                return [$self FailUnverified $sid $stanza \
+                    "a fingerprint came both plain and encrypted"]
+            }
+            set enc [xsearch $efp encrypted -ns $NS_AXOLOTL -get node]
+            if {$enc eq ""} {
+                return [$self FailUnverified $sid $stanza \
+                    "an encrypted fingerprint without its encryption"]
+            }
+            set r [$client omemo decryptFrom $enc $peer]
+            if {[dict get $r status] ne "ok"} {
+                return [$self FailUnverified $sid $stanza [dict get $r reason]]
+            }
+            if {$by ne "" && [dict get $r device] != [dict get $by device]} {
+                return [$self FailUnverified $sid $stanza \
+                    "fingerprints from two devices"]
+            }
+            set by $r
+            lassign [xsearch $efp -get {@hash @setup}] hash setup
+            set body [string trim [dict get $r plaintext]]
+            if {[catch {::jinglesdp::CheckFingerprint $hash $body $setup}]} {
+                return [$self FailUnverified $sid $stanza \
+                    "the encrypted fingerprint is not a fingerprint"]
+            }
+            set jingle [::taco_calls::verify::put $jingle $slot \
+                [::taco_calls::verify::decrypted $transport $hash $setup $body]]
+            incr encrypted
+        }
+        if {$encrypted && $plain} {
+            return [$self FailUnverified $sid $stanza \
+                "only some fingerprints were encrypted"]
+        }
+        if {$expect && !$encrypted} {
+            return [$self FailUnverified $sid $stanza \
+                "the fingerprint was not encrypted"]
+        }
+        if {$by eq ""} {
+            dict set Calls $sid verified 0
+            dict set Calls $sid fingerprint ""
+        } else {
+            dict set Calls $sid omemo_device [dict get $by device]
+            dict set Calls $sid fingerprint [dict get $by fingerprint]
+            dict set Calls $sid verified [dict get $by accepted]
+        }
+        $self EmitVerified $sid
+        return $jingle
+    }
+
+    # Ack the IQ and end the session with security-error, as Conversations
+    # does. Returns "".
+    method FailUnverified {sid stanza reason} {
+        $self AckIq $stanza
+        $self FailCall $sid "call could not be verified: $reason" security-error
+        return ""
+    }
+
+    method EmitVerified {sid} {
+        $client emit calls <Verified> -sid $sid \
+            -verified [dict get $Calls $sid verified] \
+            -fingerprint [dict get $Calls $sid fingerprint]
+    }
+
+    # Trust or blind trust changed: recheck live calls. Any of the peer's
+    # keys matters, since verifying one ends blind trust for the others.
+    method OnTrustChanged {args} { $self Reverify [dict get $args -jid] }
+    method OnBlindTrust {args} { $self Reverify "" }
+
+    # Recheck calls with $peer, or all calls when $peer is "".
+    method Reverify {peer} {
+        dict for {sid call} $Calls {
+            if {![dict exists $call omemo_device]} continue
+            set bare [jid bare [dict get $call peer]]
+            if {$peer ne "" && $bare ne $peer} continue
+            set verified [$client omemo deviceAccepted $bare \
+                [dict get $call omemo_device]]
+            if {$verified == [dict get $call verified]} continue
+            dict set Calls $sid verified $verified
+            $self EmitVerified $sid
+        }
     }
 
     # Every call in flight, one dict each, unordered. The only way to
@@ -310,7 +472,9 @@ snit::type taco_calls {
                 peer_ringing [dict get $call peer_ringing] \
                 group        [dict get $call group] \
                 video_local  [dict get $call video_local] \
-                video_remote [dict get $call video_remote]]
+                video_remote [dict get $call video_remote] \
+                verified     [dict getdef $call verified 0] \
+                fingerprint  [dict getdef $call fingerprint ""]]
         }
         return $out
     }
@@ -553,17 +717,73 @@ snit::type taco_calls {
             }
             # Sent: a crossing initiate is now settled by sid.
             dict set Calls $sid jingle 1
-            $client iq request -type set -to [dict get $call peer] \
-                -payload $jingle \
-                -command [mymethod OnInitiateAck $sid]
+            $self SendDescription $sid $jingle OnInitiateAck
         } elseif {$sdpType eq "answer"} {
             dict set jingle attrs action session-accept
             dict set jingle attrs sid $sid
             dict set jingle attrs responder $me
-            $client iq request -type set -to [dict get $call peer] \
-                -payload $jingle \
-                -command [mymethod OnAcceptAck $sid]
+            $self SendDescription $sid $jingle OnAcceptAck
         }
+    }
+
+    # Send our session-initiate/accept. If both sides announced a device,
+    # encrypt the fingerprints first; local candidates are held meanwhile.
+    # If encryption fails the call fails; we never fall back to plain.
+    method SendDescription {sid jingle ack} {
+        set call [dict get $Calls $sid]
+        if {[dict get $call group] ne "" || ![dict exists $call announced]
+                || ![dict exists $call peer_device]} {
+            $self ShipDescription $sid $jingle $ack
+            return
+        }
+        dict set Calls $sid describing 1
+        $self EncryptFingerprints $sid $jingle $ack \
+            [::taco_calls::verify::transports $jingle]
+    }
+
+    method EncryptFingerprints {sid jingle ack slots} {
+        if {![dict exists $Calls $sid]} return
+        if {[llength $slots] == 0} {
+            dict set Calls $sid fingerprint_encrypted 1
+            $self ShipDescription $sid $jingle $ack
+            return
+        }
+        set slot [lindex $slots 0]
+        set fp [::taco_calls::verify::plain [::taco_calls::verify::get $jingle $slot]]
+        if {$fp eq ""} {
+            $self EncryptFingerprints $sid $jingle $ack [lrange $slots 1 end]
+            return
+        }
+        set call [dict get $Calls $sid]
+        $client omemo encryptFor [jid bare [dict get $call peer]] \
+            [dict get $call peer_device] [dict get $fp body] \
+            [mymethod AfterEncryptFingerprint $sid $jingle $ack $slots]
+    }
+
+    method AfterEncryptFingerprint {sid jingle ack slots status enc} {
+        if {![dict exists $Calls $sid]} return
+        if {$status ne "ok"} {
+            dict unset Calls $sid describing
+            $self FailCall $sid "call could not be verified: $enc" security-error
+            return
+        }
+        set slot [lindex $slots 0]
+        set jingle [::taco_calls::verify::put $jingle $slot \
+            [::taco_calls::verify::encrypted \
+                [::taco_calls::verify::get $jingle $slot] $enc]]
+        $self EncryptFingerprints $sid $jingle $ack [lrange $slots 1 end]
+    }
+
+    method ShipDescription {sid jingle ack} {
+        $client iq request -type set -to [dict get $Calls $sid peer] \
+            -payload $jingle -command [mymethod $ack $sid]
+        if {![dict exists $Calls $sid describing]} return
+        dict unset Calls $sid describing
+        if {![dict exists $Calls $sid held_candidates]} return
+        foreach held [dict get $Calls $sid held_candidates] {
+            $self OnLocalCandidate $sid {*}$held
+        }
+        dict unset Calls $sid held_candidates
     }
 
     # Trickle a single ICE candidate to the peer. The API carries the SDP
@@ -573,6 +793,12 @@ snit::type taco_calls {
     # group's audio MID.
     method OnLocalCandidate {sid cand mid} {
         set call [dict get $Calls $sid]
+        # Hold candidates until the description is sent.
+        if {[dict exists $call describing]} {
+            dict set Calls $sid held_candidates [linsert \
+                [dict getdef $call held_candidates {}] end [list $cand $mid]]
+            return
+        }
         set me [$client cget -jid]
         set isInitiator [dict get $call initiator]
 
@@ -896,6 +1122,7 @@ snit::type taco_calls {
         set hasVideo [$self ProposeHasVideo $child]
 
         dict set Calls $sid [$self NewCallDict $from 0 ringing 0]
+        $self NotePeerDevice $sid $child
         dict set Calls $sid video_remote $hasVideo
         # We answer video symmetrically: if they offered it, we intend to
         # send it too (the GUI can still mute the camera).
@@ -940,6 +1167,8 @@ snit::type taco_calls {
             if {![$self PeerMatches $sid $from]} return
             dict set Calls $sid peer $from
             dict set Calls $sid state proceeded
+            $self NotePeerDevice $sid \
+                [xsearch $stanza proceed -ns urn:xmpp:jingle-message:0 -get node]
             $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
         }
     }
@@ -998,18 +1227,24 @@ snit::type taco_calls {
         }
     }
 
-    method BuildJmiMessage {to action sid wantDescription {wantVideo 0}} {
+    # $device: our OMEMO device id to announce, if any.
+    method BuildJmiMessage {to action sid wantDescription {wantVideo 0} {device ""}} {
         set ns urn:xmpp:jingle-message:0
         return [j message -to $to -type chat {
-            if {$wantDescription} {
+            if {$wantDescription || $device ne ""} {
                 j $action -ns $ns -id $sid {
-                    j description \
-                        -ns urn:xmpp:jingle:apps:rtp:1 \
-                        -media audio
+                    if {$wantDescription} {
+                        j description \
+                            -ns urn:xmpp:jingle:apps:rtp:1 \
+                            -media audio
+                    }
                     if {$wantVideo} {
                         j description \
                             -ns urn:xmpp:jingle:apps:rtp:1 \
                             -media video
+                    }
+                    if {$device ne ""} {
+                        j device -ns $NS_VERIFY -id $device
                     }
                 }
             } else {
@@ -1160,6 +1395,10 @@ snit::type taco_calls {
             $self IqError $stanza out-of-order
             return
         }
+        # A plain offer is accepted even if the peer announced a device,
+        # like Conversations.
+        set jingle [$self TakeFingerprints $sid $stanza $jingle $from 0]
+        if {$jingle eq ""} return
         # Strip payload-types the backend cannot decode before to_sdp, so
         # the answer only offers what we can actually play back.
         set jingle [$self FilterCodecs $jingle]
@@ -1235,6 +1474,13 @@ snit::type taco_calls {
         if {$pc eq -1} {
             $self IqError $stanza out-of-order
             return
+        }
+        # If our offer was encrypted, the answer must be too. A repeated
+        # answer is skipped: its key was already used.
+        if {![dict exists $Calls $sid remote_set]} {
+            set jingle [$self TakeFingerprints $sid $stanza $jingle $from \
+                [dict exists $Calls $sid fingerprint_encrypted]]
+            if {$jingle eq ""} return
         }
         # The peer wrote this answer, as the responder. One that doesn't
         # convert ends a call still waiting for it; a malformed repeat of
@@ -1486,4 +1732,86 @@ snit::type taco_calls {
         binary scan [omemo::random 16] H* hex
         return "tk-$hex"
     }
+}
+
+# Helpers for reading and replacing the DTLS fingerprint in a <jingle>'s
+# ice-udp transports. A slot is {content index, transport index}.
+namespace eval ::taco_calls::verify {
+    variable NS_VERIFY  http://gultsch.de/xmpp/drafts/omemo/dlts-srtp-verification
+    variable NS_DTLS    urn:xmpp:jingle:apps:dtls:0
+    variable NS_ICE_UDP urn:xmpp:jingle:transports:ice-udp:1
+}
+
+proc ::taco_calls::verify::transports {jingle} {
+    variable NS_ICE_UDP
+    set slots {}
+    set ci 0
+    foreach content [dict get $jingle children] {
+        if {[dict get $content tag] eq "content"} {
+            set ti 0
+            foreach child [dict get $content children] {
+                if {[dict get $child tag] eq "transport"
+                        && [dict get $child ns] eq $NS_ICE_UDP} {
+                    lappend slots [list $ci $ti]
+                }
+                incr ti
+            }
+        }
+        incr ci
+    }
+    return $slots
+}
+
+proc ::taco_calls::verify::get {jingle slot} {
+    lassign $slot ci ti
+    lindex [dict get [lindex [dict get $jingle children] $ci] children] $ti
+}
+
+proc ::taco_calls::verify::put {jingle slot transport} {
+    lassign $slot ci ti
+    set contents [dict get $jingle children]
+    set content [lindex $contents $ci]
+    dict set content children \
+        [lreplace [dict get $content children] $ti $ti $transport]
+    dict set jingle children [lreplace $contents $ci $ci $content]
+}
+
+# The transport's plain <fingerprint/> node, or "".
+proc ::taco_calls::verify::plain {transport} {
+    variable NS_DTLS
+    xsearch $transport fingerprint -ns $NS_DTLS -get node
+}
+
+# $transport with its fingerprint (namespace $from) replaced by $node.
+proc ::taco_calls::verify::Swap {transport from node} {
+    set children {}
+    foreach child [dict get $transport children] {
+        if {[dict get $child tag] eq "fingerprint" && [dict get $child ns] eq $from} {
+            set child $node
+        }
+        lappend children $child
+    }
+    dict set transport children $children
+}
+
+# Replace the plain fingerprint with one wrapping $enc.
+proc ::taco_calls::verify::encrypted {transport enc} {
+    variable NS_DTLS
+    variable NS_VERIFY
+    set fp [plain $transport]
+    set attrs [list -hash [xsearch $fp -get @hash]]
+    set setup [xsearch $fp -get @setup]
+    if {$setup ne ""} { lappend attrs -setup $setup }
+    Swap $transport $NS_DTLS [j fingerprint -ns $NS_VERIFY {*}$attrs {
+        j #as-is $enc
+    }]
+}
+
+# Replace the encrypted fingerprint with the decrypted plain one.
+proc ::taco_calls::verify::decrypted {transport hash setup body} {
+    variable NS_DTLS
+    variable NS_VERIFY
+    set attrs [list -hash $hash]
+    if {$setup ne ""} { lappend attrs -setup $setup }
+    Swap $transport $NS_VERIFY [j fingerprint -ns $NS_DTLS {*}$attrs -body $body]
 }

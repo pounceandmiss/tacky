@@ -57,3 +57,79 @@ test callwindow-hangup-closes-promptly {hanging up closes the window within a be
     catch {destroy .callwindow}
     mock_backend_down
 } -result 0
+
+# -- Verification: the security row follows calls <Verified> --
+
+set cw_key "05ab12cd 33445566 778899aa bbccddee ff001122 33445566 778899aa bbccddee"
+
+proc cw_verify_setup {} {
+    mock_backend_up
+    callwindow show -acc $::cw_acc -sid s2 -peer bob@test.example.com/phone
+    update
+}
+
+proc cw_verify_cleanup {} {
+    catch {destroy .callwindow}
+    catch {destroy .omemokeys_[path_safe $::cw_acc]}
+    mock_backend_down
+}
+
+# {shown state-text has-lock key-text} of the security row.
+proc cw_security {} {
+    set w .callwindow.body.security
+    list [expr {[winfo manager $w] ne ""}] \
+        [$w.state cget -text] [expr {[$w.state cget -image] ne ""}] \
+        [string map {\n |} [$w.key cget -text]]
+}
+
+test callwindow-verified-shows-lock-and-key \
+    {a verified call shows the lock and the key that vouched for it} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid s2 -verified 1 -fingerprint $::cw_key
+    update
+    cw_security
+} -result {1 Verified 1 {05ab12cd 33445566 778899aa bbccddee|ff001122 33445566 778899aa bbccddee}}
+
+test callwindow-unverified-key-shown-without-lock \
+    {a key not yet trusted is shown, without the lock} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid s2 -verified 0 -fingerprint $::cw_key
+    update
+    lrange [cw_security] 0 2
+} -result {1 {Key not verified} 0}
+
+test callwindow-no-key-no-row {a call no OMEMO key took part in shows no security row} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid s2 -verified 0 -fingerprint ""
+    update
+    lindex [cw_security] 0
+} -result 0
+
+test callwindow-verified-later-adds-lock \
+    {trusting the key mid-call turns the row verified} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid s2 -verified 0 -fingerprint $::cw_key
+    update
+    $::_client emit calls <Verified> -sid s2 -verified 1 -fingerprint $::cw_key
+    update
+    lrange [cw_security] 0 2
+} -result {1 Verified 1}
+
+test callwindow-other-call-ignored {another call's <Verified> leaves the row alone} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid other -verified 1 -fingerprint $::cw_key
+    update
+    lindex [cw_security] 0
+} -result 0
+
+test callwindow-key-opens-keys-window \
+    {clicking the key opens the contact's keys with that one highlighted} \
+    -setup cw_verify_setup -cleanup cw_verify_cleanup -body {
+    $::_client emit calls <Verified> -sid s2 -verified 0 -fingerprint $::cw_key
+    update
+    .callwindow ShowKey
+    update
+    set w .omemokeys_[path_safe $::cw_acc]
+    list [winfo exists $w] [$w cget -jid] \
+        [expr {[$w cget -highlight] eq $::cw_key}] [$w cget -highlightnote]
+} -result {1 bob@test.example.com 1 {this call's key}}
