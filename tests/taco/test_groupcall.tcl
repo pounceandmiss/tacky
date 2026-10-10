@@ -16,6 +16,7 @@ set groupcall_env [tacky_env -mock conn -capture-emit 1 -taco-client {
     ::tacky::media open mock
     set ::taco_groupcall::PREPARE_TIMEOUT_MS 5000
     set ::taco_groupcall::ECHO_TIMEOUT_MS 10000
+    set ::taco_groupcall::ASK_TIMEOUT_MS 5000
 }]
 
 set ROOM room@muc.example.com
@@ -1323,6 +1324,19 @@ test groupcall-live-room-unsure {an answer that says neither is not kept: the ro
         set first [gc_live $ROOM?join]
         list $first [llength [gc_disco_asks call@muc.example.com]]
     } -result {? 2}
+
+test groupcall-live-room-silent {a room that never answers is asked again once the wait runs out, and its answer patches the row} \
+    {*}$groupcall_env -body {
+        set ::taco_groupcall::ASK_TIMEOUT_MS 30
+        gc_room [gc_presence bob -jid $BOB]
+        c.conn feed [gc_call_invite $ROOM/bob groupchat]
+        set before [list [gc_live $ROOM?join] [llength [gc_disco_asks call@muc.example.com]]]
+        set ::taco_groupcall::ASK_TIMEOUT_MS 5000
+        after 100 {set ::gc_wait 1}; vwait ::gc_wait
+        set asks [llength [gc_disco_asks call@muc.example.com]]
+        gc_answer_room call@muc.example.com item-not-found
+        list $before $asks [gc_live $ROOM?join]
+    } -result {{? 1} 2 0}
 
 test groupcall-live-asked-once {reading the row again while the room has not answered asks once} \
     {*}$groupcall_env -body {

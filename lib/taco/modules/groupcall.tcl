@@ -112,6 +112,12 @@ snit::type taco_groupcall {
     # holds the nick, the room shows its presence instead; past this we give up.
     typevariable ECHO_TIMEOUT_MS 10000
 
+    # How long a room's disco#info is waited for (AskRoom), and how often
+    # in a row one that went unanswered is asked again. ejabberd can leave
+    # one unanswered while the last occupant's leave tears the room down.
+    typevariable ASK_TIMEOUT_MS 5000
+    typevariable ASK_RETRIES 2
+
     # A hosted call's room: only those let in may enter (so a room name is
     # no key), everyone's real JID shows (sessions go to them), and it is
     # gone once empty. Fields a service lacks are simply not set.
@@ -930,24 +936,26 @@ snit::type taco_groupcall {
 
     # Ask $room, then call $cmd with the answer: 1, 0, or "" for an answer
     # that says neither (anything but a result, item-not-found or gone).
-    # Questions in flight are shared.
-    method AskRoom {room {cmd ""}} {
+    # Questions in flight are shared. $tries: how often this question went
+    # unanswered already.
+    method AskRoom {room {cmd ""} {tries 0}} {
         set inFlight [info exists Asking($room)]
         lappend Asking($room)
         if {$cmd ne ""} { lappend Asking($room) $cmd }
         if {$inFlight} return
         if {![$client iq isLive]} {
-            after idle [mymethod OnRoomInfo $room "" ""]
+            after idle [mymethod OnRoomInfo $room "" $tries ""]
             return
         }
         set gen [expr {[info exists Gen($room)] ? $Gen($room) : 0}]
-        $client iq request -type get -to $room \
+        $client iq request -type get -to $room -timeout $ASK_TIMEOUT_MS \
             -payload [j query -ns http://jabber.org/protocol/disco#info] \
-            -command [mymethod OnRoomInfo $room $gen]
+            -command [mymethod OnRoomInfo $room $gen $tries]
     }
 
-    method OnRoomInfo {room gen stanza} {
+    method OnRoomInfo {room gen tries stanza} {
         set live ""
+        set cond ""
         if {$stanza ne "" && [xsearch $stanza -get @type] eq "result"} {
             set live 1
         } elseif {$stanza ne ""} {
@@ -959,6 +967,15 @@ snit::type taco_groupcall {
         }
         set waiters $Asking($room)
         unset Asking($room)
+        # Unanswered within ASK_TIMEOUT_MS: ask again rather than leave
+        # the rows and the waiters on a lost question.
+        if {$cond ne "" && [dict get $cond tag] eq "remote-server-timeout"
+                && $tries < $ASK_RETRIES} {
+            incr tries
+            $self AskRoom $room "" $tries
+            foreach cmd $waiters { $self AskRoom $room $cmd $tries }
+            return
+        }
         set now [expr {[info exists Gen($room)] ? $Gen($room) : 0}]
         if {$live ne "" && $gen ne "" && $gen != $now} {
             $self AskRoom $room
