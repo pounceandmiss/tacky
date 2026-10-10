@@ -1656,8 +1656,28 @@ snit::type taco_message {
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
             j store -ns urn:xmpp:hints
         }]
-        set targetTs [$messagestore applyRetract $chatJid $opts(-timestamp)]
+        set targetTs [$self Retract $chatJid $opts(-timestamp)]
         if {$targetTs ne ""} { $self EmitRetracted $chatJid $targetTs }
+    }
+
+    # Tombstone the row at $targetTs and drop the downloaded files of its
+    # attachments with their at-rest keys (file uncache), so a retracted
+    # picture is not left on disk, readable with its key. The row's
+    # timestamp, or "" when nothing was stored there.
+    method Retract {chatJid targetTs} {
+        set atts [$client db onecolumn {
+            SELECT attachments FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$targetTs AND kind='message'
+        }]
+        set targetTs [$messagestore applyRetract $chatJid $targetTs]
+        if {$targetTs eq ""} { return "" }
+        foreach att $atts {
+            if {[catch {dict get $att url} url] || $url eq ""} continue
+            if {[catch {$client file uncache -url $url} err]} {
+                jlog warn "message: a retracted message's file stays: $err"
+            }
+        }
+        return $targetTs
     }
 
     # moderate -chat $chatJid -timestamp $targetTs ?-reason $text? ?-onerror $cb?
@@ -2908,7 +2928,7 @@ snit::type taco_message {
                 [dict get $verdict target_id]]
             if {$targetTs eq ""} return
         }
-        set targetTs [$messagestore applyRetract $chatJid $targetTs]
+        set targetTs [$self Retract $chatJid $targetTs]
         if {$targetTs eq ""} return
         $self EmitRetracted $chatJid $targetTs
     }
