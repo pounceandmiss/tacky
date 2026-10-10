@@ -1004,7 +1004,7 @@ snit::type taco_calls {
             attachAudio {
                 # Advisory: one side has no device, the call runs on and
                 # picking a device opens it. Fatal falls through below.
-                if {![dict get $ev fatal]} {
+                if {![dict getdef $ev fatal 0]} {
                     $client emit calls <Warning> -sid $sid -reason \
                         "[$self AudioSide $ev] device could not be opened: $reason"
                     return
@@ -1086,6 +1086,15 @@ snit::type taco_calls {
         # Carbon of our own outbound propose: drop.
         set myBare [jid bare [$client cget -jid]]
         if {[jid bare $from] eq $myBare} return
+        # An occupant of a room we are in, joining or have bookmarked is
+        # not a caller: anyone in a public room could ring us and learn
+        # from our <ringing/> that we are online. Dropped unanswered.
+        if {[jid resource $from] ne ""
+                && ([$client muc isTracked -jid $from]
+                    || [$client muc isKnownRoom -jid $from])} {
+            jlog debug "call propose from $from dropped: a room occupant"
+            return
+        }
         # Duplicate or sid collision: ignore, unless it is our own proposed
         # sid from the account we call (equal-sid tie-break below).
         if {[dict exists $Calls $sid]} {

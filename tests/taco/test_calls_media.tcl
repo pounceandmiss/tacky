@@ -374,6 +374,16 @@ proc media_side_calls {which from} {
     return $out
 }
 
+# A media host's error event need not say fatal; an attachAudio one that
+# does not is advisory.
+test media-attach-error-without-fatal-warns {an attachAudio error with no fatal key warns and the call runs on} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        c.calls OnMediaError $sid {op attachAudio kind playback reason "no device"}
+        string map [list $sid SID] [list \
+            [lindex [calls_events] end] [dict exists [calls_state] $sid]]
+    } -result {{<Warning> -sid SID -reason {output device could not be opened: no device}} 1}
+
 test media-output-unopenable-warns {no speaker at all warns and the call runs on} \
     {*}$media_env -body {
         mockrtc::fail ::rtcma::player::new "no device" "*"

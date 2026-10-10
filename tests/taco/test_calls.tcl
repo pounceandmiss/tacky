@@ -130,6 +130,21 @@ test calls-propose-alerts {an inbound propose replies <ringing> and emits <Incom
             [calls_events]
     } -result {{ringing tk-in1} ringing {{<Incoming> -sid tk-in1 -from peer@example.com -video 0}}}
 
+test calls-propose-from-room-occupant-ignored {a propose from an occupant of a room we know never rings} \
+    {*}$calls_env -body {
+        c db eval {
+            INSERT INTO bookmark(jid, name, autojoin, nick, password)
+            VALUES ('room@muc.example.com', 'Room', 0, 'me', '')
+        }
+        c muc join -jid other@muc.example.com -nick me
+        c.conn clear
+        c.conn feed [calls_jmi_in propose tk-r1 room@muc.example.com/eve]
+        c.conn feed [calls_jmi_in propose tk-r2 other@muc.example.com/eve]
+        set out [list [calls_state] [c.conn get_written] [calls_events]]
+        c.conn feed [calls_jmi_in propose tk-r3 $::PEER]
+        lappend out [dict exists [calls_state] tk-r3]
+    } -result {{} {} {} 1}
+
 test calls-propose-carbon-ignored {our own propose carboned back is not a new call} \
     {*}$calls_env -body {
         c.conn clear
