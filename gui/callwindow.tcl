@@ -10,6 +10,10 @@
 # self-destructs on <Ended>, and on <Failed> stays open with the hangup
 # button swapped for a green call-start "call again" button.
 #
+# <Verified> shows a row under the status: a lock and "Verified" when the
+# call is verified, plus the peer's OMEMO key. Clicking the key opens the
+# contact's keys with it highlighted. Plain calls show no row.
+#
 # Also <VideoTrack>/<VideoPreview>/<VideoEnded>: ::rtcmv::view::* connects
 # to the frame stream named in the event and updates a photo as frames
 # arrive. A host-rendered track has no -name and is skipped.
@@ -32,6 +36,7 @@ snit::widgetadaptor callwindow {
     variable statusVar ""
     variable warningVar ""
     variable closeTimer ""
+    variable keyFp ""
 
     variable remoteView  ""
     variable remotePhoto ""
@@ -71,6 +76,14 @@ snit::widgetadaptor callwindow {
         ttk::label $win.body.warn \
             -textvariable [myvar warningVar] \
             -foreground red -anchor center
+        # Packed by OnVerified, between the status and the warning.
+        ttk::frame $win.body.security
+        ttk::label $win.body.security.state -compound left -anchor center
+        ttk::label $win.body.security.key -justify center -anchor center \
+            -font TkFixedFont -foreground royalblue3 -cursor hand2
+        pack $win.body.security.state -fill x
+        pack $win.body.security.key -fill x
+        bind $win.body.security.key <Button-1> [mymethod ShowKey]
 
         pack $win.body.avatar
         pack $win.body.peer   -fill x
@@ -112,6 +125,8 @@ snit::widgetadaptor callwindow {
         $self StopPreview
 
         set warningVar ""
+        set keyFp ""
+        pack forget $win.body.security
         set statusVar [expr {
             $options(-direction) eq "outgoing" ? "Calling..." : "Connecting..."
         }]
@@ -134,6 +149,7 @@ snit::widgetadaptor callwindow {
             <Ended>         OnEnded
             <Failed>        OnFailed
             <Warning>       OnWarning
+            <Verified>      OnVerified
             <VideoTrack>    OnVideoTrack
             <VideoPreview>  OnVideoPreview
             <VideoEnded>    OnVideoEnded
@@ -194,6 +210,31 @@ snit::widgetadaptor callwindow {
 
     method OnWarning {ev} {
         set warningVar [dict get $ev -reason]
+    }
+
+    method OnVerified {ev} {
+        set keyFp [dict get $ev -fingerprint]
+        if {$keyFp eq ""} {
+            pack forget $win.body.security
+            return
+        }
+        if {[dict get $ev -verified]} {
+            $win.body.security.state configure -text "Verified" \
+                -image mate/16x16/status/stock_lock.png -foreground ""
+        } else {
+            $win.body.security.state configure -text "Key not verified" \
+                -image "" -foreground gray40
+        }
+        $win.body.security.key configure \
+            -text [omemokeyspanel FormatFingerprint $keyFp]
+        pack $win.body.security -fill x -pady {4 0} -before $win.body.warn
+    }
+
+    # Open the contact's keys with this call's key highlighted.
+    method ShowKey {} {
+        if {$keyFp eq ""} return
+        omemokeyswindow open $options(-acc) [jid bare $options(-peer)] $keyFp \
+            "this call's key"
     }
 
     # Video: ::rtcmv::view::* over the frame stream named in the event.

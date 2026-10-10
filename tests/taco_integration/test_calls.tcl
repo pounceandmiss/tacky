@@ -1,3 +1,6 @@
+package require tcltest
+namespace import ::tcltest::*
+package require tacky::testhelpers::integration
 package require tacky::testwait
 
 namespace eval ::test::calls_int {
@@ -17,6 +20,8 @@ namespace eval ::test::calls_int {
     variable JulietStates   {}
     variable RomeoWarnings    {}
     variable JulietWarnings   {}
+    variable RomeoVerified    {}
+    variable JulietVerified   {}
 
     variable _rtcmaHandleSeq 0
     variable _rtcmaMuted     0
@@ -30,6 +35,8 @@ namespace eval ::test::calls_int {
         variable JulietStates   {}
         variable RomeoWarnings    {}
         variable JulietWarnings   {}
+        variable RomeoVerified    {}
+        variable JulietVerified   {}
     }
 
     # Stub the audio-device commands out with unique integer handles so
@@ -37,6 +44,8 @@ namespace eval ::test::calls_int {
     proc muteRtcma {} {
         variable _rtcmaMuted
         if {$_rtcmaMuted} return
+        # Loaded here, not left to whichever test file ran before this one.
+        package require rtcma
         foreach cmd {::rtcma::player::new ::rtcma::capturer::new} {
             if {[info commands $cmd] ne ""} {
                 rename $cmd ${cmd}__real
@@ -158,6 +167,58 @@ namespace eval ::test::calls_int {
             ::test::calls_int::onRomeoWarning
         tacky listen -tag calls_int calls <Warning> -acc $JULIET \
             ::test::calls_int::onJulietWarning
+        foreach {acc var} [list $ROMEO RomeoVerified $JULIET JulietVerified] {
+            tacky listen -tag calls_int calls <Verified> -acc $acc \
+                [list apply {{var ev} {
+                    lappend ::test::calls_int::$var \
+                        [list [dict get $ev -verified] [dict get $ev -fingerprint]]
+                }} $var]
+        }
+    }
+
+    # A call from Romeo that Juliet accepts, up until both are active, then
+    # (after $whileActive, at the caller's level) hung up. Returns the sid.
+    proc activeCall {{whileActive ""}} {
+        variable ROMEO
+        variable JULIET
+        set sid [tacky calls start -acc $ROMEO -to $JULIET]
+        waitUntil {[set ::test::calls_int::IncomingSid] eq $sid}
+        tacky calls accept -acc $JULIET -sid $sid
+        waitUntil {
+            "active" in [set ::test::calls_int::RomeoStates] &&
+            "active" in [set ::test::calls_int::JulietStates]
+        } 30000
+        uplevel 1 $whileActive
+        tacky calls hangup -acc $ROMEO -sid $sid
+        waitUntil {
+            "ended" in [set ::test::calls_int::RomeoStates] &&
+            "ended" in [set ::test::calls_int::JulietStates]
+        }
+        return $sid
+    }
+
+    # Each side's last <Verified>, the key compared with the other's own.
+    proc verdicts {} {
+        variable ROMEO
+        variable JULIET
+        variable RomeoVerified
+        variable JulietVerified
+        set romeoKey [tacky omemo own_fingerprint -acc $ROMEO]
+        set julietKey [tacky omemo own_fingerprint -acc $JULIET]
+        lassign [lindex $RomeoVerified end] rv rfp
+        lassign [lindex $JulietVerified end] jv jfp
+        list romeo $rv [expr {$rfp eq "" ? "none" : $rfp eq $julietKey}] \
+            juliet $jv [expr {$jfp eq "" ? "none" : $jfp eq $romeoKey}]
+    }
+
+    # Each side trusts the device the other's call came from.
+    proc trustEachOther {} {
+        variable ROMEO
+        variable JULIET
+        foreach {acc peer} [list $ROMEO $JULIET $JULIET $ROMEO] {
+            set dev [tacky omemo device_id -acc $peer]
+            tacky omemo trust -acc $acc -jid $peer -device $dev -state trusted
+        }
     }
 
     proc cleanup {} {
@@ -243,4 +304,42 @@ namespace eval ::test::calls_int {
                 [llength [set ::test::calls_int::RomeoWarnings]] \
                 [llength [set ::test::calls_int::JulietWarnings]]
         } -result {1 1 1 1 0 0}
+
+    # --- Verification through OMEMO, with real DTLS ---
+    #
+    # Each side's fingerprint is OMEMO-encrypted for the other's device.
+    # The call only reaches active if the decrypted fingerprints match the
+    # certificates DTLS sees.
+
+    test calls-int-verified-by-each-others-key \
+        {each side's fingerprint is authenticated by the other's OMEMO key, which blind trust accepts as it would for a message} \
+        {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
+            ::test::calls_int::activeCall
+            ::test::calls_int::verdicts
+        } -result {romeo 1 1 juliet 1 1}
+
+    test calls-int-verified-once-trusted \
+        {without blind trust, trusting each other's key mid-call turns the call verified, and the next one is from the start} \
+        {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
+            foreach acc [list $::test::calls_int::ROMEO $::test::calls_int::JULIET] {
+                tacky omemo setBlindTrust -acc $acc -value 0
+            }
+            ::test::calls_int::activeCall {
+                set before [::test::calls_int::verdicts]
+                ::test::calls_int::trustEachOther
+                set during [::test::calls_int::verdicts]
+            }
+            ::test::calls_int::reset
+            ::test::calls_int::activeCall
+            list $before $during [::test::calls_int::verdicts]
+        } -result {{romeo 0 1 juliet 0 1} {romeo 1 1 juliet 1 1} {romeo 1 1 juliet 1 1}}
+
+    test calls-int-plain-with-omemo-off \
+        {with OMEMO off for the chat on one side, the call is plain both ways and still connects} \
+        {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
+            tacky omemo setEnabled -acc $::test::calls_int::JULIET \
+                -jid $::test::calls_int::ROMEO -value 0
+            ::test::calls_int::activeCall
+            ::test::calls_int::verdicts
+        } -result {romeo 0 none juliet 0 none}
 }

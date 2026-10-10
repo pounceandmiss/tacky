@@ -433,13 +433,13 @@ test calls-list-outgoing {a call we placed reports outgoing, proposed and a bare
         set sid [c.calls start -to peer@example.com/phone]
         set rows [c.calls list]
         string map [list $sid SID] [list [llength $rows] [lindex $rows 0]]
-    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0 group {} video_local 0 video_remote 0}}
+    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {}}}
 
 test calls-list-incoming {a call rung at us reports incoming, in tacky's own word for it} \
     {*}$calls_env -body {
         c.conn feed [calls_jmi_in propose tk-in20 $::PEER]
         lindex [c.calls list] 0
-    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0 group {} video_local 0 video_remote 0}
+    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {}}
 
 test calls-list-peer-ringing {a peer device alerting is recorded, and moves no state} \
     {*}$calls_env -body {
