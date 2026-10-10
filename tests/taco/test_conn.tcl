@@ -1981,3 +1981,182 @@ test conn-sm-asks-again-after-a-partial-answer {a stanza written while <r/> was 
         conn_wait 40
         llength [lsearch -all [lmap st [c.base get_written] {dict get $st tag}] r]
     } -result 2
+
+# -- XEP-0478 stream limits ---------------------------------------------------
+#
+# The server's <limits/> in the stream features says how large a stanza it
+# takes; one past it would have the stream closed with policy-violation and
+# then, resumed, replayed into the same refusal. So conn refuses it at write.
+
+proc make_limits {bytes} {
+    j limits -ns urn:xmpp:stream-limits:0 {
+        j max-bytes -body $bytes
+    }
+}
+
+# Post-auth features with SM and, unless $bytes is "", a limit.
+proc make_limited_bind_features {bytes} {
+    j features {
+        j bind -ns urn:ietf:params:xml:ns:xmpp-bind
+        j sm -ns urn:xmpp:sm:3
+        if {$bytes ne ""} { j #as-is [make_limits $bytes] }
+    }
+}
+
+proc drive_to_ready_limited {bytes smid} {
+    c.base inject [make_features]
+    c.base inject [make_success]
+    c.base inject [make_limited_bind_features $bytes]
+    c.base inject [make_bind_result "user@test.example.com/r"]
+    c.base inject [make_sm_enabled $smid]
+}
+
+# A message whose serialization is exactly $bytes UTF-8 bytes, its body
+# made of $ch (a two-byte character packs twice the bytes per character).
+proc sized_message {bytes {ch x}} {
+    # One character's worth less than a one-character body (an empty one
+    # serializes as <body/>).
+    set shell [expr {[string length [encoding convertto utf-8 \
+        [jwrite [j message -to friend@example.com {j body -body x}]]]] - 1}]
+    set per [string length [encoding convertto utf-8 $ch]]
+    set n [expr {($bytes - $shell) / $per}]
+    set m [j message -to friend@example.com {j body -body [string repeat $ch $n]}]
+    set got [string length [encoding convertto utf-8 [jwrite $m]]]
+    if {$got != $bytes} { error "sized_message: $got bytes, wanted $bytes" }
+    return $m
+}
+
+proc limit_write {stanza} {
+    if {[catch {c write $stanza} err opts]} {
+        return [list [lrange [dict get $opts -errorcode] 0 0] $err]
+    }
+    return ok
+}
+
+test conn-limit-refuses-over-advertised {a stanza past the advertised max-bytes is refused, neither written nor queued} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready_limited 4096 sm-lim
+        c.base clear
+        set limR [limit_write [sized_message 4097]]
+        list $limR [llength [c.base get_written]] \
+            [dict get [c.sm getInfo] queueSize] [dict get [c.sm getInfo] out] \
+            [c state] $_tdisconnect
+    } -result {{TACO_STANZA_TOO_LARGE {stanza of 4097 bytes is over the server's limit of 4096}} 0 0 0 connected {}}
+
+test conn-limit-sends-at-the-limit {a stanza exactly at max-bytes goes out through SM} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready_limited 4096 sm-lim
+        c.base clear
+        set limR [limit_write [sized_message 4096]]
+        list $limR [lmap s [c.base get_written] {dict get $s tag}] \
+            [dict get [c.sm getInfo] queueSize]
+    } -result {ok message 1}
+
+test conn-limit-counts-utf8-bytes {the limit counts UTF-8 bytes, not characters} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready_limited 4096 sm-lim
+        c.base clear
+        # Under 4096 characters, over 4096 bytes.
+        set limM [sized_message 4098 é]
+        list [expr {[string length [jwrite $limM]] < 4096}] \
+            [lindex [limit_write $limM] 0] [llength [c.base get_written]]
+    } -result {1 TACO_STANZA_TOO_LARGE 0}
+
+test conn-limit-post-auth-replaces-pre-auth {the post-auth features' limit replaces the pre-auth one} \
+    {*}$common \
+    -body {
+        c connect
+        c.base inject [j features {
+            j mechanisms -ns urn:ietf:params:xml:ns:xmpp-sasl {
+                j mechanism -body PLAIN
+            }
+            j #as-is [make_limits 1000]
+        }]
+        set limPre [c maxBytes]
+        c.base inject [make_success]
+        c.base inject [make_limited_bind_features 8192]
+        c.base inject [make_bind_result "user@test.example.com/r"]
+        c.base inject [make_sm_enabled sm-lim]
+        list $limPre [c maxBytes] [limit_write [sized_message 5000]]
+    } -result {1000 8192 ok}
+
+test conn-limit-reread-on-a-new-stream {each stream's features set the limit afresh; none advertised is our own 1 MiB} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready_limited 4096 sm-lim
+        set limFirst [c maxBytes]
+        c.base inject_error "connection lost"
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_limited_bind_features ""]
+        c.base inject [make_sm_resumed sm-lim 0]
+        c.base clear
+        list $limFirst [c maxBytes] [limit_write [sized_message 5000]] \
+            [lindex [limit_write [sized_message 1048577]] 0]
+    } -result {4096 1048576 ok TACO_STANZA_TOO_LARGE}
+
+test conn-limit-invalid-is-ignored {a max-bytes that is no positive count, or past 1 MiB, leaves our own bound} \
+    {*}$common \
+    -body {
+        set limGot {}
+        foreach limV {0 -5 abc 2000000} {
+            c close
+            c connect
+            drive_to_ready_limited $limV sm-lim$limV
+            lappend limGot [c maxBytes]
+        }
+        set limGot
+    } -result {1048576 1048576 1048576 1048576}
+
+test conn-limit-checked-while-buffering {a stanza written before ready is checked against the last limit and not buffered} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready_limited 4096 sm-lim
+        c.base inject_error "connection lost"
+        set limR [lindex [limit_write [sized_message 5000]] 0]
+        c write [sized_message 100]
+        c connect
+        c.base inject [make_features]
+        c.base inject [make_success]
+        c.base inject [make_limited_bind_features 4096]
+        c.base clear
+        c.base inject [make_sm_resumed sm-lim 0]
+        list $limR [lmap s [c.base get_written] {dict get $s tag}]
+    } -result {TACO_STANZA_TOO_LARGE message}
+
+test conn-limit-buffered-then-shrunk {a buffered stanza the new stream's limit refuses is dropped, the rest flushed} \
+    {*}$common \
+    -body {
+        c connect
+        c write [sized_message 5000]
+        c write [sized_message 100]
+        drive_to_ready_limited 4096 sm-lim
+        list [lmap s [c.base get_written] {
+            expr {[dict get $s tag] eq "message"
+                ? [string length [jwrite $s]] : [dict get $s tag]}
+        }] [c state] [dict get [c.sm getInfo] queueSize]
+    } -result {{auth iq enable 100} connected 1}
+
+test conn-limit-leaves-nonzas-alone {a tiny limit does not touch SM negotiation, <r/>/<a/> or the stream footer} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready_limited 10 sm-tiny
+        c.base clear
+        c.base inject [j r -ns urn:xmpp:sm:3]
+        [c sm] RequestAck
+        c close
+        list [lmap s [c.base get_written] {dict get $s tag}] \
+            [c.base get_written_raw]
+    } -result {{a r} </stream:stream>}

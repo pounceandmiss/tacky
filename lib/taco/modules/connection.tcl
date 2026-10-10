@@ -804,6 +804,14 @@ snit::type conn {
     variable csiOffered 0
     variable csiSent active
 
+    # XEP-0478: the largest stanza, in UTF-8 bytes, the server takes. Set
+    # from each set of stream features; when they advertise none, our own
+    # reader's bound (xmppreader -max-stanza-size), which also caps any
+    # larger value. A stanza past it would get the stream closed with
+    # policy-violation, and resuming would only send it again.
+    typevariable MAX_BYTES 1048576
+    variable maxBytes 1048576
+
     # Wake check: the timer and when it was last armed.
     variable wakeAfterId ""
     variable wakeLast 0
@@ -1151,17 +1159,46 @@ snit::type conn {
 
     method writeStanza {stanza} { $self write $stanza }
 
+    # The limit the latest stream features set (see maxBytes above).
+    method maxBytes {} {
+        return $maxBytes
+    }
+
+    method ReadLimits {features} {
+        set n [xsearch $features limits -ns urn:xmpp:stream-limits:0 \
+            max-bytes -get body]
+        set maxBytes $MAX_BYTES
+        if {[string is entier -strict $n] && $n > 0 && $n < $MAX_BYTES} {
+            set maxBytes [expr {$n}]
+        }
+    }
+
+    # Refuse a stanza longer than the server takes, before it reaches the
+    # write buffer, SM's queue or the socket: raises TACO_STANZA_TOO_LARGE
+    # and leaves the stream as it is.
+    method CheckSize {stanza} {
+        set n [string length [encoding convertto utf-8 [jwrite $stanza]]]
+        if {$n > $maxBytes} {
+            set msg "stanza of $n bytes is over the server's limit of $maxBytes"
+            jlog warn "refused to send <[dict get $stanza tag]>: $msg"
+            return -code error -errorcode [list TACO_STANZA_TOO_LARGE $n $maxBytes] $msg
+        }
+    }
+
     # Write a stanza directly to the transport, bypassing SM tracking
     # and the write buffer. Use for stanzas that must go out before
     # the session is fully ready (e.g. initial presence after bind).
     method writeImmediate {stanza} {
+        $self CheckSize $stanza
         jlog debug "stanza out" -stanza $stanza
         $base writeStanza $stanza
     }
 
     # Send a stanza through the SM component for ack tracking/queuing.
     # If the session isn't ready yet, queues the stanza for later.
+    # A stanza over the server's limit raises TACO_STANZA_TOO_LARGE.
     method write {stanza} {
+        $self CheckSize $stanza
         if {$authState ne "ready"} {
             lappend writeBuffer $stanza
             return
@@ -1177,13 +1214,18 @@ snit::type conn {
     # Send all buffered stanzas through the normal write path.
     # If a write triggers SM queue overflow (which fires OnTransportError +
     # reconnect), we stop flushing and re-buffer the remaining stanzas so
-    # they survive into the next session.
+    # they survive into the next session. One this stream's limit refuses
+    # is dropped (CheckSize logged it): it would be refused every time.
     method FlushWriteBuffer {} {
         set buf $writeBuffer
         set writeBuffer [list]
         set i 0
         foreach stanza $buf {
-            if {[catch {$self write $stanza}]} {
+            if {[catch {$self write $stanza} err opts]} {
+                if {[lindex [dict get $opts -errorcode] 0] eq "TACO_STANZA_TOO_LARGE"} {
+                    incr i
+                    continue
+                }
                 set writeBuffer [lrange $buf [expr {$i + 1}] end]
                 return
             }
@@ -1239,6 +1281,7 @@ snit::type conn {
 
         switch -- $tag {
             features {
+                $self ReadLimits $stanza
                 $self StartSasl [xsearch $stanza mechanisms mechanism -gather body]
             }
             challenge {
@@ -1399,6 +1442,7 @@ snit::type conn {
 
         switch -- $tag {
             features {
+                $self ReadLimits $stanza
                 set csiOffered [expr {[llength \
                     [xsearch $stanza csi -ns urn:xmpp:csi:0]] > 0}]
                 # Let sm check for SM support
