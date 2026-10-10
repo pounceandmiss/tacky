@@ -61,11 +61,30 @@ snit::type mock_conn {
     }
 
     method write {stanza} {
+        $self CheckSize $stanza
         lappend written $stanza
     }
 
     method writeImmediate {stanza} {
+        $self CheckSize $stanza
         lappend written $stanza
+    }
+
+    # The real conn's XEP-0478 refusal: past set_max_bytes (none by default)
+    # a write raises TACO_STANZA_TOO_LARGE and records nothing.
+    variable maxBytes ""
+
+    method set_max_bytes {n} {
+        set maxBytes $n
+    }
+
+    method CheckSize {stanza} {
+        if {$maxBytes eq ""} return
+        set n [string length [encoding convertto utf-8 [jwrite $stanza]]]
+        if {$n > $maxBytes} {
+            return -code error -errorcode [list TACO_STANZA_TOO_LARGE $n $maxBytes] \
+                "stanza of $n bytes is over the server's limit of $maxBytes"
+        }
     }
 
     # Mirrors taco_connection pull. `tacky observe` calls it, so a widget that

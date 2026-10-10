@@ -1055,7 +1055,7 @@ snit::type taco_message {
 
         if {$stanza ne ""} {
             $self MarkWired $oid
-            $client write $stanza
+            $self WriteOrFail $opts(-chat) $oid $stanza
         }
         return [dict get $dbMsg timestamp]
     }
@@ -1151,7 +1151,7 @@ snit::type taco_message {
             -timestamp $ts -server_status pending
         # In flight from here, so RetryPending doesn't send it twice.
         $self MarkWired $oid
-        $client write $stanza
+        $self WriteOrFail $chatJid $oid $stanza
     }
 
     # Re-attempt a failed upload using the local file recorded on the row. A
@@ -1393,7 +1393,19 @@ snit::type taco_message {
         }
         # Marks it in flight, so a later warm tick won't re-send it.
         $self MarkWired $oid
-        $client write $stanza
+        $self WriteOrFail $chatJid $oid $stanza
+    }
+
+    # Write an outgoing message's stanza. One past the server's stanza limit
+    # (XEP-0478; conn refuses it) would be refused on every retry, so the
+    # row fails with fail_reason too-large instead of staying pending.
+    method WriteOrFail {chatJid oid stanza} {
+        try {
+            $client write $stanza
+        } trap TACO_STANZA_TOO_LARGE {emsg} {
+            jlog warn "message to $chatJid not sent: too large for the server ($emsg)"
+            $self MarkOutgoingFailed $chatJid $oid too-large
+        }
     }
 
     # resend -chat X -timestamp T ?-plaintext 0|1?
@@ -1456,7 +1468,8 @@ snit::type taco_message {
 
     # Flip a pending row to failed with a fail_reason category and notify
     # the GUI. `reason` is a category ('encrypt' = OMEMO couldn't produce
-    # ciphertext, 'delivery' = the archive says it never landed); persisted
+    # ciphertext, 'delivery' = the archive says it never landed, 'too-large'
+    # = past the stanza size the server takes); persisted
     # on the row and carried in the <Status> so the GUI picks the right
     # affordance (e.g. resend-as-plaintext).
     method MarkOutgoingFailed {chatJid oid reason} {

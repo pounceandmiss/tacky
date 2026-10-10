@@ -1787,6 +1787,11 @@ span catchup covered (the server demonstrably never got it), and marked
 `failed` with `fail_reason: "delivery"` if it predates that span, where
 the archive can no longer say either way.
 
+A message larger than the server takes in one stanza (the XEP-0478 limit
+it advertises, else 1 MiB) is never written: it goes straight to `failed`
+with `fail_reason: "too-large"`, and no retry sends it. Shorten it and send
+again.
+
 **Search.** `message search` takes a `source`, mirroring `goto`. `source:
 local` (the default) runs over the bodies already stored for one chat, with
 `before` as an exclusive timestamp cursor. Each query word matches a body word
@@ -1924,8 +1929,9 @@ to one who can't fails outright instead of quietly downgrading.
 
 **Intent vs outcome** - a row carries `encryption` (the intent: `"omemo"`
 or `""`), and on a `failed` row, `fail_reason`: `"encrypt"`,
-`"delivery"` or `"upload"`. Check it to tell "couldn't encrypt" apart from a
-delivery failure. The send path never quietly falls back to cleartext; the
+`"delivery"`, `"upload"` or `"too-large"` (see above). Check it to tell
+"couldn't encrypt" apart from a delivery failure. The send path never quietly
+falls back to cleartext; the
 only way down is an explicit `message resend {plaintext: 1}`, which
 rewrites the one row and leaves the chat toggle alone. That rewrite rides
 the row's `<Status>` as an `encryption` field, so a displayed message never

@@ -480,3 +480,66 @@ test ds-own-id-equals-timestamp {own_id is same as timestamp} \
         set msg [lindex $msgs 0]
         expr {[dict get $msg own_id] == [dict get $msg timestamp]}
     } -result {1}
+
+# -- a message past the server's stanza limit (XEP-0478) ------------------------
+#
+# conn refuses the write; the send must end failed, not stay pending to be
+# retried into the same refusal on every reconnect. Plaintext, so the
+# stanza is built and written at once.
+
+proc ds_status_events {} {
+    set ::ds_statuses {}
+    tacky listen message <Status> -jid bob@example.com \
+        {apply {{ev} { lappend ::ds_statuses \
+            [list [dict get $ev -server_status] [dict get $ev -fail_reason]] }}}
+}
+
+test ds-send-too-large-fails {a message over the server's limit is marked failed with reason too-large} \
+    {*}$ds_msg_common \
+    -body {
+        c omemo setEnabled -jid bob@example.com -value 0
+        c.conn set_max_bytes 500
+        c.conn clear
+        ds_status_events
+        c message send -chat bob@example.com -body [string repeat x 1000]
+        set dsRow [c db eval {
+            SELECT server_status, fail_reason FROM chat_message
+            WHERE chat_jid='bob@example.com'
+        }]
+        list $dsRow $::ds_statuses [llength [c.conn get_written]] \
+            [c.conn get_connects]
+    } -result {{failed too-large} {{failed too-large}} 0 0}
+
+test ds-too-large-not-retried {a too-large failure is not retried on reconnect} \
+    {*}$ds_msg_common \
+    -body {
+        c omemo setEnabled -jid bob@example.com -value 0
+        c.conn set_max_bytes 500
+        c message send -chat bob@example.com -body [string repeat x 1000]
+        c.conn clear
+        c message RetryPending
+        llength [c.conn get_written]
+    } -result 0
+
+test ds-resend-too-large-fails-again {resending a too-large message fails it again rather than raising} \
+    {*}$ds_msg_common \
+    -body {
+        c omemo setEnabled -jid bob@example.com -value 0
+        c.conn set_max_bytes 500
+        set ts [c message send -chat bob@example.com -body [string repeat x 1000]]
+        ds_status_events
+        c message resend -chat bob@example.com -timestamp $ts
+        list $::ds_statuses [llength [c.conn get_written]]
+    } -result {{{pending {}} {failed too-large}} 0}
+
+test ds-send-under-limit-unaffected {a message under the limit is written and stays pending} \
+    {*}$ds_msg_common \
+    -body {
+        c omemo setEnabled -jid bob@example.com -value 0
+        c.conn set_max_bytes 500
+        c.conn clear
+        c message send -chat bob@example.com -body hello
+        list [c db onecolumn {
+            SELECT server_status FROM chat_message WHERE chat_jid='bob@example.com'
+        }] [llength [c.conn get_written]]
+    } -result {pending 1}
