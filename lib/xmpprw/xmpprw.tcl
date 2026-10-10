@@ -279,6 +279,13 @@ snit::type xmppreader {
         if {$options(-zap) && [string is space $cdata]} {
             return
         }
+        # Between stanzas, with only the stream root open: whitespace
+        # keepalives and the like belong to no stanza, and kept on the root
+        # they would grow for the life of the stream. Nothing reads the
+        # root's body.
+        if {[llength $NodeList] == 1} {
+            return
+        }
         incr CurSize [string length $cdata]
         if {$CurSize > $options(-max-stanza-size)} {
             error "stanza body exceeds parser limit (size $CurSize)"
