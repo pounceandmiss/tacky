@@ -10,6 +10,8 @@
  *   PUT /_t/echo/<name>     keep the body;  GET /_t/echo/<name>  return it
  *   GET /_t/status/<code>   answer with that status
  *   GET /_t/slow            answer after 3 s
+ *   GET /_t/trickle/<n>     n 64 KiB blocks, one every 100 ms
+ *   GET /_t/stall           claim two blocks, send one, then nothing for 3 s
  */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -40,6 +42,21 @@ async function testRoute(req, res, path) {
         res.writeHead(Number(arg) || 500).end(`status ${arg}`);
     } else if (route === 'slow') {
         setTimeout(() => res.writeHead(200).end('slow'), 3000);
+    } else if (route === 'trickle' || route === 'stall') {
+        const blocks = route === 'stall' ? 2 : Number(arg) || 1;
+        let left = route === 'stall' ? 1 : blocks;
+        res.writeHead(200, { 'content-length': blocks * 65536 });
+        const next = () => {
+            if (left === 0) {
+                if (route === 'stall') setTimeout(() => res.destroy(), 3000);
+                else res.end();
+                return;
+            }
+            left--;
+            res.write(Buffer.alloc(65536, 120));
+            setTimeout(next, 100);
+        };
+        setTimeout(next, 100);
     } else {
         res.writeHead(404).end(`no ${path}`);
     }

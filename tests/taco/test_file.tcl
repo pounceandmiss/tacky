@@ -1034,4 +1034,151 @@ test file-download-path-gone-falls-back-to-url {a send whose local file is gone 
         set res
     } -result {done {} onDisk=1}
 
+# --- timeout ----------------------------------------------------------------
+#
+# TIMEOUT_MS is how long a transfer may go without moving a byte, not how long
+# it may take. These lower it and run a transfer for longer.
+
+# A GET server that sends 64 KiB every 20 ms, $blocks of them, then closes.
+proc it_get_start {blocks} {
+    set ::_it_conns {}
+    set ::_it_afters {}
+    set srv [socket -server [list it_get_accept $blocks] -myaddr 127.0.0.1 0]
+    return [list $srv [lindex [fconfigure $srv -sockname] 2]]
+}
+
+proc it_get_accept {blocks ch addr port} {
+    lappend ::_it_conns $ch
+    fconfigure $ch -translation binary -blocking 0
+    catch {
+        puts -nonewline $ch "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"
+        puts -nonewline $ch "Content-Length: [expr {$blocks * 65536}]\r\n\r\n"
+    }
+    lappend ::_it_afters [after 20 [list it_get_block $ch $blocks]]
+}
+
+proc it_get_block {ch left} {
+    if {$left == 0} {
+        catch {close $ch}
+        return
+    }
+    if {[catch {puts -nonewline $ch [string repeat x 65536]; flush $ch}]} return
+    lappend ::_it_afters [after 20 [list it_get_block $ch [expr {$left - 1}]]]
+}
+
+# A PUT server that reads 256 KiB every 10 ms and answers 201 once the whole
+# body is in.
+# Run $script with TIMEOUT_MS at $ms.
+proc it_lowered {ms script} {
+    set saved $::taco_file::TIMEOUT_MS
+    set ::taco_file::TIMEOUT_MS $ms
+    try {
+        uplevel 1 $script
+    } finally {
+        set ::taco_file::TIMEOUT_MS $saved
+    }
+}
+
+proc it_put_start {} {
+    set ::_it_conns {}
+    set ::_it_afters {}
+    set srv [socket -server it_put_accept -myaddr 127.0.0.1 0]
+    return [list $srv [lindex [fconfigure $srv -sockname] 2]]
+}
+
+proc it_put_accept {ch addr port} {
+    lappend ::_it_conns $ch
+    fconfigure $ch -translation binary -blocking 0
+    set ::_it_head($ch) ""
+    set ::_it_left($ch) -1
+    lappend ::_it_afters [after 10 [list it_put_read $ch]]
+}
+
+# Keeps the head until it has the Content-Length, then only counts.
+proc it_put_read {ch} {
+    if {[catch {read $ch 262144} data]} return
+    if {$::_it_left($ch) < 0} {
+        append ::_it_head($ch) $data
+        set end [string first "\r\n\r\n" $::_it_head($ch)]
+        if {$end >= 0} {
+            regexp -nocase {content-length:\s*(\d+)} $::_it_head($ch) -> n
+            set ::_it_left($ch) \
+                [expr {$n - ([string length $::_it_head($ch)] - $end - 4)}]
+        }
+    } else {
+        incr ::_it_left($ch) -[string length $data]
+    }
+    if {$::_it_left($ch) == 0} {
+        catch {
+            puts -nonewline $ch "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n"
+            puts -nonewline $ch "Connection: close\r\n\r\n"
+            close $ch
+        }
+        return
+    }
+    lappend ::_it_afters [after 10 [list it_put_read $ch]]
+}
+
+proc it_stop {srv} {
+    foreach a $::_it_afters { catch {after cancel $a} }
+    foreach c $::_it_conns { catch {close $c} }
+    array unset ::_it_head
+    array unset ::_it_left
+    catch {close $srv}
+}
+
+test file-timeout-download-outlives-it {a download still moving bytes past TIMEOUT_MS completes} \
+    -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        it_lowered 150 {
+            lassign [it_get_start 30] srv port
+            set url http://127.0.0.1:$port/long.png
+            set t0 [clock milliseconds]
+            $::_client file download -url $url
+            set res [cx_settle]
+            set full [$::_client file AttachPath $url]
+            lappend res long=[expr {[clock milliseconds] - $t0 > 150}] \
+                size=[expr {[file exists $full] ? [file size $full] : 0}]
+            it_stop $srv
+            set res
+        }
+    } -result {done {} long=1 size=1966080}
+
+test file-timeout-download-stalled {a download that stops moving bytes fails} \
+    -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        it_lowered 150 {
+            lassign [cx_start silent] srv port
+            $::_client file download -url http://127.0.0.1:$port/stalled.png
+            set res [cx_settle]
+            cx_stop $srv
+            set res
+        }
+    } -result {failed {http error}}
+
+# The upload's own timer covers discovery and the slot request; once the PUT
+# is on the wire, only a stall ends it. 400 ms, not 150: the last few MB sit
+# in the kernel's socket buffers for a while after the last of them is handed
+# over, and nothing in Tcl sees them leave.
+test file-timeout-upload-outlives-it {an upload still moving bytes past TIMEOUT_MS completes} \
+    -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        it_lowered 400 {
+            set src [file join $::_upcache long.bin]
+            set f [open $src wb]
+            puts -nonewline $f [string repeat z [expr {8 * 1048576}]]
+            close $f
+            lassign [it_put_start] srv port
+            set t0 [clock milliseconds]
+            $::_client file upload -id 9200000 -path $src
+            $::_client file OnSlotForUpload 9200000 $src application/octet-stream \
+                [list http://127.0.0.1:$port/put/long.bin https://h/long.bin {}]
+            set res [cx_settle]
+            lappend res long=[expr {[clock milliseconds] - $t0 > 400}]
+            it_stop $srv
+            file delete $src
+            set res
+        }
+    } -result {done {} long=1}
+
 file delete -force -- $::_upcache
