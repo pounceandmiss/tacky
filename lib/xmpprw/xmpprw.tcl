@@ -13,6 +13,8 @@ namespace eval ::jab {}
 #       -footer-command $cmd  Callback for the stream footer (closing </stream:stream>)
 #       -error-command $cmd   Callback for read errors and EOF
 #       -zap $bool          Drop whitespace-only character data (default no)
+#       -stream-header $bool  Refuse a root that is not an RFC 6120 stream
+#                           header (default yes; `string` turns it off)
 #     Methods:
 #       start               Begin reading from -channel via fileevent
 #       pause               Stop reading (remove fileevent)
@@ -116,6 +118,13 @@ snit::type xmppreader {
     # zap whitespaces (you don't want this in real life circumstance)
     option -zap -default no
 
+    # The root must be <stream/> in http://etherx.jabber.org/streams with
+    # jabber:client as its default namespace (RFC 6120 4.8); any other root
+    # throws, which OnReadable turns into a stream teardown like other
+    # malformed input. A WebSocket's <open/> reaches the reader already
+    # translated into such a header (wsframing.tcl).
+    option -stream-header -default yes
+
     # Per-stanza caps; tripping one throws, which OnReadable turns into a
     # stream teardown. Defaults sit well above any real XMPP stanza.
     option -max-stanza-size -default 1048576
@@ -139,12 +148,18 @@ snit::type xmppreader {
     variable AfterID ""
     variable CurSize 0
     variable CurElems 0
+    # The default namespace the root declared
+    variable RootNs ""
+    # Set once the root has closed: the stream is over, and anything fed
+    # after it is dropped
+    variable Ended 0
 
     constructor {args} {
         install expat using expat $self.expat -namespace -final no \
             -elementstartcommand [mymethod OnElemStart]\
             -elementendcommand [mymethod OnElemEnd] \
-            -characterdatacommand [mymethod OnCdata]
+            -characterdatacommand [mymethod OnCdata] \
+            -startnamespacedeclcommand [mymethod OnNsDecl]
         set Expat $self.expat
         set NodeList {}
         $self configurelist $args
@@ -195,7 +210,12 @@ snit::type xmppreader {
     }
     
     method feed {data} {
-        $Expat parse $data
+        if {$Ended} return
+        if {[catch {$Expat parse $data} err opts]} {
+            # Whatever followed the root's end in the same chunk
+            if {$Ended} return
+            return -options $opts $err
+        }
     }
     
     destructor {
@@ -204,6 +224,12 @@ snit::type xmppreader {
         catch {$Expat delete}
     }
     
+    method OnNsDecl {prefix uri} {
+        if {[llength $NodeList] == 0 && $prefix eq ""} {
+            set RootNs $uri
+        }
+    }
+
     method OnElemStart {tag attrs} {
         # A top-level stanza begins with only the stream root on the stack.
         if {[llength $NodeList] == 1} {
@@ -234,6 +260,13 @@ snit::type xmppreader {
             }
         }
         if {[llength $NodeList] == 0} {
+            if {$options(-stream-header)
+                && ($tag ne "stream"
+                    || $ns ne "http://etherx.jabber.org/streams"
+                    || $RootNs ne "jabber:client")} {
+                error "<$tag/> in namespace \"$ns\" (content namespace\
+                    \"$RootNs\") is not a stream header"
+            }
             dict set node body {}
             dict set node tail {}
             # Push before dispatching: a header handler that throws must
@@ -271,6 +304,7 @@ snit::type xmppreader {
         } elseif {[llength $NodeList] == 1} {
             $self Dispatch $options(-command) $node
         }  elseif {[llength $NodeList] == 0} {
+            set Ended 1
             $self Dispatch $options(-footer-command) {}
         }
     }
@@ -309,7 +343,8 @@ snit::type xmppreader {
     typemethod string {args} {
         set xmlString [lindex $args end]
         set args [lrange $args 0 end-1]
-        $type $type.tmp {*}$args -command [list set [mytypevar String]]
+        $type $type.tmp -stream-header no {*}$args \
+            -command [list set [mytypevar String]]
         # Always destroyed: a leftover parser would hold the name.
         try {
             $type.tmp feed <dummy>$xmlString</dummy>

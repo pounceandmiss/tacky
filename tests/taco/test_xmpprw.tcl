@@ -226,6 +226,48 @@ test xmpprw-stream-level-text-is-not-kept \
         unset -nocomplain ::_xrwLevelGot
     } -result {601 0}
 
+# RFC 6120 4.8: a stream's root is <stream/> in the streams namespace with
+# jabber:client as its content namespace. Any other root used to be taken
+# as the header; now it is refused like other malformed input.
+test xmpprw-root-must-be-a-stream-header \
+    {a root other than a jabber:client stream header is refused} \
+    -body {
+        set res {}
+        foreach root [list \
+                [::jab::header] \
+                "<message xmlns='jabber:client'>" \
+                "<stream xmlns='jabber:client'>" \
+                [::jab::header {} xmlns jabber:server] \
+                "<stream:stream xmlns:stream='http://etherx.jabber.org/streams'>"] {
+            xmppreader ::_xrwRootR
+            lappend res [catch {::_xrwRootR feed $root} err]
+            ::_xrwRootR destroy
+        }
+        lappend res [string match "*is not a stream header*" $err]
+    } -result {0 1 1 1 1 1}
+
+test xmpprw-string-takes-any-root {xmppreader string is not held to a stream header} \
+    -body {
+        dict get [xmppreader string {<b xmlns='urn:x'/>}] ns
+    } -result {urn:x}
+
+# The footer ends the stream: whatever the server sends behind it, even
+# in the same read, is neither parsed nor an error.
+test xmpprw-nothing-after-the-footer \
+    {input after </stream:stream> is dropped} \
+    -body {
+        set ::_xrwFootGot {}
+        xmppreader ::_xrwFootR \
+            -command {apply {n {lappend ::_xrwFootGot [dict get $n tag]}}} \
+            -footer-command {apply {args {lappend ::_xrwFootGot FOOTER}}}
+        ::_xrwFootR feed "[::jab::header]<iq/></stream:stream><message/>junk<"
+        ::_xrwFootR feed "<presence/>"
+        set ::_xrwFootGot
+    } -cleanup {
+        ::_xrwFootR destroy
+        unset -nocomplain ::_xrwFootGot
+    } -result {iq FOOTER}
+
 # The key dispatch has to match whole keys: it used to be a switch -regexp with
 # unanchored patterns, where a key merely containing "-ns" or ending in "body"
 # landed on the wrong field.

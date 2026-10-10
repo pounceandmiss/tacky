@@ -87,6 +87,11 @@ snit::type mockbaseconn {
         {*}$options(-error-command) $msg
     }
 
+    # The server's </stream:stream>, as the reader reports it.
+    method inject_footer {} {
+        {*}$options(-footer-command) {}
+    }
+
     method get_written {} {
         return $written
     }
@@ -967,6 +972,133 @@ test conn-stream-other-error-backs-off {any other stream error reconnects furthe
         c.base inject [make_stream_error policy-violation]
         list [c state] [conn_logged info]
     } -result {waiting {{reconnect attempt 4 in 15000ms}}}
+
+# -- The server's footer -----------------------------------------------------
+#
+# RFC 6120 4.4: a </stream:stream> from the server is answered with ours and
+# the connection closed, the same way a TCP close is handled - not left to
+# the keepalive to find out a minute later.
+
+test conn-footer-is-answered-and-closes {the server's footer gets ours, then the transport-close path} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-foot"
+        c.base clear
+        c.base inject_footer
+        list [c.base get_written_raw] [c state] [c.base state] $_tdisconnect
+    } -result {</stream:stream> disconnected disconnected {{server closed the connection}}}
+
+test conn-footer-reconnects-like-a-close {with autoreconnect the footer waits and keeps SM to resume} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-foot"
+        conn_capture_log
+        c.base inject_footer
+        set info [[c sm] getInfo]
+        list [c state] $_tdisconnect [conn_logged info] \
+            [dict get $info mode] [dict get $info streamId]
+    } -result {waiting {} {{reconnect attempt 1 in 1000ms}} active sm-foot}
+
+test conn-footer-after-close-is-ignored {a footer arriving after the session ended writes nothing} \
+    {*}$common \
+    -body {
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-foot"
+        c close
+        c.base clear
+        c.base inject_footer
+        list [c.base get_written_raw] [c state] $_tdisconnect
+    } -result {{} disconnected {}}
+
+# The same over a real socket and the real reader: the footer arrives, ours
+# goes back and the socket is closed, well before any keepalive.
+
+::tcltest::testConstraint wasm [expr {$::tcl_platform(os) eq "Emscripten"}]
+
+proc _cftAccept {chan addr port} {
+    set ::_cftPeer $chan
+    set ::_cftIn ""
+    fconfigure $chan -blocking 0 -buffering none -translation binary
+    fileevent $chan readable [list _cftServe $chan]
+}
+
+# Answers the client's header with $::_cftReply, then records what comes back
+# until the client closes.
+proc _cftServe {chan} {
+    set data [read $chan]
+    if {$data eq "" && [eof $chan]} {
+        fileevent $chan readable {}
+        set ::_cftEof 1
+        return
+    }
+    if {$::_cftIn eq ""} {
+        catch {puts -nonewline $chan $::_cftReply}
+    }
+    append ::_cftIn $data
+}
+
+proc _cftWait {var {timeout 3000}} {
+    set id [after $timeout [list set $var timeout]]
+    vwait $var
+    after cancel $id
+}
+
+set _cftCommon {
+    -constraints !wasm
+    -setup {
+        jlog configure -logproc {apply {{msg} {}}}
+        set ::_cftPeer ""
+        set ::_cftEof 0
+        set ::_cftGone ""
+        set _cftListener [socket -server _cftAccept -myaddr 127.0.0.1 0]
+        set _cftPort [lindex [fconfigure $_cftListener -sockname] 2]
+        conn _cftC -domain example.com -host 127.0.0.1 -port $_cftPort \
+            -tls none -srv 0 -username u -password p -keepalive 0 -wake-check 0 \
+            -ondisconnect {apply {{msg} {set ::_cftGone $msg}}}
+    }
+    -cleanup {
+        catch {_cftC destroy}
+        catch {close $::_cftPeer}
+        catch {close $_cftListener}
+        jlog configure -logproc ""
+        unset -nocomplain ::_cftPeer ::_cftEof ::_cftGone ::_cftIn ::_cftReply
+    }
+}
+
+test conn-footer-over-a-socket {a server's footer is answered and the socket closed at once} \
+    {*}$_cftCommon -body {
+        set ::_cftReply "[::jab::header {} from example.com id s1]</stream:stream>"
+        set t0 [clock milliseconds]
+        _cftC connect
+        _cftWait ::_cftGone
+        if {!$::_cftEof} { _cftWait ::_cftEof }
+        list $::_cftGone [_cftC state] $::_cftEof \
+            [string match "*</stream:stream>" $::_cftIn] \
+            [expr {[clock milliseconds] - $t0 < 2000}]
+    } -result {{server closed the connection} disconnected 1 1 1}
+
+# RFC 6120 4.8: the root is <stream/> in http://etherx.jabber.org/streams
+# with jabber:client as its content namespace; anything else is not a stream.
+test conn-wrong-root-is-refused {a root that is not a stream header ends the connection} \
+    {*}$_cftCommon -body {
+        set ::_cftReply "<message xmlns='jabber:client'><body>hi</body></message>"
+        _cftC connect
+        _cftWait ::_cftGone
+        list [string match "XML parse error:*not a stream header*" $::_cftGone] \
+            [_cftC state]
+    } -result {1 disconnected}
+
+test conn-wrong-content-namespace-is-refused {a stream header in jabber:server is refused} \
+    {*}$_cftCommon -body {
+        set ::_cftReply [::jab::header {} xmlns jabber:server from example.com id s1]
+        _cftC connect
+        _cftWait ::_cftGone
+        list [string match "XML parse error:*not a stream header*" $::_cftGone] \
+            [_cftC state]
+    } -result {1 disconnected}
 
 # -- State emission -----------------------------------------------------------
 
