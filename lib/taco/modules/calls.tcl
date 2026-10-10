@@ -568,11 +568,13 @@ snit::type taco_calls {
     # Create a fresh pc and bind its events to this sid. Caller side then
     # adds tracks and attaches media; callee side drives
     # setRemoteDescription and attaches from the `track` events.
+    # The pc is recorded only once createPeer took it, so a refused one
+    # leaves nothing to close.
     method CreatePc {sid iceServers} {
         set pc $self/$sid
-        dict set Calls $sid pc $pc
         ::tacky::media createPeer $pc -sid $sid \
             -command [mymethod OnMediaEvent $sid] -ice-servers $iceServers
+        dict set Calls $sid pc $pc
         return $pc
     }
 
@@ -1194,9 +1196,17 @@ snit::type taco_calls {
     # servers the server advertised (empty list = host candidates only),
     # adds the sendrecv audio track, attaches media, and kicks off
     # offer generation. A hangup arriving during the fetch can have
-    # removed this sid from Calls — bail in that case.
+    # removed this sid from Calls — bail in that case. A setup that
+    # raises (the backend refusing the pc, a track, the offer) fails the
+    # call here instead of reaching bgerror and leaving it hanging.
     method StartOutgoingMedia {sid iceServers} {
         if {![dict exists $Calls $sid]} return
+        if {[catch {$self SetUpOutgoingMedia $sid $iceServers} err]} {
+            $self FailCall $sid "media setup failed: $err" general-error
+        }
+    }
+
+    method SetUpOutgoingMedia {sid iceServers} {
         set pc [$self CreatePc $sid $iceServers]
         ::tacky::media addTrack $pc $MID -kind audio -direction sendrecv
         $self AttachMedia $sid $MID
@@ -1450,9 +1460,16 @@ snit::type taco_calls {
     # Callee side: extdisco callback. Stands up the pc, applies the
     # remote offer, and drains any transport-info that arrived while
     # the fetch was outstanding. A hangup during the fetch can have
-    # removed this sid — bail then.
+    # removed this sid — bail then. A setup that raises fails the call, as
+    # the caller's does.
     method StartIncomingMedia {sid sdp iceServers} {
         if {![dict exists $Calls $sid]} return
+        if {[catch {$self SetUpIncomingMedia $sid $sdp $iceServers} err]} {
+            $self FailCall $sid "media setup failed: $err" general-error
+        }
+    }
+
+    method SetUpIncomingMedia {sid sdp iceServers} {
         set pc [$self CreatePc $sid $iceServers]
         # Apply the offer; `track` events fire async to drive AttachMedia.
         # A backend that rejects it reports an error, and OnMediaError has
