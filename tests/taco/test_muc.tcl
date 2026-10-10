@@ -2774,6 +2774,19 @@ test muc-join-times-out {a room that never answers fails the join} \
         list $::_join [c muc isJoined -jid quiet@muc.example.com]
     } -result {remote-server-timeout 0}
 
+test muc-join-asked-twice-answers-both {a join asked again while the first is pending answers both callers} \
+    {*}$muc_common \
+    -body {
+        set ::_join {}
+        c muc join -jid room@muc.example.com -nick me \
+            -command {apply {{r} {lappend ::_join first [dict get $r -nick]}}}
+        c muc join -jid room@muc.example.com -nick me \
+            -command {apply {{r} {lappend ::_join second [dict get $r -nick]}}}
+        c.conn feed [muc_presence from room@muc.example.com/me self 1]
+        c.conn feed [muc_presence from room@muc.example.com/me self 1]
+        set ::_join
+    } -result {first me second me}
+
 test muc-join-room-destroyed-answers {a room destroyed while we join fails the join} \
     {*}$muc_common \
     -body {
