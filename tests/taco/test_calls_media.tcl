@@ -614,4 +614,44 @@ test media-caller-holds-candidates-until-accept \
         list $before [lrange $order end-1 end]
     } -result {0 {::rtc::pc::set-remote-description ::rtc::pc::add-remote-candidate}}
 
+# -- The peer reports a fault --
+
+proc media_terminate {sid reason} {
+    c.conn feed [j iq -type set -from $::MEDIA_PEER -to user@test.example.com -id st1 {
+        j jingle -ns urn:xmpp:jingle:1 -action session-terminate -sid $sid {
+            j reason { j $reason }
+        }
+    }]
+}
+
+test media-terminate-naming-a-fault-fails-the-call {a session-terminate naming a fault is <Failed>, any other reason <Ended>} \
+    {*}$media_env -body {
+        set out {}
+        foreach reason {connectivity-error security-error failed-transport success decline} {
+            set sid [media_caller]
+            media_terminate $sid $reason
+            lappend out [string map [list $sid SID] [lindex [calls_events] end]]
+        }
+        set out
+    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} {<Failed> -sid SID -reason {the peer reported security-error}} {<Failed> -sid SID -reason {the peer reported failed-transport}} {<Ended> -sid SID} {<Ended> -sid SID}}
+
+test media-finish-ends-the-call {a <finish/> from the peer ends a call it still holds, failed if it names a fault} \
+    {*}$media_env -body {
+        set a [media_caller]
+        c.conn feed [calls_jmi_in finish $a $::MEDIA_PEER connectivity-error]
+        set out [list [string map [list $a SID] [lindex [calls_events] end]] \
+            [dict exists [calls_state] $a]]
+        set b [media_caller]
+        c.conn feed [calls_jmi_in finish $b $::MEDIA_PEER success]
+        lappend out [string map [list $b SID] [lindex [calls_events] end]] \
+            [dict exists [calls_state] $b]
+    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} 0 {<Ended> -sid SID} 0}
+
+test media-finish-while-ringing-ignored {a <finish/> for a call still ringing changes nothing} \
+    {*}$media_env -body {
+        c.conn feed [calls_jmi_in propose tk-f1 $::MEDIA_PEER]
+        c.conn feed [calls_jmi_in finish tk-f1 $::MEDIA_PEER success]
+        dict get [dict get [calls_state] tk-f1] state
+    } -result ringing
+
 mockrtc::uninstall
