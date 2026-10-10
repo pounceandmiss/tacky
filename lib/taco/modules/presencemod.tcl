@@ -65,16 +65,19 @@ snit::type taco_presence {
             return [Offline]
         }
         set resDict $Presence($bareJid)
-        set bestRes ""
+        # A flag, not an empty bestRes: a gateway's presence from its bare
+        # JID is stored under resource ""
+        set found 0
         set bestPri -129
         dict for {res info} $resDict {
             set pri [dict get $info priority]
             if {$pri > $bestPri} {
                 set bestPri $pri
                 set bestRes $res
+                set found 1
             }
         }
-        if {$bestRes eq ""} {
+        if {!$found} {
             return [Offline]
         }
         return [$self Entry [dict get $resDict $bestRes]]

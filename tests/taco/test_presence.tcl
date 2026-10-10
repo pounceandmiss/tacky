@@ -139,3 +139,9 @@ test presence-offline-shape {an unknown JID reports the full offline shape} \
     {*}$presence_common -body {
         c presence get -jid stranger@example.com
     } -result {show offline status "" priority 0 idle_since 0 client {}}
+
+test presence-resourceless-is-online {a bare JID's own presence (a gateway's) reads as online} \
+    {*}$presence_common -body {
+        c.conn feed [presence_available gateway.example.com]
+        dict get [c presence get -jid gateway.example.com] show
+    } -result away
