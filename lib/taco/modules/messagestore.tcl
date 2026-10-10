@@ -1163,6 +1163,9 @@ snit::type taco_messagestore {
     # only the room's stanza-id counts: an origin-id is the sender's choice.
     # "" if not stored. For reactions and markers; corrections and
     # retractions are matched with their author (message TargetCandidates).
+    # A stanza-id match wins, then our own send's id (a peer may copy our
+    # origin-id into a message of its own), then the oldest, so the answer
+    # never rests on the order SQLite reads the rows in.
     method resolveTargetTs {chatJid targetId} {
         if {$targetId eq ""} { return "" }
         set room [IsRoomChatJid $chatJid]
@@ -1172,6 +1175,8 @@ snit::type taco_messagestore {
               AND ( (server_id != '' AND server_id=$targetId)
                  OR (NOT $room AND origin_id != '' AND origin_id=$targetId)
                  OR (NOT $room AND own_id    != '' AND own_id=$targetId) )
+            ORDER BY (server_id = $targetId) DESC, (own_id = $targetId) DESC,
+                     timestamp ASC
             LIMIT 1
         }]
         if {$ts eq ""} { set ts [$self AliasTarget $chatJid server $targetId] }
