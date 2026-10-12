@@ -370,24 +370,31 @@ test file-markuploaded-promotes {markUploaded promotes uploading -> pending with
         [dict get [lindex [dict get $m content attachments] 0] url]
 } -result {pending https://h/a.png}
 
-test file-markuploadfailed {markUploadFailed sets the row to failed} {*}$file_env -body {
+proc up_fail_reason {jid ts} {
+    dict get [lindex [up_ms get ids $jid [list $ts]] 0] fail_reason
+}
+
+test file-markuploadfailed {markUploadFailed sets the row to failed, naming the upload} {*}$file_env -body {
     up_store_uploading bob@example.com 7100000
     up_ms markUploadFailed bob@example.com 7100000
-    up_status bob@example.com 7100000
-} -result failed
+    list [up_status bob@example.com 7100000] \
+        [up_fail_reason bob@example.com 7100000]
+} -result {failed upload}
 
 test file-markuploading-retry {markUploading flips failed back to uploading} {*}$file_env -body {
     up_store_uploading bob@example.com 7150000
     up_ms markUploadFailed bob@example.com 7150000
     up_ms markUploading bob@example.com 7150000
-    up_status bob@example.com 7150000
-} -result uploading
+    list [up_status bob@example.com 7150000] \
+        [up_fail_reason bob@example.com 7150000]
+} -result {uploading {}}
 
 test file-failstaleuploads {failStaleUploads turns leftover uploading rows into failed} {*}$file_env -body {
     up_store_uploading bob@example.com 7200000
     up_ms failStaleUploads
-    up_status bob@example.com 7200000
-} -result failed
+    list [up_status bob@example.com 7200000] \
+        [up_fail_reason bob@example.com 7200000]
+} -result {failed upload}
 
 test file-sendfile-optimistic-row {sendFile stores the message immediately as uploading} {*}$file_env -body {
     set tmp /tmp/uptest_[pid].bin
@@ -484,6 +491,24 @@ test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping t
     file delete /tmp/a.png
     set res
 } -result uploading
+
+# A frontend redrawing from <Status> alone sets and clears the reason too.
+test file-upload-status-carries-fail-reason {failure names the upload; retry clears it} {*}$file_env -body {
+    set f [open /tmp/a.png w]; puts -nonewline $f data; close $f
+    up_store_uploading bob@example.com 7600000
+    set ::_up_reasons {}
+    set tag [tacky listen message <Status> {apply {{ev} {
+        if {[dict exists $ev -fail_reason]} {
+            lappend ::_up_reasons [dict get $ev -fail_reason]
+        }
+    }}}]
+    $::_client message OnUploaded bob@example.com 7600000 7600000 \
+        /tmp/a.png "" ""
+    tacky message retryUpload -acc $acc -chat bob@example.com -timestamp 7600000
+    tacky unlisten $tag
+    file delete /tmp/a.png
+    set ::_up_reasons
+} -result {upload {}}
 
 # --- transfer events / download --------------------------------------------
 #

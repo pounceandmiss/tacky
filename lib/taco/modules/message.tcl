@@ -1124,7 +1124,7 @@ snit::type taco_message {
         if {$url eq ""} {
             $messagestore markUploadFailed $chatJid $oid
             $client emit message <Status> -jid $chatJid \
-                -timestamp $ts -server_status failed
+                -timestamp $ts -server_status failed -fail_reason upload
             return
         }
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -1171,7 +1171,7 @@ snit::type taco_message {
             ? [dict get $row encryption] : ""}]
         $messagestore markUploading $chatJid $oid
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status uploading
+            -timestamp $ts -server_status uploading -fail_reason ""
         $self StartUpload $chatJid $oid $ts $path $encMode
     }
 

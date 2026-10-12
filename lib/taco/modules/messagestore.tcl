@@ -787,7 +787,7 @@ snit::type taco_messagestore {
 
     method markUploadFailed {jid ownId} {
         $options(-db) eval {
-            UPDATE chat_message SET server_status='failed'
+            UPDATE chat_message SET server_status='failed', fail_reason='upload'
             WHERE chat_jid=$jid AND own_id=$ownId
               AND server_status='uploading'
         }
@@ -796,7 +796,7 @@ snit::type taco_messagestore {
     # Retry: flip a previously failed upload back to uploading.
     method markUploading {jid ownId} {
         $options(-db) eval {
-            UPDATE chat_message SET server_status='uploading'
+            UPDATE chat_message SET server_status='uploading', fail_reason=''
             WHERE chat_jid=$jid AND own_id=$ownId
               AND server_status='failed'
         }
@@ -806,7 +806,7 @@ snit::type taco_messagestore {
     # was never sent (HTTP PUT isn't resumable), so mark it failed.
     method failStaleUploads {} {
         $options(-db) eval {
-            UPDATE chat_message SET server_status='failed'
+            UPDATE chat_message SET server_status='failed', fail_reason='upload'
             WHERE kind='message' AND server_status='uploading'
         }
     }

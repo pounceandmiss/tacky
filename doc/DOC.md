@@ -1864,7 +1864,8 @@ stripped, so it is safe to display; `url` keeps the wire bytes.
 away via `<New>` with `server_status: "uploading"`, the attachment's `path`
 set to the local file and its `url` still empty. The backend uploads the file,
 sends the real message with the public URL, and confirmation carries on like
-any other send. A failed upload marks the row `failed`, and
+any other send. A failed upload marks the row `failed` with `fail_reason:
+"upload"` - so does one a restart cut off, since a PUT can't resume - and
 `message retryUpload` runs it again from the `path` it recorded. Each
 upload transition rides `message <Status>` as a `server_status` change:
 `uploading -> pending` on success, `uploading -> failed` on error, and
@@ -1915,9 +1916,9 @@ default. It doesn't check whether the peer can actually do OMEMO; sending
 to one who can't fails outright instead of quietly downgrading.
 
 **Intent vs outcome** - a row carries `encryption` (the intent: `"omemo"`
-or `""`), and on a `failed` row, `fail_reason`: `"encrypt"` or
-`"delivery"`. Check it to tell "couldn't encrypt" apart from a delivery
-failure. The send path never quietly falls back to cleartext; the
+or `""`), and on a `failed` row, `fail_reason`: `"encrypt"`,
+`"delivery"` or `"upload"`. Check it to tell "couldn't encrypt" apart from a
+delivery failure. The send path never quietly falls back to cleartext; the
 only way down is an explicit `message resend {plaintext: 1}`, which
 rewrites the one row and leaves the chat toggle alone. That rewrite rides
 the row's `<Status>` as an `encryption` field, so a displayed message never
@@ -1982,7 +1983,7 @@ to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
 leads with "resend as plaintext" (`message resend {plaintext: 1}`), while
 "keys arrived, retry" is a plain `message resend`. `fail_reason:
 "delivery"` offers only the plain `message resend` - the encryption was
-never the problem. `<FingerprintChanged>`
+never the problem - and `fail_reason: "upload"` offers `message retryUpload`. `<FingerprintChanged>`
 (a peer's identity key rotated, so trust auto-drops to compromised) is
 per-peer, and a single handler subscribed by `acc` covers every chat at
 once.
