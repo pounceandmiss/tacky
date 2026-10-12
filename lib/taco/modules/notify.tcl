@@ -11,8 +11,11 @@
 # mute. Rooms default to muted, which leaves a public room pinging on your
 # nick alone.
 #
-#   notify <Notify>   -jid J -timestamp T -nick N -body S -unread C -mention B
-#   notify <Settings> -jid J -muted B -mentions B
+#   notify <Notify>     -jid J -timestamp T -nick N -body S -unread C -mention B
+#   notify <MissedCall> -jid J -timestamp T -nick N -video B
+#   notify <Settings>   -jid J -muted B -mentions B
+#
+# A missed call (calls <Missed>) follows the chat's mute like a message.
 
 snit::type taco_notify {
     option -client -readonly yes
@@ -37,6 +40,7 @@ snit::type taco_notify {
         $client bus subscribe $self message:<New> [mymethod OnNew]
         $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
         $client bus subscribe $self message:<CatchupDone> [mymethod OnCatchupDone]
+        $client bus subscribe $self calls:<Missed> [mymethod OnMissedCall]
         $client bus subscribe $self <SessionStart> [mymethod OnReady]
     }
 
@@ -124,6 +128,18 @@ snit::type taco_notify {
             -body [dict get $alert body] \
             -unread [$self Store unreadCount $chatJid] \
             -mention [dict get $alert mention]
+    }
+
+    # No delay or watermark: a call has no read state.
+    method OnMissedCall {args} {
+        array set opts {-from "" -video 0}
+        array set opts $args
+        if {$opts(-from) eq ""} return
+        if {![$self ShouldNotify $opts(-from) 0]} return
+        $client emit notify <MissedCall> -jid $opts(-from) \
+            -timestamp [clock microseconds] \
+            -nick [$self SenderName $opts(-from) $opts(-from)] \
+            -video $opts(-video)
     }
 
     # Who to put on the notification: the room nick, or the contact's name

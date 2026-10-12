@@ -234,14 +234,32 @@ test media-candidate-unusable-is-not-sent {a candidate we cannot parse is droppe
 
 # -- Connection state --
 
-test media-connected-emits-active {a connected pc surfaces as <Active>} \
+test media-connected-emits-active {a connected pc surfaces as <Active>, stamped with when} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        set before [clock microseconds]
+        mockrtc::fire [media_pc $sid] state-change connected
+        set ev [lindex [calls_events] end]
+        set since [dict get [lrange $ev 1 end] -since]
+        string map [list $sid SID] [list \
+            [lrange $ev 0 2] \
+            [expr {$since >= $before && $since <= [clock microseconds]}] \
+            [expr {[dict get [lindex [c.calls list] 0] active_since] == $since}] \
+            [dict get [dict get [calls_state] $sid] state]]
+    } -result {{<Active> -sid SID} 1 1 active}
+
+test media-reconnect-keeps-active-since {an ICE restart back to connected keeps the first <Active>'s time} \
     {*}$media_env -body {
         set sid [media_caller]
         mockrtc::fire [media_pc $sid] state-change connected
-        string map [list $sid SID] [list \
-            [lindex [calls_events] end] \
-            [dict get [dict get [calls_state] $sid] state]]
-    } -result {{<Active> -sid SID} active}
+        set first [dict get [lindex [c.calls list] 0] active_since]
+        after 2
+        mockrtc::fire [media_pc $sid] state-change connecting
+        mockrtc::fire [media_pc $sid] state-change connected
+        set ev [lindex [calls_events] end]
+        list [expr {[dict get [lrange $ev 1 end] -since] == $first}] \
+            [expr {[dict get [lindex [c.calls list] 0] active_since] == $first}]
+    } -result {1 1}
 
 test media-list-active {a connected call is the one live state only media can reach} \
     {*}$media_env -body {
@@ -273,7 +291,7 @@ test media-closed-ends-call {a closed pc surfaces as <Ended> and forgets the cal
         string map [list $sid SID] [list \
             [lindex [calls_events] end] \
             [dict exists [calls_state] $sid]]
-    } -result {{<Ended> -sid SID} 0}
+    } -result {{<Ended> -sid SID -reason hangup} 0}
 
 # -- Teardown --
 
@@ -687,7 +705,7 @@ test media-terminate-naming-a-fault-fails-the-call {a session-terminate naming a
             lappend out [string map [list $sid SID] [lindex [calls_events] end]]
         }
         set out
-    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} {<Failed> -sid SID -reason {the peer reported security-error}} {<Failed> -sid SID -reason {the peer reported failed-transport}} {<Ended> -sid SID} {<Ended> -sid SID}}
+    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} {<Failed> -sid SID -reason {the peer reported security-error}} {<Failed> -sid SID -reason {the peer reported failed-transport}} {<Ended> -sid SID -reason hangup} {<Ended> -sid SID -reason hangup}}
 
 test media-finish-ends-the-call {a <finish/> from the peer ends a call it still holds, failed if it names a fault} \
     {*}$media_env -body {
@@ -699,7 +717,7 @@ test media-finish-ends-the-call {a <finish/> from the peer ends a call it still 
         c.conn feed [calls_jmi_in finish $b $::MEDIA_PEER success]
         lappend out [string map [list $b SID] [lindex [calls_events] end]] \
             [dict exists [calls_state] $b]
-    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} 0 {<Ended> -sid SID} 0}
+    } -result {{<Failed> -sid SID -reason {the peer reported connectivity-error}} 0 {<Ended> -sid SID -reason hangup} 0}
 
 test media-finish-while-ringing-ignored {a <finish/> for a call still ringing changes nothing} \
     {*}$media_env -body {

@@ -895,7 +895,7 @@ interrupting the user over is [notify](#notify)'s job.
     person    = {key: string, nick: string, jid: string, occupant: string,
                  present: bool, self: bool, group: string, role: string,
                  affiliation: string, show: string, status: string,
-                 occupant_id: string, caps: {...}, call: {...},
+                 occupant_id: string, caps: {...},
                  keys: member_keys | {}}
     room_caps = {request_voice: bool, destroy: bool}
     room_item = {jid: string, name: string, occupants: int | ""}
@@ -967,10 +967,9 @@ A group call creates an auxiliary, hidden room under the hood; see [Group
 calls](#group-calls).
 
 An occupant is `{nick, jid, jids, role, affiliation, show, status,
-occupant_id, caps, call}`. `jid` is the real JID if the room shows it; `jids`
+occupant_id, caps}`. `jid` is the real JID if the room shows it; `jids`
 lists every JID sharing the nick; `occupant_id` is its XEP-0421 id, "" when
-the room gives none; `call` is their part in a [group call](#groupcall), `{}`
-if none. `<NickChanged>` carries the occupant under its new nick. A
+the room gives none. `<NickChanged>` carries the occupant under its new nick. A
 `<Presence>` with `replay: true` only refreshes `caps` after your role
 changed.
 
@@ -981,9 +980,10 @@ changed.
 
 Events:
 
-    notify <Notify>   {jid: string, timestamp: int, nick: string, body: string,
-                       unread: int, mention: bool}
-    notify <Settings> {jid: string, muted: bool, mentions: bool}
+    notify <Notify>     {jid: string, timestamp: int, nick: string, body: string,
+                         unread: int, mention: bool}
+    notify <MissedCall> {jid: string, timestamp: int, nick: string, video: bool}
+    notify <Settings>   {jid: string, muted: bool, mentions: bool}
 
 `<Notify>` means this message is worth telling the user about even if they are
 not looking at the app; how to tell them is the frontend's job.
@@ -1007,6 +1007,10 @@ capped at 10 per chat per catch-up, with `unread` still reporting the true
 total. `notify_floor` is stamped at the account's first connection, so nothing
 older ever alerts and the opening archive fetch is silent. Both are `setting`
 keys.
+
+`<MissedCall>` alerts a [`calls <Missed>`](#calls): `jid` is the caller,
+`nick` as for `<Notify>`. It goes out at once and follows the chat's `muted`
+policy like a message without a mention.
 
 `muted` and `mentions` are the per-chat policy: alert when
 `(mention && mentions) || !muted`, so a mention pierces a mute unless
@@ -1226,7 +1230,8 @@ source: the `url` you passed, or the `path` when you passed no `url`.
 
     call_row = {sid: string, peer: string, direction: string, state: string,
                 peer_ringing: bool, group: string, video_local: bool,
-                video_remote: bool, verified: bool, fingerprint: string}
+                video_remote: bool, verified: bool, fingerprint: string,
+                active_since: int}
 
 `start` rings the peer; `video: true` offers a video track alongside audio.
 Take the session id from `<Outgoing>`.
@@ -1247,15 +1252,17 @@ offered/is sending video; `video_remote` is whether the peer did. `group` is
 the room JID when the call is one of a [group call](#groupcall)'s sessions, else `""`.
 Group-call sessions are listed like any call, so a restarted frontend finds them, but they
 raise `groupcall <Session>` instead of `<Outgoing>`/`<Incoming>`.
-`verified` and `fingerprint` are as in the last `<Verified>`.
+`verified` and `fingerprint` are as in the last `<Verified>`. `active_since` is
+the `since` of the call's `<Active>`, `0` until then.
 
 Events:
 
-    calls <Outgoing>     {sid: string, to: string}
+    calls <Outgoing>     {sid: string, to: string, video: bool}
     calls <Incoming>     {sid: string, from: string, video: bool}
     calls <Ringing>      {sid: string}
-    calls <Active>       {sid: string}
-    calls <Ended>        {sid: string}
+    calls <Active>       {sid: string, since: int}
+    calls <Ended>        {sid: string, reason: string}
+    calls <Missed>       {sid: string, from: string, video: bool, reason: string}
     calls <Failed>       {sid: string, reason: string}
     calls <Warning>      {sid: string, reason: string}
     calls <Verified>     {sid: string, verified: bool, fingerprint: string}
@@ -1267,6 +1274,26 @@ Events:
 
 A call ends on exactly one of `<Ended>` or `<Failed>`. `<Warning>` is just
 informational and doesn't end anything.
+
+`<Active>`'s `since` is when media first connected, in microseconds; an ICE
+restart can emit `<Active>` again with the same `since`.
+
+`<Ended>`'s `reason`:
+
+| reason | |
+|---|---|
+| `hangup` | ended normally after ringing, either side |
+| `declined` | the callee said no, you or the peer |
+| `busy` | the peer was on another call |
+| `retracted` | the caller gave up before an answer, you or the peer |
+| `elsewhere` | another of your devices answered or declined |
+| `timeout` | nobody answered within a minute |
+| `replaced` | your call and the peer's crossed, and theirs won |
+| `reset` | a fresh stream ended every call |
+
+`<Missed>` is a ring nobody here answered: `retracted` or `timeout` (after its
+`<Ended>`), or `busy`, turned away while another call was up, with no
+`<Incoming>` or `<Ended>`. [`notify <MissedCall>`](#notify) alerts it.
 
 `<Verified>` says whether to show the call as secure. Calls are verified
 the way Conversations does it: each side sends its DTLS fingerprint
@@ -1295,62 +1322,57 @@ tear the video half down on its own. See
     groupcall join     {jid: string, video?: bool, chat?: string, id?: string}
     groupcall join     {chat: string, timestamp: int, video?: bool}   answer an invite
     groupcall decline  {chat: string, timestamp: int}
-    groupcall inCall   {jid: string}                           -> bool
     groupcall leave    {jid: string}
     groupcall setVideo {jid: string, on?: bool}                on default: true
     groupcall invite   {jid: string, to: string}               XEP-0482, to a bare JID
-    groupcall list     {}                                      -> [groupcall_row]
+    groupcall get      {jid?: string, chat?: string}           -> [call_state]
+    groupcall inCall   {jid: string}                           -> bool
 
-    groupcall_row  = {jid: string, chat: string, hosted: bool, count: int,
-                      video: bool, mode: "mesh", preview: {name?: string, id?: string},
-                      sessions: {<peer JID>: <sid>}}
-    occupant.call  = {} | {state: "preparing" | "announced", audio: bool,
-                          video: bool, contents: {<media>: [payload]}}
+    call_state  = {jid: string, chat: string, hosted: bool,
+                   phase: "idle" | "joining" | "live" | "ended",
+                   reason: string, warning: string, since: int,
+                   video: bool, camera: bool, preview: frame_stream | {},
+                   count: int, participants: [participant]}
+    participant = {nick: string, jid: string, joined: bool, video: bool,
+                   leg: "expected" | "connecting" | "active" | "ended" | "failed",
+                   reason: string, warning: string, stream: string}
 
 Events:
 
-    groupcall <Started>      {jid: string, chat: string}
-    groupcall <StartFailed>  {chat: string, reason: string}
-    groupcall <Joined>       {jid: string, chat?: string}
-    groupcall <Session>      {jid: string, peer: string, sid: string, video: bool}
-    groupcall <Left>         {jid: string, reason: string, chat?: string}
+    groupcall <State>        call_state                                       pullable
     groupcall <Invited>      {jid: string, from: string, chat: string, timestamp: int, video: bool}
-    groupcall <Warning>      {jid: string, reason: string}
-    groupcall <VideoPreview> {jid: string, chat?: string} & frame_stream
+    groupcall <StartFailed>  {chat: string, reason: string}
 
-A call (XEP-0272 Muji) lives in a room; `jid` is the room's JID.
+`jid` is the call's room: a hosted call's own (Dino's way: `start` makes it
+and invites the chat), or a group chat holding the call (Movim's, joined but
+never started by tacky). `chat` is the chat it belongs to.
 
-- **Hosted** (as in Dino): `start` makes a members-only room for `chat`
-  (a group chat or a contact), lets the chat's members in, and posts an
-  XEP-0482 invite. Each device joins under its own random nick. To join
-  from an invite, pass its room as `jid` plus `chat` and `id`, or answer the
-  stored invite with `chat` and `timestamp`.
-- **In-room** (as in Movim): the call is held in the group chat itself;
-  `join` with the chat's `jid`. tacky never starts one. Another device of
-  yours under the same nick blocks joining (`<Left>` says so).
+`<State>` is the whole call, sent at most once per room per event-loop turn
+when it changed; replace what you had. `get` returns every call with something
+to show, `pull` re-sends one.
 
-**Participants are the room's occupants.** Track them with `muc occupants`
-and `muc` `<Presence>`, `<Unavailable>`, `<NickChanged>`: an occupant is in
-the call while its `call` is non-empty, joined once `announced`. A group
-chat's "call in progress" banner reads the same field.
+- `phase`: `idle` is a call in one of your group chats you are not in (a
+  banner). `joining` until you are in, then `live`; `ended` is sent once,
+  with `reason` (`""` for your own `leave`). A last `idle` with `count` 0
+  means drop it.
+- `since` is when you went live, in microseconds. `video`: you joined with a
+  camera; `camera`: it is on now. `preview` is your self-view (`{id}` on the
+  host backend).
+- `count` includes you; `participants` is everyone else. `jid` is bare, `""`
+  when the room hides it.
+- `leg` is your session with them: `expected`, `connecting`, `active`, or
+  `ended` / `failed` while they stay - nothing redials. Out of a call
+  everyone is `expected`; a hidden participant is `failed`. `stream` is
+  their video.
 
-**Media**: you hold one [calls](#calls) session per participant.
-`<Session>` names it (`peer` is the occupant's `jid`); a later `<Session>`
-for the same peer replaces it. Its state comes from `calls` events for that
-`sid`. A session ending does not mean the participant left, and nothing
-redials. `list` gives the current `sessions` for a window opened mid-call.
+`<Invited>` is when to ring (live invites only); answer with `join` by `chat`
+and `timestamp`, or `decline`. `start` in a chat whose last call is still
+going joins it. `leave` tells a hosted call's chat, or retracts the invite if
+nobody came. `invite` lets a contact into the room and invites them.
 
-`<VideoPreview>` is your self-view while in a video call (`list` repeats it
-as `preview`); without the backend's `preview` capability use the
-sessions' `calls <VideoPreview>`. `setVideo` mutes the camera on all
-sessions. `invite` lets the contact into a hosted call's room first.
-
-Every join ends with `<Left>`, with a `reason` when it failed (`the call has
-ended`, `you are not on this call's guest list`, ...). `leave` also posts
-`left` to a hosted call's chat, or `retract` if you started it and nobody
-came. `start` in a chat whose last call is still going joins it instead.
-`<Invited>` is when to ring for a live invite; not raised for replayed
-history or invites from your own devices. See [Group calls](#group-calls).
+`<State>` is built from `<Started>`, `<Joined>`, `<Session>`, `<Left>`,
+`<Warning>` and `<VideoPreview>`, with `list` as their snapshot; frontends
+need none of them. See [Group calls](#group-calls).
 
 ## media
 
@@ -1550,12 +1572,13 @@ will retry next are `info`.
 own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
 "debug"}` covers `gui.chatlist` and everything else under `gui`. Omit `obj` to
 read or move the default the rest inherit. Backend objects are already named
-this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`, `rtcmv`). `write` without `obj` records `frontend`.
+this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`, `rtcmv`, `webrtc`). `write` without `obj` records `frontend`.
 
-`setnativelevel` drives the native loggers, `libdatachannel`, `rtcma` and
-`rtcmv`; omit `source` to set all three. They start off, and `none` turns one
-off again; `--libdatachannel-debug-level`, `--rtcma-debug-level` and
-`--rtcmv-debug-level` set them at startup.
+`setnativelevel` drives the native loggers, `libdatachannel`, `rtcma`,
+`rtcmv` and `webrtc` (libwebrtc, when that media backend is loaded); omit
+`source` to set all four. They start off, and `none` turns one off again;
+`--libdatachannel-debug-level`, `--rtcma-debug-level`, `--rtcmv-debug-level` and
+`--webrtc-debug-level` set them at startup.
 Their output is voluminous, so the ordinary level does not affect them, and jlog
 does not re-filter what the library already did. `getnativelevel` takes one
 `source`, since the three can differ.
@@ -2087,7 +2110,12 @@ applies the answer, media connects, and you get `<Active>`.
 Callee: an incoming `propose` gives you `<Incoming>` (with `video: true` if
 the caller offered it) and auto-replies `ringing`. `calls accept` sends
 `proceed`, then media setup waits for `session-initiate`, which applies the
-offer and sends `session-accept`.
+offer and sends `session-accept`. An unanswered ring ends in `<Ended>` too:
+retracted, taken by another of your devices, or rejected with `timeout` after
+a minute. An outgoing call is retracted after the same minute.
+
+A `propose` arriving while the account has any other call, group sessions
+included, is rejected `busy` without ringing and comes out as `<Missed>`.
 
 Either side ends the call with `calls hangup`. Before media is up the
 caller retracts over JMI instead of terminating; after that it's a Jingle
@@ -2144,33 +2172,19 @@ request, so the answer is authoritative: a call it does not name is over.
 
 ## Group calls
 
-tacky does mesh group calls, Dino-style: every participant holds one Jingle
-session with every other, so cost grows with each participant and a handful
-is the practical limit.
+tacky does mesh group calls, as Dino does: a Jingle session between every
+pair, so a handful of people is the practical limit.
 
-A call lives in an auxiliary MUC created under the hood. The room is hidden:
-not bookmarked, archived or in the chat list, its messages dropped, left out
-of `muc rooms`. Its `muc` events are the same as any room's, and `muc
-isHidden` tells it apart. It is members-only and shows real JIDs. Calls held
-in a group chat itself (as Movim does) can be joined too, but tacky never
-starts one.
+A hosted call lives in a hidden MUC made for it: not bookmarked, archived or
+listed, its messages dropped; `muc isHidden` tells it apart. Calls held in a
+group chat itself, as Movim's are, can be joined too.
 
 Using the API:
 
-1. `groupcall start` from a chat, or `groupcall join` with an invite
-   (`<Invited>` is when to ring). `<Started>` gives the call's room `jid`;
-   `<Joined>` means you are in.
-2. Show participants from the room like any MUC: `muc occupants` and `muc`
-   `<Presence>`, `<Unavailable>` and `<NickChanged>` for that `jid`. An
-   occupant is in the call while its `call` is non-empty. Renames and leaves
-   need no extra handling.
-3. For each participant, `groupcall <Session>` gives the `sid` of your media
-   session with them (`peer` is the occupant's `jid`); drive the tile from
-   `calls` events for that `sid`. A window opened mid-call gets the current
-   ones from `groupcall list`.
-4. `groupcall leave` to hang up; `<Left>` ends every join, with a `reason`
-   if it failed.
+1. `groupcall start` from a chat, or `groupcall join` an invite
+   (`<Invited>` is when to ring).
+2. Draw it from `groupcall <State>`; `groupcall get` on startup.
+3. `groupcall leave`; the `ended` state says you are out.
 
-A participant whose JID the room hides cannot be connected to and raises
-`<Warning>`. Dino joins any call room under a random nick, so inviting a
-Dino user to a call held in a group chat renames them there.
+Dino joins any call room under a random nick, so inviting a Dino user to a
+call held in a group chat renames them there.

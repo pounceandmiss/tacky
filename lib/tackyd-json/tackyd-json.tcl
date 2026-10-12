@@ -162,7 +162,7 @@ snit::type jsonify_type {
 jsonify_type jsonify \
     -types {
         message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string id string inviter string reason string state string video bool active bool live bool formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
-        occupant    {jids list caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} call {dict {audio bool video bool contents {map {list payload}}}}}
+        occupant    {jids list caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
         chat_entry  {groupchat bool is_self bool pinned bool order int autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool blocked bool}
@@ -171,13 +171,15 @@ jsonify_type jsonify \
         omemo_trust {device int active bool}
         omemo_room_status {eligible bool enabled bool offered bool reasons list members {list member_keys} attention int unreachable {list {dict {}}}}
         member_keys {keys int trusted int undecided int untrusted int compromised int attention bool}
-        person      {present bool self bool caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} call {dict {audio bool video bool contents {map {list payload}}}} keys member_keys}
+        person      {present bool self bool caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} keys member_keys}
         muc_room_info {known bool live bool members_only bool non_anonymous bool occupant_id bool}
         audio_device {default bool}
         camera      {facing int}
-        call_row    {peer_ringing bool video_local bool video_remote bool verified bool}
+        call_row    {peer_ringing bool video_local bool video_remote bool verified bool active_since int}
         payload     {id int clockrate int channels int}
         groupcall_row  {count int video bool hosted bool preview {dict {name string id string}} sessions {map string}}
+        groupcall_state {hosted bool since int video bool camera bool count int preview {dict {name string id string}} participants {list groupcall_participant}}
+        groupcall_participant {joined bool video bool}
         goto_result {messages {list message} anchor int bounded_before bool bounded_after bool}
         form        {fields {list form_field}}
         form_field  {required bool value list options {list {dict {label string value string}}} media {dict {cid string type string}}}
@@ -239,6 +241,7 @@ jsonify_type jsonify \
         calls/list              {list call_row}
         groupcall/inCall        bool
         groupcall/list          {list groupcall_row}
+        groupcall/get           {list groupcall_state}
         author/get              {dict {}}
         register/media          base64
         register/form           form
@@ -294,9 +297,14 @@ jsonify_type jsonify \
         blocking/<Changed>      {dict {list list}}
         notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
+        notify/<MissedCall>     {dict {timestamp int video bool}}
         groupcall/<Invited>     {dict {timestamp int video bool}}
         groupcall/<Session>     {dict {video bool}}
+        groupcall/<State>       groupcall_state
+        calls/<Outgoing>        {dict {video bool}}
         calls/<Incoming>        {dict {video bool}}
+        calls/<Active>          {dict {since int}}
+        calls/<Missed>          {dict {video bool}}
         calls/<Verified>        {dict {verified bool}}
 
         omemo/<TrustList>          {dict {trustList {list omemo_trust}}}

@@ -199,13 +199,34 @@ proc gc_payloads {muji} {
     return $out
 }
 
+# Without <State>, which gc_states reads.
 proc gc_events {} {
     set out {}
     foreach e $::_emitted {
-        if {[lindex $e 0] ne "groupcall"} continue
+        if {[lindex $e 0] ne "groupcall" || [lindex $e 1] eq "<State>"} continue
         lappend out [list [lindex $e 1] {*}[dict remove [lrange $e 2 end] -acc]]
     }
     return $out
+}
+
+# Every <State> so far, as dicts without the dashes or -acc.
+proc gc_states {} {
+    set out {}
+    foreach e $::_emitted {
+        if {[lindex $e 0] ne "groupcall" || [lindex $e 1] ne "<State>"} continue
+        set st {}
+        dict for {k v} [dict remove [lrange $e 2 end] -acc] {
+            dict set st [string range $k 1 end] $v
+        }
+        lappend out $st
+    }
+    return $out
+}
+
+# The newest <State>, once this turn's have gone out.
+proc gc_state {} {
+    update idletasks
+    return [lindex [gc_states] end]
 }
 
 proc gc_event_args {name} {
@@ -311,7 +332,7 @@ proc gc_nicks_left {} {
 # occupants and groupcall list.
 proc gc_status {room} {
     set count 0
-    foreach occ [c muc occupants -jid $room] {
+    foreach occ [c muc Occupants -jid $room] {
         if {[dict get $occ call] ne "" && [dict get $occ call state] eq "announced"} { incr count }
     }
     set joined [expr {$room in [lmap r [c.groupcall list] { dict get $r jid }]}]
@@ -319,10 +340,14 @@ proc gc_status {room} {
 }
 
 # An occupant's call state: preparing, announced, or "" when not in the call.
+# The field is internal: read it as groupcall does.
 proc gc_occupant_call {room nick} {
-    set occ [c muc occupant -jid $room -nick $nick]
-    if {$occ eq "" || [dict get $occ call] eq ""} { return "" }
-    dict get $occ call state
+    foreach occ [c muc Occupants -jid $room] {
+        if {[dict get $occ nick] ne $nick} continue
+        if {[dict get $occ call] eq ""} { return "" }
+        return [dict get $occ call state]
+    }
+    return ""
 }
 
 # The pc handle of a session, as mock media logged it.
@@ -880,7 +905,7 @@ test groupcall-tracks-call-in-room {a call in progress is seen from the occupant
         c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
         c.conn feed [gc_presence carol -jid $CAROL -preparing 1]
         list [gc_events] [gc_status $ROOM] \
-            [lsort [lmap o [c muc occupants -jid $ROOM] {
+            [lsort [lmap o [c muc Occupants -jid $ROOM] {
                 if {[dict get $o call] eq ""} continue
                 list [dict get $o nick] [dict get $o call state] [dict get $o call audio]}]]
     } -result {{} {active 1 joined 0 count 1} {{bob announced 1} {carol preparing 0}}}
@@ -2183,3 +2208,184 @@ test groupcall-replayed-presence-ignored {presences muc re-sends with our echoes
         foreach w [c.conn get_written] { if {[dict get $w tag] eq "presence"} { incr presences } }
         list $replays [llength [gc_event_args <Session>]] $presences
     } -result {1 1 0}
+
+# -- <State> ----------------------------------------------------------------------
+
+# The fields of one participant in a state, by nick.
+proc gc_who {state nick} {
+    foreach p [dict get $state participants] {
+        if {[dict get $p nick] eq $nick} { return $p }
+    }
+    return ""
+}
+
+proc gc_legs {state} {
+    set out {}
+    foreach p [dict get $state participants] {
+        lappend out [dict get $p nick] [dict get $p leg]
+    }
+    return [lsort -stride 2 $out]
+}
+
+test groupcall-state-banner {a call in a room of ours we are not in is idle, with who is in it} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]] \
+            [gc_presence carol -jid $CAROL -preparing 1]
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111] video [list $VP8_96]]]
+        set st [gc_state]
+        list [dict get $st jid] [dict get $st chat] [dict get $st hosted] \
+            [dict get $st phase] [dict get $st count] \
+            [gc_who $st bob] [dict get [gc_who $st carol] joined]
+    } -result [list $ROOM $ROOM 0 idle 1 \
+        {nick bob jid bob@example.com joined 1 video 1 leg expected reason {} warning {} stream {}} 0]
+
+test groupcall-state-nothing-to-show {a room with no call in it has no state} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB]
+        c.conn feed [gc_presence carol -jid $CAROL]
+        list [gc_state] [c.groupcall get]
+    } -result {{} {}}
+
+test groupcall-state-joining-then-live {join is joining until we announce, then live since then} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM -video 1
+        set joining [gc_state]
+        set before [clock microseconds]
+        gc_echo_preparing
+        set live [gc_state]
+        list [dict get $joining phase] [dict get $joining video] [dict get $joining camera] \
+            [dict get $live phase] [expr {[dict get $live since] >= $before}] \
+            [dict get $live count] [dict exists [dict get $live preview] name]
+    } -result {joining 1 1 live 1 0 1}
+
+test groupcall-state-legs {each participant's leg follows its session's calls events} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]] \
+            [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set sid [gc_sid_of bob]
+        set out [list [gc_legs [gc_state]]]
+        c emit calls <Active> -sid $sid -since 1
+        lappend out [dict get [gc_who [gc_state] bob] leg]
+        c emit calls <Warning> -sid $sid -reason "media path interrupted"
+        lappend out [dict get [gc_who [gc_state] bob] warning]
+        c emit calls <VideoTrack> -sid $sid -mid video -direction incoming -name /tmp/tv-bob
+        lappend out [dict get [gc_who [gc_state] bob] stream]
+        c emit calls <Active> -sid $sid -since 1
+        lappend out [dict get [gc_who [gc_state] bob] warning]
+        c emit calls <Failed> -sid $sid -reason "media path failed (ICE/DTLS)"
+        set bob [gc_who [gc_state] bob]
+        lappend out [dict get $bob leg] [dict get $bob reason] [dict get $bob stream]
+    } -result {{bob connecting carol connecting} active {media path interrupted} /tmp/tv-bob {} failed {media path failed (ICE/DTLS)} {}}
+
+test groupcall-state-hidden-jid {a participant the room hides is in the call, unreachable} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set bob [gc_who [gc_state] bob]
+        list [dict get $bob jid] [dict get $bob leg] [dict get $bob reason]
+    } -result {{} failed {the room hides their address}}
+
+test groupcall-state-leave-with-others {our leave is one ended state, then the banner again} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_state
+        set n [llength [gc_states]]
+        c.groupcall leave -jid $ROOM
+        c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
+        gc_state
+        set after [lrange [gc_states] $n end]
+        list [lmap s $after { dict get $s phase }] [dict get [lindex $after 0] reason] \
+            [dict get [lindex $after end] count] [gc_legs [lindex $after end]]
+    } -result {{ended idle} {} 1 {bob expected}}
+
+test groupcall-state-leave-alone {leaving a call nobody else is in: ended, then the empty one that says drop it} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_state
+        set n [llength [gc_states]]
+        c.groupcall leave -jid $ROOM
+        c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
+        gc_state
+        set after [lrange [gc_states] $n end]
+        list [lmap s $after { dict get $s phase }] \
+            [dict get [lindex $after end] count] [dict get [lindex $after end] participants] \
+            [c.groupcall get]
+    } -result {{ended idle} 0 {} {}}
+
+test groupcall-state-failed-join {a hosted call that is over: one ended state saying why} \
+    {*}$groupcall_env -body {
+        c.groupcall join -jid call1@muc.example.com -chat bob@example.com
+        set joining [gc_state]
+        set join [lindex [c.conn get_written] end]
+        c.conn feed [j presence -from call1@muc.example.com/[jid resource [xsearch $join -get @to]] \
+            -type error {
+                j error -type cancel {
+                    j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+        set st [gc_state]
+        list [dict get $joining phase] [dict get $joining hosted] [dict get $joining chat] \
+            [lmap s [gc_states] { dict get $s phase }] \
+            [lsearch -inline -all [lmap s [gc_states] { dict get $s reason }] ?*]
+    } -result {joining 1 bob@example.com {joining ended idle} {{the call has ended}}}
+
+test groupcall-state-camera {setVideo turns the camera field, not video} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM -video 1
+        gc_echo_preparing
+        c.groupcall setVideo -jid $ROOM -on 0
+        set st [gc_state]
+        list [dict get $st video] [dict get $st camera]
+    } -result {1 0}
+
+test groupcall-state-once-per-turn {a burst of changes is one state, and no change is none} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        gc_state
+        set n [llength [gc_states]]
+        c.conn feed [gc_presence carol -jid $CAROL -preparing 1]
+        c.conn feed [gc_presence carol -jid $CAROL -contents [list audio [list $OPUS_111]]]
+        c.conn feed [gc_presence dave -jid dave@example.com/x -contents [list audio [list $OPUS_111]]]
+        gc_state
+        set burst [expr {[llength [gc_states]] - $n}]
+        # Not about the call: an occupant without <muji> changing status.
+        c.conn feed [gc_presence erin -jid erin@example.com/x]
+        gc_state
+        list $burst [expr {[llength [gc_states]] - $n}] [dict get [gc_state] count]
+    } -result {1 1 3}
+
+test groupcall-state-get-and-pull {get is the last state; pull sends it again} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        set st [gc_state]
+        set n [llength [gc_states]]
+        c.groupcall pull -event <State> -jid $ROOM
+        list [expr {[c.groupcall get] eq [list $st]}] \
+            [expr {[c.groupcall get -chat $ROOM?join] eq [list $st]}] \
+            [c.groupcall get -chat nobody@example.com] \
+            [expr {[llength [gc_states]] - $n}] [expr {[lindex [gc_states] end] eq $st}] \
+            [catch {c.groupcall pull -event <Joined> -jid $ROOM}]
+    } -result {1 1 {} 1 1 1}
+
+test groupcall-state-call-field-internal {frontends get no occupant call field: occupants, occupant, people and muc's events leave it out} \
+    {*}$groupcall_env -body {
+        gc_room
+        set ::_emitted {}
+        c.conn feed [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        set pres [lsearch -inline -index 1 $::_emitted <Presence>]
+        set people [dict get [c muc people -jid $ROOM] people]
+        list [dict exists [lindex [c muc occupants -jid $ROOM] 0] call] \
+            [dict exists [c muc occupant -jid $ROOM -nick bob] call] \
+            [llength [lmap p $people { expr {[dict exists $p call] ? 1 : [continue]} }]] \
+            [dict exists [dict get [lrange $pres 2 end] -occupant] call] \
+            [gc_occupant_call $ROOM bob]
+    } -result {0 0 0 0 announced}

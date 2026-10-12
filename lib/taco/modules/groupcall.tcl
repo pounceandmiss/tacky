@@ -31,6 +31,20 @@
 #   ;# -> one dict per room we are in a call in: jid chat hosted count video mode
 #   ;#    preview (the self-view's channel, {name $n} or {id $i}; {} if none)
 #   ;#    sessions (peer real JID -> sid)
+# tacky groupcall get          -acc $jid ?-jid $room? ?-chat $chat?
+#   ;# -> the <State> of every call with something to show
+# tacky groupcall pull         -acc $jid -event <State> -jid $room
+#
+# tacky listen groupcall <State> $cmd ;# -jid $room -chat $chat -hosted 0|1
+#   ;# -phase idle|joining|live|ended -reason $t -warning $t -since $us
+#   ;# -video 0|1 -camera 0|1 -preview {name $n}|{id $i}|{} -count $n
+#   ;# -participants {participant ...}
+#   ;# participant: nick jid joined video leg reason warning stream
+#   ;#   leg: expected|connecting|active|ended|failed
+#
+# The whole call, at most once per room per event-loop turn and only when it
+# changed. idle: a call in a room of ours we are not in. ended: sent once, with
+# the reason ("" for our own leave). A last idle with count 0 means drop it.
 #
 # Participants are MUC occupants. Each carries `call`, parsed from their
 # <muji> presence: "" when not in the call, else {state preparing|announced
@@ -46,6 +60,8 @@
 # tacky listen groupcall <Invited>    $cmd ;# -jid $room -from $bareJid -chat $chat -timestamp $ts -video $b
 # tacky listen groupcall <Warning>    $cmd ;# -jid $room -reason $t
 # tacky listen groupcall <VideoPreview> $cmd ;# -jid $room ?-chat $chat? ?-name $n? ?-id $i?
+#
+# <State> is built from the events above; frontends need none of them.
 #
 # <Session>: our session with -peer (an occupant's real JID) is now -sid,
 # replacing any earlier one for that peer. Its media state comes from the
@@ -79,7 +95,8 @@
 #   video    : 1 if we offer video
 #   mode     : mesh
 #   payloads : media -> list of {id name clockrate ?channels?} we announced
-#   sessions : real JID -> {sid video}; sid "" before it exists or after it ends
+#   sessions : real JID -> {sid video state reason warning stream}; sid ""
+#              before it exists or after it ends, state as <State>'s leg
 #   timer    : pending after id or "": the echo wait, then the prepare wait
 #   echoed   : 1 once the room has echoed our <preparing/>
 #   waitfor  : real JIDs preparing when our <preparing/> echoed
@@ -87,6 +104,9 @@
 #   warned   : nicks already warned about a hidden JID
 #   preview  : the media preview we hold for the self-view, "" when none
 #   view     : its channel, {name $n} or {id $i}, {} until it is up
+#   camera   : 1 while our camera is on (setVideo)
+#   since    : [clock microseconds] of our announce, 0 before
+#   warning  : the call's current warning for <State>
 #
 # Calls($room) is a hosted call we are entering or in:
 #   chat     : the chat it belongs to, "" when unknown
@@ -136,15 +156,23 @@ snit::type taco_groupcall {
     variable Live -array {}
     variable Asking -array {}
     variable Gen -array {}
+    # <State>: the flush due per room (after id), and the last one sent.
+    variable Dirty -array {}
+    variable Sent -array {}
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client muc addOccupantField call [mymethod ParseMuji]
+        $client muc addOccupantField call [mymethod ParseMuji] -internal 1
         $client bus subscribe $self calls:<Ended>     [mymethod OnSessionEnded ended]
         $client bus subscribe $self calls:<Failed>    [mymethod OnSessionEnded failed]
+        $client bus subscribe $self calls:<Active>     [mymethod OnLegEvent active]
+        $client bus subscribe $self calls:<Warning>    [mymethod OnLegEvent warning]
+        $client bus subscribe $self calls:<VideoTrack> [mymethod OnLegEvent track]
+        $client bus subscribe $self calls:<VideoEnded> [mymethod OnLegEvent untrack]
         $client bus subscribe $self muc:<Presence>    [mymethod OnMucPresence]
         $client bus subscribe $self muc:<Unavailable> [mymethod OnOccupantGone]
+        $client bus subscribe $self muc:<NickChanged> [mymethod OnRoomTouched]
         $client bus subscribe $self muc:<Left>        [mymethod OnRoomLeft]
         $client bus subscribe $self muc:<Destroyed>   [mymethod OnRoomLeft]
         $client bus subscribe $self <SessionEnd>      [mymethod OnDisconnect]
@@ -156,6 +184,9 @@ snit::type taco_groupcall {
         catch {$client bus unsubscribe $self}
         foreach room [array names Rooms] {
             after cancel [dict get $Rooms($room) timer]
+        }
+        foreach room [array names Dirty] {
+            after cancel $Dirty($room)
         }
     }
 
@@ -219,12 +250,13 @@ snit::type taco_groupcall {
         set chat [expr {$opts(-chat) eq "" ? ""
                         : [jid norm [regsub {\?join$} $opts(-chat) {}]]}]
         if {![$client iq isLive]} {
-            after idle [list $client emit groupcall <Left> -jid $room \
-                -reason "not connected" {*}[expr {$chat eq "" ? {} : [list -chat $chat]}]]
+            after idle [mymethod Gone $room "not connected" \
+                [dict create chat $chat hosted 1 video $video]]
             return
         }
         set Calls($room) [dict create chat $chat id $opts(-id) ours 0 \
-            met 0 admitted {}]
+            met 0 admitted {} video $video]
+        $self Touch $room
         $client muc join -jid $room -nick [$self RandomHex 4] -hidden 1 \
             -history {maxstanzas 0} -command [mymethod OnHostedJoined $room $video]
         return
@@ -258,8 +290,7 @@ snit::type taco_groupcall {
         if {![info exists Rooms($room)]} {
             # Still entering a hosted call's room: stop there.
             if {[info exists Calls($room)]} {
-                $client emit groupcall <Left> -jid $room -reason "left" \
-                    {*}[$self ChatArgs $room]
+                $self Gone $room "left"
                 unset Calls($room)
                 if {[$client muc isJoined -jid $room]} { $client muc leave -jid $room }
             }
@@ -278,10 +309,12 @@ snit::type taco_groupcall {
         array set opts $args
         set room [jid norm $opts(-jid)]
         if {![info exists Rooms($room)]} return
+        dict set Rooms($room) camera [expr {$opts(-on) ? 1 : 0}]
         dict for {real session} [dict get $Rooms($room) sessions] {
             if {[dict get $session sid] eq ""} continue
             $client calls setVideo -sid [dict get $session sid] -on $opts(-on)
         }
+        $self Touch $room
         return
     }
 
@@ -332,6 +365,200 @@ snit::type taco_groupcall {
         return $out
     }
 
+    tackymethod get {args} {
+        array set opts {-jid "" -chat ""}
+        array set opts $args
+        if {$opts(-jid) ne ""} {
+            set rooms [list [jid norm $opts(-jid)]]
+        } else {
+            set rooms [lsort -unique [concat [array names Rooms] \
+                [array names Calls] [array names Sent]]]
+        }
+        set chat [expr {$opts(-chat) eq "" ? ""
+                        : [jid norm [regsub {\?join$} $opts(-chat) {}]]}]
+        set out {}
+        foreach room $rooms {
+            set st [$self StateOf $room]
+            if {$st eq ""} continue
+            if {$chat ne "" && [dict get $st chat] ne $chat} continue
+            lappend out $st
+        }
+        return $out
+    }
+
+    tackymethod pull {args} {
+        array set opts {-event "" -jid ""}
+        array set opts $args
+        if {$opts(-event) ne "<State>"} {
+            return -code error "groupcall pull: event $opts(-event) is not pullable"
+        }
+        set room [jid norm $opts(-jid)]
+        set st [$self StateOf $room]
+        if {$st eq ""} {
+            unset -nocomplain Sent($room)
+            $self SendState [$self EmptyState $room]
+            return
+        }
+        set Sent($room) $st
+        $self SendState $st
+        return
+    }
+
+    # =========================================================================
+    # <State>
+    # =========================================================================
+
+    # $room's <State> goes out at the end of this turn, if it changed.
+    method Touch {room} {
+        set room [jid norm $room]
+        if {[info exists Dirty($room)]} return
+        set Dirty($room) [after idle [mymethod Flush $room]]
+    }
+
+    method Flush {room} {
+        unset -nocomplain Dirty($room)
+        set st [$self StateOf $room]
+        if {$st eq ""} {
+            if {![info exists Sent($room)]} return
+            unset Sent($room)
+            $self SendState [$self EmptyState $room]
+            return
+        }
+        if {[info exists Sent($room)] && $Sent($room) eq $st} return
+        set Sent($room) $st
+        $self SendState $st
+    }
+
+    method SendState {st} {
+        set flags {}
+        dict for {key value} $st { lappend flags -$key $value }
+        $client emit groupcall <State> {*}$flags
+    }
+
+    method EmptyState {room} {
+        return [dict create jid $room chat [$self ChatOf $room] \
+            hosted [info exists Calls($room)] phase idle reason "" warning "" \
+            since 0 video 0 camera 0 preview {} count 0 participants {}]
+    }
+
+    # "" when there is nothing to show.
+    method StateOf {room} {
+        set inCall [info exists Rooms($room)]
+        set entering [expr {!$inCall && [info exists Calls($room)]}]
+        set inRoom [expr {[$client muc isJoined -jid $room]
+                          && ($inCall || $entering || ![$client muc isHidden -jid $room])}]
+        if {!$inCall && !$entering && !$inRoom} { return "" }
+
+        if {$inCall} {
+            set phase [expr {[dict get $Rooms($room) state] eq "announced"
+                             ? "live" : "joining"}]
+        } else {
+            set phase [expr {$entering ? "joining" : "idle"}]
+        }
+        set people {}
+        set count 0
+        if {$inRoom} {
+            set myNick [$client muc myNick -jid $room]
+            foreach occ [$client muc Occupants -jid $room] {
+                set cs [$self CallState $occ]
+                if {$cs eq ""} continue
+                if {$cs eq "announced"} { incr count }
+                if {[dict get $occ nick] eq $myNick} continue
+                lappend people [$self ParticipantOf $room $occ $inCall]
+            }
+        }
+        if {$phase eq "idle" && $count == 0 && ![llength $people]} { return "" }
+
+        set st [$self EmptyState $room]
+        dict set st phase $phase
+        dict set st count $count
+        dict set st participants $people
+        if {$inCall} {
+            set r $Rooms($room)
+            dict set st warning [dict get $r warning]
+            dict set st since [dict get $r since]
+            dict set st video [dict get $r video]
+            dict set st camera [dict get $r camera]
+            dict set st preview [dict get $r view]
+        } elseif {$entering} {
+            dict set st video [dict getdef $Calls($room) video 0]
+            dict set st camera [dict get $st video]
+        }
+        return $st
+    }
+
+    # Out of the call everyone is expected.
+    method ParticipantOf {room occ inCall} {
+        set real [dict get $occ jid]
+        set p [dict create nick [dict get $occ nick] \
+            jid [expr {$real eq "" ? "" : [jid bare $real]}] \
+            joined [expr {[$self CallState $occ] eq "announced"}] \
+            video [dict get $occ call video] \
+            leg expected reason "" warning "" stream ""]
+        if {!$inCall} { return $p }
+        if {$real eq ""} {
+            if {[dict get $Rooms($room) state] eq "announced"} {
+                dict set p leg failed
+                dict set p reason "the room hides their address"
+            }
+            return $p
+        }
+        if {![dict exists $Rooms($room) sessions $real]} { return $p }
+        set leg [dict get $Rooms($room) sessions $real]
+        set state [dict getdef $leg state ""]
+        if {$state eq ""} { return $p }
+        dict set p leg $state
+        dict set p reason [dict getdef $leg reason ""]
+        dict set p warning [dict getdef $leg warning ""]
+        dict set p stream [dict getdef $leg stream ""]
+        return $p
+    }
+
+    # <Left> and an ended <State>. $extra: since, video, chat.
+    method Gone {room reason {extra {}}} {
+        set chatArgs [$self ChatArgs $room]
+        if {[dict exists $extra chat] && [dict get $extra chat] ne ""} {
+            set chatArgs [list -chat [dict get $extra chat]]
+        }
+        $client emit groupcall <Left> -jid $room -reason $reason {*}$chatArgs
+        set st [$self EmptyState $room]
+        dict set st chat [expr {[dict exists $chatArgs -chat] ? [dict get $chatArgs -chat] : ""}]
+        dict set st phase ended
+        dict set st reason [expr {$reason eq "left" ? "" : $reason}]
+        set st [dict merge $st [dict remove $extra chat]]
+        $self SendState $st
+        set Sent($room) ended
+        $self Touch $room
+    }
+
+    method OnLegEvent {kind args} {
+        set sid [dict get $args -sid]
+        foreach room [array names Rooms] {
+            dict for {real leg} [dict get $Rooms($room) sessions] {
+                if {[dict get $leg sid] ne $sid} continue
+                switch -- $kind {
+                    active {
+                        dict set leg state active
+                        dict set leg warning ""
+                    }
+                    warning { dict set leg warning [dict get $args -reason] }
+                    track {
+                        if {[dict getdef $args -direction ""] ne "incoming"} return
+                        dict set leg stream [dict getdef $args -name ""]
+                    }
+                    untrack { dict set leg stream "" }
+                }
+                dict set Rooms($room) sessions $real $leg
+                $self Touch $room
+                return
+            }
+        }
+    }
+
+    method OnRoomTouched {args} {
+        $self Touch [dict get $args -jid]
+    }
+
     # =========================================================================
     # taco_calls hook: an inbound session-initiate with <muji room/>
     # =========================================================================
@@ -355,11 +582,11 @@ snit::type taco_groupcall {
             set old [dict get $Rooms($room) sessions $peer sid]
             if {$old ne "" && $old ne $opts(-replaces)} { return "" }
         }
-        dict set Rooms($room) sessions $peer \
-            [dict create sid $opts(-sid) video $opts(-video)]
+        dict set Rooms($room) sessions $peer [$self NewLeg $opts(-sid) $opts(-video)]
         $client emit groupcall <Session> -jid $room \
             -peer $peer -sid $opts(-sid) -video $opts(-video)
         $self Met $room
+        $self Touch $room
         return [dict get $Rooms($room) video]
     }
 
@@ -392,6 +619,7 @@ snit::type taco_groupcall {
         # A caps refresh, not a new presence.
         if {[dict exists $args -replay] && [dict get $args -replay]} return
         set room [jid norm [dict get $args -jid]]
+        $self Touch $room
         if {![info exists Rooms($room)]} return
         set occ [dict get $args -occupant]
         if {[dict get $args -nick] eq [$client muc myNick -jid $room]} {
@@ -416,7 +644,7 @@ snit::type taco_groupcall {
                 if {$real eq ""} {
                     $self WarnHidden $room [dict get $occ nick]
                 } elseif {![dict exists $Rooms($room) sessions $real]} {
-                    dict set Rooms($room) sessions $real [dict create sid "" video 0]
+                    dict set Rooms($room) sessions $real [$self NewLeg "" 0 ""]
                     if {![dict get $Rooms($room) placed]} { $self Dial $room $real }
                 }
             }
@@ -456,7 +684,7 @@ snit::type taco_groupcall {
                     # Wait only for those preparing now; hidden JIDs are
                     # unreachable anyway.
                     set ahead {}
-                    foreach o [$client muc occupants -jid $room] {
+                    foreach o [$client muc Occupants -jid $room] {
                         if {[dict get $o nick] eq [dict get $occ nick]} continue
                         if {[$self CallState $o] ne "preparing" || [dict get $o jid] eq ""} continue
                         lappend ahead [dict get $o jid]
@@ -526,12 +754,14 @@ snit::type taco_groupcall {
         }
         dict set Rooms($room) payloads $payloads
         dict set Rooms($room) state announced
+        dict set Rooms($room) since [clock microseconds]
+        $self Touch $room
         $client muc sendPresence $room [list [$self ContentsNode $payloads]]
         $client emit groupcall <Joined> -jid $room {*}[$self ChatArgs $room]
         $client message PatchCallRows $room
 
         set myNick [$client muc myNick -jid $room]
-        foreach occ [$client muc occupants -jid $room] {
+        foreach occ [$client muc Occupants -jid $room] {
             if {[dict get $occ nick] eq $myNick || [$self CallState $occ] ne "announced"} continue
             set real [dict get $occ jid]
             if {$real eq ""} {
@@ -550,10 +780,17 @@ snit::type taco_groupcall {
                          && $occ ne "" && [dict get $occ call video]}]
         set sid [$client calls StartGroupSession \
             -room $room -peer $real -video $video]
-        dict set Rooms($room) sessions $real [dict create sid $sid video $video]
+        dict set Rooms($room) sessions $real [$self NewLeg $sid $video]
         $client emit groupcall <Session> -jid $room \
             -peer $real -sid $sid -video $video
         $self Met $room
+        $self Touch $room
+    }
+
+    # A placeholder (no sid, state "") shows as expected.
+    method NewLeg {sid video {state connecting}} {
+        return [dict create sid $sid video $video state $state reason "" \
+            warning "" stream ""]
     }
 
     # Warn once per nick that the room hides their JID.
@@ -588,6 +825,7 @@ snit::type taco_groupcall {
     method OnOccupantGone {args} {
         set room [jid norm [dict get $args -jid]]
         $self OnOutOfCall $room [dict get $args -occupant jid]
+        $self Touch $room
     }
 
     # The call goes with the room. On a session end OnDisconnect does this
@@ -598,11 +836,11 @@ snit::type taco_groupcall {
         if {$opts(-disconnected)} return
         set room [jid norm $opts(-jid)]
         if {![info exists Rooms($room)] && [info exists Calls($room)]} {
-            $client emit groupcall <Left> -jid $room -reason "left the room" \
-                {*}[$self ChatArgs $room]
+            $self Gone $room "left the room"
             unset Calls($room)
         }
         if {[info exists Rooms($room)]} { $self Leave $room "left the room" }
+        $self Touch $room
     }
 
     # Only the room state is ours to drop, with nothing on the wire; the sessions
@@ -613,10 +851,11 @@ snit::type taco_groupcall {
             $self Leave $room "disconnected" 0
         }
         foreach room [array names Calls] {
-            $client emit groupcall <Left> -jid $room -reason "disconnected" \
-                {*}[$self ChatArgs $room]
+            $self Gone $room "disconnected"
             unset Calls($room)
         }
+        # Banners are stale too.
+        foreach room [array names Sent] { $self Touch $room }
     }
 
     # =========================================================================
@@ -630,7 +869,11 @@ snit::type taco_groupcall {
         foreach room [array names Rooms] {
             dict for {real session} [dict get $Rooms($room) sessions] {
                 if {[dict get $session sid] ne $sid} continue
-                dict set Rooms($room) sessions $real sid ""
+                dict set session sid ""
+                dict set session state $how
+                dict set session reason [dict getdef $args -reason ""]
+                dict set session warning ""
+                dict set session stream ""
                 # A refusing peer does not see us in the call, usually
                 # because another session of ours shares the nick (which our
                 # own echo does not always reveal).
@@ -639,10 +882,13 @@ snit::type taco_groupcall {
                     set occ [$self OccupantOf $room $real]
                     set who [expr {$occ eq "" ? $real : [dict get $occ nick]}]
                     set me [$client muc myNick -jid $room]
-                    $client emit groupcall <Warning> -jid $room \
-                        -reason "$who does not see you in the call; is another\
-                            device of yours in this room as $me?"
+                    set why "$who does not see you in the call; is another\
+                        device of yours in this room as $me?"
+                    dict set session reason $why
+                    $client emit groupcall <Warning> -jid $room -reason $why
                 }
+                dict set Rooms($room) sessions $real $session
+                $self Touch $room
                 return
             }
         }
@@ -687,7 +933,8 @@ snit::type taco_groupcall {
         # Others may still be in it.
         $self ForgetLiveness $room
         # Still preparing counts: a frontend showing "joining" waits for it.
-        $client emit groupcall <Left> -jid $room -reason $reason {*}[$self ChatArgs $room]
+        $self Gone $room $reason [dict create since [dict get $state since] \
+            video [dict get $state video]]
         $client message PatchCallRows $room
         # A hosted call's room is the call's alone: out of the call, out of it.
         if {[info exists Calls($room)]} {
@@ -715,7 +962,7 @@ snit::type taco_groupcall {
     # Occupants announcing contents (not merely preparing), us included.
     method CallSize {room} {
         set n 0
-        foreach occ [$client muc occupants -jid $room] {
+        foreach occ [$client muc Occupants -jid $room] {
             if {[$self CallState $occ] eq "announced"} { incr n }
         }
         return $n
@@ -724,7 +971,7 @@ snit::type taco_groupcall {
     # The occupant whose real JID is $fullJid, "" if none.
     method OccupantOf {room fullJid} {
         if {$fullJid eq ""} { return "" }
-        foreach occ [$client muc occupants -jid $room] {
+        foreach occ [$client muc Occupants -jid $room] {
             if {[dict get $occ jid] eq $fullJid} { return $occ }
         }
         return ""
@@ -777,7 +1024,7 @@ snit::type taco_groupcall {
             set ours [expr {[dict exists $mine $kind] ? [dict get $mine $kind] : {}}]
             set agreed {}
             set anyone 0
-            foreach occ [$client muc occupants -jid $room] {
+            foreach occ [$client muc Occupants -jid $room] {
                 if {[dict get $occ nick] eq $myNick || [$self CallState $occ] ne "announced"} continue
                 if {![dict exists $occ call contents $kind]} continue
                 set theirs [dict get $occ call contents $kind]
@@ -816,9 +1063,11 @@ snit::type taco_groupcall {
     method BeginJoin {room video} {
         set Rooms($room) [dict create state preparing video $video mode mesh \
             payloads {} sessions {} echoed 0 waitfor {} placed 0 warned {} preview "" view {} \
+            camera $video since 0 warning "" \
             timer [after $ECHO_TIMEOUT_MS [mymethod OnEchoTimeout $room]]]
         $client muc sendPresence $room [list [$self PreparingNode]]
         if {$video} { $self OpenPreview $room }
+        $self Touch $room
     }
 
     # The self-view, held from joining to leaving. A camera that will not
@@ -831,7 +1080,11 @@ snit::type taco_groupcall {
         dict set Rooms($room) preview $name
         if {[catch {::tacky::media openPreview $name \
                 -command [mymethod OnPreviewEvent $room $name] -device-id $cam} err]} {
-            if {[info exists Rooms($room)]} { dict set Rooms($room) preview "" }
+            if {[info exists Rooms($room)]} {
+                dict set Rooms($room) preview ""
+                dict set Rooms($room) warning "camera: $err"
+                $self Touch $room
+            }
             $client emit groupcall <Warning> -jid $room -reason "camera: $err"
         }
     }
@@ -842,12 +1095,15 @@ snit::type taco_groupcall {
             videoChannel {
                 set view [dict filter [dict get $ev channel] key name id]
                 dict set Rooms($room) view $view
+                $self Touch $room
                 set flags {}
                 dict for {key value} $view { lappend flags -$key $value }
                 $client emit groupcall <VideoPreview> -jid $room \
                     {*}[$self ChatArgs $room] {*}$flags
             }
             deviceFallback {
+                dict set Rooms($room) warning "camera device unavailable, using default"
+                $self Touch $room
                 $client emit groupcall <Warning> -jid $room \
                     -reason "camera device unavailable, using default"
             }
@@ -855,6 +1111,8 @@ snit::type taco_groupcall {
                 if {![dict get $ev fatal]} return
                 dict set Rooms($room) preview ""
                 dict set Rooms($room) view {}
+                dict set Rooms($room) warning "camera: [dict get $ev reason]"
+                $self Touch $room
                 ::tacky::media closePreview $name
                 $client emit groupcall <Warning> -jid $room \
                     -reason "camera: [dict get $ev reason]"
@@ -908,7 +1166,8 @@ snit::type taco_groupcall {
     method OnCreated {spec room} {
         set chat [dict get $spec chat]
         set id [dict get $spec id]
-        set Calls($room) [dict create chat $chat id $id ours 1 met 0 admitted {}]
+        set Calls($room) [dict create chat $chat id $id ours 1 met 0 admitted {} \
+            video [dict get $spec video]]
         $client emit groupcall <Started> -jid $room -chat $chat
         $self AdmitChat $room
         $self BeginJoin $room [dict get $spec video]
@@ -1026,8 +1285,7 @@ snit::type taco_groupcall {
             set reason "the call has ended"
         }
         if {$reason ne ""} {
-            $client emit groupcall <Left> -jid $room -reason $reason \
-                {*}[$self ChatArgs $room]
+            $self Gone $room $reason
             unset Calls($room)
             if {$reason eq "the call has ended"} {
                 set Live($room) 0
@@ -1096,7 +1354,7 @@ snit::type taco_groupcall {
             return
         }
         set jids {}
-        foreach occ [$client muc occupants -jid $chat] {
+        foreach occ [$client muc Occupants -jid $chat] {
             if {[dict get $occ jid] ne ""} { lappend jids [jid bare [dict get $occ jid]] }
         }
         $self Admit $room $jids

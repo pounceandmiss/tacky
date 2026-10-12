@@ -28,6 +28,7 @@ snit::type app_type {
     variable setupWin ""
     variable reportedActive 1
     variable focusAfter ""
+    variable groupCallsIn {}     ;# {acc room} of the group calls we are in
 
     constructor args {
         $self configurelist $args
@@ -56,7 +57,7 @@ snit::type app_type {
         }
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
-        ::tacky listen -tag $self groupcall <Joined> [mymethod OnGroupCallJoined]
+        ::tacky listen -tag $self groupcall <State> [mymethod OnGroupCallState]
         ::tacky listen -tag $self groupcall <Invited> [mymethod OnGroupCallInvited]
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
@@ -384,7 +385,15 @@ snit::type app_type {
             -direction outgoing
     }
 
-    method OnGroupCallJoined {ev} {
+    # Shown on going in only, so later states don't raise it.
+    method OnGroupCallState {ev} {
+        set key [list [dict get $ev -acc] [dict get $ev -jid]]
+        if {[dict get $ev -phase] ni {joining live}} {
+            set groupCallsIn [lsearch -all -inline -not -exact $groupCallsIn $key]
+            return
+        }
+        if {$key in $groupCallsIn} return
+        lappend groupCallsIn $key
         groupcallwindow show \
             -acc [dict get $ev -acc] \
             -jid [dict get $ev -jid]

@@ -95,7 +95,7 @@ test calls-start-proposes {start rings the bare JID and emits <Outgoing>} \
             $desc \
             [calls_events]]
     } -result [list 1 {propose SID} peer@example.com audio \
-        {{<Outgoing> -sid SID -to peer@example.com}}]
+        {{<Outgoing> -sid SID -to peer@example.com -video 0}}]
 
 test calls-hangup-while-proposed-retracts {a call cancelled before proceed retracts} \
     {*}$calls_env -body {
@@ -106,7 +106,7 @@ test calls-hangup-while-proposed-retracts {a call cancelled before proceed retra
             [calls_jmi_sent [calls_last_written]] \
             [dict exists [calls_state] $sid] \
             [lindex [calls_events] end]]
-    } -result [list {retract SID} 0 {<Ended> -sid SID}]
+    } -result [list {retract SID} 0 {<Ended> -sid SID -reason retracted}]
 
 test calls-reject-while-proposed-retracts {rejecting a call we placed retracts it} \
     {*}$calls_env -body {
@@ -117,7 +117,7 @@ test calls-reject-while-proposed-retracts {rejecting a call we placed retracts i
             [calls_jmi_sent [calls_last_written]] \
             [dict exists [calls_state] $sid] \
             [lindex [calls_events] end]]
-    } -result [list {retract SID} 0 {<Ended> -sid SID}]
+    } -result [list {retract SID} 0 {<Ended> -sid SID -reason retracted}]
 
 # -- Inbound JMI --
 
@@ -179,7 +179,7 @@ test calls-reject-declines {reject answers <reject>, ends the call and forgets i
             [calls_jmi_sent [calls_last_written]] \
             [dict exists [calls_state] tk-in5] \
             [lindex [calls_events] end]
-    } -result {{reject tk-in5} 0 {<Ended> -sid tk-in5}}
+    } -result {{reject tk-in5} 0 {<Ended> -sid tk-in5 -reason declined}}
 
 # -- Multi-device carbons --
 
@@ -191,7 +191,7 @@ test calls-proceed-by-sibling-ends-ring {another of our resources answering stop
         list \
             [dict exists [calls_state] tk-in6] \
             [lindex [calls_events] end]
-    } -result {0 {<Ended> -sid tk-in6}}
+    } -result {0 {<Ended> -sid tk-in6 -reason elsewhere}}
 
 test calls-reject-by-sibling-ends-ring {another of our resources declining stops our ring} \
     {*}$calls_env -body {
@@ -201,7 +201,7 @@ test calls-reject-by-sibling-ends-ring {another of our resources declining stops
         list \
             [dict exists [calls_state] tk-in7] \
             [lindex [calls_events] end]
-    } -result {0 {<Ended> -sid tk-in7}}
+    } -result {0 {<Ended> -sid tk-in7 -reason elsewhere}}
 
 # -- Crossing proposes (XEP-0353 §4.1) --
 
@@ -234,7 +234,7 @@ test calls-crossing-propose-theirs-wins {a crossing propose with a lower sid end
         string map [list $sid SID] [list [lmap w [c.conn get_written] { calls_jmi_sent $w }] \
             [dict keys [calls_state]] [lrange [calls_events] 1 end]]
     } -result [list {{ringing aa-in}} aa-in \
-        [list {<Ended> -sid SID} {<Incoming> -sid aa-in -from peer@example.com -video 0}]]
+        [list {<Ended> -sid SID -reason replaced} {<Incoming> -sid aa-in -from peer@example.com -video 0}]]
 
 test calls-crossing-propose-equal-sid-lower-jid {crossing proposes with the same sid: the lower JID wins} \
     {*}$calls_env -body {
@@ -262,14 +262,18 @@ test calls-tie-break-reject-ends-ours {a reject with <tie-break/> ends our propo
         }]
         string map [list $sid SID] [list [dict exists [calls_state] $sid] \
             [lindex [calls_events] end]]
-    } -result {0 {<Ended> -sid SID}}
+    } -result {0 {<Ended> -sid SID -reason replaced}}
 
-test calls-propose-from-another-contact-still-rings {calling one contact, another's propose rings as before} \
+test calls-propose-while-calling-is-busy {calling one contact, another's propose is turned away busy and missed} \
     {*}$calls_env -body {
         set sid [c.calls start -to peer@example.com]
+        c.conn clear
         c.conn feed [calls_jmi_in propose aa-other other@example.com/x]
-        list [dict get [calls_state] $sid state] [dict get [calls_state] aa-other state]
-    } -result {proposed ringing}
+        set m [calls_last_written]
+        list [dict get [calls_state] $sid state] [dict exists [calls_state] aa-other] \
+            [calls_jmi_sent $m] [xsearch $m reject reason * -get tag] \
+            [lrange [calls_events] 1 end]
+    } -result {proposed 0 {reject aa-other} busy {{<Missed> -sid aa-other -from other@example.com -video 0 -reason busy}}}
 
 # A <reject> with <tie-break/>, as the winner of crossing proposes sends.
 proc calls_tie_break_in {sid from} {
@@ -295,7 +299,7 @@ test calls-tie-break-by-sibling-ends-ring {our other device rejecting the peer's
         c.conn feed [calls_jmi_in propose zz-in $::PEER]
         c.conn feed [calls_tie_break_in zz-in user@test.example.com/desktop]
         list [dict exists [calls_state] zz-in] [lindex [calls_events] end]
-    } -result {0 {<Ended> -sid zz-in}}
+    } -result {0 {<Ended> -sid zz-in -reason elsewhere}}
 
 test calls-crossing-propose-against-two-of-ours {a crossing propose must beat every propose of ours to that contact} \
     {*}$calls_env -body {
@@ -427,7 +431,7 @@ test calls-fresh-stream-ends-calls {a new session invalidates every sid we held}
         c.conn feed [calls_jmi_in propose tk-in12 $::PEER]
         c.conn fire_ready 0
         list [calls_state] [lindex [calls_events] end]
-    } -result {{} {<Ended> -sid tk-in12}}
+    } -result {{} {<Ended> -sid tk-in12 -reason reset}}
 
 test calls-resumed-stream-keeps-calls {resumption keeps the session, so calls survive} \
     {*}$calls_env -body {
@@ -448,13 +452,13 @@ test calls-list-outgoing {a call we placed reports outgoing, proposed and a bare
         set sid [c.calls start -to peer@example.com/phone]
         set rows [c.calls list]
         string map [list $sid SID] [list [llength $rows] [lindex $rows 0]]
-    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {}}}
+    } -result {1 {sid SID peer peer@example.com direction outgoing state proposed peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {} active_since 0}}
 
 test calls-list-incoming {a call rung at us reports incoming, in tacky's own word for it} \
     {*}$calls_env -body {
         c.conn feed [calls_jmi_in propose tk-in20 $::PEER]
         lindex [c.calls list] 0
-    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {}}
+    } -result {sid tk-in20 peer peer@example.com direction incoming state ringing peer_ringing 0 group {} video_local 0 video_remote 0 verified 0 fingerprint {} active_since 0}
 
 test calls-list-peer-ringing {a peer device alerting is recorded, and moves no state} \
     {*}$calls_env -body {
@@ -479,16 +483,98 @@ test calls-list-drops-on-fresh-stream {a new session leaves nothing to re-seed f
         c.calls list
     } -result {}
 
-test calls-list-two-calls {nothing caps this at one, and each call keeps its own direction} \
+test calls-list-two-calls {calling out while rung at is allowed, and each call keeps its own direction} \
     {*}$calls_env -body {
-        c.calls start -to peer@example.com
         c.conn feed [calls_jmi_in propose tk-in22 other@example.com/tablet]
+        c.calls start -to peer@example.com
         set out {}
         foreach entry [c.calls list] {
             lappend out [dict get $entry peer] [dict get $entry direction]
         }
         lsort -stride 2 $out
     } -result {other@example.com incoming peer@example.com outgoing}
+
+# -- Ring timeout, missed calls, and why a ring ended --
+
+proc calls_wait_ring {} {
+    after [expr {$::taco_calls::RING_TIMEOUT_MS + 30}] {set ::calls_ring 1}
+    vwait ::calls_ring
+}
+
+set calls_ring_env $calls_env
+dict append calls_ring_env -setup "\nset ::taco_calls::RING_TIMEOUT_MS 20"
+dict append calls_ring_env -cleanup "\nset ::taco_calls::RING_TIMEOUT_MS 60000"
+
+test calls-ring-timeout-callee {a ring nobody answers is turned down with <timeout/> and missed} \
+    {*}$calls_ring_env -body {
+        c.conn feed [calls_jmi_in propose tk-rt1 $::PEER]
+        c.conn clear
+        calls_wait_ring
+        set m [calls_last_written]
+        list [dict exists [calls_state] tk-rt1] [calls_jmi_sent $m] \
+            [xsearch $m reject reason * -get tag] [lrange [calls_events] 1 end]
+    } -result {0 {reject tk-rt1} timeout {{<Ended> -sid tk-rt1 -reason timeout} {<Missed> -sid tk-rt1 -from peer@example.com -video 0 -reason timeout}}}
+
+test calls-ring-timeout-caller {a propose nobody answers is retracted as timed out} \
+    {*}$calls_ring_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        calls_wait_ring
+        string map [list $sid SID] [list [dict exists [calls_state] $sid] \
+            [calls_jmi_sent [calls_last_written]] [lindex [calls_events] end]]
+    } -result {0 {retract SID} {<Ended> -sid SID -reason timeout}}
+
+test calls-ring-timeout-stops-on-accept {an answered ring never times out} \
+    {*}$calls_ring_env -body {
+        c.conn feed [calls_jmi_in propose tk-rt2 $::PEER]
+        c.calls accept -sid tk-rt2
+        c.conn clear
+        calls_wait_ring
+        list [dict get [calls_state] tk-rt2 state] [c.conn get_written] \
+            [lmap e [calls_events] { lindex $e 0 }]
+    } -result {proceeded {} <Incoming>}
+
+test calls-ring-timeout-stops-on-proceed {a propose the peer took never times out} \
+    {*}$calls_ring_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn feed [calls_jmi_in proceed $sid $::PEER]
+        calls_wait_ring
+        list [dict get [calls_state] $sid state] [lmap e [calls_events] { lindex $e 0 }]
+    } -result {proceeded <Outgoing>}
+
+test calls-retract-while-ringing-is-missed {a caller giving up while we ring is a missed call} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-rt3 $::PEER]
+        c.conn feed [calls_jmi_in retract tk-rt3 $::PEER]
+        lrange [calls_events] 1 end
+    } -result {{<Ended> -sid tk-rt3 -reason retracted} {<Missed> -sid tk-rt3 -from peer@example.com -video 0 -reason retracted}}
+
+test calls-answered-elsewhere-is-not-missed {another of our devices answering is no missed call} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-rt4 $::PEER]
+        c.conn feed [calls_jmi_in proceed tk-rt4 user@test.example.com/desktop]
+        lmap e [calls_events] { lindex $e 0 }
+    } -result {<Incoming> <Ended>}
+
+test calls-busy-while-in-a-call {a propose while a call is up rings nothing and is missed busy} \
+    {*}$calls_env -body {
+        calls_accepted tk-rt5 $::PEER
+        c.conn feed [calls_jmi_in propose tk-rt6 other@example.com/x]
+        set m [calls_last_written]
+        list [dict keys [calls_state]] [calls_jmi_sent $m] [xsearch $m -get @to] \
+            [xsearch $m reject reason * -get tag] [lindex [calls_events] end]
+    } -result {tk-rt5 {reject tk-rt6} other@example.com/x busy {<Missed> -sid tk-rt6 -from other@example.com -video 0 -reason busy}}
+
+test calls-peer-reject-reasons {the peer turning our propose down says why} \
+    {*}$calls_env -body {
+        set out {}
+        foreach reason {"" busy timeout decline} {
+            set sid [c.calls start -to peer@example.com]
+            c.conn feed [calls_jmi_in reject $sid $::PEER $reason]
+            lappend out [dict get [lrange [lindex [calls_events] end] 1 end] -reason]
+        }
+        set out
+    } -result {declined busy timeout declined}
 
 # -- Codec filtering --
 
