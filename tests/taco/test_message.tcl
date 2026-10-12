@@ -4254,16 +4254,57 @@ test message-markdisplayed-sends \
     {markDisplayed sends a displayed marker referencing the stored origin id} \
     {*}$msg_common \
     -body {
+        msg_contact alice@example.com
         msg_store [list [msg_msg timestamp 5000000 origin_id oid9]]
         tacky message markDisplayed -acc $acc \
             -chat alice@example.com -timestamp 5000000
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
 
+test message-markdisplayed-names-theirs-under-ours \
+    {with our own message newest, the marker names theirs below it} \
+    {*}$msg_common \
+    -body {
+        msg_contact alice@example.com
+        msg_store [list [msg_msg timestamp 5000000 origin_id oid9] \
+            [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
+                from_jid $acc]]
+        tacky message markDisplayed -acc $acc \
+            -chat alice@example.com -timestamp 5100000
+        msg_written_marker displayed urn:xmpp:chat-markers:0
+    } -result oid9
+
+test message-markdisplayed-after \
+    {nothing of theirs past -after means no marker} \
+    {*}$msg_common \
+    -body {
+        msg_contact alice@example.com
+        msg_store [list [msg_msg timestamp 5000000 origin_id oid9] \
+            [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
+                from_jid $acc]]
+        tacky message markDisplayed -acc $acc \
+            -chat alice@example.com -timestamp 5100000 -after 5000000
+        msg_written_marker_count displayed urn:xmpp:chat-markers:0
+    } -result 0
+
+test message-markdisplayed-not-to-strangers \
+    {no displayed marker to someone who may not see our presence} \
+    {*}$msg_common \
+    -body {
+        msg_contact bob@example.com to
+        foreach jid {stranger@example.com bob@example.com} {
+            msg_store [list [msg_msg timestamp 5000000 chat_jid $jid \
+                from_jid $jid/phone origin_id oid-$jid]]
+            tacky message markDisplayed -acc $acc -chat $jid -timestamp 5000000
+        }
+        msg_written_marker_count displayed urn:xmpp:chat-markers:0
+    } -result 0
+
 test message-markdisplayed-own-message-noop \
     {markDisplayed sends nothing for a message of our own} \
     {*}$msg_common \
     -body {
+        msg_contact alice@example.com
         msg_store [list [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
             from_jid $acc]]
         tacky message markDisplayed -acc $acc \
@@ -4284,6 +4325,7 @@ test message-markdisplayed-disabled \
     {send_chat_markers=0 suppresses the displayed marker} \
     {*}$msg_common \
     -body {
+        msg_contact alice@example.com
         [$::_client cget -taco] setting set -key send_chat_markers -value 0
         msg_store [list [msg_msg timestamp 7000000 origin_id oid7]]
         tacky message markDisplayed -acc $acc \
