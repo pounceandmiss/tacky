@@ -33,6 +33,7 @@ and get back replies and events.
   - [omemo](#omemo)
   - [avatar](#avatar)
   - [nick](#nick)
+  - [author](#author)
   - [file](#file)
   - [calls](#calls)
   - [groupcall](#groupcall)
@@ -146,9 +147,6 @@ be regenerated: upload staging.
 
 `-transient yes` keeps every database in RAM and puts attachments in a
 temporary directory that is removed on shutdown.
-
-`-media-backend` and `-webrtc-lib` pick what runs the media half of a call;
-see [media](#media).
 
 Local storage can be encrypted (see [storage](#storage)) - off by default.
 When it is, every db above is SQLCipher-encrypted with the same passphrase.
@@ -699,7 +697,8 @@ carries it in `client`.
     message goto {chat: string, date: int, source: "local" | "remote", limit?: int, tag?: string}  -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}            -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int,
-                    before?: int, before_chat_jid?: string, before_id?: string, tag?: string}       -> search_result
+                    before?: int, before_chat_jid?: string, before_id?: string,
+                    field?: string, tag?: string}                                       -> search_result
     message edit {chat: string, timestamp: int, body: string}
     message retract {chat: string, timestamp: int}
     message moderate {chat: string, timestamp: int, reason?: string}
@@ -794,22 +793,11 @@ becomes `caption`, and the files are listed in `attachments`.
   attachments are just more than one entry). Each `attachment` has a `type` of
   `"image"` (render inline) or `"file"` (a download chip). `type: "invite"`
   invites you to the group chat `room` (bare JID) from `inviter` (bare JID,
-  `""` when unknown), with an optional `reason`; `body` is a plain-text
-  fallback. See [muc](#muc) for where it sits, `state`, and answering it.
-  `type: "call"` is an XEP-0482 invite to a group call in `room`, from
-  `inviter` (`""` when the room hides it), with `video` if it started with
-  video. `state` is `pending` until you answer, then `joined`, `declined`,
-  `elsewhere` (another device of yours answered), `missed` (retracted before
-  you answered) or `ended` (over when you tried); your own call reads
-  `joined`. `active` is whether you are in the call now, `live` whether
-  anyone is. `live` comes from a disco#info to the room (a hosted call's
-  room vanishes once empty), asked only for a chat's newest call (older ones
-  read `false`) and again on each accept, left or retract; it is absent
-  until the room answers, then the row arrives again as `message <Edited>`.
-  Answer with `groupcall join` / `groupcall decline` (see
-  [groupcall](#groupcall)); a change arrives as `message <Edited>`. Deletion is a
-  message-level state rather than a content type, so future kinds like `call`
-  or `system` extend this union - switch on `type` and tolerate unknown ones.
+  `""` when unknown), with an optional `reason`; see [muc](#muc).
+  `type: "call"` is an XEP-0482 invite to a group call in `room`; see
+  [groupcall](#groupcall). Both carry a plain-text fallback in `body`.
+  Deletion is a message-level state rather than a content type, so future
+  kinds extend this union - switch on `type` and tolerate unknown ones.
 - A `type: "text"` message's `body` may be `""`: the sender sent a message
   with nothing in it (an empty `<body/>`, or an OMEMO payload that opened to
   nothing). It is kept so you learn a message came; show it as such (the Tk
@@ -897,6 +885,8 @@ interrupting the user over is [notify](#notify)'s job.
     muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
     muc people        {jid: string} -> {list: string, groups: {group: int},
                                         me: room_caps, people: [person]}
+    muc occupants     {jid: string} -> [occupant]
+    muc occupant      {jid: string, nick: string} -> occupant
 
     muc_room_info = {known: bool, live: bool, members_only: bool,
                      non_anonymous: bool, occupant_id: bool}
@@ -907,12 +897,21 @@ interrupting the user over is [notify](#notify)'s job.
                  keys: member_keys | {}}
     room_caps = {request_voice: bool, destroy: bool}
     room_item = {jid: string, name: string, occupants: int | ""}
+    occupant  = {nick: string, jid: string, jids: [string], role: string,
+                 affiliation: string, show: string, status: string,
+                 occupant_id: string, caps: occupant_caps}
+    occupant_caps = {kick: bool, ban: bool, make_moderator: bool,
+                     grant_voice: bool, revoke_voice: bool,
+                     grant_membership: bool, revoke_membership: bool}
 
 Events:
 
     muc <RoomInfo>       {jid: string, info: muc_room_info}
     muc <MembersChanged> {jid: string}
     muc <PeopleChanged>  {jid: string}
+    muc <Presence>       {jid: string, nick: string, occupant: occupant, replay?: bool}
+    muc <Unavailable>    {jid: string, nick: string, reason: string, codes: [int], occupant: occupant}
+    muc <NickChanged>    {jid: string, oldNick: string, newNick: string, self: bool, occupant: occupant}
 
 `kick`, `role`, `affiliation`, `createInstant` and `destroyRoom` answer
 `""` once the room has accepted, and an error reply with a reason when it
@@ -971,11 +970,8 @@ room (a direct invite has none to send). The row stays as a record, unless
 the room's chat then holds only declined invites (a room you never joined):
 that chat is dropped with a `chatlist <Remove>`.
 
-A group call creates an auxiliary, hidden room under the hood; see [Group
-calls](#group-calls).
-
-An occupant is `{nick, jid, jids, role, affiliation, show, status,
-occupant_id, caps}`. `jid` is the real JID if the room shows it; `jids`
+`occupants` is who is in a joined room now, `occupant` one of them by nick.
+`jid` is the real JID if the room shows it; `jids`
 lists every JID sharing the nick; `occupant_id` is its XEP-0421 id, "" when
 the room gives none. `<NickChanged>` carries the occupant under its new nick. A
 `<Presence>` with `replay: true` only refreshes `caps` after your role
@@ -1182,6 +1178,18 @@ Event:
 
     nick <Changed> {jid: string}   a JID's cached nick changed; re-read with `nick get`
 
+## author
+
+    author get {chat: string} -> {*: string}   from_jid -> display name
+
+The name to show for each sender in one chat, keyed by a row's `from_jid`: in
+a MUC the participant nick, in a 1:1 the roster name, then the PEP nick, then
+the bare JID. Built on the first `get` for a chat and kept current after.
+
+Event:
+
+    author <Changed> {chat: string, from: string, name: string}   one sender's name changed, or a new one appeared
+
 ## file
 
     file download {acc: string, url?: string, path?: string, auto?: bool,
@@ -1377,6 +1385,17 @@ to show, `pull` re-sends one.
 and `timestamp`, or `decline`. `start` in a chat whose last call is still
 going joins it. `leave` tells a hosted call's chat, or retracts the invite if
 nobody came. `invite` lets a contact into the room and invites them.
+
+Each invite is also a row in its chat, `content.type` `"call"` (see
+[message](#message)). `inviter` is `""` when the room hides it, and `video`
+says the call started with video. `state` is `pending` until you answer,
+then `joined`, `declined`, `elsewhere` (another device of yours answered),
+`missed` (retracted before you answered) or `ended` (over when you tried);
+your own call reads `joined`. `active` is whether you are in the call now,
+`live` whether anyone is. `live` comes from a disco#info to the room (a
+hosted call's room vanishes once empty), asked only for a chat's newest call
+(older ones read `false`) and again on each accept, left or retract; it is
+absent until the room answers. Every change arrives as `message <Edited>`.
 
 `<State>` is built from `<Started>`, `<Joined>`, `<Session>`, `<Left>`,
 `<Warning>` and `<VideoPreview>`, with `list` as their snapshot; frontends
@@ -1860,7 +1879,9 @@ Retracted messages never match.
 `before_id: last_id`, the archive's own cursor.
 Few servers implement the field, so check first with `mam fulltextSupported
 {chat: string} -> bool`; a search against an archive that advertises none is an
-error reply rather than a silent match of everything. `field` selects the full-text form field explicitly.
+error reply rather than a silent match of everything. `field` names the
+archive's full-text form field outright, skipping the lookup of which one it
+advertises.
 
 `source: both` runs the remote leg for its cache-filling effect - hits are
 stored on the way through - and then answers from the store, so one matching
@@ -1891,13 +1912,10 @@ context around a hit stored as an isolated island. Whichever source found it,
 the results aren't chat-view content - show them somewhere separate.
 
 **Sender names.** A message row carries a `from_jid`, not a display name.
-`author get {chat: string} -> {from_jid: name, ...}` resolves the names for
-one chat: in a MUC that's the participant nick, in a 1:1 it's the roster
-name, then the PEP nick, then the bare JID. Fetch it once when the chat
-opens, key rows off `from_jid`, and subscribe to
-`author <Changed> {chat: string, from: string, name: string}` to re-resolve
-a single sender in place (a roster edit, a nick change, a new occupant)
-without refetching the whole map.
+[author](#author) `get` resolves the names for one chat. Fetch it once when
+the chat opens, key rows off `from_jid`, and follow `author <Changed>` to
+re-resolve a single sender in place (a roster edit, a nick change, a new
+occupant) without refetching the whole map.
 
 **Rendering a message.** Draw a row in this order. If `retracted` is set, the
 row is a tombstone - show the deleted-message placeholder from the header
@@ -2084,15 +2102,8 @@ camera:
   Windows), loaded at startup and only present in builds that ship that
   library. Brings libwebrtc's codecs, echo cancellation and ICE.
 
-Which one runs is the `media_backend` setting, read at startup, so a change
-applies at the next one. Unset, it is `webrtc` where the build ships that
-library and `rtc` everywhere else. `-media-backend <name>` overrides it for a
-single run, and `-webrtc-lib <path>` says where the library is if it is not
-beside the executable. `media list` is what the build has, `media backend` what
-it settled on, `media capabilities` what it can do. A named backend that is
-missing or will not load falls back to `rtc` with a `media <Warning>`, so a
-wrong choice degrades instead of breaking calls. Both produce the same events and the same
-frame streams; a frontend needs no per-backend code beyond `capabilities`.
+How one is picked is in [media](#media). Both produce the same events and the
+same frame streams; a frontend needs no per-backend code beyond `capabilities`.
 
 **The frontend runs the media.** The `host` backend, for platforms whose
 WebRTC stack belongs to the host and cannot be linked in - a browser's
