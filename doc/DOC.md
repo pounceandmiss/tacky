@@ -734,7 +734,7 @@ carries it in `client`.
 
     formatting = [{type: span_type, offset: int, length: int}]
     span_type  = "bold" | "italic" | "overstrike" | "monospace"
-               | "preformatted" | "quote"
+               | "preformatted" | "quote" | "link"
     matches    = [{offset: int, length: int}]
     attachment = {url: string, path: string, type: "image" | "file", name: string, size: int, mime: string}
 
@@ -819,6 +819,14 @@ becomes `caption`, and the files are listed in `attachments`.
   `body`/`caption` the variant carries, with the styling characters already
   removed from that string. Spans may overlap: two styles over the same run
   are two separate single-type entries, combined by the renderer.
+- A `link` span is not XEP-0393 styling: nothing on the wire marks links, so
+  tacky finds them in the text. It covers a URL written with an `http://`,
+  `https://`, `mailto:` or `geo:` scheme (a bare `www.` is not one), minus
+  sentence punctuation after it and a closing bracket it never opened. The
+  covered text is the target, so the span carries no href. Text inside a
+  `monospace` or `preformatted` span is never a link. The scheme list is
+  tacky's choice, not a promise: a renderer still checks the scheme before
+  opening anything.
 - `matches` appears on `message search` results only: one entry per occurrence
   of the query, in the same offsets as `formatting`.
 - A retracted message carries no `content` - the `retracted` flag is the
@@ -1895,7 +1903,8 @@ without refetching the whole map.
 row is a tombstone - show the deleted-message placeholder from the header
 (sender and timestamp) and stop, there is no `content`. Otherwise switch on
 `content.type`. A `text` message draws `body`, applying each `formatting` span
-over its offset range. A `media` message draws every entry in `attachments` by
+over its offset range, and opens a `link` span's covered text when it is
+clicked. A `media` message draws every entry in `attachments` by
 its `type` - an `image` inline, a `file` as a download chip - then the
 `caption` beneath, styled from its own `formatting` the same way (see
 [Attachments](#attachments)). Around the content go the parts covered

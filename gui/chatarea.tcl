@@ -109,6 +109,10 @@ snit::widget chatarea {
         bind $win.text <<Yview>> [mymethod OnYview]
         bind $win.text <Button-1> [mymethod OnClick %x %y]
         bind $win.text <Button-3> [mymethod OnRightClick %x %y %X %Y]
+        $text tag bind entity.link <Button-1> [mymethod OpenLink %x %y]
+        $text tag bind entity.link <Enter> [list $text configure -cursor hand2]
+        $text tag bind entity.link <Leave> \
+            [list $text configure -cursor [$text cget -cursor]]
 
     }
 
@@ -250,6 +254,18 @@ snit::widget chatarea {
         event generate $win <<MessageClick>> -data $key -x $x -y $y
     }
 
+    # The link's text is its target. The scheme is checked again rather than
+    # trusted from the span: a link span is a claim about text, not a promise
+    # that opening it is harmless.
+    method OpenLink {x y} {
+        set range [$text tag prevrange entity.link "@$x,$y + 1 chars"]
+        if {$range eq ""} return
+        set url [$text get {*}$range]
+        if {[regexp -nocase {^(?:https?://|mailto:|geo:)} $url]} {
+            url_os_open $url
+        }
+    }
+
     method OnRightClick {x y X Y} {
         set key [$self KeyAt $x $y]
         if {$key eq ""} return
@@ -331,6 +347,7 @@ snit::widget chatarea {
         $text tag configure entity.quote -foreground [palette quote] \
             -lmargin1 40 -lmargin2 55
         $text tag configure entity.preformatted -font $mono
+        $text tag configure entity.link -foreground [palette link] -underline 1
         $text configure -font $font
         # Cross-product of bold/italic/monospace/overstrike entity tags.
         foreach bold {0 1} {

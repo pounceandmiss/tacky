@@ -210,6 +210,14 @@ test chatview-formatting-overlap-combines {overlapping bold+italic render as one
              [llength [[.cv textwidget] tag ranges entity.italic]]
     } -result {{bold italic} 0}
 
+test chatview-link-tagged {a url in a body is tagged as a link over exactly its text} \
+    {*}$cv_common \
+    -body {
+        cv_feed "news < https://example.com/a >" srv-link1
+        wait
+        [.cv textwidget] get {*}[[.cv textwidget] tag ranges entity.link]
+    } -result https://example.com/a
+
 test chatview-live-dedup {duplicate stanza-id does not create second message} \
     {*}$cv_common \
     -body {

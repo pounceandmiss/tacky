@@ -3643,6 +3643,30 @@ test message-search-ranges-index-a-caption {a media hit's offsets index its capt
         string range $caption $offset [expr {$offset + $length - 1}]
     } -result {cat}
 
+test message-link-span-indexes-the-display-body {a stored body's link span covers the url as rendered} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {*news* < https://example.com/a >}]]
+        set m [lindex [dict get [msg_search -chat alice@example.com \
+            -query news -source local] messages] 0]
+        set body [dict get $m content body]
+        lassign [lsearch -inline -index 0 -stride 3 \
+            [dict get $m content formatting] link] - offset length
+        string range $body $offset [expr {$offset + $length - 1}]
+    } -result {https://example.com/a}
+
+test message-link-span-indexes-a-caption {a media caption's link span covers its url} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg timestamp 100 body {cat, from https://ex/page http://ex/a.png} \
+            attachments {{url http://ex/a.png type image name a.png size "" mime ""}}]]
+        set m [lindex [dict get [msg_search -chat alice@example.com \
+            -query cat -source local] messages] 0]
+        set caption [dict get $m content caption]
+        lassign [dict get $m content formatting] - offset length
+        string range $caption $offset [expr {$offset + $length - 1}]
+    } -result {https://ex/page}
+
 test message-search-match-outside-the-rendered-text-reports-no-range {a hit on text that isn't drawn reports no range rather than a wrong one} \
     {*}$msg_common \
     -body {

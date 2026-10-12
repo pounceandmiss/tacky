@@ -20,6 +20,7 @@ namespace eval palette {
         highlight     yellow
         system        gray50
         quote         green
+        link          #1a5fb4
     }
 }
 
