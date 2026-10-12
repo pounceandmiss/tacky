@@ -1020,7 +1020,7 @@ An archive that refuses or can't be reached is an error reply for all three.
     omemo devicelist {jid: string}    -> [int]      raw PEP devicelist cache
     omemo trustList {jid: string}     -> [omemo_trust]
     omemo blindTrust {}               -> bool
-    omemo trust {jid: string, device: int, state: string}      validates the transition
+    omemo trust {jid: string, device: int, state: string}      validates the transition; emits <TrustChanged>, <TrustList>
     omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
     omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
     omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room
@@ -1059,6 +1059,13 @@ Events:
     omemo <DecryptFailed>      {jid: string, device: int, reason: string, room?: string}
     omemo <RoomStatus>         {jid: string, status: omemo_room_status}  pullable
     omemo <MembersUnreachable> {jid: string, members: [{jid: string, reason: string}]}
+
+Every change to a peer's devices ends with a fresh `<TrustList>` for that
+peer (and for each room listing them): a `trust` call (`<TrustChanged>`,
+then `<TrustList>`), a rotated identity key (`<FingerprintChanged>`,
+`<TrustChanged>` to `compromised`, then `<TrustList>`), and a new or
+dropped device (`<TrustList>` alone). A key panel needs only `<TrustList>`;
+the other two say what happened, for a notice.
 
 ## avatar
 
