@@ -136,6 +136,19 @@ test xmpprw-parse-error-reports-to-error-command \
     } -cleanup _xrwCleanup \
     -result {iq 1 1}
 
+# The message reaches the user as conn <ConnError>.
+test xmpprw-eof-reports-to-error-command \
+    {the peer closing the stream reports a readable message} -constraints !wasm \
+    -setup _xrwSetup -body {
+        ::jab::readChannel $::_xrwRd \
+            -error-command {apply {msg {lappend ::_xrwErr $msg}}}
+        puts -nonewline $::_xrwWr [::jab::header]
+        close $::_xrwWr
+        _xrwDrain
+        set ::_xrwErr
+    } -cleanup _xrwCleanup \
+    -result {{server closed the connection}}
+
 # Without the root on the stack, every following stanza sits at the
 # wrong depth and is never dispatched.
 test xmpprw-header-error-keeps-stream-root \

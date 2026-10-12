@@ -157,14 +157,14 @@ snit::type xmppreader {
     method OnReadable {} {
         if {[catch {set chunk [read $options(-channel)]} err]} {
             jlog debug "Read error: $::errorInfo"
-            {*}$options(-error-command) "Read error: $::errorInfo"
+            {*}$options(-error-command) "Read error: $err"
             $self pause
             return
         }
 
         if {$chunk eq "" && [chan eof $options(-channel)]} {
             $self pause
-            {*}$options(-error-command) -
+            {*}$options(-error-command) "server closed the connection"
             return
         }
         # RFC 6120 4.9.3.13 bad-format: the stream is unusable, and the
