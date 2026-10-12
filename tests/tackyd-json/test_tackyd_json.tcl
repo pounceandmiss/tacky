@@ -258,6 +258,26 @@ test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
     jsonify convert message/gotoReply [dict create messages {} anchor ""]
 } -result [json::write object messages [json::write array] anchor null]
 
+# -- groupcall tests ---------------------------------------------------------
+
+test json-type-groupcall-state {a call's state: participants a list of typed objects, no preview an empty object} -body {
+    jsonify convert groupcall/<State> [dict create jid r@m chat r@m hosted 0 \
+        phase live reason "" warning "" since 1700 video 1 camera 0 preview {} count 2 \
+        participants [list [dict create nick bob jid b@x joined 1 video 0 \
+            leg active reason "" warning "" stream /s]]]
+} -result [json::write object jid {"r@m"} chat {"r@m"} hosted false \
+    phase {"live"} reason {""} warning {""} since 1700 video true camera false \
+    preview [json::write object] count 2 \
+    participants [json::write array [json::write object nick {"bob"} jid {"b@x"} \
+        joined true video false leg {"active"} reason {""} warning {""} stream {"/s"}]]]
+
+test json-type-groupcall-state-empty {nobody else: an empty participants array} -body {
+    jsonify convert groupcall/get [list [dict create jid r@m hosted 1 phase joining \
+        since 0 video 0 camera 0 preview {name /p} count 0 participants {}]]
+} -result [json::write array [json::write object jid {"r@m"} hosted true \
+    phase {"joining"} since 0 video false camera false \
+    preview [json::write object name {"/p"}] count 0 participants [json::write array]]]
+
 # -- chatlist tests ----------------------------------------------------------
 
 test json-type-chat-entry-last-message {a chat entry's last_message is typed as a message, nested} -body {
@@ -550,32 +570,7 @@ test json-dispatch-refuses-internal-methods {snit builtins and capitalised metho
     } { catch {tackyd_dispatch $frame} err; set err }
 } -result {{not callable: setting Migrate} {not callable: setting configure} {not callable: destroy x} {not callable: setting cget}}
 
-# -- Group calls: participants are occupants -----------------------------------
-
-test json-muc-presence-occupant-call {an occupant's call goes out typed, booleans as booleans} -setup {
-    _test_clear
-} -body {
-    _test_emit muc <Presence> -jid room@muc.example.com -nick bob -occupant \
-        [dict create nick bob jid bob@example.com/desk jids {bob@example.com/desk} \
-            role participant affiliation member show "" status "" \
-            caps [dict create kick 0 ban 0 make_moderator 0 grant_voice 0 \
-                revoke_voice 0 grant_membership 0 revoke_membership 0] \
-            call [dict create state announced audio 1 video 0 \
-                contents [dict create audio [list [dict create id 111 name opus clockrate 48000 channels 2]]]]]
-    set occ [dict get [lindex [json::json2dict [lindex [_test_sent] 0]] 3] occupant]
-    list [dict get $occ jids] [dict get $occ call state] [dict get $occ call audio] \
-        [dict get $occ call video] [dict get [lindex [dict get $occ call contents audio] 0] id] \
-        [string match {*"audio":true*} [lindex [_test_sent] 0]]
-} -result {bob@example.com/desk announced true false 111 1}
-
-test json-muc-presence-occupant-not-in-call {an occupant not in the call has an empty call} -setup {
-    _test_clear
-} -body {
-    _test_emit muc <Presence> -jid room@muc.example.com -nick dave -occupant \
-        [dict create nick dave jid dave@example.com/x jids {dave@example.com/x} \
-            role participant affiliation member show "" status "" caps {} call ""]
-    string match {*"call":\{\}*} [lindex [_test_sent] 0]
-} -result 1
+# -- Group calls ---------------------------------------------------------------
 
 test json-groupcall-session {groupcall <Session> types its video flag} -setup {
     _test_clear

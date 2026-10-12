@@ -2,10 +2,8 @@
 # our own preview, mic/speaker/camera controls, leave. One per room;
 # `groupcallwindow show` reuses the open one.
 #
-# Tiles are the room's occupants with a `call`, re-synced from muc occupants
-# on each muc event for the room. groupcall <Session> binds a sid to a
-# participant, and that sid's calls events drive the tile. Tiles are keyed
-# by real JID and labelled by nick.
+# Drawn from groupcall <State>: a tile per participant plus our preview,
+# keyed by real JID (or /nick where the room hides it).
 #
 # Usage:
 #   groupcallwindow show -acc $acc -jid $room
@@ -17,10 +15,7 @@ snit::widgetadaptor groupcallwindow {
     typevariable Windows {}   ;# "$acc $room" -> window
     typevariable Seq 0        ;# tile widget names, never reused
 
-    variable tiles {}        ;# real JID -> videotile
-    variable sessions {}     ;# sid -> real JID
-    variable bound {}        ;# real JIDs with a session, whose status calls drives
-    variable myNick ""
+    variable tiles {}        ;# real JID, or /nick, -> videotile
     variable preview ""      ;# the preview videotile, "" until a stream shows
     variable countVar ""
     variable warningVar ""
@@ -76,33 +71,8 @@ snit::widgetadaptor groupcallwindow {
         bind $win <Escape> [mymethod Leave]
         wm protocol $win WM_DELETE_WINDOW [mymethod Leave]
 
-        foreach {event method} {
-            <Session>    OnSession
-            <Left>       OnLeft
-            <Warning>    OnWarning
-        } {
-            ::tacky listen -tag $win groupcall $event \
-                -acc $options(-acc) -jid $options(-jid) [mymethod $method]
-        }
-        foreach event {<Presence> <Unavailable> <NickChanged>} {
-            ::tacky listen -tag $win muc $event \
-                -acc $options(-acc) -jid $options(-jid) [mymethod Refresh]
-        }
-        foreach {event method} {
-            <Active>       OnSessionActive
-            <Ended>        OnSessionEnded
-            <Failed>       OnSessionFailed
-            <Warning>      OnSessionWarning
-            <VideoTrack>   OnVideoTrack
-            <VideoEnded>   OnVideoEnded
-            <VideoPreview> OnVideoPreview
-        } {
-            ::tacky listen -tag $win calls $event \
-                -acc $options(-acc) [mymethod $method]
-        }
-
-        $self Refresh
-        ::tacky groupcall list -acc $options(-acc) -tag $win -command [mymethod SeedSessions]
+        ::tacky observe -tag $win groupcall <State> \
+            -acc $options(-acc) -jid $options(-jid) [mymethod OnState]
     }
 
     destructor {
@@ -115,114 +85,81 @@ snit::widgetadaptor groupcallwindow {
         }
     }
 
-    # -- participants ---------------------------------------------------------
+    # -- the call ---------------------------------------------------------------
 
-    # Re-read the room from muc.
-    method Refresh {args} {
-        ::tacky muc myNick -acc $options(-acc) -jid $options(-jid) \
-            -tag $win -command [mymethod RefreshWith]
-    }
-
-    method RefreshWith {me} {
-        set myNick $me
-        ::tacky muc occupants -acc $options(-acc) -jid $options(-jid) \
-            -tag $win -command [mymethod Sync]
-    }
-
-    # One tile per occupant in the call except us; drop the rest. The count
-    # includes us.
-    method Sync {occupants} {
-        set count 0
+    method OnState {ev} {
+        if {[dict get $ev -phase] eq "ended"} {
+            $self OnLeft $ev
+            return
+        }
+        set countVar "[dict get $ev -count] in call"
+        set warningVar [dict get $ev -warning]
+        set cameraOn [dict get $ev -camera]
         set here {}
-        foreach occ $occupants {
-            set call [dict get $occ call]
-            if {$call eq ""} continue
-            if {[dict get $call state] eq "announced"} { incr count }
-            set real [dict get $occ jid]
-            if {[dict get $occ nick] eq $myNick || $real eq ""} continue
-            lappend here $real
-            $self Tile $real [dict get $occ nick]
-            if {$real ni $bound} {
-                $self SetStatus $real [expr {[dict get $call state] eq "preparing"
-                    ? "Joining..." : "Waiting..."}]
-            }
+        foreach p [dict get $ev -participants] {
+            set jid [dict get $p jid]
+            set key [expr {$jid eq "" ? "/[dict get $p nick]" : $jid}]
+            lappend here $key
+            set t [$self Tile $key [dict get $p nick] $jid]
+            $t configure -status [$self StatusOf $p] -stream [dict get $p stream]
         }
-        dict for {real t} $tiles {
-            if {$real in $here} continue
+        dict for {key t} $tiles {
+            if {$key in $here} continue
             destroy $t
-            dict unset tiles $real
-            set bound [lsearch -all -inline -not -exact $bound $real]
+            dict unset tiles $key
         }
+        $self ShowPreview [expr {[dict exists $ev -preview name]
+            ? [dict get $ev -preview name] : ""}]
         $self Layout
-        set countVar "$count in call"
     }
 
-    # The sessions already up when the window opens.
-    method SeedSessions {rows} {
-        foreach row $rows {
-            if {[dict get $row jid] ne $options(-jid)} continue
-            dict for {real sid} [dict get $row sessions] {
-                $self Bind $real $sid
+    method StatusOf {p} {
+        switch -- [dict get $p leg] {
+            expected   { return [expr {[dict get $p joined] ? "Waiting..." : "Joining..."}] }
+            connecting { return "Connecting..." }
+            active {
+                set warning [dict get $p warning]
+                return [expr {$warning eq "" ? "Connected" : $warning}]
             }
+            ended      { return "Ended" }
+            failed     { return "Failed: [dict get $p reason]" }
         }
-        ::tacky calls list -acc $options(-acc) -tag $win -command [mymethod SeedStates]
+        return ""
     }
 
-    method SeedStates {rows} {
-        foreach row $rows {
-            set real [$self PeerOf [dict get $row sid]]
-            if {$real eq ""} continue
-            $self SetStatus $real [expr {[dict get $row state] eq "active"
-                ? "Connected" : "Connecting..."}]
+    method ShowPreview {name} {
+        if {$name eq ""} {
+            if {$preview ne ""} { $preview configure -stream "" }
+            return
         }
+        if {$preview eq ""} {
+            set preview [videotile $win.grid.preview -name "You" -status ""]
+        }
+        $preview configure -stream $name
     }
 
-    # The tile for $real, created if needed, labelled $nick.
-    method Tile {real nick} {
-        if {![dict exists $tiles $real]} {
+    # $jid is "" when the room hides it: no avatar then.
+    method Tile {key nick jid} {
+        if {![dict exists $tiles $key]} {
             set t [videotile $win.grid.t[incr Seq] -name $nick \
                 -status "Waiting..."]
-            dict set tiles $real $t
-            set img [avatarcache track -acc $options(-acc) \
-                -jid [jid bare $real] -tag $win \
-                -command [list $self OnAvatar $real]]
-            $t configure -avatar $img
+            dict set tiles $key $t
+            if {$jid ne ""} {
+                set img [avatarcache track -acc $options(-acc) \
+                    -jid $jid -tag $win \
+                    -command [list $self OnAvatar $key]]
+                $t configure -avatar $img
+            }
         } else {
-            [dict get $tiles $real] configure -name $nick
+            [dict get $tiles $key] configure -name $nick
         }
-        return [dict get $tiles $real]
+        return [dict get $tiles $key]
     }
 
-    # $sid is our session with $real, replacing any earlier one.
-    method Bind {real sid} {
-        dict for {s r} $sessions {
-            if {$r eq $real} { dict unset sessions $s }
+    method OnAvatar {key img} {
+        if {[dict exists $tiles $key]} {
+            [dict get $tiles $key] configure -avatar $img
         }
-        dict set sessions $sid $real
-        if {$real ni $bound} { lappend bound $real }
-    }
-
-    method OnAvatar {real img} {
-        if {[dict exists $tiles $real]} {
-            [dict get $tiles $real] configure -avatar $img
-        }
-    }
-
-    method SetStatus {real text} {
-        if {[dict exists $tiles $real]} {
-            [dict get $tiles $real] configure -status $text
-        }
-    }
-
-    method SetStream {real name} {
-        if {[dict exists $tiles $real]} {
-            [dict get $tiles $real] configure -stream $name
-        }
-    }
-
-    method PeerOf {sid} {
-        if {[dict exists $sessions $sid]} { return [dict get $sessions $sid] }
-        return ""
     }
 
     # Tiles in a near-square grid, the preview last.
@@ -248,66 +185,11 @@ snit::widgetadaptor groupcallwindow {
         }
     }
 
-    method OnSession {ev} {
-        set real [dict get $ev -peer]
-        $self Bind $real [dict get $ev -sid]
-        $self SetStatus $real "Connecting..."
-    }
-
-    method OnWarning {ev} {
-        set warningVar [dict get $ev -reason]
-    }
-
     method OnLeft {ev} {
         set countVar "Ended"
         foreach t [dict values $tiles] { $t configure -stream "" }
         if {$preview ne ""} { $preview configure -stream "" }
         $self CloseAfter 600
-    }
-
-    # -- sessions -------------------------------------------------------------------
-
-    method OnSessionActive {ev} {
-        $self SetStatus [$self PeerOf [dict get $ev -sid]] "Connected"
-    }
-
-    method OnSessionEnded {ev} {
-        set real [$self PeerOf [dict get $ev -sid]]
-        $self SetStatus $real "Ended"
-        $self SetStream $real ""
-    }
-
-    method OnSessionFailed {ev} {
-        set real [$self PeerOf [dict get $ev -sid]]
-        $self SetStatus $real "Failed: [dict get $ev -reason]"
-        $self SetStream $real ""
-    }
-
-    method OnSessionWarning {ev} {
-        set real [$self PeerOf [dict get $ev -sid]]
-        if {$real eq ""} return
-        $self SetStatus $real [dict get $ev -reason]
-    }
-
-    method OnVideoTrack {ev} {
-        if {[dict get $ev -direction] ne "incoming"} return
-        if {![dict exists $ev -name]} return
-        $self SetStream [$self PeerOf [dict get $ev -sid]] [dict get $ev -name]
-    }
-
-    method OnVideoEnded {ev} {
-        $self SetStream [$self PeerOf [dict get $ev -sid]] ""
-    }
-
-    # Any session's preview is our camera; the first one to show is enough.
-    method OnVideoPreview {ev} {
-        if {[$self PeerOf [dict get $ev -sid]] eq ""} return
-        if {![dict exists $ev -name] || [dict get $ev -name] eq ""} return
-        if {$preview eq ""} {
-            set preview [videotile $win.grid.preview -name "You" -status ""]
-            $self Layout
-        }
-        $preview configure -stream [dict get $ev -name]
     }
 
     # -- controls ---------------------------------------------------------------
@@ -319,8 +201,8 @@ snit::widgetadaptor groupcallwindow {
 
     method Leave {} {
         ::tacky groupcall leave -acc $options(-acc) -jid $options(-jid)
-        # <Left> may already have run (direct mode) or never come. Running
-        # OnLeft twice only re-arms the same close.
+        # The ended <State> may have come already, or never will; a second
+        # OnLeft only re-arms the close.
         if {[winfo exists $win]} { $self OnLeft {} }
     }
 

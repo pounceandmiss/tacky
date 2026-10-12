@@ -34,7 +34,8 @@
 # tacky muc occupants -acc $jid -jid $room
 # tacky muc occupant -acc $jid -jid $room -nick $nick
 #   ;# occupant: nick jid jids role affiliation show status occupant_id caps, plus
-#   ;# fields from addOccupantField (groupcall's call)
+#   ;# public fields from addOccupantField. Internal ones (groupcall's call)
+#   ;# only reach tacky's modules, through Occupants and the bus.
 # tacky muc myNick -acc $jid -jid $room
 # tacky muc myRole -acc $jid -jid $room
 # tacky muc myAffiliation -acc $jid -jid $room
@@ -102,6 +103,8 @@ snit::type taco_muc {
 
     # name -> parse command for extra occupant fields (addOccupantField).
     variable OccupantFields {}
+    # addOccupantField -internal ones.
+    variable InternalFields {}
     # name -> command for extra person fields (addPersonField).
     variable PersonFields {}
     # roomJid -> the after token of a <PeopleChanged> still to go out.
@@ -624,7 +627,7 @@ snit::type taco_muc {
             set key [expr {$real ne "" && ![dict exists $seen $real]
                 ? $real : "nick:$nick"}]
             if {$real ne ""} { dict set seen $real 1 }
-            set p [$self WithCaps $roomJid $occ]
+            set p [$self Public [$self WithCaps $roomJid $occ]]
             dict unset p jids
             dict set p key $key
             dict set p jid $real
@@ -642,7 +645,9 @@ snit::type taco_muc {
                 present 0 self 0 group absent role none \
                 affiliation [dict get $members $real] show "" status "" \
                 occupant_id "" caps [$self EmptyCaps]]
-            dict for {name cmd} $OccupantFields { dict set p $name "" }
+            dict for {name cmd} $OccupantFields {
+                if {$name ni $InternalFields} { dict set p $name "" }
+            }
             lappend absent [$self WithPersonFields $roomJid $real $p]
         }
         set groups [dict create]
@@ -1163,6 +1168,11 @@ snit::type taco_muc {
     }
 
     tackymethod occupants {args} {
+        return [lmap occ [$self Occupants -jid [dict get $args -jid]] { $self Public $occ }]
+    }
+
+    # occupants with the internal fields, for tacky's modules.
+    method Occupants {args} {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return {}}
         set result {}
@@ -1172,13 +1182,17 @@ snit::type taco_muc {
         return $result
     }
 
+    method Public {occ} {
+        return [dict remove $occ {*}$InternalFields]
+    }
+
     tackymethod occupant {args} {
         array set opts $args
         set opts(-jid) [jid norm $opts(-jid)]
         if {![info exists Rooms($opts(-jid))]} {return ""}
         set occs [dict get $Rooms($opts(-jid)) occupants]
         if {[dict exists $occs $opts(-nick)]} {
-            return [$self WithCaps $opts(-jid) [dict get $occs $opts(-nick)]]
+            return [$self Public [$self WithCaps $opts(-jid) [dict get $occs $opts(-nick)]]]
         }
         return ""
     }
@@ -1264,9 +1278,13 @@ snit::type taco_muc {
 
     # Add $name to every occupant: {*}$cmd $stanza on each presence, ""
     # when absent. A module reads a presence extension off the occupants
-    # this way and gets renames and leaves for free.
-    method addOccupantField {name cmd} {
+    # this way and gets renames and leaves for free. -internal 1 keeps it
+    # from frontends.
+    method addOccupantField {name cmd args} {
+        array set opts {-internal 0}
+        array set opts $args
         dict set OccupantFields $name $cmd
+        if {$opts(-internal) && $name ni $InternalFields} { lappend InternalFields $name }
     }
 
     # Add $name to every person `people` lists: {*}$cmd $room $realJid,
@@ -2127,8 +2145,15 @@ snit::type taco_muc {
 
     # Same events for every room. Modules that file rooms (bookmarks,
     # message, author) skip hidden ones via isHidden.
+    # An occupant goes whole on the bus, without internal fields to frontends.
     method Emit {roomJid event args} {
-        $client emit muc $event {*}$args
+        if {[llength $InternalFields] && [dict exists $args -occupant]} {
+            $client bus publish muc:$event {*}$args
+            dict set args -occupant [$self Public [dict get $args -occupant]]
+            tacky emit muc $event -acc [jid bare [$client cget -jid]] {*}$args
+        } else {
+            $client emit muc $event {*}$args
+        }
         if {$event in {<Presence> <Unavailable> <NickChanged> <Joined> <Left>
                 <MembersChanged> <AffiliationChanged>}} {
             $self peopleChanged $roomJid

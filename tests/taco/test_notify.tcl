@@ -323,3 +323,46 @@ test notify-set-keeps-untouched-field {setting one field leaves the other alone}
         set p [tacky notify get -acc $acc -chat alice@example.com]
         list [dict get $p muted] [dict get $p mentions]
     } -result {0 0}
+
+# -- Missed calls --
+
+# Helper: a JMI action from alice's phone; a propose offers audio.
+proc notify_jmi {action sid} {
+    $::_client conn feed [j message -type chat -from alice@example.com/phone {
+        j $action -ns urn:xmpp:jingle-message:0 -id $sid {
+            if {$action eq "propose"} {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio
+            }
+        }
+    }]
+}
+
+set notify_calls [tacky_env -mock conn -account $acc -extra-setup {
+    set ::missed {}
+    tacky listen notify <MissedCall> {apply {{ev} {
+        lappend ::missed [list [dict get $ev -jid] [dict get $ev -nick] \
+            [dict get $ev -video] [string is entier -strict [dict get $ev -timestamp]]]
+    }}}
+}]
+
+test notify-missed-call-alerts {a call the caller gave up on alerts as missed} \
+    {*}$notify_calls -body {
+        notify_jmi propose tk-m1
+        notify_jmi retract tk-m1
+        set ::missed
+    } -result {{alice@example.com alice@example.com 0 1}}
+
+test notify-declined-call-silent {a call we turned down ourselves is not missed} \
+    {*}$notify_calls -body {
+        notify_jmi propose tk-m2
+        tacky calls reject -acc $acc -sid tk-m2
+        set ::missed
+    } -result {}
+
+test notify-missed-call-muted-silent {a muted chat stays quiet about missed calls too} \
+    {*}$notify_calls -body {
+        tacky notify set -acc $acc -chat alice@example.com -muted 1
+        notify_jmi propose tk-m3
+        notify_jmi retract tk-m3
+        set ::missed
+    } -result {}

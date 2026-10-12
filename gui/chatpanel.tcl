@@ -93,12 +93,9 @@ snit::widget chatpanel {
                 -acc $options(-acc) [mymethod OnMucRoomCreated]
             ::tacky listen -tag $win muc <NickError> \
                 -acc $options(-acc) -jid $roomJid [mymethod OnNickError]
-            # A call held in the room, read from its occupants.
-            foreach event {<Joined> <Presence> <Unavailable> <Left>} {
-                ::tacky listen -tag $win muc $event \
-                    -acc $options(-acc) -jid $roomJid [mymethod RefreshGroupCall]
-            }
-            $self RefreshGroupCall
+            # A call held in the room.
+            ::tacky observe -tag $win groupcall <State> \
+                -acc $options(-acc) -jid $roomJid [mymethod OnGroupCallState]
             ::tacky observe -tag $win omemo <RoomStatus> \
                 -acc $options(-acc) -jid $omemoChat \
                 [mymethod OnRoomOmemoStatus]
@@ -657,27 +654,10 @@ snit::widget chatpanel {
         }
     }
 
-    method RefreshGroupCall {args} {
-        ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
-            -tag $win -command [mymethod RefreshGroupCallWith]
-    }
-
-    method RefreshGroupCallWith {me} {
-        ::tacky muc occupants -acc $options(-acc) -jid $roomJid \
-            -tag $win -command [mymethod OnGroupCallOccupants $me]
-    }
-
-    # Count announced occupants; joined if we are one.
-    method OnGroupCallOccupants {me occupants} {
-        set count 0
-        set joined 0
-        foreach occ $occupants {
-            set call [dict get $occ call]
-            if {$call eq "" || [dict get $call state] ne "announced"} continue
-            incr count
-            if {[dict get $occ nick] eq $me} { set joined 1 }
-        }
-        $self ApplyGroupCall [expr {$count > 0}] $count $joined $roomJid
+    method OnGroupCallState {ev} {
+        set count [dict get $ev -count]
+        $self ApplyGroupCall [expr {$count > 0}] $count \
+            [expr {[dict get $ev -phase] eq "live"}] $roomJid
     }
 
     method ApplyGroupCall {active count joined jid} {
