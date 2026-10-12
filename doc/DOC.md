@@ -709,7 +709,7 @@ carries it in `client`.
     message retryUpload {chat: string, timestamp: int}
     message cancel {tag: string}
     message rawxml {chat: string, timestamp: int} -> string  raw stanza (debug)
-    message markDisplayed {chat: string, timestamp: int}
+    message markDisplayed {chat: string, timestamp: int, after?: int}
     message markOwnRead {chat: string, timestamp: int}
     message ownRead {chat: string} -> {timestamp: int, unread: int}
 
@@ -859,7 +859,10 @@ history landing behind it does not become unread.
 `markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored, so it
 is safe to call on every focus and scroll. It is local state and applies to
 group chats; `markDisplayed` is the separate wire half (a XEP-0333 `<displayed>`,
-1:1 only). A chat on screen leaves both to [chat](#chat) `view`; call them
+1:1 only, and only to a contact who may see our presence, as for delivery
+receipts). It names the newest of the peer's messages at or before
+`timestamp` and past `after`, so ours on screen below theirs still marks
+theirs read; with none in that range it sends nothing. A chat on screen leaves both to [chat](#chat) `view`; call them
 directly to read one that isn't. The watermark also advances
 on its own when you send a message from any of your devices, and when another
 device's `<displayed>` marker reaches this one.

@@ -18,6 +18,31 @@ proc chat_theirs {ts {oid ""}} {
         server_id "" own_id "" raw_xml "" origin_id $oid]]
 }
 
+# Helper: our own message, sent at $ts.
+proc chat_ours {ts} {
+    $::_client message messagestore store [list [dict create \
+        timestamp $ts chat_jid alice@example.com \
+        from_jid $::acc body "reply $ts" \
+        server_id "" own_id own$ts raw_xml "" origin_id own$ts]]
+}
+
+# Helper: alice may see our presence, so markers go to her.
+proc chat_contact {} {
+    $::_client db eval {
+        INSERT OR REPLACE INTO roster_item(jid, name, subscription, ask, approved)
+        VALUES ('alice@example.com', '', 'both', '', 0)
+    }
+}
+
+proc chat_displayed_ids {} {
+    set ids {}
+    foreach s [$::_client conn get_written] {
+        set id [xsearch $s displayed -ns urn:xmpp:chat-markers:0 -get @id]
+        if {$id ne ""} { lappend ids $id }
+    }
+    return $ids
+}
+
 proc chat_read_ts {} {
     dict get [tacky message ownRead -acc $::acc -chat alice@example.com] timestamp
 }
@@ -118,12 +143,26 @@ test chat-view-held-dropped-on-close {closing a chat drops the view it held} \
 test chat-view-sends-displayed {a 1:1 view sends one displayed marker per move} \
     {*}$chat_common \
     -body {
+        chat_contact
         chat_theirs 100 oid1
         tacky chat open -acc $acc -chat alice@example.com
         tacky chat view -acc $acc -chat alice@example.com -timestamp 100
         tacky chat view -acc $acc -chat alice@example.com -timestamp 100
         chat_displayed_count
     } -result 1
+
+test chat-view-ours-on-the-bottom {a view ending on our own reply marks theirs under it, once} \
+    {*}$chat_common \
+    -body {
+        chat_contact
+        chat_theirs 100 oid1
+        chat_ours 200
+        tacky chat open -acc $acc -chat alice@example.com
+        tacky chat view -acc $acc -chat alice@example.com -timestamp 200
+        chat_ours 300
+        tacky chat view -acc $acc -chat alice@example.com -timestamp 300
+        chat_displayed_ids
+    } -result oid1
 
 test chat-view-room-no-displayed {a room view moves the watermark and sends no marker} \
     {*}$chat_common \

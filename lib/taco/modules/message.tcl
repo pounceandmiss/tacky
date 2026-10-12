@@ -595,6 +595,15 @@ snit::type taco_message {
         }]
     }
 
+    # A receipt or marker says we are online and reading, so it goes only to
+    # who may see our presence anyway: a subscription from us, or both ways.
+    method MaySeePresence {chatJid} {
+        if {[catch {$client roster subscription -jid $chatJid} sub]} {
+            return 0
+        }
+        return [expr {$sub in {from both}}]
+    }
+
     # Reply with a `received` marker if a live 1:1 message asked for one
     # (XEP-0184 <request> / XEP-0333 <markable>). Read is GUI-driven.
     method AutoReceipt {chatJid stanza} {
@@ -602,10 +611,7 @@ snit::type taco_message {
         # A carbon is a copy: the device it was addressed to answers it,
         # not every one of ours.
         if {[$client inCarbon]} return
-        # A receipt says we are online and reading, so it goes only to who
-        # may see our presence anyway.
-        if {[catch {$client roster subscription -jid $chatJid} sub]
-                || $sub ni {from both}} return
+        if {![$self MaySeePresence $chatJid]} return
         set refId [xsearch $stanza -get @id]
         if {$refId eq ""} return
         if {[llength [xsearch $stanza request -ns urn:xmpp:receipts]] > 0} {
@@ -1566,18 +1572,25 @@ snit::type taco_message {
         }
     }
 
-    # markDisplayed -chat $chatJid -timestamp $ts
-    # Send a `displayed` marker for a read message. No-op for MUC, when
-    # disabled, or when the row has no origin id to reference.
+    # markDisplayed -chat $chatJid -timestamp $ts ?-after $afterTs?
+    # Send a `displayed` marker for the newest of the peer's messages at or
+    # before $ts and past $afterTs, which marks everything up to it read.
+    # A marker for a message of our own means nothing, so with ours on
+    # screen below theirs it is theirs that is named. No-op for MUC, when
+    # disabled, to who may not see our presence, or when there is no such
+    # message with an origin id to reference.
     tackymethod markDisplayed {args} {
+        set opts(-after) 0
         array set opts $args
         if {![$self MarkersEnabled]} return
         if {[string match {*\?join} $opts(-chat)]} return
-        # Theirs only: a marker for a message of our own means nothing.
+        if {![$self MaySeePresence $opts(-chat)]} return
         set originId [$client db onecolumn {
             SELECT origin_id FROM chat_message
-            WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
-              AND (own_id IS NULL OR own_id = '')
+            WHERE chat_jid=$opts(-chat) AND kind='message'
+              AND timestamp > $opts(-after) AND timestamp <= $opts(-timestamp)
+              AND (own_id IS NULL OR own_id = '') AND origin_id != ''
+            ORDER BY timestamp DESC LIMIT 1
         }]
         if {$originId eq ""} return
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId

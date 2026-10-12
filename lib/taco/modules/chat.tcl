@@ -75,12 +75,14 @@ snit::type taco_chat {
         }
     }
 
-    # Only a forward move, so the displayed marker goes out once.
+    # Only a forward move, and only for what lies past the old watermark, so
+    # each displayed marker goes out once.
     method Read {chatJid ts} {
         set readTs [dict get [$client message messagestore ownRead $chatJid] read_ts]
         if {$ts <= $readTs} return
         $client message markOwnRead -chat $chatJid -timestamp $ts
-        $client message markDisplayed -chat $chatJid -timestamp $ts
+        $client message markDisplayed -chat $chatJid -timestamp $ts \
+            -after $readTs
     }
 
     # A standalone client (tests) has no taco.
