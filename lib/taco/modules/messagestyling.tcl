@@ -2,15 +2,20 @@
 #
 # Public procs:
 #   messagestyling::parse body -> dict {display_body $str entities $flatList}
+#   messagestyling::links display entities -> flat {link offset length ...}
 #   messagestyling::enrich msgDict -> msgDict with body replaced by display_body
 #                                     and formatting key added
 #
 # Entities are {type offset length} triples with offsets into display_body.
 # Each entity has a single type; overlapping styles are emitted as separate
 # overlapping entities, and the renderer combines them.
+#
+# Links are not XEP-0393: nothing on the wire marks them, every client finds
+# them in the text. Finding them here gives each frontend the same answer, in
+# the same offsets as the styling.
 
 namespace eval messagestyling {
-    namespace export parse enrich
+    namespace export parse links enrich
 }
 
 proc messagestyling::parse {body} {
@@ -102,12 +107,80 @@ proc messagestyling::enrich {msg} {
         return $msg
     }
     set parsed [parse [dict get $msg body]]
-    dict set msg body [dict get $parsed display_body]
+    set display [dict get $parsed display_body]
+    dict set msg body $display
     set entities [dict get $parsed entities]
+    # Outside parse, whose fast path skips a body with no styling characters -
+    # which is most bodies that are only a link.
+    lappend entities {*}[links $display $entities]
     if {[llength $entities] > 0} {
         dict set msg formatting $entities
     }
     return $msg
+}
+
+# Only schemes a sender writes out in full and that open something harmless.
+# A bare "www." stays text, so the covered text is always the target and the
+# span needs no href of its own. `entities` are the styling spans over the
+# same text: a link inside code is quoted, not something to follow.
+proc messagestyling::links {display entities} {
+    if {![regexp -nocase {https?://|mailto:|geo:} $display]} {
+        return {}
+    }
+    set code {}
+    foreach {t o l} $entities {
+        if {$t in {monospace preformatted}} {
+            lappend code $o [expr {$o + $l}]
+        }
+    }
+    set out {}
+    foreach range [regexp -all -inline -indices -nocase \
+            {\m(?:https?://|mailto:|geo:)[^\s<>"]+} $display] {
+        lassign $range start last
+        set url [string range $display $start $last]
+        regexp -nocase {^(?:https?://|mailto:|geo:)} $url scheme
+        set url [TrimLinkTail $url]
+        if {[string length $url] <= [string length $scheme]} {
+            continue
+        }
+        set end [expr {$start + [string length $url]}]
+        set inCode 0
+        foreach {cs ce} $code {
+            if {$start < $ce && $end > $cs} {
+                set inCode 1
+                break
+            }
+        }
+        if {!$inCode} {
+            lappend out link $start [expr {$end - $start}]
+        }
+    }
+    return $out
+}
+
+# Punctuation that ends the sentence rather than the link, and a closing
+# bracket the link never opened: "(see https://example.com/a)" leaves the
+# paren out, "https://example.com/a_(b)" keeps it.
+proc messagestyling::TrimLinkTail {url} {
+    set pairs [dict create ) ( \] \[ \} \{]
+    while {$url ne ""} {
+        set ch [string index $url end]
+        if {$ch in {. , ; : ! ? ' *}} {
+            set url [string range $url 0 end-1]
+            continue
+        }
+        if {[dict exists $pairs $ch]} {
+            # split yields one more piece than there are separators.
+            set opens [llength [split $url [dict get $pairs $ch]]]
+            set closes [llength [split $url $ch]]
+            if {$closes > $opens} {
+                set url [string range $url 0 end-1]
+                continue
+            }
+        }
+        break
+    }
+    return $url
 }
 
 # Parse spans in a (possibly multi-line) text block.

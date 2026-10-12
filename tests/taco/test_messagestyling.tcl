@@ -70,6 +70,55 @@ test ms-enrich-no-body {enrich skips dict without body} -body {
     messagestyling::enrich $msg
 } -result {patch 1 timestamp 1}
 
+test ms-link-bare {a body that is only a link, past parse's fast path} -body {
+    set result [messagestyling::enrich [dict create body "https://example.com/a"]]
+    list [dict get $result body] [dict get $result formatting]
+} -result {https://example.com/a {link 0 21}}
+
+test ms-link-in-quote {a link inside a quote, set off by angle brackets} -body {
+    dict get [messagestyling::enrich \
+        [dict create body "> Новости дня < https://example.com/news/1 >"]] \
+        formatting
+} -result {quote 0 44 link 16 26}
+
+test ms-link-trailing-punctuation {sentence punctuation stays out} -body {
+    messagestyling::links "see https://example.com/a. Or https://example.com/b, ok?" {}
+} -result {link 4 21 link 30 21}
+
+test ms-link-parens {a paren the link opened stays, one it did not goes} -body {
+    list [messagestyling::links "(see https://example.com/a)" {}] \
+         [messagestyling::links "https://example.com/a_(b)" {}]
+} -result {{link 5 21} {link 0 25}}
+
+test ms-link-in-code {links quoted as code are not links} -body {
+    list [dict get [messagestyling::enrich \
+              [dict create body "`https://example.com/a`"]] formatting] \
+         [dict get [messagestyling::enrich \
+              [dict create body "```\ncurl https://example.com/a\n```"]] formatting]
+} -result {{monospace 0 21} {preformatted 0 26}}
+
+test ms-link-schemes {mailto and geo link, other schemes stay text} -body {
+    messagestyling::links \
+        "mailto:a@example.com geo:1,2 javascript:x xmpp:a@example.com ftp://x" {}
+} -result {link 0 20 link 21 7}
+
+test ms-link-scheme-only {a scheme with nothing after it is no link} -body {
+    messagestyling::links "https:// and mailto:." {}
+} -result {}
+
+test ms-link-mid-word {a scheme glued to a word is not a link start} -body {
+    messagestyling::links "xhttps://example.com" {}
+} -result {}
+
+test ms-link-code-points {offsets count code points past an emoji} -body {
+    messagestyling::links "\U1F600 https://example.com" {}
+} -result {link 2 19}
+
+test ms-link-styled {a link in bold keeps both spans} -body {
+    dict get [messagestyling::enrich \
+        [dict create body "*https://example.com*"]] formatting
+} -result {bold 0 19 link 0 19}
+
 test ms-enrich-empty-body {enrich skips empty body} -body {
     set msg [dict create body "" from_jid foo@bar timestamp 1]
     set result [messagestyling::enrich $msg]

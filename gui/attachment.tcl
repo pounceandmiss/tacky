@@ -201,3 +201,17 @@ proc attachment_os_open {path} {
         }
     }
 }
+
+# Open a link in the platform's browser or mail client. Not through
+# attachment_os_open: `cmd /c start` would read a url's & as its own syntax.
+proc url_os_open {url} {
+    catch {
+        if {$::tcl_platform(os) eq "Darwin"} {
+            exec open $url &
+        } elseif {$::tcl_platform(platform) eq "windows"} {
+            exec rundll32 url.dll,FileProtocolHandler $url &
+        } else {
+            exec xdg-open $url &
+        }
+    }
+}
