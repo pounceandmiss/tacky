@@ -1,5 +1,6 @@
 # config: accounts.db. data: per-account databases and downloaded attachments.
-# cache: regenerable files only. On Darwin config and data are one directory.
+# cache: regenerable files only. On Darwin and Haiku config and data are one
+# directory.
 # Unixes other than Darwin and Haiku get the XDG layout.
 proc appdirs {which} {
     switch -glob -- $::tcl_platform(os) {
@@ -11,8 +12,10 @@ proc appdirs {which} {
             }
         }
         Haiku {
+            # ~/config/data is where packages install their data: read-only
+            # and absent on a stock system. Settings is the writable one.
             set base [file join $::env(HOME) config \
-                [dict get {config settings data data cache cache} $which]]
+                [expr {$which in {config data} ? "settings" : "cache"}]]
         }
         Windows* {
             # Data is not roaming: the OMEMO identity key is per-device.
