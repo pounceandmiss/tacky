@@ -628,11 +628,13 @@ snit::type taco_omemo {
     }
 
     # n is how many keys the message skips in all, counting this one: a
-    # message skipping more than MAX_SKIP is refused. Past SKIPPED_CAP for
+    # message skipping more than MAX_SKIP is refused, noted in Gap for
+    # Decrypt (the binding reports any callback error as ESTORAGE). Past SKIPPED_CAP for
     # the device the oldest key goes. Both callbacks run inside Decrypt's
     # savepoint, so a message that then fails its MAC changes nothing.
     method OnStoreSkipped {peerJid peerDev dh nr mk n} {
         if {$n > $::taco::omemo::MAX_SKIP} {
+            set Gap 1
             error "message skips $n keys, over $::taco::omemo::MAX_SKIP"
         }
         set over [expr {[$db onecolumn {
@@ -666,9 +668,17 @@ snit::type taco_omemo {
     # With $keep, a decrypt that worked is kept only if {*}$keep $sess says
     # so, else rolled back as well and refused with {OMEMO REFUSED} ($sess
     # is then as the decrypt left it, for the caller to read and drop).
+    #
+    # A message refused for skipping past MAX_SKIP raises {OMEMO ESTORAGE
+    # GAP}: the peer's chain is further on than this session can follow,
+    # and every message after it would be refused the same way.
     method Decrypt {sess enc isPrekey {keep {}}} {
         $db eval {SAVEPOINT omemo_decrypt}
+        set Gap 0
         set code [catch {$sess decrypt_key $store $enc -prekey $isPrekey} out opts]
+        if {$code && $Gap && [dict get $opts -errorcode] eq {OMEMO ESTORAGE}} {
+            dict set opts -errorcode {OMEMO ESTORAGE GAP}
+        }
         if {!$code && $keep ne "" && ![{*}$keep $sess]} {
             set code 1
             set out "refused"
@@ -1436,6 +1446,8 @@ snit::type taco_omemo {
         return $name
     }
     variable SessionCounter 0
+    # Set by OnStoreSkipped when the decrypt under way skips past MAX_SKIP.
+    variable Gap 0
 
     # =====================================================================
     # Incoming dispatch (called from client.tcl message chain)
@@ -1938,6 +1950,8 @@ snit::type taco_omemo {
         set lastWasPrekey [lindex [lindex $candidates end] 0]
         jlog debug "HandleDecryptError $peerJid/$peerDev: tag=$tag prekey=$lastWasPrekey\
             isMam=$isMam err='$err'"
+        # A gap past MAX_SKIP is a session left behind, as below.
+        if {$ecode eq {OMEMO ESTORAGE GAP}} { set tag ESTATE }
         switch -- $tag {
             EPROTOBUF -
             ECORRUPT  -
