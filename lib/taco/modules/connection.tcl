@@ -797,7 +797,6 @@ snit::type conn {
     variable keepaliveAfterId ""
     variable lastRx 0
     variable probeAt 0
-    variable probeSeq 0
 
     # XEP-0352: whether this stream's features offer CSI, and the state
     # the server last heard ("" when unknown, after a resume).
@@ -1050,15 +1049,10 @@ snit::type conn {
     }
 
     # Anything that comes back will do: an <a/>, the ping's result, or
-    # any other stanza.
+    # any other stanza. sm asks the way its mode does (<r/>, or a ping
+    # whose answer also confirms what was written before it).
     method SendProbe {} {
-        if {[dict get [$sm getInfo] mode] eq "active"} {
-            catch {$sm RequestAck}
-        } else {
-            catch {$base writeStanza [j iq -type get -id keepalive[incr probeSeq] {
-                j ping -ns urn:xmpp:ping
-            }]}
-        }
+        catch {$sm RequestAck}
         set probeAt [clock milliseconds]
     }
 
