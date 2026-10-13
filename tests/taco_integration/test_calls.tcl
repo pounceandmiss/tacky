@@ -356,4 +356,23 @@ namespace eval ::test::calls_int {
             }
             set romeo
         } -result ended
+
+    test calls-int-proxy-change-ends-call \
+        {setting a proxy mid-call ends the call on both sides} \
+        {*}$common -body {
+            # Nothing listens there; the call must end all the same.
+            set srv [socket -server {apply {args {}}} -myaddr 127.0.0.1 0]
+            set port [lindex [fconfigure $srv -sockname] 2]
+            close $srv
+            ::test::calls_int::activeCall {
+                tacky account set -acc $::test::calls_int::ROMEO \
+                    -proxy socks5://127.0.0.1:$port
+                ::test::calls_int::waitUntil {
+                    "ended" in [set ::test::calls_int::JulietStates]
+                } 10000
+                set romeo [lsearch -inline -all \
+                    [set ::test::calls_int::RomeoStates] ended]
+            }
+            set romeo
+        } -result ended
 }

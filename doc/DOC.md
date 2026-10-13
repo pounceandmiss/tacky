@@ -237,10 +237,10 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
     account add {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
-                 websocket_url?: string}
+                 websocket_url?: string, proxy?: string}
     account set {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
-                 websocket_url?: string, enabled?: bool}
+                 websocket_url?: string, proxy?: string, enabled?: bool}
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
@@ -249,7 +249,8 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
 
     account_fields = {username: string, domain: string, host: string, port: int,
                       tls: string, srv: bool, password: string,
-                      resource: string, enabled: bool, websocket_url: string}
+                      resource: string, enabled: bool, websocket_url: string,
+                      proxy: string}
 
 `add` creates or updates. On create, `username` and `domain` default to the
 pieces of the JID. `enable` saves the flag and connects; `disable` saves it
@@ -282,6 +283,19 @@ Android skips it.
 
 Setting `domain`, `host`, `port`, `tls`, `srv` or `password` reconnects an
 enabled account that is offline; an online one uses them next time.
+Changing `proxy` starts the account over, online or not: everything it
+had going ends, as on `disable`, and an enabled account connects again on
+the new route, in a new session, as on `restart`. `<Reset>` follows with
+`reason` `proxy changed` (see "Ending an account's activity" below).
+
+**Proxy.** `proxy` (default `""`) is a SOCKS5 proxy,
+`socks5://[user:pass@]host:port` (an IPv6 `host` in brackets), that carries
+every connection the account makes: the XMPP link, and HTTP uploads and
+downloads. A malformed value is refused.
+With a proxy set:
+- No SRV query is sent, and the account dials `host` (or `domain`) on `port` (or the `tls` default).
+- Attempts to place a call fail with `error <MethodError>` or `<StartFailed>`. An incoming call is declined without ringing.
+- The websocket transport refuses work.
 
 `websocket_url` (`ws://` or `wss://`) is where the account dials on the
 websocket transport. Empty, it is discovered: the
@@ -332,7 +346,8 @@ from the account store. Each session is identified by a `token` (any unique
 string).
 
     register connect {domain: string, host?: string, port?: int, tls?: string,
-                      srv?: bool, websocket_url?: string, token: string}
+                      srv?: bool, websocket_url?: string, proxy?: string,
+                      token: string}
     register form {token: string}                 -> form
     register media {token: string, var: string}   -> base64
     register submit {token: string, values: {*: string}}

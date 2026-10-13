@@ -26,11 +26,11 @@ snit::widget jidpassword {
     }
 }
 
-# The account's host, port, tls and srv. With -collapsible the fields hide
-# behind a checkbutton, and `args` is empty while it is off.
+# The account's host, port, tls, srv and proxy. With -collapsible the fields
+# hide behind a checkbutton, and `args` is empty while it is off.
 #
 #   connectionfields .c ?-collapsible 1?
-#   .c args            -> {-host h -port p -tls t -srv 0|1} or {}
+#   .c args            -> {-host h -port p -tls t -srv 0|1 -proxy url} or {}
 #   .c load $fields    fill from an `account get` dict
 snit::widget connectionfields {
     hulltype ttk::frame
@@ -48,6 +48,7 @@ snit::widget connectionfields {
     variable port ""
     variable mode Automatic
     variable srv 1
+    variable proxy ""
 
     constructor args {
         $self configurelist $args
@@ -62,6 +63,10 @@ snit::widget connectionfields {
             -values [dict keys $Modes]
         ttk::checkbutton $f.srv -text "Look up the server in DNS (SRV)" \
             -variable [myvar srv]
+        ttk::label $f.proxylbl -text "Proxy"
+        ttk::entry $f.proxy -textvariable [myvar proxy]
+        ttk::label $f.proxyhint -foreground gray50 -font TkSmallCaptionFont \
+            -text "socks5://\[user:pass@\]host:port - calls are off while set"
         ttk::label $f.hint -foreground gray50 -font TkSmallCaptionFont \
             -text "Empty host and port: found automatically"
         ttk::label $f.warning -foreground red3 \
@@ -72,12 +77,14 @@ snit::widget connectionfields {
         grid x $f.srv -sticky w -padx 4 -pady 2
         grid x $f.hint -sticky w -padx 4
         grid x $f.warning -sticky w -padx 4
-        grid configure $f.hostlbl $f.portlbl $f.modelbl -sticky w
+        grid $f.proxylbl $f.proxy -sticky ew -padx 4 -pady 2
+        grid x $f.proxyhint -sticky w -padx 4
+        grid configure $f.hostlbl $f.portlbl $f.modelbl $f.proxylbl -sticky w
         grid columnconfigure $f 1 -weight 1
         grid remove $f.warning
 
         if {$options(-collapsible)} {
-            ttk::checkbutton $win.custom -text "Custom server address" \
+            ttk::checkbutton $win.custom -text "Custom server address or proxy" \
                 -variable [myvar custom] -command [mymethod Show]
             pack $win.custom -anchor w
         } else {
@@ -86,6 +93,7 @@ snit::widget connectionfields {
         trace add variable [myvar mode] write [mymethod Changed]
         trace add variable [myvar host] write [mymethod Changed]
         trace add variable [myvar port] write [mymethod Changed]
+        trace add variable [myvar proxy] write [mymethod Changed]
         $self Show
         $self Changed
     }
@@ -98,11 +106,12 @@ snit::widget connectionfields {
         }
     }
 
-    # SRV only applies with no host and no port
+    # SRV only applies with no host, no port and no proxy
     method Changed {args} {
         set f $win.fields
         if {![winfo exists $f.srv]} return
-        $f.srv state [expr {$host eq "" && $port eq "" ? "!disabled" : "disabled"}]
+        $f.srv state [expr {$host eq "" && $port eq "" && [string trim $proxy] eq ""
+                            ? "!disabled" : "disabled"}]
         if {[dict get $Modes $mode] eq "none"} {
             grid $f.warning
         } else {
@@ -114,7 +123,7 @@ snit::widget connectionfields {
         if {!$custom} { return {} }
         set p [string trim $port]
         list -host [string trim $host] -port [expr {$p eq "" ? 0 : $p}] \
-            -tls [dict get $Modes $mode] -srv $srv
+            -tls [dict get $Modes $mode] -srv $srv -proxy [string trim $proxy]
     }
 
     method load {fields} {
@@ -126,9 +135,10 @@ snit::widget connectionfields {
             if {$value eq [dict get $fields tls]} { set mode $text }
         }
         set srv [dict get $fields srv]
+        set proxy [dict getdef $fields proxy ""]
         if {$options(-collapsible)} {
             set custom [expr {$host ne "" || $port ne "" || $mode ne "Automatic"
-                              || !$srv}]
+                              || !$srv || $proxy ne ""}]
             $self Show
         }
     }

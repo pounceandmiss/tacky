@@ -361,6 +361,7 @@ snit::type taco_file {
         if {[catch {
             file mkdir [file dirname $full]
             set tok [taco_http get $fetchUrl -outfile $full.part \
+                -proxy [$client cget -proxy] \
                 -timeout $TIMEOUT_MS \
                 -progress [mymethod ProgressCb $id] \
                 -command [mymethod OnDownloaded $id $full]]
@@ -616,6 +617,7 @@ snit::type taco_file {
         dict set Transfers($id) timer ""
         if {[catch {
             set tok [taco_http put $putUrl -infile $path \
+                -proxy [$client cget -proxy] \
                 -type $mime -headers $headers -timeout $TIMEOUT_MS \
                 -progress [mymethod ProgressCb $id] \
                 -command [mymethod OnPutDone $id $getUrl]]

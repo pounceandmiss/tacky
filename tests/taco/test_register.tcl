@@ -82,6 +82,7 @@ snit::type mock_bareconn {
     option -ondebugstanza -default ""
     option -transport -default tcp
     option -ws-url -default ""
+    option -proxy -default ""
     option -domain -default ""
 
     constructor {args} {
