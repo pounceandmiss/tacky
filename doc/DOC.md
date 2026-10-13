@@ -40,6 +40,7 @@ and get back replies and events.
   - [media](#media)
   - [audio](#audio)
   - [video](#video)
+  - [debugtap](#debugtap)
   - [log](#log)
   - [error](#error)
 - [Guides](#guides)
@@ -86,10 +87,12 @@ matter; it contains C++, so link the host app with `g++`. The ABI is
 
 - `tacky_create` starts the backend on its own thread and returns right away.
   `backend_args` is a NULL-terminated array of backend constructor options
-  (e.g. `"-transient", "0"`), or NULL. The backend defaults to `-transient 1`,
-  so an app that keeps its data passes `"-transient", "0"`. Pass
-  `-config-dir`, `-data-dir` and `-cache-dir` to override the defaults in
-  [Storage layout](#storage-layout).
+  (e.g. `"-transient", "0"`), or NULL. The backend defaults to `-transient 1`
+  however it is run, so an app that keeps its data passes `"-transient", "0"`.
+  Pass `-config-dir`, `-data-dir` and `-cache-dir` to override the defaults in
+  [Storage layout](#storage-layout), and `-transport websocket` to have every
+  account dial over WebSocket (RFC 7395, see `websocket_url` in
+  [account](#account)) instead of TCP, as the browser build does.
   It also takes `-debug-level` and `-debug-file` from [log](#log) - without a
   file the backend logs to the host's stderr, which a service process usually
   discards.
@@ -132,10 +135,12 @@ callbacks under a cancellable tag.
 
 ## Storage layout
 
-Three roots, set with `-config-dir`, `-data-dir` and `-cache-dir`; each falls
-back to a platform default. All three are created mode 0700 on platforms with
-file modes. The XDG variables below fall back to `~/.config`, `~/.local/share`
-and `~/.cache`.
+Three roots, set with `-config-dir`, `-data-dir` and `-cache-dir`; with
+`-transient 0` each falls back to a platform default. All three are created
+mode 0700 on platforms with file modes. The XDG variables below fall back to
+`~/.config`, `~/.local/share` and `~/.cache`; other Unixes use the Linux
+column, except Haiku, which keeps config and data in `~/config/settings/tacky`
+and cache in `~/config/cache/tacky`.
 
 |        | Linux                    | macOS                                 | Windows                      |
 | ------ | ------------------------ | ------------------------------------- | ---------------------------- |
@@ -145,17 +150,23 @@ and `~/.cache`.
 
 config holds `accounts.db`. data holds one `<jid>.db` per account - its state
 and message history with downloaded attachments. cache holds only what can
-be regenerated: upload staging.
+be regenerated: upload staging, video frame streams, the log file
+`log setenabled` picks, and decrypted scratch copies of attachments where
+`/dev/shm` isn't available.
 
-`-transient yes` keeps every database in RAM and puts attachments in a
-temporary directory that is removed on shutdown.
+`-transient 1`, the default, keeps the per-account databases in RAM, and
+`accounts.db` too unless `-config-dir` is given. With no `-data-dir` or
+`-cache-dir`, those go to a temporary directory that is removed on shutdown;
+platform defaults are never used.
 
 Local storage can be encrypted (see [storage](#storage)) - off by default.
 When it is, every db above is SQLCipher-encrypted with the same passphrase.
 Attachments are handled differently: only ones fetched over OMEMO media
-sharing (XEP-0454, `aesgcm://`) are ever encrypted at rest, kept exactly as
-their OMEMO ciphertext with the key recorded in the owning account's db; a
-plain (non-OMEMO) attachment is never encrypted at rest, in either mode.
+sharing (XEP-0454, `aesgcm://`) are ever encrypted at rest, with the key
+recorded in the owning account's db - one downloaded while encryption is on
+is kept as its OMEMO ciphertext, and one already on disk when it is turned on
+is encrypted under a fresh key. A plain (non-OMEMO) attachment is never
+encrypted at rest, in either mode.
 Cache stays unencrypted, since everything in it is regenerable.
 `-transient yes` skips all of this - nothing persists to touch.
 
@@ -168,8 +179,9 @@ arguments, and an optional token.
     ["module", "method", {"arg1": "val1", ...}, token]
 
 The token (any integer) asks for a reply tagged with that same token.
-Leave it off and the request is fire-and-forget: no reply, and any error
-is dropped. Argument values go through untouched - the backend is untyped,
+Leave it off and the request is fire-and-forget: no reply, and an error it
+raises at once (a bad argument, say) arrives as an
+[`error <Background>`](#error) event. Argument values go through untouched - the backend is untyped,
 so `5` and `"5"` mean the same thing on the way in. The exceptions are
 arguments typed `base64`, decoded to bytes before dispatch, and `bool`, where
 `true`/`false`, `1`/`0` and their string forms all work. A bad value of
@@ -181,14 +193,15 @@ either comes back as an error reply.
 A request with a token gets exactly one reply: a result if it worked, an
 error if it didn't. A method shown here without `->` replies `""` once it
 has done its part - which for most of them is to start something whose
-outcome arrives as events. A request cancelled by its `tag` is answered
-with the error `cancelled`, and disabling or removing an account answers
-the requests still waiting on it with an error.
+outcome arrives as events. A request cancelled through its module's `cancel`
+(`message`, `avatar`, `file`) is answered with the error `cancelled`, and
+disabling or removing an account answers the requests still waiting on it
+with an error.
 
 A request that needs the server waits for one minute of connected time
 before giving up with an error. The clock stops while the account is
-offline, so a request left pending across a disconnect still completes on
-reconnect.
+offline and starts a fresh minute on reconnect, so a request left pending
+across a disconnect still completes then.
 
     ["result", token, data]
     ["error", token, message]
@@ -229,7 +242,7 @@ every event name is bare, both in an `["event", ...]` message and as a
 `pull` argument. The Tcl binding does use the bracketed form literally.
 
 `account`, `register`, `app`, `setting`, `storage`, `media`, `audio`,
-`video` and `log` are global. Every other module is per-account: each of its methods
+`video`, `debugtap` and `log` are global. Every other module is per-account: each of its methods
 takes `acc`, the account's bare JID, which most signatures below leave out.
 
 ## account
@@ -239,7 +252,7 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
     account add {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
-                 websocket_url?: string, proxy?: string}
+                 websocket_url?: string, proxy?: string, enabled?: bool}
     account set {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
                  websocket_url?: string, proxy?: string, enabled?: bool}
@@ -248,8 +261,8 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account disable {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
-    account_fields = {username: string, domain: string, host: string, port: int,
-                      tls: string, srv: bool, password: string,
+    account_fields = {jid: string, username: string, domain: string, host: string,
+                      port: int, tls: string, srv: bool, password: string,
                       resource: string, enabled: bool, websocket_url: string,
                       proxy: string}
 
@@ -265,8 +278,13 @@ only the stored password Tacky logs in with: a running client takes it at
 once, and an enabled account that is offline (after an auth error, say)
 connects again with it; an online one keeps its session. `changePassword`
 changes the password on the server (XEP-0077) and, if that works, updates
-the stored one - the reply is `""` on success or an `["error", ...]`. See
+the stored one - the reply is `""` on success or an `["error", ...]`.
+`enabled` on `add` or `set` does what `enable` or `disable` does. See
 [Accounts and sign-in](#accounts-and-sign-in).
+
+`resource` is the account's XMPP resource, `tacky.<hex>`, made on first use and
+kept across reconnects; the backend picks a new one by itself when the server
+reports a resource conflict at bind.
 
 The connection fields. `host`, `port`, `tls` and `srv` apply on the tcp
 transport, `websocket_url` on the websocket one:
@@ -284,12 +302,12 @@ transport, `websocket_url` on the websocket one:
 - `websocket_url` (default `""`): `ws://` or `wss://`. Empty, it is
   discovered: the `urn:xmpp:alt-connections:websocket` link in
   `https://<domain>/.well-known/host-meta` (XEP-0156), else
-  `wss://<domain>/xmpp-websocket`. Changes apply on the next connect.
+  `wss://<domain>/xmpp-websocket`.
 
-Setting `domain`, `host`, `port`, `tls` or `srv` reconnects an enabled
-account that is offline, as `password` does; an online one uses them next
-time. Changing `proxy` ends everything the account had going, online or not, as
-`disable` does, with reason `proxy changed` (see "Ending an account's
+Setting `domain`, `host`, `port`, `tls`, `srv` or `websocket_url` reconnects
+an enabled account that is offline, as `password` does; an online one uses them
+next time. Changing `proxy` ends everything the account had going, online or
+not, as `disable` does, with reason `proxy changed` (see "Ending an account's
 activity" below); an enabled account then connects again on the new route,
 in a new session.
 
@@ -309,9 +327,12 @@ Events:
     account <Disabled> {acc: string}
     account <Removed>  {acc: string}
 
-`<Added>`, `<Removed>`, and `<Enabled>` fire once per actual change -
-enabling an account that's already enabled does nothing and emits nothing.
-`<Disabled>` fires on every `disable` call, so treat it as idempotent.
+`<Added>` fires for a new account, and for every stored account once at
+startup (after an unlock, when storage is encrypted), so a frontend can build
+its account list from the events alone. `<Removed>` and `<Enabled>` fire once
+per actual change - enabling an account that's already enabled emits nothing,
+though it still reconnects it. `<Disabled>` fires on every `disable` call,
+so treat it as idempotent.
 
 **Ending an account's activity.** `disable`, a `proxy` change and `remove`
 end everything the account has going, in this order:
@@ -345,21 +366,21 @@ no network until `enable`:
 
 In-band registration (XEP-0077) over a throwaway connection, kept separate
 from the account store. Each session is identified by a `token` (any unique
-string).
+string; `""` when omitted, enough for one session at a time).
 
     register connect {domain: string, host?: string, port?: int, tls?: string,
                       srv?: bool, websocket_url?: string, proxy?: string,
-                      token: string}
-    register form {token: string}                 -> form
-    register media {token: string, var: string}   -> base64
-    register submit {token: string, values: {*: string}}
-    register cancel {token: string}
+                      token?: string}
+    register form {token?: string}                 -> form
+    register media {token?: string, var: string}   -> base64
+    register submit {token?: string, values: {*: string}}
+    register cancel {token?: string}
 
     form       = {type: string, title?: string, instructions?: string,
                   fields: [form_field]}
     form_field = {var: string, type: string, label: string, required: bool,
-                  value: [string], options: [{label: string, value: string}],
-                  media: {cid: string, type: string}}
+                  value: [string], options?: [{label: string, value: string}],
+                  media?: {cid: string, type: string}}
 
 Events:
 
@@ -373,12 +394,18 @@ work as an account's do; pass the same ones to the `account add` that
 follows. See [Accounts and sign-in](#accounts-and-sign-in)
 for the flow.
 
+A server may close an idle registration stream while the user fills in the
+form. `submit` then dials again, fetches the form anew and sends the values
+into it; only when the new form needs the user again (a fresh CAPTCHA, a
+required field left empty) does it fire `<Form>` instead.
+
 ## conn
 
 The per-account connection lifecycle. `<State>` and `<ConnError>` are
 pullable (use Tcl `observe`, or just track the last event you saw).
 
     conn probe {}
+    conn state {}   -> string   the current state, as `<State>` gives it
 
 `probe` checks that the link is alive now. It does nothing unless the
 account is connected, idle for 10s and not already being checked; if
@@ -389,15 +416,24 @@ turns all of these off.
 
 Events:
 
-    conn <State>     {acc: string, state: string}     every transition
-    conn <ConnError> {acc: string, message: string}    transport failure
-    conn <AuthError> {acc: string, message: string}    credentials rejected
+    conn <State>        {acc: string, state: string}     every transition
+    conn <ConnError>    {acc: string, message: string}   transport failure
+    conn <AuthError>    {acc: string, message: string}   credentials rejected
+    conn <Disconnected> {acc: string, message: string}   gave up; no retry
 
 `state` is one of `disconnected`/`connecting`/`authenticating`/`binding`/
 `connected`/`waiting`. A transport failure retries forever with backoff:
 `<ConnError>` gives the reason, `state: "waiting"` is the gap between
-tries, and `connected` clears it. `<AuthError>` is the end of the road -
-the backend stops until you re-enable the account.
+tries, and `connected` clears it.
+
+Two things end that loop, and the backend then stops until the account is
+re-enabled or a [connection field](#account) is changed. `<AuthError>` is
+rejected credentials, a `not-authorized` stream error included.
+`<Disconnected>`, after a `<ConnError>` with the reason, is a stream error
+retrying would not cure: `conflict` (another client took the session),
+`host-unknown`, `host-gone`, `improper-addressing`, `invalid-from` or
+`unsupported-version`. A resource conflict at bind is not one of these: the
+backend picks a new resource (see [account](#account)) and connects again.
 
 ## app
 
@@ -441,6 +477,11 @@ or `both`); anyone else gets `service-unavailable`, as when off. Their
 disco features are advertised only while on, and changing either sends
 updated caps.
 
+- `send_chat_markers`: `0` stops every delivery receipt and read marker this
+  device would send (XEP-0184 `<received>`, XEP-0333 `<received>` and
+  `<displayed>`). Unset means on. It never affects what the read watermark
+  does locally.
+
 ## storage
 
 Local storage encryption - off by default.
@@ -459,17 +500,24 @@ Events:
     storage <MigrateProgress>   {done: int, total: int}
     storage <MigrationComplete> {direction: string}
 
-`locked` blocks every other module, including `account`, until `unlock`
-verifies the passphrase - retryable in place on failure, no restart.
+`locked` blocks every other module but `app`, `account` included, until
+`unlock` verifies the passphrase - retryable in place on failure, no restart.
+`<Unlocked>` follows a successful `unlock`, and an `encrypt`.
 
 Turning encryption on/off is two-step, not live: `requestEncrypt`/
 `requestDecrypt` (from `plaintext`/`unlocked`) just flag intent - no
 passphrase yet, nothing on disk changes - reflected as `pending-encrypt`/
 `pending-decrypt`; `cancelPending` reverts it. The actual migration
-(`encrypt {passphrase}` / `decrypt {}`) only runs at the next startup,
-before any account connects, gated on that pending status - `encrypt`
+(`encrypt {passphrase}` / `decrypt {}`) belongs at the next startup, before
+any account connects, when status shows the pending request - `encrypt`
 collects the passphrase there (never persisted from the request) and drops
 straight into normal operation in that same process, no further restart.
+They check only that storage is `plaintext` / `unlocked`, not that a request
+is pending, so call them from that gate alone.
+
+`requestEncrypt` and `requestDecrypt` error without a config dir (storage is
+transient, so there is nothing to encrypt) and when a request is already
+pending; `cancelPending` errors when none is.
 Cancelling at that startup gate also drops into normal operation: the
 remaining modules come up and the enabled accounts connect.
 
@@ -901,8 +949,9 @@ peer's read state of something you sent.)
 
 `markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored. It is
 local state and applies to group chats; `markDisplayed` is the separate wire
-half (a XEP-0333 `<displayed>`, 1:1 only, and only to a contact who may see
-our presence, as for delivery receipts). It names the newest of the peer's
+half (a XEP-0333 `<displayed>`, 1:1 only, only to a contact who may see
+our presence, as for delivery receipts, and never with the
+[`send_chat_markers`](#setting) setting at `0`). It names the newest of the peer's
 messages at or before `timestamp` and past `after`, so ours on screen below
 theirs still marks theirs read; with none in that range it sends nothing. The
 watermark also advances on its own on [chat](#chat) `view`, when you send a
@@ -1606,6 +1655,24 @@ Events:
 
     video <PreferredCamera> {id: string}   preferred camera changed
 
+## debugtap
+
+    debugtap on    {acc?: string, token?: string}   -> int   tap id
+    debugtap off   {tap: int}
+    debugtap write {tap: int, stanza: string}
+
+A debug console's view of one stream: an account's (`acc`) or a
+[register](#register) session's (`token`). `on` returns a tap, and every stanza
+in or out of that stream is then sent as `<Stanza>` until `off`. `write`
+sends a raw stanza, given as XML text, down the tapped stream; one that
+doesn't parse is an error.
+
+Event:
+
+    debugtap <Stanza> {tap: int, dir: "in" | "out", stanza}
+
+`stanza` is the parsed node, in the Tcl binding's form.
+
 ## log
 
     log write    {level: string, text: string, obj?: string, acc?: string}  -> ""
@@ -1705,7 +1772,7 @@ show it to users, and expect it to be absent.
 ## Accounts and sign-in
 
 **Startup.** Check `storage status` first: `locked` means no other module
-works yet, so gate everything below on `storage unlock` succeeding;
+but `app` works yet, so gate everything below on `storage unlock` succeeding;
 `pending-encrypt`/`pending-decrypt` mean a requested migration needs to run
 before anything else does (see [storage](#storage)) - after either gate
 resolves, check `status` again, since unlocking can itself reveal a pending
@@ -1724,7 +1791,8 @@ read), setup if it doesn't.
 `connected`. On failure, show the `message` and call `account remove`:
 `account add` stores the account before anything validates it, so an
 abandoned sign-in leaves a row behind.
-`<ConnError>` is retried by the backend; `<AuthError>` is terminal.
+`<ConnError>` alone is retried by the backend; `<AuthError>` and
+`<Disconnected>` are terminal.
 
 **Sign-up.** XEP-0077 registration runs through the `register` module, keyed
 by a `token`:

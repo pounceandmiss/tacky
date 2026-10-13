@@ -1038,7 +1038,7 @@ snit::type conn {
     # Check now that the link is alive: a no-op unless it is ready, idle
     # for -probe-timeout and not already being probed. Silence for
     # -probe-timeout after the probe drops it.
-    method probe {args} {
+    tackymethod -noreturn probe {args} {
         if {$authState ne "ready" || $probeAt > 0} return
         if {[clock milliseconds] - $lastRx < $options(-probe-timeout)} return
         if {![$self ProbeAllowed]} return
@@ -1150,12 +1150,12 @@ snit::type conn {
             "connect timed out after $options(-connect-timeout)ms"
     }
 
-    method state {args} {
+    tackymethod state {args} {
         return $connState
     }
 
     # Re-emit current state for `tacky observe` (initial-state sync on attach).
-    method pull {args} {
+    tackymethod -noreturn pull {args} {
         if {$options(-emit) eq ""} return
         array set opts $args
         switch -- $opts(-event) {
