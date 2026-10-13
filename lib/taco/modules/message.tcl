@@ -202,6 +202,7 @@ snit::type taco_message {
         if {![dict exists $CatchupInFlight $jid]} return
         dict unset CatchupInFlight $jid
         $client emit message <CatchupDone> -jid $jid -count $count
+        if {[string match {*\?join} $jid]} { $self FlushRoomRetry $jid }
     }
 
     method DoCatchup {} {
@@ -1250,12 +1251,15 @@ snit::type taco_message {
         foreach msg [$self PendingSends all] {
             set chatJid [dict get $msg chat_jid]
             # MUC messages must wait for room join. The account archive
-            # holds no room traffic, so the floor can't speak to them. A
-            # room already joined (it can be, before catchup settles) has
-            # no <Joined> coming, so its turn is now.
+            # holds no room traffic, so the floor can't speak to them; the
+            # room's own walk (DoMucCatchup) confirms what the room has. A
+            # room already joined whose walk has settled takes them now;
+            # any other is marked, and what is still pending once its walk
+            # settles is sent then (FlushRoomRetry).
             if {[string match {*\?join} $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
-                if {[$client muc isJoined -jid $roomJid]} {
+                if {[$client muc isJoined -jid $roomJid]
+                        && ![dict exists $CatchupInFlight $chatJid]} {
                     lappend joinedNow $roomJid
                 } else {
                     set PendingRetry($roomJid) 1
@@ -1317,19 +1321,27 @@ snit::type taco_message {
         }
     }
 
-    # Called via bus when a MUC room is joined - flush pending retries for
-    # that room, then sync its archive. <Joined> fires on the first
-    # self-presence, so the archive page races the room's own replay;
-    # whichever lands second dedups.
+    # Called via bus when a MUC room is joined - sync its archive; the
+    # pending retries RetryPending marked for the room go out once that
+    # walk settles (FlushRoomRetry), so a send the room already has is
+    # confirmed by its copy rather than sent twice. <Joined> fires on the
+    # first self-presence, so the archive page races the room's own
+    # replay; whichever lands second dedups.
     method OnMucJoined {args} {
         # A hidden room (see muc join -hidden) is none of ours.
         if {[$client muc isHidden -jid [dict get $args -jid]]} return
         set roomJid [dict get $args -jid]
-        if {[info exists PendingRetry($roomJid)]} {
-            unset PendingRetry($roomJid)
-            $self RetryRoom $roomJid
-        }
         $self DoMucCatchup ${roomJid}?join
+    }
+
+    # The room's walk settled, read or failed: what RetryPending marked for
+    # it and is still pending goes out now, if we are in the room.
+    method FlushRoomRetry {roomChatJid} {
+        regsub {\?join$} $roomChatJid {} roomJid
+        if {![info exists PendingRetry($roomJid)]} return
+        if {![$client muc isJoined -jid $roomJid]} return
+        unset PendingRetry($roomJid)
+        $self RetryRoom $roomJid
     }
 
     # Retry a still-pending message. Uses BuildMessageStanza so OMEMO
@@ -2508,10 +2520,36 @@ snit::type taco_message {
             return [dict create verdict tombstone timestamp $ts \
                 target_id $serverId]
         }
-        set ids [$self ExtractEnvelopeIds $msgNode $chatJid -server_id $serverId]
+        set idArgs [list -server_id $serverId]
+        # The room's copy of a send of ours still pending (the last run's,
+        # never echoed): it comes from the room, and without an occupant-id
+        # nothing else names it ours, so it would be filed beside the
+        # pending row, which the retry then sent again. Its origin-id (or
+        # id) naming that pending row confirms it, as the room's echo does.
+        if {!$accountArchive && [IsRoomChatJid $chatJid]} {
+            set ownId [$self PendingOwnIdOf $chatJid $msgNode]
+            if {$ownId ne ""} { lappend idArgs -own_id $ownId }
+        }
+        set ids [$self ExtractEnvelopeIds $msgNode $chatJid {*}$idArgs]
         # History, not live traffic (NickIsOurs).
         dict set msgNode archived 1
         return [$self Classify $chatJid $msgNode $ts $ids $tsClock]
+    }
+
+    # The own_id of the send of ours still pending in $chatJid that the
+    # stanza's origin-id, or else its id, names; "" when it names none.
+    method PendingOwnIdOf {chatJid msgNode} {
+        foreach id [list \
+                [xsearch $msgNode origin-id -ns urn:xmpp:sid:0 -get @id] \
+                [xsearch $msgNode -get @id]] {
+            if {$id eq ""} continue
+            if {[$client db exists {
+                SELECT 1 FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND own_id=$id
+                  AND server_status='pending'
+            }]} { return $id }
+        }
+        return ""
     }
 
     # The single ingestion core, shared by the live path (ingestLive) and
