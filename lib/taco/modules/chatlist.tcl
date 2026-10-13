@@ -19,16 +19,24 @@
 # its newest message as `last_message` (a `history` dict), and `last_activity`
 # is that message's timestamp. Rendering a preview from it is the frontend's job.
 #
+# Pinned chats (`pin`, `setPinned`) are local to this device. They and the
+# chat with our own bare JID (`is_self`) are listed even with no history.
+# Each entry carries an opaque `order`: the list reads by `order` descending,
+# ties broken by jid, and pins sit above any activity.
+#
 # The module is the sole funnel: it consumes roster/bookmarks/room-state,
 # new-message, read-watermark and tail-message signals and normalizes them
 # into three protocol-agnostic events over the flat collection:
 #   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
 #   chatlist <Remove> -jid $jid                delete
 #   chatlist <Changed>                         reset (refetch via `get`)
-# Sorting, filtering, and any windowing are the frontend's job.
+# Sorting by `order`, filtering, and any windowing are the frontend's job.
 
 snit::type taco_chatlist {
     option -client -readonly yes
+
+    # Pinned chats' order starts here, above any microsecond timestamp.
+    typevariable PinBase [expr {1 << 62}]
 
     variable client
     variable db
@@ -112,14 +120,91 @@ snit::type taco_chatlist {
             if {[dict exists $seen $chatJid]} continue
             lappend entries [$self MakeEntry $chatJid free {} $tail \
                 [$self Tally $tallies $chatJid]]
+            dict set seen $chatJid 1
+        }
+        # Listed with no source and no history: pinned chats, and ours.
+        set bare [$self SelfJid]
+        foreach chatJid [concat [$self PinnedJids] [list $bare]] {
+            if {$chatJid eq "" || [dict exists $seen $chatJid]} continue
+            lappend entries [$self MakeEntry $chatJid free {} "" \
+                [$self Tally $tallies $chatJid]]
+            dict set seen $chatJid 1
         }
         return $entries
     }
 
+    # -- pins -----------------------------------------------------------
+
+    # pin -jid J -pinned 0|1: a new pin goes on top of the others.
+    tackymethod -noreturn pin {args} {
+        set chatJid [dict get $args -jid]
+        set want [expr {[dict get $args -pinned] ? 1 : 0}]
+        if {$want == ([$self PinOrd $chatJid] > 0)} return
+        if {$want} {
+            $db eval {
+                INSERT INTO chat_pin(chat_jid, ord)
+                VALUES($chatJid, (SELECT COALESCE(MAX(ord), 0) + 1 FROM chat_pin))
+            }
+        } else {
+            $db eval {DELETE FROM chat_pin WHERE chat_jid=$chatJid}
+        }
+        $self EmitEntry $chatJid
+    }
+
+    # setPinned -jids {top ... bottom}: the whole pinned list, in order.
+    # A pinned chat left out is unpinned.
+    tackymethod -noreturn setPinned {args} {
+        set jids [dict get $args -jids]
+        if {[llength [lsort -unique $jids]] != [llength $jids]} {
+            return -code error -errorcode TACO_CHATLIST_DUPLICATE \
+                "setPinned: a chat is listed twice"
+        }
+        set old [dict create]
+        $db eval {SELECT chat_jid, ord FROM chat_pin} {
+            dict set old $chat_jid $ord
+        }
+        set new [dict create]
+        set ord [llength $jids]
+        foreach chatJid $jids {
+            dict set new $chatJid $ord
+            incr ord -1
+        }
+        $db transaction {
+            $db eval {DELETE FROM chat_pin}
+            dict for {chatJid ord} $new {
+                $db eval {INSERT INTO chat_pin(chat_jid, ord) VALUES($chatJid, $ord)}
+            }
+        }
+        foreach chatJid [lsort -unique [concat [dict keys $old] [dict keys $new]]] {
+            if {[$self Lookup $old $chatJid] ne [$self Lookup $new $chatJid]} {
+                $self EmitEntry $chatJid
+            }
+        }
+    }
+
+    # The pinned chats, top first.
+    method PinnedJids {} {
+        $db eval {SELECT chat_jid FROM chat_pin ORDER BY ord DESC}
+    }
+
+    # A chat's pin rank, higher on top; 0 when it is not pinned.
+    method PinOrd {chatJid} {
+        set ord [$db onecolumn {SELECT ord FROM chat_pin WHERE chat_jid=$chatJid}]
+        if {$ord eq ""} { return 0 }
+        return $ord
+    }
+
+    # Our own bare JID; "" before we have one.
+    method SelfJid {} {
+        set jid [$client cget -jid]
+        if {$jid eq ""} { return "" }
+        return [jid norm [jid bare $jid]]
+    }
+
     # -- single-entry resolution (event path) ---------------------------
 
-    # The unified entry for one chat JID, or "" if it belongs to no source
-    # and has no chat history.
+    # The unified entry for one chat JID, or "" if it belongs to no source,
+    # has no chat history, is not pinned, and is not our own.
     method EntryFor {chatJid} {
         set bare [regsub {\?join$} $chatJid {}]
         set isRoom [expr {$bare ne $chatJid}]
@@ -136,7 +221,8 @@ snit::type taco_chatlist {
                 return [$self MakeEntry $chatJid roster $r $tail $tally]
             }
         }
-        if {$tail ne ""} {
+        if {$tail ne "" || [$self PinOrd $chatJid] > 0
+            || $chatJid eq [$self SelfJid]} {
             return [$self MakeEntry $chatJid free {} $tail $tally]
         }
         return ""
@@ -151,12 +237,17 @@ snit::type taco_chatlist {
         dict set entry jid $chatJid
         dict set entry source $source
         dict set entry groupchat [expr {[string match {*\?join} $chatJid] ? 1 : 0}]
+        dict set entry is_self [expr {$chatJid eq [$self SelfJid]}]
         if {$tail ne ""} {
             dict set entry last_message $tail
             dict set entry last_activity [dict get $tail timestamp]
         } else {
             dict set entry last_activity 0
         }
+        set pin [$self PinOrd $chatJid]
+        dict set entry pinned [expr {$pin > 0}]
+        dict set entry order [expr {$pin > 0 ? $PinBase + $pin
+                                    : [dict get $entry last_activity]}]
         dict set entry unread $unread
         dict set entry unread_mentions $mentions
         dict set entry muted [dict get $policy muted]

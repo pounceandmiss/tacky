@@ -63,11 +63,11 @@ proc by_jid {entries {field ""}} {
     return $out
 }
 
-test chatlist-empty {empty DB returns an empty list} \
+test chatlist-empty {an empty DB lists only the chat with ourselves} \
     {*}$chatlist_common \
     -body {
-        c chatlist get
-    } -result {}
+        by_jid [c chatlist get] source
+    } -result {user@test.example.com free}
 
 test chatlist-get-unions-sources {get unions roster, bookmarks, and free chats} \
     {*}$chatlist_common \
@@ -76,7 +76,7 @@ test chatlist-get-unions-sources {get unions roster, bookmarks, and free chats} 
         bookmark_insert room@muc.example.com name Room
         chatlist_chat_insert stranger@example.com
         by_jid [c chatlist get] source
-    } -result {contact@example.com roster room@muc.example.com?join bookmarks stranger@example.com free}
+    } -result {contact@example.com roster room@muc.example.com?join bookmarks stranger@example.com free user@test.example.com free}
 
 test chatlist-groupchat-flag {bookmark rooms carry ?join and groupchat=1; contacts do not} \
     {*}$chatlist_common \
@@ -84,7 +84,7 @@ test chatlist-groupchat-flag {bookmark rooms carry ?join and groupchat=1; contac
         roster_insert contact@example.com name Contact
         bookmark_insert room@muc.example.com name Room
         by_jid [c chatlist get] groupchat
-    } -result {contact@example.com 0 room@muc.example.com?join 1}
+    } -result {contact@example.com 0 room@muc.example.com?join 1 user@test.example.com 0}
 
 test chatlist-last-activity {entries carry last_activity; unmessaged contacts are 0} \
     {*}$chatlist_common \
@@ -146,7 +146,15 @@ test chatlist-name-resolution {roster/bookmark names pass through; free chats ha
         bookmark_insert room@muc.example.com name "Room B"
         chatlist_chat_insert stranger@example.com
         by_jid [c chatlist get] name
-    } -result {alice@example.com {Alice R} room@muc.example.com?join {Room B} stranger@example.com {}}
+    } -result {alice@example.com {Alice R} room@muc.example.com?join {Room B} stranger@example.com {} user@test.example.com {}}
+
+test chatlist-is-self {only the chat with our own bare JID is is_self} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert alice@example.com name Alice
+        chatlist_chat_insert user@test.example.com
+        by_jid [c chatlist get] is_self
+    } -result {alice@example.com 0 user@test.example.com 1}
 
 test chatlist-roster-groups {roster entries include the groups field} \
     {*}$chatlist_common \
@@ -380,6 +388,7 @@ test chatlist-last-message-per-chat {get picks each chat's own tail in one pass}
         chatlist_chat_insert bob@example.com timestamp 200 body b-only
         set out {}
         dict for {jid e} [by_jid [c chatlist get]] {
+            if {![dict exists $e last_message]} continue
             lappend out $jid [dict get [dict get $e last_message] content body]
         }
         set out
@@ -496,7 +505,7 @@ test chatlist-blocked-flag-follows-pushes \
         }]
         update idletasks
         list $::items [by_jid [c chatlist get] blocked]
-    } -result {alice@example.com {alice@example.com 1 bob@example.com 0 room@muc.example.com?join 0}}
+    } -result {alice@example.com {alice@example.com 1 bob@example.com 0 room@muc.example.com?join 0 user@test.example.com 0}}
 
 test chatlist-blocked-flag-cleared-on-unblock \
     {an unblock push clears the flag and re-emits the row} \
@@ -518,3 +527,110 @@ test chatlist-blocked-flag-cleared-on-unblock \
         update idletasks
         set ::items
     } -result {0}
+
+# -- pins and order ---------------------------------------------------
+
+# The jids of a get, top to bottom: `order` descending, ties by jid.
+proc top_down {entries} {
+    set rows [lmap e $entries { list [dict get $e order] [dict get $e jid] }]
+    set rows [lsort -index 1 $rows]
+    lmap r [lsort -integer -decreasing -index 0 $rows] { lindex $r 1 }
+}
+
+test chatlist-order-is-activity {an unpinned chat's order is its newest message's time} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 300
+        roster_insert bob@example.com name Bob
+        list [lsort -stride 2 [by_jid [c chatlist get] order]] \
+            [lsort -stride 2 [by_jid [c chatlist get] pinned]]
+    } -result {{alice@example.com 300 bob@example.com 0 user@test.example.com 0} {alice@example.com 0 bob@example.com 0 user@test.example.com 0}}
+
+test chatlist-pin-goes-on-top {a pin outranks every message, a new pin the older ones} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp 300
+        chatlist_chat_insert bob@example.com timestamp 200
+        c chatlist pin -jid bob@example.com -pinned 1
+        c chatlist pin -jid carol@example.com -pinned 1
+        chatlist_chat_insert alice@example.com timestamp 400
+        list [top_down [c chatlist get]] [by_jid [c chatlist get] pinned]
+    } -result {{carol@example.com bob@example.com alice@example.com user@test.example.com} {alice@example.com 0 bob@example.com 1 carol@example.com 1 user@test.example.com 0}}
+
+test chatlist-unpin-empty-chat-removes-it {a pinned chat with no history is listed until unpinned} \
+    {*}$chatlist_common \
+    -body {
+        set ::events {}
+        tacky listen chatlist <Item> {apply {{ev} { lappend ::events item [dict get $ev -jid] }}}
+        tacky listen chatlist <Remove> {apply {{ev} { lappend ::events remove [dict get $ev -jid] }}}
+        c chatlist pin -jid carol@example.com -pinned 1
+        set listed [dict exists [by_jid [c chatlist get]] carol@example.com]
+        c chatlist pin -jid carol@example.com -pinned 0
+        list $listed [dict exists [by_jid [c chatlist get]] carol@example.com] $::events
+    } -result {1 0 {item carol@example.com remove carol@example.com}}
+
+test chatlist-pin-twice-is-a-no-op {pinning a pinned chat changes and emits nothing} \
+    {*}$chatlist_common \
+    -body {
+        c chatlist pin -jid alice@example.com -pinned 1
+        c chatlist pin -jid bob@example.com -pinned 1
+        set ::items {}
+        tacky listen chatlist <Item> {apply {{ev} { lappend ::items [dict get $ev -jid] }}}
+        c chatlist pin -jid alice@example.com -pinned 1
+        c chatlist pin -jid carol@example.com -pinned 0
+        list $::items [top_down [c chatlist get]]
+    } -result {{} {bob@example.com alice@example.com user@test.example.com}}
+
+test chatlist-setpinned-reorders-and-unpins {the list given is the pinned list; the rest come unpinned} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert bob@example.com timestamp 200
+        foreach j {alice bob carol} { c chatlist pin -jid $j@example.com -pinned 1 }
+        c chatlist setPinned -jids {carol@example.com alice@example.com}
+        list [top_down [c chatlist get]] \
+            [lsort -stride 2 [by_jid [c chatlist get] pinned]]
+    } -result {{carol@example.com alice@example.com bob@example.com user@test.example.com} {alice@example.com 1 bob@example.com 0 carol@example.com 1 user@test.example.com 0}}
+
+test chatlist-setpinned-emits-only-moved-rows {rows whose place in the pins held are not re-sent} \
+    {*}$chatlist_common \
+    -body {
+        foreach j {alice bob carol} { c chatlist pin -jid $j@example.com -pinned 1 }
+        set ::items {}
+        tacky listen chatlist <Item> {apply {{ev} { lappend ::items [dict get $ev -jid] }}}
+        c chatlist setPinned -jids {carol@example.com bob@example.com alice@example.com}
+        set same $::items
+        c chatlist setPinned -jids {bob@example.com carol@example.com alice@example.com}
+        list $same [lsort $::items]
+    } -result {{} {bob@example.com carol@example.com}}
+
+test chatlist-setpinned-rejects-duplicates {a chat named twice is an error, and nothing changes} \
+    {*}$chatlist_common \
+    -body {
+        c chatlist pin -jid alice@example.com -pinned 1
+        set code [catch {
+            c chatlist setPinned -jids {bob@example.com bob@example.com}
+        } _ opts]
+        list $code [dict get $opts -errorcode] [by_jid [c chatlist get] pinned]
+    } -result {1 TACO_CHATLIST_DUPLICATE {alice@example.com 1 user@test.example.com 0}}
+
+test chatlist-self-listed-once {our own chat is listed once, also when it is a roster contact} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert user@test.example.com name Me
+        set mine [lmap e [c chatlist get] {
+            if {[dict get $e jid] ne "user@test.example.com"} continue
+            list [dict get $e source] [dict get $e is_self]
+        }]
+        set mine
+    } -result {{roster 1}}
+
+test chatlist-unpin-self-keeps-it {our own chat stays listed when unpinned, with no history} \
+    {*}$chatlist_common \
+    -body {
+        set ::events {}
+        tacky listen chatlist <Item> {apply {{ev} { lappend ::events item [dict get [dict get $ev -item] pinned] }}}
+        tacky listen chatlist <Remove> {apply {{ev} { lappend ::events remove }}}
+        c chatlist pin -jid user@test.example.com -pinned 1
+        c chatlist pin -jid user@test.example.com -pinned 0
+        set ::events
+    } -result {item 1 item 0}
