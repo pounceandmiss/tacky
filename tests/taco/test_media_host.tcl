@@ -146,6 +146,13 @@ test media-host-incomplete-event-is-reported {a missing key is the app's bug, no
         list [dict get [host_event error] reason] [host_event track]
     } -result {{track event has no mid} {}}
 
+test media-host-error-needs-fatal {an error that doesn't say whether it is fatal is the app's bug too} \
+    {*}$host_env -body {
+        host_send type error op openPreview reason "no camera"
+        set ev [host_event error]
+        list [dict get $ev op] [dict get $ev fatal] [dict get $ev reason]
+    } -result {hostEvent 0 {error event has no fatal}}
+
 test media-host-event-needs-a-pc {an event naming no pc is refused outright} \
     {*}$host_env -body {
         catch {::tacky::media::host::event {type connectionState state failed}} err
