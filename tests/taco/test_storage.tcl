@@ -673,6 +673,8 @@ test storage-full-migration-cycle \
         sqlite3 ::_fullcycledb [file join $data foo@example.com.db]
         taco_pragma_key ::_fullcycledb "correct horse battery staple"
         set gotKey 0
+        # Tests share the global frame: an earlier one may leave a scalar `row`.
+        unset -nocomplain row
         ::_fullcycledb eval {SELECT iv, key FROM attachment_key WHERE hash=$omemoHash} row {
             set gotKey 1
             set gotIv $row(iv)
