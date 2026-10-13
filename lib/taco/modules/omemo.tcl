@@ -2456,7 +2456,9 @@ snit::type taco_omemo {
         # Fail-closed: no point ciphering a payload no peer device can
         # read, even if our own carbon devices could. The peer would
         # silently get an undecryptable stanza (MessageNotForUs).
-        if {$peerSessionCount == 0} {
+        # A self-chat is keyed for our other devices, possibly none.
+        set selfChat [expr {$chatJid eq $accountJid}]
+        if {$peerSessionCount == 0 && !$selfChat} {
             if {$peerWarming > 0} {
                 jlog debug "encrypt NOT_READY $chatJid: peer bundle(s) still warming"
                 return -code error -errorcode TACO_OMEMO_NOT_READY \
@@ -2480,7 +2482,7 @@ snit::type taco_omemo {
             return -code error -errorcode TACO_OMEMO_NOT_READY \
                 "bundle fetch in flight for [llength $warming] device(s)"
         }
-        return [$self WrapPayload $sessions $plaintext $chatJid]
+        return [$self WrapPayload $sessions $plaintext $chatJid $selfChat]
     }
 
     # Kick a devicelist fetch for each of $jids not cached yet. 1 when any
@@ -2553,7 +2555,9 @@ snit::type taco_omemo {
     }
 
     # The <encrypted> node of $plaintext keyed for each of $sessions.
-    method WrapPayload {sessions plaintext label} {
+    # $allowEmpty: with no sessions at all, build it keyless (a self-chat
+    # with no other device of ours).
+    method WrapPayload {sessions plaintext label {allowEmpty 0}} {
         # Generate AES-GCM payload key + ciphertext + iv. The payload
         # is UTF-8 bytes: the picomemo binding wants a byte string, and
         # a Tcl string with non-ASCII codepoints throws EPARAM. Wrap the
@@ -2579,7 +2583,8 @@ snit::type taco_omemo {
             lappend perRecipient [list $pd \
                 [dict get $wrap isprekey] [dict get $wrap p]]
         }
-        if {[llength $perRecipient] == 0} {
+        if {[llength $perRecipient] == 0
+            && !($allowEmpty && [llength $sessions] == 0)} {
             jlog debug "encrypt TERMINAL $label: all per-session encrypts failed"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "all per-session encrypts failed"
@@ -3188,6 +3193,8 @@ snit::type taco_omemo {
 
     method AfterPrepareChat {cb peerJid devices} {
         foreach d $devices {
+            # No session with ourselves.
+            if {$peerJid eq $accountJid && $d == $deviceId} continue
             $self EnsureSessionSync $peerJid $d
         }
         {*}$cb ""
