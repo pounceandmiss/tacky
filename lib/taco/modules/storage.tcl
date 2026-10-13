@@ -203,10 +203,20 @@ snit::type taco_storage {
         $options(-taco) CompleteUnlock
     }
 
+    # A migration runs only at the pre-boot gate: requested, then relaunched,
+    # and not yet booted. Once boot has run, accounts hold open db handles
+    # and may be mid-send, and nothing here may swap files beneath them.
+    method RequireGate {direction} {
+        if {[$self MarkerRead] ne $direction || [$options(-taco) booted]} {
+            error "storage $direction runs only at startup, after request[string totitle $direction]"
+        }
+    }
+
     tackymethod encrypt {args} {
         if {$State ne "plaintext"} {
             error "storage is not plaintext"
         }
+        $self RequireGate encrypt
         $self FinishMigration encrypt [dict get $args -passphrase] unlocked
         $options(-taco) emit storage <Unlocked>
         return
@@ -216,6 +226,7 @@ snit::type taco_storage {
         if {$State ne "unlocked"} {
             error "storage is not unlocked"
         }
+        $self RequireGate decrypt
         $self FinishMigration decrypt "" plaintext
         return
     }

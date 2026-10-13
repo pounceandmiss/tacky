@@ -83,6 +83,11 @@ test app-construct-while-locked-defers-setting-observers \
         tacky_type create tacky -transient 0 \
             -config-dir $::_apptest_cfg -data-dir $::_apptest_data \
             -cache-dir $::_apptest_cache
+        tacky storage requestEncrypt
+        tacky destroy
+        tacky_type create tacky -transient 0 \
+            -config-dir $::_apptest_cfg -data-dir $::_apptest_data \
+            -cache-dir $::_apptest_cache
         tacky storage encrypt -passphrase apptestpass
         tacky destroy
 
