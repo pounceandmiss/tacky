@@ -1220,4 +1220,52 @@ test file-timeout-upload-outlives-it {an upload still moving bytes past TIMEOUT_
         }
     } -result {done {} long=1}
 
+
+# --- the client going (taco_client shutdown) -------------------------------
+
+test file-shutdown-fails-download {a live download fails with the client, saying why, and leaves no .part} \
+    -constraints !wasm \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        lassign [cx_start silent] srv port
+        set url http://127.0.0.1:$port/going.png
+        set ::_cx_err NONE
+        $::_client file download -url $url -command {apply {{p} {}}} \
+            -onerror [list apply {{e} {set ::_cx_err $e}}]
+        set full [$::_client file AttachPath $url]
+        $::_client shutdown "account disabled"
+        set res [list [af_last] $::_cx_err part=[file exists $full.part]]
+        cx_stop $srv
+        set res
+    } -result {{failed {account disabled}} {account disabled} part=0}
+
+test file-shutdown-fails-encrypted-upload {an upload stalled at discovery fails, and its ciphertext is removed} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set src [file join $::_upcache going.bin]
+        set f [open $src wb]
+        puts -nonewline $f [string repeat z 4096]
+        close $f
+        set encDir [file join [$::_client cget -cache-dir] attachments upload]
+        $::_client file upload -id 9300000 -path $src -encrypt 1
+        set before [llength [glob -nocomplain -directory $encDir *.enc]]
+        $::_client shutdown "account disabled"
+        list $before [llength [glob -nocomplain -directory $encDir *.enc]] [af_last]
+    } -result {1 0 {failed {account disabled}}}
+
+test file-shutdown-fails-upload-row {a share still uploading is marked failed, while the message module can still hear it} \
+    {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
+        set tmp [file join $::_upcache row.bin]
+        set f [open $tmp w]; puts -nonewline $f "data"; close $f
+        tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
+        set m [lindex [dict get \
+            [$::_client message messagestore get latest bob@example.com] messages] 0]
+        $::_client shutdown "account disabled"
+        set status ""
+        foreach e $::_emitted {
+            if {[lrange $e 0 1] eq {message <Status>}} {
+                set status [dict get [lrange $e 2 end] -server_status]
+            }
+        }
+        list $status [up_status bob@example.com [dict get $m timestamp]]
+    } -result {failed failed}
+
 file delete -force -- $::_upcache

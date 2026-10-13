@@ -83,3 +83,37 @@ test upload-int-round-trip {a file goes up to the server and comes back down unc
             [dict get $down -state] [dict get $down -error] \
             [expr {$local ne "" && [::test::upload::readBytes $local] eq $data}]
     } -result {done {} 1 done {} 1}
+
+# The account going mid-upload takes the upload with it: it fails, saying
+# why, rather than finishing on a client that is gone. Disabled from an
+# idle callback, as a frontend's request would come, not from inside the
+# file module's own progress report.
+test upload-int-disable-fails-upload {disabling the account mid-upload fails the upload} \
+    -constraints {withServer && notMongoose} \
+    -setup ::test::upload::setup -cleanup ::test::upload::cleanup -body {
+        set acc $::test::upload::ACC
+        set path [file join [temporaryDirectory] going-upload.bin]
+        set f [open $path wb]
+        puts -nonewline $f [string repeat x 9000000]
+        close $f
+        set tag [tacky listen file <Update> -acc $acc -direction upload \
+            [list apply {{acc argsL} {
+                if {[dict get $argsL -state] eq "active"
+                        && [dict get $argsL -loaded] > 0
+                        && ![info exists ::_upGoing]} {
+                    set ::_upGoing 1
+                    after 0 [list tacky account disable -acc $acc]
+                }
+            }} $acc]]
+        try {
+            set end [::test::upload::finished upload {
+                tacky file upload -acc $acc -path $path
+            }]
+        } finally {
+            tacky unlisten $tag
+            unset -nocomplain ::_upGoing
+            file delete $path
+        }
+        list [dict get $end -state] [dict get $end -error]
+    } -result {failed {account disabled}}
+

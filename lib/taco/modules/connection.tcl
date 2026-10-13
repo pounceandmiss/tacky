@@ -94,8 +94,12 @@ snit::type baseconn {
     variable reader
     # Names the readers apart. A replaced one outlives its replacement's
     # creation by an idle cycle (see DestroyReader), so the name cannot be
-    # reused.
-    variable readerSeq
+    # reused - not even by a baseconn built under this one's name after it
+    # is gone, so the count is the type's.
+    typevariable ReaderSeq 0
+    # The idle callbacks that report a failure from inside a call (see
+    # Defer); close cancels them, so none reaches a closed or dead baseconn.
+    variable deferred
     # The host-meta lookup in flight (see Discover): taco_http token and body file.
     variable lookup
     variable lookupFile
@@ -148,7 +152,7 @@ snit::type baseconn {
         set flushPending 0
         set ws ""
         set reader ""
-        set readerSeq 0
+        set deferred {}
         set lookup ""
         set lookupFile ""
     }
@@ -222,7 +226,7 @@ snit::type baseconn {
         set state connecting
         if {$options(-domain) eq ""} {
             set state disconnected
-            after idle [list {*}$options(-error-command) "Connect failed: no domain"]
+            $self Defer [list {*}$options(-error-command) "Connect failed: no domain"]
             return
         }
         if {$options(-transport) eq "websocket"} {
@@ -233,7 +237,7 @@ snit::type baseconn {
         if {![llength $targets]} {
             # dial gives none only when the domain's SRV says "."
             set state disconnected
-            after idle [list {*}$options(-error-command) \
+            $self Defer [list {*}$options(-error-command) \
                 "Connect failed: $options(-domain) publishes no XMPP service"]
             return
         }
@@ -257,7 +261,7 @@ snit::type baseconn {
         } err]} {
             set socket ""
             # Deferred: the caller is still inside connect
-            after idle [mymethod Fail "Connect failed: $err"]
+            $self Defer [mymethod Fail "Connect failed: $err"]
             return
         }
         fconfigure $socket -blocking 0 -buffering full -translation binary
@@ -343,7 +347,7 @@ snit::type baseconn {
     method ConnectWebsocket {} {
         if {![llength [info commands ::websocket::open]]} {
             set state disconnected
-            after idle [list {*}$options(-error-command) \
+            $self Defer [list {*}$options(-error-command) \
                 "no websocket transport in this build"]
             return
         }
@@ -433,7 +437,7 @@ snit::type baseconn {
         if {[catch {::websocket::open $url [mymethod OnWsEvent] \
                 -protocol [list $::wsframing::SUBPROTOCOL]} result]} {
             set state disconnected
-            after idle [list {*}$options(-error-command) "Connect failed: $result"]
+            $self Defer [list {*}$options(-error-command) "Connect failed: $result"]
             return
         }
         set ws $result
@@ -495,7 +499,7 @@ snit::type baseconn {
             # A fresh parser, which is also what a stream restart after SASL
             # asks for; the caller does exactly that.
             $self DestroyReader
-            set reader [xmppreader $self.reader[incr readerSeq] \
+            set reader [xmppreader $self.reader[incr ReaderSeq] \
                 -command [mymethod OnStanzaIn] \
                 -header-command $options(-header-command) \
                 -footer-command $options(-footer-command) \
@@ -524,7 +528,14 @@ snit::type baseconn {
         }
     }
 
+    # Run $script once the caller has returned, unless close comes first.
+    method Defer {script} {
+        lappend deferred [after idle $script]
+    }
+
     method close {} {
+        foreach id $deferred { after cancel $id }
+        set deferred {}
         if {$flushPending} {
             after cancel [mymethod FlushWrite]
             set flushPending 0

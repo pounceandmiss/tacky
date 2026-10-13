@@ -142,10 +142,10 @@ snit::widget profilebar {
             $m add command -label "Disconnect" \
                 -command [list $t account disable -acc $acc]
         } else {
-            $m add command -label "Reconnect" -command [list apply {{t acc} {
-                $t account disable -acc $acc
-                $t account enable -acc $acc
-            }} $t $acc]
+            # In place: disable then enable would read as the account going,
+            # and its windows with it
+            $m add command -label "Reconnect" \
+                -command [list $t account restart -acc $acc]
         }
 
         $m add separator

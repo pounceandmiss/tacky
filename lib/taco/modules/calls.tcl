@@ -205,6 +205,7 @@ snit::type taco_calls {
         set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
         $client bus subscribe $self <SessionStart> [mymethod OnFreshStream]
+        $client bus subscribe $self <Closing> [mymethod OnClosing]
         $client bus subscribe $self omemo:<TrustChanged> [mymethod OnTrustChanged]
         $client bus subscribe $self omemo:<BlindTrust> [mymethod OnBlindTrust]
 
@@ -218,9 +219,25 @@ snit::type taco_calls {
     }
 
     destructor {
+        catch {$client bus unsubscribe $self}
         catch {$client iq unhandler set urn:xmpp:jingle:1}
         foreach sid [dict keys $Calls] {
             $self TeardownMedia $sid
+            $self CancelInterrupted $sid
+            $self StopRingTimer $sid
+        }
+    }
+
+    # The client is going (see its shutdown): every call ends while the link
+    # is still up to say so - a ringing one is declined, a proposed one
+    # retracted, the rest terminated as gone.
+    method OnClosing {args} {
+        foreach sid [dict keys $Calls] {
+            if {[catch {$self reject -sid $sid -reason gone} err]} {
+                jlog warn "call $sid: ending it on close: $err"
+                catch {$self TeardownMedia $sid}
+                catch {$self Cleanup $sid}
+            }
         }
     }
 

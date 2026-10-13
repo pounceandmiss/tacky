@@ -3,6 +3,8 @@ snit::type taco_client {
     variable InCarbon 0
     # Set from <SessionStart> until its <SessionEnd>.
     variable SessionLive 0
+    # Set once shutdown has run: the client is on its way out.
+    variable Closed 0
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
         nick chatlist chat author extdisco calls groupcall omemo file notify blocking
@@ -118,6 +120,43 @@ snit::type taco_client {
         $conn close
         if {$SessionLive} {
             $self OnDisconnect "disconnected"
+        }
+    }
+
+    # End everything the account has going, for good: this client is about
+    # to be destroyed (the destructor runs it too). In order:
+    #  - <Closing>, while every module and the link are still up: calls hang
+    #    up and tell their peers, group calls leave, transfers abort;
+    #  - the stream closes (no resumption) and the session ends;
+    #  - every request still pending is answered with $reason, including
+    #    those its handlers issue meanwhile.
+    # Idempotent. A frontend learns of it from what calls it (account
+    # <Reset>, <Removed>), not from each module.
+    method shutdown {reason} {
+        if {$Closed} return
+        set Closed 1
+        $bus publish <Closing> -reason $reason
+        $self disconnect
+        $iq failAll $reason
+    }
+
+    # What frontends have told the modules (the avatars they show, the chats
+    # they have open), for the client built in this one's place: frontend
+    # state, not the session's, so it outlives a restart (taco
+    # restartClient). {module state ...} from each module that keeps any.
+    method carry {} {
+        set out {}
+        foreach mod $_modules {
+            if {"Carry" in [$self.$mod info methods]} {
+                lappend out $mod [$self.$mod Carry]
+            }
+        }
+        return $out
+    }
+
+    method restore {carried} {
+        dict for {mod state} $carried {
+            $self.$mod Restore $state
         }
     }
 
@@ -350,6 +389,7 @@ snit::type taco_client {
     }
 
     destructor {
+        catch {$self shutdown "account closed"}
         catch {$iq failAll "account closed"}
         foreach mod $_modules {
             catch {$self.$mod destroy}

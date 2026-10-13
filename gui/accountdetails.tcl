@@ -274,10 +274,11 @@ snit::widgetadaptor signin {
     }
 
     # The backend would keep retrying a connection error; the next Proceed
-    # adds the account afresh.
+    # adds the account afresh. The remove waits for idle: this runs inside
+    # the account's client, reporting the error, and remove destroys it.
     method OnFailed {fallback ev} {
         tacky unlisten $win
-        catch { tacky account remove -acc $jid }
+        after idle [list catch [list tacky account remove -acc $jid]]
         set msg [expr {[dict exists $ev -message]
             ? [dict get $ev -message] : $fallback}]
         $self Idle

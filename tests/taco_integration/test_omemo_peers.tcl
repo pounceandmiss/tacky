@@ -34,16 +34,19 @@ namespace eval ::test::omemo_peer_int {
             -domain $HOST -username omemoa
         tacky account add {*}$::tacky_test_account_args -acc $OWNER -password omemobpass \
             -domain $HOST -username omemob
+        # Armed before either connects: one account's catchup can finish
+        # before the other is even online.
+        set caughtUp [expect_events {
+            {message <CatchupDone> -acc omemoa@example.local}
+            {message <CatchupDone> -acc omemob@example.local}
+        }]
         tacky account enable -acc $PEER
         tacky account enable -acc $OWNER
         wait_events {
             {conn <State> -acc omemoa@example.local -state connected}
             {conn <State> -acc omemob@example.local -state connected}
         }
-        wait_events {
-            {message <CatchupDone> -acc omemoa@example.local}
-            {message <CatchupDone> -acc omemob@example.local}
-        }
+        wait_expected $caughtUp
         # The announce trails catchup by several round-trips. Wait for our
         # own id, not just a non-empty list: the node still carries the ids
         # earlier tests in this file left on it.

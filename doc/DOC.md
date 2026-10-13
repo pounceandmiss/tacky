@@ -244,22 +244,24 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
+    account restart {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
     account_fields = {username: string, domain: string, host: string, port: int,
                       tls: string, srv: bool, password: string,
                       resource: string, enabled: bool, websocket_url: string}
 
-`add` creates or updates. On create, `username` and `domain` default to
-the pieces of the JID. `enable` saves the flag and connects; `disable`
-disconnects and saves. `remove` disconnects, then deletes the account row
-and its per-account database. Downloaded attachments are shared across
-accounts and are left alone. `set` with `password` changes only the stored
-password Tacky logs in with: a running client takes it at once, and an enabled
-account that is offline (after an auth error, say) connects again with it; an
-online one keeps its session. `changePassword` changes the password
-on the server (XEP-0077) and, if that works, updates the stored one - the
-reply is `""` on success or an `["error", ...]`. See
+`add` creates or updates. On create, `username` and `domain` default to the
+pieces of the JID. `enable` saves the flag and connects; `disable` saves it
+and ends everything the account had going (see "Ending an account's
+activity" below). `remove` does the same, then
+deletes the account row and its per-account database. Downloaded attachments
+are shared across accounts and are left alone. `set` with `password` changes
+only the stored password Tacky logs in with: a running client takes it at
+once, and an enabled account that is offline (after an auth error, say)
+connects again with it; an online one keeps its session. `changePassword`
+changes the password on the server (XEP-0077) and, if that works, updates
+the stored one - the reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
 
 **Where an account connects.** `domain` is the XMPP domain; the server's
@@ -293,10 +295,35 @@ Events:
     account <Enabled>  {acc: string}
     account <Disabled> {acc: string}
     account <Removed>  {acc: string}
+    account <Reset>    {acc: string, reason: string}
 
 `<Added>`, `<Removed>`, and `<Enabled>` fire once per actual change -
 enabling an account that's already enabled does nothing and emits nothing.
 `<Disabled>` fires on every `disable` call, so treat it as idempotent.
+
+**Ending an account's activity.** `disable` and `remove` end everything the
+account has going, in this order:
+
+1. Calls end, and the peer is told: a ringing call is declined, a call we
+   placed is retracted, and the rest are terminated. Group calls are left,
+   and their camera previews closed.
+2. Uploads and downloads stop, failing with the reason. An upload's message
+   is marked failed.
+3. The stream closes, without resumption, so the next connection is a new
+   session.
+4. Requests still waiting are answered with an error carrying the reason.
+
+`restart` does the same and leaves the account as enabled as it was: an
+enabled one connects again, on a new session. Use it to reconnect, rather
+than `disable` and `enable`, which say the user turned the account off and
+on. `<Reset>` follows once the account has started over, with `reason`
+`restarted`, or `account disabled` from `disable`. It means everything you
+held for the account is gone: calls, transfers, rooms joined, pending
+requests and their ids. Drop it, and read again anything you still show:
+chats, lists, message states. What you told the account about your own
+display is kept: the avatars marked `visible` and the chats marked `open`
+(see [chat](#chat)). `<Removed>` means the same, for an account that no
+longer exists.
 
 ## register
 

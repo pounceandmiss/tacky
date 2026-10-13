@@ -656,3 +656,33 @@ test calls-content-add-rejected {content-add and transport-replace are acked, th
         set out
     } -result [list 2 result [list set $::PEER] {content-reject tk-oa2} {initiator audio} \
                     2 result [list set $::PEER] {transport-reject tk-oa2} {initiator audio}]
+
+# -- The client going (taco_client shutdown) --
+
+test calls-shutdown-retracts-proposed {a call still ringing the peer is retracted} \
+    {*}$calls_env -body {
+        set sid [c.calls start -to peer@example.com]
+        c.conn clear
+        c shutdown "account disabled"
+        set sent [lmap w [c.conn get_written_before_close] {calls_jmi_sent $w}]
+        string map [list $sid SID] [list $sent [lindex [calls_events] end] [calls_state]]
+    } -result {{{retract SID}} {<Ended> -sid SID -reason retracted} {}}
+
+test calls-shutdown-declines-ringing {a call ringing at us is declined} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-sh1 $::PEER]
+        c.conn clear
+        c shutdown "account disabled"
+        set sent [lmap w [c.conn get_written_before_close] {calls_jmi_sent $w}]
+        list $sent [lindex [calls_events] end] [calls_state]
+    } -result {{{reject tk-sh1}} {<Ended> -sid tk-sh1 -reason declined} {}}
+
+test calls-shutdown-once {shutdown is idempotent, and the destructor's own finds nothing left} \
+    {*}$calls_env -body {
+        c.conn feed [calls_jmi_in propose tk-sh2 $::PEER]
+        c.conn clear
+        c shutdown "account disabled"
+        c shutdown "account disabled"
+        llength [c.conn get_written]
+    } -result 1
+
