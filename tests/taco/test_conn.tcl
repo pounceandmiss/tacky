@@ -1872,6 +1872,18 @@ test conn-barrier-confirms-a-send {without SM a ping after the delay confirms wh
         list $before [llength $ids] [sm_acked_ids]
     } -result {{} 1 m1}
 
+# The keepalive asks sm, so without SM its ping is a barrier like any other.
+test conn-probe-confirms-a-send-without-sm {without SM the answer to a keepalive probe confirms what was written before it} \
+    {*}$common \
+    -body {
+        drive_passthrough 10000
+        c write [msg m1]
+        c SendProbe
+        set ids [barrier_ids]
+        barrier_reply [lindex $ids end]
+        list [llength $ids] [sm_acked_ids]
+    } -result {1 m1}
+
 test conn-barrier-one-ping-per-burst {a burst gets one ping; reaching -ack-frequency asks at once} \
     {*}$common \
     -body {
