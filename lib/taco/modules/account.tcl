@@ -32,7 +32,7 @@ snit::type taco_account {
 
     variable valid_columns {username domain host port tls srv password resource
                             enabled websocket_url proxy}
-    variable connection_columns {password domain host port tls srv proxy}
+    variable connection_columns {password domain host port tls srv proxy websocket_url}
     # Added by the transport when a request carries a token, not fields.
     variable transport_opts {-command -onerror -tag}
 

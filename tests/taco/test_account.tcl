@@ -279,6 +279,14 @@ tacky_test account-port-reaches-client {the client dials the account's port, and
         list {*}$before [[tacky client b@example.com] cget -port]
     } -result {5223 0 15222}
 
+tacky_test account-conn-methods-reply {conn's methods answer a request that asks} \
+    -body {
+        tacky account add -acc a@example.com
+        list [wait_call tacky conn state -acc a@example.com] \
+             [wait_call tacky conn probe -acc a@example.com] \
+             [wait_call tacky conn pull -acc a@example.com -event <State>]
+    } -result {disconnected {} {}}
+
 # -- websocket_url ---------------------------------------------------------
 
 tacky_test account-websocket-url-default {a new account has none} \
@@ -320,6 +328,15 @@ tacky_test account-websocket-url-reaches-client {the client dials the account's 
         tacky account add -acc b@example.com
         list [[tacky client a@example.com] cget -ws-url] [[tacky client b@example.com] cget -ws-url]
     } -result {wss://ws.example.com/x {}}
+
+tacky_test account-websocket-url-set-updates {set carries a changed one to a client already made} \
+    -modes direct -mock conn \
+    -body {
+        tacky account add -acc a@example.com
+        set before [[tacky client a@example.com] cget -ws-url]
+        tacky account set -acc a@example.com -websocket_url wss://ws.example.com/x
+        list $before [[tacky client a@example.com] cget -ws-url]
+    } -result {{} wss://ws.example.com/x}
 
 tacky_test account-websocket-url-enable-updates {enable carries a changed one to a client already made} \
     -modes direct -mock conn \
