@@ -539,6 +539,45 @@ test file-encrypt-to-temp {EncryptToTemp writes ciphertext that media_decrypt re
              ok=[expr {$back eq $plain}]
     } -result {overhead=16 keylen=32 ivlen=12 ok=1}
 
+# Gajim previews an aesgcm:// picture only when the server serves it under an
+# image type, and a server serves the type it was told: the encrypted upload
+# asks for its slot and PUTs under the file's own type, as Gajim and
+# Conversations do, not application/octet-stream.
+test file-upload-encrypted-keeps-the-file-type \
+    {an encrypted image upload requests its slot and PUTs as image/jpeg} \
+    {*}[tacky_env -mock conn -account $acc] -body {
+        set src [file join $::_upcache pic.jpg]
+        set f [open $src wb]; puts -nonewline $f "\xff\xd8jpeg"; close $f
+        $::_client file ServiceResolved upload.test.example.com 0
+        $::_client conn clear
+        set ::_up_put_types {}
+        rename ::taco_http ::_up_real_taco_http
+        proc ::taco_http {op args} {
+            if {$op ne "put"} { return [::_up_real_taco_http $op {*}$args] }
+            lappend ::_up_put_types [dict get [lrange $args 1 end] -type]
+            return up-token
+        }
+        try {
+            $::_client file upload -id 9300000 -path $src -encrypt 1
+            set iq [lindex [$::_client conn get_written] end]
+            set slotType [xsearch $iq request -ns urn:xmpp:http:upload:0 \
+                -get @content-type]
+            $::_client iq feed [j iq -type result \
+                -from upload.test.example.com -id [dict get $iq attrs id] {
+                j slot -ns urn:xmpp:http:upload:0 {
+                    j put -url https://up.example/PUT/pic.jpg
+                    j get -url https://dl.example/GET/pic.jpg
+                }
+            }]
+        } finally {
+            rename ::taco_http ""
+            rename ::_up_real_taco_http ::taco_http
+            catch {$::_client file Terminal 9300000 failed test}
+            file delete $src
+        }
+        list slot $slotType put $::_up_put_types
+    } -result {slot image/jpeg put image/jpeg}
+
 test file-progress-throttle {ProgressCb emits a <Update> on ~1% steps and at completion} \
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set id [$::_client file NewTransfer download http://h/x.png]
