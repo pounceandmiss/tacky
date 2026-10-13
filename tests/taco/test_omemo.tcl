@@ -2419,6 +2419,69 @@ test omemo-unit-prekey-beside-own-session-is-a-message \
         c db onecolumn {SELECT body FROM chat_message WHERE chat_jid='romeo@montague.lit'}
     } -result {first words}
 
+# A payload that opens to "" is a message the sender sent: it is kept, with
+# an empty body. A key transport has no payload and leaves no row.
+test omemo-unit-empty-plaintext-is-an-empty-message \
+    {a payload decrypting to "" is stored as an empty message} \
+    {*}$::test::omemo_unit::single_env -body {
+        omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
+            [[set [c.omemo info vars store]] bundle]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] ""]
+        c conn feed [j message -from $::test::omemo_unit::ROMEO/phone \
+            -to $::test::omemo_unit::JULIET -type chat -id me1 { j #as-is $enc }]
+        c db eval {SELECT body, encryption FROM chat_message
+                   WHERE chat_jid='romeo@montague.lit'}
+    } -result {{} omemo}
+
+test omemo-unit-keytransport-leaves-no-row \
+    {a live key transport (no <payload>) stores nothing} \
+    {*}$::test::omemo_unit::single_env -body {
+        omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
+            [[set [c.omemo info vars store]] bundle]
+        set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+            [c omemo device_id] ""]
+        dict set enc children [lmap ch [dict get $enc children] {
+            if {[dict get $ch tag] eq "payload"} continue
+            set ch
+        }]
+        c conn feed [j message -from $::test::omemo_unit::ROMEO/phone \
+            -to $::test::omemo_unit::JULIET -type chat -id kt1 { j #as-is $enc }]
+        c db onecolumn {SELECT count(*) FROM chat_message
+                        WHERE chat_jid='romeo@montague.lit'}
+    } -result 0
+
+test omemo-unit-synthesise-plain-without-body \
+    {SynthesisePlain carries a <body> only when given one, and never the cleartext fallback} \
+    {*}$jid_common -body {
+        set msg [j message -from $::test::omemo_unit::ROMEO \
+                -to $::test::omemo_unit::JULIET_BARE -type chat -id wire-nb {
+            j body -body "OMEMO encrypted message fallback"
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid 42 { j key -rid 99 -body Zm9v; j iv -body AAAA }
+            }
+        }]
+        set none [c omemo SynthesisePlain $msg]
+        set empty [c omemo SynthesisePlain $msg ""]
+        list [llength [xsearch $none body]] [llength [xsearch $empty body]] \
+            [xsearch $empty body -get body]
+    } -result {0 1 {}}
+
+test omemo-unit-mam-self-sent-has-no-body \
+    {our own archived OMEMO send comes out of decryptForwarded with no <body> at all} \
+    {*}$jid_common -body {
+        set ourDev [c omemo device_id]
+        set msg [j message -from $::test::omemo_unit::JULIET_BARE \
+                -to $::test::omemo_unit::ROMEO -type chat -id wire-ob {
+            j body -body "fallback"
+            j encrypted -ns eu.siacs.conversations.axolotl {
+                j header -sid $ourDev { j key -rid 7 -body Zm9v; j iv -body AAAA }
+                j payload -body Zm9v
+            }
+        }]
+        llength [xsearch [c omemo decryptForwarded $msg] body]
+    } -result 0
+
 # The stored session with Romeo's 111, as a blob.
 proc ::test::omemo_unit::sessionBlob {dev} {
     c db onecolumn {

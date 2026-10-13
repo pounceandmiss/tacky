@@ -2801,12 +2801,14 @@ snit::type taco_message {
         set targetId [xsearch $rep -get @id]
         if {$targetId eq ""} { return "" }
         set plainNode [$client omemo decryptForwarded $msgNode]
+        # No <body> is no correction (a key transport, say); an empty one
+        # corrects the message to empty.
+        if {![HasBody $plainNode]} { return "" }
         set body [xsearch $plainNode body -get body]
         lassign [reply::parse $plainNode] replyId replyTo
         if {$replyId ne ""} {
-            set body [reply::strip_fallback $plainNode $body]
+            set body [ReplyBody $plainNode $body]
         }
-        if {$body eq ""} { return "" }
         set sender [$self resolveSender $chatJid $msgNode]
         dict set sender from [xsearch $msgNode -get @from]
         set enc [expr {[dict exists $plainNode decrypted] ? "omemo" : ""}]
@@ -3079,7 +3081,7 @@ snit::type taco_message {
         lassign [reply::parse $msgNode] replyId replyTo
         set body [xsearch $msgNode body -get body]
         if {$replyId ne ""} {
-            set body [reply::strip_fallback $msgNode $body]
+            set body [ReplyBody $msgNode $body]
         }
         set ownId [expr {[dict exists $args -own_id] \
             ? [dict get $args -own_id] : ""}]
@@ -3166,9 +3168,12 @@ snit::type taco_message {
     }
 }
 
-# A <body> is a "message"; a bodyless stanza is a control type
-# (receipt/marker/chatstate) or "" for any other bodyless payload (e.g. a
-# decrypted keytransport). Only "message" is stored; the rest are dropped.
+# A <body> is a "message", an empty one too: the sender sent a message,
+# and the recipient learns it came. A stanza with no text is a control type
+# (receipt/marker/chatstate/reaction) when it carries one, even beside an
+# empty <body/>; with neither it is "" (e.g. a decrypted keytransport).
+# Only "message" is stored; the rest are dropped. $body is the text to show,
+# which may stand in for a missing <body> (an invite's, a call's).
 proc ClassifyMessage {msgNode body} {
     if {$body ne ""} { return message }
     foreach {kind ns} {
@@ -3179,7 +3184,22 @@ proc ClassifyMessage {msgNode body} {
     } {
         if {[llength [xsearch $msgNode * -ns $ns]] > 0} { return $kind }
     }
+    if {[HasBody $msgNode]} { return message }
     return ""
+}
+
+# Whether a <message> carries a <body> element, empty or not.
+proc HasBody {msgNode} {
+    expr {[llength [xsearch $msgNode body]] > 0}
+}
+
+# A reply's body with its quoted fallback dropped. A quote that would leave
+# nothing is the sender's span gone wrong, not a reply with no words: the
+# body is kept whole rather than lose the message.
+proc ReplyBody {msgNode body} {
+    set stripped [reply::strip_fallback $msgNode $body]
+    if {[string trim $stripped] eq "" && $body ne ""} { return $body }
+    return $stripped
 }
 
 # Derive the attachment list for an incoming <message>. An attachment is

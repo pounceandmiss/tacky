@@ -793,6 +793,11 @@ becomes `caption`, and the files are listed in `attachments`.
   [groupcall](#groupcall)); a change arrives as `message <Edited>`. Deletion is a
   message-level state rather than a content type, so future kinds like `call`
   or `system` extend this union - switch on `type` and tolerate unknown ones.
+- A `type: "text"` message's `body` may be `""`: the sender sent a message
+  with nothing in it (an empty `<body/>`, or an OMEMO payload that opened to
+  nothing). It is kept so you learn a message came; show it as such (the Tk
+  GUI reads "Empty message") rather than as a blank bubble. A correction can
+  empty a message the same way.
 - `formatting` (XEP-0393 styling spans) indexes into whichever of
   `body`/`caption` the variant carries, with the styling characters already
   removed from that string. Spans may overlap: two styles over the same run

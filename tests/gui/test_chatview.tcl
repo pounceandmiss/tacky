@@ -1732,6 +1732,16 @@ test chatarea-edited-marker {an edited message renders the (edited) marker} \
              [string match "*(edited)*" [[.ca textwidget] get 1.0 end-1c]]
     } -result {1 1}
 
+test chatarea-empty-message-placeholder {a message whose body is empty reads "Empty message", dimmed} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_msg 100 ""] [ca_msg_att 200 "" {{type file url https://ex/a.bin name a.bin}} ""]]
+        set t [.ca textwidget]
+        set r [$t tag ranges tombstone]
+        list [llength $r] [$t get {*}$r] \
+            [regexp -all {Empty message} [$t get 1.0 end-1c]]
+    } -result {2 {Empty message} 1}
+
 test chatarea-retracted-tombstone {a retracted message renders a tombstone and keeps its slot} \
     {*}$ca_common \
     -body {

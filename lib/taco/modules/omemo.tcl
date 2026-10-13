@@ -1586,7 +1586,9 @@ snit::type taco_omemo {
         set ivB64 [xsearch $headerNode iv -get body]
         set iv [base64::decode $ivB64]
         set payloadB64 [xsearch $encNode payload -get body]
-        set hasPayload [expr {$payloadB64 ne ""}]
+        # A key transport has no <payload>. An empty one is a message whose
+        # text is "" (its ciphertext is as long as its plaintext).
+        set hasPayload [expr {[llength [xsearch $encNode payload]] > 0}]
 
         # Candidate keys: every <key rid="$deviceId"> in document order.
         set candidates [list]
@@ -2247,9 +2249,13 @@ snit::type taco_omemo {
     }
 
     # Build a synthesised plaintext <message> from the original encrypted
-    # stanza. Preserves @from, @to, @type, @id; replaces the <encrypted>
-    # node and any cleartext fallback <body> with <body>plaintext</body>
-    # and an EME marker. All OTHER children are kept verbatim - in
+    # stanza: `SynthesisePlain stanza ?plaintext ?senderFp??`. Preserves
+    # @from, @to, @type, @id; replaces the <encrypted> node and any
+    # cleartext fallback <body> with <body>plaintext</body> and an EME
+    # marker. With no plaintext there is no <body> at all: the stanza says
+    # no message came (a key transport, a redelivery, our own send coming
+    # back, one we drop). A plaintext of "" is a message: an empty one.
+    # All OTHER children are kept verbatim - in
     # particular <stanza-id> (XEP-0359) so the downstream ingest path
     # gets a server_id, which messagestore needs to dedup against the
     # MAM replay of the same stanza. Dropping it caused ghost rows on
@@ -2258,7 +2264,11 @@ snit::type taco_omemo {
     # `sender_fp` the identity it binds the row to. Both live on the node dict
     # rather than in the XML, so a peer can't put them there by sending an EME
     # marker on cleartext, and jwrite ignores them.
-    method SynthesisePlain {origStanza plaintext {senderFp ""}} {
+    method SynthesisePlain {origStanza args} {
+        if {[llength $args] > 2} {
+            error "wrong # args: should be \"SynthesisePlain origStanza ?plaintext ?senderFp??\""
+        }
+        lassign $args plaintext senderFp
         set attrs [dict get $origStanza attrs]
         set out [dict create tag message body {} tail {} children {} \
             ns [dict get $origStanza ns] attrs $attrs \
@@ -2267,8 +2277,9 @@ snit::type taco_omemo {
         if {[dict exists $origStanza archived]} {
             dict set out archived [dict get $origStanza archived]
         }
-        set bodyChild [dict create tag body body $plaintext tail {} \
-            children {} ns {} attrs {}]
+        set bodyChild [expr {[llength $args] == 0 ? {} : [list \
+            [dict create tag body body $plaintext tail {} \
+                children {} ns {} attrs {}]]}]
         set emeChild [dict create tag encryption body {} tail {} \
             children {} ns $::taco::omemo::NS_EME \
             attrs [dict create namespace $::taco::omemo::NS_AXOLOTL \
@@ -2279,7 +2290,7 @@ snit::type taco_omemo {
             if {$tag in {encrypted body encryption}} continue
             lappend kept $c
         }
-        dict set out children [concat [list $bodyChild $emeChild] $kept]
+        dict set out children [concat $bodyChild [list $emeChild] $kept]
         return $out
     }
 
@@ -2299,27 +2310,28 @@ snit::type taco_omemo {
         # for (RoomDecrypt), never the room's own JID in @from.
         if {[xsearch $msgNode -get @type] eq "groupchat"} {
             set from [xsearch $msgNode -get @from]
-            if {![jid valid $from]} { return [$self SynthesisePlain $msgNode ""] }
+            if {![jid valid $from]} { return [$self SynthesisePlain $msgNode] }
             set r [$self RoomDecrypt [jid norm [jid bare $from]] $msgNode $encNode 1]
-            if {$r eq ""} { return [$self SynthesisePlain $msgNode ""] }
+            if {$r eq ""} { return [$self SynthesisePlain $msgNode] }
             lassign $r kind body fp
             if {$kind in {keytransport duplicate own}} {
-                return [$self SynthesisePlain $msgNode ""]
+                return [$self SynthesisePlain $msgNode]
             }
             return [$self SynthesisePlain $msgNode $body $fp]
         }
         set fromBare [jid bare [xsearch $msgNode -get @from]]
         set headerNode [lindex [xsearch $encNode header] 0]
         # All "skip this MAM result" exits below return a synthesised
-        # stanza with an empty body, NOT the original $msgNode. The
+        # stanza with no <body>, NOT the original $msgNode. The
         # original carries the cleartext EME fallback ("I sent you an
         # OMEMO encrypted message but your client doesn't support
         # OMEMO"); returning it would let that string land in the
         # user-visible body column as a phantom message on every chat
-        # reopen. ParseMessage classifies an empty body as displayless
-        # and returns "", so the caller drops it.
+        # reopen. ParseMessage classifies a bodyless stanza as
+        # displayless and returns "", so the caller drops it. (An empty
+        # <body/> would be an empty message, so they carry none.)
         if {$headerNode eq ""} {
-            return [$self SynthesisePlain $msgNode ""]
+            return [$self SynthesisePlain $msgNode]
         }
         set sid [::taco::omemo::deviceId [xsearch $headerNode -get @sid]]
         # Our own outgoing stanza echoed via MAM: we never encrypted to
@@ -2327,20 +2339,20 @@ snit::type taco_omemo {
         # placeholder. The pending row from `taco_message send` already
         # holds the plaintext; nothing useful to surface here.
         if {$sid eq ""} {
-            return [$self SynthesisePlain $msgNode ""]
+            return [$self SynthesisePlain $msgNode]
         }
         if {$fromBare eq $accountJid && $sid == $deviceId} {
-            return [$self SynthesisePlain $msgNode ""]
+            return [$self SynthesisePlain $msgNode]
         }
         set peerJid [expr {$fromBare eq "" ? $accountJid : $fromBare}]
         set peerDev $sid
         set res [$self DoDecrypt $encNode $peerJid $peerDev 1]
         if {$res eq ""} {
-            return [$self SynthesisePlain $msgNode ""]
+            return [$self SynthesisePlain $msgNode]
         }
         lassign $res kind body senderFp
         if {$kind in {keytransport duplicate}} {
-            return [$self SynthesisePlain $msgNode ""]
+            return [$self SynthesisePlain $msgNode]
         }
         # plaintext OR decrypt_error: surface as a real <message> with
         # $body either as the decrypted text or as a user-facing
@@ -3061,7 +3073,7 @@ snit::type taco_omemo {
                 jlog debug "OMEMO $kind in $room from $sender"
                 return ""
             }
-            own { return [$self SynthesisePlain $stanza ""] }
+            own { return [$self SynthesisePlain $stanza] }
             decrypt_error {
                 set who [expr {$sender ne "" ? $sender : [xsearch $stanza -get @from]}]
                 set dev [::taco::omemo::deviceId [xsearch $encNode header -get @sid]]
