@@ -449,3 +449,66 @@ test client-setpassword-leaves-disabled-alone {a disabled account stays offline}
         tacky account set -acc user@test.example.com -password fresh
         expr {[$::_client.conn get_connects] - $before}
     } -result 0
+
+# -- shutdown ---------------------------------------------------------------
+
+test client-shutdown-order {<Closing> comes while the link is up, then the stream closes and the session ends} \
+    {*}$common \
+    -body {
+        set ::got {}
+        c bus subscribe _ <Closing> {apply {{args} {
+            lappend ::got [list closing [dict get $args -reason] closed=[c.conn get_closed]]
+        }}}
+        c bus subscribe _ <SessionEnd> {apply {{args} { lappend ::got end }}}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c shutdown "account disabled"
+        c shutdown "account disabled"
+        list $::got closed=[c.conn get_closed] live=[c iq isLive]
+    } -result {{{closing {account disabled} closed=0} end} closed=1 live=0}
+
+test client-shutdown-fails-requests-asked-meanwhile {a request a failed handler makes is failed too} \
+    {*}$common \
+    -body {
+        set ::got {}
+        c.conn configure -bound-jid "user@test.example.com/res1"
+        c.conn fire_ready 0
+        c iq request -type get -to test.example.com -payload [j ping -ns urn:xmpp:ping] \
+            -command {apply {{st} {
+                lappend ::got [xsearch $st error text -get body]
+                c iq request -type get -to test.example.com \
+                    -payload [j ping -ns urn:xmpp:ping] \
+                    -command {apply {{st} {
+                        lappend ::got [xsearch $st error text -get body]
+                    }}}
+            }}}
+        c shutdown "account removed"
+        set ::got
+    } -result {{account removed} {account removed}}
+
+test client-destroy-leaves-no-timers {a destroyed client leaves no timer or idle callback for any part of it} \
+    {*}$common \
+    -body {
+        taco_client ::gone -domain test.example.com -port 5222 \
+            -username user -password pass -resource res
+        ::gone.conn configure -bound-jid "user@test.example.com/res1"
+        ::gone.conn fire_ready 0
+        ::gone muc join -jid room@muc.example.com -nick me
+        ::gone iq request -type get -to test.example.com \
+            -payload [j ping -ns urn:xmpp:ping]
+        # A callback names the instance namespace, not the command
+        set spaces {}
+        foreach cmd [list ::gone {*}[info commands ::gone.*]] {
+            catch {lappend spaces [namespace qualifiers [lindex [$cmd info vars] 0]]}
+        }
+        set ours {apply {{spaces} {
+            lmap id [after info] {
+                set script [lindex [after info $id] 0]
+                expr {[lsearch -exact $spaces [lindex $script 1]] >= 0
+                    ? $script : [continue]}
+            }
+        }}}
+        set during [llength [{*}$ours $spaces]]
+        ::gone destroy
+        list [expr {$during > 0}] [{*}$ours $spaces]
+    } -result {1 {}}

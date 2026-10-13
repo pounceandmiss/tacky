@@ -5,6 +5,8 @@ snit::type mock_conn {
     variable written
     variable connected
     variable closed
+    # How much had been written when close came, "" before it did
+    variable closedAt ""
     variable probes 0
     variable mockState disconnected
     variable mockLastError ""
@@ -58,6 +60,7 @@ snit::type mock_conn {
 
     method close {} {
         set closed 1
+        set closedAt [llength $written]
     }
 
     method write {stanza} {
@@ -186,6 +189,12 @@ snit::type mock_conn {
 
     method get_closed {} {
         return $closed
+    }
+
+    # The stanzas written before close, the rest after
+    method get_written_before_close {} {
+        if {$closedAt eq ""} { return $written }
+        return [lrange $written 0 $closedAt-1]
     }
 
     method clear {} {

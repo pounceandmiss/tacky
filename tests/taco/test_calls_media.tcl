@@ -726,4 +726,33 @@ test media-finish-while-ringing-ignored {a <finish/> for a call still ringing ch
         dict get [dict get [calls_state] tk-f1] state
     } -result ringing
 
+
+# -- The client going (taco_client shutdown) --
+
+test media-shutdown-ends-call {a call ends with its client: terminated as gone before the stream closes, its pc closed} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        c shutdown "account removed"
+        set term ""
+        foreach w [c.conn get_written_before_close] {
+            set jn [xsearch $w jingle -ns urn:xmpp:jingle:1 -get node]
+            if {[xsearch $jn -get @action] eq "session-terminate"} {
+                set term [xsearch $jn reason 0 -get tag]
+            }
+        }
+        string map [list $sid SID] [list $term \
+            [expr {[mockrtc::first ::rtc::pc::close] >= 0}] \
+            [lindex [calls_events] end] [dict exists [calls_state] $sid]]
+    } -result {gone 1 {<Ended> -sid SID -reason hangup} 0}
+
+test media-shutdown-cancels-interrupted-timer {a call whose ICE dropped leaves no warning timer behind} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] state-change disconnected
+        set armed [dict exists [dict get [calls_state] $sid] disconnect_timer]
+        set timer [dict get [dict get [calls_state] $sid] disconnect_timer]
+        c shutdown "account removed"
+        list $armed [expr {$timer in [after info]}]
+    } -result {1 0}
+
 mockrtc::uninstall

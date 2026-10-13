@@ -301,6 +301,11 @@ snit::type taco_type {
     option -webrtc-lib -readonly yes -default ""
 
     variable TransientRoot ""
+    # Where every client's file module puts decrypted copies (scratchRoot)
+    variable ScratchRoot ""
+    # jid -> what a client shut down by restartClient carried for the next
+    # one (taco_client carry)
+    variable Carried -array {}
     # Guards CompleteUnlock against running twice: the constructor already
     # runs it once for a plaintext/unlocked-at-construction db, but
     # storage encrypt/decrypt also call it (needed when they run from the
@@ -396,9 +401,10 @@ snit::type taco_type {
         catch {::rtcmv::set-log-level none}
         catch {::tacky::media::webrtc::set-log-level none}
         foreach client [$self clients] {
-            catch {$client disconnect}
+            catch {$client shutdown "shutting down"}
             catch {$client destroy}
         }
+        taco_file_scratch_drop $ScratchRoot
         catch {$db close}
         # After the clients: their calls hold peer connections on it.
         catch {::tacky::media close}
@@ -424,6 +430,45 @@ snit::type taco_type {
         foreach client [$self clients] {
             catch {$client destroy}
         }
+    }
+
+    # The scratch location shared by the clients' file modules, made on
+    # first use and removed with taco: a client rebuilt for its account (see
+    # restartClient) keeps serving the copies the old one made.
+    method scratchRoot {} {
+        if {$ScratchRoot eq "" && $options(-cache-dir) ne ""} {
+            set ScratchRoot [taco_file_scratch_dir $options(-cache-dir)]
+        }
+        return $ScratchRoot
+    }
+
+    # Start an account over: its client shuts down (every call, transfer,
+    # room and request ends, and the stream closes without resumption; see
+    # taco_client shutdown) and is destroyed, and an enabled account
+    # connects again with a client built afresh from its stored settings.
+    # What frontends declared to the old one - the avatars they show, the
+    # chats they have open - is carried over to it (taco_client carry);
+    # account <Reset> then tells them to drop what they held of the rest.
+    #
+    # Called for a frontend's request (account restart, disable), never from
+    # inside the client: it destroys the client, whose method would be
+    # running on the stack below.
+    method restartClient {jid reason} {
+        set client $self.client($jid)
+        if {[info commands $client] ne ""} {
+            catch {set Carried($jid) [$client carry]}
+            catch {$client shutdown $reason}
+            catch {$client destroy}
+        }
+        if {[$db onecolumn {SELECT enabled FROM account WHERE jid=$jid}] eq "1"} {
+            [$self client $jid] connect
+        }
+        $self emit account <Reset> -acc $jid -reason $reason
+    }
+
+    # Nothing is carried to a client the account will never have
+    method forgetCarried {jid} {
+        unset -nocomplain Carried($jid)
     }
 
     # The clients that exist now; unlike `client`, creates none. Empty
@@ -468,6 +513,13 @@ snit::type taco_type {
                 -resource $resource \
                 -taco $self \
                 {*}$extra
+            # What the frontend declared, and a tap on the account, outlive
+            # the client they were made on
+            if {[info exists Carried($jid)]} {
+                $client restore $Carried($jid)
+                unset Carried($jid)
+            }
+            $debugtap clientBuilt $jid
         }
         return $client
     }

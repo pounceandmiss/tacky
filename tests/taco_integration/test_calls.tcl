@@ -342,4 +342,18 @@ namespace eval ::test::calls_int {
             ::test::calls_int::activeCall
             ::test::calls_int::verdicts
         } -result {romeo 0 none juliet 0 none}
+
+    test calls-int-disable-ends-call \
+        {disabling the account mid-call ends the call on both sides} \
+        {*}$common -body {
+            ::test::calls_int::activeCall {
+                tacky account disable -acc $::test::calls_int::ROMEO
+                ::test::calls_int::waitUntil {
+                    "ended" in [set ::test::calls_int::JulietStates]
+                } 10000
+                set romeo [lsearch -inline -all \
+                    [set ::test::calls_int::RomeoStates] ended]
+            }
+            set romeo
+        } -result ended
 }

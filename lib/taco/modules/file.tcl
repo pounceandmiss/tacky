@@ -66,6 +66,7 @@ snit::type taco_file {
         array set Transfers {}
         array set DownloadByUrl {}
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
+        $client bus subscribe $self <Closing> [mymethod OnClosing]
     }
 
     destructor {
@@ -74,8 +75,8 @@ snit::type taco_file {
             catch {after cancel [dict get $Transfers($id) timer]}
             catch {taco_http reset [dict get $Transfers($id) httptoken]}
         }
-        if {$ScratchDir ne ""} {
-            catch {file delete -force -- $ScratchDir}
+        if {$OwnScratch} {
+            taco_file_scratch_drop $ScratchDir
         }
     }
 
@@ -88,6 +89,19 @@ snit::type taco_file {
         set MaxFileSize 0
         set Discovered 0
         set ServiceWaiters {}
+    }
+
+    # The client is going (see its shutdown): every transfer ends failed,
+    # its request reset and its temp file gone, while the modules waiting on
+    # it (message, for an upload's row) are still there to hear it.
+    method OnClosing {args} {
+        set reason [dict get $args -reason]
+        set ServiceWaiters {}
+        foreach id [array names Transfers] {
+            if {[info exists Transfers($id)]} {
+                $self Abort $id failed $reason
+            }
+        }
     }
 
     # --- Transfer registry ----------------------------------------------
@@ -152,6 +166,9 @@ snit::type taco_file {
         dict set Transfers($id) abortstate $state
         dict set Transfers($id) abortreason $reason
         catch {taco_http reset [dict get $t httptoken]}
+        # Natively reset has run the request's -command, which cleaned up;
+        # in a browser that is still to come, and must not outlive this.
+        catch {taco_http cleanup [dict get $t httptoken]}
         catch {close [dict get $t fh]}
         $self Terminal $id $state $reason
     }
@@ -426,26 +443,22 @@ snit::type taco_file {
         $client db eval {DELETE FROM attachment_key WHERE hash=$hash}
     }
 
-    # RAM-backed scratch location when available: /dev/shm is guaranteed
-    # tmpfs on Linux; falls back to cache-dir elsewhere (Windows/macOS, or
-    # any /dev/shm-less sandbox). 0700 so no other local user can read it;
-    # destructor-cleaned so nothing outlives the session.
+    # Where decrypted copies go (see taco_file_scratch_dir). taco's, so a
+    # client rebuilt for the same account still serves the paths it handed
+    # out; this client's own only when it has no taco, and then removed with
+    # it.
     variable ScratchDir ""
+    variable OwnScratch 0
 
     method ScratchRoot {} {
         if {$ScratchDir ne ""} { return $ScratchDir }
-        set shm /dev/shm
-        if {[file isdirectory $shm] && [file writable $shm]} {
-            set dir [file join $shm "tacky-attach-[pid]-[clock clicks]"]
-            if {![catch {
-                file mkdir $dir
-                file attributes $dir -permissions 0700
-            }]} {
-                set ScratchDir $dir
-                return $ScratchDir
-            }
+        set taco [$client cget -taco]
+        if {[info commands $taco] ne ""
+                && ![catch {$taco scratchRoot} dir] && $dir ne ""} {
+            return [set ScratchDir $dir]
         }
-        set ScratchDir [file join [$self Root -cache-dir] attachments plain]
+        set ScratchDir [taco_file_scratch_dir [$self Root -cache-dir]]
+        set OwnScratch 1
         return $ScratchDir
     }
 
@@ -835,5 +848,29 @@ proc attachment_mime {name} {
         .mp3        { return audio/mpeg }
         .ogg        { return audio/ogg }
         default     { return application/octet-stream }
+    }
+}
+
+# A scratch location for decrypted copies: RAM-backed when available -
+# /dev/shm is guaranteed tmpfs on Linux - else under $cacheDir (Windows,
+# macOS, any /dev/shm-less sandbox). 0700 so no other local user can read it.
+proc taco_file_scratch_dir {cacheDir} {
+    set shm /dev/shm
+    if {[file isdirectory $shm] && [file writable $shm]} {
+        set dir [file join $shm "tacky-attach-[pid]-[clock clicks]"]
+        if {![catch {
+            file mkdir $dir
+            file attributes $dir -permissions 0700
+        }]} {
+            return $dir
+        }
+    }
+    return [file join $cacheDir attachments plain]
+}
+
+# Remove what taco_file_scratch_dir gave, so nothing outlives the session.
+proc taco_file_scratch_drop {dir} {
+    if {$dir ne ""} {
+        catch {file delete -force -- $dir}
     }
 }

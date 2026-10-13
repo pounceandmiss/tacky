@@ -160,6 +160,8 @@ snit::type taco_groupcall {
     # <State>: the flush due per room (after id), and the last one sent.
     variable Dirty -array {}
     variable Sent -array {}
+    # The idle callbacks in flight (see Later), cancelled with the module.
+    variable Idle {}
 
     constructor args {
         $self configurelist $args
@@ -177,18 +179,46 @@ snit::type taco_groupcall {
         $client bus subscribe $self muc:<Left>        [mymethod OnRoomLeft]
         $client bus subscribe $self muc:<Destroyed>   [mymethod OnRoomLeft]
         $client bus subscribe $self <SessionEnd>      [mymethod OnDisconnect]
+        $client bus subscribe $self <Closing>         [mymethod OnClosing]
         $client caps addFeature $NS
         $client caps addFeature $NS_INVITES
     }
 
     destructor {
         catch {$client bus unsubscribe $self}
+        foreach id $Idle { after cancel $id }
         foreach room [array names Rooms] {
             after cancel [dict get $Rooms($room) timer]
+            if {[dict get $Rooms($room) preview] ne ""} {
+                catch {::tacky::media closePreview [dict get $Rooms($room) preview]}
+            }
         }
         foreach room [array names Dirty] {
             after cancel $Dirty($room)
         }
+    }
+
+    # $script after the caller returns, unless the module is gone by then.
+    method Later {script} {
+        set Idle [lmap id $Idle {
+            expr {$id in [after info] ? $id : [continue]}
+        }]
+        lappend Idle [after idle $script]
+    }
+
+    # The client is going (see its shutdown): leave every call while the
+    # link can still carry the hang-ups.
+    method OnClosing {args} {
+        set reason [dict get $args -reason]
+        foreach room [array names Rooms] {
+            $self Leave $room $reason
+        }
+        foreach room [array names Calls] {
+            $self Gone $room $reason
+            unset Calls($room)
+        }
+        foreach id $Idle { after cancel $id }
+        set Idle {}
     }
 
     # =========================================================================
@@ -205,7 +235,7 @@ snit::type taco_groupcall {
             id [$self RandomHex 16] nick [$self RandomHex 4]]
         # Offline, the room would wait on a stream that may be a while coming.
         if {![$client iq isLive]} {
-            after idle [mymethod StartFailed $spec "not connected"]
+            $self Later [mymethod StartFailed $spec "not connected"]
             return
         }
         # One call per chat at a time: if the chat's newest call's room is
@@ -251,7 +281,7 @@ snit::type taco_groupcall {
         set chat [expr {$opts(-chat) eq "" ? ""
                         : [jid norm [regsub {\?join$} $opts(-chat) {}]]}]
         if {![$client iq isLive]} {
-            after idle [mymethod Gone $room "not connected" \
+            $self Later [mymethod Gone $room "not connected" \
                 [dict create chat $chat hosted 1 video $video]]
             return
         }
@@ -1211,7 +1241,7 @@ snit::type taco_groupcall {
         if {$cmd ne ""} { lappend Asking($room) $cmd }
         if {$inFlight} return
         if {![$client iq isLive]} {
-            after idle [mymethod OnRoomInfo $room "" $tries ""]
+            $self Later [mymethod OnRoomInfo $room "" $tries ""]
             return
         }
         set gen [expr {[info exists Gen($room)] ? $Gen($room) : 0}]

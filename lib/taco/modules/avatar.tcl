@@ -88,6 +88,14 @@ snit::type taco_avatar {
             [jid norm "[dict get $args -jid]/[dict get $args -oldNick]"]
     }
 
+    # What the frontend said it shows, for a client built in this one's
+    # place (taco_client carry)
+    method Carry {} { array names VisibleJids }
+
+    method Restore {jids} {
+        foreach jid $jids { set VisibleJids($jid) 1 }
+    }
+
     # VisibleJids survives: it tracks what the frontend displays, not the session.
     method OnDisconnect {args} {
         set PendingVCardHash [dict create]

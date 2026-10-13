@@ -207,12 +207,21 @@ snit::type iq {
     }
 
     # Fails every outstanding request: the account is going away. Not
-    # service-unavailable, which callers read as a missing feature.
+    # service-unavailable, which callers read as a missing feature. A
+    # handler answered here may ask again (the next disco#info of a probe),
+    # so it goes round until nothing is left - or, against a handler that
+    # always asks again, gives up after a bound.
     method failAll {text} {
-        foreach key [array names ResponseHandlers] {
-            if {![info exists Pending($key)]} continue
-            $self AnswerError $key cancel undefined-condition $text
+        for {set round 0} {$round < 32} {incr round} {
+            set keys [lmap key [array names ResponseHandlers] {
+                expr {[info exists Pending($key)] ? $key : [continue]}
+            }]
+            if {![llength $keys]} return
+            foreach key $keys {
+                $self AnswerError $key cancel undefined-condition $text
+            }
         }
+        jlog warn "iq failAll: requests still being made after $round rounds"
     }
 
     method AnswerError {key errType condition text} {

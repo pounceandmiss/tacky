@@ -62,6 +62,8 @@ snit::type app_type {
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
+        # An account's windows go with it, or start over with it
+        accountscope listen
         install notifier using notifier $self.notifier -controller $self
         bind all <FocusIn> +[mymethod FocusMoved]
         bind all <FocusOut> +[mymethod FocusMoved]
@@ -114,6 +116,7 @@ snit::type app_type {
             bind all $ev [string trim $script]
         }
         catch {::tacky unlisten $self}
+        catch {::tacky unlisten accountscope}
         catch {$notifier destroy}
         foreach w $windows {
             catch {destroy $w}

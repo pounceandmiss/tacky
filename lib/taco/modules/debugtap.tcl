@@ -29,6 +29,15 @@ snit::type taco_debugtap {
         return $id
     }
 
+    # taco built a client for $jid. Taps put on the account's last one now
+    # listen to this one's conn, which is also where their writes go.
+    method clientBuilt {jid} {
+        set connKey acc:$jid
+        if {![info exists ConnTaps($connKey)]} return
+        [$options(-taco) client $jid] conn configure -ondebugstanza \
+            [mymethod OnDebugStanza $connKey]
+    }
+
     tackymethod -noreturn off {args} {
         set tapId [dict get $args -tap]
         if {![info exists Taps($tapId)]} return
