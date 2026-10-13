@@ -146,6 +146,9 @@ snit::type baseconn {
     option -footer-command -default control::no-op
     # Callback for read errors, write errors, and EOF
     option -error-command -default control::no-op
+    # Callback for a failure retrying won't cure: the proxy refusing us for
+    # good (see socks5.tcl). Unset, -error-command hears it.
+    option -fatal-command -default ""
     # Debug hook: called as {*}$cmd $dir $stanza for in/out stanzas
     option -ondebugstanza -default ""
 
@@ -262,10 +265,11 @@ snit::type baseconn {
         $self NextTarget "Connect failed: no address to connect to"
     }
 
-    method NextTarget {lastErr} {
+    method NextTarget {lastErr {report ""}} {
         if {![llength $targets]} {
             set state disconnected
-            {*}$options(-error-command) $lastErr
+            if {$report eq ""} { set report $options(-error-command) }
+            {*}$report $lastErr
             return
         }
         set targets [lassign $targets target]
@@ -308,6 +312,12 @@ snit::type baseconn {
     # socks5's failures name the proxy themselves.
     method OnProxyConnected {status detail} {
         set proxyHandle ""
+        if {$status eq "fatal" && $options(-fatal-command) ne ""} {
+            # Every target goes through the same proxy, so none is tried.
+            set targets {}
+            $self Fail "Connect failed: $detail" $options(-fatal-command)
+            return
+        }
         if {$status ne "ok"} {
             $self Fail "Connect failed: $detail"
             return
@@ -324,7 +334,8 @@ snit::type baseconn {
         }
     }
 
-    method Fail {msg} {
+    # `report` replaces -error-command for the last target's failure.
+    method Fail {msg {report ""}} {
         $self CancelAttempt
         $self DropProxy
         if {$socket ne ""} {
@@ -337,7 +348,7 @@ snit::type baseconn {
         if {[llength $targets]} {
             jlog inform "$host:$port: $msg; trying the next address"
         }
-        $self NextTarget $msg
+        $self NextTarget $msg $report
     }
 
     method CancelAttempt {} {
@@ -754,7 +765,7 @@ snit::type conn {
     # 0 negotiates no stream management even when the server offers it: for
     # tests of the path without it, and for a server whose SM misbehaves.
     delegate option -sm to sm as -enabled
-    delegate option * to base except {-ontransportready -command -header-command -footer-command -error-command}
+    delegate option * to base except {-ontransportready -command -header-command -footer-command -error-command -fatal-command}
 
     option -domain -default ""
     # See dial.tcl. -nameservers is for tests.
@@ -896,6 +907,7 @@ snit::type conn {
             -ontransportready [mymethod OnTransportReady] \
             -command [mymethod OnStanza] \
             -error-command [mymethod OnTransportError] \
+            -fatal-command [mymethod OnFatalError] \
             -footer-command [mymethod OnStreamFooter] \
             -attempt-command [mymethod OnAttempt]
         install sm using sm $self.sm -write [list $self.base writeStanza] \

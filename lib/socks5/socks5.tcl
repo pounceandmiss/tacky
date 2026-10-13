@@ -4,8 +4,12 @@
 #   socks5_connect ?-username U -password P? \
 #       proxyHost proxyPort destHost destPort cb
 #
-# cb is invoked as: {*}$cb ok $sock  or  {*}$cb error $msg, where msg
-# names the proxy itself, so a caller need not prefix it.
+# cb is invoked as: {*}$cb ok $sock, {*}$cb error $msg or {*}$cb fatal $msg,
+# where msg names the proxy itself, so a caller need not prefix it. `error`
+# may pass (the proxy is down or restarting, the target unreachable from it);
+# `fatal` is the proxy answering in a way that holds until the settings
+# change: credentials refused, no SOCKS5 there, a request its rules forbid.
+# Anything not `ok` is a failure, so a caller may ignore the difference.
 #
 # Returns a handle for socks5_abort, which drops a handshake still in
 # progress: its socket is closed and cb never runs.
@@ -106,10 +110,10 @@ proc socks5_abort {handle} {
     }
 }
 
-proc ::socks5::Unpend {handle cb msg} {
+proc ::socks5::Unpend {handle cb msg {status error}} {
     variable Pending
     unset -nocomplain Pending($handle)
-    {*}$cb error $msg
+    {*}$cb $status $msg
 }
 
 proc ::socks5::OnWritable {sock} {
@@ -172,11 +176,11 @@ proc ::socks5::Advance {sock} {
         greeted {
             binary scan $buf cucu version method
             if {$version != 5} {
-                Fail $sock "unsupported SOCKS version from proxy: $version"
+                Fail $sock "unsupported SOCKS version from proxy: $version" fatal
                 return
             }
             if {$method == 0xFF} {
-                Fail $sock "proxy accepts none of our authentication methods"
+                Fail $sock "proxy accepts none of our authentication methods" fatal
                 return
             }
             if {$method == 0} {
@@ -185,22 +189,22 @@ proc ::socks5::Advance {sock} {
                 set username [dict get $State($sock) username]
                 set password [dict get $State($sock) password]
                 if {$username eq "" && $password eq ""} {
-                    Fail $sock "proxy requires authentication but no credentials provided"
+                    Fail $sock "proxy requires authentication but no credentials provided" fatal
                     return
                 }
                 SendAuth $sock $username $password
             } else {
-                Fail $sock "proxy selected unsupported method: $method"
+                Fail $sock "proxy selected unsupported method: $method" fatal
             }
         }
         authing {
             binary scan $buf cucu authver status
             if {$authver != 1} {
-                Fail $sock "unsupported auth subnegotiation version from proxy: $authver"
+                Fail $sock "unsupported auth subnegotiation version from proxy: $authver" fatal
                 return
             }
             if {$status != 0} {
-                Fail $sock "proxy rejected credentials"
+                Fail $sock "proxy rejected credentials" fatal
                 return
             }
             SendConnect $sock
@@ -208,15 +212,20 @@ proc ::socks5::Advance {sock} {
         connect-sent {
             binary scan $buf cucucucu version rep rsv atyp
             if {$version != 5} {
-                Fail $sock "bad version in the proxy's CONNECT reply: $version"
+                Fail $sock "bad version in the proxy's CONNECT reply: $version" fatal
                 return
             }
             if {$rep != 0} {
                 variable ReplyCodes
+                # Not allowed by ruleset, command or address type not
+                # supported: the proxy's own setup, which holds. The rest
+                # (general failure, and the target unreachable from it) may
+                # pass, as they would on a direct connection.
+                set status [expr {$rep in {2 7 8} ? "fatal" : "error"}]
                 if {[info exists ReplyCodes($rep)]} {
-                    Fail $sock "proxy error: $ReplyCodes($rep) ($rep)"
+                    Fail $sock "proxy error: $ReplyCodes($rep) ($rep)" $status
                 } else {
-                    Fail $sock "proxy error: $rep"
+                    Fail $sock "proxy error: $rep" $status
                 }
                 return
             }
@@ -237,7 +246,7 @@ proc ::socks5::Advance {sock} {
                     dict set State($sock) buffer ""
                 }
                 default {
-                    Fail $sock "bad atyp in the proxy's CONNECT reply: $atyp"
+                    Fail $sock "bad atyp in the proxy's CONNECT reply: $atyp" fatal
                 }
             }
         }
@@ -262,7 +271,7 @@ proc ::socks5::Advance {sock} {
 proc ::socks5::SendAuth {sock username password} {
     variable State
     if {[string length $username] > 255 || [string length $password] > 255} {
-        Fail $sock "proxy username/password too long"
+        Fail $sock "proxy username/password too long" fatal
         return
     }
     set req [binary format cca*ca* \
@@ -283,7 +292,8 @@ proc ::socks5::SendConnect {sock} {
     set destHost [dict get $State($sock) destHost]
     set destPort [dict get $State($sock) destPort]
     if {[catch {AtypAddr $destHost} atypAddr]} {
-        Fail $sock $atypAddr
+        # The host we were told to dial can't be put to the proxy at all.
+        Fail $sock $atypAddr fatal
         return
     }
     lassign $atypAddr atyp addr
@@ -362,7 +372,7 @@ proc ::socks5::ParseIPv6 {addr} {
     return $bytes
 }
 
-proc ::socks5::Fail {sock msg} {
+proc ::socks5::Fail {sock msg {status error}} {
     variable State
     variable Pending
     if {![info exists State($sock)]} return
@@ -371,7 +381,7 @@ proc ::socks5::Fail {sock msg} {
     catch {fileevent $sock readable {}}
     catch {fileevent $sock writable {}}
     catch {close $sock}
-    set Pending($sock) [after idle [list ::socks5::Unpend $sock $cb $msg]]
+    set Pending($sock) [after idle [list ::socks5::Unpend $sock $cb $msg $status]]
 }
 
 package provide socks5 0.1

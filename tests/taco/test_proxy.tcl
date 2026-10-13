@@ -178,6 +178,111 @@ test proxy-dead-conn-no-direct {a dead proxy fails the link, and the server is n
             $::proxytest::accepted
     } -result {1 0}
 
+# --- a proxy that answers: retried or not ---------------------------------
+#
+# A stand-in proxy that answers each read from the client with the next
+# canned reply. Whether the link retries depends on what the proxy said:
+# refusing us holds until the settings change, the target being unreachable
+# from it may pass.
+
+namespace eval proxytest {
+    variable replies {}
+    proc fake {replyList} {
+        variable replies $replyList
+        set s [socket -server ::proxytest::fakeAccept -myaddr 127.0.0.1 0]
+        return [list $s [lindex [fconfigure $s -sockname] 2]]
+    }
+    proc fakeAccept {chan args} {
+        variable replies
+        fconfigure $chan -translation binary -blocking 0
+        fileevent $chan readable [list ::proxytest::fakeRead $chan $replies]
+    }
+    proc fakeRead {chan pending} {
+        if {[catch {read $chan} got] || [eof $chan]} {
+            catch {close $chan}
+            return
+        }
+        if {$got eq "" || ![llength $pending]} return
+        puts -nonewline $chan [lindex $pending 0]
+        flush $chan
+        fileevent $chan readable \
+            [list ::proxytest::fakeRead $chan [lrange $pending 1 end]]
+    }
+    # The link's events; the first <ConnError> ends the wait.
+    proc record {args} {
+        lappend ::_temitted $args
+        if {[lindex $args 1] eq "<ConnError>"} { set ::_proxyGone 1 }
+    }
+    # The greeting's answer (no auth), then a CONNECT reply with `rep`.
+    proc connectReply {rep} {
+        list [binary format cc 5 0] \
+            [binary format ccccx6 5 $rep 0 1]
+    }
+}
+
+set answered_common {
+    -constraints !wasm
+    -setup {
+        jlog configure -logproc {apply {{msg} {}}}
+        set ::_temitted {}
+        set ::_proxyGone ""
+    }
+    -cleanup {
+        catch {_proxyC destroy}
+        catch {close $fakeSock}
+        jlog configure -logproc ""
+    }
+}
+
+# What the link said, and where it is, once the first attempt is over.
+proc proxytest::outcome {replies} {
+    lassign [proxytest::fake $replies] ::fakeSock port
+    uplevel #0 [list set fakeSock $::fakeSock]
+    conn ::_proxyC -domain example.com -host 127.0.0.1 -port 5222 \
+        -tls none -username u -password p -keepalive 0 -wake-check 0 \
+        -autoreconnect 1 -proxy socks5://127.0.0.1:$port \
+        -emit ::proxytest::record
+    ::_proxyC connect
+    wait_var ::_proxyGone 5000
+    update
+    set said {}
+    foreach e $::_temitted {
+        if {[lindex $e 1] in {<ConnError> <Disconnected>}} {
+            lappend said [lindex $e 1] [dict get [lrange $e 2 end] -message]
+        }
+    }
+    list [::_proxyC state] $said
+}
+
+test proxy-refusal-stops {a proxy that refuses us stops the link: no retry, <Disconnected>} \
+    {*}$answered_common -body {
+        proxytest::outcome [list [binary format cc 5 0xFF]]
+    } -result {disconnected {<ConnError> {Connect failed: proxy accepts none of our authentication methods} <Disconnected> {Connect failed: proxy accepts none of our authentication methods}}}
+
+test proxy-ruleset-stops {a request the proxy's rules forbid stops the link} \
+    {*}$answered_common -body {
+        proxytest::outcome [proxytest::connectReply 2]
+    } -result {disconnected {<ConnError> {Connect failed: proxy error: connection not allowed by ruleset (2)} <Disconnected> {Connect failed: proxy error: connection not allowed by ruleset (2)}}}
+
+test proxy-target-unreachable-retries {the server unreachable from the proxy is retried, as it would be directly} \
+    {*}$answered_common -body {
+        proxytest::outcome [proxytest::connectReply 5]
+    } -result {waiting {<ConnError> {Connect failed: proxy error: connection refused (5)}}}
+
+test proxy-dead-retries {a proxy that can't be reached is retried} \
+    {*}$answered_common -body {
+        set fakeSock ""
+        conn _proxyC -domain example.com -host 127.0.0.1 -port 5222 \
+            -tls none -username u -password p -keepalive 0 -wake-check 0 \
+            -autoreconnect 1 -proxy socks5://127.0.0.1:[::proxytest::deadPort] \
+            -emit ::proxytest::record
+        _proxyC connect
+        wait_var ::_proxyGone 5000
+        update
+        list [_proxyC state] \
+            [llength [lsearch -all -glob $::_temitted {conn <Disconnected> *}]]
+    } -result {waiting 0}
+
 test proxy-skips-srv {through a proxy no SRV query is sent, the domain goes to the proxy} \
     {*}$dead_common -body {
         # "." under both: asked, these would leave nothing to dial at all
