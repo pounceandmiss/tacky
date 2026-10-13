@@ -438,6 +438,10 @@ retrying would not cure: `conflict` (another client took the session),
 `host-unknown`, `host-gone`, `improper-addressing`, `invalid-from` or
 `unsupported-version`. A resource conflict at bind is not one of these: the
 backend picks a new resource and connects again.
+A [proxy](#account) that refuses the connection ends it the same way:
+rejected credentials, no authentication method in common, no SOCKS5 server
+at that address, or a request its rules forbid. A proxy that can't be
+reached is retried, and so is a server the proxy can't reach.
 
 ## app
 

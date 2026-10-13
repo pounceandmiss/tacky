@@ -13,6 +13,7 @@ snit::type mockbaseconn {
     option -ontransportready -default ""
     option -command -default ""
     option -error-command -default ""
+    option -fatal-command -default ""
     option -header-command -default ""
     option -footer-command -default ""
     option -starttls -default true
