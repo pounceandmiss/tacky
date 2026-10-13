@@ -1930,7 +1930,9 @@ included as recipients (TOFU/BTBV); off, they're left out until you've
 
 **Per-chat toggle** - every 1:1 chat has an OMEMO on/off switch, on by
 default. It doesn't check whether the peer can actually do OMEMO; sending
-to one who can't fails outright instead of quietly downgrading.
+to one who can't fails outright instead of quietly downgrading. The chat
+with yourself is the exception: it is keyed for your other devices, and
+with none it still goes out encrypted, keyed for no one.
 
 **Intent vs outcome** - a row carries `encryption` (the intent: `"omemo"`
 or `""`), and on a `failed` row, `fail_reason`: `"encrypt"`,

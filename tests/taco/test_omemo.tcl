@@ -1270,11 +1270,10 @@ test omemo-unit-heal-table-capped \
 
 # Self-chat (chatJid == our own jid): encrypt must never include our own
 # current device, and must not double-list other own devices. With only
-# our current device announced, there are no recipients -> TERMINAL
-# (proves we don't try to encrypt to ourselves, which used to build a
-# junk self-session and duplicate keys).
+# our current device announced, there are no recipients and the message
+# goes out keyless.
 test omemo-unit-self-chat-excludes-own-current-device \
-    {encrypt to self with only our own device yields no recipients} \
+    {encrypt to self with only our own device is keyless} \
     {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
@@ -1292,11 +1291,11 @@ test omemo-unit-self-chat-excludes-own-current-device \
             }
         }]
     }] -body {
-        set code [catch {
-            c omemo encrypt $::test::omemo_unit::JULIET_BARE "note to self"
-        } _ opts]
-        list code $code ecode [dict get $opts -errorcode]
-    } -result {code 1 ecode TACO_OMEMO_TERMINAL}
+        set enc [c omemo encrypt $::test::omemo_unit::JULIET_BARE "note to self"]
+        list keys [llength [xsearch $enc header key]] \
+            ours [expr {[xsearch $enc header -get @sid] == [c omemo device_id]}] \
+            payload [expr {[xsearch $enc payload -get body] ne ""}]
+    } -result {keys 0 ours 1 payload 1}
 
 # =====================================================================
 # Partial-recipient-set gate: encrypt must never key a payload for only
@@ -1395,6 +1394,37 @@ test omemo-unit-encrypt-holds-for-warming-own-device \
         } _ opts]
         list code $code ecode [dict get $opts -errorcode]
     } -result {code 1 ecode TACO_OMEMO_NOT_READY}
+
+# A self-chat keys for our other own devices, once each.
+test omemo-unit-self-chat-keys-other-own-devices \
+    {encrypt to self is keyed for our other device only} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        ::test::omemo_unit::giveSession $::test::omemo_unit::JULIET_BARE 999
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::JULIET_BARE \
+            [list [c omemo device_id] 999]
+    }] -body {
+        ::test::omemo_unit::keyRids \
+            [c omemo encrypt $::test::omemo_unit::JULIET_BARE "note to self"]
+    } -result {999}
+
+# Opening a self-chat warms our other devices, never this one: no bundle
+# fetch (and so no trust row) for our own current device.
+test omemo-unit-prepare-self-chat-skips-own-device \
+    {prepareChat for our own jid fetches no bundle of this device} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set dev [c omemo device_id]
+        c omemo AfterPrepareChat {apply {args {}}} \
+            $::test::omemo_unit::JULIET_BARE [list $dev 999]
+        set state [set [c omemo info vars BundleFetchState]]
+        list self [dict exists $state $::test::omemo_unit::JULIET_BARE|$dev] \
+            other [dict exists $state $::test::omemo_unit::JULIET_BARE|999]
+    } -result {self 0 other 1}
 
 test omemo-unit-bundle-timeout-fails-waiters \
     {OnBundleFetchTimeout gives up on the device and errors its waiters} \
