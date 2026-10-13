@@ -282,8 +282,20 @@ test ds-retry-pending-on-ready {RetryPending defers MUC until room joined} \
         # Trigger retry — MUC message should NOT be sent yet
         c message RetryPending
         set beforeCount [llength [c.conn get_written]]
-        # Now join the room — OnMucJoined flushes the pending retry
+        # Now join the room — the pending retry goes out once the room's
+        # own archive walk settles, here without the message
         ds_muc_join room@muc.example.com me
+        foreach s [c.conn get_written] {
+            if {[xsearch $s query -ns urn:xmpp:mam:2] ne ""
+                    && [xsearch $s -get @to] eq "room@muc.example.com"} {
+                c.iq feed [j iq -type result -from room@muc.example.com \
+                    -id [dict get $s attrs id] {
+                    j fin -ns urn:xmpp:mam:2 -complete true {
+                        j set -ns http://jabber.org/protocol/rsm {}
+                    }
+                }]
+            }
+        }
         # Find the retried message among written stanzas
         set retried {}
         foreach s [c.conn get_written] {

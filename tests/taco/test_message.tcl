@@ -4944,17 +4944,19 @@ proc msg_room_sends {} {
     return $n
 }
 
-test message-room-retry-when-already-joined {a room joined before catchup gets its pending messages now} \
+test message-room-retry-when-already-joined {a room joined before catchup gets its pending messages once its walk settles} \
     {*}$msg_common \
     -body {
         msg_muc_join room@muc.example.com me
         msg_store [list [msg_msg chat_jid room@muc.example.com?join body "late" \
             from_jid room@muc.example.com/me own_id r1 server_status pending \
             encryption "" timestamp 6000000]]
-        $::_client conn clear
         $::_client message RetryPending
-        msg_room_sends
-    } -result 1
+        # The room's own walk settles first, its archive without the send.
+        set early [msg_room_sends]
+        msg_mam_finish [mam_iq_to room@muc.example.com] {}
+        list $early [msg_room_sends]
+    } -result {0 1}
 
 test message-room-retry-skips-confirmed {a message the room confirmed before the join is not sent again} \
     {*}$msg_common \
@@ -4968,3 +4970,78 @@ test message-room-retry-skips-confirmed {a message the room confirmed before the
         msg_muc_join room@muc.example.com me
         msg_room_sends
     } -result 0
+
+# A room send left pending at close (written, never acked) goes out only once
+# the room's archive has been read: the room's copy of it confirms the row,
+# and only what the room lacks is sent again. A room whose walk fails or that
+# keeps no archive still gets the send.
+proc msg_room_pending_row {oid} {
+    msg_store [list [msg_msg chat_jid room@muc.example.com?join body "to room" \
+        from_jid room@muc.example.com/me own_id $oid server_status pending \
+        encryption "" timestamp 1717243200000000]]
+}
+
+# How many sends of "to room" went to the room.
+proc msg_room_resends {} {
+    set n 0
+    foreach st [$::_client conn get_written] {
+        if {[dict get $st tag] eq "message"
+                && [xsearch $st -get @to] eq "room@muc.example.com"
+                && [xsearch $st body -get body] eq "to room"} { incr n }
+    }
+    return $n
+}
+
+test message-room-walk-confirms-a-send-pending-at-close \
+    {a room send pending at close whose copy is in the room's archive is confirmed, not sent again} \
+    {*}$msg_common \
+    -body {
+        msg_room_pending_row oid-room-kept
+        msg_ready
+        msg_catchup_finish {}
+        msg_muc_join room@muc.example.com me
+        set early [msg_room_resends]
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r-mine queryid $qid from room@muc.example.com/me type groupchat \
+                origin_id oid-room-kept body "to room" stamp 2024-06-01T12:00:02Z]]
+        list early $early sent [msg_room_resends] \
+            status [dict get [msg_row {own_id='oid-room-kept'}] server_status] \
+            rows [$::_client db onecolumn {
+                SELECT COUNT(*) FROM chat_message
+                WHERE chat_jid='room@muc.example.com?join' AND kind='message'}]
+    } -result {early 0 sent 0 status {} rows 1}
+
+test message-room-walk-resends-a-send-pending-at-close-the-room-lacks \
+    {a room send pending at close that the room's archive lacks goes out once its walk settles} \
+    {*}$msg_common \
+    -body {
+        msg_room_pending_row oid-room-lost
+        msg_ready
+        msg_catchup_finish {}
+        msg_muc_join room@muc.example.com me
+        set early [msg_room_resends]
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list \
+            [mam_result id r-other queryid $qid from room@muc.example.com/bob type groupchat \
+                body "other" stamp 2024-06-01T12:01:00Z]]
+        list early $early sent [msg_room_resends]
+    } -result {early 0 sent 1}
+
+test message-room-without-archive-resends-a-send-pending-at-close \
+    {a room keeping no archive still gets a send pending at close} \
+    {*}$msg_common \
+    -body {
+        msg_room_pending_row oid-room-nomam
+        msg_ready
+        msg_catchup_finish {}
+        msg_muc_join room@muc.example.com me
+        set early [msg_room_resends]
+        $::_client iq feed [j iq -type error -from room@muc.example.com \
+            -id [dict get [mam_iq_to room@muc.example.com] attrs id] {
+            j error -type cancel { j feature-not-implemented }
+        }]
+        list early $early sent [msg_room_resends]
+    } -result {early 0 sent 1}
