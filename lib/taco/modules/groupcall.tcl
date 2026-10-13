@@ -46,11 +46,12 @@
 # changed. idle: a call in a room of ours we are not in. ended: sent once, with
 # the reason ("" for our own leave). A last idle with count 0 means drop it.
 #
-# Participants are MUC occupants. Each carries `call`, parsed from their
-# <muji> presence: "" when not in the call, else {state preparing|announced
-# audio 0|1 video 0|1 contents {media -> payload list}}. Track them with muc
-# occupants and muc <Presence>/<Unavailable>/<NickChanged>; count is the
-# occupants announced.
+# Participants are the MUC occupants in the call, ourselves left out; joined
+# says they have announced it, and count is the occupants announced, us
+# included. Underneath, each occupant carries an internal `call` field, parsed
+# from their <muji> presence: "" when not in the call, else {state
+# preparing|announced audio 0|1 video 0|1 contents {media -> payload list}}.
+# It stays off the bus: frontends read participants from <State>.
 #
 # tacky listen groupcall <Started>    $cmd ;# -jid $room -chat $chat
 # tacky listen groupcall <StartFailed> $cmd ;# -chat $chat -reason $t

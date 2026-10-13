@@ -109,20 +109,24 @@ namespace eval ::test::groupcall_int {
         lappend Events($acc) [list $event [dict remove $argsL -acc]]
     }
 
-    # Localparts of occupants who left the call or the room, from muc events.
-    proc onMuc {acc event ev} {
+    # Localparts of participants who left the call or the room: whoever drops
+    # out of $acc's <State> participants. Our own ended <State> lists nobody,
+    # so it starts the room afresh rather than counting everyone as gone.
+    proc onState {acc argsL} {
         variable InCall
         variable Gone
-        set occ [dict get $ev -occupant]
-        set real [dict get $occ jid]
-        if {$real eq ""} return
-        set was [expr {[info exists InCall($acc)] && [dict exists $InCall($acc) $real]}]
-        if {$event eq "<Presence>" && [dict get $occ call] ne ""} {
-            dict set InCall($acc) $real 1
-        } elseif {$was} {
-            dict unset InCall($acc) $real
-            lappend Gone($acc) [lindex [split $real @] 0]
+        set room [dict get $argsL -jid]
+        set now {}
+        if {[dict get $argsL -phase] ne "ended"} {
+            foreach p [dict get $argsL -participants] {
+                if {[dict get $p jid] ne ""} { lappend now [dict get $p jid] }
+            }
+            set was [expr {[info exists InCall($acc,$room)] ? $InCall($acc,$room) : {}}]
+            foreach real $was {
+                if {$real ni $now} { lappend Gone($acc) [lindex [split $real @] 0] }
+            }
         }
+        set InCall($acc,$room) $now
     }
 
     proc gone {acc} {
@@ -239,14 +243,18 @@ namespace eval ::test::groupcall_int {
         tacky groupcall leave -acc $acc -jid [expr {$call eq "" ? $ROOM : $call}]
     }
 
-    # {active joined count} as $acc sees it from the room's occupants.
+    # $acc's <State> of the call: {} if it has nothing to show.
+    proc state {acc {call ""}} {
+        variable ROOM
+        lindex [tacky groupcall get -acc $acc -jid [expr {$call eq "" ? $ROOM : $call}]] 0
+    }
+
+    # {active joined count} as $acc sees it from the call's <State>.
     proc status {acc {call ""}} {
         variable ROOM
         set room [expr {$call eq "" ? $ROOM : $call}]
-        set count 0
-        foreach occ [tacky muc occupants -acc $acc -jid $room] {
-            if {[dict get $occ call] ne "" && [dict get $occ call state] eq "announced"} { incr count }
-        }
+        set st [state $acc $room]
+        set count [expr {$st eq "" ? 0 : [dict get $st count]}]
         set joined [expr {$room in [lmap r [tacky groupcall list -acc $acc] { dict get $r jid }]}]
         dict create active [expr {$count > 0}] joined $joined count $count
     }
@@ -283,10 +291,8 @@ namespace eval ::test::groupcall_int {
                 tacky listen -tag gc_int groupcall $ev -acc $acc \
                     [list ::test::groupcall_int::onGroupcall $acc $ev]
             }
-            foreach ev {<Presence> <Unavailable>} {
-                tacky listen -tag gc_int muc $ev -acc $acc \
-                    [list ::test::groupcall_int::onMuc $acc $ev]
-            }
+            tacky listen -tag gc_int groupcall <State> -acc $acc \
+                [list ::test::groupcall_int::onState $acc]
             foreach {ev state} {<Active> active <Ended> ended <Failed> failed} {
                 tacky listen -tag gc_int calls $ev -acc $acc \
                     [list ::test::groupcall_int::onLeg $acc $state]
@@ -453,9 +459,8 @@ namespace eval ::test::groupcall_int {
             joinCall $JULIET
             waitUntil {[dict get [status $TEST] count] == 2}
             list [status $TEST] \
-                [lsort [lmap o [tacky muc occupants -acc $TEST -jid $ROOM] {
-                    if {[dict get $o call] eq ""} continue
-                    dict get $o nick}]] \
+                [lsort [lmap p [dict get [state $TEST] participants] {
+                    dict get $p nick}]] \
                 [llength [tacky calls list -acc $TEST]]
         } -result {{active 1 joined 0 count 2} {juliet romeo} 0}
 
