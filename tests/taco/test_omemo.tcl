@@ -2716,3 +2716,51 @@ test omemo-unit-prekey-we-no-longer-hold-heals \
         omemopeer::take romeo $J [lindex $kts 0]
         lappend out [::test::omemo_unit::readFromRomeo after]
     } -result {decrypt_error 1 1 {plaintext after}}
+
+# Romeo's bundle as the server serves it, its prekeys under IDS (each the
+# @preKeyId as written, "-" for none), all with his first prekey's key.
+proc ::test::omemo_unit::bundleWithPrekeyIds {ids} {
+    set b [omemopeer::bundle romeo]
+    set djb [list apply {{k} { base64::encode -wrapchar "" "\x05$k" }}]
+    set pk [{*}$djb [dict get [lindex [dict get $b prekeys] 0] pk]]
+    j iq -type result -id x -from $::test::omemo_unit::ROMEO {
+        j pubsub -ns http://jabber.org/protocol/pubsub {
+            j items -node eu.siacs.conversations.axolotl.bundles:111 {
+                j item -id current {
+                    j bundle -ns eu.siacs.conversations.axolotl {
+                        j signedPreKeyPublic -signedPreKeyId [dict get $b spk_id] \
+                            -body [{*}$djb [dict get $b spk]]
+                        j signedPreKeySignature \
+                            -body [base64::encode -wrapchar "" [dict get $b spks]]
+                        j identityKey -body [{*}$djb [dict get $b ik]]
+                        j prekeys {
+                            foreach id $ids {
+                                if {$id eq "-"} {
+                                    j preKeyPublic -body $pk
+                                } else {
+                                    j preKeyPublic -preKeyId $id -body $pk
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+# A prekey id must name one of the peer's keys: an integer 0 to 2^31-1
+# (0 kept, converse.js numbers its prekeys from 0). One that is not would
+# fail the session, or name another key, and the bundle's other prekeys
+# serve as well.
+test omemo-unit-bundle-drops-prekeys-with-unusable-ids \
+    {a fetched bundle keeps only the prekeys whose id is an integer 0 to 2^31-1} \
+    {*}$::test::omemo_unit::single_env -body {
+        set parsed [c omemo ParseBundle [::test::omemo_unit::bundleWithPrekeyIds \
+            {7 abc - {} -1 1.5 0x10 2147483648 4294967303 0 2147483647 007}]]
+        set none [c omemo ParseBundle [::test::omemo_unit::bundleWithPrekeyIds \
+            {abc 4294967303}]]
+        list [lmap pk [dict get $parsed prekeys] {dict get $pk id}] \
+            [dict get $none prekeys] \
+            [c omemo BuildSessionFromBundle $::test::omemo_unit::ROMEO 333 $none]
+    } -result {{7 0 2147483647 7} {} {{} {no prekeys in bundle}}}
