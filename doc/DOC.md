@@ -511,8 +511,9 @@ passphrase yet, nothing on disk changes - reflected as `pending-encrypt`/
 any account connects, when status shows the pending request - `encrypt`
 collects the passphrase there (never persisted from the request) and drops
 straight into normal operation in that same process, no further restart.
-They check only that storage is `plaintext` / `unlocked`, not that a request
-is pending, so call them from that gate alone.
+They run only there: with the matching request pending and before normal
+boot. Called at any other time they error and change nothing; a request takes
+effect at the next launch, never in the session that made it.
 
 `requestEncrypt` and `requestDecrypt` error without a config dir (storage is
 transient, so there is nothing to encrypt) and when a request is already

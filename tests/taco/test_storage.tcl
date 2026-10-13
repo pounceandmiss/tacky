@@ -34,6 +34,23 @@ proc storagetest_unstub_tacky {} {
     catch {rename ::tacky {}}
 }
 
+# Encrypt (or decrypt) storage the only way it can be: request it, relaunch
+# into the pre-boot gate, and migrate there. $name is recreated by $type and
+# left booted and unlocked (or plaintext) afterwards, as after a real gate.
+proc storagetest_gate_encrypt {type name cfg data cache pass} {
+    $name storage requestEncrypt
+    $name destroy
+    $type create $name -transient 0 -config-dir $cfg -data-dir $data -cache-dir $cache
+    $name storage encrypt -passphrase $pass
+}
+proc storagetest_gate_decrypt {type name cfg data cache pass} {
+    $name storage requestDecrypt
+    $name destroy
+    $type create $name -transient 0 -config-dir $cfg -data-dir $data -cache-dir $cache
+    $name storage unlock -passphrase $pass
+    $name storage decrypt
+}
+
 # -- taco_sql_quote / taco_pragma_key ---------------------------------------
 
 test storage-sql-quote-plain {no quotes to escape} \
@@ -271,7 +288,7 @@ test storage-cancel-pending-decrypt-completes-boot \
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage encrypt -passphrase cancelpass
+        storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache cancelpass
         tacky storage requestDecrypt
         tacky destroy
     } -cleanup {
@@ -295,7 +312,7 @@ test storage-cancel-pending-decrypt-while-locked-stays-locked \
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage encrypt -passphrase cancelpass
+        storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache cancelpass
         tacky storage requestDecrypt
         tacky destroy
     } -cleanup {
@@ -351,10 +368,24 @@ test storage-stale-decrypt-marker-cleaned-when-actually-plaintext \
         list [tacky storage status] [file exists [file join $cfg .storage-pending]]
     } -result {plaintext 0}
 
-# -- encrypt/decrypt disconnect connected accounts rather than erroring -----
+# -- encrypt/decrypt run only at the pre-boot gate --------------------------
 
-test storage-encrypt-disconnects-connected-account \
-    {encrypt destroys a live client instead of erroring, then proceeds} \
+test storage-encrypt-refused-without-request \
+    {a booted plaintext install can't be encrypted out of nowhere} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+    } -cleanup {
+        tacky destroy
+        file delete -force $cfg
+    } -body {
+        list [catch {tacky storage encrypt -passphrase x} err] $err \
+            [tacky storage status]
+    } -result {1 {storage encrypt runs only at startup, after requestEncrypt} plaintext}
+
+test storage-encrypt-refused-in-the-requesting-session \
+    {a request takes effect at the next launch, not in the session that made it} \
     -setup {
         storagetest_stub_tacky
         rename conn _real_conn
@@ -372,17 +403,24 @@ test storage-encrypt-disconnects-connected-account \
         rename _real_conn conn
         file delete -force $cfg
     } -body {
-        set failed [expr {[catch {t storage encrypt -passphrase testpass}] != 0}]
-        # A destroyed (not merely disconnected) client is what actually
-        # closes its db handle - see DisconnectAllAccounts in taco.tcl for
-        # why that matters (WAL checkpoint before the file gets swapped).
-        set stillExists [expr {[info commands $client] ne ""}]
-        # encrypt now reopens accounts.db against the freshly-swapped file
-        # and proceeds straight into unlocked, in this same process - no
-        # restart needed (that's the whole point of the pre-boot gate
-        # redesign), so `status` reporting unlocked here is correct.
-        list $failed $stillExists [t storage status]
-    } -result {0 0 unlocked}
+        t storage requestEncrypt
+        list [catch {t storage encrypt -passphrase x} err] $err \
+            [expr {[info commands $client] ne ""}] [t storage status]
+    } -result {1 {storage encrypt runs only at startup, after requestEncrypt} 1 pending-encrypt}
+
+test storage-decrypt-refused-without-request \
+    {an unlocked install can't be decrypted without a request and a relaunch} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache gatepass
+    } -cleanup {
+        tacky destroy
+        file delete -force $cfg
+    } -body {
+        list [catch {tacky storage decrypt} err] $err [tacky storage status]
+    } -result {1 {storage decrypt runs only at startup, after requestDecrypt} unlocked}
 
 # Regression: a real per-account db opened the normal way (client.tcl sets
 # WAL mode) leaves -wal/-shm sidecar files on disk. Merely disconnecting the
@@ -413,7 +451,7 @@ test storage-encrypt-checkpoints-live-wal-connection \
         set results {}
         lappend results walBefore=[file exists [file join $data foo@example.com.db-wal]]
 
-        t storage encrypt -passphrase walpass
+        storagetest_gate_encrypt taco_type ::t $cfg $data $cache walpass
         t destroy
 
         taco_type create ::t -transient 0 \
@@ -427,7 +465,7 @@ test storage-encrypt-checkpoints-live-wal-connection \
             $client2 db eval {INSERT INTO scratch(x) VALUES ('world')}
         }
 
-        t storage decrypt
+        storagetest_gate_decrypt taco_type ::t $cfg $data $cache walpass
         t destroy
 
         taco_type create ::t -transient 0 \
@@ -542,7 +580,7 @@ test storage-omemo-attach-keys \
         taco_type create ::t -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
         t account add -acc foo@example.com
-        t storage encrypt -passphrase testpass
+        storagetest_gate_encrypt taco_type ::t $cfg $data $cache testpass
         t destroy
         taco_type create ::t -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
@@ -625,7 +663,8 @@ test storage-full-migration-cycle \
     } -body {
         set results {}
 
-        t storage encrypt -passphrase "correct horse battery staple"
+        storagetest_gate_encrypt taco_type ::t $cfg $data $cache \
+            "correct horse battery staple"
         set fh [open $omemoFull rb]; set ct [read $fh]; close $fh
         lappend results changed=[expr {$ct ne "plaintext attachment bytes"}]
         set fh [open $plainFull rb]; set plainStillPlain [read $fh]; close $fh
@@ -652,7 +691,8 @@ test storage-full-migration-cycle \
         t2 storage unlock -passphrase "correct horse battery staple"
         lappend results unlocked-status=[t2 storage status]
 
-        t2 storage decrypt
+        storagetest_gate_decrypt taco_type ::t2 $cfg $data $cache \
+            "correct horse battery staple"
         set fh [open $omemoFull rb]; set restored [read $fh]; close $fh
         lappend results restored=[expr {$restored eq "plaintext attachment bytes"}]
 
@@ -696,7 +736,7 @@ test storage-pending-decrypt-end-to-end \
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage encrypt -passphrase pendingpass
+        storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache pendingpass
         # encrypt itself proceeds straight to unlocked - request a decrypt
         # in this same session, then relaunch to simulate the real
         # request-now/act-next-launch flow.

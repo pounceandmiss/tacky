@@ -372,8 +372,12 @@ snit::type taco_type {
 
     # Run immediately for a plaintext db, or from unlock/encrypt/decrypt
     # once verified - idempotent, since more than one of those can apply in
-    # a single process (e.g. a test calling storage encrypt directly on an
-    # already-booted instance).
+    # a single process.
+    # Whether normal boot has run: false only at the pre-boot storage gate.
+    method booted {} {
+        return $CompleteUnlockDone
+    }
+
     method CompleteUnlock {} {
         if {$CompleteUnlockDone} return
         set CompleteUnlockDone 1
@@ -430,9 +434,8 @@ snit::type taco_type {
     # actually close so WAL mode fully checkpoints and drops its -wal/-shm
     # sidecar files, or they'd be left on disk still tied to the pre-
     # migration (plaintext) page contents once the main file is swapped for
-    # the encrypted one, corrupting the next open. In practice this is
-    # always a no-op: migrations only ever run at the pre-boot gate, before
-    # any client has connected - kept as cheap insurance regardless.
+    # the encrypted one, corrupting the next open. A no-op: encrypt/decrypt
+    # refuse to run once boot has made clients - kept as cheap insurance.
     method DisconnectAllAccounts {} {
         foreach client [$self clients] {
             catch {$client destroy}
