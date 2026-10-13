@@ -2556,3 +2556,107 @@ test omemo-unit-encryptfor-refetches-given-up-bundle \
         c omemo encryptFor $::test::omemo_unit::ROMEO 333 AA {apply {args {}}}
         list $gaveUp [::test::omemo_unit::bundleFetches [c conn get_written] 333]
     } -result {1 1}
+
+# =====================================================================
+# A heal re-keys without losing the session it replaces: anyone who can
+# send as Romeo can set one off, and Romeo writes on the old session until
+# he reads the heal's key exchange.
+
+# Juliet reads ENC, a message from Romeo's 111 her session refuses, and
+# Romeo's server answers the bundle fetches that follows: {kind fetches
+# keytransports}, DoDecrypt's kind, the fetches of 111's bundle, and the
+# key transports Juliet wrote.
+proc ::test::omemo_unit::healOn {enc} {
+    c conn clear
+    set r [c omemo DoDecrypt $enc $::test::omemo_unit::ROMEO 111 0]
+    set fetches 0
+    foreach s [c conn get_written] {
+        if {[xsearch $s pubsub items -get @node]
+                eq "eu.siacs.conversations.axolotl.bundles:111"} {
+            incr fetches
+            c conn feed [omemopeer::bundleReply romeo $s]
+        }
+    }
+    set kts [list]
+    foreach s [c conn get_written] {
+        set e [lindex [xsearch $s encrypted -ns eu.siacs.conversations.axolotl] 0]
+        if {$e ne "" && [llength [xsearch $e payload]] == 0} { lappend kts $e }
+    }
+    list [lindex $r 0] $fetches $kts
+}
+
+# Romeo's TEXT, as Juliet reads it: DoDecrypt's {kind body}.
+proc ::test::omemo_unit::readFromRomeo {text} {
+    set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
+        [c omemo device_id] $text]
+    lrange [c omemo DoDecrypt $enc $::test::omemo_unit::ROMEO 111 0] 0 1
+}
+
+# A message from Romeo his session never sent: one Juliet's refuses.
+proc ::test::omemo_unit::forgedFromRomeo {} {
+    ::test::omemo_unit::tamperMac [omemopeer::encrypt romeo \
+        $::test::omemo_unit::JULIET_BARE [c omemo device_id] forged]
+}
+
+proc ::test::omemo_unit::openHealWindow {} {
+    set [c omemo info vars HealAt] [dict create]
+}
+
+test omemo-unit-heal-keeps-the-session-it-replaces \
+    {after a heal Romeo's message on the old session reads, one read before is a duplicate, and his reply to the heal reads} \
+    {*}$::test::omemo_unit::single_env -body {
+        set J $::test::omemo_unit::JULIET_BARE
+        set R $::test::omemo_unit::ROMEO
+        ::test::omemo_unit::romeoHeardFrom
+        set one [omemopeer::encrypt romeo $J [c omemo device_id] one]
+        set out [list [lrange [c omemo DoDecrypt $one $R 111 0] 0 1]]
+        lassign [::test::omemo_unit::healOn [::test::omemo_unit::forgedFromRomeo]] \
+            kind fetches kts
+        lappend out $kind $fetches [llength $kts]
+        lappend out [::test::omemo_unit::readFromRomeo two]
+        lappend out [lrange [c omemo DoDecrypt $one $R 111 0] 0 1]
+        omemopeer::forget romeo $J [c omemo device_id]
+        omemopeer::take romeo $J [lindex $kts 0]
+        lappend out [::test::omemo_unit::readFromRomeo three]
+        lappend out [::test::omemo_unit::readFromRomeo four]
+    } -result {{plaintext one} decrypt_error 1 1 {plaintext two} {duplicate {}} {plaintext three} {plaintext four}}
+
+test omemo-unit-second-heal-resends-the-key-exchange \
+    {a heal before Romeo answered the last one sends its key exchange again, fetching nothing} \
+    {*}$::test::omemo_unit::single_env -body {
+        set J $::test::omemo_unit::JULIET_BARE
+        ::test::omemo_unit::romeoHeardFrom
+        set out [list [::test::omemo_unit::readFromRomeo one]]
+        lassign [::test::omemo_unit::healOn [::test::omemo_unit::forgedFromRomeo]] \
+            - f1 k1
+        ::test::omemo_unit::openHealWindow
+        lassign [::test::omemo_unit::healOn [::test::omemo_unit::forgedFromRomeo]] \
+            - f2 k2
+        lappend out $f1 $f2 [llength $k1] [llength $k2]
+        lappend out [::test::omemo_unit::readFromRomeo two]
+        # Both key transports carry the one exchange: the second opens on
+        # the session the first started.
+        omemopeer::forget romeo $J [c omemo device_id]
+        lappend out [catch {omemopeer::take romeo $J [lindex $k1 0]}] \
+            [catch {omemopeer::take romeo $J [lindex $k2 0]}]
+        lappend out [::test::omemo_unit::readFromRomeo three]
+    } -result {{plaintext one} 1 0 1 1 {plaintext two} 0 0 {plaintext three}}
+
+test omemo-unit-heals-that-only-resend-give-way-to-a-new-exchange \
+    {after three resends of an unanswered exchange a heal fetches the bundle again, and the old session still reads} \
+    {*}$::test::omemo_unit::single_env -body {
+        set J $::test::omemo_unit::JULIET_BARE
+        ::test::omemo_unit::romeoHeardFrom
+        ::test::omemo_unit::readFromRomeo one
+        set fetches [list]
+        foreach i {1 2 3 4 5} {
+            ::test::omemo_unit::openHealWindow
+            lassign [::test::omemo_unit::healOn [::test::omemo_unit::forgedFromRomeo]] \
+                - f kts
+            lappend fetches $f
+        }
+        set out [list $fetches [::test::omemo_unit::readFromRomeo two]]
+        omemopeer::forget romeo $J [c omemo device_id]
+        omemopeer::take romeo $J [lindex $kts 0]
+        lappend out [::test::omemo_unit::readFromRomeo three]
+    } -result {{1 0 0 0 1} {plaintext two} {plaintext three}}
