@@ -2280,6 +2280,16 @@ test groupcall-state-legs {each participant's leg follows its session's calls ev
         lappend out [dict get $bob leg] [dict get $bob reason] [dict get $bob stream]
     } -result {{bob connecting carol connecting} active {media path interrupted} /tmp/tv-bob {} failed {media path failed (ICE/DTLS)} {}}
 
+test groupcall-state-leg-stream-host {on the host backend a leg's stream is the track id} \
+    {*}$groupcall_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set sid [gc_sid_of bob]
+        c emit calls <VideoTrack> -sid $sid -mid 1 -direction incoming -id t7
+        dict get [gc_who [gc_state] bob] stream
+    } -result {t7}
+
 test groupcall-state-hidden-jid {a participant the room hides is in the call, unreachable} \
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -contents [list audio [list $OPUS_111]]]

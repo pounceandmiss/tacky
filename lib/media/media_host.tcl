@@ -33,7 +33,7 @@ namespace eval ::tacky::media::host {
         connectionState  {state}
         track            {track kind mid}
         deviceFallback   {kind id reason}
-        error            {op reason}
+        error            {op reason fatal}
     }
 
     # A candidate with no mid means the audio m-line: the one a caller cannot

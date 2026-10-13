@@ -1524,8 +1524,8 @@ to show, `pull` re-sends one.
 - `leg` is your session with them: `expected`, `connecting`, `active`, or
   `ended` / `failed` while they stay - nothing redials. Out of a call
   everyone is `expected`; once you are in, a hidden participant is `failed`.
-  `stream` is their video's frame stream; on the host backend it stays `""`,
-  and the leg's `calls <VideoTrack>` carries the track `id` instead.
+  `stream` is their video: its frame stream, or on the host backend the
+  track `id` the leg's `calls <VideoTrack>` carries.
 
 `<Invited>` is when to ring (live invites only); answer with `join` by `chat`
 and `timestamp`, or `decline`. `start` in a chat whose last call is still
@@ -1654,8 +1654,8 @@ the name its `track` event gave it.
 `openPreview` opens the camera with no peer connection, for a group call's
 self-view from joining to leaving; `closePreview` releases it. `groupcall
 <VideoPreview>` carries the preview's `pc` as its `id`. A camera that fails
-to open is an `error` on the preview with `op` openPreview and `fatal: true`;
-send `fatal` with every `error`.
+to open is an `error` on the preview with `op` openPreview and `fatal: true`.
+`fatal` is required on every `error`.
 
 An event for a call that has ended is dropped; one with an unknown `type` or
 a missing key comes back as a `calls <Warning>` on that call; one with no

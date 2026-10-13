@@ -119,6 +119,20 @@ snit::type jsonify_type {
         dict exists $schemas $schema_key
     }
 
+    # One field of a dict result, as a request's `field` asks for: typed as
+    # that field is in the whole dict, a string when the schema doesn't say.
+    method convert_field {schema_key field value} {
+        set hint string
+        if {[dict exists $schemas $schema_key]} {
+            set whole [dict get $schemas $schema_key]
+            if {[lindex $whole 0] eq "dict"
+                    && [dict exists [lindex $whole 1] $field]} {
+                set hint [dict get [lindex $whole 1] $field]
+            }
+        }
+        return [$self to_json $value $hint]
+    }
+
     # `default` is the hint used when schema_key is unregistered. Events pass a
     # dict (the built-in default); the result path passes `string`, so a scalar
     # return serializes as a JSON string instead of being parsed as a dict.
@@ -221,7 +235,7 @@ jsonify_type jsonify \
         bookmarks/defaultNick   string
         account/list            list
         account/exists          bool
-        account/get             {dict {enabled bool port int}}
+        account/get             {dict {enabled bool port int srv bool}}
         chat/isOpen             bool
         chat/isLooking          bool
         chat/clientData         string
@@ -411,6 +425,11 @@ proc tackyd_json_install_emit {sink} {
                         [json::write string error] \
                         [json_token $token] \
                         [json::write string $result]]
+                } elseif {[llength $schema] == 2} {
+                    {*}$sink [json::write array \
+                        [json::write string result] \
+                        [json_token $token] \
+                        [jsonify convert_field {*}$schema $result]]
                 } else {
                     {*}$sink [json::write array \
                         [json::write string result] \
@@ -478,7 +497,14 @@ proc tackyd_dispatch {msg} {
         # the same either way, and a method that never replies (send,
         # sendFile, retryUpload) would pin its entry forever.
         if {[jsonify has_schema $module/$method]} {
-            dict set ::_token_schemas $token $module/$method
+            # A `field` request answers one value of the dict the schema
+            # describes: recorded with the field, to type just that.
+            if {[dict exists $args -field]} {
+                dict set ::_token_schemas $token \
+                    [list $module/$method [dict get $args -field]]
+            } else {
+                dict set ::_token_schemas $token $module/$method
+            }
         }
         dict set args -command \
             [list tacky emit callback <Result> -token $token -result]

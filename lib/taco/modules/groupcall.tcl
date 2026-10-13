@@ -586,7 +586,10 @@ snit::type taco_groupcall {
                     warning { dict set leg warning [dict get $args -reason] }
                     track {
                         if {[dict getdef $args -direction ""] ne "incoming"} return
-                        dict set leg stream [dict getdef $args -name ""]
+                        # A frame stream's name, or on the host backend the
+                        # frontend's own track id.
+                        dict set leg stream [dict getdef $args -name \
+                            [dict getdef $args -id ""]]
                     }
                     untrack { dict set leg stream "" }
                 }

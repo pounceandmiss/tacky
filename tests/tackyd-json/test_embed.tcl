@@ -64,6 +64,39 @@ test embed-threaded-roundtrip {threaded JSON embed dispatches a request and emit
     expr {[lsearch -exact $::received {["result",1,[]]}] >= 0}
 } -result 1
 
+test embed-threaded-account-get-field {a `field` request answers that one value, typed as in the record} \
+    {*}$embed_common -body {
+    thread::send -async $::be {
+        tackyd_dispatch {["account","add",{"acc":"a@example.com","port":5223}]}
+        tackyd_dispatch {["account","get",{"acc":"a@example.com","field":"port"},1]}
+    }
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    lindex $::received end
+} -result {["result",1,5223]}
+
+test embed-threaded-account-get-field-string {an untyped field answers a JSON string} \
+    {*}$embed_common -body {
+    thread::send -async $::be {
+        tackyd_dispatch {["account","add",{"acc":"a@example.com"}]}
+        tackyd_dispatch {["account","get",{"acc":"a@example.com","field":"domain"},1]}
+    }
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    lindex $::received end
+} -result {["result",1,"example.com"]}
+
+test embed-threaded-account-get-srv-bool {srv is a JSON boolean} \
+    {*}$embed_common -body {
+    thread::send -async $::be {
+        tackyd_dispatch {["account","add",{"acc":"a@example.com"}]}
+        tackyd_dispatch {["account","get",{"acc":"a@example.com"},1]}
+    }
+    set timeout [await_reply]
+    if {$timeout ne ""} { return $timeout }
+    string match {*"srv":true*} [lindex $::received end]
+} -result 1
+
 # Match the text, not just any error: this request has no acc either, which
 # fails on its own.
 test embed-threaded-base64-error {a bad binary argument answers the token instead of hanging} \
