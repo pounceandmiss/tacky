@@ -78,6 +78,7 @@ straight into a native app, instead of shipped as an executable.
 make lib          # native    -> dist/libtacky.a
 make win-lib      # MinGW/PE  -> dist/libtacky-win.a
 make android-lib  # NDK arm64 -> dist/libtacky-android.a
+make android-lib ANDROID_ABI=x86_64  # emulator -> dist/libtacky-android-x86_64.a
 ```
 
 One archive, with the whole Tcl runtime, the backend and every dependency

@@ -394,7 +394,7 @@ win-lib: dist-dir
 	$(call copy-if-changed,$(WIN_BUILD)/libtacky.a,dist/libtacky-win.a)
 
 # ==== Android cross-build ====
-# The daemon (tackyd-json) for arm64-v8a, staged as a jniLibs/<abi>/ subtree an
+# The daemon (tackyd-json) for ANDROID_ABI, staged as a jniLibs/<abi>/ subtree an
 # Android app drops straight into app/src/main/jniLibs/. There is usually no host
 # NDK, so this routes through zippy's ndk docker profile by default (like `make
 # linux`); ANDROID_DOCKER below is for the case where there is one. Under docker
@@ -405,8 +405,13 @@ win-lib: dist-dir
 # IN_DOCKER_BUILD_SUBDIR= turns off the cache mount as the Windows targets do:
 # BASEDIR isolates the tree, and only the ndk container ever writes it. Output:
 # dist/jniLibs/arm64-v8a/{libtackyd_json.so, libc++_shared.so}.
+#
+# ANDROID_ABI is arm64-v8a, or x86_64 for the emulator. x86_64 gets a build tree
+# and an archive name of its own, so the two never overwrite each other.
 
-ANDROID_BUILD := build/android
+ANDROID_ABI ?= arm64-v8a
+ANDROID_SUFFIX := $(if $(filter arm64-v8a,$(ANDROID_ABI)),,-$(ANDROID_ABI))
+ANDROID_BUILD := build/android$(ANDROID_SUFFIX)
 
 # ANDROID_DOCKER=0 uses an NDK already on the machine instead of the ndk image:
 # android.mk wants $ANDROID_NDK set and the API-versioned clang wrappers on PATH,
@@ -429,6 +434,7 @@ android: dist-dir
 	mkdir -p $(ANDROID_BUILD)
 	$(ANDROID_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=android \
+	    ANDROID_ABI=$(ANDROID_ABI) \
 	    BIN_NAME=tackyd-json \
 	    SHELL_TYPE=$(tackyd-json_SHELL) \
 	    DEPS="$(call android-deps,$(tackyd-json_DEPS))" \
@@ -441,13 +447,14 @@ android: dist-dir
 	cp -r $(ANDROID_BUILD)/jniLibs/. dist/jniLibs/
 
 # Android libtacky.a: the `lib` static-library build cross-compiled to a bionic
-# arm64 archive, routed through the ndk docker profile like `android` (the two
-# share build/android, so the dep stamps compile once). Ships alongside the
-# native and MinGW ones as dist/libtacky-android.a.
+# archive, routed through the ndk docker profile like `android` (the two share
+# build/android, so the dep stamps compile once). Ships alongside the native and
+# MinGW ones as dist/libtacky-android.a, or dist/libtacky-android-x86_64.a.
 android-lib: dist-dir
 	mkdir -p $(ANDROID_BUILD)
 	$(ANDROID_MAKE) -f $(ZIPPY)/zippy.mk \
 	    TARGET_OS=android \
+	    ANDROID_ABI=$(ANDROID_ABI) \
 	    SHELL_TYPE=tclsh \
 	    DEPS="$(call android-deps,$(tackyd-json_DEPS))" \
 	    SOURCES="$(tackyd-json_SRC)" \
@@ -457,7 +464,7 @@ android-lib: dist-dir
 	    LIB_NAME=tacky \
 	    BASEDIR=$(ANDROID_ROOT)/$(ANDROID_BUILD) \
 	    android-lib
-	$(call copy-if-changed,$(ANDROID_BUILD)/libtacky.a,dist/libtacky-android.a)
+	$(call copy-if-changed,$(ANDROID_BUILD)/libtacky.a,dist/libtacky-android$(ANDROID_SUFFIX).a)
 
 # ==== Portable Linux build ====
 # Build the native binaries against an older glibc (Debian bookworm, 2.36) so
@@ -546,12 +553,15 @@ webrtc-so: dist-dir webrtc-fetch-linux
 	cmake --build $(WEBRTC_BUILD)
 	$(call copy-if-changed,$(WEBRTC_BUILD)/libtacky_webrtc.so,dist/libtacky_webrtc.so)
 
-# The same backend for Android arm64-v8a. Needs android-lib and $ANDROID_NDK.
+# The same backend for Android arm64-v8a, the only ABI with a libwebrtc
+# prebuilt. Needs android-lib and $ANDROID_NDK.
 ANDROID_WEBRTC_BUILD := $(abspath $(ANDROID_BUILD))/webrtc
 ANDROID_WEBRTC_TCL_PREFIX := $(abspath $(ANDROID_BUILD))/_build-android/local
 ANDROID_WEBRTC_RTCMV_SRC := $(abspath $(ANDROID_BUILD))/_build/deps/rtc-mv-$(WEBRTC_RTCMV_COMMIT)
 
 android-webrtc-so: dist-dir webrtc-fetch-android
+	@[ "$(ANDROID_ABI)" = arm64-v8a ] || { \
+	    echo "make: no libwebrtc prebuilt for $(ANDROID_ABI); arm64-v8a only" >&2; exit 1; }
 	@[ -n "$(ANDROID_NDK)" ] || { echo "make: ANDROID_NDK is unset" >&2; exit 1; }
 	@[ -f "$(ANDROID_WEBRTC_TCL_PREFIX)/include/tcl.h" ] || { \
 	    echo "make: no Tcl headers at $(ANDROID_WEBRTC_TCL_PREFIX); run make android-lib first" >&2; \
