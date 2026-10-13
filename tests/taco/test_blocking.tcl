@@ -283,6 +283,7 @@ test blocking-command-through-front-end \
         tacky blocking block -acc user@example.com -jid alice@example.com \
             -command {apply {{r} { set ::done [list ok $r] }}} \
             -onerror {apply {{m} { set ::done [list err $m] }}}
+        update
         set iq [lindex [$_client.conn get_written] end]
         $_client.conn feed [j iq -type result -id [xsearch $iq -get @id]]
         update idletasks

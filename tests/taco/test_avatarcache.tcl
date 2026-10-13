@@ -132,19 +132,26 @@ test avatarcache-track-builds-from-master {track fetches metadata+data and build
         set ::built {}
         set img [avatarcache track -acc user@test -jid c@d -size 48 -tag t1 \
             -command {apply {{img} {set ::built $img}}}]
+        # The fetch is a request, answered on a later turn of the event loop:
+        # track hands back the default until -command brings the built image.
+        set first $img
+        update
         # The mock CreateImage encodes data:size, so both prove the master
         # bytes and target size reached the scaler.
-        list [string match "*:PNGBYTES:48" $img] [expr {$img eq $::built}]
+        list [string match "default*" $first] [string match "*:PNGBYTES:48" $::built]
     } -result {1 1}
 
 test avatarcache-track-independent-sizes {same jid at two sizes builds two images} \
     {*}$ac_common \
     -body {
         ac_seed_avatar H1 PNGBYTES
-        set i32 [avatarcache track -acc user@test -jid c@d -size 32 -tag t32 \
-            -command {apply {{img} {}}}]
-        set i64 [avatarcache track -acc user@test -jid c@d -size 64 -tag t64 \
-            -command {apply {{img} {}}}]
+        avatarcache track -acc user@test -jid c@d -size 32 -tag t32 \
+            -command {apply {{img} {set ::i32 $img}}}
+        avatarcache track -acc user@test -jid c@d -size 64 -tag t64 \
+            -command {apply {{img} {set ::i64 $img}}}
+        update
+        set i32 $::i32
+        set i64 $::i64
         list [string match "*:PNGBYTES:32" $i32] \
              [string match "*:PNGBYTES:64" $i64] \
              [expr {$i32 ne $i64}]
@@ -171,6 +178,7 @@ test avatarcache-injected-master {an injected avatar reaches a tracking frontend
         avatarcache track -acc user@test -jid c@d -size 32 -tag t1 \
             -command {apply {{img} {set ::built $img}}}
         tacky avatar inject -acc user@test -jid c@d -data PNGBYTES
+        update
         string match "*:PNGBYTES:32" $::built
     } -result 1
 
@@ -182,7 +190,9 @@ test avatarcache-update-refetches-master {<Update> rebuilds from the new master}
         avatarcache track -acc user@test -jid c@d -size 32 -tag t1 \
             -command {apply {{img} {set ::built $img}}}
         ac_seed_avatar H2 SECOND
+        update
         tacky emit avatar <Update> -acc user@test -jid c@d -hash H2
+        update
         string match "*:SECOND:32" $::built
     } -result 1
 

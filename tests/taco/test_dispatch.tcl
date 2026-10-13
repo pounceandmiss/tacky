@@ -52,3 +52,22 @@ tacky_test dispatch-callback-error-not-a-method-error \
         _dspWaitBg
         list $::_dspRan [llength $::_dspBg]
     } -result {{} 1}
+
+# Same-thread mode queues a call that has a callback, as the other front ends'
+# transports do: the callback never runs inside its caller.
+tacky_test dispatch-direct-callback-on-a-later-turn \
+    {a call with -command runs on a later turn of the event loop, not inline} \
+    -modes direct -body {
+        set ::_dspRan {}
+        tacky account list -command {apply {{result} {lappend ::_dspRan answered}}}
+        set before $::_dspRan
+        update
+        list $before $::_dspRan
+    } -result {{} answered}
+
+tacky_test dispatch-direct-bare-call-inline \
+    {a bare call still runs at once and returns its value} \
+    -modes direct -body {
+        tacky account add -acc user@example.com
+        tacky account list
+    } -result {user@example.com}

@@ -8,6 +8,8 @@ proc an_new {chat args} {
         -changed-command {apply {{jid label} {
             lappend ::an_changed [list $jid $label]
         }}} {*}$args
+    # Its snapshot request is answered on a later turn of the event loop
+    wait
     return an
 }
 

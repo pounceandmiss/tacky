@@ -288,8 +288,11 @@ oo::class create tacky_base {
 }
 
 # In-process backend: taco lives in the same thread.
-# Callbacks go through the token system like the async backends,
-# but the entire round-trip is synchronous (same stack, same thread).
+# Callbacks go through the token system like the async backends. A call
+# carrying -command/-onerror is run on a later turn of the event loop, as the
+# other backends' queues would: never inside its caller, and never inside
+# the backend's own stack when a listener makes it (events reach listeners
+# synchronously here). A bare call runs at once and returns its value.
 oo::class create tacky_type {
     superclass tacky_base
     variable Taco
@@ -308,6 +311,12 @@ oo::class create tacky_type {
     }
 
     method _send {module method args} {
+        if {[dict exists $args -command] || [dict exists $args -onerror]} {
+            after 0 [list apply {{taco args} {
+                if {[info commands $taco] ne ""} { taco_call $taco {*}$args }
+            }} $Taco $module $method {*}$args]
+            return
+        }
         taco_call $Taco $module $method {*}$args
     }
 

@@ -193,7 +193,9 @@ snit::type taco_storage {
     # CompleteUnlock - no restart needed.
     method FinishMigration {direction passphrase newState} {
         $options(-taco) DisconnectAllAccounts
-        $self Migrate $direction $passphrase
+        $options(-taco) Exclusive "storage migration" {
+            $self Migrate $direction $passphrase
+        }
         $self ReopenDb $passphrase
         set Passphrase $passphrase
         set State $newState

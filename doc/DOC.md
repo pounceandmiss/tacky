@@ -116,6 +116,11 @@ be cancelled together:
 
     tacky module method ?...args? ?-tag $tag? ?-command $cb? ?-onerror $ecb?
 
+A call with `-command` or `-onerror` is answered on a later turn of the event
+loop, whichever way the backend runs - in the same thread too, where it waits
+in a queue as it would in a pipe. A call with neither runs at once; in the same
+thread it returns the method's value, which is handy in scripts and tests.
+
 The two transports line up directly:
 
     JSON                                Tcl
@@ -523,7 +528,13 @@ remaining modules come up and the enabled accounts connect.
 
 Both stage every db plus every OMEMO/XEP-0454 attachment (a plain one is
 never touched) before swapping anything into place; `<MigrateProgress>`
-fires while that runs, `<MigrationComplete>` once it's done.
+fires while that runs, `<MigrationComplete>` once it's done. They hold the
+backend for their whole run: requests sent meanwhile wait and are answered
+afterwards. A request made from inside a `<MigrateProgress>` listener in the
+same thread gets the error `storage migration in progress`, unless it carries
+`-command`/`-onerror`, which makes it wait like any other. If the swap
+itself fails part-way, the error says to restart: the next launch completes
+it, and another `encrypt`/`decrypt` until then is refused.
 
 ## chatlist
 

@@ -509,6 +509,40 @@ test storage-swap-runs-with-accounts-db-closed \
         list $::_openAtSwap [t storage status] [t account list]
     } -result {0 unlocked foo@example.com}
 
+# The same-thread front end runs listeners inside the backend's stack. A
+# progress listener calling back in mid-migration must not reach a database
+# whose file is about to be swapped away.
+test storage-migration-refuses-reentry \
+    {mid-migration, a bare call is refused and a queued one runs after it} \
+    -setup {
+        lassign [storagetest_newdirs] cfg data cache
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        tacky storage requestEncrypt
+        tacky destroy
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+    } -cleanup {
+        catch {tacky destroy}
+        file delete -force $cfg
+    } -body {
+        set ::_reentry {}
+        tacky listen storage <MigrateProgress> {apply {{ev} {
+            if {[llength $::_reentry]} return
+            lappend ::_reentry [catch {tacky setting set -key k -value bare} err] $err
+            tacky setting set -key k -value queued \
+                -command {apply {{r} {lappend ::_reentry queued-ran}}}
+        }}}
+        tacky storage encrypt -passphrase reentrypass
+        update
+        set results $::_reentry
+        tacky destroy
+        tacky_type create ::tacky -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        tacky storage unlock -passphrase reentrypass
+        lappend results [tacky setting get -key k]
+    } -result {1 {storage migration in progress} queued-ran queued}
+
 test storage-unfinished-swap-is-left-to-the-next-launch \
     {a swap that fails part-way is never restaged over; the next launch completes it} \
     -setup {
