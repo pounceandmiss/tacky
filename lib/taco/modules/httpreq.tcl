@@ -150,7 +150,7 @@ proc ::taco_http::Socket {tls args} {
     lassign [yield] status chan
     unset -nocomplain Handshake($token)
     if {$status ne "ok"} {
-        error "proxy: $chan"
+        error $chan ;# names the proxy itself
     }
     if {!$tls} {
         return $chan

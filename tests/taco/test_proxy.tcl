@@ -174,7 +174,7 @@ test proxy-dead-conn-no-direct {a dead proxy fails the link, and the server is n
         _proxyC connect
         wait_var ::_proxyGone 5000
         update
-        list [string match "Connect failed: proxy: *" $::_proxyGone] \
+        list [string match "Connect failed: can't reach the proxy: *" $::_proxyGone] \
             $::proxytest::accepted
     } -result {1 0}
 
@@ -191,7 +191,7 @@ test proxy-skips-srv {through a proxy no SRV query is sent, the domain goes to t
             -ondisconnect {apply {{msg} {set ::_proxyGone $msg}}}
         _proxyC connect
         wait_var ::_proxyGone 5000
-        list [string match "Connect failed: proxy: *" $::_proxyGone] \
+        list [string match "Connect failed: can't reach the proxy: *" $::_proxyGone] \
             [dnsresp::queries]
     } -result {1 {}}
 
