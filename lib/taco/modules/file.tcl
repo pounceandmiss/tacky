@@ -530,8 +530,11 @@ snit::type taco_file {
             $self Terminal $id failed "file not readable"
             return
         }
-        # URL keeps the original filename (extension drives kind detection);
-        # an encrypted share PUTs the ciphertext as application/octet-stream.
+        # URL keeps the original filename (extension drives kind detection).
+        # An encrypted share is uploaded under the file's own type too, as
+        # Gajim and Conversations do theirs: a server serves the type it was
+        # told, and Gajim previews an aesgcm:// picture only when it comes
+        # back as an image.
         set name [file tail $path]
         set putPath $path
         set mime [attachment_mime $name]
@@ -544,7 +547,6 @@ snit::type taco_file {
             dict set Transfers($id) tmpfile $putPath
             dict set Transfers($id) mediakey $key
             dict set Transfers($id) mediaiv  $iv
-            set mime application/octet-stream
         }
         set size [file size $putPath]
         dict set Transfers($id) total $size
