@@ -2,7 +2,7 @@
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
 #                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
-#                  ?-websocket_url ...?
+#                  ?-websocket_url ...? ?-proxy ...?
 #   creates account if new; updates fields if it already exists
 # taco account remove -acc $jid
 #   error: account doesn't exist
@@ -10,13 +10,16 @@
 #   error: account doesn't exist, invalid field
 # taco account set -acc $jid ?-password ...? ?-domain ...? ?-username ...?
 #                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
-#                  ?-websocket_url ...?
+#                  ?-websocket_url ...? ?-proxy ...?
 #   error: account doesn't exist, invalid field or value
 #
 # host, port, tls, srv: where and how the tcp transport reaches domain;
 # see dial.tcl. Ignored over websocket.
 # websocket_url: where the websocket transport dials; "" means discover it
 # (baseconn's ConnectWebsocket). Ignored over tcp.
+# proxy: "socks5://[user:pass@]host:port", or "" to connect directly. Set, it
+# carries every connection the account makes (see proxysocket.tcl), and
+# calls are refused.
 # taco account enable -acc $jid
 # taco account disable -acc $jid
 # taco account restart -acc $jid
@@ -28,8 +31,8 @@ snit::type taco_account {
     option -data-dir -default ""
 
     variable valid_columns {username domain host port tls srv password resource
-                            enabled websocket_url}
-    variable connection_columns {password domain host port tls srv}
+                            enabled websocket_url proxy}
+    variable connection_columns {password domain host port tls srv proxy}
     # Added by the transport when a request carries a token, not fields.
     variable transport_opts {-command -onerror -tag}
 
@@ -111,7 +114,14 @@ snit::type taco_account {
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
         }
+        set proxy [$options(-db) onecolumn {SELECT proxy FROM account WHERE jid=$jid}]
         $self SetFields $jid $args
+        # A new route ends everything on the old one: what goes through a
+        # proxy, or no longer through this one, must not stay up the old way.
+        if {$proxy ne [$options(-db) onecolumn {SELECT proxy FROM account WHERE jid=$jid}]} {
+            $options(-taco) restartClient $jid "proxy changed"
+            return
+        }
         foreach field $connection_columns {
             if {[dict exists $args -$field]} {
                 $self PushConnection $jid
@@ -168,6 +178,10 @@ snit::type taco_account {
             if {$field eq "tls" && $value ni {auto starttls direct none}} {
                 error "Invalid tls: $value"
             }
+            if {$field eq "proxy"} {
+                set value [string trim $value]
+                proxy_parse $value
+            }
             if {$field eq "srv"} {
                 if {![string is boolean -strict $value]} {
                     error "Invalid srv: $value"
@@ -181,12 +195,12 @@ snit::type taco_account {
 
     method ConnectionOpts {jid} {
         $options(-db) eval {
-            SELECT password, domain, host, port, tls, srv, websocket_url
+            SELECT password, domain, host, port, tls, srv, websocket_url, proxy
             FROM account WHERE jid=$jid
         } r {
             return [list -password $r(password) -domain $r(domain) \
                 -host $r(host) -port $r(port) -tls $r(tls) -srv $r(srv) \
-                -ws-url $r(websocket_url)]
+                -ws-url $r(websocket_url) -proxy $r(proxy)]
         }
         return {}
     }

@@ -297,3 +297,36 @@ test profilesettings-connection-refused {a refused value is reported, not saved}
     destroy .ps
     mock_backend_down
 } -result {{} {Server connection error: Invalid host: not a host}}
+
+test profilesettings-proxy-saves {the proxy is saved with the connection and loaded back} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [.ps.connection info vars proxy] " socks5://u:p@127.0.0.1:9050 "
+    .ps SaveConnection
+    wait
+    set saved [tacky account get -acc user@test.example.com -field proxy]
+    destroy .ps
+    profilesettings .ps -acc user@test.example.com
+    wait
+    list $saved [set [.ps.connection info vars proxy]] [.ps.status cget -text]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {socks5://u:p@127.0.0.1:9050 socks5://u:p@127.0.0.1:9050 {}}
+
+test profilesettings-proxy-refused {a malformed proxy is reported, not saved} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [.ps.connection info vars proxy] "127.0.0.1:9050"
+    .ps SaveConnection
+    wait
+    list [tacky account get -acc user@test.example.com -field proxy] \
+        [.ps.status cget -text]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {{} {Server connection error: proxy must start with socks5://: 127.0.0.1:9050}}

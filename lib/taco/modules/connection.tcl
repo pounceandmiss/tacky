@@ -35,6 +35,8 @@
 #                          now only in a wasm build (modules/browserws.tcl).
 #   -ws-url url            Where the websocket transport connects; empty means
 #                          the conventional wss://$domain/xmpp-websocket
+#   -proxy url             socks5://[user:pass@]host:port carries the link;
+#                          empty (default) dials directly
 #   -header-command cmd    Called with the opening <stream:stream> element
 #   -footer-command cmd    Called with the closing </stream:stream> (bareconn;
 #                          conn answers it itself and closes)
@@ -44,7 +46,8 @@
 #
 # conn-only options:
 #   -host, -port, -tls     Where and how to connect, see dial.tcl
-#   -srv bool              Look up SRV records (default 1)
+#   -srv bool              Look up SRV records (default 1; never through a
+#                          -proxy)
 #   -username, -password   SASL credentials
 #   -resource              Requested resource for binding
 #   -onautherror cmd       Called with message on SASL/bind failure
@@ -84,6 +87,8 @@ snit::type baseconn {
     # Targets left to try if this one fails
     variable targets
     variable attemptAfterId
+    # The SOCKS5 handshake in progress (proxy_open's handle), "" otherwise
+    variable proxyHandle
     # Whether an "after idle" flush is already scheduled
     variable flushPending
     # The ::websocket socket on the websocket transport, "" otherwise
@@ -114,6 +119,10 @@ snit::type baseconn {
     option -ontransportready -default ""
     # The certificate is checked against this, not the host dialled (RFC 7590)
     option -domain -default ""
+    # "socks5://[user:pass@]host:port" carries the link, "" dials directly.
+    # Through a proxy, every target goes to it by name, to be resolved there,
+    # and a target it can't reach fails rather than being dialled directly.
+    option -proxy -default ""
     # Only for `connect host port`; connectTargets gives each target its mode
     option -starttls -default true
     # Called as {*}$cmd host port tls before each target is tried
@@ -149,6 +158,7 @@ snit::type baseconn {
         set tlsMode starttls
         set targets {}
         set attemptAfterId ""
+        set proxyHandle ""
         set flushPending 0
         set ws ""
         set reader ""
@@ -230,6 +240,14 @@ snit::type baseconn {
             return
         }
         if {$options(-transport) eq "websocket"} {
+            # The page's websocket goes where the browser sends it; nothing
+            # here could route it through the proxy.
+            if {$options(-proxy) ne ""} {
+                set state disconnected
+                after idle [list {*}$options(-error-command) \
+                    "Connect failed: a proxy can't carry the websocket transport"]
+                return
+            }
             $self ConnectWebsocket
             return
         }
@@ -256,6 +274,16 @@ snit::type baseconn {
         if {$options(-attempt-command) ne ""} {
             {*}$options(-attempt-command) $host $port $tlsMode
         }
+        if {$options(-proxy) ne ""} {
+            if {[catch {proxy_open $options(-proxy) $host $port \
+                    [mymethod OnProxyConnected]} handle]} {
+                after idle [mymethod Fail "Bad proxy: $handle"]
+                return
+            }
+            set proxyHandle $handle
+            $self ArmAttempt
+            return
+        }
         if {[catch {
             set socket [socket -async $host $port]
         } err]} {
@@ -266,14 +294,38 @@ snit::type baseconn {
         }
         fconfigure $socket -blocking 0 -buffering full -translation binary
         fileevent $socket writable [list $self OnSocketConnected]
+        $self ArmAttempt
+    }
+
+    method ArmAttempt {} {
         if {[llength $targets] && $options(-attempt-timeout) > 0} {
             set attemptAfterId [after $options(-attempt-timeout) \
                 [mymethod Fail "Connect failed: timed out"]]
         }
     }
 
+    # The proxy reached the target: from here the tunnel is the socket.
+    method OnProxyConnected {status detail} {
+        set proxyHandle ""
+        if {$status ne "ok"} {
+            $self Fail "Connect failed: proxy: $detail"
+            return
+        }
+        set socket $detail
+        fconfigure $socket -blocking 0 -buffering full -translation binary
+        $self Connected
+    }
+
+    method DropProxy {} {
+        if {$proxyHandle ne ""} {
+            proxy_abort $proxyHandle
+            set proxyHandle ""
+        }
+    }
+
     method Fail {msg} {
         $self CancelAttempt
+        $self DropProxy
         if {$socket ne ""} {
             fileevent $socket writable {}
             xmpp_starttls_abort $socket
@@ -301,6 +353,11 @@ snit::type baseconn {
             $self Fail "Connect failed: $err"
             return
         }
+        $self Connected
+    }
+
+    # TCP is up, directly or through the proxy: TLS, if any, then ready.
+    method Connected {} {
         switch -- $tlsMode {
             starttls {
                 xmpp_starttls $socket $options(-domain) \
@@ -541,6 +598,7 @@ snit::type baseconn {
             set flushPending 0
         }
         $self CancelAttempt
+        $self DropProxy
         set targets {}
         $self DestroyReader
         $self DropLookup
@@ -878,9 +936,12 @@ snit::type conn {
             return
         }
         set gen [incr dialGen]
+        # An SRV query would ask our resolver about the domain, past the
+        # proxy; the domain itself goes to the proxy to resolve.
+        set srv [expr {$options(-srv) && [$base cget -proxy] eq ""}]
         set dialId [dial::targets -domain $options(-domain) \
             -host $options(-host) -port $options(-port) -tls $options(-tls) \
-            -srv $options(-srv) -nameservers $options(-nameservers) \
+            -srv $srv -nameservers $options(-nameservers) \
             -command [mymethod OnTargets $gen]]
     }
 

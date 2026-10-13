@@ -23,6 +23,7 @@ snit::type mock_conn {
     option -username -default ""
     option -password -default ""
     option -resource -default ""
+    option -proxy -default ""
     option -autoreconnect -default 0
     option -probe-allowed-command -default ""
     option -active-command -default ""

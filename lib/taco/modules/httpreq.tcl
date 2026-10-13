@@ -4,14 +4,19 @@
 # ::em::call and wasm/em/http.js. This chooses between the two.
 #
 #   taco_http get URL -outfile PATH ?-timeout MS? ?-headers DICT?
-#                     ?-progress CMD? ?-command CMD?          -> token
+#                     ?-progress CMD? ?-command CMD? ?-proxy P?  -> token
 #   taco_http put URL -infile PATH ?-type MIME? ?-headers DICT?
-#                     ?-timeout MS? ?-progress CMD? ?-command CMD?  -> token
+#                     ?-timeout MS? ?-progress CMD? ?-command CMD?
+#                     ?-proxy P?                                 -> token
 #   taco_http status  TOKEN    ok | error | timeout | reset ("" while in flight)
 #   taco_http ncode   TOKEN    the HTTP status code
 #   taco_http error   TOKEN    why it failed, "" otherwise
 #   taco_http reset   TOKEN    cancel it
 #   taco_http cleanup TOKEN    drop it
+#
+# -proxy is an account's (see proxysocket.tcl): the request goes through it or
+# fails, never around it. A browser has no way to honour one, so there a
+# request with a proxy is refused.
 #
 # -timeout is how long a request may go without moving a byte, not how long it
 # may take: a large file over a slow link is still a transfer.
@@ -37,6 +42,15 @@ namespace eval ::taco_http {
     # Native requests with a -timeout: token -> the after that resets it.
     variable Idle
     array set Idle {}
+    # Native requests: token -> the proxy its socket goes through, "" for
+    # none. A socket asked for a token not here is refused, so a request
+    # whose route went missing can't fall back to a direct connection.
+    variable Route
+    array set Route {}
+    # Native requests whose proxy handshake is in progress: token ->
+    # {handle coroutine}
+    variable Handshake
+    array set Handshake {}
 }
 
 proc taco_http {op args} {
@@ -61,10 +75,13 @@ proc ::taco_http::Browser {} {
 proc ::taco_http::Request {method url args} {
     array set o {
         -outfile "" -infile "" -type "" -headers "" -timeout 0
-        -progress "" -command ""
+        -progress "" -command "" -proxy ""
     }
     array set o $args
     if {[Browser]} {
+        if {$o(-proxy) ne ""} {
+            error "a proxy can't carry the browser's requests"
+        }
         return [BrowserRequest $method $url o]
     }
     return [NativeRequest $method $url o]
@@ -75,6 +92,9 @@ proc ::taco_http::Query {op token} {
         return [BrowserQuery $op $token]
     }
     NativeInit
+    if {$op eq "cleanup"} {
+        NativeForget $token
+    }
     return [::http::$op $token]
 }
 
@@ -85,12 +105,87 @@ proc ::taco_http::NativeInit {} {
     variable Registered
 
     if {$Registered} return
-    package require http
-    # mtls is not a load-time dependency either: a build without it still does
-    # plain http, and fails an https transfer where it happens rather than at
-    # startup.
-    catch {package require mtls; ::http::register https 443 ::mtls::socket}
+    # 2.10 for the token on the socket command (useSockThread, below) and
+    # for opening that socket in a coroutine, where a handshake can wait.
+    package require http 2.10
+    # Both schemes, so plain http goes through the proxy too. useSockThread
+    # only appends "-type $token": threadlevel stays 0, nothing is threaded.
+    ::http::register http 80 [list ::taco_http::Socket 0] {} 1
+    ::http::register https 443 [list ::taco_http::Socket 1] {} 1
     set Registered 1
+}
+
+# http's socket command: {*}?options? -type TOKEN host port. Direct, it opens
+# what the stock command would; through a proxy, a tunnel, waiting in http's
+# OpenSocket coroutine for the handshake. mtls is not a load-time dependency:
+# a build without it still does plain http, and fails an https transfer where
+# it happens rather than at startup.
+proc ::taco_http::Socket {tls args} {
+    variable Route
+    variable Handshake
+    set i [lsearch -exact $args -type]
+    if {$i < 0} {
+        error "no request token for this socket"
+    }
+    set token [lindex $args $i+1]
+    set args [lreplace $args $i $i+1]
+    if {![info exists Route($token)]} {
+        error "no route for this request"
+    }
+    set proxy $Route($token)
+    if {$proxy eq ""} {
+        if {$tls} {
+            package require mtls
+            return [::mtls::socket {*}$args]
+        }
+        return [::socket {*}$args]
+    }
+    if {[info coroutine] eq ""} {
+        error "a proxied request has to open its socket in a coroutine"
+    }
+    set host [lindex $args end-1]
+    set port [lindex $args end]
+    set Handshake($token) [list [proxy_open $proxy $host $port \
+        [list ::taco_http::Tunneled [info coroutine]]] [info coroutine]]
+    lassign [yield] status chan
+    unset -nocomplain Handshake($token)
+    if {$status ne "ok"} {
+        error "proxy: $chan"
+    }
+    if {!$tls} {
+        return $chan
+    }
+    if {[catch {
+        package require mtls
+        ::mtls::import $chan -servername $host
+    } tlschan]} {
+        catch {close $chan}
+        error $tlschan
+    }
+    return $tlschan
+}
+
+# The request may have gone while its handshake ran; then so does the tunnel.
+proc ::taco_http::Tunneled {coro status detail} {
+    if {[llength [info commands $coro]]} {
+        $coro [list $status $detail]
+    } elseif {$status eq "ok"} {
+        catch {close $detail}
+    }
+}
+
+proc ::taco_http::NativeForget {token} {
+    variable Route
+    variable Handshake
+    unset -nocomplain Route($token)
+    if {[info exists Handshake($token)]} {
+        # Resumed, http's coroutine would carry on with a request it has
+        # already finished.
+        lassign $Handshake($token) handle coro
+        unset Handshake($token)
+        proxy_abort $handle
+        catch {rename $coro {}}
+    }
 }
 
 # -- the browser ------------------------------------------------------------
@@ -180,6 +275,10 @@ proc ::taco_http::NativeRequest {method url optsVar} {
     upvar 1 $optsVar o
 
     NativeInit
+    if {$o(-proxy) ne ""} {
+        # Malformed, it fails here rather than at the socket.
+        proxy_parse $o(-proxy)
+    }
     # Not the http package's -timeout: that is armed once at connect and is a
     # deadline on the whole transfer. Ours is re-armed on every block.
     set ms $o(-timeout)
@@ -205,10 +304,17 @@ proc ::taco_http::NativeRequest {method url optsVar} {
     # The channel is ours, so closing it is too - before the caller's -command
     # runs and looks at the file.
     lappend opts -command [list ::taco_http::NativeDone $fh $o(-command)]
+    # A kept-alive socket would carry the next request to the same host
+    # whatever route that one asked for.
+    lappend opts -keepalive 0
     if {[catch {::http::geturl $url {*}$opts} token]} {
         catch {close $fh}
         return -code error $token
     }
+    # In time: http opens the socket from the event loop, never inside
+    # geturl (see Socket).
+    variable Route
+    set Route($token) $o(-proxy)
     # Unless it is over already: geturl can finish a request before returning.
     if {[::http::status $token] eq ""} {
         NativeIdle $token $ms
@@ -248,6 +354,7 @@ proc ::taco_http::NativeDone {fh cmd token} {
         unset Idle($token)
     }
     catch {close $fh}
+    NativeForget $token
     if {$cmd ne ""} {
         {*}$cmd $token
     }

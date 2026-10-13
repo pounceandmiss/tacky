@@ -250,6 +250,16 @@ snit::type taco_calls {
         array set opts $args
         if {$opts(-to) eq ""} { error "start: -to required" }
 
+        # Surface it through the generic error channel (app.tcl's
+        # OnMethodError -> status line) rather than raising, since GUI callers
+        # invoke `start` without -command.
+        if {[$self ProxyBlocks]} {
+            $client emit error <MethodError> \
+                -module calls -method start \
+                -message "Calls are disabled while a proxy is configured"
+            return
+        }
+
         set bare [jid bare $opts(-to)]
         set sid [$self NewSid]
         set wantVideo [expr {$opts(-video) ? 1 : 0}]
@@ -259,6 +269,12 @@ snit::type taco_calls {
         $client write [$self BuildJmiMessage $bare propose $sid 1 $wantVideo \
             [$self AnnounceDevice $sid]]
         return $sid
+    }
+
+    # Whether a proxy rules calls out: ICE sends UDP, which a SOCKS5
+    # CONNECT tunnel can't carry, so media would go around the proxy.
+    method ProxyBlocks {} {
+        return [expr {[$client conn cget -proxy] ne ""}]
     }
 
     # Per-call state dict. peer is bare until proceeded, then full JID.
@@ -649,6 +665,10 @@ snit::type taco_calls {
     # The pc is recorded only once createPeer took it, so a refused one
     # leaves nothing to close.
     method CreatePc {sid iceServers} {
+        # The last word for every path into media, ours or the peer's.
+        if {[$self ProxyBlocks]} {
+            error "calls are disabled while a proxy is configured"
+        }
         set pc $self/$sid
         ::tacky::media createPeer $pc -sid $sid \
             -command [mymethod OnMediaEvent $sid] -ice-servers $iceServers
@@ -1196,6 +1216,12 @@ snit::type taco_calls {
             set ours [dict get $Calls $sid]
             if {![dict get $ours initiator] || [dict get $ours state] ne "proposed"
                     || ![jid matches-bare $from [dict get $ours peer]]} return
+        }
+        # Calls can't be tunneled through a proxy (native ICE bypasses it), so
+        # decline instead of ringing.
+        if {[$self ProxyBlocks]} {
+            $client write [$self BuildJmiMessage $from reject $sid 0]
+            return
         }
 
         # Crossing proposes (XEP-0353 §4.1): the lower sid wins (i;octet),

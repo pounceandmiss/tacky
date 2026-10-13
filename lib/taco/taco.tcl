@@ -450,8 +450,8 @@ snit::type taco_type {
     # chats they have open - is carried over to it (taco_client carry);
     # account <Reset> then tells them to drop what they held of the rest.
     #
-    # Called for a frontend's request (account restart, disable), never from
-    # inside the client: it destroys the client, whose method would be
+    # Called for a frontend's request (account restart, set, disable), never
+    # from inside the client: it destroys the client, whose method would be
     # running on the stack below.
     method restartClient {jid reason} {
         set client $self.client($jid)

@@ -18,6 +18,7 @@ snit::type mockbaseconn {
     option -starttls -default true
     option -transport -default tcp
     option -ws-url -default ""
+    option -proxy -default ""
     option -domain -default ""
     option -attempt-command -default ""
 

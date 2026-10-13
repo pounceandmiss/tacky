@@ -233,6 +233,11 @@ snit::type taco_groupcall {
         set video [expr {$opts(-video) ? 1 : 0}]
         set spec [dict create chat $chat video $video \
             id [$self RandomHex 16] nick [$self RandomHex 4]]
+        if {[$client calls ProxyBlocks]} {
+            $self Later [mymethod StartFailed $spec \
+                "calls are disabled while a proxy is configured"]
+            return
+        }
         # Offline, the room would wait on a stream that may be a while coming.
         if {![$client iq isLive]} {
             $self Later [mymethod StartFailed $spec "not connected"]
@@ -262,6 +267,11 @@ snit::type taco_groupcall {
             set opts(-id) [dict get $at call id]
         }
         if {$opts(-jid) eq ""} { error "join: -jid required" }
+        if {[$client calls ProxyBlocks]} {
+            $client emit error <MethodError> -module groupcall -method join \
+                -message "Calls are disabled while a proxy is configured"
+            return
+        }
         set room [jid norm $opts(-jid)]
         set video [expr {$opts(-video) ? 1 : 0}]
         if {[info exists Rooms($room)] || [info exists Calls($room)]} return

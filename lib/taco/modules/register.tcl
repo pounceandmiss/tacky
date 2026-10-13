@@ -20,7 +20,7 @@ if 0 {
     == Methods ==
 
     tacky register connect -domain $d ?-host $h? ?-port $p? ?-tls $t? ?-srv $s?
-                           ?-websocket_url $u? ?-token $tok?
+                           ?-websocket_url $u? ?-proxy $url? ?-token $tok?
         → Start registration handshake. Fires <Form> on success.
           The other options work as an account's do.
 
@@ -65,11 +65,12 @@ snit::type taco_register {
 
     tackymethod -noreturn connect {args} {
         array set opts {-host "" -port 0 -tls auto -srv 1 -nameservers ""
-                        -token "" -websocket_url ""}
+                        -token "" -websocket_url "" -proxy ""}
         array set opts $args
         if {![info exists opts(-domain)] || $opts(-domain) eq ""} {
             error "missing -domain"
         }
+        proxy_parse $opts(-proxy)
         set transport tcp
         catch {set transport [$options(-taco) cget -transport]}
 
@@ -81,6 +82,7 @@ snit::type taco_register {
             -domain $opts(-domain) -host $opts(-host) -port $opts(-port) \
             -tls $opts(-tls) -srv $opts(-srv) -nameservers $opts(-nameservers) \
             -transport $transport -ws-url $opts(-websocket_url) \
+            -proxy $opts(-proxy) \
             -callback [mymethod OnSessionEvent $opts(-token)]]
         $Sessions($opts(-token)) connect
     }
@@ -151,6 +153,7 @@ snit::type taco_register_session {
     # Passed to the bareconn; see baseconn.
     option -transport -default tcp
     option -ws-url -default ""
+    option -proxy -default ""
     option -callback -default ""
 
     variable idCounter 0
@@ -207,6 +210,7 @@ snit::type taco_register_session {
         install conn using bareconn $self.conn \
             -transport $options(-transport) \
             -ws-url $options(-ws-url) \
+            -proxy $options(-proxy) \
             -onready [mymethod OnReady] \
             -header-command [mymethod OnHeader] \
             -onstanza [mymethod OnStanza] \
@@ -216,9 +220,11 @@ snit::type taco_register_session {
             $conn connectTargets {}
             return
         }
+        # As conn's: no SRV query past the proxy
         set dialId [dial::targets -domain $options(-domain) \
             -host $options(-host) -port $options(-port) -tls $options(-tls) \
-            -srv $options(-srv) -nameservers $options(-nameservers) \
+            -srv [expr {$options(-srv) && $options(-proxy) eq ""}] \
+            -nameservers $options(-nameservers) \
             -command [mymethod OnTargets]]
     }
 

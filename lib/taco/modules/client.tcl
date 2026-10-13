@@ -37,6 +37,7 @@ snit::type taco_client {
     delegate option -username to conn
     delegate option -password to conn
     delegate option -resource to conn
+    delegate option -proxy to conn
 
     # Tacky singleton for account persistence
     option -taco -default ::taco
