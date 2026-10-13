@@ -46,14 +46,6 @@ snit::type taco_chat {
         $self Read $chatJid $ts
     }
 
-    # The chats the frontend has open, for a client built in this one's place
-    # (taco_client carry). A view held back is the old client's to apply.
-    method Carry {} { dict keys $Open }
-
-    method Restore {chats} {
-        foreach chatJid $chats { dict set Open $chatJid 0 }
-    }
-
     tackymethod setClientData {args} {
         array set opts $args
         $client message messagestore setClientData $opts(-chat) $opts(-data)

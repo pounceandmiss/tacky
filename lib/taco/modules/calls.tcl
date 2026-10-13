@@ -228,9 +228,9 @@ snit::type taco_calls {
         }
     }
 
-    # The client is going (see its shutdown): every call ends while the link
-    # is still up to say so - a ringing one is declined, a proposed one
-    # retracted, the rest terminated as gone.
+    # The session is ending (taco_client endSession): every call ends while
+    # the link is still up to say so - a ringing one is declined, a proposed
+    # one retracted, the rest terminated as gone.
     method OnClosing {args} {
         foreach sid [dict keys $Calls] {
             if {[catch {$self reject -sid $sid -reason gone} err]} {
@@ -253,10 +253,10 @@ snit::type taco_calls {
         # Surface it through the generic error channel (app.tcl's
         # OnMethodError -> status line) rather than raising, since GUI callers
         # invoke `start` without -command.
-        if {[$self ProxyBlocks]} {
+        set why [$self Blocked]
+        if {$why ne ""} {
             $client emit error <MethodError> \
-                -module calls -method start \
-                -message "Calls are disabled while a proxy is configured"
+                -module calls -method start -message $why
             return
         }
 
@@ -271,10 +271,18 @@ snit::type taco_calls {
         return $sid
     }
 
-    # Whether a proxy rules calls out: ICE sends UDP, which a SOCKS5
-    # CONNECT tunnel can't carry, so media would go around the proxy.
-    method ProxyBlocks {} {
-        return [expr {[$client conn cget -proxy] ne ""}]
+    # Why calls are ruled out, as a sentence, or "" when they are not. A
+    # proxy does: ICE sends UDP, which a SOCKS5 CONNECT tunnel can't carry,
+    # so media would go around the proxy. So does a disabled account, which
+    # touches no network.
+    method Blocked {} {
+        if {![$client cget -enabled]} {
+            return "Calls are unavailable while the account is disabled"
+        }
+        if {[$client conn cget -proxy] ne ""} {
+            return "Calls are disabled while a proxy is configured"
+        }
+        return ""
     }
 
     # Per-call state dict. peer is bare until proceeded, then full JID.
@@ -666,8 +674,9 @@ snit::type taco_calls {
     # leaves nothing to close.
     method CreatePc {sid iceServers} {
         # The last word for every path into media, ours or the peer's.
-        if {[$self ProxyBlocks]} {
-            error "calls are disabled while a proxy is configured"
+        set why [$self Blocked]
+        if {$why ne ""} {
+            error [string tolower $why 0 0]
         }
         set pc $self/$sid
         ::tacky::media createPeer $pc -sid $sid \
@@ -1219,7 +1228,7 @@ snit::type taco_calls {
         }
         # Calls can't be tunneled through a proxy (native ICE bypasses it), so
         # decline instead of ringing.
-        if {[$self ProxyBlocks]} {
+        if {[$self Blocked] ne ""} {
             $client write [$self BuildJmiMessage $from reject $sid 0]
             return
         }

@@ -18,6 +18,8 @@ snit::widget profilebar {
 
     variable connstate disconnected
     variable errmsg ""
+    # A disabled account is offline on purpose: no error, and Enable
+    variable enabled 1
 
     constructor args {
         $self configurelist $args
@@ -54,6 +56,10 @@ snit::widget profilebar {
         $t listen -tag $win conn <Disconnected> -acc $acc [mymethod OnError]
         $t observe -tag $win conn <ConnError> -acc $acc [mymethod OnConnError]
         $t observe -tag $win conn <State> -acc $acc [mymethod OnConnState]
+        $t listen -tag $win account <Enabled> -acc $acc [mymethod OnEnabled 1]
+        $t listen -tag $win account <Disabled> -acc $acc [mymethod OnEnabled 0]
+        $t account get -acc $acc -field enabled \
+            -tag $win -command [mymethod OnEnabled]
 
         # Fetch display name
         $t bookmarks defaultNick -acc $acc \
@@ -77,8 +83,18 @@ snit::widget profilebar {
         $win.avatar configure -image $img
     }
 
+    method OnEnabled {value args} {
+        set enabled [string is true -strict $value]
+        if {!$enabled} { set errmsg "" }
+        $self OnConnState [list -state $connstate]
+    }
+
     method OnConnState {ev} {
         set connstate [dict get $ev -state]
+        if {!$enabled} {
+            $win.status configure -text "\u25CB" -foreground gray50
+            return
+        }
         switch -- $connstate {
             connected {
                 set errmsg ""
@@ -103,6 +119,7 @@ snit::widget profilebar {
     }
 
     method OnError {ev} {
+        if {!$enabled} return
         set errmsg [dict get $ev -message]
         set connstate disconnected
         $win.status configure -text "\u25CF" -foreground red3
@@ -110,6 +127,7 @@ snit::widget profilebar {
 
     # Record the reason and show red; the <State> events keep driving connstate.
     method OnConnError {ev} {
+        if {!$enabled} return
         set errmsg [dict get $ev -message]
         $win.status configure -text "\u25CF" -foreground red3
     }
@@ -126,7 +144,9 @@ snit::widget profilebar {
         $m delete 0 end
 
         # Status line
-        if {$errmsg ne ""} {
+        if {!$enabled} {
+            $m add command -label "Disabled" -state disabled
+        } elseif {$errmsg ne ""} {
             $m add command -label $errmsg -state disabled
         } else {
             $m add command -label [string totitle $connstate] -state disabled
@@ -137,15 +157,17 @@ snit::widget profilebar {
         # Connection actions
         set acc $options(-acc)
         set t $options(-tacky)
-        if {$connstate eq "connected" || $connstate eq "connecting"
+        if {!$enabled} {
+            $m add command -label "Enable" \
+                -command [list $t account enable -acc $acc]
+        } elseif {$connstate eq "connected" || $connstate eq "connecting"
                 || $connstate eq "authenticating" || $connstate eq "binding"} {
             $m add command -label "Disconnect" \
                 -command [list $t account disable -acc $acc]
         } else {
-            # In place: disable then enable would read as the account going,
-            # and its windows with it
+            # enable connects an enabled account that is offline, too
             $m add command -label "Reconnect" \
-                -command [list $t account restart -acc $acc]
+                -command [list $t account enable -acc $acc]
         }
 
         $m add separator

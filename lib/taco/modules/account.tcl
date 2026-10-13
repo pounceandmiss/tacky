@@ -21,9 +21,9 @@
 # carries every connection the account makes (see proxysocket.tcl), and
 # calls are refused.
 # taco account enable -acc $jid
+#   also reconnects an enabled account that is offline
 # taco account disable -acc $jid
-# taco account restart -acc $jid
-#   starts the account over in place (taco restartClient); enabled stays as is
+#   ends the session; the client stays, offline (taco_client -enabled)
 
 snit::type taco_account {
     option -db -default ""
@@ -118,9 +118,12 @@ snit::type taco_account {
         $self SetFields $jid $args
         # A new route ends everything on the old one: what goes through a
         # proxy, or no longer through this one, must not stay up the old way.
+        # PushConnection then connects an enabled account anew.
         if {$proxy ne [$options(-db) onecolumn {SELECT proxy FROM account WHERE jid=$jid}]} {
-            $options(-taco) restartClient $jid "proxy changed"
-            return
+            set client [$self liveClient -acc $jid]
+            if {$client ne ""} {
+                $client endSession "proxy changed"
+            }
         }
         foreach field $connection_columns {
             if {[dict exists $args -$field]} {
@@ -195,12 +198,14 @@ snit::type taco_account {
 
     method ConnectionOpts {jid} {
         $options(-db) eval {
-            SELECT password, domain, host, port, tls, srv, websocket_url, proxy
+            SELECT password, domain, host, port, tls, srv, websocket_url, proxy,
+                   enabled
             FROM account WHERE jid=$jid
         } r {
             return [list -password $r(password) -domain $r(domain) \
                 -host $r(host) -port $r(port) -tls $r(tls) -srv $r(srv) \
-                -ws-url $r(websocket_url) -proxy $r(proxy)]
+                -ws-url $r(websocket_url) -proxy $r(proxy) \
+                -enabled $r(enabled)]
         }
         return {}
     }
@@ -254,10 +259,9 @@ snit::type taco_account {
 
         set client [$self liveClient -acc $jid]
         if {$client ne ""} {
-            catch {$client shutdown "account removed"}
+            catch {$client endSession "account removed"}
             catch {$client destroy}
         }
-        $options(-taco) forgetCarried $jid
 
         $options(-db) eval {DELETE FROM account WHERE jid = $jid}
 
@@ -274,7 +278,7 @@ snit::type taco_account {
         set client [$options(-taco) client $jid]
 
         # Always propagate latest credentials from DB to client/conn
-        $client configure {*}[$self ConnectionOpts $jid]
+        $client configure {*}[$self ConnectionOpts $jid] -enabled 1
 
         $client connect
 
@@ -293,24 +297,18 @@ snit::type taco_account {
         $client changePassword {*}[dict remove $args -acc]
     }
 
-    # The account over again, staying as enabled as it was: what it had
-    # going ends, and an enabled one logs in afresh. Not disable then
-    # enable, which a frontend reads as the user turning it off and on.
-    tackymethod -noreturn restart {args} {
-        set jid [dict get $args -acc]
-        if {![$self exists -acc $jid]} {
-            error "Account doesn't exist: $jid"
-        }
-        $options(-taco) restartClient $jid "restarted"
-    }
-
-    # Everything the account had going ends with its client (see taco
-    # restartClient), which is not rebuilt until something asks for it.
+    # The account goes offline and stays usable: what it had going ends
+    # (taco_client endSession), and its client stays to read from, touching
+    # no network until enable.
     tackymethod -noreturn disable {args} {
         set jid [dict get $args -acc]
         $options(-taco) emit account <Disabled> -acc $jid
         $options(-db) eval {UPDATE account SET enabled=0 WHERE jid=$jid}
-        $options(-taco) restartClient $jid "account disabled"
+        set client [$self liveClient -acc $jid]
+        if {$client ne ""} {
+            $client endSession "account disabled"
+            $client configure -enabled 0
+        }
     }
 
     # The client object taco already built for an account, or "" when it has

@@ -122,6 +122,57 @@ namespace eval ::test::muc_reconnect_int {
                 [said $JULIET "after the drop"]
         } -result {1 1}
 
+    # A disabled account is out of its rooms; enabled again, it logs in
+    # afresh and its autojoin bookmarks take it back in.
+    test muc-int-disable-enable-rejoins-autojoin-room \
+        {disable leaves the room, enable rejoins it and hears it again} \
+        {*}$common \
+        -body {
+            variable ROMEO
+            variable JULIET
+            variable ROOM
+            variable CHAT
+
+            set seen [expect_events [list \
+                [list muc <Left> -acc $JULIET -jid $ROOM -disconnected 1]]]
+            tacky account disable -acc $JULIET
+            wait_expected $seen
+            set seen [expect_events [list [list muc <Joined> -acc $JULIET -jid $ROOM]]]
+            tacky account enable -acc $JULIET
+            wait_expected $seen 30000
+
+            set seen [expect_events [list [list message <New> -acc $JULIET -jid $CHAT]]]
+            [tacky client $ROMEO] message send -chat $CHAT -body "after enable"
+            wait_expected $seen
+            list [dict get [[[tacky client $JULIET] conn sm] getInfo] resumed] \
+                [[tacky client $JULIET] muc isJoined -jid $ROOM] \
+                [said $JULIET "after enable"]
+        } -result {0 1 1}
+
+    test muc-int-sent-while-disabled-arrives-once \
+        {a message sent while disabled waits, and arrives once after enable} \
+        {*}$common \
+        -body {
+            variable ROMEO
+            variable JULIET
+
+            tacky omemo setEnabled -acc $JULIET -jid $ROMEO -value 0
+            tacky account disable -acc $JULIET
+            [tacky client $JULIET] message send -chat $ROMEO -body "while disabled"
+            settleWithServer $ROMEO
+            set before [said $ROMEO "while disabled"]
+            set seen [expect_events [list [list message <New> -acc $ROMEO -jid $JULIET]]]
+            tacky account enable -acc $JULIET
+            wait_expected $seen 30000
+            # Past the catchup that settles the pending send
+            settleWithServer $JULIET
+            settleWithServer $ROMEO
+            list $before [said $ROMEO "while disabled"] \
+                [[tacky client $JULIET] db onecolumn {
+                    SELECT server_status FROM chat_message WHERE body='while disabled'
+                }]
+        } -result {0 1 {}}
+
     # With stream management the server keeps the session (XEP-0198 5), so
     # the room is never left.
     test muc-int-resumed-stream-stays-in-room \

@@ -206,8 +206,8 @@ snit::type taco_groupcall {
         lappend Idle [after idle $script]
     }
 
-    # The client is going (see its shutdown): leave every call while the
-    # link can still carry the hang-ups.
+    # The session is ending (taco_client endSession): leave every call while
+    # the link can still carry the hang-ups.
     method OnClosing {args} {
         set reason [dict get $args -reason]
         foreach room [array names Rooms] {
@@ -233,9 +233,9 @@ snit::type taco_groupcall {
         set video [expr {$opts(-video) ? 1 : 0}]
         set spec [dict create chat $chat video $video \
             id [$self RandomHex 16] nick [$self RandomHex 4]]
-        if {[$client calls ProxyBlocks]} {
-            $self Later [mymethod StartFailed $spec \
-                "calls are disabled while a proxy is configured"]
+        set why [$client calls Blocked]
+        if {$why ne ""} {
+            $self Later [mymethod StartFailed $spec [string tolower $why 0 0]]
             return
         }
         # Offline, the room would wait on a stream that may be a while coming.
@@ -267,9 +267,10 @@ snit::type taco_groupcall {
             set opts(-id) [dict get $at call id]
         }
         if {$opts(-jid) eq ""} { error "join: -jid required" }
-        if {[$client calls ProxyBlocks]} {
+        set why [$client calls Blocked]
+        if {$why ne ""} {
             $client emit error <MethodError> -module groupcall -method join \
-                -message "Calls are disabled while a proxy is configured"
+                -message $why
             return
         }
         set room [jid norm $opts(-jid)]

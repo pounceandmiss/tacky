@@ -62,7 +62,7 @@ snit::type app_type {
         ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
-        # An account's windows go with it, or start over with it
+        # A removed account's windows go with it
         accountscope listen
         install notifier using notifier $self.notifier -controller $self
         bind all <FocusIn> +[mymethod FocusMoved]
@@ -190,7 +190,17 @@ snit::type app_type {
         ::tacky account list -enabled 1 -command [mymethod OnAccountList]
     }
 
+    # An enabled account's window first; with none, a disabled one's, which
+    # is still there to read. Setup only when there is no account at all.
     method OnAccountList {result} {
+        if {[llength $result] > 0} {
+            $self SpawnWindow [lindex $result 0]
+        } else {
+            ::tacky account list -command [mymethod OnAnyAccount]
+        }
+    }
+
+    method OnAnyAccount {result} {
         if {[llength $result] > 0} {
             $self SpawnWindow [lindex $result 0]
         } else {

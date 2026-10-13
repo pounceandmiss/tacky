@@ -36,7 +36,7 @@ snit::type taco_nick {
 
     # Set own nick via PEP, vcard-temp, and bookmarks.
     # Updates all existing bookmarks and joined rooms unless -bookmarks skip.
-    tackymethod -async set {args} {
+    tackymethod -online -async set {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
         $client vcard setNick -nick $opts(-nick)

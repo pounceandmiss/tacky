@@ -33,6 +33,11 @@ snit::type iq {
     # ourselves. 0 waits forever.
     option -default-timeout -default 60000
 
+    # Non-empty: requests are not sent but answered with this as an error,
+    # as soon as their caller is done (the account is disabled).
+    option -refuse -default ""
+    variable Refusals {}
+
     # Pending timers, and {timeout to id} per outstanding request, both
     # keyed like ResponseHandlers
     variable Timers
@@ -66,6 +71,7 @@ snit::type iq {
         foreach key [array names Timers] {
             after cancel $Timers($key)
         }
+        foreach id $Refusals { after cancel $id }
     }
 
     # Invoke when we receive an incoming stanza
@@ -224,6 +230,11 @@ snit::type iq {
         jlog warn "iq failAll: requests still being made after $round rounds"
     }
 
+    method Refuse {key text} {
+        set Refusals [lrange $Refusals 1 end]
+        $self AnswerError $key cancel undefined-condition $text
+    }
+
     method AnswerError {key errType condition text} {
         if {![info exists ResponseHandlers($key)]} return
         set handler $ResponseHandlers($key)
@@ -265,6 +276,10 @@ snit::type iq {
             set opts(-timeout) $options(-default-timeout)
         }
         set Pending($key) [list $opts(-timeout) $opts(-to) $opts(-id)]
+        if {$options(-refuse) ne ""} {
+            lappend Refusals [after idle [mymethod Refuse $key $options(-refuse)]]
+            return
+        }
         $self ArmTimer $key
         set _iq [j iq \
                                 {*}$optionalTo \

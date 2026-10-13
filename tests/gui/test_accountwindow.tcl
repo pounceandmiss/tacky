@@ -98,6 +98,9 @@ test accountwindow-search-hit-opens-its-room-as-a-groupchat {the ?join suffix on
 test accountwindow-search-hit-jumps-in-an-already-open-chat {a hit in the chat already showing still jumps to it} -setup {
     aw_setup
 } -body {
+    # Enabled, so the jump's archive query goes out (a disabled account's
+    # would be refused), without dialing
+    [tacky client user@test.example.com] configure -enabled 1
     accountwindow .aw -account user@test.example.com -controller aw_ctrl
     wait
     .aw OpenChat -acc user@test.example.com -jid alice@example.com

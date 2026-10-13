@@ -122,10 +122,12 @@ snit::type taco_muc {
     # How long a room has to answer a join.
     typevariable JoinTimeoutMs 30000
     # Our server's MUC service, probed once per session; ServiceWaiters are
-    # the callers waiting on the probe.
+    # the callers waiting on the probe. A probe that met an error finds
+    # nothing for its waiters but leaves no answer behind.
     variable ServiceJid ""
     variable ServiceFound 0
     variable ServiceWaiters {}
+    variable ServiceProbeError 0
 
     # Cap on occupants tracked per room; new ones past it are dropped.
     typevariable MaxOccupants 10000
@@ -136,6 +138,7 @@ snit::type taco_muc {
         $self configurelist $args
         set client $options(-client)
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnSessionStart]
     }
 
     destructor {
@@ -146,6 +149,12 @@ snit::type taco_muc {
         foreach roomJid [array names PeopleDue] {
             after cancel $PeopleDue($roomJid)
         }
+    }
+
+    # The service is the new session's to find
+    method OnSessionStart {args} {
+        set ServiceFound 0
+        set ServiceJid ""
     }
 
     method OnDisconnect {args} {
@@ -205,6 +214,14 @@ snit::type taco_muc {
         if {$opts(-hidden) && [info exists Rooms($opts(-jid))]
                 && ![dict get $Rooms($opts(-jid)) hidden]} {
             error "muc join: $opts(-jid) is a room we are in or joining"
+        }
+        # A disabled account joins nothing; its autojoin bookmarks are
+        # joined at the next session (bookmarks AutojoinAll).
+        if {![$client cget -enabled]} {
+            if {$opts(-command) ne ""} {
+                {*}$opts(-command) [list -jid $opts(-jid) -error account-disabled]
+            }
+            return
         }
 
         # Initialize room tracking state
@@ -789,7 +806,7 @@ snit::type taco_muc {
 
     # Bookmark the room with autojoin and the invite's password, undoing an
     # earlier decline.
-    tackymethod -noreturn acceptInvite {args} {
+    tackymethod -online -noreturn acceptInvite {args} {
         set chatJid [dict get $args -chat]
         set ts [dict get $args -timestamp]
         set row [$client message messagestore inviteAt $chatJid $ts]
@@ -1035,6 +1052,7 @@ snit::type taco_muc {
         }
         lappend ServiceWaiters $opts(-command)
         if {[llength $ServiceWaiters] > 1} return
+        set ServiceProbeError 0
         $client iq request -type get -to [jid domain [$client cget -jid]] \
             -payload [j query -ns http://jabber.org/protocol/disco#items] \
             -command [mymethod OnServiceItems]
@@ -1042,7 +1060,9 @@ snit::type taco_muc {
 
     method OnServiceItems {stanza} {
         set items {}
-        if {[xsearch $stanza -get @type] eq "result"} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            set ServiceProbeError 1
+        } elseif {[xsearch $stanza -get @type] eq "result"} {
             xsearch $stanza query item -script it {
                 set ij [xsearch $it -get @jid]
                 if {$ij ne ""} { lappend items $ij }
@@ -1063,6 +1083,9 @@ snit::type taco_muc {
     }
 
     method OnServiceInfo {probed rest stanza} {
+        if {[xsearch $stanza -get @type] eq "error"} {
+            set ServiceProbeError 1
+        }
         set isMuc 0
         xsearch $stanza query identity -script id {
             if {[xsearch $id -get @category] eq "conference"
@@ -1077,7 +1100,7 @@ snit::type taco_muc {
 
     method ServiceResolved {jid} {
         set ServiceJid $jid
-        set ServiceFound 1
+        set ServiceFound [expr {$jid ne "" || !$ServiceProbeError}]
         set waiters $ServiceWaiters
         set ServiceWaiters {}
         foreach cmd $waiters { {*}$cmd $jid }

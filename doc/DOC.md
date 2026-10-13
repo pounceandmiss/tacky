@@ -244,7 +244,6 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
-    account restart {acc: string}
     account changePassword {acc: string, password: string}   -> ""
 
     account_fields = {username: string, domain: string, host: string, port: int,
@@ -253,9 +252,11 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
                       proxy: string}
 
 `add` creates or updates. On create, `username` and `domain` default to the
-pieces of the JID. `enable` saves the flag and connects; `disable` saves it
-and ends everything the account had going (see "Ending an account's
-activity" below). `remove` does the same, then
+pieces of the JID. `enable` saves the flag and connects; on an enabled
+account that is offline it is also how to reconnect. `disable` saves it and
+ends everything the account had going (see "Ending an account's activity"
+below); the account stays, offline (see "A disabled account" below).
+`remove` ends everything too, then
 deletes the account row and its per-account database. Downloaded attachments
 are shared across accounts and are left alone. `set` with `password` changes
 only the stored password Tacky logs in with: a running client takes it at
@@ -283,10 +284,10 @@ Android skips it.
 
 Setting `domain`, `host`, `port`, `tls`, `srv` or `password` reconnects an
 enabled account that is offline; an online one uses them next time.
-Changing `proxy` starts the account over, online or not: everything it
-had going ends, as on `disable`, and an enabled account connects again on
-the new route, in a new session, as on `restart`. `<Reset>` follows with
-`reason` `proxy changed` (see "Ending an account's activity" below).
+Changing `proxy` ends everything the account had going, online or not, as
+`disable` does, with reason `proxy changed` (see "Ending an account's
+activity" below); an enabled account then connects again on the new route,
+in a new session.
 
 **Proxy.** `proxy` (default `""`) is a SOCKS5 proxy,
 `socks5://[user:pass@]host:port` (an IPv6 `host` in brackets), that carries
@@ -309,14 +310,13 @@ Events:
     account <Enabled>  {acc: string}
     account <Disabled> {acc: string}
     account <Removed>  {acc: string}
-    account <Reset>    {acc: string, reason: string}
 
 `<Added>`, `<Removed>`, and `<Enabled>` fire once per actual change -
 enabling an account that's already enabled does nothing and emits nothing.
 `<Disabled>` fires on every `disable` call, so treat it as idempotent.
 
-**Ending an account's activity.** `disable` and `remove` end everything the
-account has going, in this order:
+**Ending an account's activity.** `disable`, a `proxy` change and `remove`
+end everything the account has going, in this order:
 
 1. Calls end, and the peer is told: a ringing call is declined, a call we
    placed is retracted, and the rest are terminated. Group calls are left,
@@ -327,17 +327,21 @@ account has going, in this order:
    session.
 4. Requests still waiting are answered with an error carrying the reason.
 
-`restart` does the same and leaves the account as enabled as it was: an
-enabled one connects again, on a new session. Use it to reconnect, rather
-than `disable` and `enable`, which say the user turned the account off and
-on. `<Reset>` follows once the account has started over, with `reason`
-`restarted`, or `account disabled` from `disable`. It means everything you
-held for the account is gone: calls, transfers, rooms joined, pending
-requests and their ids. Drop it, and read again anything you still show:
-chats, lists, message states. What you told the account about your own
-display is kept: the avatars marked `visible` and the chats marked `open`
-(see [chat](#chat)). `<Removed>` means the same, for an account that no
-longer exists.
+You hear of each through its own module's events, as when the link drops:
+`calls <Ended>`, `file <Update>`, rooms left. What you told the account
+about your own display stays as it was: the avatars marked `visible` and the
+chats marked `open` (see [chat](#chat)).
+
+**A disabled account** is offline on purpose, and still there to read:
+chats, history, search and other stored state answer as usual. It touches
+no network until `enable`:
+
+- A message sent is stored `pending`, and goes out after the next login.
+- A request that needs the server fails at once with `account disabled`.
+- Calls, downloads, uploads and room joins are refused, and so are edits
+  that publish: bookmarks, `nick set`, accepting an invite. An automatic
+  download is held back (`idle`), not failed. A room with autojoin is joined
+  at the next login.
 
 ## register
 
@@ -1718,8 +1722,9 @@ works yet, so gate everything below on `storage unlock` succeeding;
 before anything else does (see [storage](#storage)) - after either gate
 resolves, check `status` again, since unlocking can itself reveal a pending
 decrypt. Once `plaintext` or `unlocked`, the backend connects every enabled
-account at init; there is no connect call. Run `account list {enabled: 1}`
-and open the main UI if it returns anything, setup if it doesn't.
+account at init; there is no connect call. Run `account list` and open
+the main UI if it returns anything (on an enabled account, if any; a
+disabled one can still be read), setup if it doesn't.
 
 **Sign-in.** Creating the account is the credential check. Subscribe to
 `conn <State>`, `<AuthError>` and `<ConnError>` for the account, then call

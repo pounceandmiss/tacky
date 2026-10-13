@@ -111,6 +111,13 @@ snit::widget chatpanel {
             ::tacky blocking list -acc $options(-acc) \
                 -tag $win -command [mymethod OnBlocklist]
         }
+
+        ::tacky listen -tag $win account <Enabled> -acc $options(-acc) \
+            [mymethod OnAccountEnabled 1]
+        ::tacky listen -tag $win account <Disabled> -acc $options(-acc) \
+            [mymethod OnAccountEnabled 0]
+        ::tacky account get -acc $options(-acc) -field enabled \
+            -tag $win -command [mymethod OnAccountEnabled]
     }
 
     destructor {
@@ -266,6 +273,27 @@ snit::widget chatpanel {
         }
         $slot.lbl configure -text "Not sent: no usable OMEMO device for\
             [join $jids {, }]"
+    }
+
+    # A disabled account's chat stays readable; the banner says why nothing
+    # goes out, and turns it back on.
+    method OnAccountEnabled {value args} {
+        if {![winfo exists $win]} return
+        if {[string is true -strict $value]} {
+            $self HideBanner disabled
+            return
+        }
+        if {[$self HasBanner disabled]} return
+        set slot [[$self ShowBanner disabled \
+            -icon mate/16x16/status/dialog-warning.png \
+            -close-command [mymethod HideBanner disabled]] body]
+        ttk::label $slot.lbl -anchor w -wraplength 420 -justify left \
+            -text "This account is disabled. Messages are sent once it is\
+                enabled."
+        ttk::button $slot.enable -text "Enable" -style Toolbutton \
+            -command [list ::tacky account enable -acc $options(-acc)]
+        pack $slot.lbl -side left -padx 2 -fill x -expand yes
+        pack $slot.enable -side right -padx 2
     }
 
     method TurnOffRoomOmemo {} {

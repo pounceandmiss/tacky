@@ -2390,19 +2390,19 @@ test groupcall-state-call-field-internal {frontends get no occupant call field: 
             [gc_occupant_call $ROOM bob]
     } -result {0 0 0 0 announced}
 
-# -- The client going (taco_client shutdown) --
+# -- The client going (taco_client endSession) --
 
-test groupcall-shutdown-leaves {the client going leaves the call and closes the preview} \
+test groupcall-endsession-leaves {the client going leaves the call and closes the preview} \
     {*}$groupcall_env -body {
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        c shutdown "account disabled"
+        c endSession "account disabled"
         list [lsearch -inline [gc_events] {<Left>*}] \
             [llength [mockmedia::calls ClosePreview]] [c.groupcall list]
     } -result [list [list <Left> -jid $ROOM -reason "account disabled" -chat $ROOM] 1 {}]
 
-test groupcall-shutdown-cancels-idle {a deferred <Left> dies with the module, and never reaches a client built in its place} \
+test groupcall-endsession-cancels-idle {a deferred <Left> dies with the module, and never reaches a client built in its place} \
     {*}$groupcall_env -body {
         c iq live 0
         set ::_emitted {}

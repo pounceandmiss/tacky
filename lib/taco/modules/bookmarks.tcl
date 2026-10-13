@@ -82,6 +82,10 @@ snit::type taco_bookmarks {
     }
 
     method OnReady {args} {
+        # Echoes awaited from requests failed as the last session ended
+        # will never come
+        set pendingPublish {}
+        set pendingRetract {}
         $self request
     }
 
@@ -111,7 +115,9 @@ snit::type taco_bookmarks {
     # Add or update a bookmark
     # Omitted options are preserved from the DB if the bookmark exists.
     # If -nick is omitted for a new bookmark, defaults to defaultNick.
-    tackymethod -noreturn item {args} {
+    # A publish: a disabled account would keep the edit only until its next
+    # session's fetch replaced the table.
+    tackymethod -online -noreturn item {args} {
         # Load existing bookmark or defaults
         array set bm {name "" autojoin 0 nick "" password "" extensions_xml ""}
         # jid bare canonicalizes chat-JID input (drops a ?join suffix);
@@ -468,7 +474,7 @@ snit::type taco_bookmarks {
 
     # Remove a bookmark, leaving the room first if currently joined unless
     # -leave 0 asks to just unstar it and stay.
-    tackymethod -noreturn remove {args} {
+    tackymethod -online -noreturn remove {args} {
         array set opts {-leave 1}
         array set opts $args
         set jid [jid norm [jid bare $opts(-jid)]]
@@ -693,7 +699,7 @@ snit::type taco_bookmarks {
     }
 
     # Update nickname on all bookmarks and optionally in joined rooms.
-    tackymethod setNickAll {args} {
+    tackymethod -online setNickAll {args} {
         set newNick [dict get $args -nick]
         $self defaultNick -nick $newNick
 

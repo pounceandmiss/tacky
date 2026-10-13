@@ -65,9 +65,7 @@ snit::widget accountwindow {
         bind $win <Control-f> [mymethod InlineOpenFind]
         bind $win <Control-F> [mymethod OpenAccountSearch]
 
-        ::tacky listen -tag $win account <Disabled> [mymethod OnAccountGone]
-        ::tacky listen -tag $win account <Removed>  [mymethod OnAccountGone]
-        ::tacky listen -tag $win account <Reset>    [mymethod OnAccountReset]
+        ::tacky listen -tag $win account <Removed> [mymethod OnAccountGone]
     }
 
     destructor {
@@ -229,22 +227,7 @@ snit::widget accountwindow {
 
     method OnAccountGone {ev} {
         if {[dict get $ev -acc] ne $currentAccount} return
-        ::tacky account list -enabled 1 -tag $win -command [mymethod OnSurvivors]
-    }
-
-    # The account started over (see accountscope): the panel and the inline
-    # chat are built again, so what they show is read from the new client.
-    method OnAccountReset {ev} {
-        if {[dict get $ev -acc] ne $currentAccount} return
-        set jid $inlineJid
-        set groupchat $inlineGroupchat
-        $self CloseInlineChat
-        catch {destroy $win.search}
-        catch {destroy $panel}
-        $self BuildPanel
-        if {$jid ne ""} {
-            $self OpenChatInline -acc $currentAccount -jid $jid -groupchat $groupchat
-        }
+        ::tacky account list -tag $win -command [mymethod OnSurvivors]
     }
 
     method OnSurvivors {result} {

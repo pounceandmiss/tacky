@@ -88,14 +88,6 @@ snit::type taco_avatar {
             [jid norm "[dict get $args -jid]/[dict get $args -oldNick]"]
     }
 
-    # What the frontend said it shows, for a client built in this one's
-    # place (taco_client carry)
-    method Carry {} { array names VisibleJids }
-
-    method Restore {jids} {
-        foreach jid $jids { set VisibleJids($jid) 1 }
-    }
-
     # VisibleJids survives: it tracks what the frontend displays, not the session.
     method OnDisconnect {args} {
         set PendingVCardHash [dict create]
@@ -441,6 +433,9 @@ snit::type taco_avatar {
     # the frontend rebuilds a list, while a row the server would not serve stays
     # unservable.
     method RefetchMissing {jid hash source} {
+        # A disabled account has no session to count it against: its fetch
+        # would only be refused, and the next session's re-ask skipped.
+        if {![$client cget -enabled]} return
         if {[dict exists $RefetchedHash $jid]
             && [dict get $RefetchedHash $jid] eq $hash} return
         dict set RefetchedHash $jid $hash
