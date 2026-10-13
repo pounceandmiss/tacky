@@ -9,6 +9,10 @@
 #   omemopeer::open P JID ENC            ENC's payload, as text (from JID, the
 #                                        header's sid); a session is made on a
 #                                        prekey message
+#   omemopeer::take P JID ENC            read ENC's key alone (a key transport) on
+#                                        the session held with JID/sid
+#   omemopeer::forget P JID DEV          drop the session with JID/DEV, as a
+#                                        peer does that takes a new key exchange
 #   omemopeer::encrypt P JID DEV TEXT    an <encrypted> node for JID/DEV alone
 #   omemopeer::fingerprint P             its identity, as trustList shows it
 #   omemopeer::destroy P
@@ -90,7 +94,7 @@ proc omemopeer::learn {p jid dev bundle} {
         -spk-id [dict get $bundle spk_id] -pk-id [dict get $pk id]
 }
 
-proc omemopeer::open {p jid enc} {
+proc omemopeer::take {p jid enc} {
     variable Peers
     set me [dict get $Peers $p device]
     set dev [xsearch $enc header -get @sid]
@@ -102,8 +106,20 @@ proc omemopeer::open {p jid enc} {
         }
     }
     if {$key eq ""} { error "not encrypted for device $me" }
-    set mk [[Session $p $jid $dev] decrypt_key [dict get $Peers $p store] \
-        $key -prekey $prekey]
+    [Session $p $jid $dev] decrypt_key [dict get $Peers $p store] \
+        $key -prekey $prekey
+}
+
+proc omemopeer::forget {p jid dev} {
+    variable Peers
+    set sessions [dict get $Peers $p sessions]
+    if {![dict exists $sessions $jid|$dev]} return
+    catch {[dict get $sessions $jid|$dev] destroy}
+    dict unset Peers $p sessions $jid|$dev
+}
+
+proc omemopeer::open {p jid enc} {
+    set mk [take $p $jid $enc]
     encoding convertfrom utf-8 [omemo::decrypt_message $mk \
         [base64::decode [xsearch $enc header iv -get body]] \
         [base64::decode [xsearch $enc payload -get body]]]

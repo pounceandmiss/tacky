@@ -100,6 +100,9 @@ namespace eval ::taco::omemo {
     variable HEAL_WINDOW_MS 60000
     # How many peer-devices may be inside their heal window at once.
     variable HEAL_MAX 512
+    # Heals in a row that only send an unanswered re-key's key exchange
+    # again before one fetches the bundle and starts over (see Heal).
+    variable HEAL_RESENDS 3
     # Give-up deadline for a bundle fetch. encrypt() blocks a send while
     # any candidate device is still warming, and `iq request` never times
     # out on its own, so a server that swallows the IQ would wedge the
@@ -226,6 +229,17 @@ snit::type taco_omemo {
     # NOT cleared in OnDisconnect, so reconnects can't re-key in a loop.
     variable HealAt
 
+    # "$jid|$dev" -> the serialized session a heal replaced, while the
+    # peer has not answered the heal's key exchange: a message the held
+    # session refuses is tried on it (OpenOnReplaced). And the heals since
+    # that only sent the exchange again (HealResends). Both go once a
+    # message opens on the held session. In memory only, kept across
+    # reconnects like HealAt: lost with the process, which costs what a
+    # heal cost before (the peer's messages on the old session until it
+    # reads the exchange).
+    variable Replaced
+    variable HealResends
+
     # `after idle` token for the coalesced live bundle republish.
     variable RepublishToken ""
 
@@ -263,6 +277,8 @@ snit::type taco_omemo {
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
         set HealAt [dict create]
+        set Replaced [dict create]
+        set HealResends [dict create]
 
 
         # Both the store and the trust rows are keyed on the bare jid, which
@@ -1609,6 +1625,23 @@ snit::type taco_omemo {
             set lastErr $out
             set lastEcode [dict get $opts -errorcode]
         }
+        # Not on the held session: perhaps on the one a heal replaced, which
+        # the peer writes on until it has read the heal's key exchange.
+        set onReplaced 0
+        if {!$ok} {
+            set r [$self OpenOnReplaced $peerJid $peerDev $candidates]
+            switch -- [lindex $r 0] {
+                ok {
+                    lassign $r - decKey replacedIk
+                    set ok 1
+                    set onReplaced 1
+                }
+                gone {
+                    set lastErr "read before the heal"
+                    set lastEcode {OMEMO EKEYGONE}
+                }
+            }
+        }
         # A prekey message starts a session of its own (X3DH on one of our
         # prekeys). When the session we hold refuses it, open it on a fresh
         # one and adopt that, as libsignal does. The usual cause: we started
@@ -1686,6 +1719,9 @@ snit::type taco_omemo {
             return [list decrypt_error \
                 "\[OMEMO\] Could not decrypt message"]
         }
+        # Opened on the held session: the peer has taken the heal's key
+        # exchange (or made one of its own), and the replaced session is done.
+        if {!$onReplaced} { $self ForgetReplaced $key }
 
         # IK-change check on inbound: a prekey message carries the
         # sender's IK inside picomemo's session struct. The bundle-fetch
@@ -1693,7 +1729,7 @@ snit::type taco_omemo {
         # to compare against the stored IK here, or an attacker could
         # swap the sender's identity in a fresh prekey establishment
         # and we'd silently accept.
-        set remoteIk [$sess remote_identity]
+        set remoteIk [expr {$onReplaced ? $replacedIk : [$sess remote_identity]}]
         if {$remoteIk ne ""} {
             if {![$self EnsureTrustRow $peerJid $peerDev $remoteIk]} {
                 # Trust check moved the row to compromised (or it was
@@ -1716,8 +1752,11 @@ snit::type taco_omemo {
         # Side effects: prekey-used + refill + bundle republish. MAM
         # path postpones the republish (we'd otherwise re-publish per
         # historical prekey message); live path republishes promptly.
-        $self ApplyPrekeySideEffects $sess $peerJid $peerDev $isMam
-        $self PersistSession $peerJid $peerDev $sess
+        # The held session is untouched when the replaced one opened it.
+        if {!$onReplaced} {
+            $self ApplyPrekeySideEffects $sess $peerJid $peerDev $isMam
+            $self PersistSession $peerJid $peerDev $sess
+        }
         $self NotifySessionReady $peerJid
 
         # Heartbeat: same logic. Live decrypts heartbeat now; MAM
@@ -1741,6 +1780,38 @@ snit::type taco_omemo {
         # Strip Conversations-style privacy padding (trailing whitespace).
         set plain [string trimright $plain " \t"]
         return [list plaintext $plain $senderFp]
+    }
+
+    # The candidates tried on the session a heal replaced (Replaced), which
+    # moves on with a message that opens: {ok key identity}; {gone} when it
+    # has read one before (EKEYGONE), a duplicate; "" otherwise, or when
+    # there is none.
+    method OpenOnReplaced {peerJid peerDev candidates} {
+        set key "$peerJid|$peerDev"
+        if {![dict exists $Replaced $key]} { return "" }
+        set gone 0
+        foreach pair $candidates {
+            lassign $pair isPrekey enc
+            set old [$self CreateSessionHandle $peerJid $peerDev]
+            $old deserialize [dict get $Replaced $key]
+            if {![catch {$self Decrypt $old $enc $isPrekey} out opts]} {
+                dict set Replaced $key [$old serialize]
+                set ik [$old remote_identity]
+                $old destroy
+                return [list ok $out $ik]
+            }
+            $old destroy
+            if {[lindex [dict get $opts -errorcode] 1] eq "EKEYGONE"} {
+                set gone 1
+            }
+        }
+        if {$gone} { return gone }
+        return ""
+    }
+
+    method ForgetReplaced {key} {
+        dict unset Replaced $key
+        dict unset HealResends $key
     }
 
     # The identity key a new session with (peerJid, peerDev) must have: the
@@ -1903,8 +1974,15 @@ snit::type taco_omemo {
     # Recover a missing/broken session: re-key from the peer's bundle and
     # send a prekey KeyTransport so they adopt a session we share. Never
     # deletes - picomemo restores the session across a failed decrypt, and
-    # BuildSessionFromBundle swaps it atomically. Rate-limited (HealAt)
+    # BuildSessionFromBundle swaps it atomically, the session it replaces
+    # kept (Replaced) until the peer answers. Rate-limited (HealAt)
     # to avoid a re-key ping-pong.
+    #
+    # A heal before the peer has answered the last one sends that one's key
+    # exchange again: a new re-key would spend another of the peer's
+    # prekeys and leave the peer's answer to the first with no session to
+    # open on. After HEAL_RESENDS of those, for a peer that can never take
+    # it, the next heal fetches the bundle and starts over.
     #
     # Only a device the peer lists is healed, its list fetched first when
     # not known: the sid is the sender's to choose, and each heal fetches a
@@ -1933,6 +2011,14 @@ snit::type taco_omemo {
             return
         }
         dict set HealAt $key [expr {$now + $window}]
+        if {[dict exists $Replaced $key] && [dict exists $Sessions $key]
+                && [dict getdef $HealResends $key 0] < $::taco::omemo::HEAL_RESENDS} {
+            dict incr HealResends $key
+            jlog debug "OMEMO heal $peerJid/$peerDev: re-key unanswered, sending its key exchange again"
+            $self SendKeyTransport $peerJid $peerDev [dict get $Sessions $key]
+            return
+        }
+        dict unset HealResends $key
         jlog debug "OMEMO heal $peerJid/$peerDev: fetching bundle to re-key + KeyTransport"
         # Force a fresh fetch (EnsureSession would short-circuit on the
         # existing broken session); the cached bundle may also be stale.
@@ -1952,10 +2038,24 @@ snit::type taco_omemo {
             jlog debug "OMEMO heal $peerJid/$peerDev: bundle fetch failed: $err"
             return
         }
+        # The session held, as stored: only one that has opened or sent
+        # something is (an empty handle a failed decrypt made is not).
+        set key "$peerJid|$peerDev"
+        set held [$db onecolumn {
+            SELECT blob FROM omemo_sessions
+            WHERE account_jid=$accountJid
+              AND peer_jid=$peerJid AND peer_device=$peerDev
+        }]
         lassign [$self BuildSessionFromBundle $peerJid $peerDev $bundle] sess berr
         if {$sess eq ""} {
             jlog debug "OMEMO heal $peerJid/$peerDev: rebuild failed: $berr"
             return
+        }
+        # Keep what the peer writes on. Starting over after unanswered
+        # resends, that is still the session the first heal replaced, not
+        # the re-key it never took.
+        if {$held ne "" && ![dict exists $Replaced $key]} {
+            dict set Replaced $key $held
         }
         jlog debug "OMEMO heal $peerJid/$peerDev: re-keyed, sending KeyTransport"
         $self NotifySessionReady $peerJid
