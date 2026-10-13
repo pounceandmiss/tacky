@@ -75,14 +75,14 @@ test clv-populates {one row per chat entry, keyed by chat JID} -setup {
     clv_create
     clv_rows
 } -cleanup { clv_cleanup } \
-    -result {alice@example.com room@muc.example.com?join stranger@example.com}
+    -result {alice@example.com room@muc.example.com?join stranger@example.com user@test.example.com}
 
-test clv-empty {an empty backend renders no rows} -setup {
+test clv-empty {an empty backend renders only the chat with ourselves} -setup {
     clv_setup
 } -body {
     clv_create
     clv_rows
-} -cleanup { clv_cleanup } -result {}
+} -cleanup { clv_cleanup } -result {user@test.example.com}
 
 test clv-recent-sort {default sort puts most-recently-active first} -setup {
     clv_setup
@@ -94,7 +94,19 @@ test clv-recent-sort {default sort puts most-recently-active first} -setup {
 } -body {
     clv_create
     .clv.rows keys
-} -cleanup { clv_cleanup } -result {bob@example.com alice@example.com}
+} -cleanup { clv_cleanup } -result {bob@example.com alice@example.com user@test.example.com}
+
+test clv-pinned-sorts-first {a pinned chat sits above newer activity} -setup {
+    clv_setup
+    set ts [clock microseconds]
+    clv_chat alice@example.com $ts
+    clv_chat bob@example.com [expr {$ts + 1000}]
+} -body {
+    clv_create
+    $::_client chatlist pin -jid alice@example.com -pinned 1
+    wait
+    .clv.rows keys
+} -cleanup { clv_cleanup } -result {alice@example.com bob@example.com user@test.example.com}
 
 test clv-item-inserts {a chatlist <Item> upsert adds a row live} -setup {
     clv_setup
@@ -106,7 +118,7 @@ test clv-item-inserts {a chatlist <Item> upsert adds a row live} -setup {
             groupchat 0 autojoin 0 last_activity 0}
     wait
     clv_rows
-} -cleanup { clv_cleanup } -result {alice@example.com}
+} -cleanup { clv_cleanup } -result {alice@example.com user@test.example.com}
 
 test clv-remove-deletes {a chatlist <Remove> deletes the row} -setup {
     clv_setup
@@ -116,7 +128,7 @@ test clv-remove-deletes {a chatlist <Remove> deletes the row} -setup {
     $::_client emit chatlist <Remove> -jid alice@example.com
     wait
     clv_rows
-} -cleanup { clv_cleanup } -result {}
+} -cleanup { clv_cleanup } -result {user@test.example.com}
 
 test clv-search-filters {the search box filters the held list client-side} -setup {
     clv_setup

@@ -165,7 +165,7 @@ jsonify_type jsonify \
         occupant    {jids list caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}} call {dict {audio bool video bool contents {map {list payload}}}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
-        chat_entry  {groupchat bool autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool blocked bool}
+        chat_entry  {groupchat bool is_self bool pinned bool order int autojoin bool last_activity int last_message message unread int unread_mentions int approved bool groups list muted bool mentions bool invited bool blocked bool}
         avatar_meta {bytes int width int height int}
         presence    {priority int idle_since int client {dict {features list}}}
         omemo_trust {device int active bool}
@@ -318,6 +318,7 @@ jsonify_type jsonify \
         account/list            {enabled bool}
         account/set             {enabled bool}
         bookmarks/item          {autojoin bool}
+        chatlist/pin            {pinned bool}
         message/resend          {plaintext bool}
         notify/set              {muted bool mentions bool}
         omemo/setBlindTrust     {value bool}

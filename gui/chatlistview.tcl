@@ -79,6 +79,9 @@ snit::widget chatlistview {
             -command [mymethod OnOpenChat]
         $contactmenu add command -label "Start Call" \
             -command [mymethod OnStartCall]
+        # Relabelled per row by SetPinLabel.
+        $contactmenu add command -label "Pin" \
+            -command [mymethod OnTogglePin]
         $contactmenu add separator
         $contactmenu add command -label "Rename..." \
             -command [mymethod OnRenameContact]
@@ -105,6 +108,8 @@ snit::widget chatlistview {
             -command [mymethod OnToggleMembership]
         $bookmarkmenu add command -label "Force join request" \
             -command [mymethod OnForceJoin]
+        $bookmarkmenu add command -label "Pin" \
+            -command [mymethod OnTogglePin]
         $bookmarkmenu add separator
         $bookmarkmenu add command -label "Edit..." \
             -command [mymethod OnEditBookmark]
@@ -243,18 +248,19 @@ snit::widget chatlistview {
         return 0
     }
 
-    # Recent activity (newest first) by default, name as tiebreak; name-only
-    # when the user picks "Name".
+    # The backend's order by default: `order` descending, jid as tiebreak.
+    # Name-only when the user picks "Name".
     method CmpEntries {a b} {
-        if {$sortby ne "name"} {
-            set ta [dict get $a last_activity]
-            set tb [dict get $b last_activity]
-            # Newest first. Return the sign, not the raw microsecond
-            # difference, which overflows lsort's integer compare.
-            if {$ta > $tb} { return -1 }
-            if {$ta < $tb} { return 1 }
+        if {$sortby eq "name"} {
+            return [string compare -nocase [$self SortName $a] [$self SortName $b]]
         }
-        string compare -nocase [$self SortName $a] [$self SortName $b]
+        set oa [dict getdef $a order 0]
+        set ob [dict getdef $b order 0]
+        # Return the sign, not the raw difference, which overflows lsort's
+        # integer compare.
+        if {$oa > $ob} { return -1 }
+        if {$oa < $ob} { return 1 }
+        string compare [dict get $a jid] [dict get $b jid]
     }
 
     method SortName {entry} {
@@ -321,6 +327,7 @@ snit::widget chatlistview {
 
     method OnContactMenu {jid X Y supported} {
         $contactmenu entryconfigure 0 -label [string range $jid 0 39]
+        $self SetPinLabel $contactmenu $jid
         set blocked [dict getdef [$self ModelItem $jid] blocked 0]
         $contactmenu entryconfigure $blockEntry \
             -label [expr {$blocked ? "Unblock" : "Block"}] \
@@ -340,6 +347,7 @@ snit::widget chatlistview {
         set jid [$self SelectedLeafJid]
         $bookmarkmenu entryconfigure 0 -label [string range $jid 0 39]
         $self UpdateBookmarkStatusLine $jid
+        $self SetPinLabel $bookmarkmenu $jid
         tk_popup $bookmarkmenu $X $Y
     }
 
@@ -377,6 +385,24 @@ snit::widget chatlistview {
         } elseif {$present} {
             $bookmarkmenu delete 1
         }
+    }
+
+    # Found by command: the bookmark status line shifts the indices.
+    method SetPinLabel {menu jid} {
+        set pinned [dict getdef [$self ModelItem $jid] pinned 0]
+        for {set i 0} {$i <= [$menu index end]} {incr i} {
+            if {[$menu type $i] ne "command"} continue
+            if {[$menu entrycget $i -command] eq [mymethod OnTogglePin]} {
+                $menu entryconfigure $i -label [expr {$pinned ? "Unpin" : "Pin"}]
+            }
+        }
+    }
+
+    method OnTogglePin {} {
+        set jid [$self SelectedLeafJid]
+        if {$jid eq ""} return
+        $options(-tacky) chatlist pin -acc $options(-acc) -jid $jid \
+            -pinned [expr {![dict getdef [$self ModelItem $jid] pinned 0]}]
     }
 
     method OnCopyJid {} {

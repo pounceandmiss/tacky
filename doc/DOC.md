@@ -437,21 +437,25 @@ fires while that runs, `<MigrationComplete>` once it's done.
 
 ## chatlist
 
-    chatlist get {}   -> [chat_entry]
+    chatlist get       {}                         -> [chat_entry]
+    chatlist pin       {jid: string, pinned: bool}
+    chatlist setPinned {jids: [string]}
 
 The entire chat list as one flat, unordered array: the roster, bookmarked
-rooms, and any chat that has message history, all merged. No querying or
-sorting.
+rooms, any chat that has message history, any pinned chat, and the chat
+with your own bare JID (even with no history), all merged. No querying.
 
     chat_entry = {jid: string, name: string, source: string,
-                  groupchat: bool, autojoin: bool, last_activity: int,
+                  groupchat: bool, is_self: bool, pinned: bool,
+                  order: int, autojoin: bool, last_activity: int,
                   last_message?: message,
                   unread: int, unread_mentions: int, invited: bool,
                   blocked: bool}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
-message. `groupchat` is `true` when the jid has `?join`. `source` is
+message. `groupchat` is `true` when the jid has `?join`. `is_self` is
+`true` for the chat with your own bare JID (notes to yourself). `source` is
 `roster` (a roster contact, bare JID), `bookmarks` (a bookmarked room), or
 `free` (came from chat history, with no roster or bookmark entry). `name`
 can be `""` (always is for `free`). `last_message` is the chat's newest
@@ -465,6 +469,19 @@ named you (see [notify](#notify)), and is always `0` outside group chats.
 `pending` invite, usually why an unjoined room is listed at all (see
 [muc](#muc)). `blocked` is `true` when the chat JID is on the
 [blocking](#blocking) list; a change arrives as `<Item>`.
+
+`order` is opaque: sort entries by it, largest first, and break ties by
+`jid`. It changes with a new message, a pin or a reorder, each arriving as
+an `<Item>`. Pinned chats always sort above unpinned ones.
+
+`pinned` is `true` for a chat you pinned. Pins are local to this device.
+`pin` pins a chat on top of the others, or unpins it; pinning a pinned
+chat does nothing. `setPinned` takes the whole pinned list, top first: a
+pinned chat left out of it is unpinned,
+and naming a chat twice is an error (`TACO_CHATLIST_DUPLICATE`). A pinned
+chat stays listed with no history or source; unpinned, such a chat is
+removed. The chat with your own JID is listed regardless, and isn't
+pinned unless you pin it.
 
 `last_message` lets a chat list preview each chat without a `history` call
 per row. Rendering it is the frontend's job: switch on `content.type`, show
@@ -489,7 +506,7 @@ Events:
     chatlist <Changed> {}
 
 `<Item>` upserts (an add, rename, new message, read-watermark move, source
-change, room_state change, or an edit, retraction, status move or
+change, room_state change, pin or reorder, or an edit, retraction, status move or
 confirmation of the newest message - not of an older one). `<Remove>` deletes - except a removed roster contact
 that still has history, which comes back as an `<Item>` with
 `source: "free"`. `<Changed>` means a whole source was swapped out (first
