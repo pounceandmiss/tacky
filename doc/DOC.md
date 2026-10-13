@@ -405,7 +405,6 @@ The per-account connection lifecycle. `<State>` and `<ConnError>` are
 pullable (use Tcl `observe`, or just track the last event you saw).
 
     conn probe {}
-    conn state {}   -> string   the current state, as `<State>` gives it
 
 `probe` checks that the link is alive now. It does nothing unless the
 account is connected, idle for 10s and not already being checked; if
@@ -433,7 +432,7 @@ rejected credentials, a `not-authorized` stream error included.
 retrying would not cure: `conflict` (another client took the session),
 `host-unknown`, `host-gone`, `improper-addressing`, `invalid-from` or
 `unsupported-version`. A resource conflict at bind is not one of these: the
-backend picks a new resource (see [account](#account)) and connects again.
+backend picks a new resource and connects again.
 
 ## app
 
@@ -644,7 +643,7 @@ with it, removed with the account and when the chat's history is forgotten.
     bookmarks item {jid: string, name?: string, autojoin?: bool,
                     nick?: string, password?: string}
     bookmarks leave {jid: string}
-    bookmarks remove {jid: string}
+    bookmarks remove {jid: string, leave?: bool}
     bookmarks forceJoin {jid: string}
     bookmarks nick {jid: string, nick: string}
     bookmarks autojoin {jid: string}         -> bool     that room's flag
@@ -659,11 +658,12 @@ XEP-0402 room membership, and the write side of the room half of
 values, a new bookmark with no `nick` takes `defaultNick`, and setting
 `autojoin: true` joins the room as a side effect. `leave` is the inverse pair -
 clear autojoin and part - while `remove` parts, deletes the bookmark, and
-retracts it from the server. `forceJoin` re-sends the join with the stored nick
+retracts it from the server; `leave: false` keeps you in the room. `forceJoin` re-sends the join with the stored nick
 and password without touching autojoin, for a room dropped underneath you (an
-IRC gateway going down). `nick` renames you in one room and stores it;
-`defaultNick` is the account-wide fallback for new bookmarks, itself falling
-back to the JID's localpart. `autojoin` reads one room's flag, for a menu that
+IRC gateway going down). `nick` renames you in one room and stores it - in a
+joined room only once the room accepts the new nick, so a refused one is never
+stored; `defaultNick` is the account-wide fallback for new bookmarks, itself
+falling back to the JID's localpart. `autojoin` reads one room's flag, for a menu that
 has to show its state before it opens.
 
 Changes made on another device are applied the same way: autojoin turned on
@@ -696,7 +696,8 @@ the roster into its entries, so a frontend reads contacts there and changes
 them here.
 
 `item` upserts one contact as an atomic replace (RFC 6121 2.4): omitting
-`groups` keeps the stored groups, passing `[]` clears them. `add` is `item`
+`groups` keeps the stored groups, passing `[]` clears them, but omitting
+`name` clears the name - pass the current one to keep it. `add` is `item`
 plus `subscribe`. `remove` deletes the item and cancels the subscription in
 both directions.
 
@@ -760,7 +761,8 @@ if it said nothing. `client` is the software behind the resource, from its
 entity capabilities (XEP-0115): `node` and `ver` come off the presence, the rest
 off the disco#info reply that hash resolves to. It is `{}` until that reply
 arrives, which fires another `<Changed>`, and stays `{}` for a client that
-advertises no caps.
+advertises no caps or whose caps can't be resolved (an error reply, or one
+that fails the hash check).
 
 Event:
 
@@ -789,8 +791,8 @@ carries it in `client`.
     message send {chat: string, body: string, reply_to_ts?: int}            -> int   the new row's timestamp
     message sendFile {chat: string, path: string}                           -> int   the new row's timestamp
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
-    message goto {chat: string, date: int, source: "local" | "remote", limit?: int, tag?: string}  -> goto_result
-    message gotoReply {chat: string, reply_id: string, reply_to?: string, tag?: string}            -> goto_result
+    message goto {chat: string, date: int, source?: "local" | "remote", limit?: int, tag?: string} -> goto_result
+    message gotoReply {chat: string, reply_id: string, reply_to?: string, limit?: int, tag?: string} -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int,
                     before?: int, before_chat_jid?: string, before_id?: string,
                     field?: string, tag?: string}                                       -> search_result
@@ -808,7 +810,8 @@ carries it in `client`.
     message ownRead {chat: string} -> {timestamp: int, unread: int}
 
     message = {timestamp: int, chat_jid: string, from_jid: string,
-               is_outgoing: bool,
+               from_resource: string, is_outgoing: bool,
+               server_id: string, own_id: string, occupant_id: string,
                server_status: string, remote_status: string,
                encryption: string, sender_fp: string, fail_reason: string,
                edited: bool, edited_ts: int, retracted: bool,
@@ -863,7 +866,14 @@ becomes `caption`, and the files are listed in `attachments`.
 
 - `timestamp` doubles as the row id - unique within a chat, and the backend
   bumps it by a microsecond if two would collide. `before`/`after` on
-  `history` are exclusive cursors.
+  `history` are exclusive cursors. `limit` defaults to 50 on `history`,
+  `goto` and `gotoReply`, and to 20 on `search`; `goto`'s `source` defaults
+  to `local`.
+- `from_resource` is the sender's resource. `server_id` is the XEP-0359
+  stanza-id the server (or room) gave the message, `""` until it has one;
+  `own_id` is the id the sending client put on it; `occupant_id` is the
+  sender's XEP-0421 id in a room, `""` elsewhere. They are wire data, for
+  debugging and matching, not for display.
 - `server_status` tracks the hop to your own server: `""` (it has the
   message), `pending`, `uploading`, or `failed`. Without XEP-0198 on the
   server, only a MUC echo or the next archive catch-up confirms a send, so a
@@ -899,8 +909,9 @@ becomes `caption`, and the files are listed in `attachments`.
   GUI reads "Empty message") rather than as a blank bubble. A correction can
   empty a message the same way.
 - `formatting` (XEP-0393 styling spans) indexes into whichever of
-  `body`/`caption` the variant carries, with the styling characters already
-  removed from that string. Spans may overlap: two styles over the same run
+  `body`/`caption` the variant carries, with the inline styling characters
+  and a code block's fence lines already removed from that string. A block
+  quote keeps its `> ` markers, and its `quote` span covers them. Spans may overlap: two styles over the same run
   are two separate single-type entries, combined by the renderer.
 - A `link` span is not XEP-0393 styling: nothing on the wire marks links, so
   tacky finds them in the text. It covers a URL written with an `http://`,
@@ -930,7 +941,7 @@ Events:
     message <OwnRead>     {jid: string, timestamp: int}
     message <CatchupStarted> {jid: string}
     message <CatchupDone> {jid: string, count: int}
-    message <Tail>        {jid: string, timestamp: int}
+    message <Tail>        {jid: string, timestamp: int}               pullable
 
 `<Status>`, `<Confirmed>`, `<Reactions>`, `<Edited>` and `<Retracted>` each
 change a message already on screen, found by `timestamp` - drop one whose
@@ -970,7 +981,7 @@ alerts](#read-state-and-alerts).
     muc requestVoice  {jid: string}
     muc kick          {jid: string, nick: string, reason?: string}
     muc role          {jid: string, nick: string, role: string, reason?: string}
-    muc affiliation   {jid: string, target: string, affiliation: string, reason?: string}
+    muc affiliation   {jid: string, target: string, affiliation: string, reason?: string, nick?: string}
     muc createInstant {jid: string}        create the room with its default config
     muc destroyRoom   {jid: string, reason?: string, altRoom?: string, password?: string}
     muc discoverRooms {jid: string}     -> [room_item]   rooms a service lists
@@ -980,7 +991,11 @@ alerts](#read-state-and-alerts).
     muc people        {jid: string} -> {list: string, groups: {group: int},
                                         me: room_caps, people: [person]}
     muc occupants     {jid: string} -> [occupant]
-    muc occupant      {jid: string, nick: string} -> occupant
+    muc occupant      {jid: string, nick: string} -> occupant   ({} if not there)
+    muc myNick        {jid: string} -> string     your nick in the room
+    muc myRole        {jid: string} -> string     your role in the room
+    muc myAffiliation {jid: string} -> string     your affiliation with it
+    muc getSubject    {jid: string} -> string     the room's subject
 
     muc_room_info = {known: bool, live: bool, members_only: bool,
                      non_anonymous: bool, occupant_id: bool}
@@ -990,7 +1005,7 @@ alerts](#read-state-and-alerts).
                  occupant_id: string, caps: {...},
                  keys: member_keys | {}}
     room_caps = {request_voice: bool, destroy: bool}
-    room_item = {jid: string, name: string, occupants: int | ""}
+    room_item = {jid: string, name: string, occupants: int | null}
     occupant  = {nick: string, jid: string, jids: [string], role: string,
                  affiliation: string, show: string, status: string,
                  occupant_id: string, caps: occupant_caps}
@@ -1006,8 +1021,36 @@ Events:
     muc <Presence>       {jid: string, nick: string, occupant: occupant, replay?: bool}
     muc <Unavailable>    {jid: string, nick: string, reason: string, codes: [int], occupant: occupant}
     muc <NickChanged>    {jid: string, oldNick: string, newNick: string, self: bool, occupant: occupant}
+    muc <Joined>         {jid: string, nick: string}
+    muc <RoomCreated>    {jid: string}
+    muc <Left>           {jid: string, nick: string, involuntary: bool, codes: [int],
+                          disconnected?: bool, destroyed?: bool}
+    muc <Error>          {jid: string, error: string}
+    muc <NickError>      {jid: string, nick: string, error: string}
+    muc <Kicked>         {jid: string, nick: string, actor: string, reason: string}
+    muc <Banned>         {jid: string, nick: string, actor: string, reason: string}
+    muc <Destroyed>      {jid: string, altRoom: string, reason: string}
+    muc <Subject>        {jid: string, nick: string, subject: string}
+    muc <Decline>        {jid: string, from: string, reason: string}
+    muc <VoiceRequest>   {jid: string, from: string, nick: string, form: form}
 
-`kick`, `role`, `affiliation`, `createInstant` and `destroyRoom` answer
+You join and leave rooms through [bookmarks](#bookmarks); these report how
+that goes. `<Joined>` is the room letting you in (after `<RoomCreated>` when
+you made it), `<Error>` a join the room refused, with the stanza condition.
+`<Left>` is you out of the room: `involuntary` when the room put you out,
+`disconnected` when the connection dropped, `destroyed` when the room was
+destroyed. `<Destroyed>` follows it with the owner's `reason` and `altRoom`,
+where they point you, if anywhere. `<Kicked>` and `<Banned>` name any occupant
+the room put out, you included, with the `actor` who did it and why. `<NickError>` is a nick change the room refused while you stay in.
+
+`<Subject>` is the room's subject, on join and when someone (`nick`) changes
+it. `<Decline>` is `from` turning down an invite you sent. `<VoiceRequest>`
+reaches a moderator when a visitor asks for voice (`requestVoice`): `from` and
+`nick` are who, and `form` (as in [register](#register)) is the room's
+approval form.
+
+`affiliation`'s `nick` names the occupant the change is about, for a room that
+wants one. `kick`, `role`, `affiliation`, `createInstant` and `destroyRoom` answer
 `""` once the room has accepted, and an error reply with a reason when it
 refuses.
 
@@ -1031,7 +1074,7 @@ sorted by group, then by nick, the absent by JID, and `groups` counts each.
 occupant's as below, all off for the absent and for yourself; `me` is what
 you may do about the room itself. `keys` is the person's
 [OMEMO keys](#group-chats) as `roomStatus` gives them, for a member of a
-room that can be encrypted, else `{}`. `list` is the member list's state
+room that can be encrypted, else `{}` (and always `{}` for yourself). `list` is the member list's state
 as for `members`: where the room refused the lists, the absent are not
 known and only those present are listed. `<PeopleChanged>` says the answer
 changed - once per burst, so a join is one event - for the frontend to read
@@ -1039,8 +1082,8 @@ it again; a room you are not in answers `list: none` and no people.
 
 Group chat invitations arrive as messages with `content.type` `"invite"`
 (see [message](#message)). These two answer one, named by that message's
-chat and timestamp as for `edit` and `react`. Neither replies, and both
-ignore a row that isn't an invite.
+chat and timestamp as for `edit` and `react`. Both answer `""` and ignore a
+row that isn't an invite.
 
 Where an invite sits depends on who sent it:
 
@@ -1067,7 +1110,8 @@ that chat is dropped with a `chatlist <Remove>`.
 `occupants` is who is in a joined room now, `occupant` one of them by nick.
 `jid` is the real JID if the room shows it; `jids`
 lists every JID sharing the nick; `occupant_id` is its XEP-0421 id, "" when
-the room gives none. `<NickChanged>` carries the occupant under its new nick. A
+the room gives none. `<NickChanged>` carries the occupant under its new nick;
+`<Unavailable>`'s occupant has no `caps`. A
 `<Presence>` with `replay: true` only refreshes `caps` after your role
 changed.
 
@@ -1078,15 +1122,16 @@ changed.
 
 Events:
 
-    notify <Notify>     {jid: string, timestamp: int, nick: string, body: string,
-                         unread: int, mention: bool}
+    notify <Notify>     {jid: string, timestamp: int, nick: string, from: string,
+                         body: string, unread: int, mention: bool}
     notify <MissedCall> {jid: string, timestamp: int, nick: string, video: bool}
     notify <Settings>   {jid: string, muted: bool, mentions: bool}
 
 `<Notify>` means this message is worth telling the user about even if they are
 not looking at the app; how to tell them is the frontend's job.
 
-- `nick` is who sent it, resolved the way `author get` does.
+- `nick` is who sent it, resolved the way `author get` does; `from` is the
+  sender's JID (the occupant JID in a room), for an avatar.
 - `body` is the full message text - trimming it for display is the frontend's
   job. For an attachment it is the caption, empty when there was none.
 - `unread` is the chat's total at that moment, so a burst can collapse into a
@@ -1130,8 +1175,8 @@ room's.
 
 - `fulltextSupported` - whether a server-side search is worth offering (see
   [The chat window](#the-chat-window)).
-- `metadata` - the oldest and newest entries; every value `""` for an empty
-  archive.
+- `metadata` - the oldest and newest entries. For an empty archive the ids
+  are `""` and the timestamps `null` (`""` in Tcl).
 - `formfields` - the filter fields the archive advertises. A fulltext field
   among them is what `fulltextSupported` checks for.
 
@@ -1148,8 +1193,8 @@ An archive that refuses or can't be reached is an error reply for all three.
     omemo trust {jid: string, device: int, state: string}      validates the transition; emits <TrustChanged>, <TrustList>
     omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
     omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
-    omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room
-    omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles; replies on completion
+    omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room or a room PM
+    omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles
     omemo roomStatus {jid: string}    -> omemo_room_status   jid is a room chat (room?join)
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
@@ -1164,13 +1209,17 @@ An archive that refuses or can't be reached is an error reply for all three.
 `trust` moves freely between `undecided`, `trusted`, and `untrusted`. Only
 the system can move a device to `compromised`, and nothing moves it back. A
 bad transition errors with `OMEMO TRUST_TRANSITION`; a `(jid, device)` pair
-that doesn't exist errors with `OMEMO TRUST_NO_DEVICE`. `device` is an
-opaque row handle from `trustList` - don't show it to the user. See
+that doesn't exist errors with `OMEMO TRUST_NO_DEVICE`. Those codes are the
+Tcl binding's `-errorcode`; a JSON error reply carries only the message.
+`device` is an opaque row handle from `trustList` - don't show it to the user.
+`prepareChat` replies once the devicelist is in and the bundle fetches have
+started (for a room, at once), not when they finish. See
 [OMEMO](#omemo-1).
 
 `trustList`, `isEnabled`, `setEnabled` and `prepareChat` take a room chat
 (`room?join`) too; see [Group chats](#group-chats). For a room, each
-`trustList` row also has `jid`, the member whose device it is, and
+`trustList` row also has `jid`, the member whose device it is - pass that,
+not the room, as `trust`'s `jid` - and
 `setEnabled {value: true}` on a room that doesn't qualify errors with
 `OMEMO ROOM_NOT_ELIGIBLE`.
 
@@ -1198,8 +1247,8 @@ the other two say what happened, for a notice.
     avatar data {hash: string}      -> base64        ("" if not cached)
     avatar visible {jid: string}
     avatar invisible {jid: string}
-    avatar publish {data: base64, type?: string, width?: int, height?: int}  -> ""
-    avatar disable {}   -> ""
+    avatar publish {data: base64, type?: string, width?: int, height?: int, tag?: string}  -> ""
+    avatar disable {tag?: string}   -> ""
     avatar cancel {tag: string}
     avatar refresh {jid: string}
     avatar inject {jid: string, data: base64, type?: string, width?: int, height?: int}  -> string
@@ -1256,19 +1305,23 @@ Events:
 ## nick
 
     nick get {jid: string}                  -> string   cached nick ("" if none)
-    nick set {nick: string}                 -> ""       publish + vcard + bookmarks
+    nick set {nick: string, bookmarks?: "skip"} -> ""   publish + vcard + bookmarks
     nick publish {nick: string}             -> ""       PEP only
     nick fetch {jid: string}                            refresh from the server
 
 XEP-0172 user nicknames over PEP. `get` is a local cache read; `fetch`
 pulls a JID's published nick and caches it, and `set` publishes your own
-(PEP node, vcard-temp, and every bookmark's nick unless you pass
-`bookmarks: skip`, in which case only the default nick is updated).
+(PEP node, vcard-temp, and every bookmark's nick - renaming you in each room
+you are in - unless you pass `bookmarks: skip`, in which case only the
+default nick for new bookmarks is updated).
 `publish` is the PEP-only slice of `set`.
 
 Event:
 
-    nick <Changed> {jid: string}   a JID's cached nick changed; re-read with `nick get`
+    nick <Changed> {jid: string}   a JID's nick arrived; re-read with `nick get`
+
+`<Changed>` fires on every fetch and every published nick that reaches you,
+whether or not it differs from the cached one.
 
 ## author
 
@@ -1418,8 +1471,8 @@ doesn't decrypt, or comes from an untrusted key, the call ends with
 
 `<VideoTrack>` (`direction: "incoming"`) and `<VideoPreview>`
 (`direction: "preview"`, the local camera) each name a stream of I420 frames
-the frontend connects to. `<VideoEnded>` fires alongside `<Ended>`/`<Failed>`
-for any call that had video up - `setVideo` only mutes the camera, it doesn't
+the frontend connects to. `<VideoEnded>` (its `mid` always `video`) fires
+alongside `<Ended>`/`<Failed>` for any call that had video negotiated - `setVideo` only mutes the camera, it doesn't
 tear the video half down on its own. See
 [Voice and video calls](#voice-and-video-calls) for the stream's format.
 
@@ -1469,13 +1522,15 @@ to show, `pull` re-sends one.
   when the room hides it.
 - `leg` is your session with them: `expected`, `connecting`, `active`, or
   `ended` / `failed` while they stay - nothing redials. Out of a call
-  everyone is `expected`; a hidden participant is `failed`. `stream` is
-  their video.
+  everyone is `expected`; once you are in, a hidden participant is `failed`.
+  `stream` is their video's frame stream; on the host backend it stays `""`,
+  and the leg's `calls <VideoTrack>` carries the track `id` instead.
 
 `<Invited>` is when to ring (live invites only); answer with `join` by `chat`
 and `timestamp`, or `decline`. `start` in a chat whose last call is still
 going joins it. `leave` tells a hosted call's chat, or retracts the invite if
-nobody came. `invite` lets a contact into the room and invites them.
+nobody came. `invite` sends a contact the invite, first letting them into
+the room when the call is hosted.
 
 Each invite is also a row in its chat, `content.type` `"call"` (see
 [message](#message)). `inviter` is `""` when the room hides it, and `video`
@@ -1506,8 +1561,8 @@ A media backend owns the media half of a call; [Voice and video
 calls](#voice-and-video-calls) explains the split. One serves every account,
 from these:
 
-    rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always
-            present, and Opus and VP8 only.
+    rtc     libdatachannel + rtc-ma + rtc-mv, in this process. In every
+            native build (not the browser one); Opus and VP8 only.
     webrtc  libwebrtc, in libtacky_webrtc.so. Only where that ships.
     host    the frontend's own peer connection, driven through the messages
             below. Always present, and inert until the frontend answers.
@@ -1519,23 +1574,26 @@ case, not a fault. The setting is read once at startup, so a change applies at
 the next one. `-media-backend` overrides it for a single run without storing
 anything, and `-webrtc-lib` says where `libtacky_webrtc.so` is (default:
 beside the executable). A backend that was named and is missing or won't start
-is the case that warrants a `<Warning>`: tacky runs `rtc` instead and leaves
-the setting as it was.
+is the case that warrants a `<Warning>`: tacky runs `rtc` instead (`host` where
+there is no `rtc`) and leaves the setting as it was.
 
 `capabilities` is what the active backend can do. A frontend needs them only
 to grey out a control it would otherwise offer:
 
-    audioDevices  `audio enumerateDevices` / `setPreferredDevice` do anything
-    audioVolume   `audio setVolume` does anything
+    audioDevices  `audio enumerateDevices` lists anything, and
+                  `setPreferredDevice` reaches live calls
+    audioVolume   `audio setVolume` reaches live calls
     cameras       `video enumerateCameras` returns anything
-    videoDevice   `video setPreferredCamera` does anything
+    videoDevice   `video setPreferredCamera` reaches live calls
     videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
     preview       a group call keeps a self-view of its own (`groupcall
                   <VideoPreview>`), on one camera shared by every session
 
-An absent capability breaks nothing: the matching call is accepted and does
-nothing, enumeration comes back empty, and a frontend that ignores all this
-shows an empty picker.
+An absent capability breaks nothing: the setter still stores the preference
+and emits its event, enumeration comes back empty, and a frontend that ignores
+all this shows an empty picker. The result also carries `autoAnswer`,
+`sdpSanitize` and `trickleIce`, which tacky's own signalling reads; a
+frontend can ignore them.
 
 Events:
 
@@ -1561,12 +1619,9 @@ channel, JNI or JS.
     setRemoteDescription   sdp, sdpType
     addRemoteCandidate     candidate, mid
     attachAudio            track, input, output, inputVolume, outputVolume
-    setAudioDevice         kind: capture|playback, id
-    setAudioVolume         kind, volume
     attachVideoSender      track, deviceId
     attachVideoReceiver    track
     setVideoEnabled        on: bool
-    setVideoDevice         id
     openPreview            deviceId   (pc names the preview, not a peer connection)
     closePreview           -
     close                  -   (no pc: the backend is shutting down)
@@ -1584,7 +1639,7 @@ none is answered, and nothing waits.
     connectionState   state: new|connecting|connected|disconnected|failed|closed
     track             track, kind, mid   your name for a track the peer added
     deviceFallback    kind: capture|playback|camera, id, reason
-    error             op, reason, fatal
+    error             op, reason, fatal: bool
 
 Report every track the peer adds: that is what makes tacky attach it, and the
 `attachAudio` or `attachVideoReceiver` that follows says what it is for.
@@ -1598,7 +1653,8 @@ the name its `track` event gave it.
 `openPreview` opens the camera with no peer connection, for a group call's
 self-view from joining to leaving; `closePreview` releases it. `groupcall
 <VideoPreview>` carries the preview's `pc` as its `id`. A camera that fails
-to open is an `error` on the preview with `op` openPreview.
+to open is an `error` on the preview with `op` openPreview and `fatal: true`;
+send `fatal` with every `error`.
 
 An event for a call that has ended is dropped; one with an unknown `type` or
 a missing key comes back as a `calls <Warning>` on that call; one with no
@@ -1629,7 +1685,8 @@ A preference outlives the backend that produced the id in it. One the active
 backend doesn't recognise falls back to that backend's default device, and
 the call it happens on gets a `calls <Warning>`; the stored preference is
 left alone. On a backend without the `audioDevices` / `audioVolume`
-capability, enumeration comes back empty and the setters do nothing.
+capability, enumeration comes back empty and the setters only store the
+preference.
 
 Events:
 
@@ -1649,7 +1706,7 @@ preference for the machine, not per account. Setting a camera persists it
 and hot-swaps every live video call on every account. An id the active
 backend doesn't recognise falls back to its default camera, exactly as an
 audio device does; without the `cameras` / `videoDevice` capability
-enumeration is empty and the setter does nothing.
+enumeration is empty and the setter only stores the preference.
 
 Events:
 
@@ -1862,15 +1919,21 @@ not belong next to, and contiguity is gone. Culling the newer end or jumping
 with `goto` ends it; a newer-page result whose newest timestamp matches the
 last `<Tail>` restores it.
 
-Requests carry a `tag`, and cancelling by tag is what keeps a result that
-outlived its cursor from being applied. The pagination cursors are just the
+Requests carry a `tag`, and cancelling by tag (`message cancel`) is what keeps
+a result that outlived its cursor from being applied: each pending request
+under the tag is answered at once with the error `cancelled`, and its result
+never arrives. The pagination cursors are just the
 first and last timestamps in the window, passed as `before` and `after`.
 
 **Paging.** `message history` with no cursor gives you the newest page.
 `before` (exclusive) pages older, `after` (exclusive) pages newer, always
 oldest-first, capped at `limit` (default 50). It's local-first: it returns
-local rows right away and reaches for the server (MAM) only when both hold: a
-cursor anchors the fill, and the local read came up short of `limit`. A cursorless
+local rows right away and reaches for the server (MAM) only when a cursor
+anchors the fill and the local read came up empty, or short of `limit` at a
+hole. An `after` page past the newest stored row, with no hole, never asks:
+there is nothing newer to fetch. When the archive fails and there is nothing
+local to show, the request answers `onerror` with a readable reason rather
+than an empty page, which would read as "no more history". A cursorless
 initial load shows only the contiguous local tail and won't auto-fetch
 older history - scrolling up (a `before` page) pulls the next page
 from MAM. When the user scrolls toward an edge, fire a tagged `history` for
@@ -1902,8 +1965,10 @@ see our server id - and prefixes the wire body with a `> ` quote of the target
 marked as a XEP-0428 fallback span. Pass the reply text alone: the quote is
 added on the way out and stripped on the way in, so a stored `body` never
 contains it.
-A `reply_to_ts` naming a row that isn't stored sends as an ordinary message
-rather than failing. Under OMEMO the quote is skipped and `<reply>` carries the
+A `reply_to_ts` naming a row that isn't stored, or a room message the room
+hasn't given an id yet, sends as an ordinary message rather than failing. A
+cleartext reply to an OMEMO message carries no quote, so the target's text
+doesn't leak. Under OMEMO the quote is skipped and `<reply>` carries the
 context alone: a fallback span indexes the cleartext warning body a peer strips
 against before it decrypts, so no offset into the encrypted text is publishable.
 
@@ -1953,7 +2018,8 @@ once the sync settles.
 screen rather than adding one. All find their target by `timestamp` and drop
 silently if it isn't displayed. `<Status>` updates the send/receipt state where the row
 sits. `<Reactions>` swaps the reaction map. `<Edited>` carries a full
-`message` row to redraw in place for a content edit. `<Retracted>` flips the
+`message` row to redraw in place, for a content edit or a change to an invite's
+or call's `state`. `<Retracted>` flips the
 row to a tombstone in place - it carries only `timestamp`, so redraw the
 placeholder from the header you already hold. `<Confirmed>` acknowledges a
 pending send: update its checkmark in place when `newtimestamp == timestamp`,
@@ -1961,9 +2027,11 @@ or rekey to `newtimestamp` and re-sort when the server relocated it - the
 only one that shifts a message's slot.
 
 **Causing those updates.** Five calls, all naming their target by `timestamp`
-and all silently doing nothing when it isn't stored. `edit` (XEP-0308) sends a
+and all doing nothing when it isn't stored (`moderate` says so through
+`onerror`). `edit` (XEP-0308) sends a
 correction of one of your own messages and swaps the stored body immediately,
-so `<Edited>` arrives without waiting for the echo. `react` (XEP-0444) toggles
+so `<Edited>` arrives without waiting for the echo - except in an OMEMO chat
+whose encryption can't go out now, where it does nothing at all. `react` (XEP-0444) toggles
 one emoji in your own reaction set rather than adding it; call it again with
 the same emoji to take it back. The set is sent whole because the
 protocol has no delta, and `reactClear` drops all of yours at once.
@@ -1975,7 +2043,9 @@ room path, and asks the room to retract anyone's message. It deliberately does
 not tombstone locally: the room's own broadcast drives the change through the
 receive path, so a rejected request leaves the message intact and no
 `<Retracted>` ever arrives. The service enforces moderator role, so a rejection
-is normal - pass `onerror` to hear about it, since success is silent.
+is normal - pass `onerror` to hear about it, since success is silent. It
+also answers `onerror` for a message the room hasn't given an id yet (your own
+send before its echo).
 
 **Outgoing.** Your own messages show up right away on `<New>`
 (optimistically) at their pending timestamp. Once they're confirmed - a MUC
@@ -1992,10 +2062,12 @@ has this exact message, moving through `<Status>` events: `""`
 
 A send interrupted by a restart is settled from the archive on the next
 connection. The reconnect catchup confirms whatever the server really
-stored; a row still pending afterwards is re-sent if it falls inside the
+stored; a 1:1 row still pending afterwards is re-sent if it falls inside the
 span catchup covered (the server demonstrably never got it), and marked
 `failed` with `fail_reason: "delivery"` if it predates that span, where
-the archive can no longer say either way.
+the archive can no longer say either way. A room's pending rows wait for that
+room's own catchup and are re-sent after it. `fail_reason: "delivery"` also
+marks a message the far side bounced, even after your server took it.
 
 A message larger than the server takes in one stanza (the XEP-0478 limit
 it advertises, else 1 MiB) is never written: it goes straight to `failed`
@@ -2100,7 +2172,7 @@ entry is a grouped/album message under a single `caption`. `caption` is the
 text to show: senders copy the share URL into the body for clients that don't
 understand OOB, so `caption` is `""` when the body was nothing but that URL, and
 the body verbatim otherwise. `path`, `size` and `mime` are only set on outgoing
-attachments; on received ones they're `""`, `0` and `""`.
+attachments; on received ones they're `""`, `null` (`""` in Tcl) and `""`.
 
 `url` is wire data and `path` is a local file, and the two never stand in for
 one another: a received `url` is fetched, never opened off disk, and one we
@@ -2127,8 +2199,11 @@ encrypted before the PUT and the `url` is an `aesgcm://` URL (XEP-0454);
 
 **Downloading.** `file download` pulls the file into the data dir. Progress
 and the final state come on `file <Update>`: the last event carries
-`localpath` on `done`, or an `error` on `failed` - no upload service, server
-refused, network died. A transfer the user cancelled or the autofetch settings
+`localpath` on `done`, or an `error` on `failed` - the server refused or the
+network died (`http error`), an unsupported URL scheme, a file that couldn't
+be read or decrypted. With local storage encrypted, an OMEMO attachment stays
+encrypted in the data dir and `localpath` names a decrypted copy kept in
+`/dev/shm` (or the cache dir) instead. A transfer the user cancelled or the autofetch settings
 held back ends `idle` instead. No thumbnail is made: a client that shows
 images inline scales `localpath` itself.
 
@@ -2160,7 +2235,7 @@ included as recipients (TOFU/BTBV); off, they're left out until you've
 `trusted` them yourself.
 
 **Per-chat toggle** - every 1:1 chat has an OMEMO on/off switch, on by
-default. It doesn't check whether the peer can actually do OMEMO; sending
+default (off for a room's private chat, whose keys can't be found). It doesn't check whether the peer can actually do OMEMO; sending
 to one who can't fails outright instead of quietly downgrading. The chat
 with yourself is the exception: it is keyed for your other devices, and
 with none it still goes out encrypted, keyed for no one.
@@ -2230,7 +2305,7 @@ draw it, subscribe to `omemo <Enabled>` to follow it after that, and call
 so a switch drawn before the answer arrives can show a padlock over a chat
 that is going out in the clear. For the key panel, subscribe
 to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
-`device` when it's clicked. For a failed message, `fail_reason: "encrypt"`
+`device` when it's clicked (and, in a room's panel, the row's `jid`). For a failed message, `fail_reason: "encrypt"`
 leads with "resend as plaintext" (`message resend {plaintext: 1}`), while
 "keys arrived, retry" is a plain `message resend`. `fail_reason:
 "delivery"` offers only the plain `message resend` - the encryption was
@@ -2256,7 +2331,7 @@ camera:
 
 - **rtc** - libdatachannel for the transport, rtc-ma (miniaudio) for the
   audio devices and Opus, rtc-mv for the camera and VP8. Linked into every
-  build, so it is the one backend that cannot go missing. Opus and VP8 are all
+  native build, so there it is the backend that cannot go missing. Opus and VP8 are all
   it speaks, and it has no camera on Windows:
   there it receives video but sends none.
 - **webrtc** - libwebrtc, whole, in `libtacky_webrtc.so` (`.dll` on
@@ -2287,9 +2362,11 @@ one camera between every sender and a group call's `openPreview` self-view, a
 track clone per sender, so a pc closing stops only its own clone and the
 preview never freezes.
 
-The rest of this section is tacky's own and does not change with the
-backend. What a backend can vary is whether it enumerates devices at all -
-see `media capabilities`.
+The signalling below is tacky's own and does not change with the backend.
+What a backend can vary is whether it enumerates devices at all - see
+`media capabilities` - and, on `host`, how video reaches the screen: the
+frame streams described further down are the other backends'; on `host`
+video is the frontend's own track.
 
 Caller: `calls start` sends a JMI `propose` to the bare JID and emits
 `<Outgoing>`. A peer device answering `ringing` gives you `<Ringing>`.
@@ -2298,7 +2375,9 @@ Their `proceed` kicks off fetching ICE servers, building the offer, sending
 applies the answer, media connects, and you get `<Active>`.
 
 Callee: an incoming `propose` gives you `<Incoming>` (with `video: true` if
-the caller offered it) and auto-replies `ringing`. `calls accept` sends
+the caller offered it) and auto-replies `ringing`. A `propose` from the
+occupant of a room you are in or have bookmarked is dropped unanswered:
+anyone in a public room could otherwise ring you to learn you are online. `calls accept` sends
 `proceed`, then media setup waits for `session-initiate`, which applies the
 offer and sends `session-accept`. An unanswered ring ends in `<Ended>` too:
 retracted, taken by another of your devices, or rejected with `timeout` after
@@ -2314,10 +2393,12 @@ show the call as secure only while it says `verified`. A fingerprint that
 should have come encrypted and didn't, or that comes from an untrusted key,
 fails the call rather than downgrading it.
 
-Either side ends the call with `calls hangup`. Before media is up the
-caller retracts over JMI instead of terminating; after that it's a Jingle
-`session-terminate`. Both land as `<Ended>`. `calls reject` on a call you
-placed yourself retracts it the same way. Video, if either side had it up,
+Either side ends the call with `calls hangup`. Until the callee has answered,
+the caller retracts over JMI instead of terminating; after that it's a Jingle
+`session-terminate`. Both land as `<Ended>`. To turn down a ringing call use
+`calls reject` (`<Ended>` reason `declined`); `hangup` there ends it as
+`hangup`. `calls reject` on a call you placed yourself retracts it as
+`hangup` would. Video, if either side had it up,
 ends with the call - there's no partial teardown of just the video half.
 
 Audio is decoded and played by the backend directly; the frontend never
