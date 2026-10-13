@@ -528,6 +528,24 @@ test chatlist-blocked-flag-cleared-on-unblock \
         set ::items
     } -result {0}
 
+# -- notify policy -----------------------------------------------------
+
+test chatlist-notify-settings-reemit {a policy change re-emits the row with muted and mentions} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert alice@example.com name Alice
+        set before [lsort -stride 2 [by_jid [c chatlist get] muted]]
+        set ::items {}
+        tacky listen chatlist <Item> {apply {{ev} {
+            set item [dict get $ev -item]
+            lappend ::items [dict get $ev -jid] \
+                [dict get $item muted] [dict get $item mentions]
+        }}}
+        c notify set -chat alice@example.com -muted 1 -mentions 0
+        c notify set -chat nobody@example.com -muted 1
+        list $before $::items
+    } -result {{alice@example.com 0 user@test.example.com 0} {alice@example.com 1 0}}
+
 # -- pins and order ---------------------------------------------------
 
 # The jids of a get, top to bottom: `order` descending, ties by jid.
@@ -568,6 +586,16 @@ test chatlist-unpin-empty-chat-removes-it {a pinned chat with no history is list
         c chatlist pin -jid carol@example.com -pinned 0
         list $listed [dict exists [by_jid [c chatlist get]] carol@example.com] $::events
     } -result {1 0 {item carol@example.com remove carol@example.com}}
+
+test chatlist-order-fits-a-double {every order is exact as a JSON number, pins included} \
+    {*}$chatlist_common \
+    -body {
+        chatlist_chat_insert alice@example.com timestamp [expr {1 << 60}]
+        c chatlist pin -jid bob@example.com -pinned 1
+        c chatlist pin -jid carol@example.com -pinned 1
+        list [top_down [c chatlist get]] \
+            [lmap e [c chatlist get] { expr {[dict get $e order] < (1 << 53)} }]
+    } -result {{carol@example.com bob@example.com alice@example.com user@test.example.com} {1 1 1 1}}
 
 test chatlist-pin-twice-is-a-no-op {pinning a pinned chat changes and emits nothing} \
     {*}$chatlist_common \

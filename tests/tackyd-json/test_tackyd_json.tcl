@@ -296,9 +296,9 @@ test json-type-chat-entry-no-last-message {a chat with no history has no last_me
 
 test json-type-chat-entry-pin-fields {is_self and pinned are booleans, order a whole number} -body {
     jsonify convert chatlist/get [list [dict create jid a@b is_self 1 pinned 1 \
-        order [expr {(1 << 62) + 3}]]]
+        order [expr {(1 << 52) + 3}]]]
 } -result [json::write array [json::write object jid {"a@b"} is_self true \
-    pinned true order 4611686018427387907]]
+    pinned true order 4503599627370499]]
 
 test json-args-chatlist-pin {pin's -pinned takes a JSON boolean} -body {
     jsonify decode_args chatlist/pin [::json::json2dict {{"jid":"a@b","pinned":true}}]
