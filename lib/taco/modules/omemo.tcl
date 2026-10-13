@@ -1958,17 +1958,18 @@ snit::type taco_omemo {
             ECRYPTO   -
             ESTATE {
                 # ESTATE = no session for the sender; the rest = an
-                # established session broken. Both recover by healing.
-                # Skip prekey-path failures (a bad/replayed prekey isn't a
-                # broken session). MAM failures defer to the QueryEnd flush
-                # (one heal/device, no racing the same page).
-                if {!$lastWasPrekey} {
-                    if {$isMam} {
-                        dict set PostponedHealing "$peerJid|$peerDev" 1
-                        set mamHadOmemo 1
-                    } else {
-                        $self Heal $peerJid $peerDev
-                    }
+                # established session broken, or a key exchange we cannot
+                # take (on a prekey we no longer hold, say), which leaves
+                # the peer writing on a session we cannot read. All recover
+                # by healing, which keeps the session held (Replaced), so a
+                # forged one costs no message. A key exchange read before
+                # is EKEYGONE, below. MAM failures defer to the QueryEnd
+                # flush (one heal/device, no racing the same page).
+                if {$isMam} {
+                    dict set PostponedHealing "$peerJid|$peerDev" 1
+                    set mamHadOmemo 1
+                } else {
+                    $self Heal $peerJid $peerDev
                 }
             }
             EKEYGONE -

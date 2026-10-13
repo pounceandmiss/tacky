@@ -1069,9 +1069,10 @@ test omemo-unit-recover-skips-during-mam \
             [lrange [c conn get_written] $before end] 648103571
     } -result 0
 
-# A prekey-path failure (malformed/replayed prekey) isn't a broken session; drop it.
-test omemo-unit-recover-skips-prekey-failure \
-    {a prekey-path failure does not heal} \
+# A key exchange that fails (on a prekey we no longer hold, say) leaves
+# the peer with a session we cannot read: heal it.
+test omemo-unit-recover-heals-prekey-failure \
+    {a prekey-path failure heals} \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
@@ -1080,6 +1081,21 @@ test omemo-unit-recover-skips-prekey-failure \
         set before [llength [c conn get_written]]
         c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
             {OMEMO ECORRUPT} "bad mac" {{1 keydata}} 0
+        ::test::omemo_unit::bundleFetches \
+            [lrange [c conn get_written] $before end] 648103571
+    } -result 1
+
+# A prekey message delivered again (EKEYGONE) is a duplicate: no heal.
+test omemo-unit-recover-skips-prekey-repeat \
+    {a prekey message read before does not heal} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        dict set [c omemo info vars DeviceLists] $::test::omemo_unit::ROMEO 648103571
+    }] -body {
+        set before [llength [c conn get_written]]
+        c omemo HandleDecryptError $::test::omemo_unit::ROMEO 648103571 \
+            {OMEMO EKEYGONE} "key gone" {{1 keydata}} 0
         ::test::omemo_unit::bundleFetches \
             [lrange [c conn get_written] $before end] 648103571
     } -result 0
@@ -2516,7 +2532,7 @@ test omemo-unit-forged-message-leaves-skipped-keys \
 # The same prekey message again, as a resend under new ids (the stanza-id
 # dedup does not see it): the session it made has spent its key (EKEYGONE)
 # and its one-time prekey is gone, so a fresh session cannot open it
-# either. It is a duplicate, dropped, not a decrypt failure.
+# either. It is a duplicate, dropped, not a decrypt failure, and not healed.
 test omemo-unit-prekey-message-again-is-a-duplicate \
     {a prekey message delivered again is dropped as a duplicate, not shown as undecryptable} \
     {*}[tacky_env -mock conn -capture-emit 1 \
@@ -2529,6 +2545,7 @@ test omemo-unit-prekey-message-again-is-a-duplicate \
         } -extra-cleanup {
             omemopeer::destroy romeo
         }] -body {
+        ::test::omemo_unit::injectDevicelist $::test::omemo_unit::ROMEO 111
         omemopeer::learn romeo $::test::omemo_unit::JULIET_BARE [c omemo device_id] \
             [[set [c.omemo info vars store]] bundle]
         set enc [omemopeer::encrypt romeo $::test::omemo_unit::JULIET_BARE \
@@ -2543,8 +2560,9 @@ test omemo-unit-prekey-message-again-is-a-duplicate \
         }
         list [c db eval {SELECT body FROM chat_message
                          WHERE chat_jid='romeo@montague.lit'}] \
-            [llength [::test::omemo_unit::emittedOmemo <DecryptFailed>]]
-    } -result {{{first words}} 0}
+            [llength [::test::omemo_unit::emittedOmemo <DecryptFailed>]] \
+            [::test::omemo_unit::bundleFetches [c conn get_written] 111]
+    } -result {{{first words}} 0 0}
 
 test omemo-unit-encryptfor-refetches-given-up-bundle \
     {a device whose bundle fetch was given up on is fetched again by encryptFor} \
@@ -2679,3 +2697,22 @@ test omemo-unit-gap-past-max-skip-heals \
         omemopeer::take romeo $J [lindex $kts 0]
         lappend out [::test::omemo_unit::readFromRomeo after]
     } -result {{plaintext one} decrypt_error 1 1 {plaintext after}}
+
+# Romeo starts a session on a prekey of Juliet's she no longer holds (spent
+# since he fetched her bundle): his key exchange cannot be taken, and he
+# would write on that session for good. It heals.
+test omemo-unit-prekey-we-no-longer-hold-heals \
+    {a key exchange on a prekey Juliet no longer holds heals, and Romeo's reply to the heal reads} \
+    {*}$::test::omemo_unit::single_env -body {
+        set J $::test::omemo_unit::JULIET_BARE
+        set store [set [c omemo info vars store]]
+        set bundle [$store bundle]
+        omemopeer::learn romeo $J [c omemo device_id] $bundle
+        $store mark_prekey_used [dict get [lindex [dict get $bundle prekeys] 0] id]
+        lassign [::test::omemo_unit::healOn \
+            [omemopeer::encrypt romeo $J [c omemo device_id] hello]] kind fetches kts
+        set out [list $kind $fetches [llength $kts]]
+        omemopeer::forget romeo $J [c omemo device_id]
+        omemopeer::take romeo $J [lindex $kts 0]
+        lappend out [::test::omemo_unit::readFromRomeo after]
+    } -result {decrypt_error 1 1 {plaintext after}}
