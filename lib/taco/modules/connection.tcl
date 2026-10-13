@@ -305,10 +305,11 @@ snit::type baseconn {
     }
 
     # The proxy reached the target: from here the tunnel is the socket.
+    # socks5's failures name the proxy themselves.
     method OnProxyConnected {status detail} {
         set proxyHandle ""
         if {$status ne "ok"} {
-            $self Fail "Connect failed: proxy: $detail"
+            $self Fail "Connect failed: $detail"
             return
         }
         set socket $detail

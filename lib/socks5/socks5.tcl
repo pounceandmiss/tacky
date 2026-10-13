@@ -4,7 +4,8 @@
 #   socks5_connect ?-username U -password P? \
 #       proxyHost proxyPort destHost destPort cb
 #
-# cb is invoked as: {*}$cb ok $sock  or  {*}$cb error $msg
+# cb is invoked as: {*}$cb ok $sock  or  {*}$cb error $msg, where msg
+# names the proxy itself, so a caller need not prefix it.
 #
 # Returns a handle for socks5_abort, which drops a handshake still in
 # progress: its socket is closed and cb never runs.
@@ -75,7 +76,7 @@ proc socks5_connect {args} {
     if {[catch {socket -async $proxyHost $proxyPort} sock]} {
         set handle ::socks5::failed[incr ::socks5::Failed]
         set ::socks5::Pending($handle) \
-            [after idle [list ::socks5::Unpend $handle $cb "connect failed: $sock"]]
+            [after idle [list ::socks5::Unpend $handle $cb "can't reach the proxy: $sock"]]
         return $handle
     }
     fconfigure $sock -translation binary -buffering none -blocking 0
@@ -117,7 +118,7 @@ proc ::socks5::OnWritable {sock} {
     fileevent $sock writable {}
     set err [fconfigure $sock -error]
     if {$err ne ""} {
-        Fail $sock "connect failed: $err"
+        Fail $sock "can't reach the proxy: $err"
         return
     }
     set username [dict get $State($sock) username]
@@ -129,7 +130,7 @@ proc ::socks5::OnWritable {sock} {
         set greeting [binary format ccc 5 1 0]
     }
     if {[catch {puts -nonewline $sock $greeting; flush $sock} e]} {
-        Fail $sock "write failed: $e"
+        Fail $sock "write to the proxy failed: $e"
         return
     }
     dict set State($sock) state greeted
@@ -146,7 +147,7 @@ proc ::socks5::OnReadable {sock} {
     set toRead [expr {$need - [string length $buf]}]
     if {$toRead > 0} {
         if {[catch {read $sock $toRead} chunk]} {
-            Fail $sock "read failed: $chunk"
+            Fail $sock "read from the proxy failed: $chunk"
             return
         }
         if {[string length $chunk] == 0} {
@@ -175,7 +176,7 @@ proc ::socks5::Advance {sock} {
                 return
             }
             if {$method == 0xFF} {
-                Fail $sock "proxy: no acceptable authentication method"
+                Fail $sock "proxy accepts none of our authentication methods"
                 return
             }
             if {$method == 0} {
@@ -195,7 +196,7 @@ proc ::socks5::Advance {sock} {
         authing {
             binary scan $buf cucu authver status
             if {$authver != 1} {
-                Fail $sock "unsupported auth subnegotiation version: $authver"
+                Fail $sock "unsupported auth subnegotiation version from proxy: $authver"
                 return
             }
             if {$status != 0} {
@@ -207,7 +208,7 @@ proc ::socks5::Advance {sock} {
         connect-sent {
             binary scan $buf cucucucu version rep rsv atyp
             if {$version != 5} {
-                Fail $sock "bad version in CONNECT reply: $version"
+                Fail $sock "bad version in the proxy's CONNECT reply: $version"
                 return
             }
             if {$rep != 0} {
@@ -236,7 +237,7 @@ proc ::socks5::Advance {sock} {
                     dict set State($sock) buffer ""
                 }
                 default {
-                    Fail $sock "bad atyp in CONNECT reply: $atyp"
+                    Fail $sock "bad atyp in the proxy's CONNECT reply: $atyp"
                 }
             }
         }
@@ -261,7 +262,7 @@ proc ::socks5::Advance {sock} {
 proc ::socks5::SendAuth {sock username password} {
     variable State
     if {[string length $username] > 255 || [string length $password] > 255} {
-        Fail $sock "username/password too long"
+        Fail $sock "proxy username/password too long"
         return
     }
     set req [binary format cca*ca* \
@@ -269,7 +270,7 @@ proc ::socks5::SendAuth {sock username password} {
         [string length $username] $username \
         [string length $password] $password]
     if {[catch {puts -nonewline $sock $req; flush $sock} e]} {
-        Fail $sock "write failed: $e"
+        Fail $sock "write to the proxy failed: $e"
         return
     }
     dict set State($sock) state authing
@@ -291,7 +292,7 @@ proc ::socks5::SendConnect {sock} {
     append req $addr
     append req [binary format S $destPort]
     if {[catch {puts -nonewline $sock $req; flush $sock} e]} {
-        Fail $sock "write failed: $e"
+        Fail $sock "write to the proxy failed: $e"
         return
     }
     dict set State($sock) state connect-sent

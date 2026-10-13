@@ -125,7 +125,7 @@ test proxy-int-bad-credentials {a proxy refusing the credentials fails the link}
         ::test::proxy::nextError {
             tacky account enable -acc $::test::proxy::ACC
         }
-    } -result {Connect failed: proxy: proxy rejected credentials}
+    } -result {Connect failed: proxy rejected credentials}
 
 test proxy-int-change-drops-link {a new proxy takes the live link down with it} \
     -constraints {withServer && socks5Jail} \
@@ -138,7 +138,7 @@ test proxy-int-change-drops-link {a new proxy takes the live link down with it} 
         }]
         wait_expected $seen
         set err
-    } -result {Connect failed: proxy: proxy rejected credentials}
+    } -result {Connect failed: proxy rejected credentials}
 
 test proxy-int-change-is-a-new-session {back on a working proxy, the same client logs in afresh rather than resuming} \
     -constraints {withServer && socks5Jail} \
