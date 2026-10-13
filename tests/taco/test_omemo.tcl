@@ -2660,3 +2660,22 @@ test omemo-unit-heals-that-only-resend-give-way-to-a-new-exchange \
         omemopeer::take romeo $J [lindex $kts 0]
         lappend out [::test::omemo_unit::readFromRomeo three]
     } -result {{1 0 0 0 1} {plaintext two} {plaintext three}}
+
+# More than MAX_SKIP of Romeo's messages never reached Juliet: the next one
+# is refused (OnStoreSkipped), and so would every one after it be. It heals.
+test omemo-unit-gap-past-max-skip-heals \
+    {a message past a gap of more than MAX_SKIP heals the session, and Romeo's reply to the heal reads} \
+    {*}$::test::omemo_unit::single_env -body {
+        set J $::test::omemo_unit::JULIET_BARE
+        ::test::omemo_unit::romeoHeardFrom
+        set out [list [::test::omemo_unit::readFromRomeo one]]
+        for {set i 0} {$i <= $::taco::omemo::MAX_SKIP} {incr i} {
+            omemopeer::encrypt romeo $J [c omemo device_id] lost
+        }
+        lassign [::test::omemo_unit::healOn \
+            [omemopeer::encrypt romeo $J [c omemo device_id] late]] kind fetches kts
+        lappend out $kind $fetches [llength $kts]
+        omemopeer::forget romeo $J [c omemo device_id]
+        omemopeer::take romeo $J [lindex $kts 0]
+        lappend out [::test::omemo_unit::readFromRomeo after]
+    } -result {{plaintext one} decrypt_error 1 1 {plaintext after}}
