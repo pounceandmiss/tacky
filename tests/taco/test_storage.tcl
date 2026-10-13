@@ -478,6 +478,80 @@ test storage-encrypt-checkpoints-live-wal-connection \
         set results
     } -result {walBefore=1 relaunchStatus=locked openAfterEncrypt=0 rowsAfterEncrypt=hello openAfterDecrypt=0 {rowsAfterDecrypt=hello world}}
 
+# -- the swap ---------------------------------------------------------------
+
+# Some systems refuse to rename over an open file, so our own accounts.db
+# handle has to be closed while the staged copy replaces it.
+test storage-swap-runs-with-accounts-db-closed \
+    {the migration's swap runs with accounts.db closed, and boot reopens it} \
+    -setup {
+        storagetest_stub_tacky
+        lassign [storagetest_newdirs] cfg data cache
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        t account add -acc foo@example.com
+        rename ::taco_storage_resume ::_real_storage_resume
+        set ::_openAtSwap {}
+        proc ::taco_storage_resume {dir} {
+            if {[file exists [file join $dir .storage-migrate manifest]]} {
+                lappend ::_openAtSwap [llength [info commands ::t.db]]
+            }
+            ::_real_storage_resume $dir
+        }
+    } -cleanup {
+        catch {t destroy}
+        rename ::taco_storage_resume {}
+        rename ::_real_storage_resume ::taco_storage_resume
+        storagetest_unstub_tacky
+        file delete -force $cfg
+    } -body {
+        storagetest_gate_encrypt taco_type ::t $cfg $data $cache swappass
+        list $::_openAtSwap [t storage status] [t account list]
+    } -result {0 unlocked foo@example.com}
+
+test storage-unfinished-swap-is-left-to-the-next-launch \
+    {a swap that fails part-way is never restaged over; the next launch completes it} \
+    -setup {
+        storagetest_stub_tacky
+        lassign [storagetest_newdirs] cfg data cache
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        t account add -acc foo@example.com
+        rename ::taco_storage_resume ::_real_storage_resume
+        set ::_failSwap 1
+        proc ::taco_storage_resume {dir} {
+            if {$::_failSwap
+                    && [file exists [file join $dir .storage-migrate manifest]]} {
+                error "disk said no"
+            }
+            ::_real_storage_resume $dir
+        }
+    } -cleanup {
+        catch {t destroy}
+        rename ::taco_storage_resume {}
+        rename ::_real_storage_resume ::taco_storage_resume
+        storagetest_unstub_tacky
+        file delete -force $cfg
+    } -body {
+        set results {}
+        t storage requestEncrypt
+        t destroy
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        catch {t storage encrypt -passphrase swappass} err
+        lappend results $err
+        catch {t storage encrypt -passphrase swappass} err
+        lappend results $err
+        lappend results [file exists [file join $cfg .storage-migrate manifest]]
+        catch {t destroy}
+        set ::_failSwap 0
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        lappend results [t storage status]
+        t storage unlock -passphrase swappass
+        lappend results [t account list]
+    } -result {{storage migration could not finish (disk said no); restart Tacky to complete it} {a storage migration is unfinished; restart Tacky to complete it} 1 locked foo@example.com}
+
 # -- MigrateDbFiles / MigrateAttachFiles ------------------------------------
 
 test storage-migrate-db-files {accounts.db plus one per account, none missing} \
