@@ -45,6 +45,7 @@ and get back replies and events.
 - [Guides](#guides)
   - [Accounts and sign-in](#accounts-and-sign-in)
   - [The chat window](#the-chat-window)
+  - [Read state and alerts](#read-state-and-alerts)
   - [Attachments](#attachments)
   - [OMEMO](#omemo-1)
   - [Voice and video calls](#voice-and-video-calls)
@@ -266,10 +267,10 @@ changes the password on the server (XEP-0077) and, if that works, updates
 the stored one - the reply is `""` on success or an `["error", ...]`. See
 [Accounts and sign-in](#accounts-and-sign-in).
 
-**Where an account connects.** `domain` is the XMPP domain; the server's
-certificate must name it. On the tcp transport, `host`, `port`, `tls` and
-`srv` say how to reach it:
+The connection fields. `host`, `port`, `tls` and `srv` apply on the tcp
+transport, `websocket_url` on the websocket one:
 
+- `domain`: the XMPP domain; the server's certificate must name it.
 - `host` (default `""`): a DNS name or IP address to dial instead.
 - `port` (default 0): 0 means 5222, or 5223 with `tls` `direct`.
 - `tls` (default `auto`): `starttls`, `direct` (XEP-0368, ALPN
@@ -277,19 +278,21 @@ certificate must name it. On the tcp transport, `host`, `port`, `tls` and
   unencrypted. `auto` is STARTTLS unless an SRV record says direct.
 - `srv` (default true): with no `host` and no `port`, try the
   `_xmpps-client._tcp` and `_xmpp-client._tcp` records for `domain` in
-  RFC 2782 order, then `domain` on 5222.
+  RFC 2782 order, then `domain` on 5222. SRV needs a nameserver in
+  `/etc/resolv.conf` (the registry on Windows), so Android skips it.
+- `websocket_url` (default `""`): `ws://` or `wss://`. Empty, it is
+  discovered: the `urn:xmpp:alt-connections:websocket` link in
+  `https://<domain>/.well-known/host-meta` (XEP-0156), else
+  `wss://<domain>/xmpp-websocket`. Changes apply on the next connect.
 
-SRV needs a nameserver in `/etc/resolv.conf` (the registry on Windows), so
-Android skips it.
-
-Setting `domain`, `host`, `port`, `tls`, `srv` or `password` reconnects an
-enabled account that is offline; an online one uses them next time.
-Changing `proxy` ends everything the account had going, online or not, as
+Setting `domain`, `host`, `port`, `tls` or `srv` reconnects an enabled
+account that is offline, as `password` does; an online one uses them next
+time. Changing `proxy` ends everything the account had going, online or not, as
 `disable` does, with reason `proxy changed` (see "Ending an account's
 activity" below); an enabled account then connects again on the new route,
 in a new session.
 
-**Proxy.** `proxy` (default `""`) is a SOCKS5 proxy,
+`proxy` (default `""`) is a SOCKS5 proxy,
 `socks5://[user:pass@]host:port` (an IPv6 `host` in brackets), that carries
 every connection the account makes: the XMPP link, and HTTP uploads and
 downloads. A malformed value is refused.
@@ -297,12 +300,6 @@ With a proxy set:
 - No SRV query is sent, and the account dials `host` (or `domain`) on `port` (or the `tls` default).
 - Attempts to place a call fail with `error <MethodError>` or `<StartFailed>`. An incoming call is declined without ringing.
 - The websocket transport refuses work.
-
-`websocket_url` (`ws://` or `wss://`) is where the account dials on the
-websocket transport. Empty, it is discovered: the
-`urn:xmpp:alt-connections:websocket` link in
-`https://<domain>/.well-known/host-meta` (XEP-0156), else
-`wss://<domain>/xmpp-websocket`. Changes apply on the next connect.
 
 Events:
 
@@ -528,9 +525,7 @@ removed. The chat with your own JID is listed regardless, and isn't
 pinned unless you pin it.
 
 `last_message` lets a chat list preview each chat without a `history` call
-per row. Rendering it is the frontend's job: switch on `content.type`, show
-a `retracted` tombstone as deleted, prefix `is_outgoing` with "You:" and a
-group chat's sender with their nick (the resource of `from_jid`).
+per row; see [The chat window](#the-chat-window) for drawing it.
 
 Per source, an entry carries extra fields:
 
@@ -893,26 +888,24 @@ in [The chat window](#the-chat-window).
 
 ### Read state
 
-Two independent directions. `remote_status` on a message is the peer's read
-state of something you sent. The read watermark is the reverse: how far you have
-read a chat. It is one timestamp per chat, not a per-message flag, so backfilled
-history landing behind it does not become unread.
+The read watermark is how far you have read a chat: one timestamp per chat,
+not a per-message flag, so backfilled history landing behind it does not
+become unread. (`remote_status` on a message is the other direction, the
+peer's read state of something you sent.)
 
-`markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored, so it
-is safe to call on every focus and scroll. It is local state and applies to
-group chats; `markDisplayed` is the separate wire half (a XEP-0333 `<displayed>`,
-1:1 only, and only to a contact who may see our presence, as for delivery
-receipts). It names the newest of the peer's messages at or before
-`timestamp` and past `after`, so ours on screen below theirs still marks
-theirs read; with none in that range it sends nothing. A chat on screen leaves both to [chat](#chat) `view`; call them
-directly to read one that isn't. The watermark also advances
-on its own when you send a message from any of your devices, and when another
-device's `<displayed>` marker reaches this one.
+`markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored. It is
+local state and applies to group chats; `markDisplayed` is the separate wire
+half (a XEP-0333 `<displayed>`, 1:1 only, and only to a contact who may see
+our presence, as for delivery receipts). It names the newest of the peer's
+messages at or before `timestamp` and past `after`, so ours on screen below
+theirs still marks theirs read; with none in that range it sends nothing. The
+watermark also advances on its own on [chat](#chat) `view`, when you send a
+message from any of your devices, and when another device's `<displayed>`
+marker reaches this one.
 
 `<OwnRead>` fires on every move, from any of those sources. `ownRead` gives one
-chat's watermark and unread count; each `chatlist` entry carries its own
-`unread`, so a chat list needs no extra call. Which of those are worth
-interrupting the user over is [notify](#notify)'s job.
+chat's watermark and unread count. See [Read state and
+alerts](#read-state-and-alerts).
 
 ## muc
 
@@ -1048,9 +1041,7 @@ not looking at the app; how to tell them is the frontend's job.
 A chat being looked at (see [chat](#chat)) never alerts. Otherwise a message
 alerts only while past the read watermark, held for `notify_delay_ms`
 (default `500`) so a read from another device landing just after still
-cancels it. Dismiss a shown alert
-when `message <OwnRead>` moves past it - that covers reads on your other
-devices too.
+cancels it.
 
 Messages that arrived while you were offline alert once catch-up settles,
 capped at 10 per chat per catch-up, with `unread` still reporting the true
@@ -1357,9 +1348,8 @@ restart can emit `<Active>` again with the same `since`.
 `<Ended>`), or `busy`, turned away while another call was up, with no
 `<Incoming>` or `<Ended>`. [`notify <MissedCall>`](#notify) alerts it.
 
-`<Verified>` says whether to show the call as secure. Calls are verified
-the way Conversations does it: each side sends its DTLS fingerprint
-OMEMO-encrypted, so a server can't swap in its own certificate. `verified`
+`<Verified>` says whether to show the call as secure (see [Voice and video
+calls](#voice-and-video-calls) for how a call is verified). `verified`
 is true when the peer's device is one we would encrypt messages to: trusted,
 or undecided while [blind trust](#omemo) is on. `fingerprint` is that
 device's OMEMO key in the format [`omemo trustList`](#omemo) uses, or `""`
@@ -1457,11 +1447,9 @@ need none of them. See [Group calls](#group-calls).
 
     payload = {id: int, name: string, clockrate: int, channels?: int}
 
-A media backend owns the media half of a call: ICE/DTLS/RTP and the mic,
-speaker and camera. One backend serves every account, and signaling (Jingle,
-JMI, call state) is tacky's either way, so `calls`, `audio` and `video` work
-the same on all of them. [Voice and video calls](#voice-and-video-calls) has
-the whole picture.
+A media backend owns the media half of a call; [Voice and video
+calls](#voice-and-video-calls) explains the split. One serves every account,
+from these:
 
     rtc     libdatachannel + rtc-ma + rtc-mv, in this process. Always
             present, and Opus and VP8 only.
@@ -1548,18 +1536,14 @@ Report every track the peer adds: that is what makes tacky attach it, and the
 Those two also produce `calls <VideoTrack>` / `<VideoPreview>`, carrying the
 track handle as `id` in place of a frame stream name.
 
-An answerer gets no `addTrack`; it sends on the offer's m-lines. Make them
-sendrecv (a browser leaves them recvonly) before the answering
-`setLocalDescription`. The `attachAudio` and `attachVideoSender` that follow
-name the peer's track, by the name its `track` event gave it: put the mic or
-camera on that m-line, and treat it as yours for `setVideoEnabled` and mute.
+An answerer gets no `addTrack`; it sends on the offer's m-lines. The
+`attachAudio` and `attachVideoSender` that follow name the peer's track, by
+the name its `track` event gave it.
 
 `openPreview` opens the camera with no peer connection, for a group call's
 self-view from joining to leaving; `closePreview` releases it. `groupcall
-<VideoPreview>` carries the preview's `pc` as its `id`. Share one camera
-between every sender and the preview (a track clone per sender), so a pc
-closing stops only its own clone and the preview never freezes. A camera
-that fails to open is an `error` on the preview with `op` openPreview.
+<VideoPreview>` carries the preview's `pc` as its `id`. A camera that fails
+to open is an `error` on the preview with `op` openPreview.
 
 An event for a call that has ended is dropped; one with an unknown `type` or
 a missing key comes back as a `calls <Warning>` on that call; one with no
@@ -1670,9 +1654,8 @@ directory. An embedded host's sandbox and `-transient`'s temp root both apply.
 `getfile` returns that path, the same handoff as an attachment's `localpath`. It
 is `""` whenever records are going to stderr.
 
-All the setters are per process and not persisted. The GUI stores its toggle as
-the `log_to_file` setting and reapplies it at startup; an explicit `--debug-file`
-wins for that run and leaves the setting untouched.
+All the setters are per process and not persisted; see
+[Accounts and sign-in](#accounts-and-sign-in) for keeping them.
 
 `none` is a threshold, never a severity: `write` drops a record at that level, so
 a caller may pipe a level straight from `getlevel` back into `write`.
@@ -1683,8 +1666,7 @@ upload slot headers. `setredact` (default on) also replaces message content:
 `<body>` and `<subject>` text (as `[redacted N chars]`), reactions, XHTML-IM,
 out-of-band URLs and upload slot URLs. This is best effort; JIDs, nicks, the
 roster, presence, room names and the IP addresses in call candidates and native
-logs stay, so treat a log as private. The GUI stores the switch as the
-`log_redact_content` setting.
+logs stay, so treat a log as private.
 
 `write` is non-blocking, so the log may not be written by the time it returns.
 
@@ -1722,9 +1704,13 @@ works yet, so gate everything below on `storage unlock` succeeding;
 before anything else does (see [storage](#storage)) - after either gate
 resolves, check `status` again, since unlocking can itself reveal a pending
 decrypt. Once `plaintext` or `unlocked`, the backend connects every enabled
-account at init; there is no connect call. Run `account list` and open
-the main UI if it returns anything (on an enabled account, if any; a
-disabled one can still be read), setup if it doesn't.
+account at init; there is no connect call. That is also when `setting` becomes
+readable, so reapply the [log](#log) choices the frontend keeps there, except
+one whose command-line flag (`--debug-file`, `--debug-level`, ...) was given
+for this run - the Tk GUI keeps them as `log_to_file`, `log_redact_content`,
+`log_level` and `log_native`. Run `account list` and open the main UI if it
+returns anything (on an enabled account, if any; a disabled one can still be
+read), setup if it doesn't.
 
 **Sign-in.** Creating the account is the credential check. Subscribe to
 `conn <State>`, `<AuthError>` and `<ConnError>` for the account, then call
@@ -1977,6 +1963,37 @@ elsewhere in this section: the sender name, the reaction row from `reactions`,
 and for your own messages the send state in `server_status` and delivery or
 read state in `remote_status`.
 
+A chat list previews each chat from its entry's `last_message`, drawn the same
+way: switch on `content.type`, show a `retracted` tombstone as deleted, and
+prefix it with "You:" when `is_outgoing`, or with the sender's nick (the
+resource of `from_jid`) in a group chat.
+
+## Read state and alerts
+
+What the user has read is one watermark per chat, and the backend moves it
+for you as long as it knows what is on screen.
+
+**A chat on screen.** `chat open` it once however many windows show it,
+`chat close` it when the last one goes, and call `chat view` with the newest
+message on screen on every scroll and arrival. While the app is active that
+reads the chat up to there - the watermark, plus a `<displayed>` to a 1:1
+peer - and keeps [notify](#notify) quiet for it. Report focus with `app
+setActive`, so a chat left on screen behind another window isn't read.
+Messages below the fold stay unread until scrolled to.
+
+**A chat not on screen.** To mark one read from a menu, call `message
+markOwnRead` with its newest timestamp, plus `markDisplayed` in a 1:1. Both
+are safe to repeat.
+
+**The chat list.** Each `chatlist` entry carries `unread` and
+`unread_mentions`, and a `chatlist <Item>` follows every watermark move, so
+the list needs no calls of its own.
+
+**Alerts.** Show each `notify <Notify>`; the backend has already left out
+chats being looked at, muted ones and messages already read. Dismiss it when
+`message <OwnRead>` for its chat moves past its `timestamp` - that covers
+reads on your other devices too.
+
 ## Attachments
 
 A message with attachments has `content.type: "media"`, carrying an
@@ -2162,7 +2179,16 @@ state or a track. Tacky turns those into Jingle and back exactly as it does
 for its own backends, so call state and every `calls` event are unchanged.
 There the devices and the rendering are the frontend's: enumeration comes
 back empty, and video arrives as its own track id rather than a frame stream.
-The two message shapes are in [media](#media).
+The two message shapes are in [The host backend](#the-host-backend).
+
+Two things are the host stack's to get right. When answering it gets no
+`addTrack` and sends on the offer's m-lines, so make them sendrecv (a browser
+leaves them recvonly) before the answering `setLocalDescription`; then put the
+mic or camera on the m-line the following `attachAudio` or `attachVideoSender`
+names, and treat that track as yours for `setVideoEnabled` and mute. And share
+one camera between every sender and a group call's `openPreview` self-view, a
+track clone per sender, so a pc closing stops only its own clone and the
+preview never freezes.
 
 The rest of this section is tacky's own and does not change with the
 backend. What a backend can vary is whether it enumerates devices at all -
@@ -2183,6 +2209,13 @@ a minute. An outgoing call is retracted after the same minute.
 
 A `propose` arriving while the account has any other call, group sessions
 included, is rejected `busy` without ringing and comes out as `<Missed>`.
+
+Calls are verified the way Conversations does it: each side sends its DTLS
+fingerprint OMEMO-encrypted, so a server can't swap in its own certificate.
+`<Verified>` gives the result before `<Active>` and again whenever it changes;
+show the call as secure only while it says `verified`. A fingerprint that
+should have come encrypted and didn't, or that comes from an untrusted key,
+fails the call rather than downgrading it.
 
 Either side ends the call with `calls hangup`. Before media is up the
 caller retracts over JMI instead of terminating; after that it's a Jingle
