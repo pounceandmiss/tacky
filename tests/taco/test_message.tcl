@@ -3712,6 +3712,47 @@ test message-reply-fallback-codepoints {fallback offsets count Unicode codepoint
         $::_client db onecolumn {SELECT body FROM chat_message WHERE server_id='srvRF3'}
     } -result {reply}
 
+# A reply body with its fallback span(s) stripped. $spans is {for {{start
+# end} ...}}.
+proc msg_reply_strip {body spans} {
+    lassign $spans for ranges
+    set node [j message -from alice@example.com/phone {
+        j body -body $body
+        j fallback -ns urn:xmpp:fallback:0 -for $for {
+            foreach r $ranges {
+                j body -start [lindex $r 0] -end [lindex $r 1]
+            }
+        }
+    }]
+    reply::strip_fallback $node $body
+}
+
+test message-reply-fallback-end-in-another-unit-is-read-in-the-one-that-closes-a-line \
+    {a reply's end counted in UTF-16 units (Kaidan, QXmpp) or UTF-8 bytes is read so when code points would not close the quote's line} \
+    -body {
+        list [msg_reply_strip "> 👋👋\nok" {urn:xmpp:reply:0 {{0 7}}}] \
+            [msg_reply_strip "> 👋 мир\n\nОтвет 🎉" {urn:xmpp:reply:0 {{0 10}}}] \
+            [msg_reply_strip "> мир\nok" {urn:xmpp:reply:0 {{0 9}}}] \
+            [msg_reply_strip "> 👋\nb\nc" {urn:xmpp:reply:0 {{0 4}}}] \
+            [msg_reply_strip "> a\nbc" {urn:xmpp:reply:0 {{0 5}}}] \
+            [msg_reply_strip "> 👋👋\nok" {urn:other:0 {{0 7}}}]
+    } -result [list ok "Ответ 🎉" ok "b\nc" c "> 👋👋\nok"]
+
+test message-reply-fallback-live-reply-counted-in-utf16-keeps-its-words \
+    {a live reply whose quote holds emoji and whose end counts UTF-16 units is stored with its own words, not dropped as all quote} \
+    {*}$msg_common \
+    -body {
+        $::_client conn feed [j message -type chat -id rf16 -from alice@example.com/phone {
+            j body -body "> 👋👋\nok"
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRF16 -by user@test.example.com
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                j body -start 0 -end 7
+            }
+        }]
+        $::_client db onecolumn {SELECT body FROM chat_message WHERE server_id='srvRF16'}
+    } -result {ok}
+
 test message-reply-fallback-for-mismatch {a fallback for a different feature is left in the body} \
     {*}$msg_common \
     -body {
