@@ -248,7 +248,12 @@ snit::macro tackymethod {args} {
 # a background handler: nothing times out a request, so an escaped error
 # leaves the caller with no reply at all.
 proc taco_call {taco module method args} {
-    set code [catch {$taco $module $method {*}$args} result opts]
+    set code [catch {
+        # Reached only by re-entry: everything else waits in its queue (see
+        # taco_type Exclusive). Routed like any error the method could raise.
+        if {[set busy [$taco busy]] ne ""} { error "$busy in progress" }
+        $taco $module $method {*}$args
+    } result opts]
     # Not `return -options` on success: -level 0 evaluates in place instead of
     # unwinding, so the error branches below would run too.
     if {$code == 0} {
@@ -376,6 +381,28 @@ snit::type taco_type {
     # Whether normal boot has run: false only at the pre-boot storage gate.
     method booted {} {
         return $CompleteUnlockDone
+    }
+
+    # Run $script holding the backend's thread for its whole run: it must
+    # never enter the event loop (no update, vwait, or waiting on a reply).
+    # Stanzas, timers and requests then wait in their queues and run after
+    # it returns, so nothing else can touch the databases meanwhile. The
+    # one way in is re-entry from a listener of an event $script emits, in
+    # the same-thread frontend: taco_call refuses that with "$what in
+    # progress". Used by storage migration.
+    variable Holder ""
+    method Exclusive {what script} {
+        set Holder $what
+        try {
+            uplevel 1 $script
+        } finally {
+            set Holder ""
+        }
+    }
+
+    # What holds the backend exclusively now, or ""
+    method busy {} {
+        return $Holder
     }
 
     method CompleteUnlock {} {

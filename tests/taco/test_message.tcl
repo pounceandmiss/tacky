@@ -44,6 +44,8 @@ proc msg_history {args} {
     set ::_msg_hist_result {}
     tacky message history -acc $::acc {*}$args \
         -command [list apply {{result} { set ::_msg_hist_result $result }}]
+    # The call runs on the next turn of the event loop (tacky_type queues it)
+    update
     set ::_msg_hist_result
 }
 
@@ -322,6 +324,8 @@ proc msg_goto {args} {
     set ::_msg_goto_result {}
     tacky message goto -acc $::acc {*}$args \
         -command [list apply {{result} { set ::_msg_goto_result $result }}]
+    # The call runs on the next turn of the event loop (tacky_type queues it)
+    update
     set ::_msg_goto_result
 }
 
@@ -330,6 +334,8 @@ proc msg_search {args} {
     set ::_msg_search_result {}
     tacky message search -acc $::acc {*}$args \
         -command [list apply {{result} { set ::_msg_search_result $result }}]
+    # The call runs on the next turn of the event loop (tacky_type queues it)
+    update
     set ::_msg_search_result
 }
 
@@ -567,6 +573,7 @@ test message-mam-server-id-not-timestamp {MAM result server_id in DB is archive 
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 5 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -1326,12 +1333,14 @@ test message-history-acked-send-becomes-cursor \
         # No citizen yet: this page goes by time and returns our send's copy.
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsR -limit 50 -command [list apply {{r} {}}]
+        update
         msg_mam_respond [list [list id arc-c1 from $acc/res to alice@example.com \
             body mine origin_id oid-c1 stamp 2024-03-01T10:00:05Z]] -complete false
         set rows [msg_store_latest alice@example.com]
         set newTs [dict get [lindex $rows 0] timestamp]
         tacky message history -acc $acc -chat alice@example.com \
             -before $newTs -limit 50 -command [list apply {{r} {}}]
+        update
         set q [lindex [xsearch [lindex [$::_client conn get_written] end] \
             query -ns urn:xmpp:mam:2] 0]
         list [llength $rows] [dict get [lindex $rows 0] server_id] \
@@ -1859,6 +1868,7 @@ test message-history-before-empty-queries-mam {-before with empty local still qu
         tacky message history -acc $acc -chat alice@example.com \
             -before 500 -limit 50 \
             -command [list apply {{r} {}}]
+        update
         set written2 [$::_client conn get_written]
         expr {[llength $written2] > [llength $written1]}
     } -result {1}
@@ -1869,6 +1879,7 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 5 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -1914,6 +1925,7 @@ test message-history-mam-before-timestamp {-before with no local citizen pages b
         tacky message history -acc $acc -chat alice@example.com \
             -before $ts -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
         list [xsearch $qnode x field @var end value -get body] \
@@ -1934,6 +1946,7 @@ test message-history-mam-after-timestamp {-after with no at-or-before citizen pa
         tacky message history -acc $acc -chat alice@example.com \
             -after $ts -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
         # The only citizen is newer than the cursor, so none anchors -after.
@@ -1951,6 +1964,7 @@ test message-history-mam-default-cursor {default (no timestamp) with empty local
         # Use a different chat that has no local data -> triggers cursor-less MAM
         tacky message history -acc $acc -chat carol@example.com -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
         # No time bounds; an empty <before/> selects the last (newest) page
@@ -1977,6 +1991,7 @@ test message-history-nearest-citizen-skips-noncitizen \
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsN -limit 50 \
             -command [list apply {{r} {}}]
+        update
         set q1 [lindex [xsearch [lindex [$::_client conn get_written] end] \
             query -ns urn:xmpp:mam:2] 0]
         xsearch $q1 set before -get body
@@ -1997,6 +2012,7 @@ test message-history-dead-cursor-retries-by-time \
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iq1 [lindex [$::_client conn get_written] end]
         set firstCursor [xsearch [lindex [xsearch $iq1 query -ns urn:xmpp:mam:2] 0] \
@@ -2034,6 +2050,7 @@ test message-history-time-retry-not-found-falls-back \
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         foreach _ {1 2} {
             set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
             $::_client iq feed [j iq -type error -id $iqId {
@@ -2055,6 +2072,7 @@ test message-history-transient-error-no-retry \
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set queriesBefore [mam_iq_count]
         set iq1id [dict get [lindex [$::_client conn get_written] end] attrs id]
         $::_client iq feed [j iq -type error -id $iq1id {
@@ -2091,6 +2109,7 @@ test message-history-archive-error-with-nothing-local-is-reported \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}] \
             -onerror [list apply {{m} { set ::failure $m }}]
+        update
         msg_history_fails
         list $::result $::failure
     } -result {none {This server keeps no message archive}}
@@ -2105,6 +2124,7 @@ test message-history-archive-error-without-onerror-falls-back-to-local \
         tacky message history -acc $acc -chat alice@example.com \
             -before $tsP -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         msg_history_fails
         llength $::result
     } -result 0
@@ -2123,6 +2143,7 @@ test message-history-archive-error-still-answers-a-partial-page \
             -before 500 -limit 50 \
             -command [list apply {{r} { set ::result $r }}] \
             -onerror [list apply {{m} { set ::failure $m }}]
+        update
         msg_history_fails
         list [llength $::result] $::failure
     } -result {1 none}
@@ -2137,6 +2158,7 @@ test message-goto-remote-error-with-nothing-local-is-reported \
             -date 500 -source remote -limit 50 \
             -command [list apply {{r} { set ::result $r }}] \
             -onerror [list apply {{m} { set ::failure $m }}]
+        update
         msg_history_fails
         list $::result $::failure
     } -result {none {This server keeps no message archive}}
@@ -2151,6 +2173,7 @@ test message-history-mam-drops-empty-body {empty-body MAM stanzas (receipts/mark
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         msg_mam_respond {
             {id m1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
             {id m2 from bob@example.com body "real" stamp 2024-01-01T09:01:00Z}
@@ -2166,6 +2189,7 @@ test message-history-mam-fill-loop-stops-on-progress {a page with any displayabl
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 3 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set pagesBefore [mam_iq_count]
         # 3 stanzas, 1 displayable, archive not exhausted: one message is
         # progress enough; scroll-back paging fetches the rest later
@@ -2184,6 +2208,7 @@ test message-history-mam-fill-loop-stops-on-complete {fill loop stops at archive
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 5 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         set pagesBefore [mam_iq_count]
         msg_mam_respond {
             {id r1 from bob@example.com body "only" stamp 2024-01-01T09:00:00Z}
@@ -2197,6 +2222,7 @@ test message-history-mam-fill-loop-pages-through-empty {a wholly empty-body page
         set result {}
         tacky message history -acc $acc -chat alice@example.com -limit 2 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         # page 1: entirely receipts/markers, more behind them
         msg_mam_respond {
             {id e1 from bob@example.com body "" stamp 2024-01-01T09:00:00Z}
@@ -2217,6 +2243,7 @@ test message-history-fill-loop-stops-at-page-cap \
         set ::result pending
         tacky message history -acc $acc -chat alice@example.com -limit 2 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         # Every page is receipts and the archive always claims more behind
         # them, so nothing but the cap ends this.
         for {set i 0} {$i < 25} {incr i} {
@@ -2243,6 +2270,7 @@ test message-history-hole-triggers-mam-on-pagination {cursor-based pagination ac
         tacky message history -acc $acc -chat alice@example.com \
             -before 500 -limit 50 \
             -command [list apply {{r} {}}]
+        update
         set written2 [$::_client conn get_written]
         expr {[llength $written2] > [llength $written1]}
     } -result {1}
@@ -2276,6 +2304,7 @@ test message-history-mam-sweeps-bounding-hole {MAM response with overlap sweeps 
         tacky message history -acc $acc -chat alice@example.com \
             -before 100 -limit 50 \
             -command [list apply {{r} {}}]
+        update
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
         # MAM returns older history (no overlap with current cache,
@@ -2311,6 +2340,7 @@ test message-history-mam-complete-removes-bounding-hole {MAM complete=true on a 
         tacky message history -acc $acc -chat alice@example.com \
             -before 100 -limit 50 \
             -command [list apply {{r} {}}]
+        update
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         $::_client iq feed [j iq -type result -id $iqId {
             j fin -ns urn:xmpp:mam:2 -complete true {
@@ -2334,6 +2364,7 @@ test message-history-complete-returns-rows-behind-hole {an empty complete page r
         tacky message history -acc $acc -chat alice@example.com \
             -before 500 -limit 50 \
             -command [list apply {{r} {set ::_got $r}}]
+        update
         msg_mam_respond {} -complete true
         lmap m $::_got {dict get $m content body}
     } -result {old}
@@ -2349,6 +2380,7 @@ test message-history-cancel-suppresses-callback {cancel tag prevents fetch callb
         tacky message history -acc $acc -chat bob@example.com -limit 50 \
             -tag mytag \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -2380,6 +2412,7 @@ test message-history-cancel-still-stores {cancel suppresses callback but stores 
         tacky message history -acc $acc -chat bob@example.com -limit 50 \
             -tag mytag \
             -command [list apply {{r} {}}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -2414,9 +2447,11 @@ test message-history-tag-goes-when-answered {tagged history calls answered from 
         foreach t {t1 t2 t3} {
             tacky message history -acc $acc -chat alice@example.com -limit 1 -tag $t \
                 -command {apply {{r} { incr ::_answers }}}
+            update
         }
         tacky message goto -acc $acc -chat alice@example.com -date 1000000 \
             -tag t4 -command {apply {{r} { incr ::_answers }}}
+        update
         list $::_answers [array names [$::_client message info vars ActiveTags]]
     } -result {4 {}}
 
@@ -2463,6 +2498,7 @@ test message-goto-remote {goto -source remote fetches MAM then returns getAround
             -date [ParseTimestamp 2024-06-15T12:00:00Z] \
             -source remote -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -2495,6 +2531,7 @@ test message-goto-remote-error-falls-back {goto -source remote falls back to loc
         tacky message goto -acc $acc -chat alice@example.com \
             -date 100 -source remote -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         $::_client iq feed [j iq -type error -id $iqId {
@@ -2515,6 +2552,7 @@ test message-goto-remote-wraps-page-with-holes {a short goto page gets holes on 
             -date [ParseTimestamp 2024-06-15T12:00:00Z] \
             -source remote -limit 50 \
             -command [list apply {{r} {}}]
+        update
         msg_mam_respond {
             {id sid1 body first stamp 2024-06-15T12:00:00Z}
             {id sid2 body second stamp 2024-06-15T12:05:00Z}
@@ -2535,6 +2573,7 @@ test message-goto-remote-complete-leaves-newer-edge-open {a goto page reaching t
             -date [ParseTimestamp 2024-06-15T12:00:00Z] \
             -source remote -limit 50 \
             -command [list apply {{r} {}}]
+        update
         msg_mam_respond {
             {id sid1 body first stamp 2024-06-15T12:00:00Z}
             {id sid2 body second stamp 2024-06-15T12:05:00Z}
@@ -2551,6 +2590,7 @@ test message-goto-remote-sweeps-hole-inside-page {jumping to a search hit sweeps
         msg_prime_search
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 -command [list apply {{r} {}}]
+        update
         msg_mam_respond {
             {id sid1 body "needle in haystack" stamp 2024-06-15T12:00:00Z}
         } -complete true
@@ -2562,6 +2602,7 @@ test message-goto-remote-sweeps-hole-inside-page {jumping to a search hit sweeps
             -date [ParseTimestamp 2024-06-15T12:00:00Z] \
             -source remote -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         msg_mam_respond {
             {id sid1 body "needle in haystack" stamp 2024-06-15T12:00:00Z}
             {id sid2 body after stamp 2024-06-15T12:05:00Z}
@@ -3195,6 +3236,7 @@ test message-search-sends-mam-fulltext {search sends MAM query with fulltext fie
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "hello world" -limit 10 \
             -command [list apply {{r} {}}]
+        update
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
         set ftVal [xsearch $qnode x field @var withtext value -get body]
@@ -3211,6 +3253,7 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3259,6 +3302,7 @@ test message-search-remote-hits-carry-match-ranges {an archive hit is annotated 
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3293,6 +3337,7 @@ test message-search-skips-empty-body {search skips results with empty body} \
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3329,6 +3374,7 @@ test message-search-pagination-before {search with -before_id sends RSM before e
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "test" -before_id "page-cursor-id" -limit 10 \
             -command [list apply {{r} {}}]
+        update
         set iqStanza [lindex [$::_client conn get_written] end]
         set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
         set beforeVal [xsearch $qnode set before -get body]
@@ -3375,6 +3421,7 @@ test message-search-error-is-an-error {an archive error answers -onerror, not -c
             -query "test" \
             -command [list apply {{r} { set ::result [list ok $r] }}] \
             -onerror [list apply {{m} { set ::result [list error $m] }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         $::_client iq feed [j iq -type error -id $iqId {
@@ -3399,6 +3446,7 @@ test message-search-wraps-inserted-hit-with-holes {a new search hit gets older a
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3438,6 +3486,7 @@ test message-search-dedup-hit-adds-no-holes {a search hit that dedups against a 
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3476,6 +3525,7 @@ test message-search-hit-confirming-own-send-is-reported {a hit matching a pendin
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         msg_mam_respond {
             {id sid1 from user@test.example.com/phone to alice@example.com
              origin_id uuid-s1 body "needle in haystack"
@@ -3499,6 +3549,7 @@ test message-search-repeat-does-not-pile-holes {repeating the same search does n
             tacky message search -source remote -acc $acc -chat alice@example.com \
                 -query "needle" -limit 10 \
                 -command [list apply {{r} {}}]
+            update
             set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
             set qid [mam_queryid]
             $::_client mam onResultMessage [j message -from user@test.example.com {
@@ -3526,6 +3577,7 @@ test message-search-multiple-hits-share-middle-hole {two hits with no citizens b
         tacky message search -source remote -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3734,6 +3786,7 @@ test message-search-remote-unsupported-sends-no-query {an archive advertising no
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result [list ok $r] }}] \
             -onerror [list apply {{m} { set ::result [list error $m] }}]
+        update
         list [mam_query_count] $::result
     } -result {0 {error {This server can't search its archive}}}
 
@@ -3758,6 +3811,7 @@ test message-search-both-answers-from-store {both ingests the remote page, then 
         tacky message search -source both -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
 
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
         set qid [mam_queryid]
@@ -3790,6 +3844,7 @@ test message-search-both-degrades-to-local-when-unsupported {both answers from t
         tacky message search -source both -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         list [mam_query_count] \
              [lmap m [dict get $::result messages] {dict get $m content body}] \
              [dict exists $::result error]
@@ -3806,6 +3861,7 @@ test message-search-both-before-pages-locally {a -before cursor walks the fetche
         tacky message search -source both -acc $acc -chat alice@example.com \
             -query "needle" -limit 10 -before 200 \
             -command [list apply {{r} { set ::result $r }}]
+        update
         list [mam_query_count] \
              [lmap m [dict get $::result messages] {dict get $m timestamp}]
     } -result {0 100}
@@ -3963,6 +4019,7 @@ test message-gotoreply-local {gotoReply resolves a reply target locally and retu
         tacky message gotoReply -acc $acc -chat alice@example.com \
             -reply_id SRV-TGT -reply_to alice@example.com -source local \
             -command [list apply {{r} {set ::_gr $r}}]
+        update
         set bodies {}
         foreach m [dict get $::_gr messages] { lappend bodies [dict get $m content body] }
         list [expr {[dict get $::_gr anchor] ne ""}] \
@@ -4847,6 +4904,7 @@ test message-moderate-unechoed-reports {a message the room hasn't echoed has no 
         set got ""
         tacky message moderate -acc $acc -chat $room -timestamp 100 \
             -onerror [list apply {{msg} { set ::got $msg }}]
+        update
         list [expr {[llength [$::_client conn get_written]] - $before}] $got
     } -result {0 {That message hasn't reached the room yet}}
 
@@ -4857,6 +4915,7 @@ test message-moderate-error-maps-condition \
         set got ""
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
             -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        update
         msg_fail_last_iq forbidden
         set got
     } -result {You do not have permission to delete messages in this room}
@@ -4867,6 +4926,7 @@ test message-moderate-error-unknown-condition {an unmapped condition still repor
         set got ""
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
             -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        update
         msg_fail_last_iq service-unavailable
         set got
     } -result {The message could not be deleted}
@@ -4877,6 +4937,7 @@ test message-moderate-rejection-leaves-message-intact \
         set ts [msg_feed_room srv1]
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
             -timestamp $ts -onerror [list apply {{msg} {}}]
+        update
         msg_fail_last_iq forbidden
         dict get [lindex [msg_store_latest room@conf.example.com?join] 0] retracted
     } -result {0}
@@ -4887,6 +4948,7 @@ test message-moderate-success-is-silent {a successful moderation request does no
         set got none
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
             -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+        update
         set req [lindex [$::_client conn get_written] end]
         $::_client iq feed [j iq -type result -id [xsearch $req -get @id] \
             -from room@conf.example.com]
@@ -4900,6 +4962,7 @@ proc msg_search {args} {
     set ::_msg_search_result {}
     tacky message search -acc $::acc {*}$args \
         -command [list apply {{result} { set ::_msg_search_result $result }}]
+    update
     set ::_msg_search_result
 }
 
@@ -4944,6 +5007,7 @@ test message-search-unscoped-refuses-a-remote-source {MAM queries one archive, s
         tacky message search -acc $acc -query needle -source both \
             -command [list apply {{r} {}}] \
             -onerror [list apply {{msg} { set ::got $msg }}]
+        update
         set got
     } -result {search: -source "both" needs a -chat}
 
@@ -4955,6 +5019,7 @@ proc msg_search_refused {args} {
     tacky message search -acc $::acc -query needle {*}$args \
         -command [list apply {{r} {}}] \
         -onerror [list apply {{msg} { set ::_msg_search_error $msg }}]
+    update
     set ::_msg_search_error
 }
 

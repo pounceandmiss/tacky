@@ -32,6 +32,7 @@ test setting-get-command {get with -command calls back result} \
         tacky setting set -key lang -value en
         set ::_cb {}
         tacky setting get -key lang -command ::_test_cb
+        update
         set ::_cb
     } -result {en}
 
@@ -40,6 +41,7 @@ test setting-get-missing-command {get with -command calls back empty string for 
     -body {
         set ::_cb {}
         tacky setting get -key missing -command ::_test_cb
+        update
         set ::_cb
     } -result {{}}
 
@@ -82,6 +84,7 @@ test setting-list-command {list with -command calls back result} \
         tacky setting set -key x -value 1
         set ::_cb {}
         tacky setting list -command ::_test_cb
+        update
         set ::_cb
     } -result {x}
 

@@ -177,6 +177,17 @@ A thrown error (including `return -code error`) goes to `-onerror`, or to
 like one. `tests/tackyd-json/test_reply.tcl` checks that bodies which answer
 `-command` themselves are declared `-async`.
 
+The backend is one thread running an event loop, so a handler runs to the end
+before any other stanza, timer or request is looked at. Code that must not
+interleave with anything else therefore only has to not yield: no `update`,
+no `vwait`, no waiting on a reply. `taco_type Exclusive` names such a stretch
+and refuses requests that re-enter it from a same-thread listener; storage
+migration runs inside one (`test_storage.tcl` storage-migration-refuses-reentry).
+In the same-thread front end (`tacky_type`) a call with `-command`/`-onerror`
+is queued with `after 0` rather than run inline, so a listener's request never
+runs inside the backend's own stack - in a test, `update` (or `wait_call`)
+before reading what its callback set.
+
 ## Media backends
 
 Calls are split in two. Signaling - Jingle, JMI, SDP translation, call state,
