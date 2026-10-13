@@ -364,7 +364,8 @@ snit::widget chatarea {
             -justify center -lmargin1 20 -lmargin2 20 -rmargin 20
         $text tag configure drawerror -foreground [palette error] \
             -font "$font italic" -lmargin1 40 -lmargin2 40 -spacing3 6
-        # XEP-0308 "(edited)" marker and XEP-0424/0425 retraction tombstone
+        # XEP-0308 "(edited)" marker; XEP-0424/0425 retraction tombstone and
+        # the stand-in for an empty message
         $text tag configure edited -foreground [palette dim]
         $text tag configure distrusted -foreground [palette error] -font $tiny
         $text tag configure tombstone -foreground [palette system] \
@@ -551,7 +552,12 @@ snit::widget chatarea {
         set remoteStatus [dict getdef $msg remote_status none]
         set serverStatus [dict getdef $msg server_status ""]
         set outgoing [dict get $msg is_outgoing]
-        $text ins msgins $displayBody [list $tag body message $tag.body]
+        if {$displayBody eq "" && !$hasAttachments} {
+            # The sender sent a message with nothing in it.
+            $text ins msgins "Empty message" [list $tag body tombstone]
+        } else {
+            $text ins msgins $displayBody [list $tag body message $tag.body]
+        }
         if {[dict getdef $msg edited 0]} {
             $text ins msgins "  (edited)" [list $tag edited]
         }

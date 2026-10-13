@@ -74,6 +74,12 @@ test preview-tombstone {a retracted message reads as deleted} \
         message_preview [dict remove [md_store retracted 1 is_outgoing 1] content] 0
     } -result {You: Message deleted}
 
+test preview-empty-message {a message whose body is empty previews as such} \
+    -body {
+        list [message_preview [md_store content {type text body ""}] 0] \
+            [message_preview [md_store content {type text body ""} is_outgoing 1] 0]
+    } -result {{Empty message} {You: Empty message}}
+
 test preview-media-caption-wins {a captioned attachment previews its caption} \
     -body {
         message_preview [md_store content {

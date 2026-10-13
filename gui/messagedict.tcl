@@ -23,8 +23,9 @@ proc message_preview {storeDict groupchat {limit 60}} {
         set text [message_text $storeDict]
         if {$text eq "" && [dict exists $storeDict content]} {
             set content [dict get $storeDict content]
-            if {[dict get $content type] eq "media"} {
-                set text [attachment_preview [dict get $content attachments]]
+            switch -- [dict get $content type] {
+                media { set text [attachment_preview [dict get $content attachments]] }
+                text  { set text "Empty message" }
             }
         }
     }

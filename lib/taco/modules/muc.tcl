@@ -1615,6 +1615,11 @@ snit::type taco_muc {
                 return 1
             }
 
+            # An occupant's empty <body/> is a message too (an empty one);
+            # the room's own, with nothing to say, is not.
+            set hasBody [expr {$bodyText ne ""
+                || ($nick ne "" && [HasBody $stanza])}]
+
             # A bodyless groupchat message carrying an XEP-0444 <reactions>,
             # an XEP-0424/0425 <retract> (moderation broadcast, v1 or v0) or an
             # XEP-0482 call invite or answer is forwarded too;
@@ -1625,7 +1630,7 @@ snit::type taco_muc {
             set hasRetract [expr {[RetractTargetId $stanza] ne ""}]
             set hasCall [expr {[llength \
                 [xsearch $stanza * -ns urn:xmpp:call-invites:0]] > 0}]
-            if {$bodyText ne "" || $hasReactions || $hasRetract || $hasCall} {
+            if {$hasBody || $hasReactions || $hasRetract || $hasCall} {
                 $self OnGroupchatMessage $roomJid $nick $stanza
                 return 1
             }
@@ -1661,8 +1666,7 @@ snit::type taco_muc {
         set roomJid [jid norm [jid bare $from]]
             if {[info exists Rooms($roomJid)] && [dict get $Rooms($roomJid) joined]} {
                 set nick [jid resource $from]
-                set bodyText [xsearch $stanza body -get body]
-                if {$bodyText ne ""} {
+                if {[HasBody $stanza]} {
                     $self OnPrivateMessage $roomJid $nick $stanza
                     return 1
                 }

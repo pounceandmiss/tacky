@@ -48,8 +48,9 @@ proc msg_history {args} {
 }
 
 # Helper: build a MAM <result> node wrapping a message
+# body "" is a bodyless message (a receipt, say); empty_body 1 an empty <body/>.
 proc mam_result {args} {
-    set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id "" type ""}
+    set defaults {id sid1 queryid "" from alice@example.com to "" body hello stamp 2024-01-01T00:00:00Z origin_id "" type "" empty_body 0}
     set opts [dict merge $defaults $args]
     set oid [dict get $opts origin_id]
     set qid [dict get $opts queryid]
@@ -70,7 +71,9 @@ proc mam_result {args} {
         j forwarded -ns urn:xmpp:forward:0 {
             j delay -ns urn:xmpp:delay -stamp [dict get $opts stamp]
             j message {*}$msgAttrs {
-                j body -body [dict get $opts body]
+                if {[dict get $opts body] ne "" || [dict get $opts empty_body]} {
+                    j body -body [dict get $opts body]
+                }
             }
         }
     }
@@ -1393,6 +1396,124 @@ test message-classify-body-is-message {a body is a normal stored message} \
             [dict get [$::_client message ParseMessage $n \
                 -chat_jid bob@example.com -timestamp 1000 -server_id ""] body]
     } -result {message hi}
+
+# An empty <body/> is still a message: the sender sent one, and the
+# recipient learns it came. Alongside a control element it is that control.
+
+# The bodies stored in $jid's chat, oldest first.
+proc msg_empty_bodies {jid} {
+    $::_client db eval {SELECT body FROM chat_message WHERE chat_jid=$jid
+                        ORDER BY timestamp}
+}
+
+test message-empty-body-live-is-stored {a live 1:1 message with an empty <body/> is stored with body ""} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id e1 -from alice@example.com/phone {
+            j body
+            j stanza-id -ns urn:xmpp:sid:0 -id srvE1 -by user@test.example.com
+        }]
+        set rows [msg_store_latest alice@example.com]
+        list [llength $rows] [dict get [lindex $rows 0] content body]
+    } -result {1 {}}
+
+test message-empty-body-beside-control-is-control \
+    {an empty <body/> beside a receipt, a marker or a chat state stays a control stanza: no row} \
+    {*}$msg_common -body {
+        set out {}
+        foreach child {
+            {j received -ns urn:xmpp:receipts -id abc}
+            {j displayed -ns urn:xmpp:chat-markers:0 -id abc}
+            {j composing -ns http://jabber.org/protocol/chatstates}
+        } {
+            set n [j message -type chat -from alice@example.com/phone \
+                "j body; $child"]
+            lappend out [ClassifyMessage $n ""]
+            $::_client conn feed $n
+        }
+        lappend out [llength [msg_empty_bodies alice@example.com]]
+    } -result {receipt marker chatstate 0}
+
+test message-empty-body-room-is-stored {a groupchat message with an empty <body/> is stored} \
+    {*}$msg_common -body {
+        msg_muc_join room@muc.example.com bob
+        $::_client conn feed [j message -type groupchat -id g1 \
+            -from room@muc.example.com/alice { j body }]
+        msg_empty_bodies room@muc.example.com?join
+    } -result {{}}
+
+test message-empty-body-mam-is-stored {an archived message with an empty <body/> is stored} \
+    {*}$msg_common -body {
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id srvEM queryid $qid body "" empty_body 1 \
+                from alice@example.com/phone to user@test.example.com \
+                stamp 2024-01-01T10:00:00Z]]
+        list [$::_client db onecolumn {SELECT count(*) FROM chat_message
+                                       WHERE server_id='srvEM'}] \
+            [msg_empty_bodies alice@example.com]
+    } -result {1 {{}}}
+
+test message-reply-fallback-whole-body-keeps-it \
+    {a reply whose fallback span covers its whole body is stored with that body, not dropped} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id rw1 -from alice@example.com/phone {
+            j body -body "> hi\nwhat?"
+            j stanza-id -ns urn:xmpp:sid:0 -id srvRW1 -by user@test.example.com
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                j body -start 0 -end 10
+            }
+        }]
+        $::_client db onecolumn {SELECT body FROM chat_message WHERE server_id='srvRW1'}
+    } -result "> hi\nwhat?"
+
+test message-edit-fallback-whole-body-keeps-it \
+    {a correction whose reply fallback covers its whole body applies that body} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id ew1 {
+            j origin-id -ns urn:xmpp:sid:0 -id ew1
+            j body -body "first"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id ew2 {
+            j replace -ns urn:xmpp:message-correct:0 -id ew1
+            j body -body "> hi\nsecond"
+            j reply -ns urn:xmpp:reply:0 -to alice@example.com -id TGT
+            j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:reply:0 {
+                j body -start 0 -end 11
+            }
+        }]
+        set rows [msg_store_latest alice@example.com]
+        list [llength $rows] [dict get [lindex $rows 0] content body] \
+            [dict get [lindex $rows 0] edited]
+    } -result [list 1 "> hi\nsecond" 1]
+
+test message-edit-to-empty-body {a correction to an empty <body/> empties the message, not a row of its own} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id ee1 {
+            j origin-id -ns urn:xmpp:sid:0 -id ee1
+            j body -body "first"
+        }]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id ee2 {
+            j replace -ns urn:xmpp:message-correct:0 -id ee1
+            j body
+        }]
+        set rows [msg_store_latest alice@example.com]
+        list [llength $rows] [dict get [lindex $rows 0] content body] \
+            [dict get [lindex $rows 0] edited]
+    } -result {1 {} 1}
+
+test message-oob-empty-body-is-attachment \
+    {an OOB share with an empty <body/> is stored as the attachment} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -id oe1 -from alice@example.com/phone {
+            j body
+            j x -ns jabber:x:oob { j url -body https://example.com/a.png }
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m content type] [dict get $m content caption] \
+            [llength [dict get $m content attachments]]
+    } -result {media {} 1}
 
 # Incoming read receipts / chat markers advance remote_status (XEP-0184/0333).
 test message-marker-received-marks-delivered \
