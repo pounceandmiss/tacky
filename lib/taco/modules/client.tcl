@@ -3,8 +3,9 @@ snit::type taco_client {
     variable InCarbon 0
     # Set from <SessionStart> until its <SessionEnd>.
     variable SessionLive 0
-    # Set once shutdown has run: the client is on its way out.
-    variable Closed 0
+    # Set while endSession takes the link down: what is written then would
+    # wait in conn's buffer for the next session, stale.
+    variable Ending 0
     set mods {
         message pubsub mam roster caps bookmarks presence avatar muc vcard
         nick chatlist chat author extdisco calls groupcall omemo file notify blocking
@@ -56,7 +57,18 @@ snit::type taco_client {
     option -data-dir -default "" -readonly yes
     option -cache-dir -default "" -readonly yes
 
-    delegate method connect to conn
+    # 0 while the account is disabled: the client stays, to read from, but
+    # touches no network. Nothing is written and requests fail at once; see
+    # DOC.md "A disabled account".
+    option -enabled -default 1 -configuremethod SetEnabled
+
+    method SetEnabled {opt value} {
+        set options($opt) [string is true -strict $value]
+        if {$iq ne ""} {
+            $iq configure -refuse \
+                [expr {$options($opt) ? "" : "account disabled"}]
+        }
+    }
 
     constructor args {
         # Install conn first so delegated options (-host, -port, etc.) have a target
@@ -96,6 +108,7 @@ snit::type taco_client {
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write] \
             -own-jid-command [mymethod cget -jid]
+        $self SetEnabled -enabled $options(-enabled)
 
         # Create internal pub/sub bus
         install bus using taco_client_bus $self.bus
@@ -124,44 +137,40 @@ snit::type taco_client {
         }
     }
 
-    # End everything the account has going, for good: this client is about
-    # to be destroyed (the destructor runs it too). In order:
+    # End everything the account has going (account disable, a proxy
+    # change, remove; the destructor runs it too). The client stays, and
+    # the next connect is a new session. In order:
     #  - <Closing>, while every module and the link are still up: calls hang
     #    up and tell their peers, group calls leave, transfers abort;
     #  - the stream closes (no resumption) and the session ends;
     #  - every request still pending is answered with $reason, including
     #    those its handlers issue meanwhile.
-    # Idempotent. A frontend learns of it from what calls it (account
-    # <Reset>, <Removed>), not from each module.
-    method shutdown {reason} {
-        if {$Closed} return
-        set Closed 1
+    # A frontend hears of it from each module, as for a lost link (calls
+    # <Ended>, file <Update>, ...). Running it again does nothing new.
+    method endSession {reason} {
         $bus publish <Closing> -reason $reason
-        $self disconnect
-        $iq failAll $reason
+        set Ending 1
+        try {
+            $self disconnect
+            $iq failAll $reason
+        } finally {
+            set Ending 0
+        }
     }
 
-    # What frontends have told the modules (the avatars they show, the chats
-    # they have open), for the client built in this one's place: frontend
-    # state, not the session's, so it outlives a restart (taco
-    # restartClient). {module state ...} from each module that keeps any.
-    method carry {} {
-        set out {}
-        foreach mod $_modules {
-            if {"Carry" in [$self.$mod info methods]} {
-                lappend out $mod [$self.$mod Carry]
-            }
-        }
-        return $out
+    # For what only makes sense on the network (tackymethod -online)
+    method requireEnabled {} {
+        if {!$options(-enabled)} { error "account disabled" }
     }
 
-    method restore {carried} {
-        dict for {mod state} $carried {
-            $self.$mod Restore $state
-        }
+    # A disabled account doesn't dial
+    method connect {} {
+        if {!$options(-enabled)} return
+        $conn connect
     }
 
     method write {stanza} {
+        if {$Ending || !$options(-enabled)} return
         $conn write $stanza
     }
 
@@ -390,7 +399,7 @@ snit::type taco_client {
     }
 
     destructor {
-        catch {$self shutdown "account closed"}
+        catch {$self endSession "account closed"}
         catch {$iq failAll "account closed"}
         foreach mod $_modules {
             catch {$self.$mod destroy}

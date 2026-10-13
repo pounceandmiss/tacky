@@ -84,25 +84,34 @@ tacky_test account-proxy-refused {a malformed proxy is refused and not stored} \
             [wait_call tacky account get -acc user@example.com -field proxy]
     } -result {{proxy must start with socks5://: http://127.0.0.1:1080} {}}
 
-# --- a new proxy starts the account over ---------------------------------
+# --- a new proxy ends the session on the old route --------------------------
 
 proc proxy_instance {client} {
     namespace qualifiers [lindex [$client info vars] 0]
 }
 
-test account-proxy-change-restarts {a new proxy replaces the client, which connects afresh, and says so} \
+test account-proxy-change-ends-session {a new proxy ends the session, and the same client connects again on it} \
     {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
         tacky account enable -acc user@example.com
         set old [proxy_instance $::_client]
+        set ::_closing {}
+        $::_client bus subscribe _ <Closing> {apply {{args} {
+            lappend ::_closing [dict get $args -reason]
+        }}}
         set ::_emitted {}
         tacky account set -acc user@example.com -proxy socks5://127.0.0.1:1080
-        set new [tacky client user@example.com]
-        list [expr {[proxy_instance $new] ne $old}] [$new.conn get_connects] \
-            [$new cget -proxy] \
-            [lmap e $::_emitted {
-                expr {[lrange $e 0 1] eq {account <Reset>} ? [lrange $e 2 end] : [continue]}
-            }]
-    } -result {1 1 socks5://127.0.0.1:1080 {{-acc user@example.com -reason {proxy changed}}}}
+        set c [tacky client user@example.com]
+        list [expr {[proxy_instance $c] eq $old}] $::_closing \
+            [$c.conn get_closed] [$c.conn get_connects] [$c cget -proxy] \
+            [lmap e $::_emitted {expr {[lindex $e 0] eq "account" ? $e : [continue]}}]
+    } -result {1 {{proxy changed}} 1 2 socks5://127.0.0.1:1080 {}}
+
+test account-proxy-change-disabled-stays-off {a new proxy on a disabled account ends nothing and dials nothing} \
+    {*}[tacky_env -mock conn -account user@example.com -enabled 0] -body {
+        set c [tacky client user@example.com]
+        tacky account set -acc user@example.com -proxy socks5://127.0.0.1:1080
+        list [$c.conn get_connects] [$c cget -proxy]
+    } -result {0 socks5://127.0.0.1:1080}
 
 test account-proxy-unchanged-keeps-client {setting other fields, or the same proxy, keeps the client} \
     {*}[tacky_env -mock conn -account user@example.com] -body {

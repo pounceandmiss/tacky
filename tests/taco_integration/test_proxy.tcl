@@ -131,7 +131,7 @@ test proxy-int-change-drops-link {a new proxy takes the live link down with it} 
     -constraints {withServer && socks5Jail} \
     -setup ::test::proxy::online -cleanup ::test::proxy::cleanup -body {
         set seen [expect_events [list \
-            [list account <Reset> -acc $::test::proxy::ACC -reason "proxy changed"]]]
+            [list conn <State> -acc $::test::proxy::ACC -state disconnected]]]
         set err [::test::proxy::nextError {
             tacky account set -acc $::test::proxy::ACC \
                 -proxy [::test::proxy::wrongProxy]
@@ -140,7 +140,7 @@ test proxy-int-change-drops-link {a new proxy takes the live link down with it} 
         set err
     } -result {Connect failed: proxy: proxy rejected credentials}
 
-test proxy-int-change-is-a-new-session {back on a working proxy, the account logs in afresh rather than resuming} \
+test proxy-int-change-is-a-new-session {back on a working proxy, the same client logs in afresh rather than resuming} \
     -constraints {withServer && socks5Jail} \
     -setup ::test::proxy::online -cleanup ::test::proxy::cleanup -body {
         set acc $::test::proxy::ACC
@@ -151,7 +151,7 @@ test proxy-int-change-is-a-new-session {back on a working proxy, the account log
         tacky account set -acc $acc -proxy [::test::proxy::proxy]
         wait_events [list [list conn <State> -acc $acc -state connected]] 20000
         set c [tacky client $acc]
-        list [expr {[namespace qualifiers [lindex [$c info vars] 0]] ne $old}] \
+        list [expr {[namespace qualifiers [lindex [$c info vars] 0]] eq $old}] \
             [dict get [[$c conn sm] getInfo] resumed]
     } -result {1 0}
 

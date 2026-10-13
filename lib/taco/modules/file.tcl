@@ -91,9 +91,9 @@ snit::type taco_file {
         set ServiceWaiters {}
     }
 
-    # The client is going (see its shutdown): every transfer ends failed,
-    # its request reset and its temp file gone, while the modules waiting on
-    # it (message, for an upload's row) are still there to hear it.
+    # The session is ending (taco_client endSession): every transfer ends
+    # failed, its request reset and its temp file gone, while the modules
+    # waiting on it (message, for an upload's row) are still there to hear it.
     method OnClosing {args} {
         set reason [dict get $args -reason]
         set ServiceWaiters {}
@@ -341,6 +341,16 @@ snit::type taco_file {
             return
         }
 
+        # A disabled account touches no network. An automatic fetch is only
+        # held back, like one the policy blocks.
+        if {![$client cget -enabled]} {
+            set id [$self NewTransfer download $srcKey]
+            $self AddWaiter $id $cmd $err
+            $self Terminal $id [expr {$opts(-auto) ? "idle" : "failed"}] \
+                "account disabled"
+            return
+        }
+
         # Fresh remote download. An aesgcm:// URL fetches its https:// form;
         # the ciphertext lands in .part and is decrypted in OnDownloaded.
         set max [expr {$opts(-auto) ? [$self AutofetchMax] : 0}]
@@ -444,10 +454,10 @@ snit::type taco_file {
         $client db eval {DELETE FROM attachment_key WHERE hash=$hash}
     }
 
-    # Where decrypted copies go (see taco_file_scratch_dir). taco's, so a
-    # client rebuilt for the same account still serves the paths it handed
-    # out; this client's own only when it has no taco, and then removed with
-    # it.
+    # Where decrypted copies go (see taco_file_scratch_dir). taco's, shared
+    # by every account, so removing one doesn't drop the paths another
+    # handed out; this client's own only when it has no taco, and then
+    # removed with it.
     variable ScratchDir ""
     variable OwnScratch 0
 
@@ -542,6 +552,10 @@ snit::type taco_file {
 
         if {![file isfile $path] || ![file readable $path]} {
             $self Terminal $id failed "file not readable"
+            return
+        }
+        if {![$client cget -enabled]} {
+            $self Terminal $id failed "account disabled"
             return
         }
         # URL keeps the original filename (extension drives kind detection).

@@ -358,6 +358,11 @@ snit::type taco_omemo {
         # peers to fetch it (asked the other way round, a peer finds no
         # bundle and leaves this device out for its whole connection).
         $self PublishBundle
+        # Our list asked for with no session (a disabled account's refusal,
+        # one failed as the last session ended) is asked for now, not on
+        # its backoff.
+        set OwnListRetryMs 5000
+        $self RetryOwnDevicelist
         $self PublishDevicelist
     }
 
@@ -862,6 +867,9 @@ snit::type taco_omemo {
                 # Keep the waiters and ask again: see OwnListRetry.
                 if {[llength $waiters] > 0} {
                     dict set DevicelistFetchWaiters $peerJid $waiters
+                    # A disabled account would only be refused again; the
+                    # next session asks (OnReady).
+                    if {![$client cget -enabled]} return
                     catch {after cancel $OwnListRetry}
                     set OwnListRetry [after $OwnListRetryMs \
                         [mymethod RetryOwnDevicelist]]

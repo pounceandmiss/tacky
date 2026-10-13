@@ -443,16 +443,16 @@ test client-sethost-keeps-online-session {an online account keeps its session; t
     } -result {0 xmpp.example.org}
 
 test client-setpassword-leaves-disabled-alone {a disabled account stays offline} \
-    {*}$pw_common \
+    {*}[tacky_env -mock conn -account user@test.example.com -enabled 0] \
     -body {
         set before [$::_client.conn get_connects]
         tacky account set -acc user@test.example.com -password fresh
         expr {[$::_client.conn get_connects] - $before}
     } -result 0
 
-# -- shutdown ---------------------------------------------------------------
+# -- endSession -------------------------------------------------------------
 
-test client-shutdown-order {<Closing> comes while the link is up, then the stream closes and the session ends} \
+test client-endsession-order {<Closing> comes while the link is up, then the stream closes and the session ends; again, only <Closing>} \
     {*}$common \
     -body {
         set ::got {}
@@ -462,12 +462,12 @@ test client-shutdown-order {<Closing> comes while the link is up, then the strea
         c bus subscribe _ <SessionEnd> {apply {{args} { lappend ::got end }}}
         c.conn configure -bound-jid "user@test.example.com/res1"
         c.conn fire_ready 0
-        c shutdown "account disabled"
-        c shutdown "account disabled"
+        c endSession "account disabled"
+        c endSession "account disabled"
         list $::got closed=[c.conn get_closed] live=[c iq isLive]
-    } -result {{{closing {account disabled} closed=0} end} closed=1 live=0}
+    } -result {{{closing {account disabled} closed=0} end {closing {account disabled} closed=1}} closed=1 live=0}
 
-test client-shutdown-fails-requests-asked-meanwhile {a request a failed handler makes is failed too} \
+test client-endsession-fails-requests-asked-meanwhile {a request a failed handler makes is failed too} \
     {*}$common \
     -body {
         set ::got {}
@@ -482,7 +482,7 @@ test client-shutdown-fails-requests-asked-meanwhile {a request a failed handler 
                         lappend ::got [xsearch $st error text -get body]
                     }}}
             }}}
-        c shutdown "account removed"
+        c endSession "account removed"
         set ::got
     } -result {{account removed} {account removed}}
 

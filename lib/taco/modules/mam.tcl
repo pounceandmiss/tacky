@@ -60,13 +60,17 @@ snit::type taco_mam {
         array set FieldCache {}
         binary scan [omemo::random 8] H* idTag
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
+        $client bus subscribe $self <SessionStart> [mymethod OnDisconnect]
     }
 
     destructor {
         catch {$client bus unsubscribe $self}
     }
 
-    # Only the field cache is session state. A query has to outlive the drop:
+    # Only the field cache is session state, dropped at either end of one: a
+    # session's start also forgets what was learned with none (a disabled
+    # account's refusals, the requests failed as the last one ended). A query
+    # has to outlive the drop:
     # iq keeps its handler and re-arms the timer on connect, so either
     # resumption replays it or the timeout answers it - and OnFin bails on a
     # missing Callbacks entry, so dropping one here loses both.
@@ -114,7 +118,8 @@ snit::type taco_mam {
         } elseif {$ftVal ne "" && ![info exists FieldCache($cacheKey)]} {
             # Discover fulltext field before sending query
             $self RequestFields $cacheKey \
-                [mymethod OnFieldsThenQuery $queryId $opts] ""
+                [mymethod OnFieldsThenQuery $queryId $opts] \
+                [mymethod OnFieldsFailed $queryId $opts]
         } else {
             $self SendQuery $queryId $opts
         }
@@ -134,7 +139,9 @@ snit::type taco_mam {
             return
         }
 
-        $self RequestFields $toJid [mymethod OnDiscoverFields $toJid] ""
+        # An error caches nothing: the archive may well have the field
+        $self RequestFields $toJid [mymethod OnDiscoverFields $toJid] \
+            {apply {args {}}}
     }
 
     # fulltextVar ?target?
@@ -292,6 +299,13 @@ snit::type taco_mam {
             return
         }
 
+        $self SendQuery $queryId $opts
+    }
+
+    # Not knowing is not "no fulltext": the query goes out with the usual
+    # field, uncached, and the archive answers for itself.
+    method OnFieldsFailed {queryId opts args} {
+        if {![info exists Callbacks($queryId)]} return
         $self SendQuery $queryId $opts
     }
 

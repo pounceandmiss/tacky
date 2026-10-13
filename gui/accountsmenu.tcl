@@ -70,13 +70,12 @@ snit::type accountsmenu {
             set sub $m.mng_$safe
             menu $sub -tearoff 0
 
-            if {$enabled} {
-                $sub add command -label "Open in This Window" \
-                    -command [list {*}$options(-open-here-command) $jid]
-                $sub add command -label "Open in New Window" \
-                    -command [list {*}$options(-open-window-command) $jid]
-                $sub add separator
-            }
+            # A disabled account opens too: offline, to read from
+            $sub add command -label "Open in This Window" \
+                -command [list {*}$options(-open-here-command) $jid]
+            $sub add command -label "Open in New Window" \
+                -command [list {*}$options(-open-window-command) $jid]
+            $sub add separator
 
             $sub add command -label "Settings..." \
                 -command [list profilesettings open $jid]

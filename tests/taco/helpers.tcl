@@ -138,6 +138,10 @@ proc tacky_test {name desc args} {
 #   -stub-emit 0|1                Drop all emits.
 #   -capture-emit 0|1             Append emits to ::_emitted (list of {module event args}).
 #   -account JID                  `tacky account add -acc JID`; sets ::_client.
+#   -enabled 0|1                  With -account (default 1): the account is
+#                                 enabled, without dialing (the row says so
+#                                 and the client acts on it); 0 leaves it as
+#                                 added, disabled.
 #   -taco-client {opts...}        `taco_client c {*}$opts`.
 #   -taco-args {opts...}          Appended to the front end's create, after
 #                                 ::tacky_test_taco_args. A file about one media
@@ -156,6 +160,7 @@ proc tacky_env {args} {
         -stub-emit     0
         -capture-emit  0
         -account       ""
+        -enabled       1
         -taco-client   ""
         -taco-args     ""
         -bound-jid     ""
@@ -233,9 +238,15 @@ proc tacky_env {args} {
     if {$opts(-account) ne ""} {
         set acc $opts(-account)
         set clientRef {$::_client}
+        set enabled $opts(-enabled)
         lappend layers [list [subst -nocommands {
             tacky account add -acc $acc
             set ::_client [tacky client $acc]
+            if {$enabled} {
+                [[\$::_client cget -taco] account cget -db] eval \
+                    {UPDATE account SET enabled=1 WHERE jid='$acc'}
+                \$::_client configure -enabled 1
+            }
         }] {unset -nocomplain ::_client}]
     } elseif {$opts(-taco-client) ne ""} {
         set clientRef c

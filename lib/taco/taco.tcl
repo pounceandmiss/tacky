@@ -179,14 +179,23 @@ proc taco_install_bgerror {} {
 #   tackymethod -noreturn name arglist body  ""
 #   tackymethod -async name arglist body     nothing: the body answers later
 # A thrown error goes to -onerror, else <MethodError>, else the caller.
+# -online marks a method that is only network work (a publish, a join): on
+# a disabled account it fails with "account disabled" before doing anything
+# (taco_client requireEnabled). Only in a module with a $client.
 snit::macro tackymethod {args} {
     set kind sync
-    if {[lindex $args 0] in {-async -noreturn}} {
-        set kind [string range [lindex $args 0] 1 end]
+    set guard ""
+    while {[lindex $args 0] in {-async -noreturn -online}} {
+        set flag [lindex $args 0]
         set args [lrange $args 1 end]
+        if {$flag eq "-online"} {
+            set guard {$client requireEnabled}
+        } else {
+            set kind [string range $flag 1 end]
+        }
     }
     if {[llength $args] != 3} {
-        error "usage: tackymethod ?-async|-noreturn? name arglist body"
+        error "usage: tackymethod ?-online? ?-async|-noreturn? name arglist body"
     }
     lassign $args name arglist body
     set reply [dict get {
@@ -195,8 +204,9 @@ snit::macro tackymethod {args} {
         async    {}
     } $kind]
     method $name $arglist [string map [list %BODY% $body %NAME% $name \
-            %REPLY% $reply] {
-        set _code [catch {%BODY%} _result _opts]
+            %REPLY% $reply %GUARD% $guard] {
+        set _code [catch {%GUARD%
+%BODY%} _result _opts]
         # `return -code error` is caught as code 2 carrying -code 1.
         if {$_code == 2 && [dict get $_opts -code] == 1} {
             set _code 1
@@ -303,9 +313,6 @@ snit::type taco_type {
     variable TransientRoot ""
     # Where every client's file module puts decrypted copies (scratchRoot)
     variable ScratchRoot ""
-    # jid -> what a client shut down by restartClient carried for the next
-    # one (taco_client carry)
-    variable Carried -array {}
     # Guards CompleteUnlock against running twice: the constructor already
     # runs it once for a plaintext/unlocked-at-construction db, but
     # storage encrypt/decrypt also call it (needed when they run from the
@@ -401,7 +408,7 @@ snit::type taco_type {
         catch {::rtcmv::set-log-level none}
         catch {::tacky::media::webrtc::set-log-level none}
         foreach client [$self clients] {
-            catch {$client shutdown "shutting down"}
+            catch {$client endSession "shutting down"}
             catch {$client destroy}
         }
         taco_file_scratch_drop $ScratchRoot
@@ -433,42 +440,13 @@ snit::type taco_type {
     }
 
     # The scratch location shared by the clients' file modules, made on
-    # first use and removed with taco: a client rebuilt for its account (see
-    # restartClient) keeps serving the copies the old one made.
+    # first use and removed with taco: one directory for every account, so
+    # a client going away doesn't take another's decrypted copies with it.
     method scratchRoot {} {
         if {$ScratchRoot eq "" && $options(-cache-dir) ne ""} {
             set ScratchRoot [taco_file_scratch_dir $options(-cache-dir)]
         }
         return $ScratchRoot
-    }
-
-    # Start an account over: its client shuts down (every call, transfer,
-    # room and request ends, and the stream closes without resumption; see
-    # taco_client shutdown) and is destroyed, and an enabled account
-    # connects again with a client built afresh from its stored settings.
-    # What frontends declared to the old one - the avatars they show, the
-    # chats they have open - is carried over to it (taco_client carry);
-    # account <Reset> then tells them to drop what they held of the rest.
-    #
-    # Called for a frontend's request (account restart, set, disable), never
-    # from inside the client: it destroys the client, whose method would be
-    # running on the stack below.
-    method restartClient {jid reason} {
-        set client $self.client($jid)
-        if {[info commands $client] ne ""} {
-            catch {set Carried($jid) [$client carry]}
-            catch {$client shutdown $reason}
-            catch {$client destroy}
-        }
-        if {[$db onecolumn {SELECT enabled FROM account WHERE jid=$jid}] eq "1"} {
-            [$self client $jid] connect
-        }
-        $self emit account <Reset> -acc $jid -reason $reason
-    }
-
-    # Nothing is carried to a client the account will never have
-    method forgetCarried {jid} {
-        unset -nocomplain Carried($jid)
     }
 
     # The clients that exist now; unlike `client`, creates none. Empty
@@ -513,13 +491,6 @@ snit::type taco_type {
                 -resource $resource \
                 -taco $self \
                 {*}$extra
-            # What the frontend declared, and a tap on the account, outlive
-            # the client they were made on
-            if {[info exists Carried($jid)]} {
-                $client restore $Carried($jid)
-                unset Carried($jid)
-            }
-            $debugtap clientBuilt $jid
         }
         return $client
     }

@@ -331,9 +331,9 @@ tacky_test account-websocket-url-enable-updates {enable carries a changed one to
         list $before [[tacky client a@example.com] cget -ws-url]
     } -result {{} wss://ws.example.com/x}
 
-# --- the account starting over (taco restartClient) -----------------------
+# --- disable: the session ends, the client stays ---------------------------
 
-# The client's instance namespace: what tells a rebuilt client from the old
+# The client's instance namespace: what would tell a new client from the old
 # one, which has the same command name.
 proc acct_instance {client} {
     namespace qualifiers [lindex [$client info vars] 0]
@@ -345,72 +345,41 @@ proc acct_events {module event} {
     }
 }
 
-test account-disable-ends-the-client {disable shuts the client down and leaves none behind} \
+test account-disable-ends-the-session {disable ends the session and keeps the client, offline} \
     {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
         tacky account enable -acc user@example.com
+        set old [acct_instance $::_client]
         set ::_closing {}
         $::_client bus subscribe _ <Closing> {apply {{args} {
             lappend ::_closing [dict get $args -reason]
         }}}
         set ::_emitted {}
         tacky account disable -acc user@example.com
-        list $::_closing [info commands $::_client] \
-            [lmap e $::_emitted {lrange $e 0 1}] \
-            [acct_events account <Reset>]
-    } -result {{{account disabled}} {} {{account <Disabled>} {account <Reset>}} {{-acc user@example.com -reason {account disabled}}}}
+        list $::_closing [expr {[acct_instance $::_client] eq $old}] \
+            [$::_client.conn get_closed] [$::_client cget -enabled] \
+            [lmap e $::_emitted {expr {[lindex $e 0] eq "account" ? [lrange $e 0 1] : [continue]}}]
+    } -result {{{account disabled}} 1 1 0 {{account <Disabled>}}}
 
-test account-restart-rebuilds-enabled {an enabled account comes back as a new client that connects} \
-    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
+test account-enable-after-disable-reconnects {enable connects the same client again} \
+    {*}[tacky_env -mock conn -account user@example.com] -body {
         tacky account enable -acc user@example.com
         set old [acct_instance $::_client]
-        [$::_client cget -taco] restartClient user@example.com "proxy changed"
-        set new [tacky client user@example.com]
-        list [expr {$new eq $::_client}] [expr {[acct_instance $new] ne $old}] \
-            [$new.conn get_connects] [acct_events account <Reset>]
-    } -result {1 1 1 {{-acc user@example.com -reason {proxy changed}}}}
-
-test account-restart-disabled-stays-down {a disabled account's client is not rebuilt} \
-    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
-        [$::_client cget -taco] restartClient user@example.com "proxy changed"
-        list [info commands $::_client] [acct_events account <Reset>]
-    } -result {{} {{-acc user@example.com -reason {proxy changed}}}}
-
-test account-remove-shuts-down {remove shuts the client down before deleting the account} \
-    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
-        set ::_closing {}
-        $::_client bus subscribe _ <Closing> {apply {{args} {
-            lappend ::_closing [dict get $args -reason]
-        }}}
-        tacky account remove -acc user@example.com
-        list $::_closing [info commands $::_client]
-    } -result {{{account removed}} {}}
-
-test account-restart-keeps-debug-taps {a debug tap on the account hears the rebuilt client} \
-    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
+        tacky account disable -acc user@example.com
         tacky account enable -acc user@example.com
-        set tap [tacky debugtap on -acc user@example.com]
-        [$::_client cget -taco] restartClient user@example.com "proxy changed"
-        set ::_emitted {}
-        set cmd [[tacky client user@example.com].conn cget -ondebugstanza]
-        {*}$cmd in [j presence]
-        list [expr {$cmd ne ""}] [llength [acct_events debugtap <Stanza>]]
-    } -result {1 1}
+        list [expr {[acct_instance [tacky client user@example.com]] eq $old}] \
+            [$::_client.conn get_connects] [$::_client cget -enabled]
+    } -result {1 2 1}
 
-test account-restart-keeps-scratch {decrypted copies outlive the client that made them} \
-    {*}[tacky_env -mock conn -account user@example.com] -body {
-        set root [$::_client file ScratchRoot]
-        set probe [file join $root probe.bin]
-        file mkdir $root
-        close [open $probe w]
-        [$::_client cget -taco] restartClient user@example.com "proxy changed"
-        set again [[tacky client user@example.com] file ScratchRoot]
-        set res [list [expr {$again eq $root}] [file exists $probe]]
-        file delete $probe
-        set res
-    } -result {1 1}
+test account-disabled-client-built-disabled {a client built for a disabled account starts offline} \
+    {*}[tacky_env -mock conn -account user@example.com -enabled 0] -body {
+        set c [tacky client user@example.com]
+        $c connect
+        list [$c cget -enabled] [$c.conn get_connects]
+    } -result {0 0}
 
-test account-restart-carries-frontend-state {the avatars shown and the chats open outlive the client} \
+test account-disable-keeps-declarations {the avatars shown and the chats open outlive a disable} \
     {*}[tacky_env -mock conn -account user@example.com] -body {
+        tacky account enable -acc user@example.com
         tacky avatar visible -acc user@example.com -jid bob@example.com
         tacky chat open -acc user@example.com -chat bob@example.com
         tacky account disable -acc user@example.com
@@ -420,37 +389,46 @@ test account-restart-carries-frontend-state {the avatars shown and the chats ope
             [$c chat isOpen -chat bob@example.com]
     } -result {1 1}
 
-test account-remove-carries-nothing {a removed account added again starts with nothing declared} \
+test account-disable-keeps-debug-taps {a debug tap on the account still hears it after a disable} \
+    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
+        tacky account enable -acc user@example.com
+        set tap [tacky debugtap on -acc user@example.com]
+        tacky account disable -acc user@example.com
+        tacky account enable -acc user@example.com
+        set ::_emitted {}
+        set cmd [[tacky client user@example.com].conn cget -ondebugstanza]
+        {*}$cmd in [j presence]
+        list [expr {$cmd ne ""}] [llength [acct_events debugtap <Stanza>]]
+    } -result {1 1}
+
+test account-remove-ends-the-session {remove ends the session, then the client} \
+    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
+        set ::_closing {}
+        $::_client bus subscribe _ <Closing> {apply {{args} {
+            lappend ::_closing [dict get $args -reason]
+        }}}
+        tacky account remove -acc user@example.com
+        list [lindex $::_closing 0] [info commands $::_client]
+    } -result {{account removed} {}}
+
+test account-remove-keeps-nothing {a removed account added again starts with nothing declared} \
     {*}[tacky_env -mock conn -account user@example.com] -body {
         tacky avatar visible -acc user@example.com -jid bob@example.com
-        tacky account disable -acc user@example.com
         tacky account remove -acc user@example.com
         tacky account add -acc user@example.com
         [tacky client user@example.com] avatar IsVisible bob@example.com
     } -result 0
 
-test account-restart-in-place {restart starts an enabled account over without turning it off} \
-    {*}[tacky_env -mock conn -account user@example.com -capture-emit 1] -body {
-        tacky account enable -acc user@example.com
-        set old [acct_instance $::_client]
-        set ::_emitted {}
-        tacky account restart -acc user@example.com
-        set new [tacky client user@example.com]
-        list [expr {[acct_instance $new] ne $old}] [$new.conn get_connects] \
-            [tacky account get -acc user@example.com -field enabled] \
-            [lmap e $::_emitted {
-                expr {[lindex $e 0] eq "account" ? [lrange $e 1 end] : [continue]}
-            }]
-    } -result {1 1 1 {{<Reset> -acc user@example.com -reason restarted}}}
-
-test account-restart-disabled-stays-off {restart leaves a disabled account disabled and offline} \
+test account-remove-keeps-scratch {decrypted copies outlive a client that goes} \
     {*}[tacky_env -mock conn -account user@example.com] -body {
-        tacky account restart -acc user@example.com
-        list [tacky account get -acc user@example.com -field enabled] \
-            [info commands $::_client]
-    } -result {0 {}}
-
-test account-restart-unknown {restart of an account that doesn't exist is an error} \
-    {*}[tacky_env -mock conn] -body {
-        tacky account restart -acc nobody@example.com
-    } -returnCodes error -result {Account doesn't exist: nobody@example.com}
+        set root [$::_client file ScratchRoot]
+        set probe [file join $root probe.bin]
+        file mkdir $root
+        close [open $probe w]
+        tacky account remove -acc user@example.com
+        tacky account add -acc user@example.com
+        set again [[tacky client user@example.com] file ScratchRoot]
+        set res [list [expr {$again eq $root}] [file exists $probe]]
+        file delete $probe
+        set res
+    } -result {1 1}

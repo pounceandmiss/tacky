@@ -158,8 +158,10 @@ proc rsSetup {} {
     tackyd_json_install_emit rsSink
     taco_type create ::taco -transient 1 \
         -config-dir $::rsDir -data-dir $::rsDir -cache-dir $::rsDir
-    # Never enabled: everything here answers offline.
+    # Enabled but never dialed: what needs the server waits, offline. (A
+    # disabled account would refuse it at once.)
     taco account add -acc $::rsAcc -password secret
+    [taco client $::rsAcc] configure -enabled 1
 }
 
 proc rsCleanup {} {
