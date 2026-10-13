@@ -154,6 +154,17 @@ namespace eval ::taco::omemo {
     # once a message using it arrives), so if every client took index 0
     # that entry would be the one most likely already consumed elsewhere,
     # and the handshake would fail. Matches Conversations.
+    # A bundle's @preKeyId as the number it names, or "" if it names none:
+    # decimal digits for 0 to 2^31-1 (XEP-0384 gives 1 up, but converse.js
+    # numbers its prekeys from 0). The binding takes any integer and keeps
+    # its low 32 bits, so a larger one would name another key.
+    proc prekeyId {id} {
+        if {![regexp {^[0-9]{1,10}$} $id]} { return "" }
+        scan $id %lld n
+        if {$n > 0x7fffffff} { return "" }
+        return $n
+    }
+
     proc pickPrekey {prekeys} {
         set n [llength $prekeys]
         if {$n == 0} { return "" }
@@ -1332,12 +1343,24 @@ snit::type taco_omemo {
             [dict get $spkNode body]]]
         set spks [base64::decode \
             [xsearch $bn signedPreKeySignature -get body]]
+        # A prekey with an id that names none is dropped: initiate would fail
+        # on it, or name another key. With none left the bundle yields no
+        # session, as one without prekeys.
         set prekeys [list]
+        set dropped [list]
         xsearch $bn prekeys preKeyPublic -script pk {
-            set pid [xsearch $pk -get @preKeyId]
+            set pid [::taco::omemo::prekeyId [xsearch $pk -get @preKeyId]]
+            if {$pid eq ""} {
+                lappend dropped [xsearch $pk -get @preKeyId]
+                continue
+            }
             set pdata [::taco::omemo::stripDjb [base64::decode \
                 [dict get $pk body]]]
             lappend prekeys [dict create id $pid pk $pdata]
+        }
+        if {[llength $dropped]} {
+            jlog debug "OMEMO bundle: ignoring [llength $dropped] prekey(s) with an\
+                unusable id ([join $dropped {, }]); [llength $prekeys] left"
         }
         return [dict create ik $ik spk $spk spk_id $spkId \
             spks $spks prekeys $prekeys]
