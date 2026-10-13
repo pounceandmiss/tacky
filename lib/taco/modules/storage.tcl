@@ -171,15 +171,13 @@ snit::type taco_storage {
         return
     }
 
-    # The live accounts.db connection (installed once, at taco_type
-    # construction) still points at the pre-migration file - a rename over
-    # its path doesn't affect an already-open handle, it just orphans the
-    # old inode. Since the whole point of the gate is to reach normal boot
-    # in this same process (no restart), the connection has to actually be
-    # closed and reopened against the freshly swapped-in file before
-    # CompleteUnlock can safely run against it.
+    # The accounts.db connection (installed once, at taco_type construction)
+    # is closed by Migrate before the swap, since some systems (Windows)
+    # refuse to rename over an open file. Since the whole point of the gate
+    # is to reach normal boot in this same process (no restart), it is
+    # reopened here, under the same command name, against the freshly
+    # swapped-in file before CompleteUnlock can run against it.
     method ReopenDb {passphrase} {
-        $options(-db) close
         sqlite3 $options(-db) [file join $options(-config-dir) accounts.db]
         if {$passphrase ne ""} {
             taco_pragma_key $options(-db) $passphrase
@@ -344,6 +342,12 @@ snit::type taco_storage {
 
     method Migrate {direction passphrase} {
         set stageDir [file join $options(-config-dir) .storage-migrate]
+        # A manifest is a swap that started and did not finish: some live
+        # files are already the new ones. Staging afresh would delete it;
+        # only taco_storage_resume, run at startup, can complete it.
+        if {[file exists [file join $stageDir manifest]]} {
+            error "a storage migration is unfinished; restart Tacky to complete it"
+        }
         # An abandoned attempt's staged files. Where the databases are pooled
         # rather than on disk (see taco_dbfile) removing the directory does not
         # remove them, and they would hold pool slots for good.
@@ -438,8 +442,15 @@ snit::type taco_storage {
         close $fh
 
         # Every file staged - normal completion and crash-recovery share
-        # this same swap step (see taco_storage_resume in taco.tcl).
-        taco_storage_resume $options(-config-dir)
+        # this same swap step (see taco_storage_resume in taco.tcl). Our own
+        # handle on accounts.db closes first, as a rename over an open file
+        # fails on some systems; FinishMigration reopens it. A swap that
+        # fails part-way is finished by taco_storage_resume at the next
+        # launch, which the manifest check above leaves it to.
+        $options(-db) close
+        if {[catch {taco_storage_resume $options(-config-dir)} err]} {
+            error "storage migration could not finish ($err); restart Tacky to complete it"
+        }
 
         $options(-taco) emit storage <MigrationComplete> -direction $direction
     }
