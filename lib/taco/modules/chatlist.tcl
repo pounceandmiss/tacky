@@ -25,7 +25,8 @@
 # ties broken by jid, and pins sit above any activity.
 #
 # The module is the sole funnel: it consumes roster/bookmarks/room-state,
-# new-message, read-watermark and tail-message signals and normalizes them
+# new-message, read-watermark, tail-message, blocking and notify-policy
+# signals and normalizes them
 # into three protocol-agnostic events over the flat collection:
 #   chatlist <Item>   -jid $jid -item $entry   upsert (add/rename/activity/state)
 #   chatlist <Remove> -jid $jid                delete
@@ -35,8 +36,10 @@
 snit::type taco_chatlist {
     option -client -readonly yes
 
-    # Pinned chats' order starts here, above any microsecond timestamp.
-    typevariable PinBase [expr {1 << 62}]
+    # Pinned chats' order starts here, above any microsecond timestamp
+    # (2^52 us is the year 2112; a later one is held below it). Every order
+    # stays under 2^53, so a JSON reader using doubles keeps it exact.
+    typevariable PinBase [expr {1 << 52}]
 
     variable client
     variable db
@@ -63,6 +66,7 @@ snit::type taco_chatlist {
         $client bus subscribe $self message:<Status> [mymethod OnTailChanged]
         $client bus subscribe $self message:<Confirmed> [mymethod OnTailConfirmed]
         $client bus subscribe $self blocking:<Changed> [mymethod OnBlockingChanged]
+        $client bus subscribe $self notify:<Settings> [mymethod OnNotifySettings]
 
         # A hole sits just past the newest message; it is not one.
         $db eval {
@@ -247,7 +251,7 @@ snit::type taco_chatlist {
         set pin [$self PinOrd $chatJid]
         dict set entry pinned [expr {$pin > 0}]
         dict set entry order [expr {$pin > 0 ? $PinBase + $pin
-                                    : [dict get $entry last_activity]}]
+            : min([dict get $entry last_activity], $PinBase - 1)}]
         dict set entry unread $unread
         dict set entry unread_mentions $mentions
         dict set entry muted [dict get $policy muted]
@@ -380,6 +384,14 @@ snit::type taco_chatlist {
         foreach j $flipped {
             if {[$self EntryFor $j] ne ""} { $self EmitEntry $j }
         }
+    }
+
+    # The entry carries the chat's notify policy as `muted` / `mentions`.
+    method OnNotifySettings {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        if {$opts(-jid) eq ""} return
+        if {[$self EntryFor $opts(-jid)] ne ""} { $self EmitEntry $opts(-jid) }
     }
 
     method EmitIfTail {chatJid ts} {

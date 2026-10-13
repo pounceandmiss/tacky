@@ -44,6 +44,7 @@ and get back replies and events.
   - [error](#error)
 - [Guides](#guides)
   - [Accounts and sign-in](#accounts-and-sign-in)
+  - [The chat list](#the-chat-list)
   - [The chat window](#the-chat-window)
   - [Read state and alerts](#read-state-and-alerts)
   - [Attachments](#attachments)
@@ -490,8 +491,8 @@ with your own bare JID (even with no history), all merged. No querying.
                   groupchat: bool, is_self: bool, pinned: bool,
                   order: int, autojoin: bool, last_activity: int,
                   last_message?: message,
-                  unread: int, unread_mentions: int, invited: bool,
-                  blocked: bool}
+                  unread: int, unread_mentions: int, muted: bool,
+                  mentions: bool, invited: bool, blocked: bool}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -506,6 +507,8 @@ microseconds, or `0`. `unread` counts the other side's messages past
 your read watermark (see [Read state](#read-state)); your own messages and
 retracted tombstones never count. `unread_mentions` is how many of those
 named you (see [notify](#notify)), and is always `0` outside group chats.
+`muted` and `mentions` are the chat's [notify](#notify) policy, the derived
+default when it was never set; a `notify set` arrives as `<Item>`.
 `invited` is `true` on a group chat you are not in (no `autojoin`) holding a
 `pending` invite, usually why an unjoined room is listed at all (see
 [muc](#muc)). `blocked` is `true` when the chat JID is on the
@@ -513,7 +516,8 @@ named you (see [notify](#notify)), and is always `0` outside group chats.
 
 `order` is opaque: sort entries by it, largest first, and break ties by
 `jid`. It changes with a new message, a pin or a reorder, each arriving as
-an `<Item>`. Pinned chats always sort above unpinned ones.
+an `<Item>`. Pinned chats always sort above unpinned ones. It stays below
+2^53, so a JSON reader that parses numbers as doubles keeps it exact.
 
 `pinned` is `true` for a chat you pinned. Pins are local to this device.
 `pin` pins a chat on top of the others, or unpins it; pinning a pinned
@@ -525,7 +529,7 @@ removed. The chat with your own JID is listed regardless, and isn't
 pinned unless you pin it.
 
 `last_message` lets a chat list preview each chat without a `history` call
-per row; see [The chat window](#the-chat-window) for drawing it.
+per row; see [The chat list](#the-chat-list) for drawing it.
 
 Per source, an entry carries extra fields:
 
@@ -545,13 +549,15 @@ Events:
     chatlist <Changed> {}
 
 `<Item>` upserts (an add, rename, new message, read-watermark move, source
-change, room_state change, pin or reorder, or an edit, retraction, status move or
-confirmation of the newest message - not of an older one). `<Remove>` deletes - except a removed roster contact
+change, room_state change, pin or reorder, block or unblock, notify policy
+change, or an edit, retraction, status move or confirmation of the newest
+message - not of an older one). `<Remove>` deletes - except a removed roster contact
 that still has history, which comes back as an `<Item>` with
 `source: "free"`. `<Changed>` means a whole source was swapped out (first
 fetch, reconnect); refetch with `get`. The module funnels the roster,
-bookmarks, new-message and room_state signals into just these three events, so
-you only need to subscribe to `chatlist`. The raw `bookmarks <Changed>`
+bookmarks, room_state, message, read-watermark, blocking and notify-policy
+signals into just these three events, so you only need to subscribe to
+`chatlist`. The raw `bookmarks <Changed>`
 and `bookmarks <RoomState>` signals are still there, but a frontend
 normally sticks with the funneled ones.
 
@@ -1734,6 +1740,34 @@ re-fetched, since a CAPTCHA expires. `<Success>` means the account exists on
 the server but not locally, so finish with `account add` and `account enable`
 as above. `register cancel` or dropping the session tears it down.
 
+## The chat list
+
+Call `chatlist get` once the account is up and again on `chatlist <Changed>`,
+then keep the rows current from `<Item>` (replace the row with that `jid`) and
+`<Remove>`. Draw them by `order`, largest first, ties by `jid`; nothing else
+needs sorting.
+
+**A row.** Each entry has what a row shows:
+
+- **Name** - `name`, which is `""` for every `free` chat and for a contact
+  you never named. For a 1:1 fall back to the contact's own nick (`nick get`,
+  refreshed on `nick <Changed>`), then the JID.
+- **Avatar** - mark each row on screen `avatar visible` with its `jid` and
+  draw from `avatar <Update>`; see [avatar](#avatar).
+- **Presence** - for a 1:1, `presence get` and `presence <Changed>`.
+- **Badges** - `unread`, and `unread_mentions` in a group chat; `pinned`;
+  `muted`; `is_self` for notes to yourself; `blocked`; `invited` for a room
+  you were invited to but are not in; a room's `room_state`, with
+  `room_reason` to show on `error`.
+
+**Preview.** Draw `last_message` as one line. A `retracted` row is a deleted
+message. Otherwise switch on `content.type`: `text` shows `body`, and an empty
+`body` is a message sent with nothing in it; `media` shows `caption`, or names
+the attachments when it is empty (a photo, the file's `name`, a count);
+`invite` and `call` carry a readable `body`. Prefix it with "You:" when
+`is_outgoing`, or with the sender's nick (the resource of `from_jid`) in a
+group chat, then collapse whitespace and trim it to fit.
+
 ## The chat window
 
 A chat view is a sliding window over the conversation, fetched on demand
@@ -1962,11 +1996,6 @@ its `type` - an `image` inline, a `file` as a download chip - then the
 elsewhere in this section: the sender name, the reaction row from `reactions`,
 and for your own messages the send state in `server_status` and delivery or
 read state in `remote_status`.
-
-A chat list previews each chat from its entry's `last_message`, drawn the same
-way: switch on `content.type`, show a `retracted` tombstone as deleted, and
-prefix it with "You:" when `is_outgoing`, or with the sender's nick (the
-resource of `from_jid`) in a group chat.
 
 ## Read state and alerts
 
