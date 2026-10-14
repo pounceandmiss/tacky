@@ -262,6 +262,21 @@ test reg-connect-host-overrides-dial {-host, -port and -tls say where to dial; t
         list $::_mock_targets [string match "*to='example.com'*" $header]
     } -result {{{192.0.2.7 5223 direct}} 1}
 
+test reg-connect-tor {-tor goes through Tor, with a login of the registration's own} \
+    {*}$common \
+    -body {
+        tacky register connect -domain example.com -tor 1
+        lassign [proxy_parse [$::_mock_conn cget -proxy]] host port user
+        list $host $port [expr {$user ne ""}]
+    } -result {127.0.0.1 9050 1}
+
+test reg-connect-tor-refused {a non-boolean -tor is refused} \
+    {*}$common \
+    -body {
+        catch {tacky register connect -domain example.com -tor maybe} msg
+        set msg
+    } -result {Invalid tor: maybe}
+
 test reg-connect-writes-header {connect writes stream header} \
     {*}$common \
     -body {

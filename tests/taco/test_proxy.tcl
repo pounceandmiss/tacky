@@ -68,6 +68,43 @@ test proxy-endpoint-none {no proxy, no endpoint} -body {
     proxy_endpoint ""
 } -result {}
 
+# --- proxy_route ----------------------------------------------------------
+
+# The login a route carries, "" for none
+proc route_login {proxy} {
+    lassign [proxy_parse $proxy] host port user pass
+    list $user $pass
+}
+
+test proxy-route-no-tor {without tor the proxy is as stored} -body {
+    list [proxy_route "" 0 a@example.com] \
+        [proxy_route socks5://127.0.0.1:1080 0 a@example.com]
+} -result {{} socks5://127.0.0.1:1080}
+
+test proxy-route-tor-default {tor with no proxy goes to 127.0.0.1:9050} -body {
+    proxy_endpoint [proxy_route "" 1 a@example.com]
+} -result 127.0.0.1:9050
+
+test proxy-route-tor-address {tor at the proxy given} -body {
+    proxy_endpoint [proxy_route {socks5://[::1]:9150} 1 a@example.com]
+} -result {[::1]:9150}
+
+test proxy-route-tor-login {tor without a login gets one: the same for an account, another for another} -body {
+    set a [route_login [proxy_route "" 1 a@example.com]]
+    set a2 [route_login [proxy_route socks5://127.0.0.1:9050 1 a@example.com]]
+    set b [route_login [proxy_route "" 1 b@example.com]]
+    list [expr {[lindex $a 0] ne ""}] [expr {$a eq $a2}] [expr {$a ne $b}]
+} -result {1 1 1}
+
+test proxy-route-tor-login-unrelated {the made-up login says nothing of the account} -body {
+    set login [route_login [proxy_route "" 1 romeo@montague.example]]
+    expr {[string match *romeo* $login] || [string match *montague* $login]}
+} -result 0
+
+test proxy-route-tor-own-login {a login in the proxy is used as given} -body {
+    proxy_route socks5://alice:x@127.0.0.1:9050 1 a@example.com
+} -result socks5://alice:x@127.0.0.1:9050
+
 # --- the account field ----------------------------------------------------
 
 set common {
@@ -98,6 +135,15 @@ tacky_test account-proxy-refused {a malformed proxy is refused and not stored} \
             [wait_call tacky account get -acc user@example.com -field proxy]
     } -result {{proxy must start with socks5://: http://127.0.0.1:1080} {}}
 
+tacky_test account-tor-round-trip {tor round-trips through set/get, a non-boolean is refused} \
+    {*}$common \
+    -body {
+        set before [wait_call tacky account get -acc user@example.com -field tor]
+        tacky account set -acc user@example.com -tor true
+        list $before [wait_call tacky account get -acc user@example.com -field tor] \
+            [wait_call_error tacky account set -acc user@example.com -tor maybe]
+    } -result {0 1 {Invalid tor: maybe}}
+
 # --- a new proxy ends the session on the old route --------------------------
 
 proc proxy_instance {client} {
@@ -126,6 +172,32 @@ test account-proxy-change-disabled-stays-off {a new proxy on a disabled account 
         tacky account set -acc user@example.com -proxy socks5://127.0.0.1:1080
         list [$c.conn get_connects] [$c cget -proxy]
     } -result {0 socks5://127.0.0.1:1080}
+
+test account-tor-change-ends-session {turning tor on ends the session, and the client goes through Tor} \
+    {*}[tacky_env -mock conn -account user@example.com] -body {
+        tacky account enable -acc user@example.com
+        set ::_closing {}
+        $::_client bus subscribe _ <Closing> {apply {{args} {
+            lappend ::_closing [dict get $args -reason]
+        }}}
+        tacky account set -acc user@example.com -tor 1
+        set c [tacky client user@example.com]
+        list $::_closing [$c.conn get_connects] \
+            [proxy_endpoint [$c cget -proxy]] \
+            [expr {[lindex [route_login [$c cget -proxy]] 0] ne ""}]
+    } -result {{{proxy changed}} 2 127.0.0.1:9050 1}
+
+test account-tor-off-goes-direct {turning tor off again ends the session and leaves no proxy} \
+    {*}[tacky_env -mock conn -account user@example.com] -body {
+        tacky account set -acc user@example.com -tor 1
+        tacky account enable -acc user@example.com
+        set ::_closing {}
+        $::_client bus subscribe _ <Closing> {apply {{args} {
+            lappend ::_closing [dict get $args -reason]
+        }}}
+        tacky account set -acc user@example.com -tor 0
+        list $::_closing [[tacky client user@example.com] cget -proxy]
+    } -result {{{proxy changed}} {}}
 
 test account-proxy-unchanged-keeps-client {setting other fields, or the same proxy, keeps the client} \
     {*}[tacky_env -mock conn -account user@example.com] -body {

@@ -20,9 +20,11 @@ if 0 {
     == Methods ==
 
     tacky register connect -domain $d ?-host $h? ?-port $p? ?-tls $t? ?-srv $s?
-                           ?-websocket_url $u? ?-proxy $url? ?-token $tok?
+                           ?-websocket_url $u? ?-proxy $url? ?-tor $b?
+                           ?-token $tok?
         → Start registration handshake. Fires <Form> on success.
-          The other options work as an account's do.
+          The other options work as an account's do; through Tor, a
+          registration has circuits of its own.
 
     tacky register form ?-token $tok?
         → Returns the form as a dict (see lib/taco/modules/form.tcl).
@@ -65,12 +67,15 @@ snit::type taco_register {
 
     tackymethod -noreturn connect {args} {
         array set opts {-host "" -port 0 -tls auto -srv 1 -nameservers ""
-                        -token "" -websocket_url "" -proxy ""}
+                        -token "" -websocket_url "" -proxy "" -tor 0}
         array set opts $args
         if {![info exists opts(-domain)] || $opts(-domain) eq ""} {
             error "missing -domain"
         }
         proxy_parse $opts(-proxy)
+        if {![string is boolean -strict $opts(-tor)]} {
+            error "Invalid tor: $opts(-tor)"
+        }
         set transport tcp
         catch {set transport [$options(-taco) cget -transport]}
 
@@ -78,11 +83,12 @@ snit::type taco_register {
             catch {$Sessions($opts(-token)) destroy}
         }
 
-        set Sessions($opts(-token)) [taco_register_session $self.session-[clock microseconds] \
+        set session $self.session-[clock microseconds]
+        set Sessions($opts(-token)) [taco_register_session $session \
             -domain $opts(-domain) -host $opts(-host) -port $opts(-port) \
             -tls $opts(-tls) -srv $opts(-srv) -nameservers $opts(-nameservers) \
             -transport $transport -ws-url $opts(-websocket_url) \
-            -proxy $opts(-proxy) \
+            -proxy [proxy_route $opts(-proxy) $opts(-tor) $session] \
             -callback [mymethod OnSessionEvent $opts(-token)]]
         $Sessions($opts(-token)) connect
     }
