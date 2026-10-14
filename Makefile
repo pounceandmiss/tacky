@@ -71,7 +71,7 @@ wasm_DEPS := tdom tcllib omemo
 	mac mac-guard mac-tacky mac-tackyd mac-tackyd-json mac-lib mac-clean \
         android android-lib \
 	wasm wasm-tcltest wasm-test wasm-serve \
-	linux webrtc-so android-webrtc-so win-webrtc-dll flatpak flatpak-bundle flatpak-install \
+	linux webrtc-so android-webrtc-so win-webrtc-dll flatpak flatpak-bundle flatpak-install flatpak-sources \
         test test-gui test-gui-headless test-lib tools wish tclsh clean dist-dir
 
 all: tacky tackyd tackyd-json
@@ -629,6 +629,15 @@ flatpak-bundle:
 
 flatpak-install:
 	cd flatpak && flatpak install --user --reinstall -y tacky.flatpak
+
+# The manifest's zippy dep sources, from zippy.mk's pins for tacky's DEPS.
+# flatpak/sync-sources.sh splices this into the manifest; nothing else needs it.
+flatpak-sources:
+	@$(MAKE) --no-print-directory -s -f $(ZIPPY)/zippy.mk \
+	    SHELL_TYPE=$(tacky_SHELL) \
+	    DEPS="$(tacky_DEPS)" \
+	    FLATPAK_DEPS_DIR=build/deps \
+	    flatpak-sources
 
 # ==== Dev interpreters ====
 # Standalone zipfs interpreters with all deps baked in (system tclsh9.0 can't
