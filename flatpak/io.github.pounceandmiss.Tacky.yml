@@ -63,19 +63,16 @@ modules:
         path: io.github.pounceandmiss.Tacky.metainfo.xml
 
       # ---- zippy deps ----
-      # GENERATED - do not hand-edit. Regenerate after any pin bump with:
-      #
-      #   make -f zippy/zippy.mk flatpak-sources FLATPAK_DEPS_DIR=build/deps
-      #
-      # and paste the result below. Each dest is the path zippy's fetch rule
-      # would have written; a stale one means zippy finds nothing staged and
-      # tries to clone, which fails in the network-less build sandbox.
+      # GENERATED from zippy.mk's pins for tacky's DEPS - do not hand-edit.
+      # flatpak/sync-sources.sh rewrites everything below the marker line, and
+      # release.sh refuses to build while it would change anything. Each dest
+      # is the path zippy's fetch rule would have written; a stale one means
+      # zippy finds nothing staged and tries to clone, which fails in the
+      # network-less build sandbox.
       #
       # Patches are not applied here - zippy applies $(CURDIR)/patches when it
       # copies each checkout to its build path.
-      #
-      # tdom is a moving "latest" URL pinned only by sha256 - re-pin when
-      # upstream republishes.
+      # ---- generated below this line ----
       - type: file
         url: http://prdownloads.sourceforge.net/tcl/tcl9.0.3-src.tar.gz
         sha256: 2537ba0c86112c8c953f7c09d33f134dd45c0fb3a71f2d7f7691fd301d2c33a6
@@ -87,29 +84,29 @@ modules:
         dest: build/deps
         dest-filename: tk9.0.3-src.tar.gz
       - type: file
-        url: https://tdom.org/downloads/latest-src.tar.gz
+        url: https://tdom.org/downloads/tdom-0.9.6-src.tar.gz
         sha256: 6d24734aef46d1dc16f3476685414794d6a4e65f48079e1029374477104e8319
         dest: build/deps
-        dest-filename: tdom-latest-src.tar.gz
+        dest-filename: tdom-0.9.6-src.tar.gz
       - type: file
         url: https://core.tcl-lang.org/tcllib/uv/tcllib-2.0.tar.gz
         sha256: 590263de0832ac801255501d003441a85fb180b8ba96265d50c4a9f92fde2534
         dest: build/deps
         dest-filename: tcllib-2.0.tar.gz
       - type: file
-        url: https://sourceforge.net/projects/tkimg/files/tkimg/2.1/tkimg%202.1.1/Img-2.1.1.tar.gz/download
-        sha256: 0e41efa886c470ca0c38663e66640eb6d89e9e5f746724535ac224e2509ae34f
-        dest: build/deps
-        dest-filename: Img-2.1.1.tar.gz
-      - type: file
         url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
         sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
         dest: build/deps
         dest-filename: opus-1.6.1.tar.gz
+      - type: file
+        url: https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.2.tar.gz
+        sha256: 26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa
+        dest: build/deps
+        dest-filename: libvpx-1.15.2.tar.gz
       - type: git
-        url: https://github.com/pounceandmiss/tclmtls.git
-        commit: 0d4055aa3f9bb5ef827e2ee76281102f54c7eca0
-        dest: build/deps/git/tclmtls-0d4055aa3f9bb5ef827e2ee76281102f54c7eca0
+        url: https://github.com/chpock/tclmtls.git
+        commit: e3e91e8bba5d535d43c7353eacee092fefce7f0b
+        dest: build/deps/git/tclmtls-e3e91e8bba5d535d43c7353eacee092fefce7f0b
       - type: git
         url: https://github.com/Mbed-TLS/mbedtls.git
         commit: 5b64a9fdb979c8971561ec78221b528e3cc4e00a
@@ -124,17 +121,29 @@ modules:
         dest: build/deps/git/libdatachannel-c47f5d77c124c35c31ac8378ad613295a124d354
       - type: git
         url: https://github.com/pounceandmiss/rtc-ma.git
-        commit: 07442896dce38ccc150c5b396bbd6b39cbcf3545
-        dest: build/deps/git/rtc-ma-07442896dce38ccc150c5b396bbd6b39cbcf3545
+        commit: 460ba431bb1220344b0f2fdd42c2a6d962b60527
+        dest: build/deps/git/rtc-ma-460ba431bb1220344b0f2fdd42c2a6d962b60527
+      - type: git
+        url: https://codeberg.org/pounceandmiss/rtc-mv.git
+        commit: 5a9edf83576d159120e8031b02bfe2dafef3021a
+        dest: build/deps/git/rtc-mv-5a9edf83576d159120e8031b02bfe2dafef3021a
       - type: git
         url: https://github.com/pounceandmiss/picomemo-tcl.git
-        commit: 9523cb71d85510f61f342c84b1fc8176aff8797f
-        dest: build/deps/git/picomemo-tcl-9523cb71d85510f61f342c84b1fc8176aff8797f
+        commit: 79eaeac73129101879507e33eea7ccd1e56d1edc
+        dest: build/deps/git/picomemo-tcl-79eaeac73129101879507e33eea7ccd1e56d1edc
       - type: git
         url: https://github.com/pounceandmiss/tclwuffs.git
-        commit: ddd4721499e2a2ad5f6ee0568c816591fbaf7e1b
-        dest: build/deps/git/tclwuffs-ddd4721499e2a2ad5f6ee0568c816591fbaf7e1b
+        commit: d83096c91137102062a95adb431865b9b4ce9017
+        dest: build/deps/git/tclwuffs-d83096c91137102062a95adb431865b9b4ce9017
       - type: git
         url: https://github.com/petasis/tkdnd.git
         commit: 6efca37a22b93b2336dc973f2b4a9ba1e3feceaf
         dest: build/deps/git/tkdnd-6efca37a22b93b2336dc973f2b4a9ba1e3feceaf
+      - type: git
+        url: https://github.com/sqlcipher/sqlcipher.git
+        commit: 63697beb0fafcb61faa7a3e6fd267036548ab11b
+        dest: build/deps/git/sqlcipher-63697beb0fafcb61faa7a3e6fd267036548ab11b
+      - type: git
+        url: https://github.com/libtom/libtomcrypt.git
+        commit: 7e7eb695d581782f04b24dc444cbfde86af59853
+        dest: build/deps/git/libtomcrypt-7e7eb695d581782f04b24dc444cbfde86af59853
