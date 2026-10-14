@@ -121,8 +121,8 @@ modules:
         dest: build/deps/git/libdatachannel-c47f5d77c124c35c31ac8378ad613295a124d354
       - type: git
         url: https://github.com/pounceandmiss/rtc-ma.git
-        commit: 460ba431bb1220344b0f2fdd42c2a6d962b60527
-        dest: build/deps/git/rtc-ma-460ba431bb1220344b0f2fdd42c2a6d962b60527
+        commit: 13b236553fef1699b2811e1fbc5354f9c6d2b714
+        dest: build/deps/git/rtc-ma-13b236553fef1699b2811e1fbc5354f9c6d2b714
       - type: git
         url: https://codeberg.org/pounceandmiss/rtc-mv.git
         commit: 5a9edf83576d159120e8031b02bfe2dafef3021a
