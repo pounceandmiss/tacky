@@ -186,3 +186,66 @@ test setting-observe-unlisten {unlisten by tag stops further dispatches} \
         tacky setting set -key theme -value light
         set ::_events
     } -result {{-key theme -value dark}}
+
+# -- per account (-acc) ----------------------------------------------------
+
+set accs {
+    -setup {
+        tacky_type create ::tacky
+        tacky account add -acc a@test.example.com
+        tacky account add -acc b@test.example.com
+    }
+    -cleanup {tacky destroy}
+}
+
+test setting-acc-isolated {-acc reads and writes that account's own store} \
+    {*}$accs \
+    -body {
+        tacky setting set -key k -value global
+        tacky setting set -acc a@test.example.com -key k -value a
+        list [tacky setting get -key k] \
+            [tacky setting get -acc a@test.example.com -key k] \
+            [tacky setting get -acc b@test.example.com -key k]
+    } -result {global a {}}
+
+test setting-acc-list {list -acc lists only that account's keys} \
+    {*}$accs \
+    -body {
+        tacky setting set -key g -value 1
+        tacky setting set -acc a@test.example.com -key k -value 1
+        list [lsearch -inline [tacky setting list -acc a@test.example.com] k] \
+            [lsearch -inline [tacky setting list -acc a@test.example.com] g] \
+            [lsearch -inline [tacky setting list -acc b@test.example.com] k]
+    } -result {k {} {}}
+
+test setting-acc-changed-carries-acc {a per-account set emits <Changed> with -acc} \
+    {*}$accs \
+    -body {
+        set ::_events {}
+        tacky listen setting <Changed> -key k {apply {{ev} {
+            lappend ::_events $ev
+        }}}
+        tacky setting set -acc a@test.example.com -key k -value 1
+        tacky setting set -key k -value 2
+        set ::_events
+    } -result {{-acc a@test.example.com -key k -value 1} {-key k -value 2}}
+
+test setting-acc-observe {observe -acc pulls and follows only that account} \
+    {*}$accs \
+    -body {
+        tacky setting set -acc a@test.example.com -key k -value 1
+        set ::_events {}
+        tacky observe setting <Changed> -acc a@test.example.com -key k {apply {{ev} {
+            lappend ::_events [dict get $ev -value]
+        }}}
+        tacky setting set -acc b@test.example.com -key k -value b
+        tacky setting set -key k -value global
+        tacky setting set -acc a@test.example.com -key k -value 2
+        set ::_events
+    } -result {1 2}
+
+test setting-acc-unknown {-acc naming no account is an error} \
+    {*}$accs \
+    -body {
+        tacky setting get -acc nobody@test.example.com -key k
+    } -returnCodes error -result {Account does not exist: nobody@test.example.com}

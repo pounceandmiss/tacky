@@ -101,9 +101,11 @@ snit::type taco_client {
                 PRAGMA synchronous = NORMAL;
             }
         }
+        set fresh [expr {[$db onecolumn {PRAGMA user_version}] == 0}]
         taco_schema_migrate $db per-account
 
         install setting using taco_setting $self.setting -db $db -taco $self
+        $self AdoptGlobalSettings $fresh
 
         # Create IQ handler
         install iq using iq $self.iq -send-command [mymethod write] \
@@ -167,6 +169,26 @@ snit::type taco_client {
     method connect {} {
         if {!$options(-enabled)} return
         $conn connect
+    }
+
+    # These were global settings before they were per account. An account
+    # that predates the move takes the global value, once; a new one ($fresh:
+    # its db was just created) starts from the defaults.
+    method AdoptGlobalSettings {fresh} {
+        if {[$db exists {SELECT 1 FROM setting WHERE key='adopted_global_settings'}]} {
+            return
+        }
+        foreach key {answer_time answer_last_activity send_chat_markers} {
+            if {$fresh} break
+            if {[catch {$options(-taco) setting get -key $key} value]
+                    || $value eq ""} continue
+            $db eval {
+                INSERT INTO setting(key, value) VALUES($key, $value)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                WHERE value=''
+            }
+        }
+        $db eval {INSERT INTO setting(key, value) VALUES('adopted_global_settings', 1)}
     }
 
     method write {stanza} {

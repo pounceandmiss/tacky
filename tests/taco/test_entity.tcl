@@ -46,7 +46,7 @@ test entity-time-answers-contacts {with answer_time on, a contact gets our time;
     {*}$entity_common \
     -body {
         entity_roster
-        tacky setting set -key answer_time -value 1
+        tacky setting set -acc user@test.example.com -key answer_time -value 1
         set r [entity_ask friend@example.com/x urn:xmpp:time]
         set tzo [xsearch $r time tzo -get body]
         set utc [xsearch $r time utc -get body]
@@ -60,7 +60,7 @@ test entity-time-answers-contacts {with answer_time on, a contact gets our time;
 test entity-time-answers-own-account {our own other devices are answered} \
     {*}$entity_common \
     -body {
-        tacky setting set -key answer_time -value 1
+        tacky setting set -acc user@test.example.com -key answer_time -value 1
         xsearch [entity_ask user@test.example.com/phone urn:xmpp:time] -get @type
     } -result result
 
@@ -68,7 +68,7 @@ test entity-last-activity-follows-the-app {last activity is 0 while active and g
     {*}$entity_common \
     -body {
         entity_roster
-        tacky setting set -key answer_last_activity -value 1
+        tacky setting set -acc user@test.example.com -key answer_last_activity -value 1
         set active [xsearch [entity_ask friend@example.com/x jabber:iq:last] \
             query -get @seconds]
         tacky app setActive -active 0
@@ -85,10 +85,59 @@ test entity-setting-changes-caps {turning a setting on advertises its feature an
         $::_client.conn fire_state connected
         set ver0 [xsearch [$::_client caps cNode] -get @ver]
         $::_client.conn clear
-        tacky setting set -key answer_time -value 1
+        tacky setting set -acc user@test.example.com -key answer_time -value 1
         set written [$::_client.conn get_written]
         set ver1 [xsearch [$::_client caps cNode] -get @ver]
         list [expr {$ver0 ne $ver1}] \
              [lmap st $written {dict get $st tag}] \
              [expr {"urn:xmpp:time" in [entity_features]}]
     } -result {1 presence 1}
+
+test entity-global-setting-ignored {the global store's answer_time no longer turns time on} \
+    {*}$entity_common \
+    -body {
+        entity_roster
+        tacky setting set -key answer_time -value 1
+        list [xsearch [entity_ask friend@example.com/x urn:xmpp:time] -get @type] \
+             [expr {"urn:xmpp:time" in [entity_features]}]
+    } -result {error 0}
+
+# -- the one-time move from the global store ---------------------------------
+
+proc entity_unadopt {} {
+    $::_client db eval {DELETE FROM setting WHERE key='adopted_global_settings'}
+}
+
+test entity-adopt-global {an existing account takes the global values once} \
+    {*}$entity_common \
+    -body {
+        entity_unadopt
+        tacky setting set -key answer_time -value 1
+        tacky setting set -key send_chat_markers -value 0
+        $::_client AdoptGlobalSettings 0
+        tacky setting set -key answer_time -value 0
+        $::_client AdoptGlobalSettings 0
+        list [tacky setting get -acc user@test.example.com -key answer_time] \
+             [tacky setting get -acc user@test.example.com -key answer_last_activity] \
+             [tacky setting get -acc user@test.example.com -key send_chat_markers]
+    } -result {1 {} 0}
+
+test entity-adopt-keeps-own {a value the account already has is not overwritten} \
+    {*}$entity_common \
+    -body {
+        entity_unadopt
+        tacky setting set -acc user@test.example.com -key answer_time -value 0
+        tacky setting set -key answer_time -value 1
+        $::_client AdoptGlobalSettings 0
+        tacky setting get -acc user@test.example.com -key answer_time
+    } -result 0
+
+test entity-adopt-not-fresh {a new account starts from the defaults} \
+    {*}$entity_common \
+    -body {
+        entity_unadopt
+        tacky setting set -key answer_time -value 1
+        $::_client AdoptGlobalSettings 1
+        list [tacky setting get -acc user@test.example.com -key answer_time] \
+             [tacky setting get -acc user@test.example.com -key adopted_global_settings]
+    } -result {{} 1}

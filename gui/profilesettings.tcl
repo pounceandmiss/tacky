@@ -1,8 +1,8 @@
 if 0 {
-    profilesettings - an account's settings, in three tabs: Profile (name,
+    profilesettings - an account's settings, in four tabs: Profile (name,
     avatar, the password Tacky logs in with, with a way into
     changepassworddialog), Server and Proxy (where and how the account
-    connects), and OMEMO (its own keys).
+    connects), Privacy (what it tells its contacts), and OMEMO (its own keys).
 
     Usage:
         profilesettings open romeo@montague.lit
@@ -37,6 +37,11 @@ snit::widget profilesettings {
 
     variable connRefused 0
 
+    # Privacy tab. The defaults match the backend's for an unset setting.
+    variable answerTime 0
+    variable answerLast 0
+    variable sendMarkers 1
+
     typemethod open {account} {
         set top .profile_[path_safe $account]
         if {[raise_existing $top]} return
@@ -57,14 +62,17 @@ snit::widget profilesettings {
         set acc $options(-acc)
         set t $options(-tacky)
 
-        # Tabs: the profile, where it connects, its OMEMO keys. Made first so
-        # the widgets below, gridded -in them, stack above them.
+        # Tabs: the profile, where it connects, what it shares, its OMEMO
+        # keys. Made first so the widgets below, gridded -in them, stack
+        # above them.
         ttk::notebook $win.nb
         set main [ttk::frame $win.nb.main -padding 8]
         set conn [ttk::frame $win.nb.conn -padding 8]
+        set privacy [ttk::frame $win.nb.privacy -padding 8]
         set omemo [ttk::frame $win.nb.omemo -padding 8]
         $win.nb add $main -text "Profile"
         $win.nb add $conn -text "Server and Proxy"
+        $win.nb add $privacy -text "Privacy"
         $win.nb add $omemo -text "OMEMO"
 
         # --- Avatar: either click opens the Change/Remove menu ---
@@ -130,6 +138,24 @@ snit::widget profilesettings {
         grid $win.proxy      -in $conn -row 3 -column 0 -sticky ew
         grid $win.connsave   -in $conn -row 4 -column 0 -sticky w -padx 4 -pady {12 0}
         grid columnconfigure $conn 0 -weight 1
+
+        # --- Privacy: this account's own settings, applied as they change ---
+        ttk::label $win.privacyhint -foreground gray50 \
+            -text "These apply to this account only."
+        settingmenu::check $win.answertime "Share my local time with contacts" \
+            -var [myvar answerTime] -key answer_time \
+            -acc $acc -tag $win -tacky $t
+        settingmenu::check $win.answerlast \
+            "Share how long I've been away with contacts" \
+            -var [myvar answerLast] -key answer_last_activity \
+            -acc $acc -tag $win -tacky $t
+        settingmenu::check $win.sendmarkers "Send read receipts" \
+            -var [myvar sendMarkers] -key send_chat_markers \
+            -acc $acc -tag $win -tacky $t
+        grid $win.answertime  -in $privacy -row 0 -column 0 -sticky w -pady 2
+        grid $win.answerlast  -in $privacy -row 1 -column 0 -sticky w -pady 2
+        grid $win.sendmarkers -in $privacy -row 2 -column 0 -sticky w -pady 2
+        grid $win.privacyhint -in $privacy -row 3 -column 0 -sticky w -pady {8 0}
 
         # --- OMEMO own keys ---
         omemoownkeys $win.omemokeys -acc $acc

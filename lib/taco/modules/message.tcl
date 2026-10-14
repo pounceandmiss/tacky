@@ -579,12 +579,10 @@ snit::type taco_message {
         }
     }
 
-    # send_chat_markers setting; unset means on. Gates all outgoing markers.
+    # The account's send_chat_markers setting; unset means on. Gates all
+    # outgoing markers.
     method MarkersEnabled {} {
-        if {[catch {[$client cget -taco] setting get -key send_chat_markers} v]} {
-            return 1
-        }
-        return [expr {$v ne "0"}]
+        expr {[client_setting_get $client send_chat_markers 1] ne "0"}
     }
 
     # Send a bodyless receipt/marker stanza referencing $refId. Not stored

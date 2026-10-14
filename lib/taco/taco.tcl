@@ -268,7 +268,7 @@ package require xmpprw
 snit::type taco_type {
     component db
     component account -public account
-    component setting -public setting
+    component setting
     component media -public media
     component audio -public audio
     component video -public video
@@ -500,6 +500,15 @@ snit::type taco_type {
                 {*}$extra
         }
         return $client
+    }
+
+    # setting is global, unless -acc names an account: then it is that
+    # account's own store (taco_client's setting component).
+    method setting {method args} {
+        if {[dict exists $args -acc]} {
+            return [[$self client [dict get $args -acc]] setting $method {*}$args]
+        }
+        return [$setting $method {*}$args]
     }
 
     delegate method * using {%s _routeToClient %m}

@@ -24,7 +24,6 @@ snit::widget chatpanel {
     variable roomJid ""
     variable showParticipants 0
     variable showJidIn1to1 0
-    variable sendReceipts 1
     variable omemoEnabled 1
     # A room's OMEMO state (omemo roomStatus), {} until it arrives; and the
     # chat it is asked by (room@service?join).
@@ -439,8 +438,6 @@ snit::widget chatpanel {
             $mb.chat add separator
             settingmenu::checkbutton $mb.chat "Show JID Instead of Name" \
                 -var [myvar showJidIn1to1] -key show_jid_in_1to1 -tag $win
-            settingmenu::checkbutton $mb.chat "Send Read Receipts" \
-                -var [myvar sendReceipts] -key send_chat_markers -tag $win
             $mb.chat add command -label "Start Call" \
                 -command [mymethod StartCall]
             # Not in MUC PMs, whose peer is an occupant, not a contact.
