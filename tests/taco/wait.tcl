@@ -184,26 +184,26 @@ proc wait_call_error {args} {
     }
 }
 
-# The `error <MethodError>` event a failing call emits when it has a -command
-# but no -onerror. wait_call_error can't see this path: it supplies -onerror,
-# which takes the error to the callback instead.
-proc wait_call_methoderror {args} {
+# The default handler's answer to a failing call that has a -command but no
+# -onerror, as {context message}. wait_call_error can't see this path: it
+# supplies -onerror, which takes the error to the callback instead.
+proc wait_call_default_onerror {args} {
     set timeout $::testwait::CallTimeout
     set flag [testwait::Flag]
     set out [testwait::Flag]
 
-    set tag [tacky listen error <MethodError> [list apply {{r f eargs} {
-        set $r $eargs
+    set was [tacky defaultOnerror]
+    tacky defaultOnerror [list apply {{r f context message} {
+        set $r [list $context $message]
         set $f 1
-    }} $out $flag]]
-
-    {*}$args -command {apply {{result} {}}}
+    }} $out $flag]
 
     try {
-        testwait::Block $flag $timeout "a <MethodError> from: $args"
+        {*}$args -command {apply {{result} {}}}
+        testwait::Block $flag $timeout "the default -onerror from: $args"
         return [set $out]
     } finally {
-        tacky unlisten $tag
+        tacky defaultOnerror $was
         unset -nocomplain $flag $out
     }
 }

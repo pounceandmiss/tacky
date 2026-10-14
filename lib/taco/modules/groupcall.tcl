@@ -234,15 +234,9 @@ snit::type taco_groupcall {
         set spec [dict create chat $chat video $video \
             id [$self RandomHex 16] nick [$self RandomHex 4]]
         set why [$client calls Blocked]
-        if {$why ne ""} {
-            $self Later [mymethod StartFailed $spec [string tolower $why 0 0]]
-            return
-        }
+        if {$why ne ""} { error [string tolower $why 0 0] }
         # Offline, the room would wait on a stream that may be a while coming.
-        if {![$client iq isLive]} {
-            $self Later [mymethod StartFailed $spec "not connected"]
-            return
-        }
+        if {![$client iq isLive]} { error "not connected" }
         # One call per chat at a time: if the chat's newest call's room is
         # still there, someone is in it, and starting means joining it.
         foreach stored [list $chat?join $chat] {
@@ -268,11 +262,7 @@ snit::type taco_groupcall {
         }
         if {$opts(-jid) eq ""} { error "join: -jid required" }
         set why [$client calls Blocked]
-        if {$why ne ""} {
-            $client emit error <MethodError> -module groupcall -method join \
-                -message $why
-            return
-        }
+        if {$why ne ""} { error [string tolower $why 0 0] }
         set room [jid norm $opts(-jid)]
         set video [expr {$opts(-video) ? 1 : 0}]
         if {[info exists Rooms($room)] || [info exists Calls($room)]} return
@@ -1301,10 +1291,15 @@ snit::type taco_groupcall {
         foreach cmd $waiters { {*}$cmd $live }
     }
 
-    # start, once the chat's newest call's room has answered.
+    # start, once the chat's newest call's room has answered. `start` has
+    # replied by now, so a join that fails outright (calls blocked meanwhile)
+    # is a start that failed.
     method StartAsked {spec stored ts live} {
         if {$live eq "1"} {
-            $self join -chat $stored -timestamp $ts -video [dict get $spec video]
+            if {[catch {$self join -chat $stored -timestamp $ts \
+                    -video [dict get $spec video]} err]} {
+                $self StartFailed $spec $err
+            }
         } else {
             $self Create $spec
         }

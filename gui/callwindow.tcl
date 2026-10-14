@@ -205,7 +205,8 @@ snit::widgetadaptor callwindow {
 
     method CallAgain {} {
         ::tacky calls start -acc $options(-acc) \
-            -to [jid bare $options(-peer)]
+            -to [jid bare $options(-peer)] \
+            -onerror [list ::tacky reportError [dict create acc $options(-acc)]]
     }
 
     method OnWarning {ev} {

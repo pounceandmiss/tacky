@@ -238,17 +238,18 @@ test sw-global-relabel-stays-in-its-own-chat {a name change in one chat leaves t
 } -cleanup { sw_cleanup } -result {1 1}
 
 # authornames seeds from inside its own constructor, so its first announce
-# reaches the host before the host has finished building it. An error there is
-# routed to an event rather than raised, so assert on the event.
+# reaches the host before the host has finished building it. An error there
+# goes to the default -onerror rather than being raised, so assert on that.
 proc sw_watch_errors {} {
     set ::sw_errors {}
-    ::tacky listen -tag sw_errwatch error <MethodError> {apply {{ev} {
-        lappend ::sw_errors [dict get $ev -message]
+    set ::sw_was_onerror [::tacky defaultOnerror]
+    ::tacky defaultOnerror {apply {{context message} {
+        lappend ::sw_errors $message
     }}}
 }
 
 proc sw_seen_errors {} {
-    ::tacky unlisten sw_errwatch
+    ::tacky defaultOnerror $::sw_was_onerror
     return $::sw_errors
 }
 

@@ -309,7 +309,8 @@ snit::widget chatlistview {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
         $options(-tacky) calls start -acc $options(-acc) \
-            -to [jid bare $jid]
+            -to [jid bare $jid] \
+            -onerror [list $options(-tacky) reportError [dict create acc $options(-acc)]]
     }
 
     method OnRowMenu {jid X Y} {

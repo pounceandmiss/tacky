@@ -172,8 +172,10 @@ and the declaration says where it comes from:
 - `tackymethod -async name {args} body` - the body calls `-command` or
   `-onerror` once, later. `taco_blocking block` is the pattern.
 
-A thrown error (including `return -code error`) goes to `-onerror`, or to
-`error <MethodError>`. A failure is always `-onerror`, never a result shaped
+A thrown error (including `return -code error`) goes to `-onerror`, or back
+to the caller; over libtacky a `-command`-only call gets the frontend's
+default handler as its `-onerror`. A request that can't be done throws, rather
+than answering and reporting the failure some other way. A failure is always `-onerror`, never a result shaped
 like one. `tests/tackyd-json/test_reply.tcl` checks that bodies which answer
 `-command` themselves are declared `-async`.
 

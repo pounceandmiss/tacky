@@ -55,11 +55,12 @@ snit::type app_type {
                     direct, thread, or process"
             }
         }
+        # Where a request's error goes when its caller only asked for the result.
+        ::tacky defaultOnerror [mymethod OnRequestError]
         ::tacky listen -tag $self calls <Incoming> [mymethod OnIncomingCall]
         ::tacky listen -tag $self calls <Outgoing> [mymethod OnOutgoingCall]
         ::tacky listen -tag $self groupcall <State> [mymethod OnGroupCallState]
         ::tacky listen -tag $self groupcall <Invited> [mymethod OnGroupCallInvited]
-        ::tacky listen -tag $self error <MethodError> [mymethod OnMethodError]
         ::tacky listen -tag $self error <Background> [mymethod OnBackgroundError]
         ::tacky listen -tag $self error <ProcessExit> [mymethod OnProcessExit]
         # A removed account's windows go with it
@@ -208,18 +209,20 @@ snit::type app_type {
         }
     }
 
-    # The controller root is withdrawn, so account-less errors go to any window.
-    method OnMethodError {eargs} {
-        set msg [dict get $eargs -message]
-        if {[dict exists $eargs -errorinfo]} {
-            catch {::tacky log error [dict get $eargs -errorinfo] -obj gui.methoderror}
-        }
+    # The default -onerror (see the constructor), also reached from call sites
+    # through `tacky reportError`. context is {module method ?acc?}, or just
+    # {acc} from a call site. The controller root is withdrawn, so
+    # account-less errors go to any window.
+    method OnRequestError {context message} {
+        set what [expr {[dict exists $context method]
+            ? "[dict get $context module] [dict get $context method]: " : ""}]
+        catch {::tacky log warning "$what$message" -obj gui.request}
         set w ""
-        if {[dict exists $eargs -acc]} {
-            set w [$self WindowForAccount [dict get $eargs -acc]]
+        if {[dict exists $context acc]} {
+            set w [$self WindowForAccount [dict get $context acc]]
         }
         if {$w eq ""} { set w [$self AnyOpenWindow] }
-        if {$w ne ""} { $w ShowStatus $msg }
+        if {$w ne ""} { $w ShowStatus $message }
     }
 
     method OnBackgroundError {eargs} {
@@ -424,7 +427,8 @@ snit::type app_type {
             -message "$who is calling [regsub {\?join$} $chat {}]. Join?"]
         if {$answer eq "yes"} {
             ::tacky groupcall join -acc $acc -chat $chat -timestamp $ts \
-                -video [dict get $ev -video]
+                -video [dict get $ev -video] \
+                -onerror [list ::tacky reportError [dict create acc $acc]]
         } else {
             ::tacky groupcall decline -acc $acc -chat $chat -timestamp $ts
         }

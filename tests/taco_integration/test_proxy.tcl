@@ -167,15 +167,10 @@ test proxy-int-change-is-a-new-session {back on a working proxy, the same client
 test proxy-int-no-calls {calls are refused while a proxy is set} \
     -constraints {withServer && socks5Jail} \
     -setup ::test::proxy::online -cleanup ::test::proxy::cleanup -body {
-        set ::_proxyMethodError ""
-        set tag [tacky listen error <MethodError> {apply {{a} {
-            set ::_proxyMethodError [dict get $a -message]
-        }}}]
-        [tacky client $::test::proxy::ACC] calls start -to juliet@example.local
-        wait_var ::_proxyMethodError 5000
-        tacky unlisten $tag
-        set ::_proxyMethodError
-    } -result {Calls are disabled while a proxy is configured}
+        catch {[tacky client $::test::proxy::ACC] calls start \
+            -to juliet@example.local} why
+        set why
+    } -result {calls are disabled while a proxy is configured}
 
 # In-band registration goes through the proxy as a login does: in the jail
 # the server is unreachable any other way, so <Success> is a registration
