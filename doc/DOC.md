@@ -257,10 +257,12 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account get {acc: string, field?: string}       -> account_fields  (or one field's value)
     account add {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
-                 websocket_url?: string, proxy?: string, enabled?: bool}
+                 websocket_url?: string, proxy?: string, tor?: bool,
+                 enabled?: bool}
     account set {acc: string, password?: string, username?: string, domain?: string,
                  host?: string, port?: int, tls?: string, srv?: bool,
-                 websocket_url?: string, proxy?: string, enabled?: bool}
+                 websocket_url?: string, proxy?: string, tor?: bool,
+                 enabled?: bool}
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
@@ -269,7 +271,7 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account_fields = {jid: string, username: string, domain: string, host: string,
                       port: int, tls: string, srv: bool, password: string,
                       resource: string, enabled: bool, websocket_url: string,
-                      proxy: string}
+                      proxy: string, tor: bool}
 
 `add` creates or updates. On create, `username` and `domain` default to the
 pieces of the JID. `enable` saves the flag and connects; on an enabled
@@ -311,8 +313,8 @@ transport, `websocket_url` on the websocket one:
 
 Setting `domain`, `host`, `port`, `tls`, `srv` or `websocket_url` reconnects
 an enabled account that is offline, as `password` does; an online one uses them
-next time. Changing `proxy` ends everything the account had going, online or
-not, as `disable` does, with reason `proxy changed` (see "Ending an account's
+next time. Changing `proxy` or `tor` ends everything the account had going,
+online or not, as `disable` does, with reason `proxy changed` (see "Ending an account's
 activity" below); an enabled account then connects again on the new route,
 in a new session.
 
@@ -320,7 +322,18 @@ in a new session.
 `socks5://[user:pass@]host:port` (an IPv6 `host` in brackets), that carries
 every connection the account makes: the XMPP link, and HTTP uploads and
 downloads. A malformed value is refused.
-With a proxy set:
+
+`tor` (default false) sends the account through Tor: through `proxy` if it
+is set, which then says where Tor's SOCKS port is (`socks5://127.0.0.1:9150`
+for Tor Browser), else through `socks5://127.0.0.1:9050`. With no login in
+`proxy`, the account comes to Tor with a made-up one of its own, which Tor
+uses to keep it on circuits no other account shares. It says nothing of the
+account and is new each time the backend starts. A login in `proxy` is used
+as given, so accounts given the same one may share circuits. If Tor isn't
+running, the account retries as it would for any proxy that can't be
+reached, and never connects without it.
+
+With a proxy set, or `tor`:
 - No SRV query is sent, and the account dials `host` (or `domain`) on `port` (or the `tls` default).
 - Attempts to place a call fail with `error <MethodError>` or `<StartFailed>`. An incoming call is declined without ringing.
 - The websocket transport refuses work.
@@ -375,7 +388,7 @@ string; `""` when omitted, enough for one session at a time).
 
     register connect {domain: string, host?: string, port?: int, tls?: string,
                       srv?: bool, websocket_url?: string, proxy?: string,
-                      token?: string}
+                      tor?: bool, token?: string}
     register form {token?: string}                 -> form
     register media {token?: string, var: string}   -> base64
     register submit {token?: string, values: {*: string}}
@@ -447,7 +460,9 @@ retrying would not cure: `conflict` (another client took the session),
 backend picks a new resource and connects again.
 A [proxy](#account) that refuses the connection ends it the same way:
 rejected credentials, no authentication method in common, no SOCKS5 server
-at that address, or a request its rules forbid. A proxy that can't be
+at that address, or a request its rules forbid. With [Tor](#account), so do
+an onion service that wants a client authorization Tor doesn't have or
+rejects the one it has, and a `.onion` host that isn't a valid onion address. A proxy that can't be
 reached is retried, and so is a server the proxy can't reach.
 
 ## app
@@ -1887,6 +1902,24 @@ by a `token`:
 re-fetched, since a CAPTCHA expires. `<Success>` means the account exists on
 the server but not locally, so finish with `account add` and `account enable`
 as above. `register cancel` or dropping the session tears it down.
+
+**Tor, proxies and I2P.** A choice of three fits the account fields:
+*Direct* (`proxy` and `tor` empty), *Tor* (`tor` true) and *SOCKS5 proxy*
+(`proxy` set), with one address field under the two that need it. For Tor
+the field can be left empty, meaning `127.0.0.1:9050`, the port of a system
+Tor or Orbot; Tor Browser listens on `127.0.0.1:9150`. Keep what was typed
+for each choice, so switching back loses nothing. Pass the same fields to
+`register connect`, so a sign-up goes the way the account then will.
+
+To reach a server through its onion service, keep the JID's `domain` and
+set `host` to the `.onion` address: the certificate is checked against the
+domain. For clearer errors from an onion service (not found, needs client
+authorization), Tor's `SocksPort` wants the `ExtendedErrors` flag.
+
+I2P works the same way through i2pd, whose SOCKS proxy at
+`socks5://127.0.0.1:4447` takes `.i2p` names. With Java I2P, make a client
+tunnel to the server's destination and point `host` and `port` at its
+local end, with no proxy.
 
 ## The chat list
 

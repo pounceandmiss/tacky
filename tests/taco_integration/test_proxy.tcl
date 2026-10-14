@@ -176,3 +176,41 @@ test proxy-int-no-calls {calls are refused while a proxy is set} \
         tacky unlisten $tag
         set ::_proxyMethodError
     } -result {Calls are disabled while a proxy is configured}
+
+# In-band registration goes through the proxy as a login does: in the jail
+# the server is unreachable any other way, so <Success> is a registration
+# that went through it, and nothing else - no SRV query, no other dial.
+test proxy-int-register {a new account registers through the proxy, and logs in through it} \
+    -constraints {withServer && socks5Jail} \
+    -setup tacky_init -cleanup ::test::proxy::cleanup -body {
+        set host $::test::proxy::HOST
+        set user reg[clock milliseconds]
+        # An <Error> is kept to show, rather than left to a timeout
+        set ::_proxyRegError ""
+        set tag [tacky listen register <Error> {apply {{a} {
+            set ::_proxyRegError [dict get $a -message]
+        }}}]
+        set form [expect_events [list [list register <Form> -token proxied]]]
+        tacky register connect -domain $host -port $::test::helpers::xmppPort \
+            -proxy [::test::proxy::proxy] \
+            -token proxied
+        catch {wait_expected $form 20000}
+        if {$::_proxyRegError ne ""} {
+            tacky unlisten $tag
+            return "register: $::_proxyRegError"
+        }
+        set done [expect_events [list [list register <Success> -token proxied]]]
+        tacky register submit -token proxied \
+            -values [list username $user password regpass]
+        catch {wait_expected $done 20000}
+        tacky unlisten $tag
+        if {$::_proxyRegError ne ""} {
+            return "register: $::_proxyRegError"
+        }
+        tacky account add {*}$::tacky_test_account_args -acc $user@$host \
+            -password regpass -proxy [::test::proxy::proxy]
+        tacky account enable -acc $user@$host
+        wait_events [list [list conn <State> -acc $user@$host -state connected \
+            -proxy [proxy_endpoint [::test::proxy::proxy]]]] 20000
+        [tacky client $user@$host] conn state
+    } -result connected

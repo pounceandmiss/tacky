@@ -298,35 +298,136 @@ test profilesettings-connection-refused {a refused value is reported, not saved}
     mock_backend_down
 } -result {{} {Server connection error: Invalid host: not a host}}
 
-test profilesettings-proxy-saves {the proxy is saved with the connection and loaded back} -setup {
+# The connection fields' variables, by name
+proc ps_var {name} {
+    return [.ps.connection info vars $name]
+}
+
+# The account's proxy and tor as stored
+proc ps_route_saved {} {
+    list [tacky account get -acc user@test.example.com -field proxy] \
+        [tacky account get -acc user@test.example.com -field tor]
+}
+
+test profilesettings-proxy-saves {a SOCKS5 proxy is saved with the connection and loaded back} -setup {
     mock_backend_up
 } -body {
     profilesettings .ps -acc user@test.example.com
     wait
-    set [.ps.connection info vars proxy] " socks5://u:p@127.0.0.1:9050 "
+    set [ps_var route] socks5
+    set [ps_var socksAddr] " u:p@127.0.0.1:1080 "
     .ps SaveConnection
     wait
-    set saved [tacky account get -acc user@test.example.com -field proxy]
+    set saved [ps_route_saved]
     destroy .ps
     profilesettings .ps -acc user@test.example.com
     wait
-    list $saved [set [.ps.connection info vars proxy]] [.ps.status cget -text]
+    list $saved [set [ps_var route]] [set [ps_var socksAddr]] \
+        [.ps.status cget -text]
 } -cleanup {
     destroy .ps
     mock_backend_down
-} -result {socks5://u:p@127.0.0.1:9050 socks5://u:p@127.0.0.1:9050 {}}
+} -result {{socks5://u:p@127.0.0.1:1080 0} socks5 u:p@127.0.0.1:1080 {}}
+
+test profilesettings-proxy-scheme-typed {a typed socks5:// is kept, not doubled} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [ps_var route] socks5
+    set [ps_var socksAddr] socks5://127.0.0.1:1080
+    .ps SaveConnection
+    wait
+    ps_route_saved
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {socks5://127.0.0.1:1080 0}
 
 test profilesettings-proxy-refused {a malformed proxy is reported, not saved} -setup {
     mock_backend_up
 } -body {
     profilesettings .ps -acc user@test.example.com
     wait
-    set [.ps.connection info vars proxy] "127.0.0.1:9050"
+    set [ps_var route] socks5
+    set [ps_var socksAddr] "127.0.0.1"
     .ps SaveConnection
     wait
-    list [tacky account get -acc user@test.example.com -field proxy] \
-        [.ps.status cget -text]
+    list [ps_route_saved] [.ps.status cget -text]
 } -cleanup {
     destroy .ps
     mock_backend_down
-} -result {{} {Server connection error: proxy must start with socks5://: 127.0.0.1:9050}}
+} -result {{{} 0} {Server connection error: proxy is missing a port: socks5://127.0.0.1}}
+
+test profilesettings-tor-default {Tor with no address stores no proxy, and loads back as Tor} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [ps_var route] tor
+    .ps SaveConnection
+    wait
+    set saved [ps_route_saved]
+    destroy .ps
+    profilesettings .ps -acc user@test.example.com
+    wait
+    list $saved [set [ps_var route]] [set [ps_var torAddr]] \
+        [.ps.connection.fields.proxylbl cget -text] \
+        [.ps.connection.fields.srv instate disabled]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {{{} 1} tor {} {Tor address} 1}
+
+test profilesettings-tor-address {Tor at an address of its own} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [ps_var route] tor
+    set [ps_var torAddr] 127.0.0.1:9150
+    .ps SaveConnection
+    wait
+    ps_route_saved
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {socks5://127.0.0.1:9150 1}
+
+test profilesettings-route-switch-keeps-text {each route keeps what was typed for it; only the chosen one is saved} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set [ps_var route] socks5
+    set [ps_var socksAddr] proxy.example:1080
+    set [ps_var route] tor
+    set [ps_var torAddr] 127.0.0.1:9150
+    set [ps_var route] socks5
+    set shown [.ps.connection.fields.proxy cget -textvariable]
+    .ps SaveConnection
+    wait
+    list [expr {$shown eq [ps_var socksAddr]}] [set [ps_var torAddr]] \
+        [ps_route_saved]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {1 127.0.0.1:9150 {socks5://proxy.example:1080 0}}
+
+test profilesettings-route-direct {Direct clears both proxy and Tor} -setup {
+    mock_backend_up
+    tacky account set -acc user@test.example.com \
+        -proxy socks5://127.0.0.1:9150 -tor 1
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    set before [set [ps_var route]]
+    set [ps_var route] direct
+    .ps SaveConnection
+    wait
+    list $before [ps_route_saved] \
+        [llength [grid info .ps.connection.fields.proxy]]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {tor {{} 0} 0}

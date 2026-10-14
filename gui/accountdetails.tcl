@@ -26,11 +26,12 @@ snit::widget jidpassword {
     }
 }
 
-# The account's host, port, tls, srv and proxy. With -collapsible the fields
-# hide behind a checkbutton, and `args` is empty while it is off.
+# The account's host, port, tls, srv, proxy and tor. With -collapsible the
+# fields hide behind a checkbutton, and `args` is empty while it is off.
 #
 #   connectionfields .c ?-collapsible 1?
-#   .c args            -> {-host h -port p -tls t -srv 0|1 -proxy url} or {}
+#   .c args            -> {-host h -port p -tls t -srv 0|1 -proxy url -tor 0|1}
+#                         or {}
 #   .c load $fields    fill from an `account get` dict
 snit::widget connectionfields {
     hulltype ttk::frame
@@ -48,7 +49,12 @@ snit::widget connectionfields {
     variable port ""
     variable mode Automatic
     variable srv 1
-    variable proxy ""
+    # How the account goes out: direct, tor or socks5. Each of the two
+    # routes through a proxy keeps the address typed for it, host:port
+    # without the scheme, so switching between them loses nothing.
+    variable route direct
+    variable torAddr ""
+    variable socksAddr ""
 
     constructor args {
         $self configurelist $args
@@ -63,10 +69,16 @@ snit::widget connectionfields {
             -values [dict keys $Modes]
         ttk::checkbutton $f.srv -text "Look up the server in DNS (SRV)" \
             -variable [myvar srv]
-        ttk::label $f.proxylbl -text "Proxy"
-        ttk::entry $f.proxy -textvariable [myvar proxy]
-        ttk::label $f.proxyhint -foreground gray50 -font TkSmallCaptionFont \
-            -text "socks5://\[user:pass@\]host:port - calls are off while set"
+        ttk::label $f.routelbl -text "Connection"
+        ttk::frame $f.route
+        foreach {value text} {direct Direct tor Tor socks5 "SOCKS5 proxy"} {
+            ttk::radiobutton $f.route.$value -text $text -value $value \
+                -variable [myvar route]
+            pack $f.route.$value -side left -padx {0 8}
+        }
+        ttk::label $f.proxylbl
+        ttk::entry $f.proxy
+        ttk::label $f.proxyhint -foreground gray50 -font TkSmallCaptionFont
         ttk::label $f.hint -foreground gray50 -font TkSmallCaptionFont \
             -text "Empty host and port: found automatically"
         ttk::label $f.warning -foreground red3 \
@@ -77,14 +89,16 @@ snit::widget connectionfields {
         grid x $f.srv -sticky w -padx 4 -pady 2
         grid x $f.hint -sticky w -padx 4
         grid x $f.warning -sticky w -padx 4
+        grid $f.routelbl $f.route -sticky w -padx 4 -pady 2
         grid $f.proxylbl $f.proxy -sticky ew -padx 4 -pady 2
         grid x $f.proxyhint -sticky w -padx 4
-        grid configure $f.hostlbl $f.portlbl $f.modelbl $f.proxylbl -sticky w
+        grid configure $f.hostlbl $f.portlbl $f.modelbl $f.routelbl \
+            $f.proxylbl -sticky w
         grid columnconfigure $f 1 -weight 1
         grid remove $f.warning
 
         if {$options(-collapsible)} {
-            ttk::checkbutton $win.custom -text "Custom server address or proxy" \
+            ttk::checkbutton $win.custom -text "Custom server address, proxy or Tor" \
                 -variable [myvar custom] -command [mymethod Show]
             pack $win.custom -anchor w
         } else {
@@ -93,7 +107,7 @@ snit::widget connectionfields {
         trace add variable [myvar mode] write [mymethod Changed]
         trace add variable [myvar host] write [mymethod Changed]
         trace add variable [myvar port] write [mymethod Changed]
-        trace add variable [myvar proxy] write [mymethod Changed]
+        trace add variable [myvar route] write [mymethod Changed]
         $self Show
         $self Changed
     }
@@ -110,8 +124,27 @@ snit::widget connectionfields {
     method Changed {args} {
         set f $win.fields
         if {![winfo exists $f.srv]} return
-        $f.srv state [expr {$host eq "" && $port eq "" && [string trim $proxy] eq ""
+        $f.srv state [expr {$host eq "" && $port eq "" && $route eq "direct"
                             ? "!disabled" : "disabled"}]
+        switch -- $route {
+            direct {
+                grid remove $f.proxylbl $f.proxy $f.proxyhint
+            }
+            tor {
+                $f.proxylbl configure -text "Tor address"
+                $f.proxy configure -textvariable [myvar torAddr]
+                $f.proxyhint configure -text "Empty: 127.0.0.1:9050\
+                    (Tor Browser: 127.0.0.1:9150) - calls are off"
+                foreach w {proxylbl proxy proxyhint} { grid $f.$w }
+            }
+            socks5 {
+                $f.proxylbl configure -text "Proxy"
+                $f.proxy configure -textvariable [myvar socksAddr]
+                $f.proxyhint configure \
+                    -text "\[user:pass@\]host:port - calls are off while set"
+                foreach w {proxylbl proxy proxyhint} { grid $f.$w }
+            }
+        }
         if {[dict get $Modes $mode] eq "none"} {
             grid $f.warning
         } else {
@@ -122,8 +155,29 @@ snit::widget connectionfields {
     method args {} {
         if {!$custom} { return {} }
         set p [string trim $port]
+        set proxy ""
+        set tor 0
+        switch -- $route {
+            tor {
+                set tor 1
+                set proxy [ProxyUrl $torAddr]
+            }
+            socks5 {
+                set proxy [ProxyUrl $socksAddr]
+            }
+        }
         list -host [string trim $host] -port [expr {$p eq "" ? 0 : $p}] \
-            -tls [dict get $Modes $mode] -srv $srv -proxy [string trim $proxy]
+            -tls [dict get $Modes $mode] -srv $srv -proxy $proxy -tor $tor
+    }
+
+    # What was typed for a proxy, as the URL an account stores: "" stays "",
+    # and the scheme may be typed or left out.
+    proc ProxyUrl {addr} {
+        set addr [string trim $addr]
+        if {$addr eq "" || [string match socks5://* $addr]} {
+            return $addr
+        }
+        return socks5://$addr
     }
 
     method load {fields} {
@@ -136,9 +190,19 @@ snit::widget connectionfields {
         }
         set srv [dict get $fields srv]
         set proxy [dict getdef $fields proxy ""]
+        regsub {^socks5://} $proxy {} addr
+        if {[dict getdef $fields tor 0]} {
+            set torAddr $addr
+            set route tor
+        } elseif {$proxy ne ""} {
+            set socksAddr $addr
+            set route socks5
+        } else {
+            set route direct
+        }
         if {$options(-collapsible)} {
             set custom [expr {$host ne "" || $port ne "" || $mode ne "Automatic"
-                              || !$srv || $proxy ne ""}]
+                              || !$srv || $route ne "direct"}]
             $self Show
         }
     }

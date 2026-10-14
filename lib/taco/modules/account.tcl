@@ -2,7 +2,7 @@
 # taco account exists -acc $jid ?-command $cmd?
 # taco account add -acc $jid ?-password ...? ?-domain ...? ?-username ...?
 #                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
-#                  ?-websocket_url ...? ?-proxy ...?
+#                  ?-websocket_url ...? ?-proxy ...? ?-tor ...?
 #   creates account if new; updates fields if it already exists
 # taco account remove -acc $jid
 #   error: account doesn't exist
@@ -10,7 +10,7 @@
 #   error: account doesn't exist, invalid field
 # taco account set -acc $jid ?-password ...? ?-domain ...? ?-username ...?
 #                  ?-host ...? ?-port ...? ?-tls ...? ?-srv ...?
-#                  ?-websocket_url ...? ?-proxy ...?
+#                  ?-websocket_url ...? ?-proxy ...? ?-tor ...?
 #   error: account doesn't exist, invalid field or value
 #
 # host, port, tls, srv: where and how the tcp transport reaches domain;
@@ -20,6 +20,8 @@
 # proxy: "socks5://[user:pass@]host:port", or "" to connect directly. Set, it
 # carries every connection the account makes (see proxysocket.tcl), and
 # calls are refused.
+# tor: 1 goes through Tor, at proxy or, when that's "", 127.0.0.1:9050, and
+# on circuits of the account's own (proxy_route).
 # taco account enable -acc $jid
 #   also reconnects an enabled account that is offline
 # taco account disable -acc $jid
@@ -31,8 +33,9 @@ snit::type taco_account {
     option -data-dir -default ""
 
     variable valid_columns {username domain host port tls srv password resource
-                            enabled websocket_url proxy}
-    variable connection_columns {password domain host port tls srv proxy websocket_url}
+                            enabled websocket_url proxy tor}
+    variable connection_columns {password domain host port tls srv proxy tor
+                                 websocket_url}
     # Added by the transport when a request carries a token, not fields.
     variable transport_opts {-command -onerror -tag}
 
@@ -114,12 +117,13 @@ snit::type taco_account {
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
         }
-        set proxy [$options(-db) onecolumn {SELECT proxy FROM account WHERE jid=$jid}]
+        set route {SELECT proxy, tor FROM account WHERE jid=$jid}
+        set before [$options(-db) eval $route]
         $self SetFields $jid $args
         # A new route ends everything on the old one: what goes through a
-        # proxy, or no longer through this one, must not stay up the old way.
-        # PushConnection then connects an enabled account anew.
-        if {$proxy ne [$options(-db) onecolumn {SELECT proxy FROM account WHERE jid=$jid}]} {
+        # proxy or Tor, or no longer through this one, must not stay up the
+        # old way. PushConnection then connects an enabled account anew.
+        if {$before ne [$options(-db) eval $route]} {
             set client [$self liveClient -acc $jid]
             if {$client ne ""} {
                 $client endSession "proxy changed"
@@ -185,9 +189,9 @@ snit::type taco_account {
                 set value [string trim $value]
                 proxy_parse $value
             }
-            if {$field eq "srv"} {
+            if {$field in {srv tor}} {
                 if {![string is boolean -strict $value]} {
-                    error "Invalid srv: $value"
+                    error "Invalid $field: $value"
                 }
                 set value [expr {$value ? 1 : 0}]
             }
@@ -199,12 +203,13 @@ snit::type taco_account {
     method ConnectionOpts {jid} {
         $options(-db) eval {
             SELECT password, domain, host, port, tls, srv, websocket_url, proxy,
-                   enabled
+                   tor, enabled
             FROM account WHERE jid=$jid
         } r {
             return [list -password $r(password) -domain $r(domain) \
                 -host $r(host) -port $r(port) -tls $r(tls) -srv $r(srv) \
-                -ws-url $r(websocket_url) -proxy $r(proxy) \
+                -ws-url $r(websocket_url) \
+                -proxy [proxy_route $r(proxy) $r(tor) $jid] \
                 -enabled $r(enabled)]
         }
         return {}
