@@ -8,7 +8,9 @@
 # where msg names the proxy itself, so a caller need not prefix it. `error`
 # may pass (the proxy is down or restarting, the target unreachable from it);
 # `fatal` is the proxy answering in a way that holds until the settings
-# change: credentials refused, no SOCKS5 there, a request its rules forbid.
+# change: credentials refused, no SOCKS5 there, a request its rules forbid,
+# and from Tor, an onion service's client authorization missing or refused,
+# or an address that is no onion address.
 # Anything not `ok` is a failure, so a caller may ignore the difference.
 #
 # Returns a handle for socks5_abort, which drops a handshake still in
@@ -47,7 +49,8 @@ namespace eval ::socks5 {
     array set Pending {}
     variable Failed 0
 
-    # SOCKS5 reply codes, RFC 1928 section 6
+    # SOCKS5 reply codes, RFC 1928 section 6, then Tor's for onion services
+    # (X'F0'-X'F7', sent by a SocksPort with ExtendedErrors)
     variable ReplyCodes
     array set ReplyCodes {
         0 "succeeded"
@@ -59,6 +62,14 @@ namespace eval ::socks5 {
         6 "TTL expired"
         7 "command not supported"
         8 "address type not supported"
+        240 "onion service descriptor not found"
+        241 "onion service descriptor is invalid"
+        242 "onion service introduction failed"
+        243 "onion service rendezvous failed"
+        244 "onion service needs client authorization"
+        245 "onion service rejected the client authorization"
+        246 "invalid onion address"
+        247 "onion service introduction timed out"
     }
 }
 
@@ -218,10 +229,13 @@ proc ::socks5::Advance {sock} {
             if {$rep != 0} {
                 variable ReplyCodes
                 # Not allowed by ruleset, command or address type not
-                # supported: the proxy's own setup, which holds. The rest
-                # (general failure, and the target unreachable from it) may
-                # pass, as they would on a direct connection.
-                set status [expr {$rep in {2 7 8} ? "fatal" : "error"}]
+                # supported: the proxy's own setup, which holds. So does an
+                # onion service's: a client authorization missing or refused,
+                # an address that is no onion address. The rest (general
+                # failure, the target unreachable from the proxy, an onion
+                # service not found or not answering) may pass, as they
+                # would on a direct connection.
+                set status [expr {$rep in {2 7 8 244 245 246} ? "fatal" : "error"}]
                 if {[info exists ReplyCodes($rep)]} {
                     Fail $sock "proxy error: $ReplyCodes($rep) ($rep)" $status
                 } else {
