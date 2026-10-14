@@ -1138,6 +1138,72 @@ test omemo-muc-people-room-caps {what we may do about the room itself} \
         list $as [dict get [c muc people -jid $::t::ROOM] me]
     } -result {{request_voice 0 destroy 0} {request_voice 1 destroy 1}}
 
+# {key nick jid present affiliation} of who sent as $nick with $occId.
+proc ::t::person {nick {occId ""}} {
+    set p [c muc person -jid $::t::ROOM -occupant $::t::ROOM/$nick \
+        -occupant_id $occId]
+    list [dict get $p key] [dict get $p nick] [dict get $p jid] \
+        [dict get $p present] [dict get $p affiliation]
+}
+
+test omemo-muc-person-present {a sender still here is their person in the room} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member]
+        list [::t::person romeo occ-r] [::t::person romeo] \
+            [dict get [c muc person -jid $::t::ROOM -occupant $::t::ROOM/romeo] occupant]
+    } -result [list [list $::t::ROMEO romeo $::t::ROMEO 1 member] \
+        [list $::t::ROMEO romeo $::t::ROMEO 1 member] $::t::ROOM/romeo]
+
+test omemo-muc-person-left {a sender who left is known by the occupant-id the room vouched for} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member]
+        c.conn feed [::t::presence romeo jid $::t::ROMEO/res occ occ-r \
+            type unavailable role none]
+        list [::t::person romeo occ-r] [::t::person romeo]
+    } -result [list [list $::t::ROMEO romeo $::t::ROMEO 0 member] \
+        [list nick:romeo romeo {} 0 none]]
+
+test omemo-muc-person-renamed {a sender now under another nick is found by their occupant-id} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member] \
+            [list merc $::t::MERC occ-m member]] \
+            members [list $::t::ROMEO member $::t::MERC member]
+        c.conn feed [::t::presence romeo jid $::t::ROMEO/res occ occ-r \
+            type unavailable role none]
+        c.conn feed [::t::presence romeo2 jid $::t::ROMEO/res occ occ-r]
+        ::t::person romeo occ-r
+    } -result [list $::t::ROMEO romeo2 $::t::ROMEO 1 member]
+
+test omemo-muc-person-nick-taken {a nick someone else has since taken is not theirs} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member $::t::MERC member]
+        c.conn feed [::t::presence romeo jid $::t::ROMEO/res occ occ-r \
+            type unavailable role none]
+        c.conn feed [::t::presence romeo jid $::t::MERC/res occ occ-m]
+        ::t::person romeo occ-r
+    } -result [list $::t::ROMEO romeo $::t::ROMEO 0 member]
+
+test omemo-muc-person-anonymous {a sender the room never named is a nick} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo "" occ-r none]] \
+            features {http://jabber.org/protocol/muc muc_open muc_semianonymous}
+        list [::t::person romeo occ-r] [::t::person ghost]
+    } -result [list [list nick:romeo romeo {} 1 none] [list nick:ghost ghost {} 0 none]]
+
+test omemo-muc-person-not-joined {a room we are not in yet still names its senders, from what is on file} \
+    {*}$mucenv -body {
+        ::t::join [list [list romeo $::t::ROMEO occ-r member]] \
+            members [list $::t::ROMEO member]
+        c.conn feed [::t::presence juliet jid $::t::JFULL self 1 type unavailable \
+            affiliation member role none]
+        c muc leave -jid $::t::ROOM
+        list [::t::person romeo occ-r] [::t::person ghost]
+    } -result [list [list $::t::ROMEO romeo $::t::ROMEO 0 none] \
+        [list nick:ghost ghost {} 0 none]]
+
 test omemo-muc-people-not-joined {a room we are not in has no people} \
     {*}$mucenv -body {
         c muc people -jid $::t::ROOM

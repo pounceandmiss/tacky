@@ -1043,6 +1043,7 @@ alerts](#read-state-and-alerts).
     muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
     muc people        {jid: string} -> {list: string, groups: {group: int},
                                         me: room_caps, people: [person]}
+    muc person        {jid: string, occupant: string, occupant_id?: string} -> person
     muc occupants     {jid: string} -> [occupant]
     muc occupant      {jid: string, nick: string} -> occupant   ({} if not there)
     muc myNick        {jid: string} -> string     your nick in the room
@@ -1132,6 +1133,18 @@ as for `members`: where the room refused the lists, the absent are not
 known and only those present are listed. `<PeopleChanged>` says the answer
 changed - once per burst, so a join is one event - for the frontend to read
 it again; a room you are not in answers `list: none` and no people.
+
+`person` is one of those people: who sent a message, named by the row's
+`from_jid` as `occupant` and its `occupant_id`. It is the occupant under
+that nick while their occupant-id (where both have one) still agrees; else
+whoever is in the room under that occupant-id or the real JID it was once
+vouched for, under whatever nick they have now; else someone absent, with
+that real JID where the room ever vouched for it and the nick they wrote
+under - unlike the absent `people` lists, whose `nick` is "". So a sender
+who left, or whose nick someone else has since taken, still comes back as
+themselves where the room gave occupant-ids, and as just a nick where it
+did not. A room you are not in, or not in yet, has nobody present, so its
+senders all come back absent, known by the occupant-ids on file.
 
 Group chat invitations arrive as messages with `content.type` `"invite"`
 (see [message](#message)). These two answer one, named by that message's

@@ -226,6 +226,7 @@ jsonify_type jsonify \
         muc/roomPrivacy         list
         muc/members             {dict {members {map string}}}
         muc/people              {dict {groups {map int} me {dict {request_voice bool destroy bool}} people {list person}}}
+        muc/person              person
         roster/get              {list roster_item}
         roster/subscription     string
         blocking/supported      bool
