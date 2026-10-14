@@ -1,7 +1,8 @@
 if 0 {
-    profilesettings - form for editing profile name, avatar, the password
-    Tacky logs in with (with a way into changepassworddialog), and where the
-    account connects.
+    profilesettings - an account's settings, in three tabs: Profile (name,
+    avatar, the password Tacky logs in with, with a way into
+    changepassworddialog), Server and Proxy (where and how the account
+    connects), and OMEMO (its own keys).
 
     Usage:
         profilesettings open romeo@montague.lit
@@ -56,6 +57,16 @@ snit::widget profilesettings {
         set acc $options(-acc)
         set t $options(-tacky)
 
+        # Tabs: the profile, where it connects, its OMEMO keys. Made first so
+        # the widgets below, gridded -in them, stack above them.
+        ttk::notebook $win.nb
+        set main [ttk::frame $win.nb.main -padding 8]
+        set conn [ttk::frame $win.nb.conn -padding 8]
+        set omemo [ttk::frame $win.nb.omemo -padding 8]
+        $win.nb add $main -text "Profile"
+        $win.nb add $conn -text "Server and Proxy"
+        $win.nb add $omemo -text "OMEMO"
+
         # --- Avatar: either click opens the Change/Remove menu ---
         ttk::frame $win.avatar
         ttk::label $win.avatar.img -image [avatarcache default] \
@@ -74,12 +85,12 @@ snit::widget profilesettings {
         $win.avatarmenu add command -label "Remove avatar" \
             -command [mymethod RemoveAvatar]
 
-        grid $win.avatar -row 0 -column 0 -rowspan 4 -sticky n \
+        grid $win.avatar -in $main -row 0 -column 0 -rowspan 4 -sticky n \
             -padx {4 12} -pady 4
 
         # --- Account JID ---
         ttk::label $win.jid -text $acc -font {Helvetica 12 bold}
-        grid $win.jid -row 0 -column 1 -columnspan 2 -sticky w -padx 4 -pady 4
+        grid $win.jid -in $main -row 0 -column 1 -columnspan 2 -sticky w -padx 4 -pady 4
 
         # --- Name row: saved on Return or focus-out, Escape reverts ---
         ttk::label $win.namelbl -text "Display Name"
@@ -88,8 +99,8 @@ snit::widget profilesettings {
         bind $win.nameentry <FocusOut> [mymethod SaveName]
         bind $win.nameentry <Escape> [mymethod RevertName]
 
-        grid $win.namelbl    -row 1 -column 1 -sticky w -padx 4 -pady 4
-        grid $win.nameentry  -row 1 -column 2 -sticky ew -padx 4 -pady 4
+        grid $win.namelbl -in $main    -row 1 -column 1 -sticky w -padx 4 -pady 4
+        grid $win.nameentry -in $main  -row 1 -column 2 -sticky ew -padx 4 -pady 4
 
         # --- Login password: the stored one, saved like the name ---
         ttk::label $win.passlbl -text "Login Password"
@@ -100,39 +111,34 @@ snit::widget profilesettings {
         ttk::button $win.passchange -text "Change password on server\u2026" \
             -command [mymethod ChangePassword]
 
-        grid $win.passlbl    -row 2 -column 1 -sticky nw -padx 4 -pady 4
-        grid $win.passentry  -row 2 -column 2 -sticky ew -padx 4 -pady 4
-        grid $win.passchange -row 3 -column 2 -sticky w -padx 4 -pady 4
+        grid $win.passlbl -in $main    -row 2 -column 1 -sticky nw -padx 4 -pady 4
+        grid $win.passentry -in $main  -row 2 -column 2 -sticky ew -padx 4 -pady 4
+        grid $win.passchange -in $main -row 3 -column 2 -sticky w -padx 4 -pady 4
+
+        grid columnconfigure $main 2 -weight 1
 
         # --- Server connection and proxy: saved together by one button ---
-        disclosure $win.connsec -title "Server Connection"
-        disclosure $win.proxysec -title "Proxy"
+        ttk::label $win.connlbl -text "Server Connection" -font TkHeadingFont
         proxyfields $win.proxy
         connectionfields $win.connection -proxyfields $win.proxy
-        fields_disclose $win.connsec $win.connection
-        fields_disclose $win.proxysec $win.proxy
+        ttk::label $win.proxylbl -text "Proxy" -font TkHeadingFont
         ttk::button $win.connsave -text "Save connection settings" \
             -command [mymethod SaveConnection]
-        grid $win.connsec  -row 4 -column 1 -columnspan 2 -sticky ew -padx 4 -pady 4
-        grid $win.proxysec -row 5 -column 1 -columnspan 2 -sticky ew -padx 4 -pady 4
-        grid $win.connsave -row 6 -column 2 -sticky w -padx 4 -pady 4
-
-        # --- Status label ---
-        ttk::label $win.status -text ""
-        grid $win.status -row 7 -column 0 -columnspan 3 -sticky nsew -padx 4 -pady 4
+        grid $win.connlbl    -in $conn -row 0 -column 0 -sticky w -pady {0 2}
+        grid $win.connection -in $conn -row 1 -column 0 -sticky ew
+        grid $win.proxylbl   -in $conn -row 2 -column 0 -sticky w -pady {12 2}
+        grid $win.proxy      -in $conn -row 3 -column 0 -sticky ew
+        grid $win.connsave   -in $conn -row 4 -column 0 -sticky w -padx 4 -pady {12 0}
+        grid columnconfigure $conn 0 -weight 1
 
         # --- OMEMO own keys ---
-        ttk::separator $win.omemosep -orient horizontal
-        grid $win.omemosep -row 8 -column 0 -columnspan 3 -sticky ew -pady {8 4}
-        ttk::label $win.omemolbl -text "My OMEMO keys" \
-            -font {Helvetica 12 bold}
-        grid $win.omemolbl -row 9 -column 0 -columnspan 3 -sticky w -padx 4
         omemoownkeys $win.omemokeys -acc $acc
-        grid $win.omemokeys -row 10 -column 0 -columnspan 3 -sticky nsew \
-            -padx 4 -pady 4
+        pack $win.omemokeys -in $omemo -fill both -expand 1
 
-        grid columnconfigure $win 2 -weight 1
-        grid rowconfigure $win 10 -weight 1
+        # --- Status label, under whichever tab is showing ---
+        ttk::label $win.status -text ""
+        pack $win.nb -fill both -expand 1
+        pack $win.status -fill x -padx 4 -pady {4 0}
 
         # Nick: load + stay live
         $t nick get -acc $acc -jid $acc \
@@ -195,12 +201,9 @@ snit::widget profilesettings {
             -tag $win -command [mymethod OnConnection]
     }
 
-    # The first load: a section opens if what it holds isn't the default
     method OnConnection {fields} {
         $win.connection load $fields
         $win.proxy load $fields
-        $win.connsec configure -open [expr {![$win.connection isDefault]}]
-        $win.proxysec configure -open [expr {![$win.proxy isDefault]}]
     }
 
     method OnAvatar {img} {
