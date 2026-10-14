@@ -637,7 +637,8 @@ snit::widget chatpanel {
 
     method StartCall {} {
         ::tacky calls start -acc $options(-acc) \
-            -to [jid bare $options(-jid)]
+            -to [jid bare $options(-jid)] \
+            -onerror [list ::tacky reportError [dict create acc $options(-acc)]]
     }
 
     # --- Blocking (1:1 only) ---
@@ -676,9 +677,11 @@ snit::widget chatpanel {
     method JoinGroupCall {args} {
         if {[dict get $groupCall active]} {
             ::tacky groupcall join -acc $options(-acc) \
-                -jid [dict get $groupCall jid] {*}$args
+                -jid [dict get $groupCall jid] {*}$args \
+                -onerror [list ::tacky reportError [dict create acc $options(-acc)]]
         } else {
-            ::tacky groupcall start -acc $options(-acc) -chat $roomJid {*}$args
+            ::tacky groupcall start -acc $options(-acc) -chat $roomJid {*}$args \
+                -onerror [list ::tacky reportError [dict create acc $options(-acc)]]
         }
     }
 

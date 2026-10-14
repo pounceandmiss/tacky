@@ -250,15 +250,8 @@ snit::type taco_calls {
         array set opts $args
         if {$opts(-to) eq ""} { error "start: -to required" }
 
-        # Surface it through the generic error channel (app.tcl's
-        # OnMethodError -> status line) rather than raising, since GUI callers
-        # invoke `start` without -command.
         set why [$self Blocked]
-        if {$why ne ""} {
-            $client emit error <MethodError> \
-                -module calls -method start -message $why
-            return
-        }
+        if {$why ne ""} { error [string tolower $why 0 0] }
 
         set bare [jid bare $opts(-to)]
         set sid [$self NewSid]

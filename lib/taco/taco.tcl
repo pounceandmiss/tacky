@@ -178,7 +178,7 @@ proc taco_install_bgerror {} {
 #   tackymethod name arglist body            the return value
 #   tackymethod -noreturn name arglist body  ""
 #   tackymethod -async name arglist body     nothing: the body answers later
-# A thrown error goes to -onerror, else <MethodError>, else the caller.
+# A thrown error goes to -onerror, else back to the caller.
 # -online marks a method that is only network work (a publish, a join): on
 # a disabled account it fails with "account disabled" before doing anything
 # (taco_client requireEnabled). Only in a module with a $client.
@@ -221,19 +221,6 @@ snit::macro tackymethod {args} {
                 {*}[dict get $args -onerror] $_result
                 return
             }
-            if {[dict exists $args -command]} {
-                set _extra {}
-                if {[dict exists $args -acc]} {
-                    lappend _extra -acc [dict get $args -acc]
-                }
-                tacky emit error <MethodError> \
-                    -module [regsub {^::taco_} $type {}] \
-                    -method %NAME% \
-                    -message $_result \
-                    -errorinfo [dict get $_opts -errorinfo] \
-                    {*}$_extra
-                return
-            }
             return -options $_opts $_result
         }
         if {[dict exists $args -command]} {
@@ -264,16 +251,6 @@ proc taco_call {taco module method args} {
     }
     if {[dict exists $args -onerror]} {
         return [{*}[dict get $args -onerror] $result]
-    }
-    if {[dict exists $args -command]} {
-        set extra {}
-        if {[dict exists $args -acc]} {
-            lappend extra -acc [dict get $args -acc]
-        }
-        tacky emit error <MethodError> \
-            -module $module -method $method -message $result \
-            -errorinfo [dict get $opts -errorinfo] {*}$extra
-        return
     }
     return -options $opts $result
 }

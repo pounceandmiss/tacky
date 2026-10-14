@@ -55,6 +55,12 @@ proc tacky_split_debug {arglist} {
 #                   the original command with the result.  One-shot: no
 #                   dead listener accumulation.
 #
+# Errors: a call's error goes to its -onerror. A call with a -command but no
+# -onerror gets the frontend's default handler (defaultOnerror) in its place,
+# called with {module method ?acc?} and the message. Anything else that
+# fails is thrown inside the backend: a bare call in-process straight back to
+# its caller, the rest to the backend's bgerror (error <Background>).
+#
 # Cancellation:
 #   tacky unlisten $tag  →  removes _listeners entries,
 #                            then purges Callbacks entries tagged $tag.
@@ -63,12 +69,37 @@ oo::class create tacky_base {
     variable _listeners ;# dict: {module event} → list of {tag filters command}
     variable TagCounter
     variable TokenCounter 0
-    variable Callbacks ;# dict: token → {tag command}
+    variable Callbacks ;# dict: token → {tag cmd err}
+    variable DefaultOnerror
 
     constructor {} {
         set _listeners [dict create]
         set TagCounter 0
         set Callbacks [dict create]
+        set DefaultOnerror ""
+    }
+
+    # defaultOnerror ?cmd?  The handler for a call that asked for its result
+    # but not its error, called as {*}$cmd context message, context being
+    # {module method ?acc?}. Without one such an error is thrown inside the
+    # backend, as a call with no callbacks at all would be. Returns the
+    # handler.
+    method defaultOnerror {args} {
+        if {[llength $args] > 1} {
+            error "usage: defaultOnerror ?cmd?"
+        }
+        if {[llength $args]} {
+            set DefaultOnerror [lindex $args 0]
+        }
+        return $DefaultOnerror
+    }
+
+    # Hand an error to the default handler: what a call site with no handling
+    # of its own passes as -onerror, as [list ::tacky reportError $context].
+    method reportError {context message} {
+        if {$DefaultOnerror ne ""} {
+            {*}$DefaultOnerror $context $message
+        }
     }
 
     # listen ?-tag $tag? module event ?-field $value ...? $command
@@ -263,22 +294,32 @@ oo::class create tacky_base {
 
     # Token for one outgoing call's callbacks, as {token cmd err}. One token
     # for both, since only one can fire: a token apiece leaves the loser
-    # behind and `listening` never goes false for that tag again.
-    method CallToken {argsDict} {
+    # behind and `listening` never goes false for that tag again. A -command
+    # with no -onerror takes the default handler as its error callback.
+    method CallToken {module method argsDict} {
         set tag [expr {[dict exists $argsDict -tag] ? [dict get $argsDict -tag] : ""}]
         set cmd [expr {[dict exists $argsDict -command] ? [dict get $argsDict -command] : ""}]
         set err [expr {[dict exists $argsDict -onerror] ? [dict get $argsDict -onerror] : ""}]
+        if {$err eq "" && $cmd ne "" && $DefaultOnerror ne ""} {
+            set context [dict create module $module method $method]
+            if {[dict exists $argsDict -acc]} {
+                dict set context acc [dict get $argsDict -acc]
+            }
+            set err [list {*}$DefaultOnerror $context]
+        }
         return [list [my TokenNew [list $tag $cmd $err]] $cmd $err]
     }
 
     # Intercept outgoing calls: store -command/-onerror in Callbacks and
     # replace them with {tacky emit callback <Result|Error> -token N -result}
-    # so the backend round-trips through emit on completion.
+    # so the backend round-trips through emit on completion. Rewritten from
+    # what CallToken settled on rather than what was passed, so a default
+    # -onerror goes out too.
     method unknown {module method args} {
         if {[dict exists $args -command] || [dict exists $args -onerror]} {
-            lassign [my CallToken $args] token
-            foreach {opt event} {-command <Result> -onerror <Error>} {
-                if {![dict exists $args $opt]} continue
+            lassign [my CallToken $module $method $args] token cmd err
+            foreach {opt event run} [list -command <Result> $cmd -onerror <Error> $err] {
+                if {$run eq ""} continue
                 dict set args $opt \
                     [list tacky emit callback $event -token $token -result]
             }
@@ -398,8 +439,8 @@ set _tacky_backend_script [file join [file dirname [info script]] .. .. bin tack
 #        [result token data]               success reply
 #        [error  token message]            error reply
 #
-# `wants` is a subset of {cmd err}: the child wires only the callbacks the
-# caller gave, so a -command with no -onerror still reaches <MethodError>.
+# `wants` is a subset of {cmd err}: the child wires only the callbacks this
+# side settled on, the caller's own or the default -onerror (CallToken).
 #
 # Unlike tacky_type / tacky_threaded_type — which round-trip the
 # original callback by replacing -command with a magic string that
@@ -459,7 +500,7 @@ oo::class create tacky_process_type {
             $Pipe send [list $module $method $args]
             return
         }
-        lassign [my CallToken $args] token cmd err
+        lassign [my CallToken $module $method $args] token cmd err
         set wants {}
         if {$cmd ne ""} { lappend wants cmd }
         if {$err ne ""} { lappend wants err }

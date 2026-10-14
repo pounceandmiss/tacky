@@ -133,10 +133,13 @@ The two transports line up directly:
 Tcl keys take a `-` and event names take `<>` (Tk binding style); the JSON
 wire carries both bare, in both directions. Values match either way except
 binary ones: JSON carries them base64, Tcl carries raw bytes. An error goes
-to `-onerror`, or to an `error <MethodError>` event if only `-command` was
-given, or is re-thrown if neither was. On top of the raw firehose the binding
-adds frontend-side sugar - `tacky listen` / `observe` / `unlisten`, filtered
-callbacks under a cancellable tag.
+to `-onerror`; a call with only `-command` gets the handler set with
+`tacky defaultOnerror $cmd` in its place, called as `{*}$cmd context message`
+with `context` = `{module method ?acc?}`, and `tacky reportError context
+message` hands it one from anywhere else. With no handler for it the error is
+re-thrown. On top of the raw firehose the binding adds frontend-side sugar -
+`tacky listen` / `observe` / `unlisten`, filtered callbacks under a
+cancellable tag.
 
 ## Storage layout
 
@@ -335,7 +338,7 @@ reached, and never connects without it.
 
 With a proxy set, or `tor`:
 - No SRV query is sent, and the account dials `host` (or `domain`) on `port` (or the `tls` default).
-- Attempts to place a call fail with `error <MethodError>` or `<StartFailed>`. An incoming call is declined without ringing.
+- `calls start`, `groupcall start` and `groupcall join` fail with the reason. An incoming call is declined without ringing.
 - The websocket transport refuses work.
 
 Events:
@@ -1541,6 +1544,10 @@ Events:
     groupcall <Invited>      {jid: string, from: string, chat: string, timestamp: int, video: bool}
     groupcall <StartFailed>  {chat: string, reason: string}
 
+`<StartFailed>` is a `start` that failed after it answered: no service to
+host the room, or the room refused us. One that can't begin at all - calls
+blocked, no session up - fails the request instead.
+
 `jid` is the call's room: a hosted call's own (Dino's way: `start` makes it
 and invites the chat), or a group chat holding the call (Movim's, joined but
 never started by tacky). `chat` is the chat it belongs to.
@@ -1843,13 +1850,15 @@ logs stay, so treat a log as private.
 Backend failures that no reply can carry. Events only, no methods, nothing
 pullable.
 
-    error <MethodError> {module: string, method: string, message: string,
-                         errorinfo?: string, acc?: string}
     error <Background>  {message: string, errorinfo?: string}
 
-`<MethodError>` is a request that failed while carrying a `-command` but no
-`-onerror`, so the error had nowhere else to go; over JSON, where both are
-always wired, a token gets an error reply instead and this never fires.
+A failure reaches a frontend one of three ways, and only one:
+
+- What a request asked for can't be done: its error reply.
+- Something long-lived failed after the request was answered - a
+  connection, a room, a call: an event of that module carrying the reason
+  (`conn <ConnError>`, `muc <Error>`, `calls <Failed>`, ...).
+- Nothing owns it: `<Background>`.
 
 `<Background>` is a failure with no request behind it at all - a timer, a
 socket handler, the stanza loop. The backend has already written the trace to

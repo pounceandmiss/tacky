@@ -105,12 +105,19 @@ test disabled-download-refused {a download fails, and an automatic one is held b
 test disabled-calls-refused {a call is refused, saying why} \
     {*}$disabled_common -body {
         set ::_emitted {}
-        tacky calls start -acc $::acc -to alice@example.com
-        list [llength [$::_client conn get_written]] [lmap e $::_emitted {
-            expr {[lrange $e 0 1] eq {error <MethodError>}
-                ? [dict get [lrange $e 2 end] -message] : [continue]}
-        }]
-    } -result {0 {{Calls are unavailable while the account is disabled}}}
+        catch {tacky calls start -acc $::acc -to alice@example.com} why
+        list [llength [$::_client conn get_written]] $why \
+            [lsearch -all -inline -glob $::_emitted {error *}]
+    } -result {0 {calls are unavailable while the account is disabled} {}}
+
+test disabled-groupcalls-refused {starting or joining a group call is refused, saying why} \
+    {*}$disabled_common -body {
+        set ::_emitted {}
+        catch {tacky groupcall start -acc $::acc -chat room@muc.example.com} start
+        catch {tacky groupcall join -acc $::acc -jid call@muc.example.com} join
+        list [llength [$::_client conn get_written]] $start $join \
+            [lsearch -all -inline -glob $::_emitted {*<StartFailed>*}]
+    } -result {0 {calls are unavailable while the account is disabled} {calls are unavailable while the account is disabled} {}}
 
 test disabled-room-join-refused {a room join answers at once and leaves nothing tracked} \
     {*}$disabled_common -body {

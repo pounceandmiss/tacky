@@ -792,14 +792,15 @@ test groupcall-start-fails-without-service {no room anywhere: <StartFailed>, not
     } -result [list [list <StartFailed> -chat bob@example.com \
         -reason "no group chat service to hold the call"] {}]
 
-test groupcall-start-offline {starting a call with no session up fails at once, saying so} \
+test groupcall-start-offline {starting a call with no session up fails the request, saying so} \
     {*}$groupcall_env -body {
         c iq live 0
         c.conn clear
-        c.groupcall start -chat bob@example.com
+        catch {c.groupcall start -chat bob@example.com} why
         update
-        list [lsearch -inline [gc_events] {<StartFailed>*}] [llength [c.conn get_written]]
-    } -result [list [list <StartFailed> -chat bob@example.com -reason "not connected"] 0]
+        list $why [lsearch -inline [gc_events] {<StartFailed>*}] \
+            [llength [c.conn get_written]]
+    } -result [list "not connected" {} 0]
 
 test groupcall-hosted-join-offline {joining a hosted call with no session up ends the join, saying so} \
     {*}$groupcall_env -body {

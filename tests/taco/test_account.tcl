@@ -91,23 +91,54 @@ tacky_test account-listening-clears-after-an-error \
         tacky listening probe
     } -result 0
 
-# -- MethodError -----------------------------------------------------------
+# -- default -onerror -------------------------------------------------------
 # Must behave identically in all three transports; process used to swallow it.
 
-tacky_test account-methoderror-fields {-command without -onerror emits MethodError} \
+tacky_test account-default-onerror-fields {-command without -onerror reaches the default handler} \
     {*}$common \
     -body {
-        set e [wait_call_methoderror tacky account get -acc nobody@example.com]
-        list [dict get $e -module] [dict get $e -method] \
-            [dict get $e -acc] [dict get $e -message]
+        lassign [wait_call_default_onerror tacky account get -acc nobody@example.com] \
+            context message
+        list [dict get $context module] [dict get $context method] \
+            [dict get $context acc] $message
     } -result {account get nobody@example.com {Account doesn't exist: nobody@example.com}}
 
-tacky_test account-methoderror-no-acc {MethodError omits -acc when the call had none} \
+tacky_test account-default-onerror-no-acc {the context omits acc when the call had none} \
     {*}$common \
     -body {
-        set e [wait_call_methoderror tacky account get]
-        list [dict get $e -module] [dict exists $e -acc]
+        lassign [wait_call_default_onerror tacky account get] context
+        list [dict get $context module] [dict exists $context acc]
     } -result {account 0}
+
+tacky_test account-default-onerror-pops-token {an error through the default handler ends the request} \
+    {*}$common \
+    -body {
+        set was [tacky defaultOnerror]
+        set ::_done 0
+        tacky defaultOnerror [list apply {{c m} { set ::_done 1 }}]
+        try {
+            tacky account get -acc nobody@example.com -tag dflt \
+                -command {apply {{r} {}}}
+            if {!$::_done} { vwait ::_done }
+        } finally {
+            tacky defaultOnerror $was
+        }
+        tacky listening dflt
+    } -result 0
+
+tacky_test account-report-error {reportError hands a call site's error to the default handler} \
+    {*}$common \
+    -body {
+        set was [tacky defaultOnerror]
+        set ::_got ""
+        tacky defaultOnerror [list apply {{c m} { set ::_got [list $c $m] }}]
+        try {
+            tacky reportError [dict create acc a@example.com] "no"
+        } finally {
+            tacky defaultOnerror $was
+        }
+        set ::_got
+    } -result {{acc a@example.com} no}
 
 # -- resource --------------------------------------------------------------
 
@@ -180,11 +211,12 @@ tacky_test account-add-error-to-onerror {a plain method's error answers -onerror
         wait_call_error tacky account add -acc "user@example,com"
     } -match glob -result {Invalid JID:*}
 
-tacky_test account-add-error-methoderror {with -command alone the error becomes <MethodError>} \
+tacky_test account-add-error-default-onerror {with -command alone the error goes to the default handler} \
     -body {
-        set ev [wait_call_methoderror tacky account add -acc "user@example,com"]
-        list [dict get $ev -module] [dict get $ev -method] \
-            [string match {Invalid JID:*} [dict get $ev -message]]
+        lassign [wait_call_default_onerror tacky account add -acc "user@example,com"] \
+            context message
+        list [dict get $context module] [dict get $context method] \
+            [string match {Invalid JID:*} $message]
     } -result {account add 1}
 
 # -- port ------------------------------------------------------------------

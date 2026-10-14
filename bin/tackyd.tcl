@@ -8,8 +8,8 @@
 #                    [result token data]               success reply
 #                    [error  token message]            error reply
 #
-# `wants` is a subset of {cmd err}: only those callbacks are wired, so a
-# -command with no -onerror still reaches the macro's <MethodError> branch.
+# `wants` is a subset of {cmd err}: only those callbacks are wired, so an
+# error the request has no callback for is thrown back out to bgerror.
 
 lappend auto_path [file normalize [file join [file dirname [info script]] .. lib]]
 package require taco
