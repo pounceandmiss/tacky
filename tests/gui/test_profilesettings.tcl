@@ -432,15 +432,22 @@ test profilesettings-route-direct {Direct clears both proxy and Tor} -setup {
     mock_backend_down
 } -result {tor {{} 0} 0}
 
-test profilesettings-sections-open-when-set {a section opens when what it holds isn't the default} -setup {
+# The tab a widget is shown in: the notebook page it is managed -in
+proc ps_tab_of {w} {
+    set in [dict get [[winfo manager $w] info $w] -in]
+    .ps.nb tab $in -text
+}
+
+test profilesettings-tabs {Profile, Server and Proxy and OMEMO tabs, each with its own part} -setup {
     mock_backend_up
-    tacky account set -acc user@test.example.com -tor 1
 } -body {
     profilesettings .ps -acc user@test.example.com
     wait
-    list [.ps.connsec cget -open] [.ps.connsec cget -summary] \
-        [.ps.proxysec cget -open] [.ps.proxysec cget -summary]
+    list [lmap t [.ps.nb tabs] {.ps.nb tab $t -text}] \
+        [lmap w {nameentry passentry connection proxy connsave omemokeys} {
+            ps_tab_of .ps.$w
+        }]
 } -cleanup {
     destroy .ps
     mock_backend_down
-} -result {0 Automatic 1 {Tor, 127.0.0.1:9050}}
+} -result {{Profile {Server and Proxy} OMEMO} {Profile Profile {Server and Proxy} {Server and Proxy} {Server and Proxy} OMEMO}}
