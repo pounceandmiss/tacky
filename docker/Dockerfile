@@ -15,10 +15,12 @@ FROM debian:bookworm AS build
 # zip: Tk's configure uses the system zip(1) to assemble its zipfs archive;
 # without it Tk falls back to a bundled "minizip" it can't build and the make
 # dies with "No rule to make target 'minizip'".
+# nasm: libvpx (rtcmv) assembles its x86 SIMD with it, and its configure
+# stops when neither nasm nor yasm is there.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git curl file zip ca-certificates pkg-config \
         zlib1g-dev libx11-dev libxext-dev libxss-dev libxft-dev \
-        libxcursor-dev libfontconfig-dev ccache \
+        libxcursor-dev libfontconfig-dev ccache nasm \
     && rm -rf /var/lib/apt/lists/*
 
 # Transparent ccache: its compiler shims shadow gcc/g++/cc so even the cmake
