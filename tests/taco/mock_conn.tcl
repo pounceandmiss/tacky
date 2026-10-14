@@ -98,7 +98,8 @@ snit::type mock_conn {
         array set opts $args
         switch -- $opts(-event) {
             <State> {
-                {*}$options(-emit) conn <State> -state $mockState
+                {*}$options(-emit) conn <State> -state $mockState \
+                    -proxy [$self Route]
             }
             <ConnError> {
                 if {$mockLastError ne ""} {
@@ -110,6 +111,14 @@ snit::type mock_conn {
                     "conn pull: event $opts(-event) is not pullable"
             }
         }
+    }
+
+    # Mirrors taco_connection Route.
+    method Route {} {
+        if {$mockState eq "disconnected"} {
+            return ""
+        }
+        return [proxy_endpoint $options(-proxy)]
     }
 
     # -- Test helpers --
@@ -125,7 +134,7 @@ snit::type mock_conn {
         # Real conn drops the last error once it reaches connected.
         if {$s eq "connected"} { set mockLastError "" }
         if {$options(-emit) ne ""} {
-            {*}$options(-emit) conn <State> -state $s
+            {*}$options(-emit) conn <State> -state $s -proxy [$self Route]
         }
     }
 

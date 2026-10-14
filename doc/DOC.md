@@ -420,7 +420,7 @@ turns all of these off.
 
 Events:
 
-    conn <State>        {acc: string, state: string}     every transition
+    conn <State>        {acc: string, state: string, proxy: string}   every transition
     conn <ConnError>    {acc: string, message: string}   transport failure
     conn <AuthError>    {acc: string, message: string}   credentials rejected
     conn <Disconnected> {acc: string, message: string}   gave up; no retry
@@ -429,6 +429,13 @@ Events:
 `connected`/`waiting`. A transport failure retries forever with backoff:
 `<ConnError>` gives the reason, `state: "waiting"` is the gap between
 tries, and `connected` clears it.
+
+`proxy` is the [proxy](#account) carrying the connection, as `host:port`
+(an IPv6 `host` in brackets), never with its login; `""` when the account
+connects directly, and while `disconnected`. A new proxy only takes effect in
+a new session, so it is the route of the connection the event is about:
+`connected` with a `proxy` is online through it and nowhere else. Pull
+`State` for the value as it stands.
 
 Two things end that loop, and the backend then stops until the account is
 re-enabled or a [connection field](#account) is changed. `<AuthError>` is

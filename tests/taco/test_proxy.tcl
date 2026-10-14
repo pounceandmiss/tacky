@@ -54,6 +54,20 @@ test proxy-parse-port-range {a port past 65535 is rejected} -body {
     proxy_parse socks5://host:65536
 } -returnCodes error -match glob -result {*invalid proxy host/port*}
 
+# --- proxy_endpoint -------------------------------------------------------
+
+test proxy-endpoint-drops-login {host:port, without the login} -body {
+    proxy_endpoint socks5://alice:s3cr3t@proxy.example:9050
+} -result proxy.example:9050
+
+test proxy-endpoint-ipv6 {an IPv6 host goes back in brackets} -body {
+    proxy_endpoint {socks5://u:p@[2001:db8::1]:1080}
+} -result {[2001:db8::1]:1080}
+
+test proxy-endpoint-none {no proxy, no endpoint} -body {
+    proxy_endpoint ""
+} -result {}
+
 # --- the account field ----------------------------------------------------
 
 set common {

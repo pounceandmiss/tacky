@@ -2,6 +2,7 @@
 # opens a connection for it: the XMPP link (baseconn) and HTTP (taco_http).
 #
 #   proxy_parse PROXY                -> {host port user pass}, "" for none
+#   proxy_endpoint PROXY             -> "host:port" with no login, "" for none
 #   proxy_open PROXY HOST PORT CB    -> handle for proxy_abort
 #       {*}$CB ok $chan | {*}$CB error $message
 #   proxy_abort HANDLE               the handshake ends, CB never runs
@@ -60,6 +61,19 @@ proc proxy_parse {s} {
         error "invalid proxy host/port: $s"
     }
     return [list $host $port $user $pass]
+}
+
+# Where PROXY is, fit to show: host:port, an IPv6 host back in brackets, and
+# never the login. "" for no proxy.
+proc proxy_endpoint {s} {
+    if {$s eq ""} {
+        return ""
+    }
+    lassign [proxy_parse $s] host port
+    if {[string first : $host] >= 0} {
+        set host "\[$host\]"
+    }
+    return $host:$port
 }
 
 proc proxy_open {proxy host port cb} {
