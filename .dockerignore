@@ -6,6 +6,7 @@
 !gui
 !icons
 !zippy
+!patches
 # unused glibc-2.43 tclsh; drop it and git metadata
 zippy/tclsh
 **/.git
