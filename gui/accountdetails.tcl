@@ -26,16 +26,17 @@ snit::widget jidpassword {
     }
 }
 
-# The account's host, port, tls and srv. With -collapsible the fields hide
-# behind a checkbutton, and `args` is empty while it is off. SRV is greyed
-# out while -proxyfields (a proxyfields widget) says a proxy is in use.
+# The account's host, port, tls and srv. SRV is greyed out while
+# -proxyfields (a proxyfields widget) has a proxy or Tor chosen.
 #
-#   connectionfields .c ?-collapsible 1? ?-proxyfields .p?
-#   .c args            -> {-host h -port p -tls t -srv 0|1} or {}
+#   connectionfields .c ?-proxyfields .p?
+#   .c args            -> {-host h -port p -tls t -srv 0|1}
 #   .c load $fields    fill from an `account get` dict
+#   .c listen cmd      run cmd whenever a field changes
+#   .c summary         -> one line saying what is set, for a folded section
+#   .c isDefault       -> 1 when nothing differs from a new account's
 snit::widget connectionfields {
     hulltype ttk::frame
-    option -collapsible -default 1 -readonly yes
     option -proxyfields -default "" -configuremethod SetProxyfields
 
     typevariable Modes {
@@ -45,11 +46,11 @@ snit::widget connectionfields {
         "None (unencrypted)" none
     }
 
-    variable custom 0
     variable host ""
     variable port ""
     variable mode Automatic
     variable srv 1
+    variable Listeners {}
 
     constructor args {
         set f [ttk::frame $win.fields]
@@ -76,57 +77,75 @@ snit::widget connectionfields {
         grid configure $f.hostlbl $f.portlbl $f.modelbl -sticky w
         grid columnconfigure $f 1 -weight 1
         grid remove $f.warning
+        pack $f -fill x -pady 2
 
         $self configurelist $args
-        if {$options(-collapsible)} {
-            ttk::checkbutton $win.custom -text "Custom server address" \
-                -variable [myvar custom] -command [mymethod Show]
-            pack $win.custom -anchor w
-        } else {
-            set custom 1
+        foreach v {mode host port srv} {
+            trace add variable [myvar $v] write [mymethod Changed]
         }
-        trace add variable [myvar mode] write [mymethod Changed]
-        trace add variable [myvar host] write [mymethod Changed]
-        trace add variable [myvar port] write [mymethod Changed]
-        $self Show
         $self Changed
     }
 
     method SetProxyfields {option value} {
         set options($option) $value
         if {$value ne ""} {
-            $value configure -command [mymethod Changed]
+            $value listen [mymethod Changed]
         }
     }
 
-    method Show {} {
-        if {$custom} {
-            pack $win.fields -fill x -pady 2
-        } else {
-            pack forget $win.fields
-        }
+    method listen {cmd} {
+        lappend Listeners $cmd
     }
 
     # SRV only applies with no host, no port and no proxy
     method Changed {args} {
         set f $win.fields
         if {![winfo exists $f.srv]} return
-        set direct [expr {$options(-proxyfields) eq ""
-                          || [$options(-proxyfields) route] eq "direct"}]
-        $f.srv state [expr {$host eq "" && $port eq "" && $direct
-                            ? "!disabled" : "disabled"}]
+        $f.srv state [expr {[$self SrvApplies] ? "!disabled" : "disabled"}]
         if {[dict get $Modes $mode] eq "none"} {
             grid $f.warning
         } else {
             grid remove $f.warning
         }
+        foreach cmd $Listeners {
+            uplevel #0 $cmd
+        }
+    }
+
+    method SrvApplies {} {
+        expr {[string trim $host] eq "" && [string trim $port] eq ""
+              && ($options(-proxyfields) eq ""
+                  || [$options(-proxyfields) route] eq "direct")}
     }
 
     method args {} {
-        if {!$custom} { return {} }
         set p [string trim $port]
         list -host [string trim $host] -port [expr {$p eq "" ? 0 : $p}] \
             -tls [dict get $Modes $mode] -srv $srv
+    }
+
+    method isDefault {} {
+        expr {[string trim $host] eq "" && [string trim $port] eq ""
+              && $mode eq "Automatic" && $srv}
+    }
+
+    method summary {} {
+        set h [string trim $host]
+        set p [string trim $port]
+        set parts {}
+        if {$h ne "" || $p ne ""} {
+            lappend parts [expr {$p eq "" ? $h : "[expr {$h eq "" ? "server" : $h}]:$p"}]
+        }
+        if {$mode ne "Automatic"} {
+            lappend parts $mode
+        }
+        if {!$srv && [$self SrvApplies]} {
+            lappend parts "no SRV"
+        }
+        if {![llength $parts]} {
+            return Automatic
+        }
+        join $parts ", "
     }
 
     method load {fields} {
@@ -138,37 +157,30 @@ snit::widget connectionfields {
             if {$value eq [dict get $fields tls]} { set mode $text }
         }
         set srv [dict get $fields srv]
-        if {$options(-collapsible)} {
-            set custom [expr {$host ne "" || $port ne "" || $mode ne "Automatic"
-                              || !$srv}]
-            $self Show
-        }
     }
 }
 
 # How the account goes out: Direct, Tor or a SOCKS5 proxy, and the address
-# for the two that need one (the account's proxy and tor). With -collapsible
-# the choice hides behind a checkbutton, and `args` is empty while it is off.
-# -command runs when the choice changes.
+# for the two that need one (the account's proxy and tor).
 #
-#   proxyfields .p ?-collapsible 1? ?-command cmd?
+#   proxyfields .p
 #   .p route           -> direct, tor or socks5
-#   .p args            -> {-proxy url -tor 0|1} or {}
+#   .p args            -> {-proxy url -tor 0|1}
 #   .p load $fields    fill from an `account get` dict
+#   .p listen cmd      run cmd whenever the choice or an address changes
+#   .p summary         -> one line saying what is set, for a folded section
+#   .p isDefault       -> 1 for Direct
 snit::widget proxyfields {
     hulltype ttk::frame
-    option -collapsible -default 1 -readonly yes
-    option -command -default ""
 
-    variable custom 0
     # Each of the two routes through a proxy keeps the address typed for
     # it, host:port without the scheme, so switching loses nothing.
     variable route direct
     variable torAddr ""
     variable socksAddr ""
+    variable Listeners {}
 
-    constructor args {
-        $self configurelist $args
+    constructor {} {
         set f [ttk::frame $win.fields]
         ttk::frame $f.route
         foreach {value text} {direct Direct tor Tor socks5 "SOCKS5 proxy"} {
@@ -176,7 +188,7 @@ snit::widget proxyfields {
                 -variable [myvar route]
             pack $f.route.$value -side left -padx {0 8}
         }
-        ttk::label $f.addrlbl
+        ttk::label $f.addrlbl -text "Address"
         ttk::entry $f.addr
         ttk::label $f.hint -foreground gray50 -font TkSmallCaptionFont
         grid $f.route - -sticky w -padx 4 -pady 2
@@ -184,37 +196,20 @@ snit::widget proxyfields {
         grid x $f.hint -sticky w -padx 4
         grid configure $f.addrlbl -sticky w
         grid columnconfigure $f 1 -weight 1
+        pack $f -fill x -pady 2
 
-        if {$options(-collapsible)} {
-            ttk::checkbutton $win.custom -text "Connect through a proxy or Tor" \
-                -variable [myvar custom] -command [mymethod Show]
-            pack $win.custom -anchor w
-        } else {
-            set custom 1
+        foreach v {route torAddr socksAddr} {
+            trace add variable [myvar $v] write [mymethod Changed]
         }
-        trace add variable [myvar route] write [mymethod Changed]
-        $self Show
         $self Changed
     }
 
-    method Show {} {
-        if {$custom} {
-            pack $win.fields -fill x -pady 2
-        } else {
-            pack forget $win.fields
-        }
-        $self Notify
+    method listen {cmd} {
+        lappend Listeners $cmd
     }
 
-    method Notify {} {
-        if {$options(-command) ne ""} {
-            uplevel #0 $options(-command)
-        }
-    }
-
-    # The route that `args` would save
     method route {} {
-        expr {$custom ? $route : "direct"}
+        return $route
     }
 
     method Changed {args} {
@@ -224,30 +219,56 @@ snit::widget proxyfields {
                 grid remove $f.addrlbl $f.addr $f.hint
             }
             tor {
-                $f.addrlbl configure -text "Address"
                 $f.addr configure -textvariable [myvar torAddr]
                 $f.hint configure -text "Empty: 127.0.0.1:9050\
                     (Tor Browser uses 9150)\nCalls are off through Tor"
                 foreach w {addrlbl addr hint} { grid $f.$w }
             }
             socks5 {
-                $f.addrlbl configure -text "Address"
                 $f.addr configure -textvariable [myvar socksAddr]
                 $f.hint configure \
                     -text "\[user:pass@\]host:port\nCalls are off through a proxy"
                 foreach w {addrlbl addr hint} { grid $f.$w }
             }
         }
-        $self Notify
+        foreach cmd $Listeners {
+            uplevel #0 $cmd
+        }
     }
 
     method args {} {
-        if {!$custom} { return {} }
         switch -- $route {
             tor     { list -proxy [ProxyUrl $torAddr] -tor 1 }
             socks5  { list -proxy [ProxyUrl $socksAddr] -tor 0 }
             default { list -proxy "" -tor 0 }
         }
+    }
+
+    method isDefault {} {
+        expr {$route eq "direct"}
+    }
+
+    # Where it goes, never with the login
+    method summary {} {
+        switch -- $route {
+            tor {
+                set addr [Shown $torAddr]
+                if {$addr eq ""} { set addr 127.0.0.1:9050 }
+                return "Tor, $addr"
+            }
+            socks5 {
+                set addr [Shown $socksAddr]
+                if {$addr eq ""} { return "SOCKS5, no address yet" }
+                return "SOCKS5, $addr"
+            }
+        }
+        return Direct
+    }
+
+    proc Shown {addr} {
+        regsub {^socks5://} [string trim $addr] {} addr
+        regsub {^.*@} $addr {} addr
+        return $addr
     }
 
     # What was typed for a proxy, as the URL an account stores: "" stays "",
@@ -272,11 +293,21 @@ snit::widget proxyfields {
         } else {
             set route direct
         }
-        if {$options(-collapsible)} {
-            set custom [expr {$route ne "direct"}]
-            $self Show
-        }
     }
+}
+
+# Put FIELDS (a connectionfields or proxyfields) in disclosure SEC, whose
+# summary then follows the fields. Opens SEC when they differ from a new
+# account's; again after a `load`, call it with -open.
+proc fields_disclose {sec fields} {
+    pack $fields -in [$sec body] -fill x
+    raise $fields
+    set sync [list apply {{sec fields} {
+        $sec configure -summary [$fields summary]
+    }} $sec $fields]
+    $fields listen $sync
+    {*}$sync
+    $sec configure -open [expr {![$fields isDefault]}]
 }
 
 snit::widget signinhull {
@@ -309,8 +340,12 @@ snit::widget signinhull {
         install accountdetails using jidpassword \
             $win.accountdetails \
             -array $options(-array)
+        disclosure $win.connsec -title "Server connection"
+        disclosure $win.proxysec -title "Proxy"
         proxyfields $win.proxy
         connectionfields $win.connection -proxyfields $win.proxy
+        fields_disclose $win.connsec $win.connection
+        fields_disclose $win.proxysec $win.proxy
 
         install progressbar using ttk::progressbar $win.progressbar
 
@@ -318,8 +353,8 @@ snit::widget signinhull {
             ttk::label $win.statuslabel
 
         pack $accountdetails -in $inner -fill x -pady 4
-        pack $win.connection -in $inner -fill x -pady 4
-        pack $win.proxy -in $inner -fill x -pady 4
+        pack $win.connsec -in $inner -fill x -pady 4
+        pack $win.proxysec -in $inner -fill x -pady 4
         pack $statuslabel -in $inner -fill x -pady 4
         pack $progressbar -in $inner -fill x -pady 4
         pack $proceed -in $inner -pady 8
@@ -569,16 +604,20 @@ snit::widget signup {
         set s1inner [ttk::frame $s1.inner -padding 16]
         ttk::label $s1.label -text "Enter server address"
         ttk::entry $s1.server
+        disclosure $s1.connsec -title "Server connection"
+        disclosure $s1.proxysec -title "Proxy"
         proxyfields $s1.proxy
         connectionfields $s1.connection -proxyfields $s1.proxy
+        fields_disclose $s1.connsec $s1.connection
+        fields_disclose $s1.proxysec $s1.proxy
         ttk::button $s1.proceed -text "Proceed" \
             -command [mymethod FetchForm]
         ttk::progressbar $s1.progressbar
         ttk::label $s1.statuslabel
         pack $s1.label -in $s1inner -fill x -pady 4
         pack $s1.server -in $s1inner -fill x -pady 4
-        pack $s1.connection -in $s1inner -fill x -pady 4
-        pack $s1.proxy -in $s1inner -fill x -pady 4
+        pack $s1.connsec -in $s1inner -fill x -pady 4
+        pack $s1.proxysec -in $s1inner -fill x -pady 4
         pack $s1.proceed -in $s1inner -pady 8
         pack $s1.statuslabel -in $s1inner -fill x -pady 4
         pack $s1.progressbar -in $s1inner -fill x -pady 4

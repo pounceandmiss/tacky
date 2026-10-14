@@ -30,7 +30,6 @@ test signin-custom-address-reaches-account {a custom host, port and security are
     set data [.si info vars Data]
     set ${data}(jid) new@example.com
     set ${data}(password) pw
-    si_conn .si.connection custom 1
     si_conn .si.connection host xmpp.example.com
     si_conn .si.connection port 5223
     si_conn .si.connection mode "Direct TLS"
@@ -44,23 +43,52 @@ test signin-custom-address-reaches-account {a custom host, port and security are
     mock_backend_down
 } -result {xmpp.example.com 5223 direct}
 
-test signin-plain-address-is-automatic {with the box unticked, nothing is set} -setup {
+test signin-sections-folded {both sections start folded, saying what applies} -setup {
+    mock_backend_up
+} -body {
+    signin .si
+    list [.si.connsec cget -open] [.si.connsec cget -summary] \
+        [.si.proxysec cget -open] [.si.proxysec cget -summary]
+} -cleanup {
+    destroy .si
+    mock_backend_down
+} -result {0 Automatic 0 Direct}
+
+test signin-summary-follows-fields {a folded section's summary follows its fields, never with a login} -setup {
+    mock_backend_up
+} -body {
+    signin .si
+    si_conn .si.connection host xmpp.example.com
+    si_conn .si.connection port 5223
+    si_conn .si.connection mode "Direct TLS"
+    set conn [.si.connsec cget -summary]
+    si_conn .si.proxy route tor
+    set tor [.si.proxysec cget -summary]
+    si_conn .si.proxy route socks5
+    si_conn .si.proxy socksAddr u:secret@proxy.example:1080
+    list $conn $tor [.si.proxysec cget -summary]
+} -cleanup {
+    destroy .si
+    mock_backend_down
+} -result {{xmpp.example.com:5223, Direct TLS} {Tor, 127.0.0.1:9050} {SOCKS5, proxy.example:1080}}
+
+test signin-folded-still-applies {what a folded section holds is still stored} -setup {
     mock_backend_up
 } -body {
     signin .si
     set data [.si info vars Data]
     set ${data}(jid) new@example.com
     set ${data}(password) pw
-    si_conn .si.connection host ignored.example.com
+    si_conn .si.proxy route tor
+    .si.proxysec configure -open 0
     .si Proceed
     wait
-    set d [tacky account get -acc new@example.com]
-    list [dict get $d host] [dict get $d port] [dict get $d tls]
+    tacky account get -acc new@example.com -field tor
 } -cleanup {
     destroy .si
     catch {tacky account remove -acc new@example.com}
     mock_backend_down
-} -result {{} 0 auto}
+} -result 1
 
 test signin-bad-host-says-why {a host the backend refuses is shown, and no account is left} -setup {
     mock_backend_up
@@ -69,7 +97,6 @@ test signin-bad-host-says-why {a host the backend refuses is shown, and no accou
     set data [.si info vars Data]
     set ${data}(jid) new@example.com
     set ${data}(password) pw
-    si_conn .si.connection custom 1
     si_conn .si.connection host https://x
     .si Proceed
     wait
@@ -84,7 +111,6 @@ test signin-none-warns {choosing no encryption shows the warning} -setup {
     mock_backend_up
 } -body {
     signin .si
-    si_conn .si.connection custom 1
     set before [winfo manager .si.connection.fields.warning]
     si_conn .si.connection mode "None (unencrypted)"
     list $before [winfo manager .si.connection.fields.warning]
@@ -93,14 +119,13 @@ test signin-none-warns {choosing no encryption shows the warning} -setup {
     mock_backend_down
 } -result {{} grid}
 
-test signin-tor-reaches-account {Tor, chosen under its own box, is stored with the account} -setup {
+test signin-tor-reaches-account {Tor is stored with the account} -setup {
     mock_backend_up
 } -body {
     signin .si
     set data [.si info vars Data]
     set ${data}(jid) new@example.com
     set ${data}(password) pw
-    si_conn .si.proxy custom 1
     si_conn .si.proxy route tor
     .si Proceed
     wait
@@ -112,36 +137,15 @@ test signin-tor-reaches-account {Tor, chosen under its own box, is stored with t
     mock_backend_down
 } -result {{} 1 {}}
 
-test signin-proxy-unticked-is-direct {with the proxy box unticked, the account connects directly} -setup {
-    mock_backend_up
-} -body {
-    signin .si
-    set data [.si info vars Data]
-    set ${data}(jid) new@example.com
-    set ${data}(password) pw
-    si_conn .si.proxy route socks5
-    si_conn .si.proxy socksAddr 127.0.0.1:1080
-    .si Proceed
-    wait
-    set d [tacky account get -acc new@example.com]
-    list [dict get $d proxy] [dict get $d tor]
-} -cleanup {
-    destroy .si
-    catch {tacky account remove -acc new@example.com}
-    mock_backend_down
-} -result {{} 0}
-
 test signin-proxy-greys-srv {SRV is greyed out while a proxy or Tor is chosen, and back after} -setup {
     mock_backend_up
 } -body {
     signin .si
-    si_conn .si.connection custom 1
     set srv .si.connection.fields.srv
     set out [list [$srv instate disabled]]
-    .si.proxy.custom invoke
     si_conn .si.proxy route tor
     lappend out [$srv instate disabled]
-    .si.proxy.custom invoke
+    si_conn .si.proxy route direct
     lappend out [$srv instate disabled]
 } -cleanup {
     destroy .si

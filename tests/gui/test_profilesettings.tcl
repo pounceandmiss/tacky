@@ -431,3 +431,16 @@ test profilesettings-route-direct {Direct clears both proxy and Tor} -setup {
     destroy .ps
     mock_backend_down
 } -result {tor {{} 0} 0}
+
+test profilesettings-sections-open-when-set {a section opens when what it holds isn't the default} -setup {
+    mock_backend_up
+    tacky account set -acc user@test.example.com -tor 1
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    list [.ps.connsec cget -open] [.ps.connsec cget -summary] \
+        [.ps.proxysec cget -open] [.ps.proxysec cget -summary]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {0 Automatic 1 {Tor, 127.0.0.1:9050}}

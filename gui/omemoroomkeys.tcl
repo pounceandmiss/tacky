@@ -205,23 +205,16 @@ snit::widget omemoroomkeys {
         }
         foreach m $ordered {
             lassign $m _ name jid attention summary
-            set sec [ttk::frame $content.m[incr seq]]
-            set head [ttk::frame $sec.head]
             set open [$self IsExpanded $jid $attention]
-            ttk::button $head.fold -style Toolbutton -width 2 \
-                -text [expr {$open ? "▾" : "▸"}] \
-                -command [mymethod Toggle $jid $attention]
-            ttk::label $head.name -text $name -font {Helvetica 11 bold}
-            ttk::label $head.jid -text "($jid)" -foreground gray40
-            ttk::label $head.sum -text $summary \
-                -foreground [expr {$attention ? "firebrick3" : "gray40"}]
-            pack $head.fold $head.name $head.jid -side left -padx {0 4}
-            pack $head.sum -side right -padx 4
-            pack $head -fill x
-            bind $head.name <Button-1> [mymethod Toggle $jid $attention]
+            set sec [disclosure $content.m[incr seq] -title $name \
+                -titlefont {Helvetica 11 bold} -detail "($jid)" \
+                -summary $summary \
+                -summaryforeground [expr {$attention ? "firebrick3" : "gray40"}] \
+                -open $open -command [mymethod Folded $jid]]
+            # Made only while open: a large room keeps one header line each
             if {$open} {
                 omemokeyspanel $sec.keys -acc $options(-acc) -jid $jid -scroll 0
-                pack $sec.keys -fill x -padx {24 0}
+                pack $sec.keys -in [$sec body] -fill x -padx {24 0}
             }
             pack $sec -fill x -anchor w -pady {2 4}
         }
@@ -229,7 +222,13 @@ snit::widget omemoroomkeys {
     }
 
     method Toggle {jid attention} {
-        set Expanded($jid) [expr {![$self IsExpanded $jid $attention]}]
+        $self Folded $jid [expr {![$self IsExpanded $jid $attention]}]
+    }
+
+    # The user opened or closed a member: kept, and drawn with or without
+    # its key panel
+    method Folded {jid open} {
+        set Expanded($jid) $open
         $self Update
     }
 

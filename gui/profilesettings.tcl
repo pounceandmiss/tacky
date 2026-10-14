@@ -105,17 +105,17 @@ snit::widget profilesettings {
         grid $win.passchange -row 3 -column 2 -sticky w -padx 4 -pady 4
 
         # --- Server connection and proxy: saved together by one button ---
-        ttk::label $win.connlbl -text "Server Connection"
-        ttk::label $win.proxylbl -text "Proxy"
-        proxyfields $win.proxy -collapsible 0
-        connectionfields $win.connection -collapsible 0 -proxyfields $win.proxy
+        disclosure $win.connsec -title "Server Connection"
+        disclosure $win.proxysec -title "Proxy"
+        proxyfields $win.proxy
+        connectionfields $win.connection -proxyfields $win.proxy
+        fields_disclose $win.connsec $win.connection
+        fields_disclose $win.proxysec $win.proxy
         ttk::button $win.connsave -text "Save connection settings" \
             -command [mymethod SaveConnection]
-        grid $win.connlbl    -row 4 -column 1 -sticky nw -padx 4 -pady 4
-        grid $win.connection -row 4 -column 2 -sticky ew -padx 4 -pady 4
-        grid $win.proxylbl   -row 5 -column 1 -sticky nw -padx 4 -pady 4
-        grid $win.proxy      -row 5 -column 2 -sticky ew -padx 4 -pady 4
-        grid $win.connsave   -row 6 -column 2 -sticky w -padx 4 -pady 4
+        grid $win.connsec  -row 4 -column 1 -columnspan 2 -sticky ew -padx 4 -pady 4
+        grid $win.proxysec -row 5 -column 1 -columnspan 2 -sticky ew -padx 4 -pady 4
+        grid $win.connsave -row 6 -column 2 -sticky w -padx 4 -pady 4
 
         # --- Status label ---
         ttk::label $win.status -text ""
@@ -195,9 +195,12 @@ snit::widget profilesettings {
             -tag $win -command [mymethod OnConnection]
     }
 
+    # The first load: a section opens if what it holds isn't the default
     method OnConnection {fields} {
         $win.connection load $fields
         $win.proxy load $fields
+        $win.connsec configure -open [expr {![$win.connection isDefault]}]
+        $win.proxysec configure -open [expr {![$win.proxy isDefault]}]
     }
 
     method OnAvatar {img} {
