@@ -26,9 +26,16 @@ proc cv_feed {body sid args} {
         j body -body $body
         j stanza-id -ns urn:xmpp:sid:0 -id $sid -by user@test.example.com
         if {[dict exists $args -stamp]} {
-            j delay -ns urn:xmpp:delay -stamp [dict get $args -stamp]
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [dict get $args -stamp]
         }
     }]
+}
+
+# A stamp `minutes` ago. Ingest only trusts our server's stamps from
+# after the previous session (30 days back on an empty store), so a fixed
+# date would be dropped for the arrival time.
+proc cv_ago {minutes} {
+    FormatTimestampISO [expr {[clock microseconds] - $minutes * 60 * 1000000}]
 }
 
 # Build a MAM <result> node wrapping a message.
@@ -151,7 +158,7 @@ proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
         -from alice@example.com/phone -id $sentTs {
         j body -body "echo"
         j stanza-id -ns urn:xmpp:sid:0 -id $echoSid -by user@test.example.com
-        j delay -ns urn:xmpp:delay -stamp $echoStamp
+        j delay -ns urn:xmpp:delay -from test.example.com -stamp $echoStamp
     }] 1
 }
 
@@ -443,8 +450,9 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
         tacky message send -acc $::acc -chat alice@example.com -body "hello"
         wait
         set sentId [.cv messages newest]
-        # Echo at 1 second later
-        set echoTs [expr {$sentId + 1000000}]
+        # Echo a second earlier: a later stamp would be in the future,
+        # which ingest clamps to now.
+        set echoTs [expr {$sentId - 1000000}]
         set echoStamp [FormatTimestampISO $echoTs]
         cv_muc_echo $sentId echo-sid2 $echoStamp
         wait
@@ -461,7 +469,7 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
 test chatview-muc-echo-reorders {echo reorders message among interleaved messages} \
     {*}$cv_common \
     -body {
-        cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
+        cv_feed "A" srv-a -stamp [cv_ago 120]
         wait
         set tsA [.cv messages newest]
         tacky message send -acc $::acc -chat alice@example.com -body "X"
@@ -471,8 +479,9 @@ test chatview-muc-echo-reorders {echo reorders message among interleaved message
         wait
         set tsB [.cv messages newest]
         set countBefore [llength [.cv messages keys]]
-        # Echo X at timestamp after B
-        set echoTs [expr {$tsB + 1000000}]
+        # Echo X at timestamp after B: now, as anything later is clamped
+        # to now on ingest.
+        set echoTs [clock microseconds]
         cv_muc_echo $tsX echo-reorder [FormatTimestampISO $echoTs]
         wait
         set ids [.cv messages keys]
@@ -488,7 +497,7 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
     {*}$cv_common \
     -body {
         # Setup: A(100) → X(200,pending) → B(300) → C(400)
-        cv_feed "A" srv-a -stamp 2025-01-01T12:00:00Z
+        cv_feed "A" srv-a -stamp [cv_ago 120]
         wait
         set tsA [.cv messages newest]
         tacky message send -acc $::acc -chat alice@example.com -body "X"
@@ -547,10 +556,10 @@ proc cv_store_behind {body sid stamp} {
 test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what catchup stored} \
     {*}$cv_common \
     -body {
-        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "before catchup" srv1 -stamp [cv_ago 120]
         wait
         set countBefore [llength [.cv messages keys]]
-        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        cv_store_behind "arrived while away" srv2 [cv_ago 60]
         tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
         wait
         set countAfter [llength [.cv messages keys]]
@@ -560,9 +569,9 @@ test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what
 test chatview-catchup-ignores-other-chat {CatchupDone for a different chat is not our repaint} \
     {*}$cv_common \
     -body {
-        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "before catchup" srv1 -stamp [cv_ago 120]
         wait
-        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        cv_store_behind "arrived while away" srv2 [cv_ago 60]
         tacky emit message <CatchupDone> -acc $::acc -jid bob@example.com -count 1
         wait
         llength [.cv messages keys]
@@ -571,9 +580,9 @@ test chatview-catchup-ignores-other-chat {CatchupDone for a different chat is no
 test chatview-catchup-account-wide-reconciles {the account-wide settle repaints a 1:1, which gets no bracket of its own} \
     {*}$cv_common \
     -body {
-        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "before catchup" srv1 -stamp [cv_ago 120]
         wait
-        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        cv_store_behind "arrived while away" srv2 [cv_ago 60]
         tacky emit message <CatchupDone> -acc $::acc -jid "" -count 1
         wait
         llength [.cv messages keys]
@@ -582,13 +591,13 @@ test chatview-catchup-account-wide-reconciles {the account-wide settle repaints 
 test chatview-catchup-no-repaint-off-tail {a view away from the tail is not repainted under the user} \
     {*}$cv_common \
     -body {
-        cv_feed "one" srv1 -stamp 2024-01-01T10:00:00Z
-        cv_feed "two" srv2 -stamp 2024-01-01T11:00:00Z
+        cv_feed "one" srv1 -stamp [cv_ago 120]
+        cv_feed "two" srv2 -stamp [cv_ago 60]
         wait
         # goto a non-end target leaves the live tail (AtTail 0)
         .cv goto [.cv messages newest] -source local
         wait
-        cv_store_behind "arrived while away" srv3 2024-01-01T12:00:00Z
+        cv_store_behind "arrived while away" srv3 [cv_ago 30]
         tacky emit message <CatchupDone> -acc $::acc -jid alice@example.com -count 1
         wait
         llength [.cv messages keys]
@@ -608,10 +617,10 @@ proc cv_catchup_done {{jid ""} {count 0}} {
 test chatview-catchup-defers-live-message {a message arriving mid-sync lands only once the sync settles} \
     {*}$cv_common \
     -body {
-        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "before catchup" srv1 -stamp [cv_ago 120]
         wait
         cv_catchup_start
-        cv_feed "during catchup" srv2 -stamp 2024-01-01T11:00:00Z
+        cv_feed "during catchup" srv2 -stamp [cv_ago 60]
         wait
         set during [llength [.cv messages keys]]
         cv_catchup_done
@@ -621,13 +630,13 @@ test chatview-catchup-defers-live-message {a message arriving mid-sync lands onl
 test chatview-catchup-declines-page-short-of-tail {a page that stops short of the tail is not appended} \
     {*}$cv_common \
     -body {
-        cv_feed "before catchup" srv1 -stamp 2024-01-01T10:00:00Z
+        cv_feed "before catchup" srv1 -stamp [cv_ago 120]
         wait
-        cv_store_behind "arrived while away" srv2 2024-01-01T11:00:00Z
+        cv_store_behind "arrived while away" srv2 [cv_ago 60]
         # A tail beyond anything stored stands in for a hole between the
         # window and the real tail: the fetched page can't reach it.
         tacky emit message <Tail> -acc $::acc -jid alice@example.com \
-            -timestamp [ParseTimestamp 2024-01-01T20:00:00Z]
+            -timestamp [ParseTimestamp [cv_ago 10]]
         cv_catchup_done alice@example.com 1
         llength [.cv messages keys]
     } -result {1}
