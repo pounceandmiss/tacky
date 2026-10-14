@@ -92,3 +92,58 @@ test signin-none-warns {choosing no encryption shows the warning} -setup {
     destroy .si
     mock_backend_down
 } -result {{} grid}
+
+test signin-tor-reaches-account {Tor, chosen under its own box, is stored with the account} -setup {
+    mock_backend_up
+} -body {
+    signin .si
+    set data [.si info vars Data]
+    set ${data}(jid) new@example.com
+    set ${data}(password) pw
+    si_conn .si.proxy custom 1
+    si_conn .si.proxy route tor
+    .si Proceed
+    wait
+    set d [tacky account get -acc new@example.com]
+    list [dict get $d proxy] [dict get $d tor] [dict get $d host]
+} -cleanup {
+    destroy .si
+    catch {tacky account remove -acc new@example.com}
+    mock_backend_down
+} -result {{} 1 {}}
+
+test signin-proxy-unticked-is-direct {with the proxy box unticked, the account connects directly} -setup {
+    mock_backend_up
+} -body {
+    signin .si
+    set data [.si info vars Data]
+    set ${data}(jid) new@example.com
+    set ${data}(password) pw
+    si_conn .si.proxy route socks5
+    si_conn .si.proxy socksAddr 127.0.0.1:1080
+    .si Proceed
+    wait
+    set d [tacky account get -acc new@example.com]
+    list [dict get $d proxy] [dict get $d tor]
+} -cleanup {
+    destroy .si
+    catch {tacky account remove -acc new@example.com}
+    mock_backend_down
+} -result {{} 0}
+
+test signin-proxy-greys-srv {SRV is greyed out while a proxy or Tor is chosen, and back after} -setup {
+    mock_backend_up
+} -body {
+    signin .si
+    si_conn .si.connection custom 1
+    set srv .si.connection.fields.srv
+    set out [list [$srv instate disabled]]
+    .si.proxy.custom invoke
+    si_conn .si.proxy route tor
+    lappend out [$srv instate disabled]
+    .si.proxy.custom invoke
+    lappend out [$srv instate disabled]
+} -cleanup {
+    destroy .si
+    mock_backend_down
+} -result {0 1 0}
