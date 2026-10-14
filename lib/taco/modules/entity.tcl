@@ -1,7 +1,7 @@
 # taco_entity - answers queries about this client: XEP-0202 Entity Time
 # and XEP-0012 Last Activity.
 #
-# Each is off unless its taco-level setting is on: answer_time and
+# Each is off unless its account's setting is on: answer_time and
 # answer_last_activity. They reveal the user's timezone and how long they
 # have been away, so even when on they are answered only to our own account
 # and to contacts who see our presence anyway (subscription from or both);
@@ -22,9 +22,9 @@ snit::type taco_entity {
         $client iq handler get urn:xmpp:time [mymethod OnTime]
         $client iq handler get jabber:iq:last [mymethod OnLast]
         $client caps addFeature urn:xmpp:time \
-            -if [list taco_setting_get $client answer_time 0]
+            -if [list client_setting_get $client answer_time 0]
         $client caps addFeature jabber:iq:last \
-            -if [list taco_setting_get $client answer_last_activity 0]
+            -if [list client_setting_get $client answer_last_activity 0]
     }
 
     destructor {
@@ -60,7 +60,7 @@ snit::type taco_entity {
     # The setting is on, and the asker is our own account or a contact
     # with a presence subscription to us.
     method Allowed {stanza key} {
-        if {![string is true -strict [taco_setting_get $client $key 0]]} {
+        if {![string is true -strict [client_setting_get $client $key 0]]} {
             return 0
         }
         set from [jid norm [jid bare [xsearch $stanza -get @from]]]

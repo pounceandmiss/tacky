@@ -4323,7 +4323,7 @@ test message-autoreceipt-disabled \
     {send_chat_markers=0 suppresses the auto receipt} \
     {*}$msg_common \
     -body {
-        [$::_client cget -taco] setting set -key send_chat_markers -value 0
+        $::_client setting set -key send_chat_markers -value 0
         $::_client conn feed [j message -type chat -id m4 -from alice@example.com/phone {
             j body -body hi
             j request -ns urn:xmpp:receipts
@@ -4407,7 +4407,7 @@ test message-markdisplayed-disabled \
     {*}$msg_common \
     -body {
         msg_contact alice@example.com
-        [$::_client cget -taco] setting set -key send_chat_markers -value 0
+        $::_client setting set -key send_chat_markers -value 0
         msg_store [list [msg_msg timestamp 7000000 origin_id oid7]]
         tacky message markDisplayed -acc $acc \
             -chat alice@example.com -timestamp 7000000

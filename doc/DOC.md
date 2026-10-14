@@ -238,8 +238,8 @@ with the value as it stands now.
 In the json api, `pull` names its event bare. Only the events marked
 `pullable` in the reference below accept it; anything else errors. The
 remaining arguments are whatever the event is keyed on - `acc` for any
-per-account module, plus `jid` for the per-chat events, or `key` for
-`setting`.
+per-account module, plus `jid` for the per-chat events, or `key` (and
+`acc` for an account's own) for `setting`.
 
 # Reference
 
@@ -250,7 +250,8 @@ every event name is bare, both in an `["event", ...]` message and as a
 `pull` argument. The Tcl binding does use the bracketed form literally.
 
 `account`, `register`, `app`, `setting`, `storage`, `media`, `audio`,
-`video`, `debugtap` and `log` are global. Every other module is per-account: each of its methods
+`video`, `debugtap` and `log` are global (`setting` also has a store per
+account, reached with `acc`). Every other module is per-account: each of its methods
 takes `acc`, the account's bare JID, which most signatures below leave out.
 
 ## account
@@ -487,17 +488,25 @@ Becoming active also applies views [chat](#chat) held.
 
 ## setting
 
-A global key/value store - not tied to any account.
+A key/value store. Without `acc` it is the global one; with `acc` it is
+that account's own, separate from the global store and from every other
+account's.
 
-    setting get {key: string}                  -> string   stored value ("" if unset)
-    setting set {key: string, value: string}
-    setting list {}                            -> [string]  known keys
+    setting get {key: string, acc?: string}                -> string   stored value ("" if unset)
+    setting set {key: string, value: string, acc?: string}
+    setting list {acc?: string}                            -> [string]  known keys
 
 Event:
 
-    setting <Changed> {key: string, value: string}
+    setting <Changed> {key: string, value: string, acc?: string}
 
-Keys the backend reads, besides `conn_probe` (see [conn](#conn)):
+`<Changed>` carries `acc` exactly when the store is an account's. Each key
+the backend reads lives in one store only, so a listener for a global key can
+filter on `key` alone; one for a per-account key filters on `acc` too.
+
+The global keys the backend reads are described with what reads them
+(`conn_probe` under [conn](#conn), for instance). These three are per
+account - they are about what the account tells its contacts:
 
 - `answer_time`: `1` answers Entity Time queries (XEP-0202) with the local
   time and timezone offset.
@@ -510,10 +519,13 @@ or `both`); anyone else gets `service-unavailable`, as when off. Their
 disco features are advertised only while on, and changing either sends
 updated caps.
 
-- `send_chat_markers`: `0` stops every delivery receipt and read marker this
-  device would send (XEP-0184 `<received>`, XEP-0333 `<received>` and
+- `send_chat_markers`: `0` stops every delivery receipt and read marker the
+  account would send from this device (XEP-0184 `<received>`, XEP-0333 `<received>` and
   `<displayed>`). Unset means on. It never affects what the read watermark
   does locally.
+
+An account set up before these were per account took their global values
+once, the first time it was opened after the change.
 
 ## storage
 

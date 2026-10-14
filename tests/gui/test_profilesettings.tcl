@@ -438,16 +438,76 @@ proc ps_tab_of {w} {
     .ps.nb tab $in -text
 }
 
-test profilesettings-tabs {Profile, Server and Proxy and OMEMO tabs, each with its own part} -setup {
+test profilesettings-tabs {Profile, Server and Proxy, Privacy and OMEMO tabs, each with its own part} -setup {
     mock_backend_up
 } -body {
     profilesettings .ps -acc user@test.example.com
     wait
     list [lmap t [.ps.nb tabs] {.ps.nb tab $t -text}] \
-        [lmap w {nameentry passentry connection proxy connsave omemokeys} {
+        [lmap w {nameentry passentry connection proxy connsave answertime sendmarkers omemokeys} {
             ps_tab_of .ps.$w
         }]
 } -cleanup {
     destroy .ps
     mock_backend_down
-} -result {{Profile {Server and Proxy} OMEMO} {Profile Profile {Server and Proxy} {Server and Proxy} {Server and Proxy} OMEMO}}
+} -result {{Profile {Server and Proxy} Privacy OMEMO} {Profile Profile {Server and Proxy} {Server and Proxy} {Server and Proxy} Privacy Privacy OMEMO}}
+
+# --- Privacy tab: the account's own settings ---
+
+test profilesettings-privacy-reflects-account {the Privacy boxes show this account's settings, not the global ones} -setup {
+    mock_backend_up
+} -body {
+    tacky setting set -key answer_time -value 1
+    tacky setting set -acc user@test.example.com -key answer_last_activity -value 1
+    tacky setting set -acc user@test.example.com -key send_chat_markers -value 0
+    profilesettings .ps -acc user@test.example.com
+    wait
+    lmap w {answertime answerlast sendmarkers} {
+        set [.ps.$w cget -variable]
+    }
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {0 1 0}
+
+test profilesettings-privacy-defaults {unset, time and away are off and read receipts on} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    lmap w {answertime answerlast sendmarkers} {
+        set [.ps.$w cget -variable]
+    }
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {0 0 1}
+
+test profilesettings-privacy-writes-account {clicking a box stores it for this account only} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    .ps.answertime invoke
+    .ps.sendmarkers invoke
+    wait
+    list [tacky setting get -acc user@test.example.com -key answer_time] \
+         [tacky setting get -acc user@test.example.com -key send_chat_markers] \
+         [tacky setting get -key answer_time]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result {1 0 {}}
+
+test profilesettings-privacy-follows-changes {a change made elsewhere reaches the open dialog} -setup {
+    mock_backend_up
+} -body {
+    profilesettings .ps -acc user@test.example.com
+    wait
+    tacky setting set -acc user@test.example.com -key answer_time -value 1
+    wait
+    set [.ps.answertime cget -variable]
+} -cleanup {
+    destroy .ps
+    mock_backend_down
+} -result 1
