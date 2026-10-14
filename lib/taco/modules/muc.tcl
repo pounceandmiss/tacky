@@ -47,6 +47,8 @@
 # tacky muc roomPrivacy -acc $jid -jid $room ;# why its readers aren't known, {} when they are
 # tacky muc members -acc $jid -jid $room     ;# {list $status members {$realJid $affiliation ...}}
 # tacky muc people -acc $jid -jid $room      ;# {list groups me people}: who to show (see "People")
+# tacky muc person -acc $jid -jid $room -occupant $room/$nick ?-occupant_id $id?
+#   ;# one person, as `people` has them: who sent a message, joined or not (see "People")
 #
 # tacky listen muc <Joined> $cmd             ;# -jid $room -nick $myNick
 # tacky listen muc <Left> $cmd               ;# -jid $room -nick $myNick -involuntary $bool -codes $codes ?-disconnected 1? ?-destroyed 1?
@@ -635,7 +637,6 @@ snit::type taco_muc {
             return [dict create list none groups {} \
                 me [dict create request_voice 0 destroy 0] people {}]
         }
-        set myNick [dict get $Rooms($roomJid) nick]
         set members [dict get $Rooms($roomJid) members]
         set present {}
         set seen [dict create]
@@ -644,28 +645,13 @@ snit::type taco_muc {
             set key [expr {$real ne "" && ![dict exists $seen $real]
                 ? $real : "nick:$nick"}]
             if {$real ne ""} { dict set seen $real 1 }
-            set p [$self Public [$self WithCaps $roomJid $occ]]
-            dict unset p jids
-            dict set p key $key
-            dict set p jid $real
-            dict set p occupant $roomJid/$nick
-            dict set p present 1
-            dict set p self [expr {$nick eq $myNick}]
-            dict set p group [$self GroupOf [dict get $occ role]]
-            lappend present [$self WithPersonFields $roomJid $real $p]
+            lappend present [$self PresentPerson $roomJid $nick $occ $key]
         }
         set present [lsort -command [mymethod ComparePresent] $present]
         set absent {}
         foreach real [lsort [dict keys $members]] {
             if {[dict exists $seen $real]} continue
-            set p [dict create key $real nick "" jid $real occupant "" \
-                present 0 self 0 group absent role none \
-                affiliation [dict get $members $real] show "" status "" \
-                occupant_id "" caps [$self EmptyCaps]]
-            dict for {name cmd} $OccupantFields {
-                if {$name ni $InternalFields} { dict set p $name "" }
-            }
-            lappend absent [$self WithPersonFields $roomJid $real $p]
+            lappend absent [$self AbsentPerson $roomJid $real ""]
         }
         set groups [dict create]
         foreach p [concat $present $absent] {
@@ -674,6 +660,79 @@ snit::type taco_muc {
         return [dict create list [dict get $Rooms($roomJid) memberList] \
             groups $groups me [$self RoomCaps $roomJid] \
             people [concat $present $absent]]
+    }
+
+    # One occupant of $roomJid as `people` lists them, under $key.
+    method PresentPerson {roomJid nick occ key} {
+        set real [$self OccupantRealJid $occ]
+        set p [$self Public [$self WithCaps $roomJid $occ]]
+        dict unset p jids
+        dict set p key $key
+        dict set p jid $real
+        dict set p occupant $roomJid/$nick
+        dict set p present 1
+        dict set p self [expr {$nick eq [dict get $Rooms($roomJid) nick]}]
+        dict set p group [$self GroupOf [dict get $occ role]]
+        return [$self WithPersonFields $roomJid $real $p]
+    }
+
+    # Someone not in $roomJid: a member by real JID $real ("" if unknown), or
+    # whoever last spoke as $nick ("" for a member `people` lists).
+    method AbsentPerson {roomJid real nick} {
+        set members [expr {[info exists Rooms($roomJid)]
+            ? [dict get $Rooms($roomJid) members] : {}}]
+        set affil [expr {[dict exists $members $real]
+            ? [dict get $members $real] : "none"}]
+        set p [dict create key [expr {$real ne "" ? $real : "nick:$nick"}] \
+            nick $nick jid $real occupant "" \
+            present 0 self 0 group absent role none \
+            affiliation $affil show "" status "" \
+            occupant_id "" caps [$self EmptyCaps]]
+        dict for {name cmd} $OccupantFields {
+            if {$name ni $InternalFields} { dict set p $name "" }
+        }
+        return [$self WithPersonFields $roomJid $real $p]
+    }
+
+    # person -jid $room -occupant $room/$nick ?-occupant_id $id?
+    #   -> a person as `people` has them.
+    # Who sent a message, from its from_jid and occupant_id: the occupant
+    # under that nick while the id (where both have one) still agrees, else
+    # whoever is here under that id or that real JID now, else an absent
+    # person - with the real JID the room once vouched the id for, if any,
+    # and the nick they wrote under. A room we are not in (yet) has no one
+    # here, so its senders are all absent, known by what is on file.
+    tackymethod person {args} {
+        set roomJid [jid norm [dict get $args -jid]]
+        set occupant [dict get $args -occupant]
+        set slash [string first / $occupant]
+        set nick [expr {$slash < 0 ? "" : [string range $occupant $slash+1 end]}]
+        set occId [expr {[dict exists $args -occupant_id]
+            ? [dict get $args -occupant_id] : ""}]
+        set occs [expr {[info exists Rooms($roomJid)]
+                && ![dict get $Rooms($roomJid) hidden]
+            ? [dict get $Rooms($roomJid) occupants] : {}}]
+        if {[dict exists $occs $nick]} {
+            set occ [dict get $occs $nick]
+            set theirs [dict get $occ occupant_id]
+            if {$occId eq "" || $theirs eq "" || $theirs eq $occId} {
+                return [$self PersonOf $roomJid $nick $occ]
+            }
+        }
+        set real [$self occupantJid $roomJid $occId]
+        dict for {n occ} $occs {
+            if {($occId ne "" && [dict get $occ occupant_id] eq $occId)
+                    || ($real ne "" && [$self OccupantRealJid $occ] eq $real)} {
+                return [$self PersonOf $roomJid $n $occ]
+            }
+        }
+        return [$self AbsentPerson $roomJid $real $nick]
+    }
+
+    method PersonOf {roomJid nick occ} {
+        set real [$self OccupantRealJid $occ]
+        return [$self PresentPerson $roomJid $nick $occ \
+            [expr {$real ne "" ? $real : "nick:$nick"}]]
     }
 
     method ComparePresent {a b} {
