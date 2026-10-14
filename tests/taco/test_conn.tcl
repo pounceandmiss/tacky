@@ -1150,7 +1150,40 @@ test conn-pull-state {pull -event <State> re-emits the state as it stands} \
         set ::_temitted {}
         c pull -event <State>
         set ::_temitted
-    } -result {{conn <State> -state connected}}
+    } -result {{conn <State> -state connected -proxy {}}}
+
+# The proxy carrying the link rides on <State>, pushed and pulled alike, so a
+# frontend can say the account is online through it. Never the login.
+test conn-state-names-proxy {through a proxy, <State> names it as host:port} \
+    {*}$common \
+    -body {
+        c configure -proxy socks5://u:p@proxy.example:1080
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-proxy"
+        set pushed [lsearch -inline -exact $::_temitted \
+            {conn <State> -state connected -proxy proxy.example:1080}]
+        set ::_temitted {}
+        c pull -event <State>
+        list $pushed $::_temitted
+    } -result {{conn <State> -state connected -proxy proxy.example:1080} {{conn <State> -state connected -proxy proxy.example:1080}}}
+
+test conn-state-names-ipv6-proxy {an IPv6 proxy is named in brackets} \
+    {*}$common \
+    -body {
+        c configure -proxy {socks5://[::1]:1080}
+        c connect
+        lindex $::_temitted 0
+    } -result {conn <State> -state connecting -proxy {[::1]:1080}}
+
+test conn-state-close-names-no-proxy {disconnected goes through nothing} \
+    {*}$common \
+    -body {
+        c configure -proxy socks5://proxy.example:1080
+        c connect
+        set ::_temitted {}
+        c close
+        set ::_temitted
+    } -result {{conn <State> -state disconnected -proxy {}}}
 
 test conn-pull-connerror {pull -event <ConnError> re-emits the standing error} \
     {*}$common \

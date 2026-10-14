@@ -54,6 +54,7 @@
 #   -autoreconnect bool    Auto-reconnect on transport errors (default off)
 #   -bound-jid             Full JID assigned by the server (read-only)
 #   -emit cmd              Event callback: {*}$cmd conn <Event> ...
+#                          (<State> carries -proxy, see Route)
 #
 # Usage:
 #
@@ -1173,7 +1174,8 @@ snit::type conn {
         array set opts $args
         switch -- $opts(-event) {
             <State> {
-                {*}$options(-emit) conn <State> -state $connState
+                {*}$options(-emit) conn <State> -state $connState \
+                    -proxy [$self Route]
             }
             <ConnError> {
                 if {$lastError ne ""} {
@@ -1194,8 +1196,22 @@ snit::type conn {
             $self CancelConnectTimeout
         }
         if {$options(-emit) ne ""} {
-            {*}$options(-emit) conn <State> -state $s
+            {*}$options(-emit) conn <State> -state $s -proxy [$self Route]
         }
+    }
+
+    # The proxy carrying this connection, as host:port with no login; "" when
+    # it goes directly or there is none. A new proxy only ever comes in
+    # between sessions, so this is the route of the one being reported.
+    method Route {} {
+        if {$connState eq "disconnected"} {
+            return ""
+        }
+        # A malformed one carries nothing: connect fails on it as "Bad proxy".
+        if {[catch {proxy_endpoint [$base cget -proxy]} route]} {
+            return ""
+        }
+        return $route
     }
 
     # Queue a reconnect attempt after a backoff delay. No-op if close()

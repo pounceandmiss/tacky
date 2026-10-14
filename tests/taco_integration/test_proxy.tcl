@@ -94,6 +94,15 @@ test proxy-int-connects {the account comes online through the proxy} \
         [tacky client $::test::proxy::ACC] conn state
     } -result connected
 
+test proxy-int-state-names-proxy {connected, <State> names the proxy the link went through, without its login} \
+    -constraints {withServer && socks5Jail} \
+    -setup ::test::proxy::setup -cleanup ::test::proxy::cleanup -body {
+        tacky account enable -acc $::test::proxy::ACC
+        wait_events [list [list conn <State> -acc $::test::proxy::ACC \
+            -state connected -proxy [proxy_endpoint [::test::proxy::proxy]]]] 20000
+        string match *@* [proxy_endpoint [::test::proxy::proxy]]
+    } -result 0
+
 test proxy-int-upload-round-trip {a file goes up and comes back down through the proxy} \
     -constraints {withServer && socks5Jail && notMongoose} \
     -setup ::test::proxy::online -cleanup ::test::proxy::cleanup -body {
