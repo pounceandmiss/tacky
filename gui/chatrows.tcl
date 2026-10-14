@@ -153,6 +153,11 @@ snit::widget chatrows {
 
     # Swap a row's avatar without redrawing.
     method image {key img} {
+        # Kept in the row as well: the old image may be deleted, and a
+        # redraw from Rows (a resize) would otherwise ask for it.
+        if {[dict exists $Rows $key]} {
+            dict set Rows $key image $img
+        }
         if {[dict exists $Images $key]} {
             $canvas itemconfigure [dict get $Images $key] -image $img
         }

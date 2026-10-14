@@ -137,6 +137,20 @@ test chatrows-image-swaps-in-place {a new avatar replaces the embedded one witho
     image delete $i1 $i2
 } -result 1
 
+test chatrows-image-survives-resize {a swapped avatar is the one a resize redraws, after the old is deleted} -body {
+    set i1 [image create photo -width 8 -height 8]
+    set i2 [image create photo -width 8 -height 8]
+    cr_create [list [cr_row a image $i1]]
+    .cr image a $i2
+    image delete $i1
+    .cr OnConfigure 321
+    list [expr {[dict get [.cr row a] image] eq $i2}] \
+         [expr {[.cr.canvas itemcget avatar -image] eq $i2}]
+} -cleanup {
+    cr_cleanup
+    image delete $i2
+} -result {1 1}
+
 test chatrows-when-today {a stamp from today is the time} -body {
     set now [clock scan "2026-09-19 14:00:00" -format "%Y-%m-%d %H:%M:%S"]
     set then [clock scan "2026-09-19 09:05:00" -format "%Y-%m-%d %H:%M:%S"]
