@@ -298,9 +298,9 @@ test profilesettings-connection-refused {a refused value is reported, not saved}
     mock_backend_down
 } -result {{} {Server connection error: Invalid host: not a host}}
 
-# The connection fields' variables, by name
+# The proxy fields' variables, by name
 proc ps_var {name} {
-    return [.ps.connection info vars $name]
+    return [.ps.proxy info vars $name]
 }
 
 # The account's proxy and tor as stored
@@ -372,12 +372,12 @@ test profilesettings-tor-default {Tor with no address stores no proxy, and loads
     profilesettings .ps -acc user@test.example.com
     wait
     list $saved [set [ps_var route]] [set [ps_var torAddr]] \
-        [.ps.connection.fields.proxylbl cget -text] \
+        [.ps.proxy.fields.addrlbl cget -text] \
         [.ps.connection.fields.srv instate disabled]
 } -cleanup {
     destroy .ps
     mock_backend_down
-} -result {{{} 1} tor {} {Tor address} 1}
+} -result {{{} 1} tor {} Address 1}
 
 test profilesettings-tor-address {Tor at an address of its own} -setup {
     mock_backend_up
@@ -404,7 +404,7 @@ test profilesettings-route-switch-keeps-text {each route keeps what was typed fo
     set [ps_var route] tor
     set [ps_var torAddr] 127.0.0.1:9150
     set [ps_var route] socks5
-    set shown [.ps.connection.fields.proxy cget -textvariable]
+    set shown [.ps.proxy.fields.addr cget -textvariable]
     .ps SaveConnection
     wait
     list [expr {$shown eq [ps_var socksAddr]}] [set [ps_var torAddr]] \
@@ -426,7 +426,7 @@ test profilesettings-route-direct {Direct clears both proxy and Tor} -setup {
     .ps SaveConnection
     wait
     list $before [ps_route_saved] \
-        [llength [grid info .ps.connection.fields.proxy]]
+        [llength [grid info .ps.proxy.fields.addr]]
 } -cleanup {
     destroy .ps
     mock_backend_down
