@@ -1789,3 +1789,50 @@ test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invi
         store destroy
         testdb close
     } -result {{{room@muc.example.com?join 10}} 1}
+
+# The id lookups a catch-up makes for every archived stanza (reconcile, the
+# duplicate check of store, resolveTargetTs, resolveReply, a receipt's
+# markRemoteStatus, the SM ack's confirmByOwnIds) go through the partial
+# indexes on server_id, own_id and origin_id, and the pending rows' index,
+# rather than the chat's or the account's rows. Counted in the virtual
+# machine's instructions (the progress handler, every 100): walking a chat
+# of 3,000 rows runs thousands; by the indexes a few, whatever its length.
+proc ms_idx_vm_ops {script} {
+    set ::ms_idx_ops 0
+    testdb progress 100 {incr ::ms_idx_ops; expr 0}
+    try {
+        uplevel 1 $script
+    } finally {
+        testdb progress 0 {}
+    }
+    return $::ms_idx_ops
+}
+
+test ms-id-lookups-take-the-indexes-not-the-chat \
+    {the id lookups cost the same over a chat of 3,000 rows as over one of 30} \
+    {*}$ms_common -body {
+        set out {}
+        foreach n {30 3000} {
+            set chat c$n@example.com
+            set batch {}
+            for {set i 0} {$i < $n} {incr i} {
+                lappend batch [ms_msg chat_jid $chat \
+                    timestamp [expr {1000000 + $i * 1000}] \
+                    server_id s$i origin_id o$i \
+                    own_id [expr {$i % 2 ? "w$i" : ""}] \
+                    server_status [expr {$i % 2 ? "pending" : ""}] \
+                    from_jid me@example.com/x]
+            }
+            store store $batch
+            set ops [ms_idx_vm_ops {
+                store reconcile $chat nosuch nosuchown nosuchorigin 9000000000
+                store store [list [ms_msg chat_jid $chat timestamp 9000000000 \
+                    server_id fresh origin_id freshorigin]]
+                store resolveTargetTs $chat nosuch
+                store resolveReply $chat nosuch
+                store markRemoteStatus $chat nosuch delivered
+            }]
+            lappend out [expr {$ops < 20 ? "few" : $ops}]
+        }
+        set out
+    } -result {few few}

@@ -1383,7 +1383,8 @@ snit::type taco_message {
         # double check encryption desire
         set dbEnc [$client db onecolumn {
             SELECT encryption FROM chat_message
-            WHERE chat_jid=$chatJid AND own_id=$oid AND kind='message'
+            WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$oid
+              AND kind='message'
         }]
         set dictEnc [expr {[dict exists $msg encryption] \
             ? [dict get $msg encryption] : ""}]
@@ -1426,7 +1427,7 @@ snit::type taco_message {
             $replyId $replyTo]]
         $client db eval {
             UPDATE chat_message SET raw_xml=$xml
-            WHERE chat_jid=$chatJid AND own_id=$oid
+            WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$oid
         }
         # Marks it in flight, so a later warm tick won't re-send it.
         $self MarkWired $oid
@@ -2586,8 +2587,8 @@ snit::type taco_message {
             if {$id eq ""} continue
             if {[$client db exists {
                 SELECT 1 FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND own_id=$id
-                  AND server_status='pending'
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND own_id != '' AND own_id=$id AND server_status='pending'
             }]} { return $id }
         }
         return ""
@@ -2775,7 +2776,8 @@ snit::type taco_message {
                 [xsearch $msgNode -get @id]] {
             if {$id ne "" && [$client db exists {
                     SELECT 1 FROM chat_message
-                    WHERE chat_jid=$chatJid AND own_id=$id}]} {
+                    WHERE chat_jid=$chatJid AND own_id != ''
+                      AND own_id=$id}]} {
                 return 1
             }
         }
@@ -2801,11 +2803,23 @@ snit::type taco_message {
                        AS by_server
             FROM chat_message m
             WHERE m.chat_jid=$chatJid AND m.kind='message'
-              AND ( (m.server_id != '' AND m.server_id=$targetId)
-                 OR (m.origin_id != '' AND m.origin_id=$targetId)
-                 OR (m.own_id    != '' AND m.own_id=$targetId)
-                 OR m.timestamp IN (SELECT target_ts FROM message_alias
-                     WHERE chat_jid=$chatJid AND alias_id=$targetId) )
+              AND m.timestamp IN (
+                  -- One arm per id, each by its own partial index, which
+                  -- an OR of the ids never took (messagestore
+                  -- resolveTargetTs).
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid
+                    AND server_id != '' AND server_id=$targetId
+                  UNION ALL
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid
+                    AND origin_id != '' AND origin_id=$targetId
+                  UNION ALL
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$targetId
+                  UNION ALL
+                  SELECT target_ts FROM message_alias
+                  WHERE chat_jid=$chatJid AND alias_id=$targetId)
             ORDER BY m.timestamp
         } row {
             lappend out [dict create ts $row(ts) occ $row(occ) \
