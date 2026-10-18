@@ -43,8 +43,10 @@
 #   omemo <FingerprintChanged>  -jid $peerJid -device D -fingerprint H
 #                                                           peer device IK rotated - security
 #                                                           alert (also auto-flips trust=compromised)
-#   omemo <DecryptFailed>       -jid $peerJid -device D -reason R ?-room $room?join?
-#                                                           live decrypt error
+#   omemo <DecryptFailed>       -jid $peerJid -device D -reason R ?-room $chat?
+#                                                           live decrypt error; -room
+#                                                           the chat: room?join, or
+#                                                           room/nick for a room PM
 #   omemo <RoomStatus>          -jid $room?join -status S   roomStatus changed [pullable]
 #   omemo <MembersUnreachable>  -jid $room?join -members {{jid J reason R} ...}
 #                                                           a room send failed closed
@@ -3063,13 +3065,16 @@ snit::type taco_omemo {
     # one made from it (SynthesisePlain) -- or "" when there is nothing to
     # show (a key transport, a redelivery). A failure is
     # told as <DecryptFailed> with the room, and the chat gets its
-    # placeholder, as in 1:1.
-    method decryptRoomMessage {room stanza} {
+    # placeholder, as in 1:1. $chat is the chat the message is filed in,
+    # what <DecryptFailed> names for -room: room?join, or room/nick for a
+    # private message, which is read the same way.
+    method decryptRoomMessage {room stanza {chat ""}} {
         set encNodes [xsearch $stanza encrypted -ns $::taco::omemo::NS_AXOLOTL]
         set encNode [lindex $encNodes 0]
         if {$encNode eq ""} { return $stanza }
         if {[xsearch $stanza -get @type] eq "error"} { return $stanza }
         set room [jid norm $room]
+        if {$chat eq ""} { set chat ${room}?join }
         set r ""
         if {[llength $encNodes] == 1} {
             set r [$self RoomDecrypt $room $stanza $encNode 0]
@@ -3092,7 +3097,7 @@ snit::type taco_omemo {
                 set dev [::taco::omemo::deviceId [xsearch $encNode header -get @sid]]
                 $client emit omemo <DecryptFailed> -jid $who \
                     -device [expr {$dev eq "" ? 0 : $dev}] \
-                    -reason $body -room ${room}?join
+                    -reason $body -room $chat
             }
         }
         return [$self SynthesisePlain $stanza $body $fp]

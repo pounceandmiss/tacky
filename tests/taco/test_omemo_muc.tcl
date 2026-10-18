@@ -1209,4 +1209,68 @@ test omemo-muc-people-not-joined {a room we are not in has no people} \
         c muc people -jid $::t::ROOM
     } -result {list none groups {} me {request_voice 0 destroy 0} people {}}
 
+# =====================================================================
+# A room's private messages
+# =====================================================================
+#
+# A type=chat from room@service/nick is its occupant's. With the fallback
+# body beside the ciphertext muc filed it as a plaintext PM, the fallback
+# text for the message; without one it reached omemo's 1:1 path, which
+# read it as the room's own bare JID: an identity pinned and a session
+# built under lab@chat.capulet.lit, a key exchange answered to the room.
+
+# A private message from $nick carrying $enc, with the fallback body every
+# OMEMO message has unless $body is 0.
+proc ::t::pmMessage {nick enc {body 1}} {
+    j message -from $::t::ROOM/$nick -to $::t::JFULL -type chat \
+            -id pm[incr ::t::seq] {
+        j #as-is $enc
+        j encryption -ns urn:xmpp:eme:0 -namespace $::t::NS_AX -name OMEMO
+        if {$body} {
+            j body -body "I sent you an OMEMO encrypted message but your client doesn't support OMEMO."
+        }
+        j x -ns http://jabber.org/protocol/muc#user
+    }
+}
+
+proc ::t::pmRows {nick} {
+    set chat $::t::ROOM/$nick
+    c db eval {
+        SELECT body, encryption FROM chat_message
+        WHERE chat_jid=$chat AND kind='message' ORDER BY timestamp
+    }
+}
+
+foreach ::omemoPmBody {1 0} {
+    test omemo-muc-private-message-is-read-as-the-occupant-$::omemoPmBody \
+        "a room's private message (fallback body: $::omemoPmBody) is decrypted as the occupant's and filed under room/nick, and nothing is pinned or answered under the room's JID" \
+        {*}$mucenv -body {
+            ::t::device $::t::ROMEO 101 -nosession
+            ::t::join [list [list romeo $::t::ROMEO occ-r]]
+            c.conn feed [::t::pmMessage romeo \
+                [::t::encryptedFrom $::t::ROMEO 101 "psst"] $::omemoPmBody]
+            list [::t::pmRows romeo] \
+                [c db eval {SELECT peer_jid FROM omemo_trust WHERE peer_device=101}] \
+                [c db eval {SELECT peer_jid FROM omemo_sessions WHERE peer_device=101}] \
+                [lsort -unique [lmap w [c.conn get_written] {
+                    if {[xsearch $w -get @to] ne $::t::ROOM} continue
+                    xsearch $w -get tag
+                }]] \
+                [::t::emitted omemo <DecryptFailed>]
+        } -result [list {psst omemo} $::t::ROMEO $::t::ROMEO iq {}]
+}
+unset ::omemoPmBody
+
+test omemo-muc-private-message-from-an-unnamed-occupant {a private message from an occupant whose real JID the room never gave is a placeholder in room/nick and a <DecryptFailed> naming that chat} \
+    {*}$mucenv -body {
+        ::t::device $::t::ROMEO 101 -nosession
+        ::t::join {}
+        c.conn feed [::t::pmMessage ghost \
+            [::t::encryptedFrom $::t::ROMEO 101 "boo"]]
+        set f [lindex [::t::emitted omemo <DecryptFailed>] 0]
+        list [string match "*did not say who sent it*" [lindex [::t::pmRows ghost] 0]] \
+            [dict get $f -room] \
+            [c db eval {SELECT count(*) FROM omemo_sessions WHERE peer_device=101}]
+    } -result [list 1 $::t::ROOM/ghost 0]
+
 cleanupTests
