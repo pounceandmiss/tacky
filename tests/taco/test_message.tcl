@@ -5145,7 +5145,7 @@ test message-bounce-fails-the-send {a bounce marks the sent message failed} \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
             from_jid $acc own_id oid-b server_status "" \
-            encryption "" timestamp 2000000]]
+            encryption "" timestamp [clock microseconds]]]
         $::_client message OnMessage [j message -type error \
                 -from alice@example.com -to $acc -id oid-b {
             j body -body "hi"
@@ -5157,6 +5157,41 @@ test message-bounce-fails-the-send {a bounce marks the sent message failed} \
         list status [dict get $r server_status] reason [dict get $r fail_reason] \
             rows [$::_client db onecolumn {SELECT COUNT(*) FROM chat_message}]
     } -result {status failed reason delivery rows 1}
+
+# Any recipient knows our id: a bounce long after the ack is not a refusal
+# of the send.
+test message-late-bounce-of-an-old-acked-send-changes-nothing \
+    {a bounce naming a send acked long ago leaves the row delivered} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-old server_status "" encryption "" \
+            timestamp [expr {[clock microseconds] - 3600 * 1000000}]]]
+        $::_client message OnMessage [j message -type error \
+                -from alice@example.com -to $acc -id oid-old {
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set r [msg_row "own_id='oid-old'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
+    } -result {status {} reason {}}
+
+test message-late-bounce-of-an-old-pending-send-fails-it \
+    {a bounce of a send never acked fails it however old} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-oldp server_status pending encryption "" \
+            timestamp [expr {[clock microseconds] - 3600 * 1000000}]]]
+        $::_client message OnMessage [j message -type error \
+                -from alice@example.com -to $acc -id oid-oldp {
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        dict get [msg_row "own_id='oid-oldp'"] server_status
+    } -result failed
 
 # A <delay> counts only from our server, our account or the room: a sender's
 # own would let it date a message as it likes.

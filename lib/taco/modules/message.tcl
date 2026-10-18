@@ -72,6 +72,9 @@ snit::type taco_message {
     typevariable OfflineSkewUs [expr {5 * 60 * 1000000}]
     # How far back a first session, with nothing stored, takes the floor.
     typevariable OfflineFloorBoundUs [expr {30 * 86400 * 1000000}]
+    # How long after a send a bounce still fails the row once our server
+    # has acked it (MarkBounced).
+    typevariable BounceWindowUs [expr {10 * 60 * 1000000}]
 
     constructor {args} {
         $self configurelist $args
@@ -1507,7 +1510,9 @@ snit::type taco_message {
 
     # The peer's side refused a message we sent. Unlike MarkOutgoingFailed
     # this also turns a message the server already acked: the ack was our
-    # server's, the refusal comes after it.
+    # server's, the refusal comes after it -- but only within BounceWindowUs
+    # of the send: every recipient knows our id, and a bounce of theirs much
+    # later must not fail a message long delivered.
     method MarkBounced {chatJid oid} {
         if {$oid eq ""} return
         set ts [$client db onecolumn {
@@ -1516,6 +1521,13 @@ snit::type taco_message {
               AND server_status IN ('pending', '')
         }]
         if {$ts eq ""} return
+        if {$ts < [clock microseconds] - $BounceWindowUs && [$client db onecolumn {
+                SELECT server_status FROM chat_message
+                WHERE chat_jid=$chatJid AND own_id=$oid
+            }] eq ""} {
+            jlog debug "message: a late bounce of $oid in $chatJid ignored"
+            return
+        }
         $client db eval {
             UPDATE chat_message
             SET server_status='failed', fail_reason='delivery'
