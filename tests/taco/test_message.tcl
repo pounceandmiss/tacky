@@ -490,6 +490,67 @@ test message-live-offline-floor-from-the-store \
              [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] == $ts}]
     } -result {1 1}
 
+# A phone that slept notices the drop at its wake, hours after the link
+# died. The floor is where the link was last heard (conn lastHeard), so what
+# the server held for us meanwhile keeps its stamp.
+test message-live-drop-after-a-sleep-floors-at-the-link-last-heard \
+    {a session that ends after a sleep floors server delays where the link was last heard, not at the wake} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        set heardMs [expr {[clock milliseconds] - 2 * 3600 * 1000}]
+        $::_client conn set_heard $heardMs 1
+        # The resume failed: the fresh stream ends the old session.
+        msg_ready
+        set before [clock microseconds]
+        set ts [expr {([clock seconds] - 3600) * 1000000}]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "stored while the phone slept"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "older than the link's last moment"
+            j delay -ns urn:xmpp:delay -from test.example.com \
+                -stamp [FormatTimestampISO [expr {$before - 3 * 3600 * 1000000}]]
+        }]
+        list [expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] == $ts}] \
+             [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] >= $before}]
+    } -result {1 1}
+
+test message-live-drop-with-no-sleep-floors-now \
+    {a session that ends with no sleep floors server delays at its end, as before} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn set_heard [expr {[clock milliseconds] - 2 * 3600 * 1000}] 0
+        $::_client conn fire_disconnect gone
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "an hour back"
+            j delay -ns urn:xmpp:delay -from test.example.com \
+                -stamp [FormatTimestampISO [expr {$before - 3600 * 1000000}]]
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}
+    } -result 1
+
+# A resumed stream is the same session: the floor stands where the session
+# started, and the queue resent after a sleep keeps its server stamps.
+test message-live-resumed-after-a-sleep-keeps-the-queue-stamps \
+    {the queue a stream resumed after a sleep resends keeps its server stamps} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn set_heard [expr {[clock milliseconds] - 2 * 3600 * 1000}] 1
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 3600) * 1000000}]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "queued while the phone slept"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] == $ts}
+    } -result 1
+
 test message-live-unparseable-stamp-uses-arrival \
     {a delay stamp we cannot parse falls back to arrival time} \
     {*}$msg_common \

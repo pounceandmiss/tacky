@@ -66,7 +66,8 @@ snit::type taco_message {
     # stanza this session (TrustedStamp), "" for none: what the server held
     # for us while we were offline postdates our previous session.
     variable OfflineFloorUs ""
-    # When our previous session in this run ended.
+    # When our previous session in this run ended: the link's last moment
+    # (LinkHeardUs), not when the drop was noticed.
     variable LastOnlineUs ""
     # Room for the server's clock running behind ours.
     typevariable OfflineSkewUs [expr {5 * 60 * 1000000}]
@@ -448,7 +449,7 @@ snit::type taco_message {
     }
 
     method OnDisconnect {args} {
-        set LastOnlineUs [clock microseconds]
+        set LastOnlineUs [$self LinkHeardUs]
         array unset PendingRetry
         # The query settles these itself, but not until the session is back -
         # too long to leave a sync showing as running.
@@ -456,6 +457,23 @@ snit::type taco_message {
         dict for {jid _} $open {
             $self CatchupSettled $jid 0
         }
+    }
+
+    # When the link was last known alive, in microseconds. A phone that
+    # slept notices the drop at its wake, hours after the link died under
+    # it, and a floor written then refuses every stamp of the flush the
+    # next session brings (TrustedStamp): each would get its arrival
+    # time. Only while the process slept is the link's last read (conn
+    # lastHeard) earlier than the drop; else, and when conn cannot say,
+    # it is now.
+    method LinkHeardUs {} {
+        set now [clock microseconds]
+        if {[catch {$client conn lastHeard} heard]
+                || [llength $heard] != 2} { return $now }
+        lassign $heard ms slept
+        if {![string is true -strict $slept] || ![string is wide -strict $ms]
+                || $ms <= 0} { return $now }
+        expr {min($ms * 1000, $now)}
     }
 
     # A call row's `active`: whether we are in the call held in $room.

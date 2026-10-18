@@ -880,6 +880,18 @@ snit::type conn {
     variable lastRx 0
     variable probeAt 0
 
+    # When the link was last heard (wall-clock ms) and whether the process
+    # has slept since. What the kernel buffered while it slept is read at
+    # the wake, hours after the server wrote it, so a read after the clock
+    # jumped (WakeTick's rule, WakeOverdue) moves heardMs no further until
+    # the link proves itself: an answer to a probe sent since (ProvesLink)
+    # or a new stream. linkEnded is {heardMs slept} as the last ready link
+    # to end left them, {} before one has (lastHeard).
+    variable heardMs 0
+    variable slept 0
+    variable sleptAt 0
+    variable linkEnded {}
+
     # XEP-0352: whether this stream's features offer CSI, and the state
     # the server last heard ("" when unknown, after a resume).
     variable csiOffered 0
@@ -931,6 +943,7 @@ snit::type conn {
     method connect {} {
         $self CancelReconnect
         if {$authState ne "disconnected"} {
+            $self NoteLinkEnded
             $sm onDisconnect
             $base close
         }
@@ -994,6 +1007,7 @@ snit::type conn {
         $self CancelDial
         $self CancelReconnect
         $self CancelConnectTimeout
+        $self NoteLinkEnded
         $self StopKeepalive
         set authState disconnected
         set writeBuffer [list]
@@ -1007,6 +1021,8 @@ snit::type conn {
         $self StopKeepalive
         set lastRx [clock milliseconds]
         set probeAt 0
+        set heardMs $lastRx
+        set slept 0
         $self ArmWakeCheck
         if {$options(-keepalive) <= 0} return
         $self ArmKeepalive $options(-keepalive)
@@ -1088,10 +1104,59 @@ snit::type conn {
                 }
             } else {
                 jlog inform "clock jumped ${elapsed}ms, probing"
+                $self NoteSlept
                 $self probe
             }
         }
         $self ArmWakeCheck
+    }
+
+    # Whether the wake check is overdue at $now as WakeTick judges it: the
+    # process slept, and a read may come before the tick's turn.
+    method WakeOverdue {now} {
+        expr {$wakeAfterId ne "" && $options(-wake-check) > 0
+            && $now - $wakeLast > 3 * $options(-wake-check)}
+    }
+
+    method NoteSlept {} {
+        if {$slept} return
+        set slept 1
+        set sleptAt [clock milliseconds]
+    }
+
+    # A read on the ready stream: the server's word now, unless the process
+    # slept and the link has not answered since.
+    method NoteHeard {stanza} {
+        if {[$self WakeOverdue $lastRx]} { $self NoteSlept }
+        if {$slept && $probeAt > 0 && $probeAt >= $sleptAt
+                && [$self ProvesLink $stanza]} {
+            set slept 0
+        }
+        if {!$slept} { set heardMs $lastRx }
+    }
+
+    # An answer to sm's probe (RequestAck): an <a/>, or the result of its
+    # ping without SM.
+    method ProvesLink {stanza} {
+        set tag [dict get $stanza tag]
+        if {[dict get $stanza ns] eq "urn:xmpp:sm:3"} { return [expr {$tag eq "a"}] }
+        expr {$tag eq "iq" && [string match sm-barrier-* [xsearch $stanza -get @id]]}
+    }
+
+    # The ready link is ending: keep when it was last heard.
+    method NoteLinkEnded {} {
+        if {$authState ne "ready"} return
+        set linkEnded [list $heardMs [expr {$slept || [$self WakeOverdue [clock milliseconds]]}]]
+    }
+
+    # {ms slept}: when the last link to end was last heard (wall-clock ms)
+    # and whether the process slept before it ended -- the current link's
+    # while none has. 0 ms before any link was ready. For the message
+    # module's offline floor: a drop noticed at a wake ends a link that
+    # went quiet hours before.
+    method lastHeard {} {
+        if {[llength $linkEnded]} { return $linkEnded }
+        list $heardMs [expr {$slept || [$self WakeOverdue [clock milliseconds]]}]
     }
 
     method ProbeAllowed {} {
@@ -1341,6 +1406,7 @@ snit::type conn {
     method OnStanza {stanza} {
         jlog debug "stanza in" -stanza $stanza
         set lastRx [clock milliseconds]
+        if {$authState eq "ready"} { $self NoteHeard $stanza }
 
         if {[dict get $stanza tag] eq "error"
                 && [dict get $stanza ns] eq "http://etherx.jabber.org/streams"} {
@@ -1646,6 +1712,7 @@ snit::type conn {
     method OnTransportError {msg} {
         $self CancelDial
         $self CancelConnectTimeout
+        $self NoteLinkEnded
         $self StopKeepalive
         set authState disconnected
         set lastError $msg
@@ -1718,6 +1785,7 @@ snit::type conn {
     method OnFatalError {msg} {
         $self CancelReconnect
         $self CancelConnectTimeout
+        $self NoteLinkEnded
         $self StopKeepalive
         set authState disconnected
         set lastError $msg
