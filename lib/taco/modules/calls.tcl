@@ -428,10 +428,13 @@ snit::type taco_calls {
     # Verification (see the file header)
     # =========================================================================
 
-    # Our OMEMO device, if OMEMO is on for the chat with $peer and set up.
+    # Our OMEMO device, if OMEMO is on for the chat with $peer and set up,
+    # and our published devicelist names it: an announced device obliges
+    # the peer to seal for it, and one its fetch of our list does not show
+    # fails the call closed.
     method OwnDevice {peer} {
         if {[catch {
-            set dev [$client omemo device_id]
+            set dev [$client omemo listed_device_id]
             set on [$client omemo isEnabled -jid [jid bare $peer]]
         }]} { return "" }
         expr {$on && [string is integer -strict $dev] && $dev > 0 ? $dev : ""}

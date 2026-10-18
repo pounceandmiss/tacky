@@ -3319,6 +3319,19 @@ snit::type taco_omemo {
     }
 
     tackymethod device_id {args} { return $deviceId }
+
+    # Our device id once our devicelist on the server names it, as this
+    # connection read or published it; 0 before. A device a peer is told
+    # about (a call's JMI <device/>) must be one the peer can find: the
+    # identity exists a round trip or more before its list is out, and a
+    # peer that fetched the list in between finds no device to seal for.
+    method listed_device_id {} {
+        if {$deviceId eq "" || ![dict exists $DeviceLists $accountJid]
+                || $deviceId ni [dict get $DeviceLists $accountJid]} {
+            return 0
+        }
+        return $deviceId
+    }
     tackymethod account_jid {args} { return $accountJid }
 
     # Prefetch a peer's devicelist (and best-effort their bundles) so
