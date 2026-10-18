@@ -10,6 +10,13 @@
 # any other sender are dropped before dispatch:
 #     $client pubsub handler urn:xmpp:bookmarks:1 -own-only [mymethod OnNotification]
 #
+# Nodes a contact publishes for us to show (an avatar's metadata, a nick)
+# register with -contacts: their events are taken from our own account or
+# from a JID in the roster, and dropped from anyone else. The server sends
+# a contact's PEP to its subscribers, but nothing stops a stranger sending
+# a message with an <event/> in it, and its name and picture would then be
+# shown on its first message's chat row.
+#
 # Sits in the client.tcl message dispatch chain between muc and message:
 # returns 1 if the stanza was a PubSub event with a registered handler
 # (claiming the stanza), 0 otherwise.
@@ -19,6 +26,7 @@ snit::type taco_pubsub {
 
     variable client
     variable PubSubHandlers
+    # node -> whose events it takes: any, own (-own-only), contacts
     variable OwnOnly
 
     constructor {args} {
@@ -47,9 +55,14 @@ snit::type taco_pubsub {
             jlog error "Dropping $node event from '$from'" -stanza $stanza
             return 1
         }
-        if {$OwnOnly($node)} {
-            if {![jid fromMe $from [$client cget -jid]]} {
+        if {$OwnOnly($node) ne "any" && ![jid fromMe $from [$client cget -jid]]} {
+            if {$OwnOnly($node) eq "own"} {
                 jlog error "Dropping $node event from '$from'" -stanza $stanza
+                return 1
+            }
+            # Anything in the roster counts, a pending request included.
+            if {[$client roster subscription -jid $from] eq ""} {
+                jlog inform "Dropping $node event from '$from', not a contact"
                 return 1
             }
         }
@@ -57,15 +70,15 @@ snit::type taco_pubsub {
         return 1
     }
 
-    # handler $node ?-own-only? $command
+    # handler $node ?-own-only|-contacts? $command
     method handler {node args} {
-        set ownOnly 0
-        if {[lindex $args 0] eq "-own-only"} {
-            set ownOnly 1
-            set args [lrange $args 1 end]
+        set from any
+        switch -- [lindex $args 0] {
+            -own-only { set from own; set args [lrange $args 1 end] }
+            -contacts { set from contacts; set args [lrange $args 1 end] }
         }
         set PubSubHandlers($node) [lindex $args 0]
-        set OwnOnly($node) $ownOnly
+        set OwnOnly($node) $from
     }
 
     method unhandler {node} {

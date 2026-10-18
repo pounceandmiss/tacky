@@ -68,7 +68,9 @@ snit::type taco_avatar {
         set RefetchedHash [dict create]
         set InflightVCard [dict create]
         array set ActiveTags {}
-        $client pubsub handler urn:xmpp:avatar:metadata \
+        # A stranger's metadata is not taken (pubsub.tcl, -contacts): it
+        # would put its picture on its first message's chat row.
+        $client pubsub handler urn:xmpp:avatar:metadata -contacts \
             [mymethod OnMetadataNotification]
         $client caps addFeature urn:xmpp:avatar:metadata+notify
         $client bus subscribe $self <SessionEnd> [mymethod OnDisconnect]
