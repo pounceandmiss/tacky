@@ -1243,8 +1243,11 @@ snit::type taco_message {
             all {}
             parked-omemo { append sql { AND encryption='omemo'} }
             peer-omemo   { append sql \
-                { AND chat_jid=$peerJid AND encryption='omemo'} }
+                { AND +chat_jid=$peerJid AND encryption='omemo'} }
         }
+        # Read through idx_chat_message_pending, which the literal
+        # server_status='pending' selects; the + keeps peer-omemo off the
+        # primary key, which would walk the peer's whole chat.
         append sql { ORDER BY timestamp}
         set pending {}
         $client db eval $sql row {

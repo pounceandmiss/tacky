@@ -818,6 +818,9 @@ snit::type taco_messagestore {
 
     # Flip pending → '' (server-confirmed) for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
+    # With no chat to narrow by, the pending rows are the ones read
+    # (idx_chat_message_pending); the + keeps the planner off the own_id
+    # index, which would walk every send of ours in every chat.
     method confirmByOwnIds {ownIds} {
         set confirmed {}
         $options(-db) transaction {
@@ -825,14 +828,14 @@ snit::type taco_messagestore {
                 if {$oid eq ""} continue
                 $options(-db) eval {
                     SELECT chat_jid, timestamp FROM chat_message
-                    WHERE own_id=$oid AND server_status='pending'
+                    WHERE server_status='pending' AND +own_id=$oid
                 } row {
                     lappend confirmed [dict create \
                         chat_jid $row(chat_jid) timestamp $row(timestamp)]
                 }
                 $options(-db) eval {
                     UPDATE chat_message SET server_status=''
-                    WHERE own_id=$oid AND server_status='pending'
+                    WHERE server_status='pending' AND +own_id=$oid
                 }
             }
         }

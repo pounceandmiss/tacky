@@ -1836,3 +1836,29 @@ test ms-id-lookups-take-the-indexes-not-the-chat \
         }
         set out
     } -result {few few}
+
+test ms-confirm-by-own-ids-reads-the-pending-rows \
+    {confirmByOwnIds costs the same beside 3,000 confirmed rows as beside 30} \
+    {*}$ms_common -body {
+        set out {}
+        foreach n {30 3000} {
+            set chat p$n@example.com
+            set batch {}
+            for {set i 0} {$i < $n} {incr i} {
+                lappend batch [ms_msg chat_jid $chat \
+                    timestamp [expr {1000000 + $i * 1000}] \
+                    server_id s$i own_id w$n-$i from_jid me@example.com/x]
+            }
+            lappend batch [ms_msg chat_jid $chat timestamp 9000000000 \
+                own_id waiting$n from_jid me@example.com/x \
+                server_status pending]
+            store store $batch
+            set rows {}
+            set ops [ms_idx_vm_ops {
+                set rows [store confirmByOwnIds [list waiting$n nosuch]]
+            }]
+            lappend out [lmap r $rows {dict get $r chat_jid}] \
+                [expr {$ops < 5 ? "few" : $ops}]
+        }
+        set out
+    } -result {p30@example.com few p3000@example.com few}

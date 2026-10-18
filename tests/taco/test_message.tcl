@@ -5499,3 +5499,42 @@ test message-room-without-archive-resends-a-send-pending-at-close \
         }]
         list early $early sent [msg_room_resends]
     } -result {early 0 sent 1}
+
+# PendingSends is asked on every reconnect and whenever an OMEMO session or
+# device list comes ready, which a catch-up's every decrypted message can
+# be: it reads the pending rows (idx_chat_message_pending), not every row of
+# the account or of the peer's chat. Counted in the virtual machine's
+# instructions (the progress handler, every 100).
+test message-pendingsends-read-the-pending-rows-not-the-store \
+    {PendingSends costs the same beside 3,000 confirmed rows as beside 30} \
+    {*}$msg_common \
+    -body {
+        set db [$::_client message messagestore cget -db]
+        set out {}
+        foreach n {30 3000} {
+            set chat ps$n@example.com
+            set batch {}
+            for {set i 0} {$i < $n} {incr i} {
+                lappend batch [msg_msg chat_jid $chat \
+                    timestamp [expr {1000000 + $i * 1000}] \
+                    server_id s$i own_id w$n-$i from_jid $acc]
+            }
+            lappend batch [msg_msg chat_jid $chat timestamp 9000000000 \
+                from_jid $acc own_id parked$n server_status pending \
+                encryption omemo]
+            msg_store $batch
+            set ::_msg_pending_ops 0
+            $db progress 100 {incr ::_msg_pending_ops; expr 0}
+            try {
+                set all [$::_client message PendingSends all]
+                set peer [$::_client message PendingSends peer-omemo $chat]
+            } finally {
+                $db progress 0 {}
+            }
+            lappend out [lmap m $all {dict get $m own_id}] \
+                [lmap m $peer {dict get $m own_id}] \
+                [expr {$::_msg_pending_ops < 5 ? "few" : $::_msg_pending_ops}]
+        }
+        unset ::_msg_pending_ops
+        set out
+    } -result {parked30 parked30 few {parked30 parked3000} parked3000 few}
