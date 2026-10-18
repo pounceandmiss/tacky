@@ -352,6 +352,10 @@ snit::type taco_type {
         } else {
             sqlite3 $self.db :memory:
         }
+        # What is deleted or overwritten is zeroed in place (a removed
+        # account's password, an old setting), not left in the file's free
+        # pages. Needs no key: SQLCipher takes it before `storage unlock`.
+        $db eval {PRAGMA secure_delete = ON}
         install storage using taco_storage ${selfns}::storage -db $db -taco $self \
             -config-dir $options(-config-dir) -data-dir $options(-data-dir) \
             -cache-dir $options(-cache-dir)

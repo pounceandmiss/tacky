@@ -179,6 +179,8 @@ snit::type taco_storage {
     # swapped-in file before CompleteUnlock can run against it.
     method ReopenDb {passphrase} {
         sqlite3 $options(-db) [file join $options(-config-dir) accounts.db]
+        # As taco_type's first open does.
+        $options(-db) eval {PRAGMA secure_delete = ON}
         if {$passphrase ne ""} {
             taco_pragma_key $options(-db) $passphrase
         }

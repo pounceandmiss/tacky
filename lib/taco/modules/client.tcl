@@ -96,13 +96,21 @@ snit::type taco_client {
             if {$options(-passphrase) ne ""} {
                 taco_pragma_key $db $options(-passphrase)
             }
+            # secure_delete: what is deleted or overwritten is zeroed in
+            # place, not left in the file's free pages, so a retracted
+            # message or a forgotten key cannot be read back from a copy.
             $db eval {
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = NORMAL;
+                PRAGMA secure_delete = ON;
             }
         }
         set fresh [expr {[$db onecolumn {PRAGMA user_version}] == 0}]
         taco_schema_migrate $db per-account
+        # And the write-ahead log starts empty: its frames can hold earlier
+        # contents of pages since rewritten. A reader still holding it keeps
+        # it from truncating, which is no error.
+        catch {$db eval {PRAGMA wal_checkpoint(TRUNCATE)}}
 
         install setting using taco_setting $self.setting -db $db -taco $self
         $self AdoptGlobalSettings $fresh
