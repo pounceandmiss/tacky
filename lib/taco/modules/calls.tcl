@@ -41,7 +41,8 @@
 #   reset      a fresh stream dropped every sid the old one held
 #
 # <Missed>: a ring nobody here answered (retracted, timed out, or turned
-# away busy, which had no <Incoming>).
+# away, which had no <Incoming>: busy with another call, or proxy because
+# the account goes through a proxy).
 #
 # Verification, as in Conversations. When OMEMO is on for the chat, each side
 # puts its OMEMO device id in <propose>/<proceed> and sends its DTLS
@@ -1227,10 +1228,15 @@ snit::type taco_calls {
             if {![dict get $ours initiator] || [dict get $ours state] ne "proposed"
                     || ![jid matches-bare $from [dict get $ours peer]]} return
         }
+        set ns urn:xmpp:jingle-message:0
+        set child [xsearch $stanza propose -ns $ns -get node]
+        set hasVideo [$self ProposeHasVideo $child]
+
         # Calls can't be tunneled through a proxy (native ICE bypasses it), so
-        # decline instead of ringing.
+        # decline instead of ringing. Missed all the same, as busy is.
         if {[$self Blocked] ne ""} {
             $client write [$self BuildJmiMessage $from reject $sid 0]
+            $self EmitMissed $sid $from $hasVideo proxy
             return
         }
 
@@ -1256,10 +1262,6 @@ snit::type taco_calls {
             $client emit calls <Ended> -sid $ours -reason replaced
             $self Cleanup $ours
         }
-
-        set ns urn:xmpp:jingle-message:0
-        set child [xsearch $stanza propose -ns $ns -get node]
-        set hasVideo [$self ProposeHasVideo $child]
 
         # One call at a time: any other, group sessions included, makes
         # this one busy.
