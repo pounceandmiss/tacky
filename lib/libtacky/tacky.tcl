@@ -219,7 +219,8 @@ oo::class create tacky_base {
         # the dialog carries the message without the trace, so stderr is the
         # only place left for it.
         if {[catch {my log error $info -obj gui.bgerror}]} {
-            puts stderr $info
+            # A Windows GUI executable has no stderr either.
+            catch {puts stderr $info}
         }
         catch {my dispatch error <Background> \
             [list -message $message -errorinfo $info]}

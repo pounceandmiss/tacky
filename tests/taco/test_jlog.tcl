@@ -83,6 +83,27 @@ test jlog-no-logproc-avoids-stdout {a logger with no sink writes to stderr, not 
         file delete -force $outfile $errfile
     } -result {0 1}
 
+# A Windows GUI executable has no standard channels: the stderr sink then
+# loses its line, and the caller (the backend's constructor at boot) goes on.
+test jlog-no-stderr-does-not-throw {with no stderr channel a record is dropped, not raised} \
+    -constraints hasProcess -setup {
+        set child [makeFile {
+            lappend auto_path [file join [pwd] lib]
+            package require taco
+            jlog_type create t -defaultlevel debug
+            close stderr
+            t log error "sink probe" -obj ::c
+            # bgerror's last resort, when the log itself throws.
+            jlog configure -logproc {error "no log"}
+            ::taco_bg::Report boom boom
+            puts survived
+        } jlog-nostderr.tcl]
+    } -body {
+        exec [info nameofexecutable] $child
+    } -cleanup {
+        removeFile jlog-nostderr.tcl
+    } -result survived
+
 # -- write -----------------------------------------------------------------
 
 test jlog-write-rejects-unknown-level {write rejects a level outside the vocabulary} \

@@ -307,9 +307,12 @@ snit::type jlog_type {
         return [::taco_redact::url $line]
     }
 
-    # -logproc target: one timestamped line per record on stderr.
+    # -logproc target: one timestamped line per record on stderr. A process
+    # with no stderr (a Windows GUI executable has no standard channels, nor
+    # has a thread's interp there) loses the line rather than throwing into
+    # the caller, a constructor among them.
     method stderrWriter {opts_list} {
-        puts stderr [$self FormatLine $opts_list]
+        catch {puts stderr [$self FormatLine $opts_list]}
     }
 
     # -logproc target: one file for every account plus native (libdatachannel /

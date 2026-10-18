@@ -157,8 +157,10 @@ namespace eval ::taco_bg {
 
     proc Report {message info} {
         lassign [list [redact $message $info] [redact $info $message]] message info
+        # The last resort, and there may be no stderr either (a Windows GUI
+        # executable has no standard channels).
         if {[catch {jlog error $info -obj bgerror}]} {
-            puts stderr $info
+            catch {puts stderr $info}
         }
         if {![Fresh $message]} return
         # tacky is a no-op proc during threaded teardown and the pipe can be
