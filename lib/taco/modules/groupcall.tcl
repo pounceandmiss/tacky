@@ -612,7 +612,8 @@ snit::type taco_groupcall {
         }
         set occ [$self OccupantOf $room $opts(-peer)]
         if {$occ eq "" || [$self CallState $occ] ne "announced"} { return "" }
-        set peer $opts(-peer)
+        # Keyed by the room's real JID, as the occupant's presence finds it.
+        set peer [dict get $occ jid]
         if {[dict exists $Rooms($room) sessions $peer]} {
             set old [dict get $Rooms($room) sessions $peer sid]
             if {$old ne "" && $old ne $opts(-replaces)} { return "" }
@@ -1003,11 +1004,14 @@ snit::type taco_groupcall {
         return $n
     }
 
-    # The occupant whose real JID is $fullJid, "" if none.
+    # The occupant whose real JID is $fullJid, "" if none. Compared
+    # normalised: a room may write the real JID in another case than the
+    # occupant's own stanzas carry.
     method OccupantOf {room fullJid} {
-        if {$fullJid eq ""} { return "" }
+        if {$fullJid eq "" || [catch {jid norm $fullJid} want]} { return "" }
         foreach occ [$client muc Occupants -jid $room] {
-            if {[dict get $occ jid] eq $fullJid} { return $occ }
+            if {[catch {jid norm [dict get $occ jid]} real]} continue
+            if {$real eq $want} { return $occ }
         }
         return ""
     }
