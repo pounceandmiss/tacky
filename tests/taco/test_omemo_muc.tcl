@@ -620,8 +620,64 @@ test omemo-muc-warming-member-holds-then-fails {a member whose only bundle is st
         c message send -chat $::t::CHAT -body "wait"
         set held [list [::t::sent] [lindex [::t::rows] 3]]
         c omemo OnBundleFetchTimeout $::t::ROMEO 101
+        # The send asks once more (RefetchForSend); that one given up on
+        # too, it fails.
+        lappend held [::t::sent] [lindex [::t::rows] 3]
+        c omemo OnBundleFetchTimeout $::t::ROMEO 101
         list $held [::t::sent] [lindex [::t::rows] 3]
-    } -result {{{} pending} {} failed}
+    } -result {{{} pending {} pending} {} failed}
+
+# The server's answer to $iq, a fetch of $jid/$dev's bundle.
+proc ::t::bundleReply {jid dev iq} {
+    set b [$::t::Store($jid,$dev) bundle]
+    set djb [list apply {{k} { base64::encode -wrapchar "" "\x05$k" }}]
+    j iq -type result -id [xsearch $iq -get @id] -from [xsearch $iq -get @to] {
+        j pubsub -ns http://jabber.org/protocol/pubsub {
+            j items -node [xsearch $iq pubsub items -get @node] {
+                j item -id current {
+                    j bundle -ns $::t::NS_AX {
+                        j signedPreKeyPublic -signedPreKeyId [dict get $b spk_id] \
+                            -body [{*}$djb [dict get $b spk]]
+                        j signedPreKeySignature \
+                            -body [base64::encode -wrapchar "" [dict get $b spks]]
+                        j identityKey -body [{*}$djb [dict get $b ik]]
+                        j prekeys {
+                            foreach pk [dict get $b prekeys] {
+                                j preKeyPublic -preKeyId [dict get $pk id] \
+                                    -body [{*}$djb [dict get $pk pk]]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+# The last fetch of $jid/$dev's bundle written, "" when none.
+proc ::t::bundleFetch {jid dev} {
+    set ::t::wantNode "$::t::NS_AX.bundles:$dev"
+    set ::t::wantJid $jid
+    written {expr {[xsearch $w -get @to] eq $::t::wantJid
+        && [xsearch $w pubsub items -get @node] eq $::t::wantNode}}
+}
+
+test omemo-muc-member-bundle-published-after-its-list-still-gets-the-send {a member's device whose bundle fetch failed, and that publishes it just after, is fetched again by the send that finds the member unreachable, and the send goes out to it} \
+    {*}$mucenv -body {
+        ::t::device $::t::ROMEO 101 -nosession
+        ::t::injectDevicelist $::t::ROMEO {101}
+        ::t::join {} members [list $::t::ROMEO member]
+        c omemo setEnabled -jid $::t::CHAT -value 1
+        c message send -chat $::t::CHAT -body "late keys"
+        set first [::t::bundleFetch $::t::ROMEO 101]
+        ::t::refuse $first
+        set again [::t::bundleFetch $::t::ROMEO 101]
+        set held [list [::t::sent] [lindex [::t::rows] 3] \
+            [expr {$again ne "" && $again ne $first}]]
+        c.conn feed [::t::bundleReply $::t::ROMEO 101 $again]
+        list $held [::t::read $::t::ROMEO 101 [::t::sentEncrypted]] \
+            [::t::emitted omemo <MembersUnreachable>]
+    } -result {{{} pending 1} {late keys} {}}
 
 test omemo-muc-unfetched-devicelist-holds {a member whose devicelist is not in yet holds the send and has it fetched} \
     {*}$mucenv -body {

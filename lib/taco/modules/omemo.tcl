@@ -216,6 +216,13 @@ snit::type taco_omemo {
     # per connection.
     variable BundleFetchState
 
+    # The devices given up on that a send has fetched once more this
+    # connection (RefetchForSend): key=(jid|dev). A device that had only
+    # not published its bundle yet when we first asked is not lost to sends
+    # until the next connection, and one that stays missing costs one more
+    # fetch, not one per send.
+    variable SendRefetch
+
     # `after` tokens for the BUNDLE_FETCH_TIMEOUT_MS deadlines, keyed the
     # same way. Cancelled when the fetch resolves, on disconnect, and in
     # the destructor (a live token would fire onto a dead object).
@@ -285,6 +292,7 @@ snit::type taco_omemo {
         set BundleFetchWaiters [dict create]
         set DevicelistFetchWaiters [dict create]
         set BundleFetchState [dict create]
+        set SendRefetch [dict create]
         set BundleFetchTimer [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
@@ -386,6 +394,7 @@ snit::type taco_omemo {
         set BundleFetchWaiters [dict create]
         set DevicelistFetchWaiters [dict create]
         set BundleFetchState [dict create]
+        set SendRefetch [dict create]
         set Postponed [list]
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
@@ -2474,6 +2483,10 @@ snit::type taco_omemo {
                 return -code error -errorcode TACO_OMEMO_NOT_READY \
                     "bundle fetch in flight for $chatJid"
             }
+            if {[$self RefetchForSend $chatJid]} {
+                return -code error -errorcode TACO_OMEMO_NOT_READY \
+                    "fetching keys for $chatJid again"
+            }
             jlog debug "encrypt TERMINAL $chatJid: no usable peer recipients"
             return -code error -errorcode TACO_OMEMO_TERMINAL \
                 "no usable recipients for $chatJid"
@@ -2763,6 +2776,18 @@ snit::type taco_omemo {
                 if {[lindex $s 0] eq $m} { set any 1; break }
             }
             if {!$any} { dict set left $m no_usable_device }
+        }
+        # A member reached by no device, perhaps only because one had not
+        # published its bundle when we asked, is asked once more first.
+        set again 0
+        dict for {m why} $left {
+            if {$why eq "no_usable_device" && [$self RefetchForSend $m]} {
+                set again 1
+            }
+        }
+        if {$again} {
+            return -code error -errorcode TACO_OMEMO_NOT_READY \
+                "fetching keys for $room's members again"
         }
         if {[dict size $left]} {
             $self RoomLeftOut $room $left
@@ -3152,6 +3177,29 @@ snit::type taco_omemo {
         jlog debug "EnsureSessionSync $peerJid/$peerDev: no session or bundle, kicking async fetch"
         $self EnsureSession $peerJid $peerDev [list apply {args {}}]
         return ""
+    }
+
+    # A send to $jid found none of its devices usable. Those on its list
+    # whose bundle fetch failed this connection are fetched once more, the
+    # first time a send finds them so: 1 when any was (the send waits,
+    # TACO_OMEMO_NOT_READY, and the fetch's answer wakes it as any does).
+    # A bundle that came but gave no session is not fetched again: the
+    # same one would come back.
+    method RefetchForSend {jid} {
+        if {![dict exists $DeviceLists $jid]} { return 0 }
+        set again 0
+        foreach d [dict get $DeviceLists $jid] {
+            set key "$jid|$d"
+            if {![$self BundleGaveUp $jid $d] || [dict exists $SendRefetch $key]
+                    || [dict exists $Bundles $key]
+                    || [$self IsDeviceBlocked $jid $d]} continue
+            jlog debug "encrypt: $jid/$d gave no bundle; a send asks again"
+            dict set SendRefetch $key 1
+            dict unset BundleFetchState $key
+            $self EnsureSession $jid $d [list apply {args {}}]
+            set again 1
+        }
+        return $again
     }
 
     # =====================================================================

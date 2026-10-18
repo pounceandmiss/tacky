@@ -1375,6 +1375,30 @@ test omemo-unit-encrypt-proceeds-without-given-up-device \
         ::test::omemo_unit::keyRids $enc
     } -result {111}
 
+# A peer reached by no device: the one whose bundle fetch failed is asked
+# for once more by the send, which waits for it, and only then fails.
+test omemo-unit-encrypt-refetches-given-up-device-once \
+    {a send that finds no usable device fetches a given-up one again, once} \
+    {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::JULIET_BARE [list [c omemo device_id]]
+        ::test::omemo_unit::injectDevicelist \
+            $::test::omemo_unit::ROMEO {222}
+        c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 222
+    }] -body {
+        set out {}
+        foreach pass {1 2} {
+            set before [llength [c conn get_written]]
+            catch {c omemo encrypt $::test::omemo_unit::ROMEO "hello"} _ opts
+            lappend out [dict get $opts -errorcode] [::test::omemo_unit::bundleFetches \
+                [lrange [c conn get_written] $before end] 222]
+            c omemo OnBundleFetchTimeout $::test::omemo_unit::ROMEO 222
+        }
+        set out
+    } -result {TACO_OMEMO_NOT_READY 1 TACO_OMEMO_TERMINAL 0}
+
 test omemo-unit-encrypt-holds-for-warming-own-device \
     {an unsessioned own device holds the send too} \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
