@@ -23,6 +23,9 @@ package require base64
 package require snit
 package require control
 package require jid
+# The redaction of every log and trace (redact.tcl), shared with the front
+# end's bgerror.
+package require taco::redact
 
 # Pull the condition and optional human text out of a response stanza's
 # <error> child. Returns {condition <c> text <t>}: condition is "unknown" when
@@ -135,7 +138,7 @@ namespace eval ::taco_bg {
         # Snapshot before the catches below overwrite ::errorInfo.
         set info $::errorInfo
         if {$reporting} {
-            catch {puts stderr $info}
+            catch {puts stderr [redact $info $message]}
             return
         }
         set reporting 1
@@ -143,7 +146,17 @@ namespace eval ::taco_bg {
         set reporting 0
     }
 
+    # errorInfo prints the failing commands with their arguments, so a trace
+    # quotes whatever they were handed: a password, a token, a message's
+    # text, an aesgcm:// URL's key. Blanked where they are named, and
+    # wherever else the values named in `text` or in the `context` beside it
+    # (the message beside a trace) turn up (redact.tcl).
+    proc redact {text args} {
+        ::taco_redact::trace $text {*}$args
+    }
+
     proc Report {message info} {
+        lassign [list [redact $message $info] [redact $info $message]] message info
         if {[catch {jlog error $info -obj bgerror}]} {
             puts stderr $info
         }

@@ -130,6 +130,26 @@ test jlog-format-omits-empty-acc {an accountless line has no stray separator} \
         string match {*] ::c: boom} [jprobe FormatLine {-level error -text boom -obj ::c}]
     } -result 1
 
+# An aesgcm:// URL's fragment is the file's key (XEP-0454): no record carries
+# it, whatever logged it -- a module's text, a host's `log write`, a stanza
+# dump with content redaction off -- and whichever sink takes the record.
+test jlog-record-carries-no-aesgcm-key \
+    {an aesgcm:// fragment in a record's text or stanza reaches neither the -logproc nor the line} \
+    {*}$probe -body {
+        set frag [string repeat 0a 12][string repeat 1b 32]
+        jprobe configure -redactcontent 0
+        jprobe setLevel ::c verbose
+        jprobe log debug "download of aesgcm://up.example/pic.png#$frag failed" -obj ::c
+        jprobe write -level error -text "host saw AESGCM://up.example/pic.png#$frag" -obj ::c
+        set stanza [j message -type chat {
+            j body -body "aesgcm://up.example/pic.png#$frag"
+        }]
+        set line [jprobe FormatLine [list -level debug -obj ::c -text in -stanza $stanza]]
+        list [regexp $frag $::jlog_seen] [regexp $frag $line] \
+            [string match {*aesgcm://up.example/pic.png#<redacted>*} $line] \
+            [dict get [lindex $::jlog_seen 1] -text]
+    } -result {0 0 1 {host saw AESGCM://up.example/pic.png#<redacted>}}
+
 # -- choosing the sink -----------------------------------------------------
 
 test jlog-setfile-redirects {setfile points later records at the new file} \

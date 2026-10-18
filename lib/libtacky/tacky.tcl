@@ -1,5 +1,9 @@
 package provide libtacky 0.1
 package require jid
+# The redaction taco's traces go through (lib/taco/redact.tcl): this side's
+# own background errors get the same, in an interpreter that may never load
+# taco.
+package require taco::redact
 
 # Split the --debug-* flags (jlog configureDebug's options) out of an args list
 # into {debugFlags restArgs}; the rest go to taco_type, which rejects unknown
@@ -206,7 +210,11 @@ oo::class create tacky_base {
 
     # Lowercase, so TclOO exports it: the alias above is an outside caller.
     method bgerror {message} {
-        set info $::errorInfo
+        # Blanked before it goes anywhere, as taco_bg does for the backend's:
+        # the GUI's calls carry passwords, a message's text, an aesgcm://
+        # URL's key.
+        set info [::taco_redact::trace $::errorInfo $message]
+        set message [::taco_redact::trace $message $::errorInfo]
         # No local jlog here: the backend owns the log file. If the wire is gone
         # the dialog carries the message without the trace, so stderr is the
         # only place left for it.
