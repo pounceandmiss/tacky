@@ -4329,6 +4329,71 @@ test message-carbon-wrapper-delay \
         set out
     } -result {c1 1 c2 0}
 
+# The copy inside a carbon may carry a delay of its own that no server set;
+# the wrapper's, our server's, still dates it.
+test message-live-resumed-sent-carbon-keeps-the-wrapper-stamp \
+    {a send of ours from another device, resent on resume, is stamped by the server's delay on the wrapper even when the copy has its own} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 120) * 1000000}]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw1 -from $::acc/pc -to alice@example.com/phone {
+                        j body -body "sent from the desktop"
+                        j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+                    }
+                }
+            }
+            j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp [FormatTimestampISO $ts]
+        }]
+        set row [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $row is_outgoing] [expr {[dict get $row timestamp] == $ts}]
+    } -result {1 1}
+
+test message-live-resumed-received-carbon-keeps-the-wrapper-stamp \
+    {a peer's message carbon-copied to us, resent on resume, is stamped by the server's delay on the wrapper, not the peer's inside} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 120) * 1000000}]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw2 -from alice@example.com/phone -to $::acc/pc {
+                        j body -body "read on the desktop first"
+                        j delay -ns urn:xmpp:delay -from alice@example.com -stamp 2024-01-01T00:00:00Z
+                    }
+                }
+            }
+            j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp [FormatTimestampISO $ts]
+        }]
+        set row [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $row is_outgoing] [expr {[dict get $row timestamp] == $ts}]
+    } -result {0 1}
+
+test message-live-carbon-inner-server-looking-stamp-is-still-the-peers \
+    {a delay naming our server inside a received carbon's copy, none on the wrapper, is held to the offline floor and the row gets its arrival time} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw3 -from alice@example.com/phone -to $::acc/pc {
+                        j body -body "backdated by the peer"
+                        j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp 1970-01-02T00:00:00Z
+                    }
+                }
+            }
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}
+    } -result 1
+
 test message-pm-carbon-filed-under-occupant {a carbon of a room PM we sent elsewhere goes to the room/nick chat, not a chat with the room} \
     {*}$msg_common \
     -body {

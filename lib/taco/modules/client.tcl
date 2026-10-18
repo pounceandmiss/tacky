@@ -338,12 +338,12 @@ snit::type taco_client {
             set inner [xsearch $fwd message -get node]
             if {$inner eq ""} return
             # A carbon delivered late (offline storage, a resumed stream) has
-            # its <delay> on the wrapper, not on the forwarded message. Copy
-            # it inside; TrustedStamp still checks who set it.
-            if {[llength [xsearch $inner delay -ns urn:xmpp:delay]] == 0} {
-                foreach d [xsearch $stanza delay -ns urn:xmpp:delay] {
-                    dict lappend inner children $d
-                }
+            # its <delay> on the wrapper, not on the forwarded message. Put it
+            # ahead of the copy's own, which the sender may have set itself;
+            # TrustedStamp still checks who set each.
+            set delays [xsearch $stanza delay -ns urn:xmpp:delay]
+            if {[llength $delays]} {
+                dict set inner children [concat $delays [dict get $inner children]]
             }
             # An inner message we cannot address is as unusable as a
             # forged envelope: same empty return.
