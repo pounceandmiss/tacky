@@ -988,6 +988,8 @@ snit::type taco_calls {
             }
             return
         }
+        # A late event for a call already gone must not bring it back.
+        if {![dict exists $Calls $sid]} return
         $self CancelInterrupted $sid
         set mapped [$self MapPcState $state]
         if {$mapped eq ""} return
@@ -1010,7 +1012,13 @@ snit::type taco_calls {
             }
         }
         if {$mapped in {ended failed}} {
+            # The peer is told in Jingle, as FailCall does: a peer that ends
+            # a session only on session-terminate (another.im's Android app)
+            # otherwise keeps the call up, its video frozen.
+            set peer [dict get $Calls $sid peer]
             $self TeardownMedia $sid
+            $self SendTerminate $sid $peer \
+                [expr {$mapped eq "failed" ? "connectivity-error" : "success"}]
             $self Cleanup $sid
         }
     }
