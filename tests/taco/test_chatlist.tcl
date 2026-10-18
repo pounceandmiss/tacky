@@ -148,6 +148,46 @@ test chatlist-name-resolution {roster/bookmark names pass through; free chats ha
         by_jid [c chatlist get] name
     } -result {alice@example.com {Alice R} room@muc.example.com?join {Room B} stranger@example.com {} user@test.example.com {}}
 
+# A contact's published nickname (XEP-0172) as a PEP event from them.
+proc chatlist_nick_push {from nick} {
+    c.conn feed [j message -from $from {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node http://jabber.org/protocol/nick {
+                j item -id current {
+                    j nick -ns http://jabber.org/protocol/nick -body $nick
+                }
+            }
+        }
+    }]
+}
+
+test chatlist-name-falls-back-to-the-published-nick {a contact the roster leaves unnamed is named by the nickname they publish, as their messages are; a roster name wins over it} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert bob@example.com subscription both
+        roster_insert alice@example.com name "Alice R" subscription both
+        chatlist_nick_push bob@example.com Bobby
+        chatlist_nick_push alice@example.com Ally
+        set names [by_jid [c chatlist get] name]
+        list [dict get $names bob@example.com] [dict get $names alice@example.com] \
+            [dict get [c author get -chat bob@example.com] bob@example.com]
+    } -result {Bobby {Alice R} Bobby}
+
+test chatlist-nick-change-reemits-the-row {a contact's new nickname re-emits their row with it; a nickname from someone with no row emits nothing} \
+    {*}$chatlist_common \
+    -body {
+        roster_insert bob@example.com subscription both
+        set ::chatlist_nick_evs {}
+        tacky listen chatlist <Item> {apply {{ev} {
+            lappend ::chatlist_nick_evs item [dict get $ev -jid] [dict get [dict get $ev -item] name]
+        }}}
+        tacky listen chatlist <Remove> {apply {{ev} { lappend ::chatlist_nick_evs remove [dict get $ev -jid] }}}
+        chatlist_nick_push bob@example.com Bobby
+        chatlist_nick_push bob@example.com Robert
+        c bus publish nick:<Changed> -jid nobody@example.com
+        set ::chatlist_nick_evs
+    } -result {item bob@example.com Bobby item bob@example.com Robert}
+
 test chatlist-is-self {only the chat with our own bare JID is is_self} \
     {*}$chatlist_common \
     -body {
