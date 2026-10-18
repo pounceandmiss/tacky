@@ -859,6 +859,9 @@ test omemo-muc-malformed-is-a-placeholder {a room message whose <encrypted/> has
 test omemo-muc-our-other-device-is-read {a message our other device wrote to the room is read as ours} \
     {*}$mucenv -body {
         ::t::device $::t::JBARE 301 -nosession
+        # On our list, as a device of ours is: a key exchange from a device
+        # no list names is not read.
+        ::t::injectDevicelist $::t::JBARE [list [c omemo device_id] 301]
         ::t::join {}
         c.conn feed [::t::roomMessage juliet \
             [::t::encryptedFrom $::t::JBARE 301 "from my phone"] occ occ-juliet]

@@ -2473,6 +2473,96 @@ test omemo-unit-prekey-beside-own-session-is-a-message \
         c db onecolumn {SELECT body FROM chat_message WHERE chat_jid='romeo@montague.lit'}
     } -result {first words}
 
+# A key exchange from a device we know nothing of, under an id the sender
+# chose: read only when the sender's devicelist names the device, or
+# provisionally before that list is in (PROVISIONAL_MAX per JID), and the
+# list then forgets the provisional devices it does not name.
+set ::test::omemo_unit::stranger_env [tacky_env -capture-emit 1 -mock conn \
+    -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+        set ::_emitted {}
+        set ::test::omemo_unit::strangers {}
+    } -extra-cleanup {
+        foreach p $::test::omemo_unit::strangers { omemopeer::destroy $p }
+    }]
+
+# Romeo's device $dev writes $text to Juliet, its first message to her: a
+# prekey message, on Juliet's prekey number $n.
+proc ::test::omemo_unit::strangerSays {dev text {n 0}} {
+    set p stranger$dev
+    if {$p ni $::test::omemo_unit::strangers} {
+        omemopeer::create $p -device $dev
+        lappend ::test::omemo_unit::strangers $p
+        set b [[set [c.omemo info vars store]] bundle]
+        dict set b prekeys [lrange [dict get $b prekeys] $n end]
+        omemopeer::learn $p $::test::omemo_unit::JULIET_BARE [c omemo device_id] $b
+    }
+    set enc [omemopeer::encrypt $p $::test::omemo_unit::JULIET_BARE \
+        [c omemo device_id] $text]
+    c conn feed [j message -from $::test::omemo_unit::ROMEO/phone \
+        -to $::test::omemo_unit::JULIET -type chat -id s[incr ::test::omemo_unit::sseq] {
+            j #as-is $enc
+        }]
+}
+
+proc ::test::omemo_unit::romeoRows {} {
+    c db eval {SELECT body FROM chat_message
+        WHERE chat_jid='romeo@montague.lit' ORDER BY timestamp, rowid}
+}
+
+proc ::test::omemo_unit::romeoDevices {} {
+    c db eval {SELECT peer_device FROM omemo_trust
+        WHERE peer_jid='romeo@montague.lit' ORDER BY peer_device}
+}
+
+proc ::test::omemo_unit::listFetchesOf {jid} {
+    set n 0
+    foreach s [c conn get_written] {
+        if {[xsearch $s -get @to] eq $jid
+                && [xsearch $s pubsub items -get @node] eq "eu.siacs.conversations.axolotl.devicelist"} {
+            incr n
+        }
+    }
+    return $n
+}
+
+test omemo-key-exchange-from-an-unlisted-device-is-not-read \
+    {a key exchange from a device Romeo's devicelist does not name is a placeholder, makes no row or session, and has the list asked for again} \
+    {*}$::test::omemo_unit::stranger_env -body {
+        ::test::omemo_unit::injectDevicelist $::test::omemo_unit::ROMEO {222}
+        set before [::test::omemo_unit::listFetchesOf $::test::omemo_unit::ROMEO]
+        ::test::omemo_unit::strangerSays 111 "who am i"
+        list [::test::omemo_unit::romeoRows] [::test::omemo_unit::romeoDevices] \
+            [c db eval {SELECT count(*) FROM omemo_sessions WHERE peer_device=111}] \
+            [lmap e [::test::omemo_unit::emittedOmemo <DecryptFailed>] {dict get $e -reason}] \
+            [expr {[::test::omemo_unit::listFetchesOf $::test::omemo_unit::ROMEO] > $before}]
+    } -result [list [list $::taco::omemo::UNLISTED] {} 0 [list $::taco::omemo::UNLISTED] 1]
+
+test omemo-key-exchange-read-before-the-list-is-provisional \
+    {a key exchange read before Romeo's devicelist is in is read and has the list fetched; the list forgets the device when it does not name it, and keeps it when it does} \
+    {*}$::test::omemo_unit::stranger_env -body {
+        ::test::omemo_unit::strangerSays 111 "early"
+        ::test::omemo_unit::strangerSays 112 "early too" 1
+        set read [list [::test::omemo_unit::romeoRows] [::test::omemo_unit::romeoDevices] \
+            [::test::omemo_unit::listFetchesOf $::test::omemo_unit::ROMEO]]
+        ::test::omemo_unit::injectDevicelist $::test::omemo_unit::ROMEO {112}
+        list $read [::test::omemo_unit::romeoDevices] \
+            [c db eval {SELECT peer_device FROM omemo_sessions
+                WHERE peer_jid='romeo@montague.lit' ORDER BY peer_device}]
+    } -result {{{early {early too}} {111 112} 1} 112 112}
+
+test omemo-provisional-devices-are-bounded \
+    {at most PROVISIONAL_MAX devices of one JID are taken in before its devicelist is} \
+    {*}$::test::omemo_unit::stranger_env -body {
+        set max $::taco::omemo::PROVISIONAL_MAX
+        for {set i 0} {$i <= $max} {incr i} {
+            ::test::omemo_unit::strangerSays [expr {101 + $i}] "n$i" $i
+        }
+        list [llength [::test::omemo_unit::romeoDevices]] \
+            [lindex [::test::omemo_unit::romeoRows] end]
+    } -result [list $::taco::omemo::PROVISIONAL_MAX $::taco::omemo::UNLISTED]
+
 # A payload that opens to "" is a message the sender sent: it is kept, with
 # an empty body. A key transport has no payload and leaves no row.
 test omemo-unit-empty-plaintext-is-an-empty-message \

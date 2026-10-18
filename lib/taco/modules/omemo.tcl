@@ -105,6 +105,13 @@ namespace eval ::taco::omemo {
     # Heals in a row that only send an unanswered re-key's key exchange
     # again before one fetches the bundle and starts over (see Heal).
     variable HEAL_RESENDS 3
+    # How many devices of one JID a key exchange may make known while that
+    # JID's devicelist is not (DoDecrypt's provisional devices): the list,
+    # once in, forgets those it does not name (SettleProvisional).
+    variable PROVISIONAL_MAX 8
+    # The placeholder for a key exchange from a device the sender's
+    # devicelist does not name.
+    variable UNLISTED {[OMEMO] Message from a device the sender does not list}
     # Give-up deadline for a bundle fetch. encrypt() blocks a send while
     # any candidate device is still warming, and `iq request` never times
     # out on its own, so a server that swallows the IQ would wedge the
@@ -245,6 +252,11 @@ snit::type taco_omemo {
     variable PostponedHealing
     variable PostponedHeartbeats
 
+    # jid -> {device 1 ...}: the devices a key exchange made known while
+    # the JID's devicelist was not (DoDecrypt), until the list comes
+    # (SettleProvisional). Not cleared in OnDisconnect, as the rows are not.
+    variable Provisional
+
     # Heal rate-limit: "$jid|$dev" -> earliest clock-ms we may heal again.
     # NOT cleared in OnDisconnect, so reconnects can't re-key in a loop.
     variable HealAt
@@ -298,6 +310,7 @@ snit::type taco_omemo {
         set PostponedHealing [dict create]
         set PostponedHeartbeats [dict create]
         set HealAt [dict create]
+        set Provisional [dict create]
         set Replaced [dict create]
         set HealResends [dict create]
 
@@ -735,6 +748,7 @@ snit::type taco_omemo {
     method AfterOwnDevicelistFetch {jid devices} {
         # The server's view; our own id joins it only on the publish ack.
         dict set DeviceLists $accountJid $devices
+        $self SettleProvisional $accountJid $devices
         if {$deviceId ni $devices} {
             $self DoPublishDevicelist [linsert $devices end $deviceId]
         }
@@ -963,6 +977,7 @@ snit::type taco_omemo {
         jlog debug "devicelist +notify from $peerJid: [llength $devices] device(s) = $devices"
         if {$peerJid eq $accountJid} {
             dict set DeviceLists $accountJid $devices
+            $self SettleProvisional $accountJid $devices
             if {$deviceId ne "" && $deviceId ni $devices} {
                 $self DoPublishDevicelist [linsert $devices end $deviceId]
             }
@@ -982,6 +997,7 @@ snit::type taco_omemo {
             set oldDevices [dict get $DeviceLists $peerJid]
         }
         dict set DeviceLists $peerJid $devices
+        $self SettleProvisional $peerJid $devices
         set changed [expr {[lsort -integer $oldDevices] ne [lsort -integer $devices]}]
 
         set now [clock milliseconds]
@@ -1029,6 +1045,43 @@ snit::type taco_omemo {
         $client bus publish omemo:<DevicelistResolved> -jid $peerJid
         $self EnsureBundlesForDevicelist $peerJid $devices
         $self WakeRoomsOf $peerJid
+    }
+
+    # The list of $jid is in: the devices a key exchange made known before
+    # it (DoDecrypt's provisional ones) that it does not name are
+    # forgotten -- row, session and skipped keys -- unless the user has
+    # decided about them; those it names are devices like any other now.
+    method SettleProvisional {jid devices} {
+        if {![dict exists $Provisional $jid]} return
+        set gone 0
+        foreach dev [dict keys [dict get $Provisional $jid]] {
+            if {$dev in $devices} continue
+            set trust [$db onecolumn {
+                SELECT trust FROM omemo_trust
+                WHERE account_jid=$accountJid
+                  AND peer_jid=$jid AND peer_device=$dev
+            }]
+            if {$trust ni {"" undecided}} continue
+            jlog inform "OMEMO $jid/$dev: its key exchange came before a\
+                devicelist that does not name it; forgotten"
+            set key "$jid|$dev"
+            if {[dict exists $Sessions $key]} {
+                catch {[dict get $Sessions $key] destroy}
+                dict unset Sessions $key
+            }
+            dict unset Bundles $key
+            $db eval {
+                DELETE FROM omemo_trust WHERE account_jid=$accountJid
+                  AND peer_jid=$jid AND peer_device=$dev;
+                DELETE FROM omemo_sessions WHERE account_jid=$accountJid
+                  AND peer_jid=$jid AND peer_device=$dev;
+                DELETE FROM omemo_skipped WHERE account_jid=$accountJid
+                  AND peer_jid=$jid AND peer_device=$dev
+            }
+            set gone 1
+        }
+        dict unset Provisional $jid
+        if {$gone} { $self EmitTrustList $jid }
     }
 
     # Warm announced devices: fetch each one's bundle and build the
@@ -1636,6 +1689,7 @@ snit::type taco_omemo {
         set sess ""
         set key "$peerJid|$peerDev"
         set hadSession 1
+        set provisional 0
         if {$pre ne ""} {
             lassign $pre sess decKey
             if {[dict exists $Sessions $key] && [dict get $Sessions $key] ne $sess} {
@@ -1655,6 +1709,38 @@ snit::type taco_omemo {
                 $sess deserialize [lindex $row 0]
                 dict set Sessions $key $sess
             } else {
+                # A key exchange from a device we hold neither a row nor a
+                # session for would make both, under an id the sender
+                # chose: only a device the sender's devicelist names may.
+                # While that list is unknown (a message read before it,
+                # the archive's above all) the device is provisional,
+                # PROVISIONAL_MAX of them per JID, and the list forgets
+                # those it does not name when it comes (SettleProvisional).
+                set unlisted 0
+                if {[lsearch -index 0 -exact $candidates 1] >= 0
+                        && [$db onecolumn {
+                            SELECT 1 FROM omemo_trust
+                            WHERE account_jid=$accountJid
+                              AND peer_jid=$peerJid AND peer_device=$peerDev
+                        }] eq ""} {
+                    if {[dict exists $DeviceLists $peerJid]} {
+                        set unlisted [expr {$peerDev ni [dict get $DeviceLists $peerJid]}]
+                    } elseif {[dict size [dict getdef $Provisional $peerJid {}]]
+                            >= $::taco::omemo::PROVISIONAL_MAX} {
+                        set unlisted 1
+                    } else {
+                        set provisional 1
+                    }
+                }
+                if {$unlisted} {
+                    # Asked for again, so a device that has only just
+                    # listed itself is read from its next message on.
+                    jlog warn "OMEMO $peerJid/$peerDev: key exchange from a\
+                        device its devicelist does not name; not read"
+                    $self RefetchDevicelist $peerJid
+                    if {!$hasPayload} { return [list keytransport ""] }
+                    return [list decrypt_error $::taco::omemo::UNLISTED]
+                }
                 # No session yet. Prekey candidate establishes a fresh
                 # session via decrypt_key directly. Create empty handle.
                 set sess [$self CreateSessionHandle $peerJid $peerDev]
@@ -1801,6 +1887,10 @@ snit::type taco_omemo {
         # Identity of the session that decrypted this, for the stored row.
         if {$remoteIk eq "" || [catch {omemo::fingerprint $remoteIk} senderFp]} {
             set senderFp ""
+        }
+        if {$provisional} {
+            dict set Provisional $peerJid $peerDev 1
+            $self RefetchDevicelist $peerJid
         }
 
         if {$isMam} { set mamHadOmemo 1 }
