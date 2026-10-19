@@ -2844,7 +2844,7 @@ snit::type taco_message {
             return [expr {$sid ne "" && $sid eq $targetOcc}]
         }
         set from [jid bare [dict get $sender from]]
-        return [expr {$from eq [jid bare $targetFrom]}]
+        return [jid equal $from [jid bare $targetFrom]]
     }
 
     # Extract an XEP-0308 correction into {target_id new_body encryption
@@ -2954,7 +2954,7 @@ snit::type taco_message {
                 # came from, may take a message back.
                 set ok [expr {[jid norm $rawFrom] eq [jid norm $targetFrom]}]
             } else {
-                set ok [expr {[jid bare $rawFrom] eq [jid bare $targetFrom]}]
+                set ok [jid equal [jid bare $rawFrom] [jid bare $targetFrom]]
             }
             if {$ok} { return [list ok [dict get $c ts]] }
         }
@@ -3085,7 +3085,7 @@ snit::type taco_message {
             set ownId [dict get $args -own_id]
         } else {
             set rawFrom [xsearch $msgNode -get @from]
-            if {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
+            if {$rawFrom ne "" && [jid equal [jid bare $rawFrom] [jid bare [$client cget -jid]]]} {
                 set ownId [xsearch $msgNode -get @id]
             } elseif {[IsRoomChatJid $chatJid] && [$self IsOwnByOccupant $chatJid $msgNode]} {
                 # Our own message from the room archive. It comes from

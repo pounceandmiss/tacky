@@ -4743,6 +4743,21 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
              [llength [msg_store_latest alice@example.com]]
     } -result {{hello world} 1 1}
 
+test message-edit-incoming-1to1-across-case {a correction from the same address in another case is the author's} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id c1 {
+            j origin-id -ns urn:xmpp:sid:0 -id c1
+            j body -body "helo"
+        }]
+        $::_client conn feed [j message -type chat -from Alice@Example.COM/phone -id c2 {
+            j replace -ns urn:xmpp:message-correct:0 -id c1
+            j body -body "hello world"
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m content body] [dict get $m edited] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {{hello world} 1 1}
+
 # Corrections and retractions routinely arrive before their target (an
 # archive walked newest first, a target still in flight). They wait for it
 # rather than being stored as messages of their own.

@@ -51,6 +51,16 @@ proc jid {cmd args} {
             jid assemble e
         }
 
+        equal {lassign $args a b
+            # The same address: localpart and domain compared without
+            # case, the resource exactly (RFC 7622). False if either
+            # doesn't parse.
+            if {[catch {jid norm $a} a] || [catch {jid norm $b} b]} {
+                return 0
+            }
+            expr {$a eq $b}
+        }
+
         matches-bare {lassign $args a b
             string equal -nocase [jid bare $a] [jid bare $b]
         }
@@ -62,7 +72,7 @@ proc jid {cmd args} {
             if {[jid resource $to] eq ""} {
                 string equal -nocase $to [jid bare $myjid]
             } else {
-                expr {$to eq $myjid}
+                jid equal $to $myjid
             }
         }
 

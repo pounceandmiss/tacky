@@ -765,8 +765,8 @@ snit::type taco_messagestore {
         foreach candidate $candidates {
             lassign $candidate ts fromJid
             if {$replyTo eq ""
-                || ($isMuc && $fromJid eq $replyTo)
-                || (!$isMuc && [jid bare $fromJid] eq [jid bare $replyTo])} {
+                || ($isMuc && [jid equal $fromJid $replyTo])
+                || (!$isMuc && [jid equal [jid bare $fromJid] [jid bare $replyTo]])} {
                 return $ts
             }
         }
