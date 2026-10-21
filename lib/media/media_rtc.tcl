@@ -88,10 +88,18 @@ proc ::tacky::media::rtc::Close {} {
 }
 
 proc ::tacky::media::rtc::Capabilities {} {
-    return {
-        audioDevices 1 audioVolume 1 cameras 1 videoDevice 1 videoChannel 1
-        preview 1 autoAnswer 1 sdpSanitize 1 trickleIce 1
-    }
+    set restart [CanRestart]
+    return [list \
+        audioDevices 1 audioVolume 1 cameras 1 videoDevice 1 videoChannel 1 \
+        preview 1 autoAnswer 1 sdpSanitize 1 trickleIce 1 \
+        iceRestart $restart restartIce $restart rollback $restart]
+}
+
+# Whether this libdatachannel restarts ICE. Upstream releases do not yet;
+# a build that does has the binding's ::rtc::pc::restart-ice. Without it a
+# pc whose ICE fails closes, and calls on it end as they always have.
+proc ::tacky::media::rtc::CanRestart {} {
+    expr {[info commands ::rtc::pc::restart-ice] ne ""}
 }
 
 # rtc-ma decodes opus and rtc-mv VP8; anything else the peer offers would be
@@ -120,7 +128,10 @@ proc ::tacky::media::rtc::CreatePeer {h args} {
     variable Pc
     variable PcOf
     set opts [dict merge {-ice-servers {}} $args]
-    set pc [::rtc::pc::new -ice-servers [dict get $opts -ice-servers]]
+    # Restartable, the pc stays open when ICE fails or disconnects: the
+    # caller restarts it or hangs up.
+    set restart [expr {[CanRestart] ? {-enable-ice-restart 1} : {}}]
+    set pc [::rtc::pc::new -ice-servers [dict get $opts -ice-servers] {*}$restart]
     set Pc($h) $pc
     set PcOf($pc) $h
     ::rtc::pc::on-local-description      $pc [namespace code [list OnLocalDescription]]
@@ -325,13 +336,19 @@ proc ::tacky::media::rtc::HaveMid {h mid} {
 
 # An empty type lets libdatachannel infer offer or answer from its signaling
 # state; the generated SDP comes back on the localDescription event.
+# -ice-restart 1 restarts ICE first, so the offer carries new credentials;
+# a rollback that fails leaves the call as it was, so it is only advisory.
 proc ::tacky::media::rtc::SetLocalDescription {h args} {
     variable Pc
-    set opts [dict merge {-sdp "" -type ""} $args]
+    set opts [dict merge {-sdp "" -type "" -ice-restart 0} $args]
     if {![info exists Pc($h)]} return
-    if {[catch {::rtc::pc::set-local-description $Pc($h) \
-            [dict get $opts -type]} err]} {
-        ::tacky::media::emit $h error op setLocalDescription reason $err fatal 1
+    set type [dict get $opts -type]
+    if {[catch {
+        if {[dict get $opts -ice-restart]} { ::rtc::pc::restart-ice $Pc($h) }
+        ::rtc::pc::set-local-description $Pc($h) $type
+    } err]} {
+        ::tacky::media::emit $h error op setLocalDescription reason $err \
+            fatal [expr {$type ne "rollback"}]
     }
     return
 }

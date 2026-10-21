@@ -111,6 +111,56 @@ test media-conformance-rtc {the rtc backend conforms to tacky::media} -setup {
     mediaconform::run rtc -drive conform_drive_rtc
 } -result {}
 
+test media-conformance-rtc-restartable {the rtc backend on a libdatachannel that restarts ICE conforms} -setup {
+    mockrtc::install
+    mockrtc::restartable 1
+} -cleanup {
+    mockrtc::uninstall
+} -body {
+    mediaconform::run rtc -drive conform_drive_rtc
+} -result {}
+
+# Vanilla libdatachannel cannot restart ICE: the backend says so, opens no pc
+# asking for it, and so its calls end on a failed path as they always have.
+test media-rtc-restart-follows-the-binding {rtc declares ICE restart exactly when the binding has it} -setup {
+    mockrtc::install
+} -cleanup {
+    ::tacky::media close
+    mockrtc::uninstall
+} -body {
+    set out {}
+    foreach on {0 1} {
+        mockrtc::restartable $on
+        ::tacky::media open rtc
+        ::tacky::media createPeer p$on -command {apply {{ev} {}}}
+        lappend out [dict filter [::tacky::media capabilities] key \
+                iceRestart restartIce rollback] \
+            [lindex [mockrtc::calls ::rtc::pc::new] end]
+        ::tacky::media closePeer p$on
+    }
+    set out
+} -result {{iceRestart 0 restartIce 0 rollback 0} {-ice-servers {}} {iceRestart 1 restartIce 1 rollback 1} {-ice-servers {} -enable-ice-restart 1}}
+
+test media-rtc-restart-offer {rtc restarts ICE before the offer, and rolls back without failing the pc} -setup {
+    mockrtc::install
+    mockrtc::restartable 1
+    ::tacky::media open rtc
+} -cleanup {
+    ::tacky::media close
+    mockrtc::uninstall
+} -body {
+    set ::rtcEvents {}
+    ::tacky::media createPeer p1 -command {apply {{ev} {lappend ::rtcEvents $ev}}}
+    ::tacky::media setLocalDescription p1 -type offer -ice-restart 1
+    mockrtc::fail ::rtc::pc::set-local-description "no offer to roll back" "* rollback"
+    ::tacky::media setLocalDescription p1 -type rollback
+    list [lmap e [mockrtc::log] {
+            if {[lindex $e 0] ni {::rtc::pc::restart-ice ::rtc::pc::set-local-description}} continue
+            list [lindex $e 0] {*}[lrange $e 2 end]
+        }] \
+        [lmap e $::rtcEvents { dict get $e fatal }]
+} -result {{::rtc::pc::restart-ice {::rtc::pc::set-local-description offer} {::rtc::pc::set-local-description rollback}} 0}
+
 # A device streams to one opener at a time, so every sender and the preview
 # ride one rtc-mv capture, closed only when the last of them goes.
 proc rtc_video_pc {pc} {
