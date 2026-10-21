@@ -37,7 +37,7 @@ namespace eval mediaconform {
 
     variable CAPABILITIES {
         audioDevices audioVolume cameras videoDevice videoChannel preview
-        autoAnswer sdpSanitize trickleIce
+        autoAnswer sdpSanitize trickleIce iceRestart restartIce rollback
     }
     variable PC_STATES {new connecting connected disconnected failed closed}
     variable OFFER_SDP "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:111 opus/48000/2\r\na=ice-ufrag:abc\r\na=ice-pwd:xyzxyzxyzxyz\r\na=fingerprint:sha-256 AA:BB\r\na=setup:actpass\r\na=mid:audio\r\na=sendrecv\r\n"
@@ -67,6 +67,7 @@ proc mediaconform::run {backend args} {
     Lifecycle $backend
     Caller
     Callee
+    Restart
     Devices
     Preview
     Isolation
@@ -313,6 +314,85 @@ proc mediaconform::VideoChannel {events direction track} {
                 [dict get $ch kind]"
         }
     }
+}
+
+# ==========================================================================
+# ICE restart, both ways, on a pc that is up (capability-gated)
+# ==========================================================================
+
+# The new generation's description: the same session under new ICE
+# credentials, as a peer's restart brings it.
+proc mediaconform::Restarted {sdp} {
+    regsub -line {^a=ice-ufrag:.*$} $sdp "a=ice-ufrag:rst" sdp
+    regsub -line {^a=ice-pwd:.*$} $sdp "a=ice-pwd:rstrstrstrstrstrstrstrs" sdp
+    return $sdp
+}
+
+proc mediaconform::Restart {} {
+    variable OFFER_SDP
+    set follow  [::tacky::media capability iceRestart]
+    set restart [::tacky::media capability restartIce]
+    set back    [::tacky::media capability rollback]
+    if {!$follow && !$restart && !$back} {
+        # Asking for what it did not declare is refused before the backend
+        # sees it.
+        expect "-ice-restart without restartIce" [catch {
+            ::tacky::media setLocalDescription conform-none -type offer -ice-restart 1
+        }] "was not refused"
+        return
+    }
+    set pc conform-restart
+    if {![ok createPeer {
+        ::tacky::media createPeer $pc -command [list ::mediaconform::Sink]
+    }]} return
+    ok "addTrack audio" {::tacky::media addTrack $pc audio -kind audio}
+    ok "setLocalDescription offer" {::tacky::media setLocalDescription $pc}
+    Drive localDescription $pc $OFFER_SDP offer
+    ok "setRemoteDescription answer" {
+        ::tacky::media setRemoteDescription $pc -sdp $OFFER_SDP -type answer
+    }
+    Drive connectionState $pc connected
+    Collect
+
+    if {$restart} {
+        ok "setLocalDescription -ice-restart" {
+            ::tacky::media setLocalDescription $pc -type offer -ice-restart 1
+        }
+        Drive localDescription $pc [Restarted $OFFER_SDP] offer
+        set ev [Take [Collect] localDescription]
+        expect "restart offer" [expr {$ev ne ""}] "never arrived"
+        if {$back} {
+            ok "setLocalDescription rollback" {
+                ::tacky::media setLocalDescription $pc -type rollback
+            }
+        } elseif {$follow} {
+            ok "the restart offer's answer" {
+                ::tacky::media setRemoteDescription $pc \
+                    -sdp [Restarted $OFFER_SDP] -type answer
+            }
+        }
+    }
+    if {$follow} {
+        ok "setRemoteDescription restart offer" {
+            ::tacky::media setRemoteDescription $pc \
+                -sdp [Restarted $OFFER_SDP] -type offer
+        }
+        if {![::tacky::media capability autoAnswer]} {
+            ok "setLocalDescription restart answer" {
+                ::tacky::media setLocalDescription $pc -type answer
+            }
+        }
+        Drive localDescription $pc [Restarted $OFFER_SDP] answer
+        set ev [Take [Collect] localDescription]
+        if {[expect "restart answer" [expr {$ev ne ""}] "never arrived"]} {
+            expect "restart answer" \
+                [string equal [dict get $ev sdpType] answer] \
+                "sdpType is [dict get $ev sdpType]"
+        }
+        Drive connectionState $pc connected
+    }
+    ok closePeer {::tacky::media closePeer $pc}
+    Collect
 }
 
 # ==========================================================================

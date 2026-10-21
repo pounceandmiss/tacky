@@ -281,6 +281,51 @@ test media-conformance-minimal {a backend declaring no device control conforms} 
     mediaconform::run mock -drive conform_drive_mock
 } -result {}
 
+foreach {name caps} {
+    full   {iceRestart 1 restartIce 1 rollback 1}
+    follow {iceRestart 1 restartIce 0 rollback 0}
+    start  {iceRestart 0 restartIce 1 rollback 1}
+} {
+    test media-conformance-mock-restart-$name "the mock backend conforms with ICE restart caps: $name" -setup "
+        mockmedia::reset
+        [list mockmedia::capabilities [dict merge $::mockmedia::DEFAULT_CAPS $caps]]
+    " -cleanup {
+        mockmedia::reset
+    } -body {
+        list [mediaconform::run mock -drive conform_drive_mock] \
+            [llength [lsearch -all -index 0 [mockmedia::log] SetLocalDescription]]
+    } -match glob -result {{} *}
+}
+
+test media-ice-restart-option-reaches-backend {-ice-restart and rollback reach the backend that declares them} -setup {
+    mockmedia::reset
+    mockmedia::capabilities [dict merge $::mockmedia::DEFAULT_CAPS \
+        {iceRestart 1 restartIce 1 rollback 1}]
+    ::tacky::media open mock
+} -cleanup {
+    ::tacky::media close
+    mockmedia::reset
+} -body {
+    ::tacky::media createPeer p1 -command {apply {{ev} {}}}
+    ::tacky::media setLocalDescription p1 -type offer -ice-restart 1
+    ::tacky::media setLocalDescription p1 -type rollback
+    ::tacky::media setLocalDescription p1
+    mockmedia::calls SetLocalDescription
+} -result {{p1 -sdp {} -type offer -ice-restart 1} {p1 -sdp {} -type rollback} {p1 -sdp {} -type {}}}
+
+test media-ice-restart-refused-without-capability {a backend that cannot restart or roll back is never asked to} -setup {
+    mockmedia::reset
+    ::tacky::media open mock
+} -cleanup {
+    ::tacky::media close
+    mockmedia::reset
+} -body {
+    ::tacky::media createPeer p1 -command {apply {{ev} {}}}
+    list [catch {::tacky::media setLocalDescription p1 -type offer -ice-restart 1}] \
+        [catch {::tacky::media setLocalDescription p1 -type rollback}] \
+        [mockmedia::calls SetLocalDescription]
+} -result {1 1 {}}
+
 # The script has to actually fail a backend that breaks the contract, or its
 # passing above means nothing.
 test media-conformance-catches-bad-capability {an unknown capability is refused} -setup {
