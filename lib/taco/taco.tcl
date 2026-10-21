@@ -306,6 +306,10 @@ snit::type taco_type {
     # account (websocket_url).
     option -transport -readonly yes -default tcp
     option -webrtc-lib -readonly yes -default ""
+    # On the host backend: the frontend's peer connection restarts ICE (the
+    # setLocalDescription iceRestart key, rollback), so calls restart and
+    # follow restarts. One that does not leave it 0. See lib/media/media_host.tcl.
+    option -media-host-restart -readonly yes -default 0
 
     variable TransientRoot ""
     # Where every client's file module puts decrypted copies (scratchRoot)
@@ -414,6 +418,7 @@ snit::type taco_type {
             : [file join $options(-cache-dir) frames]}]
         install media using taco_media ${selfns}::media -taco $self \
             -backend $options(-media-backend) -webrtc-lib $options(-webrtc-lib) \
+            -host-restart $options(-media-host-restart) \
             -frame-dir $frameDir
         install audio using taco_audio ${selfns}::audio -db $db -taco $self
         install video using taco_video ${selfns}::video -db $db -taco $self

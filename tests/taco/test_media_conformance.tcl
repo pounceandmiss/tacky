@@ -266,6 +266,13 @@ test media-conformance-host {the host backend conforms to tacky::media} -body {
         -open {-emit conform_host_sink}
 } -result {}
 
+test media-conformance-host-restart {the host backend that restarts ICE conforms to tacky::media} -body {
+    mediaconform::run host -drive conform_drive_host \
+        -open {-emit conform_host_sink -ice-restart 1}
+} -cleanup {
+    ::tacky::media::host::Open -ice-restart 0
+} -result {}
+
 # A backend that owns less than rtc does must still conform: the script asks
 # only for what the capabilities claim. This is the shape a host backend
 # takes, where the embedding app owns the devices and the rendering.

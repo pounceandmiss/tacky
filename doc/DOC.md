@@ -1678,8 +1678,8 @@ to grey out a control it would otherwise offer:
 An absent capability breaks nothing: the setter still stores the preference
 and emits its event, enumeration comes back empty, and a frontend that ignores
 all this shows an empty picker. The result also carries `autoAnswer`,
-`sdpSanitize` and `trickleIce`, which tacky's own signalling reads; a
-frontend can ignore them.
+`sdpSanitize`, `trickleIce`, `iceRestart`, `restartIce` and `rollback`, which
+tacky's own signalling reads; a frontend can ignore them.
 
 Events:
 
@@ -1701,7 +1701,8 @@ channel, JNI or JS.
     createPeer             iceServers: [string], sid: string
     closePeer              -
     addTrack               track, kind: audio|video, direction
-    setLocalDescription    sdp, sdpType: offer|answer ("" = your stack decides)
+    setLocalDescription    sdp, sdpType: offer|answer|rollback ("" = your stack decides),
+                           iceRestart?: 1 (restart ICE before making the offer)
     setRemoteDescription   sdp, sdpType
     addRemoteCandidate     candidate, mid
     attachAudio            track, input, output, inputVolume, outputVolume
@@ -1749,6 +1750,19 @@ a missing key comes back as a `calls <Warning>` on that call; one with no
 Devices stay yours, so `audio` and `video` enumerate empty. An offer is
 answered by the `setLocalDescription` that follows it, and your SDP goes on
 the wire as it stands.
+
+Calls on `host` restart ICE when the frontend says its peer connection can:
+start tacky with `-media-host-restart 1` (the browser build does). Then a pc
+that is up may get, at any time, a second `setRemoteDescription` with
+`sdpType` `offer` (the peer moved the call to a new path: answer it with the
+`setLocalDescription` that follows, as for the first), a `setLocalDescription`
+with `iceRestart: 1` (call `restartIce()` and make the offer), the
+`setRemoteDescription` `answer` to that, or a `setLocalDescription` with
+`sdpType` `rollback` (drop the offer you just made, without reporting a
+description). Without the option none of these is sent, and a call whose path
+fails ends. Never renegotiate on your own (`negotiationneeded`): tacky decides
+when a description is made. Report `disconnected` and `failed` as your stack
+does, and do not close the peer connection on either.
 
 ## audio
 

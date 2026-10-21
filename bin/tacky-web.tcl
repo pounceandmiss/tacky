@@ -20,7 +20,8 @@ proc tacky_native_emit {json} {
 }
 
 proc tacky_web_start {} {
-    set args {-media-backend host -transport websocket}
+    # media-host.js restarts ICE (restartIce, rollback, re-offers).
+    set args {-media-backend host -media-host-restart 1 -transport websocket}
     if {[info exists ::env(TACKY_TRANSIENT)] && $::env(TACKY_TRANSIENT)} {
         lappend args -transient 1
     } else {

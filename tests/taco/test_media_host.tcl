@@ -190,3 +190,26 @@ test media-host-event-needs-the-host-backend \
         catch {tacky media hostEvent -pc p1 -type connectionState -state failed} err
         set err
     } -result {media hostEvent: the host backend is not open}
+
+# -- ICE restart --------------------------------------------------------------
+
+test media-host-no-restart-by-default {an app that did not say it restarts ICE is not asked to} \
+    {*}$host_env -body {
+        dict filter [::tacky::media capabilities] key iceRestart restartIce rollback
+    } -result {iceRestart 0 restartIce 0 rollback 0}
+
+test media-host-restart-opt-in {an app opened with -ice-restart gets restart offers and rollbacks} -setup {
+    host_setup
+    ::tacky::media open host -emit host_sink -ice-restart 1
+    ::tacky::media createPeer p1 -command host_pc_sink
+    set ::host_cmds {}
+} -cleanup {
+    ::tacky::media::host::Open -ice-restart 0
+    host_cleanup
+} -body {
+    ::tacky::media setLocalDescription p1 -type offer -ice-restart 1
+    ::tacky::media setLocalDescription p1 -type rollback
+    ::tacky::media setLocalDescription p1 -type answer
+    list [dict filter [::tacky::media capabilities] key iceRestart restartIce rollback] \
+        $::host_cmds
+} -result {{iceRestart 1 restartIce 1 rollback 1} {{-op setLocalDescription -pc p1 -sdp {} -sdpType offer -iceRestart 1} {-op setLocalDescription -pc p1 -sdp {} -sdpType rollback} {-op setLocalDescription -pc p1 -sdp {} -sdpType answer}}}
