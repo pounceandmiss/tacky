@@ -1456,6 +1456,7 @@ source: the `url` you passed, or the `path` when you passed no `url`.
     calls list {}                                                  -> [call_row]
 
     call_row = {sid: string, peer: string, direction: string, state: string,
+                connection: string,
                 peer_ringing: bool, group: string, video_local: bool,
                 video_remote: bool, verified: bool, fingerprint: string,
                 active_since: int}
@@ -1480,7 +1481,9 @@ the room JID when the call is one of a [group call](#groupcall)'s sessions, else
 Group-call sessions are listed like any call, so a restarted frontend finds them, but they
 raise `groupcall <Session>` instead of `<Outgoing>`/`<Incoming>`.
 `verified` and `fingerprint` are as in the last `<Verified>`. `active_since` is
-the `since` of the call's `<Active>`, `0` until then.
+the `since` of the call's `<Active>`, `0` until then. `connection` is the media
+path: `connecting` until it first connects, then `connected`, `interrupted`
+(it stopped, and may come back) or `reconnecting`, as in `<Connection>`.
 
 Events:
 
@@ -1492,6 +1495,7 @@ Events:
     calls <Missed>       {sid: string, from: string, video: bool, reason: string}
     calls <Failed>       {sid: string, reason: string}
     calls <Warning>      {sid: string, reason: string}
+    calls <Connection>   {sid: string, state: string}
     calls <Verified>     {sid: string, verified: bool, fingerprint: string}
     calls <VideoTrack>   {sid: string, mid: string, direction: string} & frame_stream
     calls <VideoPreview> {sid: string, direction: string}            & frame_stream
@@ -1505,6 +1509,17 @@ informational and doesn't end anything.
 `<Active>`'s `since` is when media first connected, in microseconds; an ICE
 restart can emit `<Active>` again with the same `since`.
 
+`<Connection>` is the media path of a call that was up: `interrupted` when it
+has been down for a couple of seconds (a blip shorter than that is never
+reported), `reconnecting` while it is being re-established, and `connected`
+once media flows again. Show it as a banner over the call; the call goes on
+until `<Ended>`/`<Failed>`. An interruption also comes with a `<Warning>`
+saying so, for frontends that predate `<Connection>`.
+
+An answered call that never gets media flowing within a minute fails with
+`<Failed>`; once media has flowed, a lost path is the business of
+`<Connection>` until it either comes back or fails the call.
+
 `<Ended>`'s `reason`:
 
 | reason | |
@@ -1516,7 +1531,7 @@ restart can emit `<Active>` again with the same `since`.
 | `elsewhere` | another of your devices answered or declined |
 | `timeout` | nobody answered within a minute |
 | `replaced` | your call and the peer's crossed, and theirs won |
-| `reset` | a fresh stream ended every call |
+| `reset` | the stream to the server was lost for good and its replacement could not carry the call: a call still being set up, one whose media was not flowing, or one whose new stream has another resource |
 
 `<Missed>` is a ring nobody here answered: `retracted` or `timeout` (after its
 `<Ended>`), or `busy`, turned away while another call was up, or `proxy`,

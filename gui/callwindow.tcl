@@ -149,6 +149,7 @@ snit::widgetadaptor callwindow {
             <Ended>         OnEnded
             <Failed>        OnFailed
             <Warning>       OnWarning
+            <Connection>    OnConnection
             <Verified>      OnVerified
             <VideoTrack>    OnVideoTrack
             <VideoPreview>  OnVideoPreview
@@ -211,6 +212,19 @@ snit::widgetadaptor callwindow {
 
     method OnWarning {ev} {
         set warningVar [dict get $ev -reason]
+    }
+
+    # The media path of a call that was up dropped, or came back. Back up,
+    # the interruption's warning has nothing left to say.
+    method OnConnection {ev} {
+        switch -- [dict get $ev -state] {
+            interrupted  { set statusVar "Connection lost..." }
+            reconnecting { set statusVar "Reconnecting..." }
+            connected    {
+                set statusVar "Connected"
+                set warningVar ""
+            }
+        }
     }
 
     method OnVerified {ev} {

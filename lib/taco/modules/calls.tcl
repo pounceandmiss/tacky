@@ -127,13 +127,42 @@
 # participant here. Such a session skips JMI (room presence is the ring),
 # carries the room JID as `group`, and emits no <Outgoing>/<Incoming>.
 #
-# Per-call state ([dict get $Calls $sid] dict):
+# State. A call runs two machines, each one field of its dict, and every
+# change of either goes through Go, which refuses a move its table
+# (SESSION_NEXT, TRANSPORT_NEXT) does not list:
+#
+#   state (the session, signalling):
+#     proposed   we rang the peer (JMI propose), no answer yet
+#     ringing    the peer rings us, we have not answered
+#     proceeded  answered (JMI proceed); a group leg starts here
+#     pending    a session-initiate went out or came in, not yet accepted
+#     established both descriptions are applied: the session is up
+#
+#   transport (the media path, whatever the backend):
+#     idle        no path yet
+#     checking    ICE is looking for one
+#     connected   media flows
+#     interrupted it flowed and stopped; the backend may still recover
+#
+# Neither has a terminal state: every end goes through Finish, which says
+# so on the wire and on the bus and drops the call in the same frame. So
+# `list` never shows an ended call. The inbound Jingle actions a session
+# takes in each state are a table too (JINGLE_IN); one it does not take is
+# refused there, before any handler runs.
+#
+# Per-call fields ([dict get $Calls $sid] dict):
 #   peer       : remote JID (bare until proceeded, then full)
 #   initiator  : 1 for caller, 0 for callee
 #   group      : room JID for a group-call session, "" for a 1:1 call
-#   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
+#   state, transport : the two machines above
+#   jingle     : 1 once a session-initiate went out or came in; the peer
+#     then knows the session and is told it ended with session-terminate
+#   self_jid   : our full JID when the session started; a fresh stream
+#     that binds another one cannot carry the session
 #   peer_ringing : 1 once a peer device answered <ringing> (caller side);
 #     a field, not a state, because the state machine does not move for it
+#   ever_connected : 1 once the transport first reached connected
+#   setup_timer : SetupTimeout's after token from proceeded until then
 #   pc         : tacky::media pc handle (-1 = not created)
 #   track      : media handle of the audio track (-1 = not added/received)
 #   pending_remote_candidates : list of [list mid candidate], present
@@ -182,6 +211,68 @@ snit::type taco_calls {
     # XEP-0353 sets no limit: a caller that never retracts rings forever.
     typevariable RING_TIMEOUT_MS 60000
 
+    # Answered, a call has this long to first reach a media path: a
+    # session-initiate that never comes after proceed, or an accept that
+    # never comes after it, would otherwise hold the call forever. Once
+    # media has flowed it no longer applies; a path lost later is the
+    # transport machine's to recover or fail.
+    typevariable SETUP_TIMEOUT_MS 60000
+
+    # The session machine: state -> the states it may move to.
+    typevariable SESSION_NEXT {
+        proposed    {proceeded}
+        ringing     {proceeded}
+        proceeded   {pending}
+        pending     {established}
+        established {}
+    }
+
+    # The transport machine, likewise. interrupted -> checking is a path
+    # the backend is looking for again by itself (`connecting` after it
+    # had connected).
+    typevariable TRANSPORT_NEXT {
+        idle        {checking connected interrupted}
+        checking    {connected interrupted}
+        connected   {interrupted checking}
+        interrupted {connected checking}
+    }
+
+    # What a session in each state does with an inbound Jingle action from
+    # its peer: handle, or refuse with that IQ error. An action not named
+    # for a state takes that state's `*`. The handlers check what the table
+    # cannot see (the role, whether a pc is up yet).
+    typevariable JINGLE_IN {
+        proposed {
+            session-terminate handle
+            session-info      handle
+            *                 out-of-order
+        }
+        ringing {
+            session-terminate handle
+            session-info      handle
+            transport-info    handle
+            *                 out-of-order
+        }
+        proceeded {
+            session-accept    out-of-order
+            *                 handle
+        }
+        pending {
+            session-accept    handle
+            session-terminate handle
+            transport-info    handle
+            *                 handle
+        }
+        established {
+            session-initiate  out-of-order
+            *                 handle
+        }
+    }
+
+    # Moves Go refused, newest last. A refused move is a bug in this file;
+    # the tests check this stays empty.
+    typevariable IllegalMoves {}
+
     # The XEP-0166 conditions that say a session broke rather than ended:
     # a peer ending with one of them failed, and the call fails here too.
     typevariable FAULTS {
@@ -226,6 +317,7 @@ snit::type taco_calls {
             $self TeardownMedia $sid
             $self CancelInterrupted $sid
             $self StopRingTimer $sid
+            $self StopSetupTimer $sid
         }
     }
 
@@ -287,10 +379,105 @@ snit::type taco_calls {
     #                has not reported the attach failed
     method NewCallDict {peer initiator state wantVideo {group ""}} {
         return [dict create \
-            peer $peer initiator $initiator state $state peer_ringing 0 \
-            group $group pc -1 track -1 \
+            peer $peer initiator $initiator state $state transport idle \
+            jingle 0 self_jid [$client cget -jid] peer_ringing 0 \
+            ever_connected 0 group $group pc -1 track -1 \
             video_local $wantVideo video_remote 0 \
             vtrack -1 vsend 0 vrecv 0 active_since 0]
+    }
+
+    # Move $sid's $machine (state or transport) to $to. A move its table
+    # does not list is refused, logged and kept in IllegalMoves; staying
+    # where it is is no move. Returns 1 if it moved.
+    method Go {sid machine to} {
+        set from [dict get $Calls $sid $machine]
+        if {$from eq $to} { return 0 }
+        set table [expr {$machine eq "state" ? $SESSION_NEXT : $TRANSPORT_NEXT}]
+        if {![dict exists $table $from] || $to ni [dict get $table $from]} {
+            jlog error "call $sid: $machine $from -> $to is not a move"
+            lappend IllegalMoves [list $sid $machine $from $to]
+            return 0
+        }
+        dict set Calls $sid $machine $to
+        if {$machine eq "state" && $to eq "proceeded"} {
+            $self StopRingTimer $sid
+            $self StartSetupTimer $sid
+        }
+        return 1
+    }
+
+    # The inbound Jingle table's word for $action in $sid's state.
+    method JingleIn {sid action} {
+        set row [dict get $JINGLE_IN [dict get $Calls $sid state]]
+        if {[dict exists $row $action]} { return [dict get $row $action] }
+        return [dict get $row *]
+    }
+
+    # The state `list` shows, as it always has: the session's until it is
+    # pending, then the media path's.
+    method PublicState {call} {
+        set state [dict get $call state]
+        if {$state in {proposed ringing}} { return $state }
+        if {$state eq "proceeded" && [dict get $call transport] eq "idle"} {
+            return $state
+        }
+        switch -- [dict get $call transport] {
+            idle      { return new }
+            connected { return active }
+            default   { return connecting }
+        }
+    }
+
+    # The end of every call. Drops the media, tells the peer as far as it
+    # knows the call, reports it once, and forgets it:
+    #   $event   Ended or Failed
+    #   $reason  <Ended>'s -reason, or <Failed>'s text
+    #   $wire    the XEP-0166 condition to terminate the session with, or
+    #            "" when the peer already knows (it ended it) or there is
+    #            no session to end (RetractProposed and the JMI paths
+    #            write their own message)
+    # A Jingle session that existed also gets JMI <finish/> (XEP-0353
+    # §3.5), so every device of both sides learns the call is over.
+    method Finish {sid event reason {wire ""}} {
+        if {![dict exists $Calls $sid]} return
+        set call [dict get $Calls $sid]
+        set peer [dict get $call peer]
+        $self TeardownMedia $sid
+        if {$wire ne ""} {
+            $self SendTerminate $sid $peer $wire
+        }
+        if {[dict get $call jingle] && [dict get $call group] eq ""
+                && [jid resource $peer] ne ""} {
+            set why [expr {$event eq "Failed" ? "connectivity-error" : "success"}]
+            if {$wire ne ""} { set why $wire }
+            $client write [$self BuildJmiFinish $peer $sid $why]
+        }
+        if {$event eq "Failed"} {
+            jlog warn "call $sid with $peer failed: $reason"
+        }
+        $client emit calls <$event> -sid $sid -reason $reason
+        $self Cleanup $sid
+    }
+
+    # Answered: the call has SETUP_TIMEOUT_MS to first connect.
+    method StartSetupTimer {sid} {
+        if {[dict exists $Calls $sid setup_timer]} return
+        dict set Calls $sid setup_timer \
+            [after $SETUP_TIMEOUT_MS [mymethod SetupTimeout $sid]]
+    }
+
+    method StopSetupTimer {sid} {
+        if {![dict exists $Calls $sid setup_timer]} return
+        after cancel [dict get $Calls $sid setup_timer]
+        dict unset Calls $sid setup_timer
+    }
+
+    method SetupTimeout {sid} {
+        if {![dict exists $Calls $sid setup_timer]} return
+        dict unset Calls $sid setup_timer
+        if {[dict get $Calls $sid ever_connected]} return
+        $self Finish $sid Failed \
+            "no media path within [expr {$SETUP_TIMEOUT_MS / 1000}] s" timeout
     }
 
     # One group-call session to a participant's full JID, straight to media and
@@ -305,6 +492,7 @@ snit::type taco_calls {
         set wantVideo [expr {$opts(-video) ? 1 : 0}]
         dict set Calls $sid [$self NewCallDict $opts(-peer) 1 proceeded \
             $wantVideo [jid norm $opts(-room)]]
+        $self StartSetupTimer $sid
         $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
         return $sid
     }
@@ -323,8 +511,7 @@ snit::type taco_calls {
             set peer [dict get $call peer]
             $client write [$self BuildJmiMessage $peer proceed $opts(-sid) 0 0 \
                 [$self AnnounceDevice $opts(-sid)]]
-            dict set Calls $opts(-sid) state proceeded
-            $self StopRingTimer $opts(-sid)
+            $self Go $opts(-sid) state proceeded
             return
         }
         # If session-initiate already landed, HandleSessionInitiate did
@@ -339,10 +526,7 @@ snit::type taco_calls {
         set call [dict get $Calls $opts(-sid)]
         set state [dict get $call state]
         if {$state eq "ringing"} {
-            set peer [dict get $call peer]
-            $client write [$self BuildJmiMessage $peer reject $opts(-sid) 0]
-            $client emit calls <Ended> -sid $opts(-sid) -reason declined
-            $self Cleanup $opts(-sid)
+            $self DeclineRinging $opts(-sid)
             return
         }
         if {$state eq "proposed"} {
@@ -357,20 +541,31 @@ snit::type taco_calls {
         array set opts $args
         if {![dict exists $Calls $opts(-sid)]} return
         set call [dict get $Calls $opts(-sid)]
-        if {[dict get $call state] eq "proposed"} {
-            $self RetractProposed $opts(-sid) [dict get $call peer] retracted
-            return
+        switch -- [dict get $call state] {
+            proposed {
+                $self RetractProposed $opts(-sid) [dict get $call peer] retracted
+                return
+            }
+            ringing {
+                # Hanging up on a ring is declining it: there is no session
+                # to terminate yet.
+                $self DeclineRinging $opts(-sid)
+                return
+            }
         }
         $self EndSession $opts(-sid) [dict get $call peer] $opts(-reason)
+    }
+
+    # Turn down a call ringing here (XEP-0353 <reject/>).
+    method DeclineRinging {sid} {
+        $client write [$self BuildJmiMessage [dict get $Calls $sid peer] reject $sid 0]
+        $self Finish $sid Ended declined
     }
 
     # End a session that reached Jingle: drop the media, tell the peer, and
     # report it gone.
     method EndSession {sid peer reason} {
-        $self TeardownMedia $sid
-        $self SendTerminate $sid $peer $reason
-        $client emit calls <Ended> -sid $sid -reason hangup
-        $self Cleanup $sid
+        $self Finish $sid Ended hangup $reason
     }
 
     # RingTimeout rechecks the state: it can fire in the same turn as an
@@ -400,9 +595,8 @@ snit::type taco_calls {
             }
             ringing {
                 $client write [$self BuildJmiReject $peer $sid timeout]
-                $client emit calls <Ended> -sid $sid -reason timeout
+                $self Finish $sid Ended timeout
                 $self EmitMissed $sid $peer [dict get $call video_remote] timeout
-                $self Cleanup $sid
             }
         }
     }
@@ -415,13 +609,7 @@ snit::type taco_calls {
     # Fail a session that reached Jingle: emit <Failed>, drop the media and
     # terminate with $jingleReason.
     method FailCall {sid reason jingleReason} {
-        if {![dict exists $Calls $sid]} return
-        set peer [dict get $Calls $sid peer]
-        jlog warn "call $sid with $peer failed: $reason"
-        $client emit calls <Failed> -sid $sid -reason $reason
-        $self TeardownMedia $sid
-        $self SendTerminate $sid $peer $jingleReason
-        $self Cleanup $sid
+        $self Finish $sid Failed $reason $jingleReason
     }
 
     # =========================================================================
@@ -574,7 +762,8 @@ snit::type taco_calls {
                 sid          $sid \
                 peer         [jid bare [dict get $call peer]] \
                 direction    $direction \
-                state        [dict get $call state] \
+                state        [$self PublicState $call] \
+                connection   [$self ConnectionState $call] \
                 peer_ringing [dict get $call peer_ringing] \
                 group        [dict get $call group] \
                 video_local  [dict get $call video_local] \
@@ -820,6 +1009,16 @@ snit::type taco_calls {
         set jingle [::jinglesdp::from_sdp $sdp \
             -creator initiator -initiator $isInitiator]
 
+        # Only the session's own descriptions go out as such: the caller's
+        # first offer from proceeded, the callee's answer from pending. Any
+        # other is a backend speaking out of turn and goes nowhere.
+        set state [dict get $call state]
+        if {!($sdpType eq "offer" && $isInitiator && $state eq "proceeded")
+                && !($sdpType eq "answer" && !$isInitiator && $state eq "pending")} {
+            jlog warn "call $sid: a local $sdpType in $state is not sent"
+            return
+        }
+
         if {$sdpType eq "offer"} {
             dict set jingle attrs action session-initiate
             dict set jingle attrs sid $sid
@@ -831,11 +1030,13 @@ snit::type taco_calls {
             }
             # Sent: a crossing initiate is now settled by sid.
             dict set Calls $sid jingle 1
+            $self Go $sid state pending
             $self SendDescription $sid $jingle OnInitiateAck
         } elseif {$sdpType eq "answer"} {
             dict set jingle attrs action session-accept
             dict set jingle attrs sid $sid
             dict set jingle attrs responder $me
+            $self Go $sid state established
             $self SendDescription $sid $jingle OnAcceptAck
         }
     }
@@ -961,10 +1162,8 @@ snit::type taco_calls {
             # <tie-break/>: the peer kept its own initiate; not a refusal.
             set lost [expr {[xsearch $stanza error tie-break \
                 -ns urn:xmpp:jingle:errors:1 -get node] ne ""}]
-            $client emit calls <Failed> -sid $sid -reason [expr {$lost
+            $self Finish $sid Failed [expr {$lost
                 ? "session-initiate lost a tie-break" : "session-initiate rejected"}]
-            $self TeardownMedia $sid
-            $self Cleanup $sid
         }
     }
 
@@ -974,62 +1173,77 @@ snit::type taco_calls {
         }
     }
 
-    # Backend state strings: new, connecting, connected, disconnected,
-    # failed, closed. The internal `state` dict field tracks the full
-    # lifecycle; only the connected/closed/failed transitions are surfaced
-    # as <Active>/<Ended>/<Failed>. new/connecting are backend internals,
-    # too short-lived to be useful to a GUI, and intentionally not emitted.
-    # The pre-media transitions (<Outgoing>, <Incoming>, <Ringing>) are
-    # emitted from the JMI handlers, not from here.
+    # The backend's connectionState drives the transport machine:
+    #
+    #   new          nothing yet
+    #   connecting   idle -> checking; after a connect, the backend looking
+    #                for a path again by itself (checking)
+    #   connected    -> connected: <Active> (again after an interruption,
+    #                with the first connect's -since)
+    #   disconnected -> interrupted: consent lost, which the backend may
+    #                recover from; said once it lasts DISCONNECT_GRACE_MS,
+    #                since a hanging-up peer drops ICE first and its
+    #                session-terminate lands inside that
+    #   failed       the path is gone: the call fails
+    #   closed       the pc closed under us: the call ends
+    #
+    # The pre-media events (<Outgoing>, <Incoming>, <Ringing>) come from the
+    # JMI handlers, not from here.
     method OnPcState {sid state} {
-        # ICE lost consent. The backend recovers or moves on to failed by
-        # itself, so warn if it lasts and leave the call running.
-        if {$state eq "disconnected"} {
-            if {[dict exists $Calls $sid]
-                    && ![dict exists $Calls $sid disconnect_timer]} {
-                dict set Calls $sid disconnect_timer \
-                    [after $DISCONNECT_GRACE_MS [mymethod WarnInterrupted $sid]]
-            }
-            return
-        }
         # A late event for a call already gone must not bring it back.
         if {![dict exists $Calls $sid]} return
-        $self CancelInterrupted $sid
-        set mapped [$self MapPcState $state]
-        if {$mapped eq ""} return
-        dict set Calls $sid state $mapped
-        switch -- $mapped {
-            new        -
-            connecting { return }
-            active     {
-                # Kept across an ICE restart.
-                if {[dict get $Calls $sid active_since] == 0} {
-                    dict set Calls $sid active_since [clock microseconds]
-                }
-                $client emit calls <Active> -sid $sid \
-                    -since [dict get $Calls $sid active_since]
+        set transport [dict get $Calls $sid transport]
+        switch -- $state {
+            new {}
+            connecting {
+                $self Go $sid transport checking
             }
-            ended      { $client emit calls <Ended> -sid $sid -reason hangup }
-            failed     {
-                $client emit calls <Failed> -sid $sid \
-                    -reason "media path failed (ICE/DTLS)"
+            connected {
+                $self CancelInterrupted $sid
+                $self Go $sid transport connected
+                $self OnConnected $sid
+            }
+            disconnected {
+                if {[$self Go $sid transport interrupted]} {
+                    dict set Calls $sid disconnect_timer \
+                        [after $DISCONNECT_GRACE_MS [mymethod WarnInterrupted $sid]]
+                }
+            }
+            failed {
+                # The peer is told in Jingle: a peer that ends a session
+                # only on session-terminate (another.im's Android app)
+                # otherwise keeps the call up, its video frozen.
+                $self Finish $sid Failed "media path failed (ICE/DTLS)" \
+                    connectivity-error
+            }
+            closed {
+                $self Finish $sid Ended hangup success
             }
         }
-        if {$mapped in {ended failed}} {
-            # The peer is told in Jingle, as FailCall does: a peer that ends
-            # a session only on session-terminate (another.im's Android app)
-            # otherwise keeps the call up, its video frozen.
-            set peer [dict get $Calls $sid peer]
-            $self TeardownMedia $sid
-            $self SendTerminate $sid $peer \
-                [expr {$mapped eq "failed" ? "connectivity-error" : "success"}]
-            $self Cleanup $sid
+    }
+
+    # Media flows: the first time it stamps the call and ends the setup
+    # timer; every time it is <Active>, with the first stamp, and a
+    # <Connection> that takes back an interruption the GUI was told of.
+    method OnConnected {sid} {
+        if {![dict get $Calls $sid ever_connected]} {
+            dict set Calls $sid ever_connected 1
+            dict set Calls $sid active_since [clock microseconds]
+            $self StopSetupTimer $sid
+        }
+        $client emit calls <Active> -sid $sid \
+            -since [dict get $Calls $sid active_since]
+        if {[dict exists $Calls $sid told_interrupted]} {
+            dict unset Calls $sid told_interrupted
+            $client emit calls <Connection> -sid $sid -state connected
         }
     }
 
     method WarnInterrupted {sid} {
         if {![dict exists $Calls $sid disconnect_timer]} return
         dict unset Calls $sid disconnect_timer
+        dict set Calls $sid told_interrupted 1
+        $client emit calls <Connection> -sid $sid -state interrupted
         $client emit calls <Warning> -sid $sid -reason "media path interrupted"
     }
 
@@ -1039,15 +1253,17 @@ snit::type taco_calls {
         dict unset Calls $sid disconnect_timer
     }
 
-    method MapPcState {state} {
-        switch -- $state {
-            new          { return new }
-            connecting   { return connecting }
-            connected    { return active }
-            failed       { return failed }
-            closed       { return ended }
-            disconnected { return "" }
-            default      { return "" }
+    # The media path as `list` and <Connection> name it: connecting until
+    # it first connects, then connected, interrupted, or reconnecting while
+    # the backend checks for a path again.
+    method ConnectionState {call} {
+        set transport [dict get $call transport]
+        if {![dict get $call ever_connected]} {
+            return [expr {$transport eq "connected" ? "connected" : "connecting"}]
+        }
+        switch -- $transport {
+            checking { return reconnecting }
+            default  { return $transport }
         }
     }
 
@@ -1116,12 +1332,8 @@ snit::type taco_calls {
                 # session-initiate is already acked — the peer thinks the
                 # call is live, so terminate rather than leave it to
                 # time out.
-                set peer [dict get $Calls $sid peer]
-                $client emit calls <Failed> -sid $sid \
-                    -reason "remote offer rejected: $reason"
-                $self TeardownMedia $sid
-                $self SendTerminate $sid $peer general-error
-                $self Cleanup $sid
+                $self Finish $sid Failed "remote offer rejected: $reason" \
+                    general-error
                 return
             }
             addRemoteCandidate {
@@ -1163,10 +1375,11 @@ snit::type taco_calls {
                 return
             }
         }
+        # A pc the backend gave up on: the peer is told, as for any
+        # failure, or it keeps a call nobody is on.
         if {[dict exists $ev fatal] && [dict get $ev fatal]} {
-            $client emit calls <Failed> -sid $sid -reason $reason
-            $self TeardownMedia $sid
-            $self Cleanup $sid
+            $self Finish $sid Failed $reason \
+                [expr {[dict get $Calls $sid jingle] ? "general-error" : ""}]
             return
         }
         $client emit calls <Warning> -sid $sid -reason $reason
@@ -1262,8 +1475,7 @@ snit::type taco_calls {
             lappend beaten $ours
         }
         foreach ours $beaten {
-            $client emit calls <Ended> -sid $ours -reason replaced
-            $self Cleanup $ours
+            $self Finish $ours Ended replaced
         }
 
         # One call at a time: any other, group sessions included, makes
@@ -1310,8 +1522,7 @@ snit::type taco_calls {
         # (another device of ours answered): drop our ringing state.
         if {$state eq "ringing" && [jid bare $from] eq $myBare \
                 && $from ne $myJid} {
-            $client emit calls <Ended> -sid $sid -reason elsewhere
-            $self Cleanup $sid
+            $self Finish $sid Ended elsewhere
             return
         }
         # We're the original caller: latch full JID, then fetch the
@@ -1320,8 +1531,7 @@ snit::type taco_calls {
         if {$state eq "proposed" && [dict get $call initiator]} {
             if {![$self PeerMatches $sid $from]} return
             dict set Calls $sid peer $from
-            dict set Calls $sid state proceeded
-            $self StopRingTimer $sid
+            $self Go $sid state proceeded
             $self NotePeerDevice $sid \
                 [xsearch $stanza proceed -ns urn:xmpp:jingle-message:0 -get node]
             $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
@@ -1367,8 +1577,7 @@ snit::type taco_calls {
         # we were ringing — drop locally.
         if {$state eq "ringing" && [jid bare $from] eq $myBare \
                 && $from ne $myJid} {
-            $client emit calls <Ended> -sid $sid -reason elsewhere
-            $self Cleanup $sid
+            $self Finish $sid Ended elsewhere
             return
         }
         # Caller side: declined, busy, timed out, or a tie-break.
@@ -1384,19 +1593,26 @@ snit::type taco_calls {
                     timeout { set why timeout }
                 }
             }
-            $client emit calls <Ended> -sid $sid -reason $why
-            $self Cleanup $sid
+            $self Finish $sid Ended $why
         }
     }
 
     method HandleJmiRetract {stanza sid from} {
         if {![$self PeerMatches $sid $from]} return
         set call [dict get $Calls $sid]
-        # Caller cancelled before we proceeded.
-        if {[dict get $call state] eq "ringing"} {
-            $client emit calls <Ended> -sid $sid -reason retracted
-            $self EmitMissed $sid $from [dict get $call video_remote] retracted
-            $self Cleanup $sid
+        switch -- [dict get $call state] {
+            ringing {
+                # Caller cancelled before we answered.
+                $self Finish $sid Ended retracted
+                $self EmitMissed $sid $from [dict get $call video_remote] retracted
+            }
+            proceeded {
+                # Answered, but the caller gave up before its
+                # session-initiate (XEP-0353 allows a retract until then).
+                if {![dict get $call initiator] && ![dict get $call jingle]} {
+                    $self Finish $sid Ended retracted
+                }
+            }
         }
     }
 
@@ -1445,6 +1661,16 @@ snit::type taco_calls {
         }]
     }
 
+    # <finish/> with a XEP-0166 condition (XEP-0353 §3.5).
+    method BuildJmiFinish {to sid condition} {
+        return [j message -to $to -type chat {
+            j finish -ns urn:xmpp:jingle-message:0 -id $sid {
+                j reason -ns urn:xmpp:jingle:1 { j $condition }
+            }
+            j store -ns urn:xmpp:hints
+        }]
+    }
+
     method BuildJmiTieBreak {to sid} {
         return [j message -to $to -type chat {
             j reject -ns urn:xmpp:jingle-message:0 -id $sid {
@@ -1477,6 +1703,17 @@ snit::type taco_calls {
         set sid [xsearch $jingle -get @sid]
         set from [xsearch $stanza -get @from]
 
+        # A known session's peer is held to the table: what the session
+        # does not take in its state is refused before any handler. A
+        # session-initiate is the handler's to judge, since it may open
+        # the session or cross one of ours.
+        if {$action ne "session-initiate" && [$self PeerMatches $sid $from]} {
+            set word [$self JingleIn $sid $action]
+            if {$word ne "handle"} {
+                $self IqError $stanza $word
+                return
+            }
+        }
         switch -- $action {
             session-initiate  { $self HandleSessionInitiate $stanza $jingle $sid $from }
             session-accept    { $self HandleSessionAccept   $stanza $jingle $sid $from }
@@ -1558,7 +1795,7 @@ snit::type taco_calls {
             if {$cmp == 0} {
                 set cmp [string compare [jid norm $from] [jid norm [$client cget -jid]]]
             }
-            if {[dict exists $Calls $ours jingle] && $cmp > 0} {
+            if {[dict get $Calls $ours jingle] && $cmp > 0} {
                 $self IqError $stanza conflict tie-break
                 return
             }
@@ -1600,13 +1837,13 @@ snit::type taco_calls {
         # for the peer as well.
         if {[catch {::jinglesdp::to_sdp $jingle -initiator 1} sdp]} {
             $self IqError $stanza bad-request
-            $client emit calls <Failed> -sid $sid -reason "bad offer: $sdp"
-            $self Cleanup $sid
+            $self Finish $sid Failed "bad offer: $sdp"
             return
         }
         jlog debug "SDP offer from $from (sid=$sid)\n[jlog_redact_sdp $sdp]"
         dict set Calls $sid peer $from
-        dict set Calls $sid state new
+        dict set Calls $sid jingle 1
+        $self Go $sid state pending
         $self AckIq $stanza
         # Fetch ICE servers (XEP-0215) before standing up the pc.
         # StartIncomingMedia drives the rest in the extdisco callback.
@@ -1704,6 +1941,9 @@ snit::type taco_calls {
             return
         }
         dict set Calls $sid remote_set 1
+        if {[dict get $Calls $sid initiator]} {
+            $self Go $sid state established
+        }
         $self AckIq $stanza
         $self DrainPendingCandidates $sid $pc
     }
@@ -1762,14 +2002,11 @@ snit::type taco_calls {
     # the XEP-0166 condition $reason: one of FAULTS fails the call here
     # too, anything else ends it.
     method PeerEnded {sid reason} {
-        $self TeardownMedia $sid
         if {$reason in $FAULTS} {
-            $client emit calls <Failed> -sid $sid \
-                -reason "the peer reported $reason"
+            $self Finish $sid Failed "the peer reported $reason"
         } else {
-            $client emit calls <Ended> -sid $sid -reason hangup
+            $self Finish $sid Ended hangup
         }
-        $self Cleanup $sid
     }
 
     # =========================================================================
@@ -1796,6 +2033,7 @@ snit::type taco_calls {
         dict set Calls $sid [$self NewCallDict $from 0 proceeded \
             [expr {$wantVideo ? 1 : 0}] [jid norm $room]]
         dict set Calls $sid video_remote $hasVideo
+        $self StartSetupTimer $sid
         return 1
     }
 
@@ -1894,19 +2132,29 @@ snit::type taco_calls {
     # session to terminate yet, so XEP-0353 wants a retract.
     method RetractProposed {sid peer why} {
         $client write [$self BuildJmiMessage $peer retract $sid 0]
-        $client emit calls <Ended> -sid $sid -reason $why
-        $self Cleanup $sid
+        $self Finish $sid Ended $why
     }
 
-    # A fresh (non-resumed) stream invalidates every sid we hold: nothing can
-    # route back to a session that died with the old stream. Resumption never
-    # lands here, and a plain disconnect is deliberately left alone - the
-    # media path is peer to peer and can outlive the outage.
+    # A fresh (non-resumed) stream. Signalling for a session is addressed to
+    # our full JID, so a session survives only where the new stream bound
+    # the same one, and only if it is worth keeping: up, with media
+    # flowing, since the media path is peer to peer and may well have
+    # outlived the outage. Everything else ends: a ring or setup in flight
+    # lost messages we cannot know of, and a group call's legs follow its
+    # room, which the fresh stream left. Resumption never lands here, and a
+    # plain disconnect is deliberately left alone.
     method OnFreshStream {args} {
+        set me [$client cget -jid]
         foreach sid [dict keys $Calls] {
-            $self TeardownMedia $sid
-            $client emit calls <Ended> -sid $sid -reason reset
-            $self Cleanup $sid
+            set call [dict get $Calls $sid]
+            if {[dict get $call state] eq "established"
+                    && [dict get $call transport] eq "connected"
+                    && [dict get $call group] eq ""
+                    && [dict get $call self_jid] eq $me} {
+                jlog inform "call $sid kept across a fresh stream"
+                continue
+            }
+            $self Finish $sid Ended reset
         }
     }
 
@@ -1938,6 +2186,7 @@ snit::type taco_calls {
         if {![dict exists $Calls $sid]} return
         $self CancelInterrupted $sid
         $self StopRingTimer $sid
+        $self StopSetupTimer $sid
         dict unset Calls $sid
     }
 

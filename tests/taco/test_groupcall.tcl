@@ -2443,3 +2443,9 @@ test groupcall-endsession-cancels-idle {a deferred <Left> dies with the module, 
         update
         lsearch -inline [gc_events] {<Left>*}
     } -result {}
+
+# taco_calls keeps every move its tables refuse; group legs are sessions too.
+test groupcall-no-illegal-moves {no session or transport move so far was one taco_calls forbids} \
+    {*}$groupcall_env -body {
+        set ::taco_calls::IllegalMoves
+    } -result {}
