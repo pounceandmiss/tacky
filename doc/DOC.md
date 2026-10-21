@@ -1607,7 +1607,8 @@ to show, `pull` re-sends one.
 - `count` includes you; `participants` is everyone else. `jid` is bare, `""`
   when the room hides it.
 - `leg` is your session with them: `expected`, `connecting`, `active`, or
-  `ended` / `failed` while they stay - nothing redials. Out of a call
+  `ended` / `failed` while they stay; a leg you dialled whose media path
+  failed is dialled again, twice at most. Out of a call
   everyone is `expected`; once you are in, a hidden participant is `failed`.
   `stream` is their video: its frame stream, or on the host backend the
   track `id` the leg's `calls <VideoTrack>` carries.

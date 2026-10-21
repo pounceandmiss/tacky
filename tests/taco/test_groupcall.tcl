@@ -2444,6 +2444,86 @@ test groupcall-endsession-cancels-idle {a deferred <Left> dies with the module, 
         lsearch -inline [gc_events] {<Left>*}
     } -result {}
 
+# -- Legs whose media path broke ------------------------------------------------
+
+set gc_redial_env $groupcall_env
+dict append gc_redial_env -setup "\nset ::taco_groupcall::REDIAL_DELAY_MS 10"
+dict append gc_redial_env -cleanup "\nset ::taco_groupcall::REDIAL_DELAY_MS 2000"
+
+proc gc_wait {ms} {
+    after $ms {set ::gc_waited 1}
+    vwait ::gc_waited
+}
+
+# The sids of every session opened with $nick, in order.
+proc gc_sids_of {nick} {
+    set out {}
+    foreach e [gc_event_args <Session>] {
+        if {[gc_nick_of [dict get $e -peer]] eq $nick} { lappend out [dict get $e -sid] }
+    }
+    return $out
+}
+
+test groupcall-redial-after-path-failure {a leg we dialled whose path failed is dialled again} \
+    {*}$gc_redial_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        set first [gc_sid_of bob]
+        c emit calls <Failed> -sid $first -reason "media path failed (ICE/DTLS)"
+        set failed [dict get [gc_who [gc_state] bob] leg]
+        gc_wait 50
+        set sids [gc_sids_of bob]
+        list $failed [llength $sids] [expr {[lindex $sids end] ne $first}] \
+            [dict get [gc_who [gc_state] bob] leg]
+    } -result {failed 2 1 connecting}
+
+test groupcall-redial-at-most-twice {a leg that keeps failing is dialled again twice, then left failed} \
+    {*}$gc_redial_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        foreach n {1 2 3} {
+            c emit calls <Failed> -sid [lindex [gc_sids_of bob] end] -reason "no media for 60 s"
+            gc_wait 50
+        }
+        list [llength [gc_sids_of bob]] [dict get [gc_who [gc_state] bob] leg]
+    } -result {3 failed}
+
+test groupcall-no-redial-when-refused {a leg the peer refused is not dialled again} \
+    {*}$gc_redial_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c emit calls <Failed> -sid [gc_sid_of bob] -reason "the peer reported general-error"
+        gc_wait 50
+        llength [gc_sids_of bob]
+    } -result 1
+
+test groupcall-no-redial-of-their-leg {a leg the participant dialled is theirs to dial again} \
+    {*}$gc_redial_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_late_peer $ROOM bob $BOB zz-bob
+        set before [llength [gc_sids_of bob]]
+        c emit calls <Failed> -sid zz-bob -reason "media path failed (ICE/DTLS)"
+        gc_wait 50
+        # Ours crossed theirs and lost; theirs failing opens nothing more.
+        list [expr {[llength [gc_sids_of bob]] - $before}] [lindex [gc_sids_of bob] end]
+    } -result {0 zz-bob}
+
+test groupcall-no-redial-after-leaving {a participant who left the call is not dialled again} \
+    {*}$gc_redial_env -body {
+        gc_room [gc_presence bob -jid $BOB -contents [list audio [list $OPUS_111]]]
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        c emit calls <Failed> -sid [gc_sid_of bob] -reason "media path failed (ICE/DTLS)"
+        c.conn feed [gc_presence bob -jid $BOB]
+        gc_wait 50
+        llength [gc_sids_of bob]
+    } -result 1
+
 # taco_calls keeps every move its tables refuse; group legs are sessions too.
 test groupcall-no-illegal-moves {no session or transport move so far was one taco_calls forbids} \
     {*}$groupcall_env -body {
