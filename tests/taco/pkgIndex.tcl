@@ -8,3 +8,4 @@ package ifneeded tacky::mediaconformance 0.1 \
     [list source [file join $dir media_conformance.tcl]]
 package ifneeded tacky::callshelpers 0.1 [list source [file join $dir calls_helpers.tcl]]
 package ifneeded tacky::omemopeer 0.1 [list source [file join $dir omemo_peer.tcl]]
+package ifneeded tacky::callsmachine 0.1 [list source [file join $dir calls_machine_helpers.tcl]]

@@ -49,6 +49,17 @@ proc mockmedia::capabilities {caps} {
     set Caps $caps
 }
 
+proc mockmedia::caps {} {
+    variable Caps
+    return $Caps
+}
+
+# Forget what the backend was asked so far, keeping its state.
+proc mockmedia::reset_log {} {
+    variable Log
+    set Log {}
+}
+
 proc mockmedia::log {} {
     variable Log
     return $Log

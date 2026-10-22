@@ -229,13 +229,29 @@ snit::type taco_calls {
 
     # The transport machine, likewise. interrupted -> checking is a path
     # the backend is looking for again by itself (`connecting` after it
-    # had connected).
+    # had connected); restarting is an ICE restart, ours or the peer's,
+    # under way (see "ICE restart" below).
     typevariable TRANSPORT_NEXT {
         idle        {checking connected interrupted}
-        checking    {connected interrupted}
-        connected   {interrupted checking}
-        interrupted {connected checking}
+        checking    {connected interrupted restarting}
+        connected   {interrupted checking restarting}
+        interrupted {connected checking restarting}
+        restarting  {connected interrupted}
     }
+
+    # ICE restart (XEP-0176 §5.9, as Conversations does it). A path that
+    # stays interrupted this long, or fails, is restarted.
+    typevariable RESTART_AFTER_MS 3000
+    # One restart has this long to connect, counted only while the stream
+    # to the server is up: its signalling cannot travel otherwise.
+    typevariable RESTART_WAIT_MS 15000
+    # Restarts in a row that do not connect, and in all, before the call
+    # is given up.
+    typevariable MAX_RESTART_ATTEMPTS 3
+    typevariable MAX_RESTARTS 8
+    # However it goes, a call whose media has not flowed for this long is
+    # over.
+    typevariable MEDIA_LOSS_MAX_MS 60000
 
     # What a session in each state does with an inbound Jingle action from
     # its peer: handle, or refuse with that IQ error. An action not named
@@ -297,6 +313,7 @@ snit::type taco_calls {
         set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
         $client bus subscribe $self <SessionStart> [mymethod OnFreshStream]
+        $client bus subscribe $self <Resumed> [mymethod OnResumed]
         $client bus subscribe $self <Closing> [mymethod OnClosing]
         $client bus subscribe $self omemo:<TrustChanged> [mymethod OnTrustChanged]
         $client bus subscribe $self omemo:<BlindTrust> [mymethod OnBlindTrust]
@@ -318,6 +335,8 @@ snit::type taco_calls {
             $self CancelInterrupted $sid
             $self StopRingTimer $sid
             $self StopSetupTimer $sid
+            $self CancelRestartWait $sid
+            $self MediaBack $sid
         }
     }
 
@@ -381,7 +400,8 @@ snit::type taco_calls {
         return [dict create \
             peer $peer initiator $initiator state $state transport idle \
             jingle 0 self_jid [$client cget -jid] peer_ringing 0 \
-            ever_connected 0 group $group pc -1 track -1 \
+            ever_connected 0 restarts 0 restart_attempts 0 \
+            group $group pc -1 track -1 \
             video_local $wantVideo video_remote 0 \
             vtrack -1 vsend 0 vrecv 0 active_since 0]
     }
@@ -1003,6 +1023,19 @@ snit::type taco_calls {
         if {[regexp -line {^a=ice-pwd:(\S+)} $sdp -> pwd]} {
             dict set Calls $sid pwd $pwd
         }
+        # The DTLS role we took. An offer says actpass whoever made it -
+        # our restart offer too - so only an answer's active/passive is
+        # the role, and it lasts the session (RFC 9429 §5.3.3).
+        if {[regexp -line {^a=setup:(active|passive)} $sdp -> setup]} {
+            dict set Calls $sid local_setup $setup
+        }
+
+        # A description of an ICE restart goes out as one, never as the
+        # session's own.
+        if {[dict get $call transport] eq "restarting"} {
+            $self OnRestartDescription $sid $sdp $sdpType
+            return
+        }
 
         # SDP->Jingle (creator stays "initiator" on both sides — the
         # responder echoes the initiator's content names verbatim).
@@ -1108,8 +1141,10 @@ snit::type taco_calls {
     # group's audio MID.
     method OnLocalCandidate {sid cand mid} {
         set call [dict get $Calls $sid]
-        # Hold candidates until the description is sent.
-        if {[dict exists $call describing]} {
+        # Hold candidates until the description is sent, or our restart's
+        # credentials are taken: one carrying the new credentials before
+        # them would read as an answer to a restart nobody offered.
+        if {[dict exists $call describing] || [dict exists $call restart_hold]} {
             dict set Calls $sid held_candidates [linsert \
                 [dict getdef $call held_candidates {}] end [list $cand $mid]]
             return
@@ -1144,7 +1179,44 @@ snit::type taco_calls {
         } else {
             dict set jingle attrs responder $me
         }
-        $client iq request -type set -to [dict get $call peer] -payload $jingle
+        $client iq request -type set -to [dict get $call peer] -payload $jingle \
+            -command [mymethod OnTransportInfoAck $sid]
+    }
+
+    # The peer answering our transport-info. One that no longer knows the
+    # session (it ended it, and we missed the terminate, or it restarted)
+    # ends it here too; any other error - a peer offline for a moment, a
+    # server in the way - leaves the call to its media path.
+    method OnTransportInfoAck {sid stanza} {
+        if {![dict exists $Calls $sid]} return
+        if {[xsearch $stanza -get @type] ne "error"} return
+        if {[$self SessionUnknown $stanza]} {
+            $self Finish $sid Failed "the peer no longer has the session"
+        } elseif {[$self PeerOffline $stanza]} {
+            $self Finish $sid Failed "the peer went offline"
+        }
+    }
+
+    # Does the IQ error $stanza say the peer's resource is not there? Its
+    # server answers so only for a resource that is gone - one whose stream
+    # waits to be resumed has its stanzas held instead - and a call cannot
+    # be kept up, or restarted, without signalling to it.
+    method PeerOffline {stanza} {
+        foreach condition {service-unavailable recipient-unavailable} {
+            if {[xsearch $stanza error $condition \
+                    -ns urn:ietf:params:xml:ns:xmpp-stanzas -get node] ne ""} {
+                return 1
+            }
+        }
+        return 0
+    }
+
+    # Does the IQ error $stanza say the peer has no such session?
+    method SessionUnknown {stanza} {
+        expr {[xsearch $stanza error unknown-session \
+                    -ns urn:xmpp:jingle:errors:1 -get node] ne ""
+            || [xsearch $stanza error item-not-found \
+                    -ns urn:ietf:params:xml:ns:xmpp-stanzas -get node] ne ""}
     }
 
     # Informational only — kept for visibility / future logging hooks. No
@@ -1183,33 +1255,51 @@ snit::type taco_calls {
     #   disconnected -> interrupted: consent lost, which the backend may
     #                recover from; said once it lasts DISCONNECT_GRACE_MS,
     #                since a hanging-up peer drops ICE first and its
-    #                session-terminate lands inside that
-    #   failed       the path is gone: the call fails
+    #                session-terminate lands inside that, and restarted
+    #                once it lasts RESTART_AFTER_MS
+    #   failed       the path is gone: restarted if we can, else waited on
+    #                for the peer's restart if we could follow one, else
+    #                the call fails
     #   closed       the pc closed under us: the call ends
+    #
+    # While a restart is under way only `connected` (it worked) and
+    # `closed` count: the old path failing meanwhile is expected, and
+    # RESTART_WAIT_MS judges the new one. A backend whose path never broke
+    # (the peer restarted over a path that works here) may report nothing
+    # at all, staying connected throughout; pc_state, its last word, lets
+    # the restart end on that once its descriptions are in (RestartSettled).
     #
     # The pre-media events (<Outgoing>, <Incoming>, <Ringing>) come from the
     # JMI handlers, not from here.
     method OnPcState {sid state} {
         # A late event for a call already gone must not bring it back.
         if {![dict exists $Calls $sid]} return
+        dict set Calls $sid pc_state $state
         set transport [dict get $Calls $sid transport]
+        if {$transport eq "restarting" && $state ni {connected closed}} return
         switch -- $state {
             new {}
             connecting {
                 $self Go $sid transport checking
             }
             connected {
+                # Said again of a path already up, it is no news.
+                if {$transport eq "connected"} return
                 $self CancelInterrupted $sid
+                $self EndRestart $sid
                 $self Go $sid transport connected
                 $self OnConnected $sid
             }
             disconnected {
                 if {[$self Go $sid transport interrupted]} {
+                    $self MediaLost $sid
                     dict set Calls $sid disconnect_timer \
                         [after $DISCONNECT_GRACE_MS [mymethod WarnInterrupted $sid]]
                 }
             }
             failed {
+                if {[$self StartRestart $sid "the media path failed"]} return
+                if {[$self AwaitPeerRestart $sid]} return
                 # The peer is told in Jingle: a peer that ends a session
                 # only on session-terminate (another.im's Android app)
                 # otherwise keeps the call up, its video frozen.
@@ -1226,6 +1316,7 @@ snit::type taco_calls {
     # timer; every time it is <Active>, with the first stamp, and a
     # <Connection> that takes back an interruption the GUI was told of.
     method OnConnected {sid} {
+        $self MediaBack $sid
         if {![dict get $Calls $sid ever_connected]} {
             dict set Calls $sid ever_connected 1
             dict set Calls $sid active_since [clock microseconds]
@@ -1235,22 +1326,474 @@ snit::type taco_calls {
             -since [dict get $Calls $sid active_since]
         if {[dict exists $Calls $sid told_interrupted]} {
             dict unset Calls $sid told_interrupted
+            dict unset Calls $sid told_connection
+            jlog debug "call $sid: <Connection> connected"
             $client emit calls <Connection> -sid $sid -state connected
         }
     }
 
     method WarnInterrupted {sid} {
         if {![dict exists $Calls $sid disconnect_timer]} return
-        dict unset Calls $sid disconnect_timer
-        dict set Calls $sid told_interrupted 1
-        $client emit calls <Connection> -sid $sid -state interrupted
+        dict set Calls $sid disconnect_timer \
+            [after [expr {max(0, $RESTART_AFTER_MS - $DISCONNECT_GRACE_MS)}] \
+                [mymethod RestartInterrupted $sid]]
+        $self TellConnection $sid interrupted
         $client emit calls <Warning> -sid $sid -reason "media path interrupted"
+    }
+
+    # Still interrupted: the backend did not recover by itself.
+    method RestartInterrupted {sid} {
+        if {![dict exists $Calls $sid disconnect_timer]} return
+        dict unset Calls $sid disconnect_timer
+        if {[dict get $Calls $sid transport] ne "interrupted"} return
+        $self StartRestart $sid "the media path stayed interrupted"
     }
 
     method CancelInterrupted {sid} {
         if {![dict exists $Calls $sid disconnect_timer]} return
         after cancel [dict get $Calls $sid disconnect_timer]
         dict unset Calls $sid disconnect_timer
+    }
+
+    # <Connection> $state, said once per change. Anything said but
+    # `connected` is taken back by OnConnected.
+    method TellConnection {sid state} {
+        if {[dict getdef $Calls $sid told_connection ""] eq $state} return
+        dict set Calls $sid told_connection $state
+        dict set Calls $sid told_interrupted 1
+        jlog debug "call $sid: <Connection> $state"
+        $client emit calls <Connection> -sid $sid -state $state
+    }
+
+    # Media stopped flowing: the call has MEDIA_LOSS_MAX_MS to get it back,
+    # whatever is tried meanwhile.
+    method MediaLost {sid} {
+        if {[dict exists $Calls $sid loss_timer]} return
+        dict set Calls $sid loss_timer \
+            [after $MEDIA_LOSS_MAX_MS [mymethod MediaLostTooLong $sid]]
+    }
+
+    method MediaBack {sid} {
+        if {![dict exists $Calls $sid loss_timer]} return
+        after cancel [dict get $Calls $sid loss_timer]
+        dict unset Calls $sid loss_timer
+    }
+
+    method MediaLostTooLong {sid} {
+        if {![dict exists $Calls $sid loss_timer]} return
+        dict unset Calls $sid loss_timer
+        $self Finish $sid Failed \
+            "no media for [expr {$MEDIA_LOSS_MAX_MS / 1000}] s" connectivity-error
+    }
+
+    # =========================================================================
+    # ICE restart
+    # =========================================================================
+    #
+    # A session that is up can move its media to a new path under new ICE
+    # credentials, without a new session (XEP-0176 §5.9). The wire is
+    # Conversations': the side restarting sends a transport-info carrying
+    # its new ufrag/pwd and no candidates - the offer - and trickles its
+    # candidates once that is acked. The other side applies the peer's
+    # description under those credentials as an offer, and its answer's
+    # credentials travel on the candidates it trickles; there is no answer
+    # stanza. So a transport-info with new credentials and no candidates is
+    # an offer, and one with candidates is the answer when we have an offer
+    # out, else an offer too (taken broadly: some peer may send it so).
+    #
+    # Either side may restart. Both at once is settled as XEP-0166 settles
+    # crossing actions: the initiator's wins. The initiator answers the
+    # responder's offer with <conflict/><tie-break/>; the responder rolls
+    # its own offer back and follows the initiator's. A responder whose
+    # backend cannot roll back does not start restarts, only follows them.
+    #
+    # The `restart` field says where one stands while transport is
+    # restarting:
+    #   offering   we asked our backend for a restart offer
+    #   awaiting   our offer is out; the peer's answer has not come
+    #   answering  we applied the peer's offer and owe our answer
+    #   answered   our answer's credentials go out with our candidates
+    # Each has RESTART_WAIT_MS of live signalling to connect.
+
+    # Start a restart of our own, if this call and backend can: returns 1 if
+    # one is under way (started now, or already).
+    method StartRestart {sid why} {
+        set call [dict get $Calls $sid]
+        if {[dict get $call transport] eq "restarting"} { return 1 }
+        if {![$self CanRestart $sid]} { return 0 }
+        jlog inform "call $sid: $why, restarting ICE\
+            ([expr {[dict get $call restarts] + 1}] of $MAX_RESTARTS)"
+        $self CancelInterrupted $sid
+        $self Go $sid transport restarting
+        $self MediaLost $sid
+        dict set Calls $sid restart offering
+        dict set Calls $sid restarts [expr {[dict get $Calls $sid restarts] + 1}]
+        dict set Calls $sid restart_attempts [expr {[dict get $Calls $sid restart_attempts] + 1}]
+        dict set Calls $sid restart_hold 1
+        $self TellConnection $sid reconnecting
+        $self ArmRestartWait $sid
+        if {[catch {::tacky::media setLocalDescription [dict get $call pc] \
+                -type offer -ice-restart 1} err]} {
+            jlog warn "call $sid: the restart offer was refused: $err"
+            $self RestartFailed $sid
+        }
+        return 1
+    }
+
+    method CanRestart {sid} {
+        set call [dict get $Calls $sid]
+        expr {[dict get $call state] eq "established" && [dict get $call pc] ne -1
+            && [dict exists $call remote_jingle]
+            && [::tacky::media capability restartIce]
+            && ([dict get $call initiator] || [::tacky::media capability rollback])
+            && [dict get $call restarts] < $MAX_RESTARTS
+            && [dict get $call restart_attempts] < $MAX_RESTART_ATTEMPTS}
+    }
+
+    # We cannot restart, but the peer can and we could follow: give it the
+    # time a restart gets. Returns 1 if waiting.
+    method AwaitPeerRestart {sid} {
+        set call [dict get $Calls $sid]
+        if {![::tacky::media capability iceRestart]
+                || [dict get $call state] ne "established"
+                || ![dict exists $call remote_jingle]
+                || [dict get $call restart_attempts] >= $MAX_RESTART_ATTEMPTS} {
+            return 0
+        }
+        jlog inform "call $sid: the media path failed; waiting for the peer to restart it"
+        $self Go $sid transport interrupted
+        $self MediaLost $sid
+        dict set Calls $sid restart_attempts [expr {[dict get $Calls $sid restart_attempts] + 1}]
+        $self TellConnection $sid interrupted
+        $self ArmRestartWait $sid
+        return 1
+    }
+
+    # Our backend's description during a restart.
+    method OnRestartDescription {sid sdp sdpType} {
+        set restart [dict getdef $Calls $sid restart ""]
+        if {$sdpType eq "offer" && $restart eq "offering"} {
+            # Lost a glare before our offer even existed: drop it, and
+            # follow the initiator's offer that won.
+            if {[dict exists $Calls $sid glare_offer]} {
+                dict set Calls $sid restart awaiting
+                $self RollBackAndFollow $sid
+                return
+            }
+            dict set Calls $sid restart awaiting
+            $self SendIceCredentials $sid $sdp
+            return
+        }
+        if {$sdpType eq "answer" && $restart eq "answering"} {
+            dict set Calls $sid restart answered
+            $self ReleaseLocalCandidates $sid
+            $self RestartSettled $sid
+            return
+        }
+        jlog warn "call $sid: a local $sdpType during restart $restart is not sent"
+    }
+
+    # The credentials of our restart offer, alone, one <transport> per
+    # content (XEP-0176 §5.9). Candidates wait for the IQ result.
+    method SendIceCredentials {sid sdp} {
+        set call [dict get $Calls $sid]
+        set me [$client cget -jid]
+        set local [::jinglesdp::from_sdp $sdp -creator initiator \
+            -initiator [dict get $call initiator]]
+        set contents {}
+        foreach c [xsearch $local content -gather node] {
+            set t [xsearch $c transport -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]
+            if {$t eq ""} continue
+            lassign [xsearch $t -get {@ufrag @pwd}] ufrag pwd
+            lappend contents [j content -creator initiator -name [xsearch $c -get @name] {
+                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 \
+                    -ufrag $ufrag -pwd $pwd
+            }]
+        }
+        set jingle [j jingle -ns urn:xmpp:jingle:1]
+        dict set jingle attrs action transport-info
+        dict set jingle attrs sid $sid
+        dict set jingle attrs [expr {[dict get $call initiator] ? "initiator" : "responder"}] $me
+        dict set jingle children $contents
+        $client iq request -type set -to [dict get $call peer] -payload $jingle \
+            -command [mymethod OnRestartOfferAck $sid]
+    }
+
+    # The peer took our restart offer: our candidates may follow. Turned
+    # down with <tie-break/>, ours lost a glare to the initiator's offer,
+    # which is coming (or came); anything else, the peer will not restart.
+    method OnRestartOfferAck {sid stanza} {
+        if {![dict exists $Calls $sid]} return
+        if {[xsearch $stanza -get @type] ne "error"} {
+            $self ReleaseLocalCandidates $sid
+            return
+        }
+        if {[xsearch $stanza error tie-break -ns urn:xmpp:jingle:errors:1 -get node] ne ""} {
+            jlog inform "call $sid: our ICE restart lost a tie-break"
+            return
+        }
+        if {[$self SessionUnknown $stanza]} {
+            $self Finish $sid Failed "the peer no longer has the session"
+            return
+        }
+        if {[$self PeerOffline $stanza]} {
+            $self Finish $sid Failed "the peer went offline"
+            return
+        }
+        jlog warn "call $sid: the peer refused our ICE restart"
+        $self RestartFailed $sid
+    }
+
+    method ReleaseLocalCandidates {sid} {
+        if {![dict exists $Calls $sid restart_hold]} return
+        dict unset Calls $sid restart_hold
+        if {[dict exists $Calls $sid describing]} return
+        set held [dict getdef $Calls $sid held_candidates {}]
+        dict unset Calls $sid held_candidates
+        foreach h $held { $self OnLocalCandidate $sid {*}$h }
+    }
+
+    # The peer restarted: $creds is content name -> its new <transport>.
+    # Apply its description under them as an offer, and answer it. Returns
+    # 1 if followed.
+    method FollowRestart {sid creds} {
+        set call [dict get $Calls $sid]
+        if {![::tacky::media capability iceRestart] || [dict get $call pc] eq -1
+                || ![dict exists $call remote_jingle]} {
+            jlog warn "call $sid: the peer restarted ICE, which this backend cannot follow"
+            $client emit calls <Warning> -sid $sid \
+                -reason "the peer moved the call to a new connection, which this device cannot follow"
+            return 0
+        }
+        jlog inform "call $sid: the peer restarted ICE; following"
+        $self CancelInterrupted $sid
+        $self Go $sid transport restarting
+        $self MediaLost $sid
+        dict set Calls $sid restart answering
+        # A backend may report the new generation's candidates before our
+        # answer, which names their credentials: they wait for it.
+        dict set Calls $sid restart_hold 1
+        $self TellConnection $sid reconnecting
+        $self ArmRestartWait $sid
+        set pc [dict get $call pc]
+        set sdp [$self RemoteSdp $sid $creds actpass]
+        if {$sdp eq ""} { return 1 }
+        $self TakeRemoteIce $sid $creds
+        ::tacky::media setRemoteDescription $pc -sdp $sdp -type offer
+        if {![dict exists $Calls $sid]} { return 1 }
+        if {[$self TakeSdpError $sid] ne ""} {
+            $self RestartFailed $sid
+            return 1
+        }
+        if {![::tacky::media capability autoAnswer]} {
+            ::tacky::media setLocalDescription $pc -type answer
+            if {![dict exists $Calls $sid]} { return 1 }
+        }
+        $self DrainPendingCandidates $sid $pc
+        return 1
+    }
+
+    # The peer's answer to our restart offer.
+    method ApplyRestartAnswer {sid creds} {
+        set call [dict get $Calls $sid]
+        set sdp [$self RemoteSdp $sid $creds [$self PeerSetup $sid]]
+        if {$sdp eq ""} return
+        $self TakeRemoteIce $sid $creds
+        dict set Calls $sid restart answered
+        ::tacky::media setRemoteDescription [dict get $call pc] -sdp $sdp -type answer
+        if {![dict exists $Calls $sid]} return
+        if {[$self TakeSdpError $sid] ne ""} {
+            $self RestartFailed $sid
+            return
+        }
+        $self DrainPendingCandidates $sid [dict get $call pc]
+        $self RestartSettled $sid
+    }
+
+    # Both descriptions of a restart are in. A backend that never left
+    # `connected` will not say so again: the path it has is the call's.
+    method RestartSettled {sid} {
+        if {![dict exists $Calls $sid]} return
+        if {[dict get $Calls $sid transport] ne "restarting"} return
+        if {[dict getdef $Calls $sid pc_state ""] ne "connected"} return
+        $self OnPcState $sid connected
+    }
+
+    # We are the responder and both sides restarted at once: the
+    # initiator's offer (glare_offer) wins. Our own offer, which must exist
+    # by now for a rollback to drop it, goes with the candidates it
+    # gathered; then theirs is followed. Until our backend has produced
+    # ours (restart offering), OnRestartDescription waits for it.
+    method RollBackAndFollow {sid} {
+        if {[dict get $Calls $sid restart] eq "offering"} return
+        set creds [dict get $Calls $sid glare_offer]
+        dict unset Calls $sid glare_offer
+        dict unset Calls $sid held_candidates
+        ::tacky::media setLocalDescription [dict get $Calls $sid pc] -type rollback
+        if {![dict exists $Calls $sid]} return
+        dict unset Calls $sid restart
+        $self CancelRestartWait $sid
+        $self Go $sid transport interrupted
+        $self FollowRestart $sid $creds
+    }
+
+    # The peer's description - its last, with the credentials and
+    # candidates in $creds and the DTLS setup $setup - as SDP. "" if it
+    # will not convert, which fails the restart.
+    method RemoteSdp {sid creds setup} {
+        set call [dict get $Calls $sid]
+        set jingle [dict get $call remote_jingle]
+        set first [lindex [dict values $creds] 0]
+        set contents {}
+        foreach c [dict get $jingle children] {
+            if {[dict get $c tag] eq "content"} {
+                set name [xsearch $c -get @name]
+                set new [expr {[dict exists $creds $name]
+                    ? [dict get $creds $name] : $first}]
+                set kids {}
+                foreach t [dict get $c children] {
+                    if {[dict get $t tag] eq "transport"
+                            && [dict get $t ns] eq "urn:xmpp:jingle:transports:ice-udp:1"} {
+                        set t [$self RestartTransport $t $new $setup]
+                    }
+                    lappend kids $t
+                }
+                dict set c children $kids
+            }
+            lappend contents $c
+        }
+        dict set jingle children $contents
+        set authorInitiator [expr {![dict get $call initiator]}]
+        if {[catch {::jinglesdp::to_sdp $jingle -initiator $authorInitiator} sdp]} {
+            jlog warn "call $sid: the restarted description does not convert: $sdp"
+            $self RestartFailed $sid
+            return ""
+        }
+        return $sdp
+    }
+
+    # Transport $old (the peer's last) under $new's credentials and
+    # candidates, its fingerprint kept with setup $setup.
+    method RestartTransport {old new setup} {
+        lassign [xsearch $new -get {@ufrag @pwd}] ufrag pwd
+        dict set old attrs ufrag $ufrag
+        dict set old attrs pwd $pwd
+        set kids {}
+        foreach k [dict get $old children] {
+            if {[dict get $k tag] eq "fingerprint"} {
+                dict set k attrs setup $setup
+                lappend kids $k
+            }
+        }
+        foreach k [dict get $new children] {
+            if {[dict get $k tag] eq "candidate"} { lappend kids $k }
+        }
+        dict set old children $kids
+        return $old
+    }
+
+    # The DTLS role the peer took, which an answer to our restart offer
+    # keeps (RFC 9429 §5.3.3): its own, or the other of ours where it
+    # offered actpass.
+    method PeerSetup {sid} {
+        set jingle [dict get $Calls $sid remote_jingle]
+        set setup [xsearch $jingle content transport fingerprint -get @setup]
+        if {$setup in {active passive}} { return $setup }
+        expr {[dict getdef $Calls $sid local_setup active] eq "active" ? "passive" : "active"}
+    }
+
+    # The peer's credentials are now those in $creds; the ones they
+    # replace name a generation whose candidates are dropped.
+    method TakeRemoteIce {sid creds} {
+        set ice [dict getdef $Calls $sid remote_ice {}]
+        set old [dict getdef $Calls $sid remote_old {}]
+        dict for {name t} $creds {
+            if {[dict exists $ice $name]} { lappend old [lindex [dict get $ice $name] 0] }
+            dict set ice $name [xsearch $t -get {@ufrag @pwd}]
+        }
+        dict set Calls $sid remote_ice $ice
+        dict set Calls $sid remote_old $old
+    }
+
+    # Note the peer's description: what a restart re-applies under new
+    # credentials, and the credentials it names.
+    method KeepRemoteDescription {sid jingle} {
+        dict set Calls $sid remote_jingle $jingle
+        set ice {}
+        foreach c [xsearch $jingle content -gather node] {
+            set t [xsearch $c transport -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]
+            if {$t eq ""} continue
+            dict set ice [xsearch $c -get @name] [xsearch $t -get {@ufrag @pwd}]
+        }
+        dict set Calls $sid remote_ice $ice
+    }
+
+    method ArmRestartWait {sid} {
+        $self CancelRestartWait $sid
+        dict set Calls $sid restart_timer \
+            [after $RESTART_WAIT_MS [mymethod RestartWaited $sid]]
+    }
+
+    method CancelRestartWait {sid} {
+        if {![dict exists $Calls $sid restart_timer]} return
+        after cancel [dict get $Calls $sid restart_timer]
+        dict unset Calls $sid restart_timer
+    }
+
+    # The wait ran out. Time the stream to the server was down does not
+    # count - the restart's signalling could not travel - so it starts
+    # again then, under MEDIA_LOSS_MAX_MS.
+    method RestartWaited {sid} {
+        if {![dict exists $Calls $sid restart_timer]} return
+        dict unset Calls $sid restart_timer
+        if {![$client iq isLive]} {
+            $self ArmRestartWait $sid
+            return
+        }
+        # Media is flowing by the backend's last word: the restart did not
+        # finish, but the path it was for is fine.
+        if {[dict getdef $Calls $sid pc_state ""] eq "connected"} {
+            $self OnPcState $sid connected
+            return
+        }
+        $self RestartFailed $sid
+    }
+
+    # This restart, or this wait for the peer's, did not bring the path
+    # back: try again if we may, else the call fails.
+    method RestartFailed {sid} {
+        if {![dict exists $Calls $sid]} return
+        if {[dict get $Calls $sid transport] eq "connected"} return
+        $self CancelRestartWait $sid
+        dict unset Calls $sid restart_hold
+        dict unset Calls $sid glare_offer
+        if {[dict get $Calls $sid transport] eq "restarting"} {
+            dict unset Calls $sid restart
+            $self Go $sid transport interrupted
+        }
+        if {[$self StartRestart $sid "the restart did not reconnect"]} return
+        if {[$self AwaitPeerRestart $sid]} return
+        $self Finish $sid Failed "media path failed (ICE/DTLS)" connectivity-error
+    }
+
+    # Connected again, by a restart or not: what was under way is over.
+    method EndRestart {sid} {
+        $self CancelRestartWait $sid
+        dict set Calls $sid restart_attempts 0
+        dict unset Calls $sid restart
+        dict unset Calls $sid glare_offer
+        $self ReleaseLocalCandidates $sid
+    }
+
+    # The stream came back with its session: a media path that was lost
+    # meanwhile most likely went with the network, so restart it now
+    # rather than wait out the backend.
+    method OnResumed {args} {
+        dict for {sid call} $Calls {
+            if {[dict get $call transport] ni {interrupted checking}} continue
+            if {![dict get $call ever_connected]} continue
+            $self StartRestart $sid "the stream to the server came back"
+        }
     }
 
     # The media path as `list` and <Connection> name it: connecting until
@@ -1262,8 +1805,9 @@ snit::type taco_calls {
             return [expr {$transport eq "connected" ? "connected" : "connecting"}]
         }
         switch -- $transport {
-            checking { return reconnecting }
-            default  { return $transport }
+            checking   -
+            restarting { return reconnecting }
+            default    { return $transport }
         }
     }
 
@@ -1841,6 +2385,7 @@ snit::type taco_calls {
             return
         }
         jlog debug "SDP offer from $from (sid=$sid)\n[jlog_redact_sdp $sdp]"
+        $self KeepRemoteDescription $sid $jingle
         dict set Calls $sid peer $from
         dict set Calls $sid jingle 1
         $self Go $sid state pending
@@ -1940,6 +2485,9 @@ snit::type taco_calls {
             $self IqError $stanza not-acceptable
             return
         }
+        if {![dict exists $Calls $sid remote_set]} {
+            $self KeepRemoteDescription $sid $jingle
+        }
         dict set Calls $sid remote_set 1
         if {[dict get $Calls $sid initiator]} {
             $self Go $sid state established
@@ -1948,48 +2496,148 @@ snit::type taco_calls {
         $self DrainPendingCandidates $sid $pc
     }
 
+    # Trickled candidates (XEP-0176), and what else a transport-info may
+    # carry: new credentials, which are an ICE restart (see "ICE restart"),
+    # and a DTLS fingerprint, which must be the one the session has.
+    #
+    # Candidates are sorted by the credentials they come under: the
+    # peer's current ones go to the pc (or wait, below); a generation a
+    # restart replaced is dropped, as is one we never heard of.
     method HandleTransportInfo {stanza jingle sid from} {
         if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
             return
         }
-        set pc [dict get $Calls $sid pc]
+        set call [dict get $Calls $sid]
+        set pc [dict get $call pc]
+        set ice [dict getdef $call remote_ice {}]
+        set old [dict getdef $call remote_old {}]
+        set glare [dict getdef $call glare_offer {}]
         # Until the peer's description is applied a candidate has nothing
         # to attach to: on the callee's side the pc may not exist yet (the
         # JMI window), on the caller's the answer may not have come. Buffer
         # in arrival order; DrainPendingCandidates applies them.
-        set early [expr {$pc eq -1 || ![dict exists $Calls $sid remote_set]}]
+        set early [expr {$pc eq -1 || ![dict exists $call remote_set]}]
+        set creds {}
+        set fresh 0
+        set cands {}
+        set wait {}
+        set swapped 0
         xsearch $jingle content -script content {
             set name [xsearch $content -get @name]
             set transport [xsearch $content transport \
                 -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]
             if {$transport eq ""} continue
+            if {![$self SameFingerprint $sid $transport]} {
+                set swapped 1
+                break
+            }
+            lassign [xsearch $transport -get {@ufrag @pwd}] ufrag pwd
+            set target cands
+            if {$ufrag ne "" && [dict exists $ice $name]
+                    && $ufrag ne [lindex [dict get $ice $name] 0]} {
+                if {$pwd ne "" && $ufrag ni $old} {
+                    # New credentials, both of them: a restart.
+                    dict set creds $name $transport
+                    incr fresh [llength [xsearch $transport candidate -gather node]]
+                    continue
+                }
+                if {[dict exists $glare $name]
+                        && $ufrag eq [xsearch [dict get $glare $name] -get @ufrag]} {
+                    # The initiator's restart we are about to follow.
+                    set target wait
+                } else {
+                    jlog debug "transport-info: candidates of a replaced or unknown\
+                        ICE generation ($ufrag) skipped"
+                    continue
+                }
+            }
             xsearch $transport candidate -script cand {
                 if {[catch {::jinglesdp::CandidateToSdp $cand} value]} {
                     jlog debug "transport-info: skipping unusable candidate"
                     continue
                 }
-                set full "candidate:$value"
-                if {$early} {
-                    set buffered {}
-                    if {[dict exists $Calls $sid pending_remote_candidates]} {
-                        set buffered [dict get $Calls $sid pending_remote_candidates]
-                    }
-                    if {[llength $buffered] >= $MAX_PENDING_CANDIDATES} {
-                        jlog debug "transport-info: candidate buffer full"
-                        continue
-                    }
-                    dict update Calls $sid call {
-                        dict lappend call pending_remote_candidates \
-                            [list $name $full]
-                    }
-                } else {
-                    ::tacky::media addRemoteCandidate $pc \
-                        -candidate $full -mid $name
-                }
+                lappend $target [list $name "candidate:$value"]
             }
         }
+        if {$swapped} {
+            $self AckIq $stanza
+            $self Finish $sid Failed \
+                "the peer's DTLS fingerprint changed mid-call" security-error
+            return
+        }
+        if {[dict size $creds]} {
+            # With candidates while our own offer is out, it is the answer;
+            # anything else is the peer's offer.
+            set restart [dict getdef $call restart ""]
+            set isAnswer [expr {$restart eq "awaiting" && $fresh > 0}]
+            if {!$isAnswer && $restart in {offering awaiting}} {
+                # Both restarted at once: the initiator's wins.
+                if {[dict get $call initiator]} {
+                    $self IqError $stanza conflict tie-break
+                    return
+                }
+                $self AckIq $stanza
+                dict set Calls $sid glare_offer $creds
+                $self RollBackAndFollow $sid
+                $self AddCandidates $sid $cands
+                return
+            }
+            $self AckIq $stanza
+            if {$isAnswer} {
+                $self ApplyRestartAnswer $sid $creds
+            } elseif {[dict get $call state] eq "established"} {
+                $self FollowRestart $sid $creds
+            } else {
+                jlog debug "transport-info: new credentials before the session is up skipped"
+            }
+            if {![dict exists $Calls $sid]} return
+            $self AddCandidates $sid $cands
+            return
+        }
+        foreach c $wait { $self BufferCandidate $sid {*}$c }
+        if {$early} {
+            foreach c $cands { $self BufferCandidate $sid {*}$c }
+        } else {
+            $self AddCandidates $sid $cands
+        }
         $self AckIq $stanza
+    }
+
+    method AddCandidates {sid cands} {
+        set pc [dict get $Calls $sid pc]
+        if {$pc eq -1} return
+        foreach c $cands {
+            lassign $c name full
+            ::tacky::media addRemoteCandidate $pc -candidate $full -mid $name
+            if {![dict exists $Calls $sid]} return
+        }
+    }
+
+    method BufferCandidate {sid name full} {
+        set buffered [dict getdef $Calls $sid pending_remote_candidates {}]
+        if {[llength $buffered] >= $MAX_PENDING_CANDIDATES} {
+            jlog debug "transport-info: candidate buffer full"
+            return
+        }
+        dict update Calls $sid call {
+            dict lappend call pending_remote_candidates [list $name $full]
+        }
+    }
+
+    # A plain fingerprint in a transport-info (XEP-0320 lets one travel
+    # there) must be the one the session was set up with: a restart moves
+    # the path, never the DTLS keys. An encrypted one is not read here.
+    method SameFingerprint {sid transport} {
+        if {![dict exists $Calls $sid remote_jingle]} { return 1 }
+        set fp [::taco_calls::verify::plain $transport]
+        if {$fp eq ""} { return 1 }
+        set known [::taco_calls::verify::plain [xsearch \
+            [dict get $Calls $sid remote_jingle] content transport \
+            -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]]
+        if {$known eq ""} { return 1 }
+        expr {[string equal -nocase [string trim [xsearch $fp -get body]] \
+                   [string trim [xsearch $known -get body]]]}
     }
 
     method HandleSessionTerminate {stanza jingle sid from} {
@@ -2187,6 +2835,8 @@ snit::type taco_calls {
         $self CancelInterrupted $sid
         $self StopRingTimer $sid
         $self StopSetupTimer $sid
+        $self CancelRestartWait $sid
+        $self MediaBack $sid
         dict unset Calls $sid
     }
 

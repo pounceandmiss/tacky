@@ -227,6 +227,10 @@ snit::type taco_client {
             $iq request -type set \
                 -payload [j enable -ns urn:xmpp:carbons:2]
             $bus publish <SessionStart>
+        } else {
+            # The stream came back with everything it held: whatever
+            # waited on the link (a call's media path, say) can go on.
+            $bus publish <Resumed>
         }
     }
 
