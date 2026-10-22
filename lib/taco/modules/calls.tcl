@@ -41,7 +41,8 @@
 #   reset      a fresh stream dropped every sid the old one held
 #
 # <Missed>: a ring nobody here answered (retracted, timed out, or turned
-# away busy, which had no <Incoming>).
+# away, which had no <Incoming>: busy with another call, or proxy because
+# the account goes through a proxy).
 #
 # Verification, as in Conversations. When OMEMO is on for the chat, each side
 # puts its OMEMO device id in <propose>/<proceed> and sends its DTLS
@@ -427,10 +428,13 @@ snit::type taco_calls {
     # Verification (see the file header)
     # =========================================================================
 
-    # Our OMEMO device, if OMEMO is on for the chat with $peer and set up.
+    # Our OMEMO device, if OMEMO is on for the chat with $peer and set up,
+    # and our published devicelist names it: an announced device obliges
+    # the peer to seal for it, and one its fetch of our list does not show
+    # fails the call closed.
     method OwnDevice {peer} {
         if {[catch {
-            set dev [$client omemo device_id]
+            set dev [$client omemo listed_device_id]
             set on [$client omemo isEnabled -jid [jid bare $peer]]
         }]} { return "" }
         expr {$on && [string is integer -strict $dev] && $dev > 0 ? $dev : ""}
@@ -988,6 +992,8 @@ snit::type taco_calls {
             }
             return
         }
+        # A late event for a call already gone must not bring it back.
+        if {![dict exists $Calls $sid]} return
         $self CancelInterrupted $sid
         set mapped [$self MapPcState $state]
         if {$mapped eq ""} return
@@ -1010,7 +1016,13 @@ snit::type taco_calls {
             }
         }
         if {$mapped in {ended failed}} {
+            # The peer is told in Jingle, as FailCall does: a peer that ends
+            # a session only on session-terminate (another.im's Android app)
+            # otherwise keeps the call up, its video frozen.
+            set peer [dict get $Calls $sid peer]
             $self TeardownMedia $sid
+            $self SendTerminate $sid $peer \
+                [expr {$mapped eq "failed" ? "connectivity-error" : "success"}]
             $self Cleanup $sid
         }
     }
@@ -1219,10 +1231,15 @@ snit::type taco_calls {
             if {![dict get $ours initiator] || [dict get $ours state] ne "proposed"
                     || ![jid matches-bare $from [dict get $ours peer]]} return
         }
+        set ns urn:xmpp:jingle-message:0
+        set child [xsearch $stanza propose -ns $ns -get node]
+        set hasVideo [$self ProposeHasVideo $child]
+
         # Calls can't be tunneled through a proxy (native ICE bypasses it), so
-        # decline instead of ringing.
+        # decline instead of ringing. Missed all the same, as busy is.
         if {[$self Blocked] ne ""} {
             $client write [$self BuildJmiMessage $from reject $sid 0]
+            $self EmitMissed $sid $from $hasVideo proxy
             return
         }
 
@@ -1248,10 +1265,6 @@ snit::type taco_calls {
             $client emit calls <Ended> -sid $ours -reason replaced
             $self Cleanup $ours
         }
-
-        set ns urn:xmpp:jingle-message:0
-        set child [xsearch $stanza propose -ns $ns -get node]
-        set hasVideo [$self ProposeHasVideo $child]
 
         # One call at a time: any other, group sessions included, makes
         # this one busy.

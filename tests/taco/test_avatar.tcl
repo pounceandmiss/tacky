@@ -6,6 +6,9 @@ package require tacky::testhelpers
 set avatar_common [tacky_env -mock conn -taco-client {
     -domain test.example.com -port 5222
     -username user -password pass -resource res
+} -extra-setup {
+    # PEP avatars are taken from contacts only (pubsub.tcl -contacts).
+    c roster StoreItem [j item -jid alice@example.com -subscription both]
 }]
 
 # Helper: seed a cached avatar. -data "" stores metadata without the blob.
@@ -178,6 +181,15 @@ test avatar-pep-from-full-jid-dropped {a metadata event from a full jid (a room 
         avatar_data_requested
     } -result 0
 
+test avatar-metadata-from-a-stranger-is-ignored {avatar metadata from a bare JID not in the roster is not recorded and fetches nothing, even for a JID on screen} \
+    {*}$avatar_common \
+    -body {
+        c avatar visible -jid stranger@example.com
+        c.conn clear
+        c.conn feed [pep_metadata stranger@example.com newhash]
+        list [c avatar metadata -jid stranger@example.com] [avatar_data_requested]
+    } -result {{} 0}
+
 test avatar-invisible-parks-fetch {an unmarked JID's new hash is parked, not fetched} \
     {*}$avatar_common \
     -body {
@@ -239,7 +251,9 @@ test avatar-visible-refetches-changed-hash {a hash that moved on since the unans
 set avatar_ready_common [tacky_env -mock conn -taco-client {
     -domain test.example.com -port 5222
     -username user -password pass -resource res
-} -bound-jid user@test.example.com/res]
+} -bound-jid user@test.example.com/res -extra-setup {
+    c roster StoreItem [j item -jid alice@example.com -subscription both]
+}]
 
 test avatar-ready-refetches-missing-bytes {a new session goes after bytes a marked JID is still missing} \
     {*}$avatar_ready_common \

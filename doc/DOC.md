@@ -1519,7 +1519,8 @@ restart can emit `<Active>` again with the same `since`.
 | `reset` | a fresh stream ended every call |
 
 `<Missed>` is a ring nobody here answered: `retracted` or `timeout` (after its
-`<Ended>`), or `busy`, turned away while another call was up, with no
+`<Ended>`), or `busy`, turned away while another call was up, or `proxy`,
+turned away because the account goes through a proxy, both with no
 `<Incoming>` or `<Ended>`. [`notify <MissedCall>`](#notify) alerts it.
 
 `<Verified>` says whether to show the call as secure (see [Voice and video

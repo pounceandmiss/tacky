@@ -188,7 +188,7 @@ snit::type taco_messagestore {
         set found {}
         $options(-db) eval {
             SELECT chat_jid, timestamp FROM chat_message
-            WHERE invite_room=$room AND kind='message'
+            WHERE invite_room != '' AND invite_room=$room AND kind='message'
         } r {
             lappend found [list $r(chat_jid) $r(timestamp)]
         }
@@ -736,16 +736,21 @@ snit::type taco_messagestore {
 
         set isMuc [IsMucChatJid $jid]
         set candidates {}
+        # One arm per id, each by its own index (see resolveTargetTs).
         $options(-db) eval {
             SELECT timestamp, from_jid FROM chat_message
-            WHERE chat_jid=$jid AND kind='message'
-              AND ( (origin_id != '' AND origin_id=$replyId)
-                 OR (own_id    != '' AND own_id=$replyId) )
-            UNION
-            SELECT m.timestamp, m.from_jid FROM message_alias a
-            JOIN chat_message m
-              ON m.chat_jid=a.chat_jid AND m.timestamp=a.target_ts
-            WHERE a.chat_jid=$jid AND a.kind='origin' AND a.alias_id=$replyId
+            WHERE chat_jid=$jid AND timestamp IN (
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
+                  AND origin_id != '' AND origin_id=$replyId
+                UNION ALL
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$jid AND kind='message'
+                  AND own_id != '' AND own_id=$replyId
+                UNION ALL
+                SELECT target_ts FROM message_alias
+                WHERE chat_jid=$jid AND kind='origin' AND alias_id=$replyId)
+            ORDER BY timestamp
         } row {
             lappend candidates [list $row(timestamp) $row(from_jid)]
         }
@@ -760,8 +765,8 @@ snit::type taco_messagestore {
         foreach candidate $candidates {
             lassign $candidate ts fromJid
             if {$replyTo eq ""
-                || ($isMuc && $fromJid eq $replyTo)
-                || (!$isMuc && [jid bare $fromJid] eq [jid bare $replyTo])} {
+                || ($isMuc && [jid equal $fromJid $replyTo])
+                || (!$isMuc && [jid equal [jid bare $fromJid] [jid bare $replyTo]])} {
                 return $ts
             }
         }
@@ -780,7 +785,7 @@ snit::type taco_messagestore {
             UPDATE chat_message
             SET body=$url, raw_xml=$rawXml, attachments=$attachments,
                 server_status='pending', encryption=$encryption
-            WHERE chat_jid=$jid AND own_id=$ownId
+            WHERE chat_jid=$jid AND own_id != '' AND own_id=$ownId
               AND server_status='uploading'
         }
     }
@@ -813,6 +818,9 @@ snit::type taco_messagestore {
 
     # Flip pending → '' (server-confirmed) for each own_id (SM ack path).
     # Returns list of {chat_jid, timestamp} for confirmed messages.
+    # With no chat to narrow by, the pending rows are the ones read
+    # (idx_chat_message_pending); the + keeps the planner off the own_id
+    # index, which would walk every send of ours in every chat.
     method confirmByOwnIds {ownIds} {
         set confirmed {}
         $options(-db) transaction {
@@ -820,14 +828,14 @@ snit::type taco_messagestore {
                 if {$oid eq ""} continue
                 $options(-db) eval {
                     SELECT chat_jid, timestamp FROM chat_message
-                    WHERE own_id=$oid AND server_status='pending'
+                    WHERE server_status='pending' AND +own_id=$oid
                 } row {
                     lappend confirmed [dict create \
                         chat_jid $row(chat_jid) timestamp $row(timestamp)]
                 }
                 $options(-db) eval {
                     UPDATE chat_message SET server_status=''
-                    WHERE own_id=$oid AND server_status='pending'
+                    WHERE server_status='pending' AND +own_id=$oid
                 }
             }
         }
@@ -857,14 +865,22 @@ snit::type taco_messagestore {
         if {$targetId eq ""} { return {} }
         set changed {}
         $options(-db) transaction {
-            set targetTs ""
-            $options(-db) eval {
+            # Ours by its own id, else by its origin-id, one indexed lookup
+            # each (see resolveTargetTs).
+            set targetTs [$options(-db) onecolumn {
                 SELECT timestamp FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND own_id != ''
-                  AND (own_id=$targetId OR origin_id=$targetId)
-                LIMIT 1
-            } row {
-                set targetTs $row(timestamp)
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND own_id != '' AND own_id=$targetId
+                ORDER BY +timestamp LIMIT 1
+            }]
+            if {$targetTs eq ""} {
+                set targetTs [$options(-db) onecolumn {
+                    SELECT timestamp FROM chat_message
+                    WHERE chat_jid=$chatJid AND kind='message'
+                      AND origin_id != '' AND origin_id=$targetId
+                      AND own_id != ''
+                    ORDER BY +timestamp LIMIT 1
+                }]
             }
             if {$targetTs eq ""} {
                 set targetTs [$self AliasTarget $chatJid origin $targetId]
@@ -1203,16 +1219,35 @@ snit::type taco_messagestore {
     method resolveTargetTs {chatJid targetId} {
         if {$targetId eq ""} { return "" }
         set room [IsRoomChatJid $chatJid]
-        set ts [$options(-db) onecolumn {
+        set db $options(-db)
+        # One lookup per id, in that order, each spelling its partial
+        # index's condition (`server_id != ''` and so on): SQLite takes a
+        # partial index only for a query that states it, and a statement
+        # OR-ing the ids, or asking `server_id=$x` alone, walked every row
+        # of the chat. `+timestamp`, not `timestamp`: ordered by the
+        # column, the planner walks the primary key for the order instead.
+        set ts [$db onecolumn {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
-              AND ( (server_id != '' AND server_id=$targetId)
-                 OR (NOT $room AND origin_id != '' AND origin_id=$targetId)
-                 OR (NOT $room AND own_id    != '' AND own_id=$targetId) )
-            ORDER BY (server_id = $targetId) DESC, (own_id = $targetId) DESC,
-                     timestamp ASC
-            LIMIT 1
+              AND server_id != '' AND server_id=$targetId
+            ORDER BY +timestamp LIMIT 1
         }]
+        if {$ts eq "" && !$room} {
+            set ts [$db onecolumn {
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND own_id != '' AND own_id=$targetId
+                ORDER BY +timestamp LIMIT 1
+            }]
+        }
+        if {$ts eq "" && !$room} {
+            set ts [$db onecolumn {
+                SELECT timestamp FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND origin_id != '' AND origin_id=$targetId
+                ORDER BY +timestamp LIMIT 1
+            }]
+        }
         if {$ts eq ""} { set ts [$self AliasTarget $chatJid server $targetId] }
         if {$ts eq "" && !$room} {
             set ts [$self AliasTarget $chatJid origin $targetId]
@@ -1369,16 +1404,28 @@ snit::type taco_messagestore {
         if {$serverId eq "" && $ownId eq ""} {
             return [dict create verdict new]
         }
+        # The earliest row with either id, each by its own index (see
+        # resolveTargetTs).
         set row ""
         $options(-db) eval {
             SELECT timestamp, server_status, server_id FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
-              AND ( ($serverId != '' AND server_id=$serverId)
-                 OR ($ownId != '' AND own_id=$ownId) )
-            LIMIT 1
+              AND server_id != '' AND server_id=$serverId
+            ORDER BY +timestamp LIMIT 1
         } r {
             set row [dict create timestamp $r(timestamp) \
                 server_status $r(server_status) server_id $r(server_id)]
+        }
+        $options(-db) eval {
+            SELECT timestamp, server_status, server_id FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND own_id != '' AND own_id=$ownId
+            ORDER BY +timestamp LIMIT 1
+        } r {
+            if {$row eq "" || $r(timestamp) < [dict get $row timestamp]} {
+                set row [dict create timestamp $r(timestamp) \
+                    server_status $r(server_status) server_id $r(server_id)]
+            }
         }
         if {$row eq ""} {
             return [dict create verdict new]
@@ -1526,12 +1573,16 @@ snit::type taco_messagestore {
         set sid [dict get $msg server_id]
         set oid [dict get $msg own_id]
         if {$sid ne "" || $oid ne ""} {
-            return [$options(-db) exists {
-                SELECT 1 FROM chat_message
-                WHERE chat_jid=$jid AND kind='message'
-                  AND ( ($sid != '' AND server_id=$sid)
-                     OR ($oid != '' AND own_id=$oid) )
-            }]
+            # Each id by its own index (see resolveTargetTs).
+            return [expr {[$options(-db) exists {
+                    SELECT 1 FROM chat_message
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND server_id != '' AND server_id=$sid
+                }] || [$options(-db) exists {
+                    SELECT 1 FROM chat_message
+                    WHERE chat_jid=$jid AND kind='message'
+                      AND own_id != '' AND own_id=$oid
+                }]}]
         } else {
             # Content-based fallback for messages without server_id/own_id
             # (e.g. IRC bridge messages). Match within the same second —

@@ -1843,6 +1843,81 @@ test conn-wake-check-stops-when-not-ready {the wake check stops once the link le
         }]
     } -result {0}
 
+# When the link was last heard (lastHeard), for the message module's offline
+# floor. What is read after a sleep may be the kernel's buffer, written
+# before it, so it moves the mark not until the link answers a probe.
+proc conn_heard_msg {body} {
+    j message -type chat -from alice@example.com/phone { j body -body $body }
+}
+
+test conn-last-heard-stands-across-a-sleep {a read after the process slept, before the wake tick, leaves last heard where it was until a probe is answered} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 20 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-lh1"
+        conn_wait 5
+        c.base inject [conn_heard_msg before]
+        lassign [c lastHeard] h1 slept
+        set out [list [expr {$h1 > 0}] $slept]
+        after 150
+        c.base inject [conn_heard_msg buffered]
+        lappend out [expr {[c lastHeard] eq [list $h1 1]}]
+        conn_wait 40
+        c.base clear
+        c probe
+        lappend out [lmap st [c.base get_written] {dict get $st tag}]
+        c.base inject [conn_heard_msg more]
+        lappend out [expr {[c lastHeard] eq [list $h1 1]}]
+        c.base inject [make_sm_ack 0]
+        lassign [c lastHeard] h2 slept
+        lappend out $slept [expr {$h2 > $h1}]
+    } -result {1 0 1 r 1 0 1}
+
+test conn-last-heard-stands-when-the-tick-comes-first {the wake tick that finds the jump marks the sleep, and its probe's answer ends it} \
+    {*}$common \
+    -body {
+        c configure -keepalive 0 -wake-check 20 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-lh2"
+        conn_wait 5
+        c.base inject [conn_heard_msg before]
+        set h1 [lindex [c lastHeard] 0]
+        c.base clear
+        after 150
+        conn_wait 5
+        set out [list [lmap st [c.base get_written] {dict get $st tag}]]
+        c.base inject [conn_heard_msg buffered]
+        lappend out [expr {[c lastHeard] eq [list $h1 1]}]
+        c.base inject [make_sm_ack 0]
+        lassign [c lastHeard] h2 slept
+        lappend out $slept [expr {$h2 > $h1}]
+    } -result {r 1 0 1}
+
+test conn-last-heard-of-a-link-that-did-not-survive-a-sleep {a link that drops after a sleep is reported as last heard before it; a later link that drops awake, as its own} \
+    {*}$common \
+    -body {
+        c configure -autoreconnect 1 -keepalive 0 -wake-check 20 -probe-timeout 30
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-lh3"
+        conn_wait 5
+        c.base inject [conn_heard_msg before]
+        set h1 [lindex [c lastHeard] 0]
+        after 150
+        c.base inject [conn_heard_msg buffered]
+        c.base inject_error "read failed"
+        set out [list [expr {[c lastHeard] eq [list $h1 1]}]]
+        c connect
+        drive_to_ready "user@test.example.com/r" "sm-lh4"
+        # The new stream does not rewrite what the dropped link left.
+        lappend out [expr {[c lastHeard] eq [list $h1 1]}]
+        conn_wait 5
+        c.base inject [conn_heard_msg after]
+        c.base inject_error "read failed"
+        lassign [c lastHeard] h2 slept
+        lappend out $slept [expr {$h2 > $h1}]
+    } -result {1 1 0 1}
+
 # -- Without stream management: pings confirm sends -------------------------
 #
 # The passthrough mode keeps written stanzas and asks about them on the same

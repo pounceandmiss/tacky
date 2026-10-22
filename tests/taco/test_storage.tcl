@@ -928,3 +928,56 @@ test storage-resume-deletes-stale-wal-sidecars \
         taco_storage_resume $cfg
         list [file exists $live] [file exists $live-wal] [file exists $live-shm]
     } -result {1 0 0}
+
+# -- what is deleted is gone from the file -----------------------------------
+
+proc storagetest_filehas {path needle} {
+    if {![file exists $path]} { return 0 }
+    set f [open $path rb]; set data [read $f]; close $f
+    expr {[string first $needle $data] >= 0}
+}
+
+# secure_delete zeroes what a delete or an overwrite frees, so a retracted
+# message, an old setting or a forgotten key cannot be read back from a copy
+# of the file; the per-account db's write-ahead log is truncated when it
+# opens, its frames holding earlier contents of pages since rewritten.
+test storage-secure-delete-scrubs-overwritten-values \
+    {secure_delete is on for accounts.db and an account's db; an overwritten value is in neither file nor log, and the log is empty after the next open} \
+    -setup {
+        storagetest_stub_tacky
+        lassign [storagetest_newdirs] cfg data cache
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+    } -cleanup {
+        catch {t destroy}
+        storagetest_unstub_tacky
+        file delete -force $cfg
+    } -body {
+        t account add -acc scrub@example.com
+        set client [t client scrub@example.com]
+        set pragmas [list [[t account cget -db] onecolumn {PRAGMA secure_delete}] \
+            [$client db onecolumn {PRAGMA secure_delete}]]
+        # Large enough to spill onto overflow pages, which a delete hands to
+        # the free list as they are unless secure_delete zeroes them.
+        set marker [string repeat MARKERMARKERMARKER 600]
+        $client db eval {
+            CREATE TABLE scrubtest(k TEXT PRIMARY KEY, v TEXT);
+            INSERT INTO scrubtest VALUES('pin', $marker)
+        }
+        $client db eval {UPDATE scrubtest SET v='' WHERE k='pin'}
+        set path [file join $data scrub@example.com.db]
+        # Another connection keeps the log from being folded in and deleted
+        # at close, as a crash would.
+        sqlite3 storagetest_holder $path
+        storagetest_holder eval {SELECT count(*) FROM sqlite_master}
+        t destroy
+        set walLeft [expr {[file size $path-wal] > 0}]
+        taco_type create ::t -transient 0 \
+            -config-dir $cfg -data-dir $data -cache-dir $cache
+        t client scrub@example.com
+        set walSize [file size $path-wal]
+        storagetest_holder close
+        t destroy
+        list $pragmas $walLeft $walSize [storagetest_filehas $path MARKERMARKERMARKER] \
+            [storagetest_filehas $path-wal MARKERMARKERMARKER]
+    } -result {{1 1} 1 0 0 0}

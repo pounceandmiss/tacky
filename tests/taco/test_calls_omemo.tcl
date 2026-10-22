@@ -26,6 +26,24 @@ namespace eval ::test::cv {
     variable SDP "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:111 opus/48000/2\r\na=ice-ufrag:abc\r\na=ice-pwd:xyzxyzxyzxyz\r\na=fingerprint:sha-256 AA:BB\r\na=setup:actpass\r\na=mid:audio\r\na=sendrecv\r\n"
 }
 
+# Our devicelist on the server, as the PEP notification brings it: our own
+# device, unless $devices says otherwise. A device is announced only once
+# it is listed.
+proc ::test::cv::ownList {{devices ""}} {
+    if {$devices eq ""} { set devices [list [c omemo device_id]] }
+    c omemo OnDevicelist [j message -from $::test::cv::ME {
+        j event -ns http://jabber.org/protocol/pubsub#event {
+            j items -node eu.siacs.conversations.axolotl.devicelist {
+                j item -id current {
+                    j list -ns $::test::cv::NS_AXOLOTL {
+                        foreach d $devices { j device -id $d }
+                    }
+                }
+            }
+        }
+    }]
+}
+
 # We already have a session with the peer's device 4242, built from its
 # bundle (as after an earlier chat).
 set ::test::cv::env [tacky_env -mock conn -capture-emit 1 -taco-args {-media-backend rtc} -taco-client {
@@ -35,6 +53,7 @@ set ::test::cv::env [tacky_env -mock conn -capture-emit 1 -taco-args {-media-bac
 } -bound-jid user@test.example.com/res -extra-setup {
     mockrtc::reset
     c omemo OnReady
+    ::test::cv::ownList
     omemopeer::create romeo -device $::test::cv::DEV
     c omemo BuildSessionFromBundle $::test::cv::BARE $::test::cv::DEV \
         [omemopeer::bundle romeo]
@@ -50,6 +69,7 @@ set ::test::cv::fresh_env [tacky_env -mock conn -capture-emit 1 -taco-args {-med
 } -bound-jid user@test.example.com/res -extra-setup {
     mockrtc::reset
     c omemo OnReady
+    ::test::cv::ownList
     omemopeer::create romeo -device $::test::cv::DEV
     omemopeer::learn romeo $::test::cv::ME [c omemo device_id] \
         [[set [c.omemo info vars store]] bundle]
@@ -241,6 +261,20 @@ test calls-verify-proceed-announces-device \
         c.calls accept -sid tk-v1
         expr {[::test::cv::announced proceed] == [::test::cv::myDevice]}
     } -result 1
+
+test calls-omemo-nothing-announced-before-the-list-is-out \
+    {an identity our devicelist does not name yet is not announced, and is once the list names it} \
+    {*}$::test::cv::env -body {
+        # The identity exists but the list that went out (or came back)
+        # lacks it: a peer fetching our list would find nothing to seal
+        # for, and fail the call closed.
+        ::test::cv::ownList 77
+        c.calls hangup -sid [c.calls start -to $::test::cv::BARE]
+        set before [::test::cv::announced propose]
+        ::test::cv::ownList [list 77 [::test::cv::myDevice]]
+        c.calls start -to $::test::cv::BARE
+        list $before [expr {[::test::cv::announced propose] == [::test::cv::myDevice]}]
+    } -result {{} 1}
 
 test calls-verify-nothing-announced-when-off \
     {with OMEMO off for the chat, neither propose nor proceed names a device} \

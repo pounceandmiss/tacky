@@ -174,6 +174,19 @@ snit::type mock_conn {
         incr probes
     }
 
+    # The real conn's {ms slept} for the last link to end, the test's to
+    # set (set_heard); {} until it does, which the message module takes
+    # as nothing known.
+    variable heard {}
+
+    method lastHeard {} {
+        return $heard
+    }
+
+    method set_heard {ms slept} {
+        set heard [list $ms $slept]
+    }
+
     variable csiUpdates 0
 
     method csiUpdate {} {

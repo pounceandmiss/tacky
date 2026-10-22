@@ -56,6 +56,8 @@ snit::type taco_chatlist {
         set db [$client cget -db]
 
         $client bus subscribe $self roster:<Changed> [mymethod OnRosterChanged]
+        # A published nickname names a row the roster leaves unnamed.
+        $client bus subscribe $self nick:<Changed> [mymethod OnNickChanged]
         $client bus subscribe $self bookmarks:<Changed> [mymethod OnBookmarkChanged]
         $client bus subscribe $self bookmarks:<RoomState> [mymethod OnRoomState]
         $client bus subscribe $self message:<OwnRead> [mymethod OnOwnRead]
@@ -257,6 +259,14 @@ snit::type taco_chatlist {
         dict set entry muted [dict get $policy muted]
         dict set entry mentions [dict get $policy mentions]
         if {![dict exists $entry name]} { dict set entry name "" }
+        # A person's row is named as their messages are (author.tcl): the
+        # roster name, else the nickname they publish, so the list reads
+        # as replies and notices do. Not a room, nor a room PM.
+        if {[dict get $entry name] eq "" && ![dict get $entry groupchat]
+                && [string first / $chatJid] < 0
+                && ![catch {$client nick get -jid $chatJid} published]} {
+            dict set entry name $published
+        }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
         dict set entry blocked [expr {$chatJid in [$client blocking list]}]
         dict set entry invited [expr {[dict get $entry groupchat]
@@ -304,6 +314,16 @@ snit::type taco_chatlist {
             return
         }
         $self EmitEntry $opts(-jid)
+    }
+
+    # Only a row the list has: a nickname from anyone else is no chat to
+    # add, nor one to remove.
+    method OnNickChanged {args} {
+        array set opts {-jid ""}
+        array set opts $args
+        if {$opts(-jid) eq ""} return
+        set bare [jid bare $opts(-jid)]
+        if {[$self EntryFor $bare] ne ""} { $self EmitEntry $bare }
     }
 
     method OnBookmarkChanged {args} {

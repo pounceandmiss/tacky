@@ -1,4 +1,5 @@
 package require snit
+package require taco::redact
 
 snit::type jlog_type {
     # Levels set through setLevel; everything else inherits, resolved per call.
@@ -52,6 +53,11 @@ snit::type jlog_type {
         # level of the object
         set objlevel [$self getLevel $opts(-obj)]
         if {[lsearch $LEVELS $opts(-level)] >= [lsearch $LEVELS $objlevel]} {
+            # An aesgcm:// URL's fragment is the file's key (XEP-0454): blanked
+            # here, once for every sink, an embedder's -logproc as much as ours.
+            if {[info exists opts(-text)]} {
+                set opts(-text) [::taco_redact::url $opts(-text)]
+            }
             if {$options(-logproc) ne ""} {
                 {*}$options(-logproc) [array get opts]
             } else {
@@ -296,12 +302,17 @@ snit::type jlog_type {
             append line \n [jwrite -pretty \
                 [jlog_redact $opts(-stanza) $options(-redactcontent)]]
         }
-        return $line
+        # The stanza dump too (a body or an oob url with content redaction
+        # off), and a record that reached a writer without going through Log.
+        return [::taco_redact::url $line]
     }
 
-    # -logproc target: one timestamped line per record on stderr.
+    # -logproc target: one timestamped line per record on stderr. A process
+    # with no stderr (a Windows GUI executable has no standard channels, nor
+    # has a thread's interp there) loses the line rather than throwing into
+    # the caller, a constructor among them.
     method stderrWriter {opts_list} {
-        puts stderr [$self FormatLine $opts_list]
+        catch {puts stderr [$self FormatLine $opts_list]}
     }
 
     # -logproc target: one file for every account plus native (libdatachannel /

@@ -96,13 +96,21 @@ snit::type taco_client {
             if {$options(-passphrase) ne ""} {
                 taco_pragma_key $db $options(-passphrase)
             }
+            # secure_delete: what is deleted or overwritten is zeroed in
+            # place, not left in the file's free pages, so a retracted
+            # message or a forgotten key cannot be read back from a copy.
             $db eval {
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = NORMAL;
+                PRAGMA secure_delete = ON;
             }
         }
         set fresh [expr {[$db onecolumn {PRAGMA user_version}] == 0}]
         taco_schema_migrate $db per-account
+        # And the write-ahead log starts empty: its frames can hold earlier
+        # contents of pages since rewritten. A reader still holding it keeps
+        # it from truncating, which is no error.
+        catch {$db eval {PRAGMA wal_checkpoint(TRUNCATE)}}
 
         install setting using taco_setting $self.setting -db $db -taco $self
         $self AdoptGlobalSettings $fresh
@@ -338,12 +346,12 @@ snit::type taco_client {
             set inner [xsearch $fwd message -get node]
             if {$inner eq ""} return
             # A carbon delivered late (offline storage, a resumed stream) has
-            # its <delay> on the wrapper, not on the forwarded message. Copy
-            # it inside; TrustedStamp still checks who set it.
-            if {[llength [xsearch $inner delay -ns urn:xmpp:delay]] == 0} {
-                foreach d [xsearch $stanza delay -ns urn:xmpp:delay] {
-                    dict lappend inner children $d
-                }
+            # its <delay> on the wrapper, not on the forwarded message. Put it
+            # ahead of the copy's own, which the sender may have set itself;
+            # TrustedStamp still checks who set each.
+            set delays [xsearch $stanza delay -ns urn:xmpp:delay]
+            if {[llength $delays]} {
+                dict set inner children [concat $delays [dict get $inner children]]
             }
             # An inner message we cannot address is as unusable as a
             # forged envelope: same empty return.

@@ -66,12 +66,16 @@ snit::type taco_message {
     # stanza this session (TrustedStamp), "" for none: what the server held
     # for us while we were offline postdates our previous session.
     variable OfflineFloorUs ""
-    # When our previous session in this run ended.
+    # When our previous session in this run ended: the link's last moment
+    # (LinkHeardUs), not when the drop was noticed.
     variable LastOnlineUs ""
     # Room for the server's clock running behind ours.
     typevariable OfflineSkewUs [expr {5 * 60 * 1000000}]
     # How far back a first session, with nothing stored, takes the floor.
     typevariable OfflineFloorBoundUs [expr {30 * 86400 * 1000000}]
+    # How long after a send a bounce still fails the row once our server
+    # has acked it (MarkBounced).
+    typevariable BounceWindowUs [expr {10 * 60 * 1000000}]
 
     constructor {args} {
         $self configurelist $args
@@ -445,7 +449,7 @@ snit::type taco_message {
     }
 
     method OnDisconnect {args} {
-        set LastOnlineUs [clock microseconds]
+        set LastOnlineUs [$self LinkHeardUs]
         array unset PendingRetry
         # The query settles these itself, but not until the session is back -
         # too long to leave a sync showing as running.
@@ -453,6 +457,23 @@ snit::type taco_message {
         dict for {jid _} $open {
             $self CatchupSettled $jid 0
         }
+    }
+
+    # When the link was last known alive, in microseconds. A phone that
+    # slept notices the drop at its wake, hours after the link died under
+    # it, and a floor written then refuses every stamp of the flush the
+    # next session brings (TrustedStamp): each would get its arrival
+    # time. Only while the process slept is the link's last read (conn
+    # lastHeard) earlier than the drop; else, and when conn cannot say,
+    # it is now.
+    method LinkHeardUs {} {
+        set now [clock microseconds]
+        if {[catch {$client conn lastHeard} heard]
+                || [llength $heard] != 2} { return $now }
+        lassign $heard ms slept
+        if {![string is true -strict $slept] || ![string is wide -strict $ms]
+                || $ms <= 0} { return $now }
+        expr {min($ms * 1000, $now)}
     }
 
     # A call row's `active`: whether we are in the call held in $room.
@@ -1222,8 +1243,11 @@ snit::type taco_message {
             all {}
             parked-omemo { append sql { AND encryption='omemo'} }
             peer-omemo   { append sql \
-                { AND chat_jid=$peerJid AND encryption='omemo'} }
+                { AND +chat_jid=$peerJid AND encryption='omemo'} }
         }
+        # Read through idx_chat_message_pending, which the literal
+        # server_status='pending' selects; the + keeps peer-omemo off the
+        # primary key, which would walk the peer's whole chat.
         append sql { ORDER BY timestamp}
         set pending {}
         $client db eval $sql row {
@@ -1362,7 +1386,8 @@ snit::type taco_message {
         # double check encryption desire
         set dbEnc [$client db onecolumn {
             SELECT encryption FROM chat_message
-            WHERE chat_jid=$chatJid AND own_id=$oid AND kind='message'
+            WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$oid
+              AND kind='message'
         }]
         set dictEnc [expr {[dict exists $msg encryption] \
             ? [dict get $msg encryption] : ""}]
@@ -1405,7 +1430,7 @@ snit::type taco_message {
             $replyId $replyTo]]
         $client db eval {
             UPDATE chat_message SET raw_xml=$xml
-            WHERE chat_jid=$chatJid AND own_id=$oid
+            WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$oid
         }
         # Marks it in flight, so a later warm tick won't re-send it.
         $self MarkWired $oid
@@ -1507,7 +1532,9 @@ snit::type taco_message {
 
     # The peer's side refused a message we sent. Unlike MarkOutgoingFailed
     # this also turns a message the server already acked: the ack was our
-    # server's, the refusal comes after it.
+    # server's, the refusal comes after it -- but only within BounceWindowUs
+    # of the send: every recipient knows our id, and a bounce of theirs much
+    # later must not fail a message long delivered.
     method MarkBounced {chatJid oid} {
         if {$oid eq ""} return
         set ts [$client db onecolumn {
@@ -1516,6 +1543,13 @@ snit::type taco_message {
               AND server_status IN ('pending', '')
         }]
         if {$ts eq ""} return
+        if {$ts < [clock microseconds] - $BounceWindowUs && [$client db onecolumn {
+                SELECT server_status FROM chat_message
+                WHERE chat_jid=$chatJid AND own_id=$oid
+            }] eq ""} {
+            jlog debug "message: a late bounce of $oid in $chatJid ignored"
+            return
+        }
         $client db eval {
             UPDATE chat_message
             SET server_status='failed', fail_reason='delivery'
@@ -2556,8 +2590,8 @@ snit::type taco_message {
             if {$id eq ""} continue
             if {[$client db exists {
                 SELECT 1 FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND own_id=$id
-                  AND server_status='pending'
+                WHERE chat_jid=$chatJid AND kind='message'
+                  AND own_id != '' AND own_id=$id AND server_status='pending'
             }]} { return $id }
         }
         return ""
@@ -2745,7 +2779,8 @@ snit::type taco_message {
                 [xsearch $msgNode -get @id]] {
             if {$id ne "" && [$client db exists {
                     SELECT 1 FROM chat_message
-                    WHERE chat_jid=$chatJid AND own_id=$id}]} {
+                    WHERE chat_jid=$chatJid AND own_id != ''
+                      AND own_id=$id}]} {
                 return 1
             }
         }
@@ -2771,11 +2806,23 @@ snit::type taco_message {
                        AS by_server
             FROM chat_message m
             WHERE m.chat_jid=$chatJid AND m.kind='message'
-              AND ( (m.server_id != '' AND m.server_id=$targetId)
-                 OR (m.origin_id != '' AND m.origin_id=$targetId)
-                 OR (m.own_id    != '' AND m.own_id=$targetId)
-                 OR m.timestamp IN (SELECT target_ts FROM message_alias
-                     WHERE chat_jid=$chatJid AND alias_id=$targetId) )
+              AND m.timestamp IN (
+                  -- One arm per id, each by its own partial index, which
+                  -- an OR of the ids never took (messagestore
+                  -- resolveTargetTs).
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid
+                    AND server_id != '' AND server_id=$targetId
+                  UNION ALL
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid
+                    AND origin_id != '' AND origin_id=$targetId
+                  UNION ALL
+                  SELECT timestamp FROM chat_message
+                  WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$targetId
+                  UNION ALL
+                  SELECT target_ts FROM message_alias
+                  WHERE chat_jid=$chatJid AND alias_id=$targetId)
             ORDER BY m.timestamp
         } row {
             lappend out [dict create ts $row(ts) occ $row(occ) \
@@ -2797,7 +2844,7 @@ snit::type taco_message {
             return [expr {$sid ne "" && $sid eq $targetOcc}]
         }
         set from [jid bare [dict get $sender from]]
-        return [expr {$from eq [jid bare $targetFrom]}]
+        return [jid equal $from [jid bare $targetFrom]]
     }
 
     # Extract an XEP-0308 correction into {target_id new_body encryption
@@ -2907,7 +2954,7 @@ snit::type taco_message {
                 # came from, may take a message back.
                 set ok [expr {[jid norm $rawFrom] eq [jid norm $targetFrom]}]
             } else {
-                set ok [expr {[jid bare $rawFrom] eq [jid bare $targetFrom]}]
+                set ok [jid equal [jid bare $rawFrom] [jid bare $targetFrom]]
             }
             if {$ok} { return [list ok [dict get $c ts]] }
         }
@@ -3038,7 +3085,7 @@ snit::type taco_message {
             set ownId [dict get $args -own_id]
         } else {
             set rawFrom [xsearch $msgNode -get @from]
-            if {$rawFrom ne "" && [jid bare $rawFrom] eq [jid bare [$client cget -jid]]} {
+            if {$rawFrom ne "" && [jid equal [jid bare $rawFrom] [jid bare [$client cget -jid]]]} {
                 set ownId [xsearch $msgNode -get @id]
             } elseif {[IsRoomChatJid $chatJid] && [$self IsOwnByOccupant $chatJid $msgNode]} {
                 # Our own message from the room archive. It comes from

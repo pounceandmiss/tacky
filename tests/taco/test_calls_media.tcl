@@ -293,6 +293,45 @@ test media-closed-ends-call {a closed pc surfaces as <Ended> and forgets the cal
             [dict exists [calls_state] $sid]]
     } -result {{<Ended> -sid SID -reason hangup} 0}
 
+# The <Failed>/<Ended> alone is not enough for a peer that ends a session
+# only on session-terminate: another.im's Android app kept such a call up
+# with its video frozen.
+test media-failed-terminates {a failed pc tells the peer with session-terminate connectivity-error} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+        mockrtc::fire [media_pc $sid] state-change failed
+        set jingle [media_jingle_sent]
+        list [xsearch $jingle -get @action] [expr {[xsearch $jingle -get @sid] eq $sid}] \
+            [xsearch $jingle reason connectivity-error -get tag]
+    } -result {session-terminate 1 connectivity-error}
+
+test media-closed-terminates {a pc that closes on a live call tells the peer with session-terminate success} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+        mockrtc::fire [media_pc $sid] state-change connected
+        mockrtc::fire [media_pc $sid] state-change closed
+        set jingle [media_jingle_sent]
+        list [xsearch $jingle -get @action] [expr {[xsearch $jingle -get @sid] eq $sid}] \
+            [xsearch $jingle reason success -get tag]
+    } -result {session-terminate 1 success}
+
+test media-hangup-terminates-once {our own hangup sends one session-terminate, not a second on the pc closing} \
+    {*}$media_env -body {
+        set sid [media_caller]
+        set pc [media_pc $sid]
+        c.calls hangup -sid $sid
+        # The backend may already have dropped the callback with the pc.
+        catch {mockrtc::fire $pc state-change closed}
+        set n 0
+        foreach st [c.conn get_written] {
+            if {[xsearch $st jingle -ns urn:xmpp:jingle:1 -get @action]
+                    eq "session-terminate"} { incr n }
+        }
+        list $n [dict exists [calls_state] $sid]
+    } -result {1 0}
+
 # -- Teardown --
 
 test media-teardown-frees-rtcma-before-pc {audio handles are destroyed before the pc} \

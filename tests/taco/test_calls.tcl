@@ -275,6 +275,15 @@ test calls-propose-while-calling-is-busy {calling one contact, another's propose
             [lrange [calls_events] 1 end]
     } -result {proposed 0 {reject aa-other} busy {{<Missed> -sid aa-other -from other@example.com -video 0 -reason busy}}}
 
+test calls-missed-through-a-proxy-goes-on-the-bus {a ring refused because the account goes through a proxy is rejected and missed, reason proxy} \
+    {*}$calls_env -body {
+        c.conn configure -proxy {host 127.0.0.1 port 9050 username {} password {}}
+        try {
+            c.conn feed [calls_jmi_in propose tk-mp1 $::PEER]
+            list [calls_jmi_sent [calls_last_written]] [calls_events] [calls_state]
+        } finally { c.conn configure -proxy "" }
+    } -result {{reject tk-mp1} {{<Missed> -sid tk-mp1 -from peer@example.com -video 0 -reason proxy}} {}}
+
 # A <reject> with <tie-break/>, as the winner of crossing proposes sends.
 proc calls_tie_break_in {sid from} {
     j message -from $from -to user@test.example.com -type chat {

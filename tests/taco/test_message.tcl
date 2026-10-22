@@ -490,6 +490,67 @@ test message-live-offline-floor-from-the-store \
              [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] == $ts}]
     } -result {1 1}
 
+# A phone that slept notices the drop at its wake, hours after the link
+# died. The floor is where the link was last heard (conn lastHeard), so what
+# the server held for us meanwhile keeps its stamp.
+test message-live-drop-after-a-sleep-floors-at-the-link-last-heard \
+    {a session that ends after a sleep floors server delays where the link was last heard, not at the wake} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        set heardMs [expr {[clock milliseconds] - 2 * 3600 * 1000}]
+        $::_client conn set_heard $heardMs 1
+        # The resume failed: the fresh stream ends the old session.
+        msg_ready
+        set before [clock microseconds]
+        set ts [expr {([clock seconds] - 3600) * 1000000}]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "stored while the phone slept"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "older than the link's last moment"
+            j delay -ns urn:xmpp:delay -from test.example.com \
+                -stamp [FormatTimestampISO [expr {$before - 3 * 3600 * 1000000}]]
+        }]
+        list [expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] == $ts}] \
+             [expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] >= $before}]
+    } -result {1 1}
+
+test message-live-drop-with-no-sleep-floors-now \
+    {a session that ends with no sleep floors server delays at its end, as before} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn set_heard [expr {[clock milliseconds] - 2 * 3600 * 1000}] 0
+        $::_client conn fire_disconnect gone
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -type chat -from alice@example.com/phone {
+            j body -body "an hour back"
+            j delay -ns urn:xmpp:delay -from test.example.com \
+                -stamp [FormatTimestampISO [expr {$before - 3600 * 1000000}]]
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}
+    } -result 1
+
+# A resumed stream is the same session: the floor stands where the session
+# started, and the queue resent after a sleep keeps its server stamps.
+test message-live-resumed-after-a-sleep-keeps-the-queue-stamps \
+    {the queue a stream resumed after a sleep resends keeps its server stamps} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn set_heard [expr {[clock milliseconds] - 2 * 3600 * 1000}] 1
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 3600) * 1000000}]
+        $::_client conn feed [j message -type chat -from bob@example.com/phone {
+            j body -body "queued while the phone slept"
+            j delay -ns urn:xmpp:delay -from test.example.com -stamp [FormatTimestampISO $ts]
+        }]
+        expr {[dict get [lindex [msg_store_latest bob@example.com] 0] timestamp] == $ts}
+    } -result 1
+
 test message-live-unparseable-stamp-uses-arrival \
     {a delay stamp we cannot parse falls back to arrival time} \
     {*}$msg_common \
@@ -4268,6 +4329,71 @@ test message-carbon-wrapper-delay \
         set out
     } -result {c1 1 c2 0}
 
+# The copy inside a carbon may carry a delay of its own that no server set;
+# the wrapper's, our server's, still dates it.
+test message-live-resumed-sent-carbon-keeps-the-wrapper-stamp \
+    {a send of ours from another device, resent on resume, is stamped by the server's delay on the wrapper even when the copy has its own} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 120) * 1000000}]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j sent -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw1 -from $::acc/pc -to alice@example.com/phone {
+                        j body -body "sent from the desktop"
+                        j delay -ns urn:xmpp:delay -stamp 2024-01-01T00:00:00Z
+                    }
+                }
+            }
+            j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp [FormatTimestampISO $ts]
+        }]
+        set row [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $row is_outgoing] [expr {[dict get $row timestamp] == $ts}]
+    } -result {1 1}
+
+test message-live-resumed-received-carbon-keeps-the-wrapper-stamp \
+    {a peer's message carbon-copied to us, resent on resume, is stamped by the server's delay on the wrapper, not the peer's inside} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        $::_client conn fire_ready 1
+        set ts [expr {([clock seconds] - 120) * 1000000}]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw2 -from alice@example.com/phone -to $::acc/pc {
+                        j body -body "read on the desktop first"
+                        j delay -ns urn:xmpp:delay -from alice@example.com -stamp 2024-01-01T00:00:00Z
+                    }
+                }
+            }
+            j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp [FormatTimestampISO $ts]
+        }]
+        set row [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $row is_outgoing] [expr {[dict get $row timestamp] == $ts}]
+    } -result {0 1}
+
+test message-live-carbon-inner-server-looking-stamp-is-still-the-peers \
+    {a delay naming our server inside a received carbon's copy, none on the wrapper, is held to the offline floor and the row gets its arrival time} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        set before [clock microseconds]
+        $::_client conn feed [j message -from $::acc -to $::acc/res {
+            j received -ns urn:xmpp:carbons:2 {
+                j forwarded -ns urn:xmpp:forward:0 {
+                    j message -type chat -id cw3 -from alice@example.com/phone -to $::acc/pc {
+                        j body -body "backdated by the peer"
+                        j delay -ns urn:xmpp:delay -from [jid domain $::acc] -stamp 1970-01-02T00:00:00Z
+                    }
+                }
+            }
+        }]
+        expr {[dict get [lindex [msg_store_latest alice@example.com] 0] timestamp] >= $before}
+    } -result 1
+
 test message-pm-carbon-filed-under-occupant {a carbon of a room PM we sent elsewhere goes to the room/nick chat, not a chat with the room} \
     {*}$msg_common \
     -body {
@@ -4610,6 +4736,21 @@ test message-edit-incoming-1to1 {a peer correction swaps the body and marks edit
         }]
         $::_client conn feed [j message -type chat -from alice@example.com/phone -id m2 {
             j replace -ns urn:xmpp:message-correct:0 -id m1
+            j body -body "hello world"
+        }]
+        set m [lindex [msg_store_latest alice@example.com] 0]
+        list [dict get $m content body] [dict get $m edited] \
+             [llength [msg_store_latest alice@example.com]]
+    } -result {{hello world} 1 1}
+
+test message-edit-incoming-1to1-across-case {a correction from the same address in another case is the author's} \
+    {*}$msg_common -body {
+        $::_client conn feed [j message -type chat -from alice@example.com/phone -id c1 {
+            j origin-id -ns urn:xmpp:sid:0 -id c1
+            j body -body "helo"
+        }]
+        $::_client conn feed [j message -type chat -from Alice@Example.COM/phone -id c2 {
+            j replace -ns urn:xmpp:message-correct:0 -id c1
             j body -body "hello world"
         }]
         set m [lindex [msg_store_latest alice@example.com] 0]
@@ -5145,7 +5286,7 @@ test message-bounce-fails-the-send {a bounce marks the sent message failed} \
     -body {
         msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
             from_jid $acc own_id oid-b server_status "" \
-            encryption "" timestamp 2000000]]
+            encryption "" timestamp [clock microseconds]]]
         $::_client message OnMessage [j message -type error \
                 -from alice@example.com -to $acc -id oid-b {
             j body -body "hi"
@@ -5157,6 +5298,41 @@ test message-bounce-fails-the-send {a bounce marks the sent message failed} \
         list status [dict get $r server_status] reason [dict get $r fail_reason] \
             rows [$::_client db onecolumn {SELECT COUNT(*) FROM chat_message}]
     } -result {status failed reason delivery rows 1}
+
+# Any recipient knows our id: a bounce long after the ack is not a refusal
+# of the send.
+test message-late-bounce-of-an-old-acked-send-changes-nothing \
+    {a bounce naming a send acked long ago leaves the row delivered} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-old server_status "" encryption "" \
+            timestamp [expr {[clock microseconds] - 3600 * 1000000}]]]
+        $::_client message OnMessage [j message -type error \
+                -from alice@example.com -to $acc -id oid-old {
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        set r [msg_row "own_id='oid-old'"]
+        list status [dict get $r server_status] reason [dict get $r fail_reason]
+    } -result {status {} reason {}}
+
+test message-late-bounce-of-an-old-pending-send-fails-it \
+    {a bounce of a send never acked fails it however old} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com body "hi" \
+            from_jid $acc own_id oid-oldp server_status pending encryption "" \
+            timestamp [expr {[clock microseconds] - 3600 * 1000000}]]]
+        $::_client message OnMessage [j message -type error \
+                -from alice@example.com -to $acc -id oid-oldp {
+            j error -type cancel {
+                j service-unavailable -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        dict get [msg_row "own_id='oid-oldp'"] server_status
+    } -result failed
 
 # A <delay> counts only from our server, our account or the room: a sender's
 # own would let it date a message as it likes.
@@ -5338,3 +5514,42 @@ test message-room-without-archive-resends-a-send-pending-at-close \
         }]
         list early $early sent [msg_room_resends]
     } -result {early 0 sent 1}
+
+# PendingSends is asked on every reconnect and whenever an OMEMO session or
+# device list comes ready, which a catch-up's every decrypted message can
+# be: it reads the pending rows (idx_chat_message_pending), not every row of
+# the account or of the peer's chat. Counted in the virtual machine's
+# instructions (the progress handler, every 100).
+test message-pendingsends-read-the-pending-rows-not-the-store \
+    {PendingSends costs the same beside 3,000 confirmed rows as beside 30} \
+    {*}$msg_common \
+    -body {
+        set db [$::_client message messagestore cget -db]
+        set out {}
+        foreach n {30 3000} {
+            set chat ps$n@example.com
+            set batch {}
+            for {set i 0} {$i < $n} {incr i} {
+                lappend batch [msg_msg chat_jid $chat \
+                    timestamp [expr {1000000 + $i * 1000}] \
+                    server_id s$i own_id w$n-$i from_jid $acc]
+            }
+            lappend batch [msg_msg chat_jid $chat timestamp 9000000000 \
+                from_jid $acc own_id parked$n server_status pending \
+                encryption omemo]
+            msg_store $batch
+            set ::_msg_pending_ops 0
+            $db progress 100 {incr ::_msg_pending_ops; expr 0}
+            try {
+                set all [$::_client message PendingSends all]
+                set peer [$::_client message PendingSends peer-omemo $chat]
+            } finally {
+                $db progress 0 {}
+            }
+            lappend out [lmap m $all {dict get $m own_id}] \
+                [lmap m $peer {dict get $m own_id}] \
+                [expr {$::_msg_pending_ops < 5 ? "few" : $::_msg_pending_ops}]
+        }
+        unset ::_msg_pending_ops
+        set out
+    } -result {parked30 parked30 few {parked30 parked3000} parked3000 few}

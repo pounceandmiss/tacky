@@ -1766,6 +1766,21 @@ snit::type taco_muc {
         set roomJid [jid norm [jid bare $from]]
             if {[info exists Rooms($roomJid)] && [dict get $Rooms($roomJid) joined]} {
                 set nick [jid resource $from]
+                # OMEMO: read as the occupant's, whom the room names, as a
+                # room message is. Before the body test: the ciphertext
+                # comes with a fallback body, which is not the message.
+                if {[llength [xsearch $stanza encrypted \
+                        -ns eu.siacs.conversations.axolotl]]} {
+                    if {[catch {$client omemo decryptRoomMessage $roomJid \
+                            $stanza ${roomJid}/${nick}} plain]} {
+                        jlog warn "$roomJid/$nick: OMEMO message not read: $plain"
+                        return 1
+                    }
+                    if {$plain ne ""} {
+                        $self OnPrivateMessage $roomJid $nick $plain
+                    }
+                    return 1
+                }
                 if {[HasBody $stanza]} {
                     $self OnPrivateMessage $roomJid $nick $stanza
                     return 1

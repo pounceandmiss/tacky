@@ -24,7 +24,8 @@ snit::type taco_nick {
     constructor args {
         $self configurelist $args
         set client $options(-client)
-        $client pubsub handler http://jabber.org/protocol/nick \
+        # A stranger's nick is not taken (pubsub.tcl, -contacts).
+        $client pubsub handler http://jabber.org/protocol/nick -contacts \
             [mymethod OnNotification]
         $client caps addFeature http://jabber.org/protocol/nick+notify
     }

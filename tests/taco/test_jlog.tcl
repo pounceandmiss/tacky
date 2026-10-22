@@ -83,6 +83,27 @@ test jlog-no-logproc-avoids-stdout {a logger with no sink writes to stderr, not 
         file delete -force $outfile $errfile
     } -result {0 1}
 
+# A Windows GUI executable has no standard channels: the stderr sink then
+# loses its line, and the caller (the backend's constructor at boot) goes on.
+test jlog-no-stderr-does-not-throw {with no stderr channel a record is dropped, not raised} \
+    -constraints hasProcess -setup {
+        set child [makeFile {
+            lappend auto_path [file join [pwd] lib]
+            package require taco
+            jlog_type create t -defaultlevel debug
+            close stderr
+            t log error "sink probe" -obj ::c
+            # bgerror's last resort, when the log itself throws.
+            jlog configure -logproc {error "no log"}
+            ::taco_bg::Report boom boom
+            puts survived
+        } jlog-nostderr.tcl]
+    } -body {
+        exec [info nameofexecutable] $child
+    } -cleanup {
+        removeFile jlog-nostderr.tcl
+    } -result survived
+
 # -- write -----------------------------------------------------------------
 
 test jlog-write-rejects-unknown-level {write rejects a level outside the vocabulary} \
@@ -129,6 +150,26 @@ test jlog-format-omits-empty-acc {an accountless line has no stray separator} \
     {*}$probe -body {
         string match {*] ::c: boom} [jprobe FormatLine {-level error -text boom -obj ::c}]
     } -result 1
+
+# An aesgcm:// URL's fragment is the file's key (XEP-0454): no record carries
+# it, whatever logged it -- a module's text, a host's `log write`, a stanza
+# dump with content redaction off -- and whichever sink takes the record.
+test jlog-record-carries-no-aesgcm-key \
+    {an aesgcm:// fragment in a record's text or stanza reaches neither the -logproc nor the line} \
+    {*}$probe -body {
+        set frag [string repeat 0a 12][string repeat 1b 32]
+        jprobe configure -redactcontent 0
+        jprobe setLevel ::c verbose
+        jprobe log debug "download of aesgcm://up.example/pic.png#$frag failed" -obj ::c
+        jprobe write -level error -text "host saw AESGCM://up.example/pic.png#$frag" -obj ::c
+        set stanza [j message -type chat {
+            j body -body "aesgcm://up.example/pic.png#$frag"
+        }]
+        set line [jprobe FormatLine [list -level debug -obj ::c -text in -stanza $stanza]]
+        list [regexp $frag $::jlog_seen] [regexp $frag $line] \
+            [string match {*aesgcm://up.example/pic.png#<redacted>*} $line] \
+            [dict get [lindex $::jlog_seen 1] -text]
+    } -result {0 0 1 {host saw AESGCM://up.example/pic.png#<redacted>}}
 
 # -- choosing the sink -----------------------------------------------------
 

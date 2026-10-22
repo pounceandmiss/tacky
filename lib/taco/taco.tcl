@@ -23,6 +23,9 @@ package require base64
 package require snit
 package require control
 package require jid
+# The redaction of every log and trace (redact.tcl), shared with the front
+# end's bgerror.
+package require taco::redact
 
 # Pull the condition and optional human text out of a response stanza's
 # <error> child. Returns {condition <c> text <t>}: condition is "unknown" when
@@ -135,7 +138,7 @@ namespace eval ::taco_bg {
         # Snapshot before the catches below overwrite ::errorInfo.
         set info $::errorInfo
         if {$reporting} {
-            catch {puts stderr $info}
+            catch {puts stderr [redact $info $message]}
             return
         }
         set reporting 1
@@ -143,9 +146,21 @@ namespace eval ::taco_bg {
         set reporting 0
     }
 
+    # errorInfo prints the failing commands with their arguments, so a trace
+    # quotes whatever they were handed: a password, a token, a message's
+    # text, an aesgcm:// URL's key. Blanked where they are named, and
+    # wherever else the values named in `text` or in the `context` beside it
+    # (the message beside a trace) turn up (redact.tcl).
+    proc redact {text args} {
+        ::taco_redact::trace $text {*}$args
+    }
+
     proc Report {message info} {
+        lassign [list [redact $message $info] [redact $info $message]] message info
+        # The last resort, and there may be no stderr either (a Windows GUI
+        # executable has no standard channels).
         if {[catch {jlog error $info -obj bgerror}]} {
-            puts stderr $info
+            catch {puts stderr $info}
         }
         if {![Fresh $message]} return
         # tacky is a no-op proc during threaded teardown and the pipe can be
@@ -337,6 +352,10 @@ snit::type taco_type {
         } else {
             sqlite3 $self.db :memory:
         }
+        # What is deleted or overwritten is zeroed in place (a removed
+        # account's password, an old setting), not left in the file's free
+        # pages. Needs no key: SQLCipher takes it before `storage unlock`.
+        $db eval {PRAGMA secure_delete = ON}
         install storage using taco_storage ${selfns}::storage -db $db -taco $self \
             -config-dir $options(-config-dir) -data-dir $options(-data-dir) \
             -cache-dir $options(-cache-dir)

@@ -499,6 +499,27 @@ test groupcall-late-peer-calls-us {a peer announcing after us is let in when the
             [expr {[gc_pc_of bob-sid] ne ""}]
     } -result [list 0 result si1 bob-sid $ROOM 1]
 
+# The room's <item jid> and the joiner's own from can differ in case; they
+# name the same occupant.
+test groupcall-late-peer-calls-us-across-case {a joiner whose JID the room writes in another case is let in} \
+    {*}$groupcall_env -body {
+        gc_room
+        c.groupcall join -jid $ROOM
+        gc_echo_preparing
+        gc_echo_announce
+        c.conn feed [gc_presence bob -jid Bob@Example.COM/desk \
+            -contents [list audio [list $OPUS_111]]]
+        c.conn feed [gc_session_initiate bob-sid $BOB $ROOM]
+        set ack [gc_written_id si1]
+        gc_answer_extdisco
+        set accepted [list [xsearch $ack -get @type] [llength [c.calls list]]]
+        # And it is the same participant when they leave the call.
+        c.conn clear
+        c.conn feed [gc_presence bob -jid Bob@Example.COM/desk]
+        lassign [gc_jingle_written] to jingle
+        list {*}$accepted $to [xsearch $jingle -get @action] [llength [c.calls list]]
+    } -result [list result 1 $BOB session-terminate 0]
+
 test groupcall-late-peer-video-follows-ours {an inbound session sends video only if we joined with it} \
     {*}$groupcall_env -body {
         gc_room
