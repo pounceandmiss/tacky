@@ -470,15 +470,16 @@ snit::widget chatarea {
         }
     }
 
-    # Outgoing receipt glyph: "!" failed, "" while pending, single check
-    # once the server has it, double on delivered/read (read is coloured).
-    method ReceiptText {serverStatus remoteStatus} {
-        if {$serverStatus eq "failed"} { return "!" }
-        if {$serverStatus ne ""} { return "" }
+    # Outgoing receipt as {text image}: "!" failed, nothing while pending, a
+    # tick once the server has it, two on delivered/read (read is coloured).
+    method ReceiptMark {serverStatus remoteStatus} {
+        if {$serverStatus eq "failed"} { return {! ""} }
+        if {$serverStatus ne ""} { return {"" ""} }
         switch -- $remoteStatus {
-            read - delivered { return "\u2713\u2713" }
-            default          { return "\u2713" }
+            read - delivered { set state $remoteStatus }
+            default          { set state sent }
         }
+        return [list "" [receiptmark::get $state]]
     }
 
     # Read gets an accent colour via receipt.read.
@@ -492,8 +493,21 @@ snit::widget chatarea {
 
     # Insert the receipt glyph at msgins.
     method DrawReceiptGlyph {slot serverStatus remoteStatus} {
-        set rt [$self ReceiptText $serverStatus $remoteStatus]
-        $text ins msgins " $rt" [$self ReceiptTags $slot $serverStatus $remoteStatus]
+        $self InsertReceipt msgins $slot $serverStatus $remoteStatus
+    }
+
+    # A space, then the receipt's text or tick, all under the receipt tags.
+    # The tick goes where the receipt's text ended up: $index may be msgins
+    # sitting at the end of the text, where neither the number it resolves
+    # to nor the mark itself is where Tk put the insert.
+    method InsertReceipt {index slot serverStatus remoteStatus} {
+        lassign [$self ReceiptMark $serverStatus $remoteStatus] glyph img
+        set tags [$self ReceiptTags $slot $serverStatus $remoteStatus]
+        $text ins $index " $glyph" $tags
+        if {$img eq ""} return
+        set after [lindex [$text tag ranges item.$slot.receipt] end]
+        $text image create $after -image $img -align baseline
+        foreach t $tags { $text tag add $t $after }
     }
 
     method {receipt update} {key serverStatus remoteStatus} {
@@ -502,9 +516,8 @@ snit::widget chatarea {
         set ranges [$text tag ranges item.$slot.receipt]
         if {[llength $ranges] == 0} return
         lassign $ranges start end
-        set rt [$self ReceiptText $serverStatus $remoteStatus]
-        $text replace $start $end " $rt" \
-            [$self ReceiptTags $slot $serverStatus $remoteStatus]
+        $text del $start $end
+        $self InsertReceipt $start $slot $serverStatus $remoteStatus
     }
 
     # Swap the chip row in place; body stays put, viewport doesn't jump.
@@ -805,4 +818,70 @@ snit::widget chatarea {
             {*}$options(-avatar-release-command) $ajid
         }
     }
+}
+
+# Receipt ticks, drawn rather than typed: Unicode has no double check mark,
+# and two check characters sit a whole letter apart. One bitmap per state,
+# in the colour the text receipt had.
+namespace eval receiptmark {
+    # '#' is ink. The second tick is only its long stroke; its short one
+    # would cross the first tick.
+    variable Art {
+        single {
+            ".........##"
+            "........##."
+            ".......##.."
+            "##....##..."
+            ".##..##...."
+            "..####....."
+            "...##......"
+        }
+        double {
+            ".........##..##"
+            "........##..##."
+            ".......##..##.."
+            "##....##..##..."
+            ".##..##..##...."
+            "..####..##....."
+            "...##..##......"
+        }
+    }
+    # state -> {art palette-role}
+    variable States {
+        sent      {single dim}
+        delivered {double dim}
+        read      {double accent}
+    }
+}
+
+# The image for a receipt state (sent, delivered, read), made on first use.
+proc receiptmark::get {state} {
+    variable Art
+    variable States
+    set name receiptmark.$state
+    if {$name ni [image names]} {
+        lassign [dict get $States $state] art role
+        image create bitmap $name -data [xbm [dict get $Art $art]] \
+            -foreground [palette $role]
+    }
+    return $name
+}
+
+# XBM data for rows of '#' and '.', least significant bit leftmost.
+proc receiptmark::xbm {rows} {
+    set w [string length [lindex $rows 0]]
+    set bytes {}
+    foreach row $rows {
+        for {set x 0} {$x < $w} {incr x 8} {
+            set b 0
+            for {set i 0} {$i < 8 && $x + $i < $w} {incr i} {
+                if {[string index $row [expr {$x + $i}]] eq "#"} {
+                    set b [expr {$b | (1 << $i)}]
+                }
+            }
+            lappend bytes [format 0x%02x $b]
+        }
+    }
+    # Tk's reader wants the braces apart from the numbers.
+    return "#define m_width $w\n#define m_height [llength $rows]\nstatic unsigned char m_bits\[\] = { [join $bytes {, }] };"
 }

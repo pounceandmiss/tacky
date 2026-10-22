@@ -20,6 +20,17 @@ proc cv_wait_until {script {ms 3000}} {
 }
 
 # Feed a chat message stanza through the mock client.
+# A receipt as shown: its text, with each tick image by name.
+proc receipt_shown {w tag} {
+    set ranges [$w tag ranges $tag]
+    if {![llength $ranges]} { return MISSING }
+    set out ""
+    foreach {key value index} [$w dump -text -image {*}$ranges] {
+        append out $value
+    }
+    return $out
+}
+
 proc cv_feed {body sid args} {
     $::_client conn feed [j message -type chat \
         -from alice@example.com/phone {
@@ -392,17 +403,15 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         set sentId [.cv messages newest]
         # Check no checkmark yet (pending)
         set tag [.cv messages tag $sentId].receipt
-        set ranges [[.cv textwidget] tag ranges $tag]
-        set before [[.cv textwidget] get {*}$ranges]
+        set before [receipt_shown [.cv textwidget] $tag]
         # Trigger SM ack
         set sentStanza [lindex [$::_client conn get_written] end]
         $::_client message OnSmAck \
             -stanzas [list $sentStanza]
         wait
-        set ranges [[.cv textwidget] tag ranges $tag]
-        set after [[.cv textwidget] get {*}$ranges]
+        set after [receipt_shown [.cv textwidget] $tag]
         list before=$before after=$after
-    } -result "{before= } {after= \u2713}"
+    } -result "{before= } {after= receiptmark.sent}"
 
 test chatview-multiple-outgoing-order {multiple outgoing messages appear in send order} \
     {*}$cv_common \
@@ -439,10 +448,9 @@ test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
         cv_muc_echo $sentId echo-sid1
         wait
         set tag [.cv messages tag $sentId].receipt
-        set ranges [[.cv textwidget] tag ranges $tag]
-        set receipt [[.cv textwidget] get {*}$ranges]
+        set receipt [receipt_shown [.cv textwidget] $tag]
         list [llength [.cv messages keys]] receipt=$receipt
-    } -result "1 {receipt= \u2713}"
+    } -result "1 {receipt= receiptmark.sent}"
 
 test chatview-muc-echo-different-ts {echo with different timestamp moves message} \
     {*}$cv_common \
@@ -460,11 +468,10 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
         set newId [lindex $ids 0]
         # Old id should be gone, new id should be present
         set tag [.cv messages tag $newId].receipt
-        set ranges [[.cv textwidget] tag ranges $tag]
-        set receipt [[.cv textwidget] get {*}$ranges]
+        set receipt [receipt_shown [.cv textwidget] $tag]
         list [llength $ids] [expr {$sentId ni $ids}] \
             [expr {$newId == $echoTs}] receipt=$receipt
-    } -result "1 1 1 {receipt= \u2713}"
+    } -result "1 1 1 {receipt= receiptmark.sent}"
 
 test chatview-muc-echo-reorders {echo reorders message among interleaved messages} \
     {*}$cv_common \
@@ -1288,16 +1295,32 @@ test chatarea-patch-receipt {Patch with server_status updates receipt checkmark}
         .ca apply [list [ca_outgoing 100 "hello"]]
         # Receipt tag should exist but show no checkmark (pending)
         set tag [.ca messages tag 100].receipt
-        set ranges [[.ca textwidget] tag ranges $tag]
-        set before [expr {[llength $ranges] > 0
-            ? [[.ca textwidget] get {*}$ranges] : "MISSING"}]
+        set before [receipt_shown [.ca textwidget] $tag]
         # Patch: server confirms receipt
         .ca apply [list [ca_patch 100]]
-        set ranges [[.ca textwidget] tag ranges $tag]
-        set after [expr {[llength $ranges] > 0
-            ? [[.ca textwidget] get {*}$ranges] : "MISSING"}]
+        set after [receipt_shown [.ca textwidget] $tag]
         list before=$before after=$after
-    } -result "{before= } {after= \u2713}"
+    } -result "{before= } {after= receiptmark.sent}"
+
+test chatarea-receipt-delivered-read {delivered and read draw the double tick, read in the accent colour} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_outgoing 100 "hello" ""]]
+        set tag [.ca messages tag 100].receipt
+        .ca apply [list [dict create key 100 sort 100 remote_status delivered]]
+        set delivered [receipt_shown [.ca textwidget] $tag]
+        .ca apply [list [dict create key 100 sort 100 remote_status read]]
+        set read [receipt_shown [.ca textwidget] $tag]
+        list delivered=$delivered read=$read \
+            [expr {[receiptmark.read cget -foreground] eq [palette accent]}]
+    } -result {{delivered= receiptmark.delivered} {read= receiptmark.read} 1}
+
+test chatarea-receipt-failed {a failed send shows "!" as text, no tick} \
+    {*}$ca_common \
+    -body {
+        .ca apply [list [ca_outgoing 100 "hello" failed]]
+        receipt_shown [.ca textwidget] [.ca messages tag 100].receipt
+    } -result { !}
 
 test chatarea-reply-preview-rendered {a reply renders a clickable preview with author and snippet} \
     {*}$ca_common \
