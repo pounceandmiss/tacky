@@ -67,6 +67,9 @@ proc mockrtc::install {} {
     variable COMMANDS
     variable Installed
     if {$Installed} { reset; return }
+    if {[info commands ::rtc::pc::restart-ice] ne ""} {
+        rename ::rtc::pc::restart-ice ::rtc::pc::restart-ice__real
+    }
     foreach cmd $COMMANDS {
         if {[info commands $cmd] ne ""} { rename $cmd ${cmd}__real }
         # An extension built before a command existed has no namespace for it.
@@ -82,12 +85,24 @@ proc mockrtc::uninstall {} {
     variable COMMANDS
     variable Installed
     if {!$Installed} return
-    foreach cmd $COMMANDS {
+    restartable 0
+    foreach cmd [concat $COMMANDS ::rtc::pc::restart-ice] {
         catch {rename $cmd ""}
         catch {rename ${cmd}__real $cmd}
     }
     set Installed 0
     reset
+}
+
+# A libdatachannel that restarts ICE has ::rtc::pc::restart-ice; vanilla does
+# not, which is how the backend tells. Installed, the mock is vanilla, whatever
+# this build links (install sets a real one aside); 1 makes it restartable.
+proc mockrtc::restartable {on} {
+    set cmd ::rtc::pc::restart-ice
+    catch {rename $cmd ""}
+    if {$on} {
+        proc $cmd args [format {return [mockrtc::Dispatch %s {*}$args]} [list $cmd]]
+    }
 }
 
 proc mockrtc::reset {} {

@@ -205,7 +205,7 @@ portable to a backend outside this process: no command returns a result, only
 events on the pc's `-command`; the caller names its pcs and its own tracks, the
 backend names the peer's; only strings and dicts cross; capabilities are
 checked, not assumed. An event can arrive before the command that caused it
-returns, so re-check state after every media call, as `taco_calls` does.
+returns, so re-check state after every media call, as a call (`taco_calls::call`) does.
 
 Codec, m-line and device specifics belong in the backend. Where `taco_calls`
 has to vary it asks: `capability sdpSanitize` for the SDP strip, `capability

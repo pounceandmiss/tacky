@@ -14,6 +14,13 @@
  * Commands are serialized per pc: some await a promise, and a
  * setRemoteDescription must not overtake the createPeer before it.
  *
+ * An ICE restart, ours or the peer's, is an ordinary re-offer on a pc that
+ * is up: setLocalDescription with iceRestart restarts ICE before making the
+ * offer, a second setRemoteDescription(offer) is answered by the
+ * setLocalDescription after it, and sdpType rollback drops our offer when the
+ * peer's crossed it and won. negotiationneeded is never acted on: tacky
+ * decides when to negotiate.
+ *
  * One camera for the page: every pc sends a clone of its track, and a preview
  * (openPreview) holds it for a self-view that outlives any one pc. The camera
  * stops once nobody holds it.
@@ -127,6 +134,14 @@ export function createMediaHost({
 
         case 'setLocalDescription':
             serialize(state, op, pc, async () => {
+                // An unanswered offer of ours dropped: a restart that lost to
+                // the peer's. Nothing to report; the peer's offer follows.
+                if (args.sdpType === 'rollback') {
+                    await state.conn.setLocalDescription({ type: 'rollback' });
+                    return;
+                }
+                // An ICE restart: the next offer is made under new credentials.
+                if (args.iceRestart) state.conn.restartIce();
                 // An empty sdp: the browser makes the offer or answer.
                 if (args.sdp) {
                     await state.conn.setLocalDescription({

@@ -124,8 +124,22 @@ proc media_callee {sid} {
     c.conn clear
 }
 
+# Caller whose offer went out: the session is pending its accept.
+proc media_offered {} {
+    set sid [media_caller]
+    mockrtc::fire [media_pc $sid] local-description $::MEDIA_OFFER_SDP offer
+    c.conn clear
+    return $sid
+}
+
+# The last <jingle> we sent. A session that ended may have a JMI <finish/>
+# after it.
 proc media_jingle_sent {} {
-    return [xsearch [calls_last_written] jingle -ns urn:xmpp:jingle:1 -get node]
+    foreach w [lreverse [c.conn get_written]] {
+        set jingle [xsearch $w jingle -ns urn:xmpp:jingle:1 -get node]
+        if {$jingle ne ""} { return $jingle }
+    }
+    return ""
 }
 
 # -- ICE servers --
@@ -245,7 +259,7 @@ test media-connected-emits-active {a connected pc surfaces as <Active>, stamped 
             [lrange $ev 0 2] \
             [expr {$since >= $before && $since <= [clock microseconds]}] \
             [expr {[dict get [lindex [c.calls list] 0] active_since] == $since}] \
-            [dict get [dict get [calls_state] $sid] state]]
+            [dict get [lindex [c.calls list] 0] state]]
     } -result {{<Active> -sid SID} 1 1 active}
 
 test media-reconnect-keeps-active-since {an ICE restart back to connected keeps the first <Active>'s time} \
@@ -436,7 +450,7 @@ proc media_side_calls {which from} {
 test media-attach-error-without-fatal-warns {an attachAudio error with no fatal key warns and the call runs on} \
     {*}$media_env -body {
         set sid [media_caller]
-        c.calls OnMediaError $sid {op attachAudio kind playback reason "no device"}
+        [call_of $sid] Media error {op attachAudio kind playback reason "no device"}
         string map [list $sid SID] [list \
             [lindex [calls_events] end] [dict exists [calls_state] $sid]]
     } -result {{<Warning> -sid SID -reason {output device could not be opened: no device}} 1}
@@ -530,7 +544,7 @@ test media-pending-candidates-drain {candidates buffered before the pc are appli
         media_answer_extdisco
         list $buffered \
             [mockrtc::calls ::rtc::pc::add-remote-candidate] \
-            [dict exists [calls_state] tk-m4 pending_remote_candidates]
+            [llength [dict get [calls_state] tk-m4 pending_remote_candidates]]
     } -result {1 {{101 {candidate:7 1 udp 2122260223 192.0.2.7 7777 typ host} audio}} 0}
 
 # -- Device switching --
@@ -561,7 +575,7 @@ proc media_remote_direction {type} {
 test media-accept-senders-initiator-is-recvonly \
     {an answer where only we send reaches the backend as recvonly} \
     {*}$media_env -body {
-        set sid [media_caller]
+        set sid [media_offered]
         c.conn feed [media_session_accept $sid $::MEDIA_PEER initiator]
         media_remote_direction answer
     } -result recvonly
@@ -580,7 +594,7 @@ test media-offer-senders-initiator-is-sendonly \
 
 test media-accept-rejected-warns {a rejected session-accept warns without touching the live call} \
     {*}$media_env -body {
-        set sid [media_caller]
+        set sid [media_offered]
         mockrtc::fail ::rtc::pc::set-remote-description "invalid state" "* answer"
         c.conn feed [media_session_accept $sid $::MEDIA_PEER]
         set resp [calls_last_written]
@@ -599,7 +613,7 @@ test media-offer-rejected-fails-and-terminates \
         c.calls accept -sid tk-m6
         c.conn feed [media_session_initiate tk-m6 $::MEDIA_PEER]
         media_answer_extdisco
-        set jingle [xsearch [calls_last_written] jingle -ns urn:xmpp:jingle:1 -get node]
+        set jingle [media_jingle_sent]
         list \
             [lindex [calls_events] end] \
             [dict exists [calls_state] tk-m6] \
@@ -626,7 +640,7 @@ test media-offer-malformed-is-refused \
 test media-answer-malformed-fails-and-terminates \
     {an answer whose fingerprint would add an SDP line fails the call} \
     {*}$media_env -body {
-        set sid [media_caller]
+        set sid [media_offered]
         c.conn feed [media_session_accept $sid $::MEDIA_PEER both \
             "CC:DD\na=fingerprint:sha-256 EE:FF"]
         set terminate [media_jingle_sent]
@@ -649,7 +663,7 @@ test media-buffered-candidate-rejected-is-skipped \
         media_answer_extdisco
         list \
             [llength [mockrtc::calls ::rtc::pc::add-remote-candidate]] \
-            [dict exists [calls_state] tk-m7 pending_remote_candidates] \
+            [llength [dict get [calls_state] tk-m7 pending_remote_candidates]] \
             [dict exists [calls_state] tk-m7]
     } -result {1 0 1}
 
@@ -788,8 +802,8 @@ test media-endsession-cancels-interrupted-timer {a call whose ICE dropped leaves
     {*}$media_env -body {
         set sid [media_caller]
         mockrtc::fire [media_pc $sid] state-change disconnected
-        set armed [dict exists [dict get [calls_state] $sid] disconnect_timer]
-        set timer [dict get [dict get [calls_state] $sid] disconnect_timer]
+        set armed [dict exists [dict get [calls_state] $sid] interrupted_timer]
+        set timer [dict get [dict get [calls_state] $sid] interrupted_timer]
         c endSession "account removed"
         list $armed [expr {$timer in [after info]}]
     } -result {1 0}

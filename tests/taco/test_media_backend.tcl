@@ -153,3 +153,17 @@ test media-backend-unopenable-setting-falls-back \
         ::taco_mb destroy
         set got
     } -result {rtc nosuchbackend}
+
+# A frontend's peer connection restarts ICE only if the frontend says so.
+test media-backend-host-restart-opt-in {-media-host-restart tells the host backend the app restarts ICE} \
+    {*}[media_pref_env] -body {
+        set out {}
+        foreach flag {0 1} {
+            media_pref_start -media-backend host -media-host-restart $flag
+            lappend out [dict filter [::taco_mb media capabilities] key \
+                iceRestart restartIce rollback]
+            ::taco_mb destroy
+        }
+        ::tacky::media::host::Open -ice-restart 0
+        set out
+    } -result {{iceRestart 0 restartIce 0 rollback 0} {iceRestart 1 restartIce 1 rollback 1}}

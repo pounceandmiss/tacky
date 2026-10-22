@@ -1,161 +1,40 @@
-# Voice calls (XEP-0166/0167/0176). Signaling - Jingle, JMI, SDP conversion,
-# call state - lives here; the media itself is behind `tacky::media`, whose
-# active backend owns ICE/DTLS/RTP and the mic/speaker/camera path. XEP-0353
-# Jingle Message Initiation rings the right device without GUI-side resource
-# discovery.
+# Voice and video calls: XEP-0353 JMI rings the peer's devices, XEP-0166/
+# 0167/0176 Jingle sets the session up, and `tacky::media`'s backend (webrtc,
+# rtc or host) carries ICE, DTLS and RTP. The requests and events are in
+# doc/DOC.md, "calls"; taco_groupcall (XEP-0272) runs one session per room
+# participant here, with no JMI and no <Outgoing>/<Incoming>.
 #
-# tacky calls start  -acc $jid -to <bare jid> ?-command $cb?   ;# returns sid
-# tacky calls accept -acc $jid -sid $sid
-# tacky calls reject -acc $jid -sid $sid ?-reason decline?
-# tacky calls hangup -acc $jid -sid $sid ?-reason success?
+# taco_calls is the account's side: it rings and answers, keeps one
+# taco_calls::call (call.tcl) per sid, and hands each call the stanzas for it. A call holds
+# two machines, and every move of either goes through its Go, which refuses
+# one its table does not list:
 #
-# tacky calls setDevices          -acc $jid -sid $sid ?-input $id? ?-output $id?
-#   ;# per-call device override; does not touch the persisted preference.
+#   state (SESSION_NEXT)       proposed | ringing -> proceeded -> pending
+#                              -> established
+#   transport (TRANSPORT_NEXT) idle, checking, connected, interrupted,
+#                              restarting
 #
-# tacky calls list   -acc $jid ?-command $cb?
-#   ;# -> one dict per live call: sid peer direction state peer_ringing
-#   ;#    group video_local video_remote verified fingerprint active_since
+# Neither has an end state: every end goes through Finish, which tells the
+# peer and the bus and drops the call at once. Inbound Jingle a session does
+# not take in its state (JINGLE_IN) is refused before any handler runs.
 #
-# Enumeration and the persisted preferred device + volume live on the
-# process-global `audio` module (see lib/taco/modules/audio.tcl). Volume
-# has no per-call override — `tacky audio setVolume` is the only knob.
+# Every inbound stanza for a call must come from its peer: the bare JID while
+# JMI rings (any of its devices may answer), the full one once proceed has
+# latched it. The sid is no secret, since the propose goes to the bare JID.
 #
-# tacky listen calls <Outgoing>        $cmd  ;# -sid $sid -to $jid -video 0|1
-# tacky listen calls <Incoming>        $cmd  ;# -sid $sid -from $jid
-# tacky listen calls <Ringing>         $cmd  ;# -sid $sid          (caller side: peer device alerting)
-# tacky listen calls <Active>          $cmd  ;# -sid $sid -since $us   (RTP flowing)
-# tacky listen calls <Ended>           $cmd  ;# -sid $sid -reason $why  (terminal — normal teardown)
-# tacky listen calls <Missed>          $cmd  ;# -sid $sid -from $jid -video 0|1 -reason $why
-# tacky listen calls <Failed>          $cmd  ;# -sid $sid -reason $text  (terminal — unrecoverable)
-# tacky listen calls <Warning>         $cmd  ;# -sid $sid -reason $text  (non-fatal; call continues)
-# tacky listen calls <Verified>        $cmd  ;# -sid $sid -verified 0|1 -fingerprint $fp
+# Candidates trickle as transport-info after the description; none that
+# arrive before the remote description is set are lost (DrainPendingCandidates).
 #
-# <Ended> -reason says why, one of:
-#   hangup     a session that reached Jingle ended normally, either side
-#   declined   the callee said no: us rejecting a ring, or the peer ours
-#   busy       the peer turned our propose down because it was busy
-#   retracted  the caller gave up before an answer, either side
-#   elsewhere  another of our own devices answered or declined the ring
-#   timeout    nobody answered within RING_TIMEOUT_MS, either side
-#   replaced   a crossing propose or session from the same peer won
-#   reset      a fresh stream dropped every sid the old one held
+# An interrupted path is restarted (XEP-0176 5.9, as Conversations does it):
+# either side may offer new credentials in a candidate-less transport-info,
+# and the initiator wins a glare. A backend that cannot follow a restart
+# keeps the old path and says so with a <Warning>. A call outlives a fresh
+# stream if its media is flowing and our full JID is unchanged (OnFreshStream).
 #
-# <Missed>: a ring nobody here answered (retracted, timed out, or turned
-# away, which had no <Incoming>: busy with another call, or proxy because
-# the account goes through a proxy).
-#
-# Verification, as in Conversations. When OMEMO is on for the chat, each side
-# puts its OMEMO device id in <propose>/<proceed> and sends its DTLS
-# fingerprint OMEMO-encrypted for the other side's device instead of in
-# plain text. The fingerprint then arrives authenticated by that device, so
-# a server can't substitute its own certificate.
-# <Verified> is emitted once the peer's fingerprint is taken and again when
-# the result changes. -verified is 1 when the device that sent it is one we
-# would encrypt messages to (omemo deviceAccepted). -fingerprint is that
-# device's OMEMO key as `omemo trustList` shows it, "" for a plain call.
-# A fingerprint that should be encrypted but isn't, doesn't decrypt, or
-# comes from an untrusted device fails the call with security-error.
-# Group-call sessions don't use this.
-#
-# Caller:
-#   start
-#     -> state=proposed, emit <Outgoing>
-#     -> send <message><propose sid/></message> to bare JID
-#   <- <message><ringing sid/></message> from full JID
-#     -> emit <Ringing> (informational; internal state stays proposed)
-#   <- <message><proceed sid/></message> from full JID
-#     -> state=proceeded, peer=full JID
-#     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
-#     -> createPeer + sendrecv audio track, attachAudio,
-#        setLocalDescription
-#     -> localDescription(offer)       -> send <jingle action=session-initiate>
-#     -> iceCandidate * N              -> send <jingle action=transport-info>
-#   <- <jingle action=session-accept>  -> setRemoteDescription sdp answer
-#   <- <jingle action=transport-info>  -> addRemoteCandidate
-#     -> connectionState connected     -> emit <Active>
-#
-#   hangup while proposed: send <message><retract/></message>
-#   hangup after proceed:  pc + media teardown + <jingle action=session-terminate>
-#
-# Callee:
-#   <- <message><propose sid/></message>
-#     -> state=ringing, peer=msg @from
-#     -> send <message><ringing sid/></message> (XEP-0353 §4 alerting)
-#     -> emit <Incoming>
-#   accept
-#     -> state=proceeded, send <message><proceed sid/></message>
-#   <- <jingle action=session-initiate>
-#     -> $client extdisco fetch (XEP-0215; async) returns ICE server list
-#     -> createPeer, setRemoteDescription sdp offer, then
-#        setLocalDescription unless the backend declares `autoAnswer`
-#        (see StartIncomingMedia)
-#     -> track $tr                     -> attachAudio / attachVideo* on $tr
-#     -> localDescription(answer)      -> send <jingle action=session-accept>
-#     -> iceCandidate * N              -> send <jingle action=transport-info>
-#   <- <jingle action=transport-info>  -> addRemoteCandidate
-#
-#   reject while ringing:  send <message><reject/></message>
-#   hangup after proceed:  pc + media teardown + <jingle action=session-terminate>
-#
-# Both sides:
-#   <- <jingle action=session-terminate> -> destroy media + pc
-#                                        -> emit <Ended>
-#   <- fresh (non-resumed) stream        -> destroy media + pc
-#                                        -> emit <Ended>
-#
-# Some notes about order:
-#   - session-initiate / session-accept are shipped from
-#     OnLocalDescription, not from OnGatheringState. The SDP at that
-#     point has no candidates yet — those arrive asynchronously and
-#     are trickled via OnLocalCandidate → transport-info.
-#   - No end-of-candidates marker is emitted. A backend keeps accepting
-#     addRemoteCandidate until the pc closes; ICE either succeeds on
-#     what's there or fails via its own timer.
-#   - Inbound transport-info while pc == -1 (the JMI-ringing window,
-#     or any race before set-remote-description) is buffered into
-#     [dict get $Calls $sid pending_remote_candidates], not dropped.
-#     HandleSessionInitiate drains the buffer right after
-#     set-remote-description.
-#
-# Sender binding: every inbound stanza for a call must come from that
-# call's peer - bare match during the JMI window (any of the callee's
-# resources may answer), exact full JID once latched. The sid is no
-# secret: the propose goes to the bare JID, so all of the peer's
-# resources and every server on the path see it.
-#
-# Group-call sessions: taco_groupcall (XEP-0272 Muji) runs one session per
-# participant here. Such a session skips JMI (room presence is the ring),
-# carries the room JID as `group`, and emits no <Outgoing>/<Incoming>.
-#
-# Per-call state ([dict get $Calls $sid] dict):
-#   peer       : remote JID (bare until proceeded, then full)
-#   initiator  : 1 for caller, 0 for callee
-#   group      : room JID for a group-call session, "" for a 1:1 call
-#   state      : proposed|ringing|proceeded|new|connecting|active|ended|failed
-#   peer_ringing : 1 once a peer device answered <ringing> (caller side);
-#     a field, not a state, because the state machine does not move for it
-#   pc         : tacky::media pc handle (-1 = not created)
-#   track      : media handle of the audio track (-1 = not added/received)
-#   pending_remote_candidates : list of [list mid candidate], present
-#     only while inbound trickle has outpaced the remote description (no
-#     pc yet, or the caller's pc before session-accept); drained and unset
-#     once it is set (DrainPendingCandidates)
-#   remote_set : present once the peer's description is applied
-#   ring_timer : RingTimeout's after token while a propose rings
-#   active_since : [clock microseconds] of the first <Active>, 0 before
-#   Verification fields, set only when they apply:
-#   announced   : our <propose>/<proceed> carried our OMEMO device
-#   peer_device : OMEMO device from the peer's <propose>/<proceed>
-#   fingerprint_encrypted : our description went out encrypted
-#   describing  : our description is being encrypted; local candidates
-#     wait in held_candidates until it is sent
-#   omemo_device, fingerprint, verified : the peer's device that sent its
-#     fingerprint, that device's key, and whether we accept it
-#
-# The pc handle is this instance plus the sid, so two accounts in one
-# process that end up on either side of the same call do not collide.
-# Media events for a pc come back to OnMediaEvent with that sid bound, so
-# there is no id to map back.
+# Verification, as in Conversations: when OMEMO is on for the chat, each side
+# names its OMEMO device in <propose>/<proceed> and sends its DTLS
+# fingerprint encrypted for the other's, so a server cannot substitute its
+# own certificate. <Verified> says whether we trust the device it came from.
 
 package require tacky::media
 package require omemo
@@ -163,49 +42,25 @@ package require omemo
 snit::type taco_calls {
     option -client -readonly yes
 
-    # The handles we name our own tracks with. They double as the Jingle
-    # <content name=...> we expect back, since the m-line labels the rtc
-    # backend writes match; a peer using its own mids is dispatched by
-    # media kind instead. The codecs and payload types behind them belong
-    # to the media backend.
-    typevariable MID       audio
-    typevariable VIDEO_MID video
-
-    # Ceiling on candidates buffered during the JMI window; a peer trickles
-    # a handful, so anything past this is not worth keeping.
-    typevariable MAX_PENDING_CANDIDATES 64
-
-    # How long ICE may stay disconnected before we warn: a hanging-up peer
-    # drops ICE first, and its session-terminate lands inside this.
-    typevariable DISCONNECT_GRACE_MS 2000
-
-    # XEP-0353 sets no limit: a caller that never retracts rings forever.
-    typevariable RING_TIMEOUT_MS 60000
-
-    # The XEP-0166 conditions that say a session broke rather than ended:
-    # a peer ending with one of them failed, and the call fails here too.
-    typevariable FAULTS {
-        connectivity-error failed-application failed-transport general-error
-        incompatible-parameters media-error security-error timeout
-        unsupported-applications unsupported-transports
+    # XEP-0166's actions (§7.2). A value not among them is refused with
+    # <bad-request/>, as the spec has it, before any session sees it.
+    typevariable JINGLE_ACTIONS {
+        content-accept content-add content-modify content-reject
+        content-remove description-info security-info session-accept
+        session-info session-initiate session-terminate transport-accept
+        transport-info transport-reject transport-replace
     }
 
-    # Conversations' namespace. "dlts" is a typo, but it is what goes on the
-    # wire; don't correct it.
-    typevariable NS_VERIFY http://gultsch.de/xmpp/drafts/omemo/dlts-srtp-verification
-    typevariable NS_AXOLOTL eu.siacs.conversations.axolotl
-
     variable client
-    variable Calls           ;# sid -> dict (see file header)
-    variable SdpErrors       ;# sid -> reason, see TakeSdpError
+    variable Calls      ;# sid -> taco_calls::call
 
     constructor args {
         $self configurelist $args
         set client $options(-client)
         set Calls [dict create]
-        set SdpErrors [dict create]
         $client iq handler set urn:xmpp:jingle:1 [mymethod OnJingleIq]
         $client bus subscribe $self <SessionStart> [mymethod OnFreshStream]
+        $client bus subscribe $self <Resumed> [mymethod OnResumed]
         $client bus subscribe $self <Closing> [mymethod OnClosing]
         $client bus subscribe $self omemo:<TrustChanged> [mymethod OnTrustChanged]
         $client bus subscribe $self omemo:<BlindTrust> [mymethod OnBlindTrust]
@@ -222,25 +77,63 @@ snit::type taco_calls {
     destructor {
         catch {$client bus unsubscribe $self}
         catch {$client iq unhandler set urn:xmpp:jingle:1}
-        foreach sid [dict keys $Calls] {
-            $self TeardownMedia $sid
-            $self CancelInterrupted $sid
-            $self StopRingTimer $sid
+        foreach call [dict values $Calls] { $call destroy }
+    }
+
+    # =========================================================================
+    # The calls
+    # =========================================================================
+
+    method NewCall {sid args} {
+        set call [::taco_calls::call %AUTO% -calls $self -client $client -sid $sid {*}$args]
+        dict set Calls $sid $call
+        return $call
+    }
+
+    # The call for $sid, "" if none.
+    method Call {sid} { dict getdef $Calls $sid "" }
+
+    # $call has ended (its End).
+    method Forget {sid call} {
+        if {[dict getdef $Calls $sid ""] eq $call} { dict unset Calls $sid }
+    }
+
+    # Call method $args on every live call. One may end another meanwhile.
+    method Each {args} {
+        foreach call [dict values $Calls] {
+            if {![$call Ended]} { $call {*}$args }
         }
+    }
+
+    method NewSid {} {
+        binary scan [omemo::random 16] H* hex
+        return "tk-$hex"
     }
 
     # The session is ending (taco_client endSession): every call ends while
     # the link is still up to say so - a ringing one is declined, a proposed
     # one retracted, the rest terminated as gone.
     method OnClosing {args} {
-        foreach sid [dict keys $Calls] {
-            if {[catch {$self reject -sid $sid -reason gone} err]} {
+        foreach {sid call} $Calls {
+            if {[catch {$call Hangup gone} err]} {
                 jlog warn "call $sid: ending it on close: $err"
-                catch {$self TeardownMedia $sid}
-                catch {$self Cleanup $sid}
+                catch {$call Drop}
             }
         }
     }
+
+    # A fresh (non-resumed) stream: see the call's OnFreshStream. Resumption
+    # never lands here, and a plain disconnect is deliberately left alone.
+    method OnFreshStream {args} {
+        $self Each OnFreshStream [$client cget -jid]
+    }
+
+    method OnResumed {args} { $self Each OnResumed }
+
+    # Trust changed: recheck live calls. Any of the peer's keys matters,
+    # since verifying one ends blind trust for the others.
+    method OnTrustChanged {args} { $self Each Reverify [dict get $args -jid] }
+    method OnBlindTrust {args} { $self Each Reverify "" }
 
     # =========================================================================
     # Public API
@@ -256,12 +149,119 @@ snit::type taco_calls {
 
         set bare [jid bare $opts(-to)]
         set sid [$self NewSid]
-        set wantVideo [expr {$opts(-video) ? 1 : 0}]
-        dict set Calls $sid [$self NewCallDict $bare 1 proposed $wantVideo]
-        $self StartRingTimer $sid
-        $client emit calls <Outgoing> -sid $sid -to $bare -video $wantVideo
-        $client write [$self BuildJmiMessage $bare propose $sid 1 $wantVideo \
-            [$self AnnounceDevice $sid]]
+        set video [expr {$opts(-video) ? 1 : 0}]
+        set call [$self NewCall $sid -peer $bare -initiator 1 -state proposed \
+            -video $video]
+        $call StartRingTimer
+        $client emit calls <Outgoing> -sid $sid -to $bare -video $video
+        $client write [$self BuildJmiMessage $bare propose $sid 1 $video \
+            [$call AnnounceDevice]]
+        return $sid
+    }
+
+    tackymethod accept {args} {
+        array set opts {-sid ""}
+        array set opts $args
+        set call [$self Call $opts(-sid)]
+        if {$call eq ""} { error "accept: no such call $opts(-sid)" }
+        $call Accept
+        return
+    }
+
+    tackymethod reject {args} {
+        array set opts {-sid "" -reason decline}
+        array set opts $args
+        set call [$self Call $opts(-sid)]
+        if {$call ne ""} { $call Hangup $opts(-reason) }
+        return
+    }
+
+    tackymethod hangup {args} {
+        array set opts {-sid "" -reason success}
+        array set opts $args
+        set call [$self Call $opts(-sid)]
+        if {$call ne ""} { $call Hangup $opts(-reason) }
+        return
+    }
+
+    # Every call in flight, one dict each, unordered. The only way to
+    # learn a sid you did not see <Outgoing>/<Incoming> for, which is what
+    # a client that restarted needs. A call is forgotten in the same frame
+    # that ends it, so nothing terminal is ever in here. peer is bare, as
+    # the events report it, even once proceed has latched a full JID.
+    tackymethod list {args} {
+        lmap call [dict values $Calls] { $call Row }
+    }
+
+    # Mute / unmute the local camera on a live video call. Video is
+    # negotiated at start/answer; this only toggles capture.
+    tackymethod setVideo {args} {
+        array set opts {-sid "" -on 1}
+        array set opts $args
+        set call [$self Call $opts(-sid)]
+        if {$call ne ""} { $call SetVideo $opts(-on) }
+        return
+    }
+
+    # Hot-swap mic / speaker for a live call. Empty id = system default.
+    tackymethod setDevices {args} {
+        array set opts {-sid ""}
+        array set opts $args
+        set call [$self Call $opts(-sid)]
+        if {$call eq ""} return
+        foreach {flag kind} {-input capture -output playback} {
+            if {[info exists opts($flag)]} { $call SetAudioDevice $kind $opts($flag) }
+        }
+        return
+    }
+
+    # Hook called by the global `video` module after the preferred
+    # camera changes - hot-swap the camera on every live video call.
+    tackymethod applyPreferredCamera {args} {
+        array set opts {-id ""}
+        array set opts $args
+        if {[::tacky::media capability videoDevice]} {
+            $self Each SetCamera $opts(-id)
+        }
+        return
+    }
+
+    # Hook called by the global `audio` module after the preferred
+    # device changes — hot-swap every live call on this client.
+    tackymethod applyPreferredDevice {args} {
+        array set opts {-kind "" -id ""}
+        array set opts $args
+        $self Each SetAudioDevice $opts(-kind) $opts(-id)
+        return
+    }
+
+    # Hook called by the global `audio` module after the volume changes —
+    # hot-swap every live call on this client. Values in [0.0, 1.0]. A call
+    # with no audio attached yet is a no-op in the backend; a value the
+    # backend rejects surfaces as <Warning> and the call keeps running.
+    tackymethod applyVolume {args} {
+        array set opts {-kind "" -volume ""}
+        array set opts $args
+        if {[::tacky::media capability audioVolume]} {
+            $self Each SetAudioVolume $opts(-kind) $opts(-volume)
+        }
+        return
+    }
+
+    # One group-call session to a participant's full JID, straight to media
+    # and session-initiate (no JMI). Returns the sid.
+    method StartGroupSession {args} {
+        array set opts {-room "" -peer "" -video 0}
+        array set opts $args
+        if {$opts(-room) eq "" || $opts(-peer) eq ""} {
+            error "StartGroupSession: -room and -peer required"
+        }
+        set sid [$self NewSid]
+        set call [$self NewCall $sid -peer $opts(-peer) -initiator 1 \
+            -state proceeded -video [expr {$opts(-video) ? 1 : 0}] \
+            -group [jid norm $opts(-room)]]
+        $call StartSetupTimer
+        $client extdisco fetch -command [$call Callback StartOutgoingMedia]
         return $sid
     }
 
@@ -279,155 +279,6 @@ snit::type taco_calls {
         return ""
     }
 
-    # Per-call state dict. peer is bare until proceeded, then full JID.
-    # video_local  : 1 if this side offered/wants to send video
-    # video_remote : 1 if the peer's propose advertised media=video
-    # vtrack       : media handle of the video track, -1 when absent
-    # vsend/vrecv  : 1 once we have asked the backend for that half and it
-    #                has not reported the attach failed
-    method NewCallDict {peer initiator state wantVideo {group ""}} {
-        return [dict create \
-            peer $peer initiator $initiator state $state peer_ringing 0 \
-            group $group pc -1 track -1 \
-            video_local $wantVideo video_remote 0 \
-            vtrack -1 vsend 0 vrecv 0 active_since 0]
-    }
-
-    # One group-call session to a participant's full JID, straight to media and
-    # session-initiate (no JMI). Returns the sid.
-    method StartGroupSession {args} {
-        array set opts {-room "" -peer "" -video 0}
-        array set opts $args
-        if {$opts(-room) eq "" || $opts(-peer) eq ""} {
-            error "StartGroupSession: -room and -peer required"
-        }
-        set sid [$self NewSid]
-        set wantVideo [expr {$opts(-video) ? 1 : 0}]
-        dict set Calls $sid [$self NewCallDict $opts(-peer) 1 proceeded \
-            $wantVideo [jid norm $opts(-room)]]
-        $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
-        return $sid
-    }
-
-    tackymethod accept {args} {
-        array set opts {-sid ""}
-        array set opts $args
-        if {![dict exists $Calls $opts(-sid)]} {
-            error "accept: no such call $opts(-sid)"
-        }
-        set call [dict get $Calls $opts(-sid)]
-        set state [dict get $call state]
-        if {$state eq "ringing"} {
-            # JMI: tell the caller we're picking up; flip to proceeded.
-            # Media setup is deferred until session-initiate arrives.
-            set peer [dict get $call peer]
-            $client write [$self BuildJmiMessage $peer proceed $opts(-sid) 0 0 \
-                [$self AnnounceDevice $opts(-sid)]]
-            dict set Calls $opts(-sid) state proceeded
-            $self StopRingTimer $opts(-sid)
-            return
-        }
-        # If session-initiate already landed, HandleSessionInitiate did
-        # all the work; nothing left to do here.
-        return
-    }
-
-    tackymethod reject {args} {
-        array set opts {-sid "" -reason decline}
-        array set opts $args
-        if {![dict exists $Calls $opts(-sid)]} return
-        set call [dict get $Calls $opts(-sid)]
-        set state [dict get $call state]
-        if {$state eq "ringing"} {
-            set peer [dict get $call peer]
-            $client write [$self BuildJmiMessage $peer reject $opts(-sid) 0]
-            $client emit calls <Ended> -sid $opts(-sid) -reason declined
-            $self Cleanup $opts(-sid)
-            return
-        }
-        if {$state eq "proposed"} {
-            $self RetractProposed $opts(-sid) [dict get $call peer] retracted
-            return
-        }
-        $self EndSession $opts(-sid) [dict get $call peer] $opts(-reason)
-    }
-
-    tackymethod hangup {args} {
-        array set opts {-sid "" -reason success}
-        array set opts $args
-        if {![dict exists $Calls $opts(-sid)]} return
-        set call [dict get $Calls $opts(-sid)]
-        if {[dict get $call state] eq "proposed"} {
-            $self RetractProposed $opts(-sid) [dict get $call peer] retracted
-            return
-        }
-        $self EndSession $opts(-sid) [dict get $call peer] $opts(-reason)
-    }
-
-    # End a session that reached Jingle: drop the media, tell the peer, and
-    # report it gone.
-    method EndSession {sid peer reason} {
-        $self TeardownMedia $sid
-        $self SendTerminate $sid $peer $reason
-        $client emit calls <Ended> -sid $sid -reason hangup
-        $self Cleanup $sid
-    }
-
-    # RingTimeout rechecks the state: it can fire in the same turn as an
-    # accept or proceed.
-    method StartRingTimer {sid} {
-        dict set Calls $sid ring_timer \
-            [after $RING_TIMEOUT_MS [mymethod RingTimeout $sid]]
-    }
-
-    method StopRingTimer {sid} {
-        if {![dict exists $Calls $sid ring_timer]} return
-        after cancel [dict get $Calls $sid ring_timer]
-        dict unset Calls $sid ring_timer
-    }
-
-    # Ours is retracted; theirs is rejected with <timeout/> and missed.
-    method RingTimeout {sid} {
-        if {![dict exists $Calls $sid]} return
-        dict unset Calls $sid ring_timer
-        set call [dict get $Calls $sid]
-        set peer [dict get $call peer]
-        switch -- [dict get $call state] {
-            proposed {
-                if {[dict get $call initiator]} {
-                    $self RetractProposed $sid $peer timeout
-                }
-            }
-            ringing {
-                $client write [$self BuildJmiReject $peer $sid timeout]
-                $client emit calls <Ended> -sid $sid -reason timeout
-                $self EmitMissed $sid $peer [dict get $call video_remote] timeout
-                $self Cleanup $sid
-            }
-        }
-    }
-
-    method EmitMissed {sid from video reason} {
-        $client emit calls <Missed> -sid $sid -from [jid bare $from] \
-            -video $video -reason $reason
-    }
-
-    # Fail a session that reached Jingle: emit <Failed>, drop the media and
-    # terminate with $jingleReason.
-    method FailCall {sid reason jingleReason} {
-        if {![dict exists $Calls $sid]} return
-        set peer [dict get $Calls $sid peer]
-        jlog warn "call $sid with $peer failed: $reason"
-        $client emit calls <Failed> -sid $sid -reason $reason
-        $self TeardownMedia $sid
-        $self SendTerminate $sid $peer $jingleReason
-        $self Cleanup $sid
-    }
-
-    # =========================================================================
-    # Verification (see the file header)
-    # =========================================================================
-
     # Our OMEMO device, if OMEMO is on for the chat with $peer and set up,
     # and our published devicelist names it: an announced device obliges
     # the peer to seal for it, and one its fetch of our list does not show
@@ -440,757 +291,17 @@ snit::type taco_calls {
         expr {$on && [string is integer -strict $dev] && $dev > 0 ? $dev : ""}
     }
 
-    # Our device for <propose>/<proceed>, or "". Records that we sent it.
-    method AnnounceDevice {sid} {
-        set dev [$self OwnDevice [dict get $Calls $sid peer]]
-        if {$dev ne ""} { dict set Calls $sid announced 1 }
-        return $dev
-    }
-
-    # Record the device from the peer's <propose>/<proceed> $child. The
-    # caller also starts the session now so the offer doesn't wait on a
-    # bundle fetch. The callee doesn't: the caller's prekey message will
-    # create the session.
-    method NotePeerDevice {sid child} {
-        set dev [xsearch $child device -ns $NS_VERIFY -get @id]
-        if {![string is integer -strict $dev] || $dev <= 0} return
-        dict set Calls $sid peer_device $dev
-        set peer [jid bare [dict get $Calls $sid peer]]
-        if {[dict get $Calls $sid initiator] && [$self OwnDevice $peer] ne ""} {
-            catch {$client omemo readySession $peer $dev}
-        }
-    }
-
-    # Decrypt the fingerprints in the peer's session-initiate/accept and
-    # return the jingle with plain ones, or "" if the call was failed.
-    # $expect: the fingerprint must be encrypted (ours was).
-    method TakeFingerprints {sid stanza jingle from expect} {
-        if {[dict get $Calls $sid group] ne ""} { return $jingle }
-        set peer [jid bare $from]
-        set encrypted 0
-        set plain 0
-        set by ""
-        foreach slot [::taco_calls::verify::transports $jingle] {
-            set transport [::taco_calls::verify::get $jingle $slot]
-            set fp [::taco_calls::verify::plain $transport]
-            set efp [xsearch $transport fingerprint -ns $NS_VERIFY -get node]
-            if {$efp eq ""} { incr plain; continue }
-            if {$fp ne ""} {
-                return [$self FailUnverified $sid $stanza \
-                    "a fingerprint came both plain and encrypted"]
-            }
-            set enc [xsearch $efp encrypted -ns $NS_AXOLOTL -get node]
-            if {$enc eq ""} {
-                return [$self FailUnverified $sid $stanza \
-                    "an encrypted fingerprint without its encryption"]
-            }
-            set r [$client omemo decryptFrom $enc $peer]
-            if {[dict get $r status] ne "ok"} {
-                return [$self FailUnverified $sid $stanza [dict get $r reason]]
-            }
-            if {$by ne "" && [dict get $r device] != [dict get $by device]} {
-                return [$self FailUnverified $sid $stanza \
-                    "fingerprints from two devices"]
-            }
-            set by $r
-            lassign [xsearch $efp -get {@hash @setup}] hash setup
-            set body [string trim [dict get $r plaintext]]
-            if {[catch {::jinglesdp::CheckFingerprint $hash $body $setup}]} {
-                return [$self FailUnverified $sid $stanza \
-                    "the encrypted fingerprint is not a fingerprint"]
-            }
-            set jingle [::taco_calls::verify::put $jingle $slot \
-                [::taco_calls::verify::decrypted $transport $hash $setup $body]]
-            incr encrypted
-        }
-        if {$encrypted && $plain} {
-            return [$self FailUnverified $sid $stanza \
-                "only some fingerprints were encrypted"]
-        }
-        if {$expect && !$encrypted} {
-            return [$self FailUnverified $sid $stanza \
-                "the fingerprint was not encrypted"]
-        }
-        if {$by eq ""} {
-            dict set Calls $sid verified 0
-            dict set Calls $sid fingerprint ""
-        } else {
-            dict set Calls $sid omemo_device [dict get $by device]
-            dict set Calls $sid fingerprint [dict get $by fingerprint]
-            dict set Calls $sid verified [dict get $by accepted]
-        }
-        $self EmitVerified $sid
-        return $jingle
-    }
-
-    # Ack the IQ and end the session with security-error, as Conversations
-    # does. Returns "".
-    method FailUnverified {sid stanza reason} {
-        $self AckIq $stanza
-        $self FailCall $sid "call could not be verified: $reason" security-error
-        return ""
-    }
-
-    method EmitVerified {sid} {
-        $client emit calls <Verified> -sid $sid \
-            -verified [dict get $Calls $sid verified] \
-            -fingerprint [dict get $Calls $sid fingerprint]
-    }
-
-    # Trust or blind trust changed: recheck live calls. Any of the peer's
-    # keys matters, since verifying one ends blind trust for the others.
-    method OnTrustChanged {args} { $self Reverify [dict get $args -jid] }
-    method OnBlindTrust {args} { $self Reverify "" }
-
-    # Recheck calls with $peer, or all calls when $peer is "".
-    method Reverify {peer} {
-        dict for {sid call} $Calls {
-            if {![dict exists $call omemo_device]} continue
-            set bare [jid bare [dict get $call peer]]
-            if {$peer ne "" && $bare ne $peer} continue
-            set verified [$client omemo deviceAccepted $bare \
-                [dict get $call omemo_device]]
-            if {$verified == [dict get $call verified]} continue
-            dict set Calls $sid verified $verified
-            $self EmitVerified $sid
-        }
-    }
-
-    # Every call in flight, one dict each, unordered. The only way to
-    # learn a sid you did not see <Outgoing>/<Incoming> for, which is what
-    # a client that restarted needs. Cleanup drops a session in the same
-    # frame that ends it, so nothing terminal is ever in here. peer is
-    # bare, as the events report it, even once proceed has latched a full
-    # JID.
-    tackymethod list {args} {
-        set out {}
-        dict for {sid call} $Calls {
-            if {[dict get $call initiator]} {
-                set direction outgoing
-            } else {
-                set direction incoming
-            }
-            lappend out [dict create \
-                sid          $sid \
-                peer         [jid bare [dict get $call peer]] \
-                direction    $direction \
-                state        [dict get $call state] \
-                peer_ringing [dict get $call peer_ringing] \
-                group        [dict get $call group] \
-                video_local  [dict get $call video_local] \
-                video_remote [dict get $call video_remote] \
-                verified     [dict getdef $call verified 0] \
-                fingerprint  [dict getdef $call fingerprint ""] \
-                active_since [dict get $call active_since]]
-        }
-        return $out
-    }
-
-    # Mute / unmute the local camera on a live video call. Video is
-    # negotiated at start/answer; this only toggles capture.
-    tackymethod setVideo {args} {
-        array set opts {-sid "" -on 1}
-        array set opts $args
-        if {![dict exists $Calls $opts(-sid)]} return
-        set pc [dict get $Calls $opts(-sid) pc]
-        if {$pc eq -1} return
-        ::tacky::media setVideoEnabled $pc -on [expr {$opts(-on) ? 1 : 0}]
-        return
-    }
-
-    # Hot-swap mic / speaker for a live call. Empty id = system default.
-    # A backend with nothing attached yet ignores it; one that refuses the
-    # device answers with an error event, which OnMediaError turns into a
-    # <Warning>.
-    tackymethod setDevices {args} {
-        array set opts {-sid "" -input __unset__ -output __unset__}
-        array set opts $args
-        if {![dict exists $Calls $opts(-sid)]} return
-        set pc [dict get $Calls $opts(-sid) pc]
-        if {$pc eq -1} return
-        if {![::tacky::media capability audioDevices]} return
-        if {$opts(-input) ne "__unset__"} {
-            ::tacky::media setAudioDevice $pc -kind capture -id $opts(-input)
-        }
-        if {$opts(-output) ne "__unset__"} {
-            ::tacky::media setAudioDevice $pc -kind playback -id $opts(-output)
-        }
-        return
-    }
-
-    # Hook called by the global `video` module after the preferred
-    # camera changes - hot-swap the camera on every live video call.
-    tackymethod applyPreferredCamera {args} {
-        array set opts {-id ""}
-        array set opts $args
-        if {![::tacky::media capability videoDevice]} return
-        foreach sid [dict keys $Calls] {
-            if {![dict get $Calls $sid vsend]} continue
-            ::tacky::media setVideoDevice [dict get $Calls $sid pc] -id $opts(-id)
-        }
-        return
-    }
-
-    # Hook called by the global `audio` module after the preferred
-    # device changes — hot-swap every live call on this client.
-    tackymethod applyPreferredDevice {args} {
-        array set opts {-kind "" -id ""}
-        array set opts $args
-        set flag [expr {$opts(-kind) eq "capture" ? "-input" : "-output"}]
-        foreach sid [dict keys $Calls] {
-            $self setDevices -sid $sid $flag $opts(-id)
-        }
-        return
-    }
-
-    # Hook called by the global `audio` module after the volume changes —
-    # hot-swap every live call on this client. Values in [0.0, 1.0]. A call
-    # with no audio attached yet is a no-op in the backend; a value the
-    # backend rejects surfaces as <Warning> and the call keeps running.
-    tackymethod applyVolume {args} {
-        array set opts {-kind "" -volume ""}
-        array set opts $args
-        if {![::tacky::media capability audioVolume]} return
-        foreach sid [dict keys $Calls] {
-            set pc [dict get $Calls $sid pc]
-            if {$pc eq -1} continue
-            ::tacky::media setAudioVolume $pc \
-                -kind $opts(-kind) -volume $opts(-volume)
-        }
-        return
+    method EmitMissed {sid from video reason} {
+        $client emit calls <Missed> -sid $sid -from [jid bare $from] \
+            -video $video -reason $reason
     }
 
     # =========================================================================
-    # PC + media plumbing
+    # Inbound JMI <message> (XEP-0353)
     # =========================================================================
 
-    # Create a fresh pc and bind its events to this sid. Caller side then
-    # adds tracks and attaches media; callee side drives
-    # setRemoteDescription and attaches from the `track` events.
-    # The pc is recorded only once createPeer took it, so a refused one
-    # leaves nothing to close.
-    method CreatePc {sid iceServers} {
-        # The last word for every path into media, ours or the peer's.
-        set why [$self Blocked]
-        if {$why ne ""} {
-            error [string tolower $why 0 0]
-        }
-        set pc $self/$sid
-        ::tacky::media createPeer $pc -sid $sid \
-            -command [mymethod OnMediaEvent $sid] -ice-servers $iceServers
-        dict set Calls $sid pc $pc
-        return $pc
-    }
-
-    # Attach the mic + speaker to a track. The persisted
-    # audio_input_device / audio_output_device settings pin specific
-    # endpoints; a backend that cannot open one falls back to its default
-    # and says so with deviceFallback, so a stale setting - a device that
-    # went away, or an id stored against another backend - can't brick
-    # every call.
-    method AttachMedia {sid track} {
-        set taco [$client cget -taco]
-        dict set Calls $sid track $track
-        ::tacky::media attachAudio [dict get $Calls $sid pc] $track \
-            -input         [$taco audio getPreferredDevice -kind capture] \
-            -output        [$taco audio getPreferredDevice -kind playback] \
-            -input-volume  [$taco audio getVolume -kind capture] \
-            -output-volume [$taco audio getVolume -kind playback]
-    }
-
-    # Camera -> the peer, plus a self-view: the backend answers with a
-    # preview videoChannel, which OnVideoChannel turns into <VideoPreview>.
-    method AttachVideoSender {sid track} {
-        if {[dict get $Calls $sid vsend]} return
-        set taco [$client cget -taco]
-        set camId ""
-        catch {set camId [$taco video getPreferredCamera]}
-        dict set Calls $sid vsend 1
-        ::tacky::media attachVideoSender [dict get $Calls $sid pc] $track \
-            -device-id $camId
-    }
-
-    # The peer's camera -> a frame channel. The backend answers with an
-    # incoming videoChannel, which OnVideoChannel turns into <VideoTrack>.
-    method AttachVideoReceiver {sid track} {
-        if {[dict get $Calls $sid vrecv]} return
-        dict set Calls $sid vtrack $track
-        dict set Calls $sid vrecv 1
-        ::tacky::media attachVideoReceiver [dict get $Calls $sid pc] $track
-    }
-
-    # Turn a backend video channel descriptor into calls-event -flag args.
-    # A frame stream is named; a host-rendered channel just carries its id.
-    method VideoEventArgs {ch} {
-        set out {}
-        foreach key {name id} {
-            if {[dict exists $ch $key]} {
-                lappend out -$key [dict get $ch $key]
-            }
-        }
-        return $out
-    }
-
-    # Free media + pc for one call. The backend owns the ordering its own
-    # handles need; all this decides is whether the video half was ever up,
-    # since <VideoEnded> is owed only then.
-    method TeardownMedia {sid} {
-        if {![dict exists $Calls $sid]} return
-        set call [dict get $Calls $sid]
-        set hadVideo [expr {[dict get $call vsend] || [dict get $call vrecv]}]
-        if {[dict get $call pc] ne -1} {
-            ::tacky::media closePeer [dict get $call pc]
-        }
-        if {$hadVideo} {
-            $client emit calls <VideoEnded> -sid $sid -mid $VIDEO_MID
-        }
-        dict set Calls $sid pc     -1
-        dict set Calls $sid track  -1
-        dict set Calls $sid vtrack -1
-        dict set Calls $sid vsend  0
-        dict set Calls $sid vrecv  0
-    }
-
-    # =========================================================================
-    # tacky::media events (async, delivered on the Tcl main thread)
-    # =========================================================================
-
-    # One sink per call; $sid was bound at createPeer. A call torn down
-    # while the backend still had events queued is gone from Calls, and the
-    # check here is what every handler below relies on to assume it is not.
-    method OnMediaEvent {sid ev} {
-        if {![dict exists $Calls $sid]} return
-        # SDP is logged where it is sent.
-        if {[dict get $ev type] ne "localDescription"} {
-            jlog debug "media event (sid=$sid): [dict remove $ev pc]"
-        }
-        switch -- [dict get $ev type] {
-            localDescription {
-                $self OnLocalDescription $sid \
-                    [dict get $ev sdp] [dict get $ev sdpType]
-            }
-            iceCandidate {
-                $self OnLocalCandidate $sid \
-                    [dict get $ev candidate] [dict get $ev mid]
-            }
-            connectionState { $self OnPcState $sid [dict get $ev state] }
-            gatheringState  { $self OnGatheringState $sid [dict get $ev state] }
-            track           { $self OnTrack $sid $ev }
-            videoChannel    { $self OnVideoChannel $sid $ev }
-            deviceFallback  { $self OnDeviceFallback $sid $ev }
-            error           { $self OnMediaError $sid $ev }
-        }
-    }
-
-    # Fires once per setLocalDescription, and on the responder once more
-    # when an `autoAnswer` backend generates the answer inside
-    # setRemoteDescription. The SDP here has no candidates yet — those
-    # arrive asynchronously and are trickled separately.
-    method OnLocalDescription {sid sdp sdpType} {
-        set call [dict get $Calls $sid]
-        set me [$client cget -jid]
-        set isInitiator [dict get $call initiator]
-
-        # A backend declaring `sdpSanitize` advertises more on the wire
-        # than it honours. rtc-ma sends raw RTP (no media handler on the
-        # track) and honours neither negotiated RTP header extensions nor
-        # transport-cc feedback, while libdatachannel auto-echoes the
-        # remote offer's extmaps into our answer — notably sdes:mid, which
-        # libwebrtc peers then expect for transceiver routing in
-        # UNIFIED_PLAN and without which they drop every packet we send.
-        # See the SDP sanitization block in include/rtcma.h.
-        if {[::tacky::media capability sdpSanitize]} {
-            regsub -all -line {^a=extmap(-allow-mixed)?.*\n}      $sdp "" sdp
-            regsub -all -line {^a=rtcp-fb:[^ ]+ transport-cc.*\n} $sdp "" sdp
-        }
-
-        jlog debug "SDP $sdpType to [dict get $call peer] (sid=$sid)\n[jlog_redact_sdp $sdp]"
-
-        # Kept for the candidates that trickle after it: XEP-0176 5.3 has
-        # every transport-info carry them.
-        if {[regexp -line {^a=ice-ufrag:(\S+)} $sdp -> ufrag]} {
-            dict set Calls $sid ufrag $ufrag
-        }
-        if {[regexp -line {^a=ice-pwd:(\S+)} $sdp -> pwd]} {
-            dict set Calls $sid pwd $pwd
-        }
-
-        # SDP->Jingle (creator stays "initiator" on both sides — the
-        # responder echoes the initiator's content names verbatim).
-        set jingle [::jinglesdp::from_sdp $sdp \
-            -creator initiator -initiator $isInitiator]
-
-        if {$sdpType eq "offer"} {
-            dict set jingle attrs action session-initiate
-            dict set jingle attrs sid $sid
-            dict set jingle attrs initiator $me
-            if {[dict get $call group] ne ""} {
-                # XEP-0272: a session belonging to a Muji conference says so.
-                dict lappend jingle children \
-                    [j muji -ns urn:xmpp:jingle:muji:0 -room [dict get $call group]]
-            }
-            # Sent: a crossing initiate is now settled by sid.
-            dict set Calls $sid jingle 1
-            $self SendDescription $sid $jingle OnInitiateAck
-        } elseif {$sdpType eq "answer"} {
-            dict set jingle attrs action session-accept
-            dict set jingle attrs sid $sid
-            dict set jingle attrs responder $me
-            $self SendDescription $sid $jingle OnAcceptAck
-        }
-    }
-
-    # Send our session-initiate/accept. If both sides announced a device,
-    # encrypt the fingerprints first; local candidates are held meanwhile.
-    # If encryption fails the call fails; we never fall back to plain.
-    method SendDescription {sid jingle ack} {
-        set call [dict get $Calls $sid]
-        if {[dict get $call group] ne "" || ![dict exists $call announced]
-                || ![dict exists $call peer_device]} {
-            $self ShipDescription $sid $jingle $ack
-            return
-        }
-        dict set Calls $sid describing 1
-        $self EncryptFingerprints $sid $jingle $ack \
-            [::taco_calls::verify::transports $jingle]
-    }
-
-    method EncryptFingerprints {sid jingle ack slots} {
-        if {![dict exists $Calls $sid]} return
-        if {[llength $slots] == 0} {
-            dict set Calls $sid fingerprint_encrypted 1
-            $self ShipDescription $sid $jingle $ack
-            return
-        }
-        set slot [lindex $slots 0]
-        set fp [::taco_calls::verify::plain [::taco_calls::verify::get $jingle $slot]]
-        if {$fp eq ""} {
-            $self EncryptFingerprints $sid $jingle $ack [lrange $slots 1 end]
-            return
-        }
-        set call [dict get $Calls $sid]
-        $client omemo encryptFor [jid bare [dict get $call peer]] \
-            [dict get $call peer_device] [dict get $fp body] \
-            [mymethod AfterEncryptFingerprint $sid $jingle $ack $slots]
-    }
-
-    method AfterEncryptFingerprint {sid jingle ack slots status enc} {
-        if {![dict exists $Calls $sid]} return
-        if {$status ne "ok"} {
-            dict unset Calls $sid describing
-            $self FailCall $sid "call could not be verified: $enc" security-error
-            return
-        }
-        set slot [lindex $slots 0]
-        set jingle [::taco_calls::verify::put $jingle $slot \
-            [::taco_calls::verify::encrypted \
-                [::taco_calls::verify::get $jingle $slot] $enc]]
-        $self EncryptFingerprints $sid $jingle $ack [lrange $slots 1 end]
-    }
-
-    method ShipDescription {sid jingle ack} {
-        $client iq request -type set -to [dict get $Calls $sid peer] \
-            -payload $jingle -command [mymethod $ack $sid]
-        if {![dict exists $Calls $sid describing]} return
-        dict unset Calls $sid describing
-        if {![dict exists $Calls $sid held_candidates]} return
-        foreach held [dict get $Calls $sid held_candidates] {
-            $self OnLocalCandidate $sid {*}$held
-        }
-        dict unset Calls $sid held_candidates
-    }
-
-    # Trickle a single ICE candidate to the peer. The API carries the SDP
-    # attribute form ("candidate:foo bar baz..."); we strip the
-    # "candidate:" prefix so jinglesdp::BuildCandidate sees the same
-    # shape it parses out of SDP. An empty mid falls back to the bundle
-    # group's audio MID.
-    method OnLocalCandidate {sid cand mid} {
-        set call [dict get $Calls $sid]
-        # Hold candidates until the description is sent.
-        if {[dict exists $call describing]} {
-            dict set Calls $sid held_candidates [linsert \
-                [dict getdef $call held_candidates {}] end [list $cand $mid]]
-            return
-        }
-        set me [$client cget -jid]
-        set isInitiator [dict get $call initiator]
-
-        set value $cand
-        if {[string match "candidate:*" $value]} {
-            set value [string range $value 10 end]
-        }
-        if {$mid eq ""} { set mid $MID }
-
-        set candNode [::jinglesdp::BuildCandidate $value]
-        if {$candNode eq ""} return
-
-        set iceAttrs {}
-        foreach key {ufrag pwd} {
-            if {[dict exists $call $key]} { lappend iceAttrs -$key [dict get $call $key] }
-        }
-        set jingle [j jingle -ns urn:xmpp:jingle:1 {
-            j content -creator initiator -name $mid {
-                j transport -ns urn:xmpp:jingle:transports:ice-udp:1 {*}$iceAttrs {
-                    j #as-is $candNode
-                }
-            }
-        }]
-        dict set jingle attrs action transport-info
-        dict set jingle attrs sid $sid
-        if {$isInitiator} {
-            dict set jingle attrs initiator $me
-        } else {
-            dict set jingle attrs responder $me
-        }
-        $client iq request -type set -to [dict get $call peer] -payload $jingle
-    }
-
-    # Informational only — kept for visibility / future logging hooks. No
-    # wire effect; the SDP ships from OnLocalDescription and candidates
-    # trickle via OnLocalCandidate.
-    method OnGatheringState {sid state} {
-        return
-    }
-
-    method OnInitiateAck {sid stanza} {
-        # Already dropped for a crossing initiate; the peer answers it with
-        # <tie-break/>.
-        if {![dict exists $Calls $sid]} return
-        if {[xsearch $stanza -get @type] eq "error"} {
-            # <tie-break/>: the peer kept its own initiate; not a refusal.
-            set lost [expr {[xsearch $stanza error tie-break \
-                -ns urn:xmpp:jingle:errors:1 -get node] ne ""}]
-            $client emit calls <Failed> -sid $sid -reason [expr {$lost
-                ? "session-initiate lost a tie-break" : "session-initiate rejected"}]
-            $self TeardownMedia $sid
-            $self Cleanup $sid
-        }
-    }
-
-    method OnAcceptAck {sid stanza} {
-        if {[xsearch $stanza -get @type] eq "error"} {
-            $client emit calls <Warning> -sid $sid -reason "session-accept rejected"
-        }
-    }
-
-    # Backend state strings: new, connecting, connected, disconnected,
-    # failed, closed. The internal `state` dict field tracks the full
-    # lifecycle; only the connected/closed/failed transitions are surfaced
-    # as <Active>/<Ended>/<Failed>. new/connecting are backend internals,
-    # too short-lived to be useful to a GUI, and intentionally not emitted.
-    # The pre-media transitions (<Outgoing>, <Incoming>, <Ringing>) are
-    # emitted from the JMI handlers, not from here.
-    method OnPcState {sid state} {
-        # ICE lost consent. The backend recovers or moves on to failed by
-        # itself, so warn if it lasts and leave the call running.
-        if {$state eq "disconnected"} {
-            if {[dict exists $Calls $sid]
-                    && ![dict exists $Calls $sid disconnect_timer]} {
-                dict set Calls $sid disconnect_timer \
-                    [after $DISCONNECT_GRACE_MS [mymethod WarnInterrupted $sid]]
-            }
-            return
-        }
-        # A late event for a call already gone must not bring it back.
-        if {![dict exists $Calls $sid]} return
-        $self CancelInterrupted $sid
-        set mapped [$self MapPcState $state]
-        if {$mapped eq ""} return
-        dict set Calls $sid state $mapped
-        switch -- $mapped {
-            new        -
-            connecting { return }
-            active     {
-                # Kept across an ICE restart.
-                if {[dict get $Calls $sid active_since] == 0} {
-                    dict set Calls $sid active_since [clock microseconds]
-                }
-                $client emit calls <Active> -sid $sid \
-                    -since [dict get $Calls $sid active_since]
-            }
-            ended      { $client emit calls <Ended> -sid $sid -reason hangup }
-            failed     {
-                $client emit calls <Failed> -sid $sid \
-                    -reason "media path failed (ICE/DTLS)"
-            }
-        }
-        if {$mapped in {ended failed}} {
-            # The peer is told in Jingle, as FailCall does: a peer that ends
-            # a session only on session-terminate (another.im's Android app)
-            # otherwise keeps the call up, its video frozen.
-            set peer [dict get $Calls $sid peer]
-            $self TeardownMedia $sid
-            $self SendTerminate $sid $peer \
-                [expr {$mapped eq "failed" ? "connectivity-error" : "success"}]
-            $self Cleanup $sid
-        }
-    }
-
-    method WarnInterrupted {sid} {
-        if {![dict exists $Calls $sid disconnect_timer]} return
-        dict unset Calls $sid disconnect_timer
-        $client emit calls <Warning> -sid $sid -reason "media path interrupted"
-    }
-
-    method CancelInterrupted {sid} {
-        if {![dict exists $Calls $sid disconnect_timer]} return
-        after cancel [dict get $Calls $sid disconnect_timer]
-        dict unset Calls $sid disconnect_timer
-    }
-
-    method MapPcState {state} {
-        switch -- $state {
-            new          { return new }
-            connecting   { return connecting }
-            connected    { return active }
-            failed       { return failed }
-            closed       { return ended }
-            disconnected { return "" }
-            default      { return "" }
-        }
-    }
-
-    # The backend reports the media kind: a real peer's offer carries its
-    # own BUNDLE mids, not our "audio"/"video" labels, so the mid is only
-    # good for reporting.
-    method OnTrack {sid ev} {
-        set call [dict get $Calls $sid]
-        set tr [dict get $ev track]
-        if {[dict get $ev kind] eq "video"} {
-            if {[dict get $call vtrack] ne -1} return
-            $self AttachVideoReceiver $sid $tr
-            if {[dict get $call video_local]} {
-                $self AttachVideoSender $sid $tr
-            }
-            return
-        }
-        if {[dict get $call track] ne -1} return
-        $self AttachMedia $sid $tr
-    }
-
-    # A frame channel came up: <VideoTrack> for the peer's camera,
-    # <VideoPreview> for our own self-view.
-    method OnVideoChannel {sid ev} {
-        set args [$self VideoEventArgs [dict get $ev channel]]
-        if {[dict get $ev direction] eq "preview"} {
-            jlog debug "<VideoPreview> (sid=$sid) $args"
-            $client emit calls <VideoPreview> -sid $sid \
-                -direction preview {*}$args
-            return
-        }
-        jlog debug "<VideoTrack> (sid=$sid) $args"
-        $client emit calls <VideoTrack> -sid $sid -mid [dict get $ev mid] \
-            -direction incoming {*}$args
-    }
-
-    # The backend could not open the device we asked for and used its
-    # default. The call is fine; the user just isn't on the endpoint they
-    # picked, so say so.
-    method OnDeviceFallback {sid ev} {
-        set what [expr {[dict get $ev kind] eq "playback" ? "output" : "input"}]
-        if {[dict get $ev kind] eq "camera"} { set what camera }
-        $client emit calls <Warning> -sid $sid \
-            -reason "$what device unavailable, using default"
-    }
-
-    # Backend errors. Each op the module drives has its own report, since
-    # the text and the consequence differ; anything else falls through to
-    # the generic rule - fatal ends the call, advisory warns and it runs on.
-    method OnMediaError {sid ev} {
-        set op [dict get $ev op]
-        set reason [dict get $ev reason]
-        switch -- $op {
-            setRemoteDescription {
-                # Recorded for the handler that issued it: with a backend
-                # that reports synchronously it is still on the stack and
-                # can answer the IQ accordingly.
-                dict set SdpErrors $sid $reason
-                if {[dict exists $ev sdpType]
-                        && [dict get $ev sdpType] eq "answer"} {
-                    $client emit calls <Warning> -sid $sid \
-                        -reason "session-accept rejected: $reason"
-                    return
-                }
-                # An offer we cannot apply is fatal, and the
-                # session-initiate is already acked — the peer thinks the
-                # call is live, so terminate rather than leave it to
-                # time out.
-                set peer [dict get $Calls $sid peer]
-                $client emit calls <Failed> -sid $sid \
-                    -reason "remote offer rejected: $reason"
-                $self TeardownMedia $sid
-                $self SendTerminate $sid $peer general-error
-                $self Cleanup $sid
-                return
-            }
-            addRemoteCandidate {
-                # Stale, duplicate, wrong ufrag: skipped like an
-                # unparsable one, since the others may still connect.
-                jlog debug "transport-info: candidate rejected: $reason"
-                return
-            }
-            attachAudio {
-                # Advisory: one side has no device, the call runs on and
-                # picking a device opens it. Fatal falls through below.
-                if {![dict getdef $ev fatal 0]} {
-                    $client emit calls <Warning> -sid $sid -reason \
-                        "[$self AudioSide $ev] device could not be opened: $reason"
-                    return
-                }
-            }
-            setAudioDevice {
-                $client emit calls <Warning> -sid $sid \
-                    -reason "[$self AudioSide $ev] device unavailable: $reason"
-                return
-            }
-            setAudioVolume {
-                $client emit calls <Warning> -sid $sid \
-                    -reason "[$self AudioSide $ev] volume rejected: $reason"
-                return
-            }
-            attachVideoSender {
-                dict set Calls $sid vsend 0
-                $client emit calls <Warning> -sid $sid \
-                    -reason "video sender: $reason"
-                return
-            }
-            attachVideoReceiver {
-                dict set Calls $sid vrecv 0
-                dict set Calls $sid vtrack -1
-                $client emit calls <Warning> -sid $sid \
-                    -reason "video receiver: $reason"
-                return
-            }
-        }
-        if {[dict exists $ev fatal] && [dict get $ev fatal]} {
-            $client emit calls <Failed> -sid $sid -reason $reason
-            $self TeardownMedia $sid
-            $self Cleanup $sid
-            return
-        }
-        $client emit calls <Warning> -sid $sid -reason $reason
-    }
-
-    method AudioSide {ev} {
-        return [expr {[dict get $ev kind] eq "capture" ? "input" : "output"}]
-    }
-
-    # Did the setRemoteDescription just issued for $sid fail? Only a
-    # backend reporting synchronously can answer in time; with an async one
-    # the IQ is already acked and OnMediaError's report is the whole story.
-    method TakeSdpError {sid} {
-        if {![dict exists $SdpErrors $sid]} { return "" }
-        set err [dict get $SdpErrors $sid]
-        dict unset SdpErrors $sid
-        return $err
-    }
-
-    # =========================================================================
-    # Incoming JMI <message> dispatch (XEP-0353)
-    # =========================================================================
-
-    # Returns 1 if the stanza was claimed (had a JMI child), 0 otherwise.
+    # Returns 1 if the stanza was claimed (had a JMI child), 0 otherwise. A
+    # propose may open a call; the rest are the call's.
     method OnMessage {stanza} {
         set ns urn:xmpp:jingle-message:0
         foreach action {propose proceed ringing reject retract finish} {
@@ -1198,23 +309,19 @@ snit::type taco_calls {
             if {$child eq ""} continue
             set sid [xsearch $child -get @id]
             set from [xsearch $stanza -get @from]
-            switch -- $action {
-                propose { $self HandleJmiPropose $stanza $sid $from }
-                proceed { $self HandleJmiProceed $stanza $sid $from }
-                ringing { $self HandleJmiRinging $stanza $sid $from }
-                reject  { $self HandleJmiReject  $stanza $sid $from }
-                retract { $self HandleJmiRetract $stanza $sid $from }
-                finish  { $self HandleJmiFinish  $stanza $sid $from }
+            if {$action eq "propose"} {
+                $self OnPropose $stanza $child $sid $from
+            } elseif {[set call [$self Call $sid]] ne ""} {
+                $call Jmi $action $stanza $from
             }
             return 1
         }
         return 0
     }
 
-    method HandleJmiPropose {stanza sid from} {
+    method OnPropose {stanza child sid from} {
         # Carbon of our own outbound propose: drop.
-        set myBare [jid bare [$client cget -jid]]
-        if {[jid bare $from] eq $myBare} return
+        if {[jid bare $from] eq [jid bare [$client cget -jid]]} return
         # An occupant of a room we are in, joining or have bookmarked is
         # not a caller: anyone in a public room could ring us and learn
         # from our <ringing/> that we are online. Dropped unanswered.
@@ -1226,20 +333,15 @@ snit::type taco_calls {
         }
         # Duplicate or sid collision: ignore, unless it is our own proposed
         # sid from the account we call (equal-sid tie-break below).
-        if {[dict exists $Calls $sid]} {
-            set ours [dict get $Calls $sid]
-            if {![dict get $ours initiator] || [dict get $ours state] ne "proposed"
-                    || ![jid matches-bare $from [dict get $ours peer]]} return
-        }
-        set ns urn:xmpp:jingle-message:0
-        set child [xsearch $stanza propose -ns $ns -get node]
-        set hasVideo [$self ProposeHasVideo $child]
+        set ours [$self Call $sid]
+        if {$ours ne "" && ![$ours ProposedTo $from]} return
+        set video [$self ProposeHasVideo $child]
 
         # Calls can't be tunneled through a proxy (native ICE bypasses it), so
         # decline instead of ringing. Missed all the same, as busy is.
         if {[$self Blocked] ne ""} {
             $client write [$self BuildJmiMessage $from reject $sid 0]
-            $self EmitMissed $sid $from $hasVideo proxy
+            $self EmitMissed $sid $from $video proxy
             return
         }
 
@@ -1248,10 +350,9 @@ snit::type taco_calls {
         # with <tie-break/>. Theirs rings only if it beats every propose of
         # ours to them; ours then end.
         set beaten {}
-        dict for {ours call} $Calls {
-            if {![dict get $call initiator] || [dict get $call state] ne "proposed"} continue
-            if {![jid matches-bare $from [dict get $call peer]]} continue
-            set cmp [string compare $ours $sid]
+        dict for {oursid call} $Calls {
+            if {![$call ProposedTo $from]} continue
+            set cmp [string compare $oursid $sid]
             if {$cmp == 0} {
                 set cmp [string compare [jid norm [$client cget -jid]] [jid norm $from]]
             }
@@ -1259,154 +360,38 @@ snit::type taco_calls {
                 $client write [$self BuildJmiTieBreak $from $sid]
                 return
             }
-            lappend beaten $ours
+            lappend beaten $call
         }
-        foreach ours $beaten {
-            $client emit calls <Ended> -sid $ours -reason replaced
-            $self Cleanup $ours
+        foreach call $beaten {
+            $call Finish Ended replaced
         }
 
         # One call at a time: any other, group sessions included, makes
         # this one busy.
         if {[dict size $Calls] > 0} {
             $client write [$self BuildJmiReject $from $sid busy]
-            $self EmitMissed $sid $from $hasVideo busy
+            $self EmitMissed $sid $from $video busy
             return
         }
 
-        dict set Calls $sid [$self NewCallDict $from 0 ringing 0]
-        $self NotePeerDevice $sid $child
-        dict set Calls $sid video_remote $hasVideo
         # We answer video symmetrically: if they offered it, we intend to
         # send it too (the GUI can still mute the camera).
-        dict set Calls $sid video_local $hasVideo
-
+        set call [$self NewCall $sid -peer $from -initiator 0 -state ringing \
+            -video $video -video-remote $video]
+        $call NotePeerDevice $child
         # XEP-0353 §4: tell the initiator this device is alerting the user.
         $client write [$self BuildJmiMessage $from ringing $sid 0]
-        $self StartRingTimer $sid
-        $client emit calls <Incoming> -sid $sid -from [jid bare $from] \
-            -video $hasVideo
+        $call StartRingTimer
+        $client emit calls <Incoming> -sid $sid -from [jid bare $from] -video $video
     }
 
-    method HandleJmiRinging {stanza sid from} {
-        if {![dict exists $Calls $sid]} return
-        set call [dict get $Calls $sid]
-        if {[dict get $call state] ne "proposed"
-                || ![dict get $call initiator]} return
-        if {![$self PeerMatches $sid $from]} return
-        # The state stays proposed, so this is the only trace `list` has.
-        dict set Calls $sid peer_ringing 1
-        $client emit calls <Ringing> -sid $sid
-    }
-
-    method HandleJmiProceed {stanza sid from} {
-        if {![dict exists $Calls $sid]} return
-        set call [dict get $Calls $sid]
-        set state [dict get $call state]
-        set myJid [$client cget -jid]
-        set myBare [jid bare $myJid]
-
-        # Carbon of someone else's proceed on a call we're ringing on
-        # (another device of ours answered): drop our ringing state.
-        if {$state eq "ringing" && [jid bare $from] eq $myBare \
-                && $from ne $myJid} {
-            $client emit calls <Ended> -sid $sid -reason elsewhere
-            $self Cleanup $sid
-            return
+    # Does an inbound JMI <propose> advertise a video <description>?
+    method ProposeHasVideo {child} {
+        foreach d [xsearch $child description \
+                       -ns urn:xmpp:jingle:apps:rtp:1 -gather node] {
+            if {[xsearch $d -get @media] eq "video"} { return 1 }
         }
-        # We're the original caller: latch full JID, then fetch the
-        # server's STUN/TURN list (XEP-0215). StartOutgoingMedia runs in
-        # the extdisco callback once the iceServers list is in hand.
-        if {$state eq "proposed" && [dict get $call initiator]} {
-            if {![$self PeerMatches $sid $from]} return
-            dict set Calls $sid peer $from
-            dict set Calls $sid state proceeded
-            $self StopRingTimer $sid
-            $self NotePeerDevice $sid \
-                [xsearch $stanza proceed -ns urn:xmpp:jingle-message:0 -get node]
-            $client extdisco fetch -command [mymethod StartOutgoingMedia $sid]
-        }
-    }
-
-    # Caller side: extdisco callback. Builds the pc with whatever ICE
-    # servers the server advertised (empty list = host candidates only),
-    # adds the sendrecv audio track, attaches media, and kicks off
-    # offer generation. A hangup arriving during the fetch can have
-    # removed this sid from Calls — bail in that case. A setup that
-    # raises (the backend refusing the pc, a track, the offer) fails the
-    # call here instead of reaching bgerror and leaving it hanging.
-    method StartOutgoingMedia {sid iceServers} {
-        if {![dict exists $Calls $sid]} return
-        if {[catch {$self SetUpOutgoingMedia $sid $iceServers} err]} {
-            $self FailCall $sid "media setup failed: $err" general-error
-        }
-    }
-
-    method SetUpOutgoingMedia {sid iceServers} {
-        set pc [$self CreatePc $sid $iceServers]
-        ::tacky::media addTrack $pc $MID -kind audio -direction sendrecv
-        $self AttachMedia $sid $MID
-        if {![dict exists $Calls $sid]} return
-        if {[dict get $Calls $sid video_local]} {
-            ::tacky::media addTrack $pc $VIDEO_MID -kind video -direction sendrecv
-            $self AttachVideoSender $sid $VIDEO_MID
-            $self AttachVideoReceiver $sid $VIDEO_MID
-        }
-        # No type: with no remote description set, this is the offer.
-        ::tacky::media setLocalDescription $pc
-    }
-
-    method HandleJmiReject {stanza sid from} {
-        if {![dict exists $Calls $sid]} return
-        set call [dict get $Calls $sid]
-        set state [dict get $call state]
-        set myJid [$client cget -jid]
-        set myBare [jid bare $myJid]
-
-        # Another of our devices took the call from underneath us while
-        # we were ringing — drop locally.
-        if {$state eq "ringing" && [jid bare $from] eq $myBare \
-                && $from ne $myJid} {
-            $client emit calls <Ended> -sid $sid -reason elsewhere
-            $self Cleanup $sid
-            return
-        }
-        # Caller side: declined, busy, timed out, or a tie-break.
-        if {$state eq "proposed" && [dict get $call initiator]} {
-            if {![$self PeerMatches $sid $from]} return
-            set child [xsearch $stanza reject -ns urn:xmpp:jingle-message:0 -get node]
-            set why declined
-            if {[xsearch $child tie-break -get node] ne ""} {
-                set why replaced
-            } else {
-                switch -- [lindex [xsearch $child reason * -get tag] 0] {
-                    busy    { set why busy }
-                    timeout { set why timeout }
-                }
-            }
-            $client emit calls <Ended> -sid $sid -reason $why
-            $self Cleanup $sid
-        }
-    }
-
-    method HandleJmiRetract {stanza sid from} {
-        if {![$self PeerMatches $sid $from]} return
-        set call [dict get $Calls $sid]
-        # Caller cancelled before we proceeded.
-        if {[dict get $call state] eq "ringing"} {
-            $client emit calls <Ended> -sid $sid -reason retracted
-            $self EmitMissed $sid $from [dict get $call video_remote] retracted
-            $self Cleanup $sid
-        }
-    }
-
-    # <finish/> (XEP-0353 §3.5): the session is over. Its session-terminate
-    # normally said so first; if we still hold the call, it ends here.
-    method HandleJmiFinish {stanza sid from} {
-        if {![$self PeerMatches $sid $from]} return
-        if {[dict get $Calls $sid state] in {proposed ringing}} return
-        set child [xsearch $stanza finish -ns urn:xmpp:jingle-message:0 -get node]
-        $self PeerEnded $sid [lindex [xsearch $child reason * -get tag] 0]
+        return 0
     }
 
     # $device: our OMEMO device id to announce, if any.
@@ -1426,7 +411,7 @@ snit::type taco_calls {
                             -media video
                     }
                     if {$device ne ""} {
-                        j device -ns $NS_VERIFY -id $device
+                        j device -ns $::taco_calls::call::NS_VERIFY -id $device
                     }
                 }
             } else {
@@ -1435,7 +420,6 @@ snit::type taco_calls {
         }]
     }
 
-    # The <reject> of a propose that lost the tie-break (XEP-0353 §4.1).
     # <reject/> with a XEP-0166 condition.
     method BuildJmiReject {to sid condition} {
         return [j message -to $to -type chat {
@@ -1445,6 +429,17 @@ snit::type taco_calls {
         }]
     }
 
+    # <finish/> with a XEP-0166 condition (XEP-0353 §3.5).
+    method BuildJmiFinish {to sid condition} {
+        return [j message -to $to -type chat {
+            j finish -ns urn:xmpp:jingle-message:0 -id $sid {
+                j reason -ns urn:xmpp:jingle:1 { j $condition }
+            }
+            j store -ns urn:xmpp:hints
+        }]
+    }
+
+    # The <reject> of a propose that lost the tie-break (XEP-0353 §4.1).
     method BuildJmiTieBreak {to sid} {
         return [j message -to $to -type chat {
             j reject -ns urn:xmpp:jingle-message:0 -id $sid {
@@ -1454,327 +449,99 @@ snit::type taco_calls {
         }]
     }
 
-    # Does an inbound JMI <propose> advertise a video <description>?
-    method ProposeHasVideo {child} {
-        foreach d [xsearch $child description \
-                       -ns urn:xmpp:jingle:apps:rtp:1 -gather node] {
-            if {[xsearch $d -get @media] eq "video"} { return 1 }
-        }
-        return 0
-    }
-
     # =========================================================================
-    # Incoming Jingle IQ dispatch
+    # Inbound Jingle IQ
     # =========================================================================
 
+    # Every action but session-initiate is for a call that exists, from its
+    # peer, in a state that takes it; that call's {Jingle action} handles
+    # it. A sender that isn't the peer gets the same
+    # answer as an unknown sid, so a guessed sid can't be confirmed.
     method OnJingleIq {stanza} {
         set jingle [xsearch $stanza jingle -ns urn:xmpp:jingle:1 -get node]
         if {$jingle eq ""} {
             $self IqError $stanza bad-request
             return
         }
-        set action [xsearch $jingle -get @action]
-        set sid [xsearch $jingle -get @sid]
+        lassign [xsearch $jingle -get {@action @sid}] action sid
         set from [xsearch $stanza -get @from]
-
-        switch -- $action {
-            session-initiate  { $self HandleSessionInitiate $stanza $jingle $sid $from }
-            session-accept    { $self HandleSessionAccept   $stanza $jingle $sid $from }
-            session-terminate { $self HandleSessionTerminate $stanza $jingle $sid $from }
-            transport-info    { $self HandleTransportInfo   $stanza $jingle $sid $from }
-            default           { $self HandleOtherAction $stanza $jingle $action $sid $from }
-        }
-    }
-
-    # Any other action. One for a session that is not this peer's is
-    # refused like the rest. session-info (ringing, mute, hold) and the
-    # other informational actions are acknowledged. content-add and
-    # transport-replace are acknowledged and then turned down with
-    # content-reject / transport-reject, as XEP-0166 7.2 has it: an IQ
-    # error there would read as the session failing, and Conversations
-    # ends the call (its video button sends content-add mid-call).
-    # Anything else gets feature-not-implemented.
-    method HandleOtherAction {stanza jingle action sid from} {
-        if {![$self PeerMatches $sid $from]} {
-            $self IqError $stanza item-not-found
+        if {$action ni $JINGLE_ACTIONS} {
+            $self IqError $stanza bad-request
             return
         }
-        switch -- $action {
-            session-info - content-modify - content-remove -
-            description-info - security-info {
-                $self AckIq $stanza
-            }
-            content-add {
-                $self AckIq $stanza
-                $self SendReject $sid $from content-reject $jingle 0
-            }
-            transport-replace {
-                $self AckIq $stanza
-                $self SendReject $sid $from transport-reject $jingle 1
-            }
-            default {
-                $self IqError $stanza feature-not-implemented
-            }
+        if {$action eq "session-initiate"} {
+            if {![$self OpenSession $stanza $jingle $sid $from]} return
         }
-    }
-
-    # Turn down the contents of an incoming $jingle with $action, naming
-    # each content (and, for a transport-reject, the transport refused).
-    method SendReject {sid peer action jingle withTransport} {
-        set contents {}
-        foreach c [xsearch $jingle content -gather node] {
-            lassign [xsearch $c -get {@creator @name}] creator name
-            set content [j content -creator $creator -name $name]
-            if {$withTransport} {
-                dict set content children [xsearch $c transport -gather node]
-            }
-            lappend contents $content
-        }
-        set out [j jingle -ns urn:xmpp:jingle:1]
-        dict set out attrs action $action
-        dict set out attrs sid $sid
-        dict set out children $contents
-        $client iq request -type set -to $peer -payload $out
-    }
-
-    method HandleSessionInitiate {stanza jingle sid from} {
-        # JMI is mandatory: a session-initiate must be preceded by our
-        # own <proceed>. Otherwise the user never agreed to ring and
-        # we reject the IQ — the call never existed locally.
-        # A sender that isn't our peer gets the same answer as an unknown
-        # sid, so a guessed sid can't be confirmed.
-        # Except a Muji session, whose sender taco_groupcall vouches for.
-        #
-        # Crossing initiates (XEP-0166 §7.2.16): we also have an unanswered
-        # group session to this peer. The lower sid wins, then the lower JID.
-        # If ours wins, theirs gets <tie-break/>; otherwise, or if ours was
-        # never sent, theirs replaces ours, which is dropped silently.
-        set ours [$self CrossingSession $from]
-        if {$ours ne "" && ([dict exists $Calls $sid] && $sid ne $ours)} {
-            set ours ""
-        }
-        if {$ours ne ""} {
-            set cmp [string compare $sid $ours]
-            if {$cmp == 0} {
-                set cmp [string compare [jid norm $from] [jid norm [$client cget -jid]]]
-            }
-            if {[dict exists $Calls $ours jingle] && $cmp > 0} {
-                $self IqError $stanza conflict tie-break
-                return
-            }
-            # Same sid: drop ours first, theirs reuses the entry.
-            if {$sid eq $ours} { $self DropSession $ours }
-            if {![$self OpenGroupSession $jingle $sid $from $ours]} {
-                # groupcall refused theirs: ours stays, or ends if already
-                # dropped.
-                if {$sid eq $ours} {
-                    $client emit calls <Ended> -sid $ours -reason replaced
-                }
+        set call [$self Call $sid]
+        if {$call eq "" || ![$call Matches $from]} {
+            # Acknowledged anyway: whatever it ended is over.
+            if {$action eq "session-terminate"} {
+                $self AckIq $stanza
+            } else {
                 $self IqError $stanza item-not-found
-                return
             }
-            if {$sid ne $ours} { $self DropSession $ours }
-        } elseif {![dict exists $Calls $sid] && ![$self OpenGroupSession $jingle $sid $from]} {
-            $self IqError $stanza item-not-found
             return
         }
-        if {![$self PeerMatches $sid $from]} {
-            $self IqError $stanza item-not-found
-            return
-        }
-        set call [dict get $Calls $sid]
-        if {[dict get $call state] ne "proceeded"
-                || [dict get $call initiator]} {
+        # A session-initiate is the handler's to judge, since it may open
+        # the session or cross one of ours.
+        if {$action ne "session-initiate" && ![$call Takes $action]} {
             $self IqError $stanza out-of-order
             return
         }
-        # A plain offer is accepted even if the peer announced a device,
-        # like Conversations.
-        set jingle [$self TakeFingerprints $sid $stanza $jingle $from 0]
-        if {$jingle eq ""} return
-        # Strip payload-types the backend cannot decode before to_sdp, so
-        # the answer only offers what we can actually play back.
-        set jingle [$self FilterCodecs $jingle]
-        # -initiator names the SDP's author: the peer, who initiated.
-        # An offer that doesn't convert is refused, which ends the session
-        # for the peer as well.
-        if {[catch {::jinglesdp::to_sdp $jingle -initiator 1} sdp]} {
-            $self IqError $stanza bad-request
-            $client emit calls <Failed> -sid $sid -reason "bad offer: $sdp"
-            $self Cleanup $sid
-            return
-        }
-        jlog debug "SDP offer from $from (sid=$sid)\n[jlog_redact_sdp $sdp]"
-        dict set Calls $sid peer $from
-        dict set Calls $sid state new
-        $self AckIq $stanza
-        # Fetch ICE servers (XEP-0215) before standing up the pc.
-        # StartIncomingMedia drives the rest in the extdisco callback.
-        $client extdisco fetch \
-            -command [mymethod StartIncomingMedia $sid $sdp]
+        $call Jingle $action $stanza $jingle $from
     }
 
-    # Callee side: extdisco callback. Stands up the pc, applies the
-    # remote offer, and drains any transport-info that arrived while
-    # the fetch was outstanding. A hangup during the fetch can have
-    # removed this sid — bail then. A setup that raises fails the call, as
-    # the caller's does.
-    method StartIncomingMedia {sid sdp iceServers} {
-        if {![dict exists $Calls $sid]} return
-        if {[catch {$self SetUpIncomingMedia $sid $sdp $iceServers} err]} {
-            $self FailCall $sid "media setup failed: $err" general-error
-        }
-    }
-
-    method SetUpIncomingMedia {sid sdp iceServers} {
-        set pc [$self CreatePc $sid $iceServers]
-        # Apply the offer; `track` events fire async to drive AttachMedia.
-        # A backend that rejects it reports an error, and OnMediaError has
-        # already emitted <Failed>, terminated and cleaned up by the time
-        # this returns — hence the re-check below.
-        ::tacky::media setRemoteDescription $pc -sdp $sdp -type offer
-        if {![dict exists $Calls $sid]} return
-        $self TakeSdpError $sid
-        dict set Calls $sid remote_set 1
-        # An `autoAnswer` backend has applied its own answer as part of
-        # setRemoteDescription(offer) and calling setLocalDescription now
-        # would run in signaling state Stable, where an unspecified type
-        # means Offer — generating a fresh offer that silently overwrites
-        # that answer. libdatachannel does this
-        # (config.disableAutoNegotiation is false by default); libwebrtc
-        # does not, and needs the explicit answer.
-        if {![::tacky::media capability autoAnswer]} {
-            ::tacky::media setLocalDescription $pc -type answer
-            if {![dict exists $Calls $sid]} return
-        }
-        $self DrainPendingCandidates $sid $pc
-    }
-
-    # Apply the candidates that arrived (and were buffered) before the
-    # remote description. A rejected one isn't fatal to a description that
-    # just applied cleanly; OnMediaError logs and skips it.
-    method DrainPendingCandidates {sid pc} {
-        if {![dict exists $Calls $sid pending_remote_candidates]} return
-        foreach entry [dict get $Calls $sid pending_remote_candidates] {
-            lassign $entry name full
-            ::tacky::media addRemoteCandidate $pc \
-                -candidate $full -mid $name
-        }
-        dict unset Calls $sid pending_remote_candidates
-    }
-
-    method HandleSessionAccept {stanza jingle sid from} {
-        if {![$self PeerMatches $sid $from]} {
-            $self IqError $stanza item-not-found
-            return
-        }
-        set pc [dict get $Calls $sid pc]
-        # An accept before we've stood up the pc (still fetching ICE
-        # servers, or never offered at all) has nothing to apply to.
-        if {$pc eq -1} {
-            $self IqError $stanza out-of-order
-            return
-        }
-        # If our offer was encrypted, the answer must be too. A repeated
-        # answer is skipped: its key was already used.
-        if {![dict exists $Calls $sid remote_set]} {
-            set jingle [$self TakeFingerprints $sid $stanza $jingle $from \
-                [dict exists $Calls $sid fingerprint_encrypted]]
-            if {$jingle eq ""} return
-        }
-        # The peer wrote this answer, as the responder. One that doesn't
-        # convert ends a call still waiting for it; a malformed repeat of
-        # an answer already applied is only refused.
-        if {[catch {::jinglesdp::to_sdp $jingle -initiator 0} sdp]} {
-            $self IqError $stanza bad-request
-            if {![dict exists $Calls $sid remote_set]} {
-                $self FailCall $sid "bad answer: $sdp" failed-application
+    # Make sure a session-initiate has its call, if it may: returns 0 when
+    # it may not, having answered it. JMI is mandatory: a session-initiate
+    # must be preceded by our own <proceed>, or the user never agreed to
+    # ring. Except a Muji session, whose sender taco_groupcall vouches for.
+    #
+    # Crossing initiates (XEP-0166 §7.2.16): we also have an unanswered
+    # group session to this peer. The lower sid wins, then the lower JID.
+    # If ours wins, theirs gets <tie-break/>; otherwise, or if ours was
+    # never sent, theirs replaces ours, which is dropped silently.
+    method OpenSession {stanza jingle sid from} {
+        set ours [$self CrossingSession $from]
+        set known [$self Call $sid]
+        if {$ours eq "" || ($known ne "" && $sid ne $ours)} {
+            if {$known ne "" || [$self OpenGroupSession $jingle $sid $from]} {
+                return 1
             }
-            return
-        }
-        # A duplicate/retransmitted accept applies fine once but is
-        # rejected the second time — not fatal to the call already
-        # running, so OnMediaError warns rather than failing it, and we
-        # answer with an IQ error instead of AckIq so a retrying peer
-        # stops.
-        ::tacky::media setRemoteDescription $pc -sdp $sdp -type answer
-        if {![dict exists $Calls $sid]} return
-        if {[$self TakeSdpError $sid] ne ""} {
-            $self IqError $stanza not-acceptable
-            return
-        }
-        dict set Calls $sid remote_set 1
-        $self AckIq $stanza
-        $self DrainPendingCandidates $sid $pc
-    }
-
-    method HandleTransportInfo {stanza jingle sid from} {
-        if {![$self PeerMatches $sid $from]} {
             $self IqError $stanza item-not-found
-            return
+            return 0
         }
-        set pc [dict get $Calls $sid pc]
-        # Until the peer's description is applied a candidate has nothing
-        # to attach to: on the callee's side the pc may not exist yet (the
-        # JMI window), on the caller's the answer may not have come. Buffer
-        # in arrival order; DrainPendingCandidates applies them.
-        set early [expr {$pc eq -1 || ![dict exists $Calls $sid remote_set]}]
-        xsearch $jingle content -script content {
-            set name [xsearch $content -get @name]
-            set transport [xsearch $content transport \
-                -ns urn:xmpp:jingle:transports:ice-udp:1 -get node]
-            if {$transport eq ""} continue
-            xsearch $transport candidate -script cand {
-                if {[catch {::jinglesdp::CandidateToSdp $cand} value]} {
-                    jlog debug "transport-info: skipping unusable candidate"
-                    continue
-                }
-                set full "candidate:$value"
-                if {$early} {
-                    set buffered {}
-                    if {[dict exists $Calls $sid pending_remote_candidates]} {
-                        set buffered [dict get $Calls $sid pending_remote_candidates]
-                    }
-                    if {[llength $buffered] >= $MAX_PENDING_CANDIDATES} {
-                        jlog debug "transport-info: candidate buffer full"
-                        continue
-                    }
-                    dict update Calls $sid call {
-                        dict lappend call pending_remote_candidates \
-                            [list $name $full]
-                    }
-                } else {
-                    ::tacky::media addRemoteCandidate $pc \
-                        -candidate $full -mid $name
-                }
+        set call [$self Call $ours]
+        set cmp [string compare $sid $ours]
+        if {$cmp == 0} {
+            set cmp [string compare [jid norm $from] [jid norm [$client cget -jid]]]
+        }
+        if {[$call Initiated] && $cmp > 0} {
+            $self IqError $stanza conflict tie-break
+            return 0
+        }
+        # Same sid: drop ours first, theirs takes the sid.
+        if {$sid eq $ours} { $call Drop }
+        if {![$self OpenGroupSession $jingle $sid $from $ours]} {
+            # groupcall refused theirs: ours stays, or ends if already
+            # dropped.
+            if {$sid eq $ours} {
+                $client emit calls <Ended> -sid $ours -reason replaced
             }
+            $self IqError $stanza item-not-found
+            return 0
         }
-        $self AckIq $stanza
+        if {$sid ne $ours} { $call Drop }
+        return 1
     }
 
-    method HandleSessionTerminate {stanza jingle sid from} {
-        $self AckIq $stanza
-        if {![$self PeerMatches $sid $from]} return
-        $self PeerEnded $sid [lindex [xsearch $jingle reason * -get tag] 0]
-    }
-
-    # The peer ended the session (session-terminate or JMI <finish/>) with
-    # the XEP-0166 condition $reason: one of FAULTS fails the call here
-    # too, anything else ends it.
-    method PeerEnded {sid reason} {
-        $self TeardownMedia $sid
-        if {$reason in $FAULTS} {
-            $client emit calls <Failed> -sid $sid \
-                -reason "the peer reported $reason"
-        } else {
-            $client emit calls <Ended> -sid $sid -reason hangup
+    # The sid of our unanswered group session to $from (full JID), "" if
+    # none.
+    method CrossingSession {from} {
+        dict for {sid call} $Calls {
+            if {[$call UnansweredTo $from]} { return $sid }
         }
-        $self Cleanup $sid
+        return ""
     }
-
-    # =========================================================================
-    # Helpers
-    # =========================================================================
 
     # A session-initiate with <muji room/> from a known participant becomes a
     # callee session in `proceeded`, as if JMI-accepted. Returns 1 if opened.
@@ -1782,37 +549,22 @@ snit::type taco_calls {
     method OpenGroupSession {jingle sid from {replaces ""}} {
         set room [xsearch $jingle muji -ns urn:xmpp:jingle:muji:0 -get @room]
         if {$room eq "" || ![jid valid $room]} { return 0 }
-        set hasVideo 0
+        set video 0
         xsearch $jingle content -script content {
             set d [xsearch $content description \
                 -ns urn:xmpp:jingle:apps:rtp:1 -get node]
             if {$d ne "" && [xsearch $d -get @media] eq "video"} {
-                set hasVideo 1
+                set video 1
             }
         }
         set wantVideo [$client groupcall AcceptSession \
-            -room $room -peer $from -sid $sid -video $hasVideo -replaces $replaces]
+            -room $room -peer $from -sid $sid -video $video -replaces $replaces]
         if {$wantVideo eq ""} { return 0 }
-        dict set Calls $sid [$self NewCallDict $from 0 proceeded \
-            [expr {$wantVideo ? 1 : 0}] [jid norm $room]]
-        dict set Calls $sid video_remote $hasVideo
+        set call [$self NewCall $sid -peer $from -initiator 0 -state proceeded \
+            -video [expr {$wantVideo ? 1 : 0}] -video-remote $video \
+            -group [jid norm $room]]
+        $call StartSetupTimer
         return 1
-    }
-
-    # Drop a session that lost a crossing tie-break: no terminate, no event.
-    method DropSession {sid} {
-        $self TeardownMedia $sid
-        $self Cleanup $sid
-    }
-
-    # Our unanswered group session to $from (full JID), "" if none.
-    method CrossingSession {from} {
-        dict for {sid call} $Calls {
-            if {![dict get $call initiator] || [dict get $call group] eq ""} continue
-            if {[dict get $call peer] ne $from || [dict exists $call remote_set]} continue
-            return $sid
-        }
-        return ""
     }
 
     # Walk a session-initiate's Jingle tree and drop, from each rtp
@@ -1832,14 +584,7 @@ snit::type taco_calls {
                 foreach d [dict get $c children] {
                     if {[dict get $d tag] eq "description"
                             && [dict get $d ns] eq $NS_RTP} {
-                        set media ""
-                        if {[dict exists $d attrs media]} {
-                            set media [dict get $d attrs media]
-                        }
-                        set keep {}
-                        if {[dict exists $codecs $media]} {
-                            set keep [dict get $codecs $media]
-                        }
+                        set keep [dict getdef $codecs [dict getdef $d attrs media ""] {}]
                         if {[llength $keep]} {
                             dict set d children \
                                 [$self KeepPayloadTypes [dict get $d children] $keep]
@@ -1858,12 +603,9 @@ snit::type taco_calls {
     method KeepPayloadTypes {children keep} {
         set out {}
         foreach e $children {
-            if {[dict get $e tag] eq "payload-type"} {
-                set name ""
-                if {[dict exists $e attrs name]} {
-                    set name [dict get $e attrs name]
-                }
-                if {[lsearch -exact -nocase $keep $name] < 0} continue
+            if {[dict get $e tag] eq "payload-type"
+                    && [lsearch -exact -nocase $keep [dict getdef $e attrs name ""]] < 0} {
+                continue
             }
             lappend out $e
         }
@@ -1888,62 +630,6 @@ snit::type taco_calls {
             }
         }]
         $client iq respond -type error -for $stanza -payload $payload
-    }
-
-    # Cancel a call that never got past our own <propose>. There is no
-    # session to terminate yet, so XEP-0353 wants a retract.
-    method RetractProposed {sid peer why} {
-        $client write [$self BuildJmiMessage $peer retract $sid 0]
-        $client emit calls <Ended> -sid $sid -reason $why
-        $self Cleanup $sid
-    }
-
-    # A fresh (non-resumed) stream invalidates every sid we hold: nothing can
-    # route back to a session that died with the old stream. Resumption never
-    # lands here, and a plain disconnect is deliberately left alone - the
-    # media path is peer to peer and can outlive the outage.
-    method OnFreshStream {args} {
-        foreach sid [dict keys $Calls] {
-            $self TeardownMedia $sid
-            $client emit calls <Ended> -sid $sid -reason reset
-            $self Cleanup $sid
-        }
-    }
-
-    method SendTerminate {sid peer reason} {
-        set jingle [j jingle -ns urn:xmpp:jingle:1 {
-            j reason {
-                j $reason
-            }
-        }]
-        dict set jingle attrs action session-terminate
-        dict set jingle attrs sid $sid
-        $client iq request -type set -to $peer -payload $jingle
-    }
-
-    # Bare match while peer is still a bare JID (the JMI window: we
-    # proposed to the account, any of its resources may answer), exact
-    # full JID once the session is latched to one resource.
-    method PeerMatches {sid from} {
-        if {![dict exists $Calls $sid] || ![jid valid $from]} { return 0 }
-        set peer [dict get $Calls $sid peer]
-        if {![jid matches-bare $from $peer]} { return 0 }
-        set res [jid resource $peer]
-        if {$res eq ""} { return 1 }
-        return [expr {[jid resource $from] eq $res}]
-    }
-
-    method Cleanup {sid} {
-        dict unset SdpErrors $sid
-        if {![dict exists $Calls $sid]} return
-        $self CancelInterrupted $sid
-        $self StopRingTimer $sid
-        dict unset Calls $sid
-    }
-
-    method NewSid {} {
-        binary scan [omemo::random 16] H* hex
-        return "tk-$hex"
     }
 }
 

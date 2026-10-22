@@ -22,6 +22,12 @@
 #   deviceFallback    kind capture|playback|camera id <requested> reason <t>
 #   error             op <command> reason <text> fatal 0|1
 #
+# connectionState is the path, not the pc: `disconnected` is a path that
+# stopped and may come back by itself, `failed` one that will not without an
+# ICE restart. A backend never closes a pc on either - the caller decides
+# whether to restart or hang up - and `closed` only follows closePeer or a
+# fatal error.
+#
 # An event may be delivered before the command that caused it returns, so
 # re-check your own state after every call. `error` with fatal 1 means the pc
 # is unusable; fatal 0 is advisory and the call goes on.
@@ -53,6 +59,16 @@
 #   sdpSanitize   local SDP needs extmap / transport-cc stripped before it
 #                 goes on the wire
 #   trickleIce    candidates arrive one at a time as iceCandidate events
+#   iceRestart    a pc that is up takes a second remote offer under new ICE
+#                 credentials and answers it (setLocalDescription -type
+#                 answer, or by itself with autoAnswer), and takes the answer
+#                 to a restart offer of its own; the DTLS association and the
+#                 tracks carry on over the new path
+#   restartIce    setLocalDescription -type offer -ice-restart 1 on a pc that
+#                 is up makes an offer under new ICE credentials and gathers
+#                 for them
+#   rollback      setLocalDescription -type rollback drops a local offer not
+#                 yet answered, back to the description before it
 #
 # Commands:
 #
@@ -69,7 +85,8 @@
 #   tacky::media createPeer <pc> -command <cb> ?-ice-servers <list>? ?-sid <sid>?
 #   tacky::media closePeer  <pc>
 #   tacky::media addTrack   <pc> <track> -kind audio|video ?-direction <d>?
-#   tacky::media setLocalDescription  <pc> ?-sdp <s>? ?-type offer|answer?
+#   tacky::media setLocalDescription  <pc> ?-sdp <s>? ?-type offer|answer|rollback?
+#                                         ?-ice-restart 0|1?
 #   tacky::media setRemoteDescription <pc> -sdp <s> -type offer|answer
 #   tacky::media addRemoteCandidate   <pc> -candidate <c> ?-mid <m>?
 #
@@ -111,7 +128,7 @@ namespace eval ::tacky::media {
     # is a typo and throws at open time.
     variable CAPABILITIES {
         audioDevices audioVolume cameras videoDevice videoChannel preview
-        autoAnswer sdpSanitize trickleIce
+        autoAnswer sdpSanitize trickleIce iceRestart restartIce rollback
     }
 
     namespace export register available open backend capabilities capability \
@@ -270,9 +287,22 @@ proc ::tacky::media::addTrack {pc track args} {
 }
 
 # No caller-supplied type by default: the backend infers offer or answer from
-# its own signaling state, the way setLocalDescription() does.
+# its own signaling state, the way setLocalDescription() does. -ice-restart
+# and -type rollback need the restartIce and rollback capabilities; a backend
+# without them is never asked, so it never sees the options.
 proc ::tacky::media::setLocalDescription {pc args} {
-    Dispatch SetLocalDescription $pc {*}[dict merge {-sdp "" -type ""} $args]
+    set opts [dict merge {-sdp "" -type "" -ice-restart 0} $args]
+    if {[dict get $opts -ice-restart]} {
+        if {![capability restartIce]} {
+            error "setLocalDescription: the [backend] backend cannot restart ICE"
+        }
+    } else {
+        dict unset opts -ice-restart
+    }
+    if {[dict get $opts -type] eq "rollback" && ![capability rollback]} {
+        error "setLocalDescription: the [backend] backend cannot roll back"
+    }
+    Dispatch SetLocalDescription $pc {*}$opts
     return
 }
 

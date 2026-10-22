@@ -111,6 +111,56 @@ test media-conformance-rtc {the rtc backend conforms to tacky::media} -setup {
     mediaconform::run rtc -drive conform_drive_rtc
 } -result {}
 
+test media-conformance-rtc-restartable {the rtc backend on a libdatachannel that restarts ICE conforms} -setup {
+    mockrtc::install
+    mockrtc::restartable 1
+} -cleanup {
+    mockrtc::uninstall
+} -body {
+    mediaconform::run rtc -drive conform_drive_rtc
+} -result {}
+
+# Vanilla libdatachannel cannot restart ICE: the backend says so, opens no pc
+# asking for it, and so its calls end on a failed path as they always have.
+test media-rtc-restart-follows-the-binding {rtc declares ICE restart exactly when the binding has it} -setup {
+    mockrtc::install
+} -cleanup {
+    ::tacky::media close
+    mockrtc::uninstall
+} -body {
+    set out {}
+    foreach on {0 1} {
+        mockrtc::restartable $on
+        ::tacky::media open rtc
+        ::tacky::media createPeer p$on -command {apply {{ev} {}}}
+        lappend out [dict filter [::tacky::media capabilities] key \
+                iceRestart restartIce rollback] \
+            [lindex [mockrtc::calls ::rtc::pc::new] end]
+        ::tacky::media closePeer p$on
+    }
+    set out
+} -result {{iceRestart 0 restartIce 0 rollback 0} {-ice-servers {}} {iceRestart 1 restartIce 1 rollback 1} {-ice-servers {} -enable-ice-restart 1}}
+
+test media-rtc-restart-offer {rtc restarts ICE before the offer, and rolls back without failing the pc} -setup {
+    mockrtc::install
+    mockrtc::restartable 1
+    ::tacky::media open rtc
+} -cleanup {
+    ::tacky::media close
+    mockrtc::uninstall
+} -body {
+    set ::rtcEvents {}
+    ::tacky::media createPeer p1 -command {apply {{ev} {lappend ::rtcEvents $ev}}}
+    ::tacky::media setLocalDescription p1 -type offer -ice-restart 1
+    mockrtc::fail ::rtc::pc::set-local-description "no offer to roll back" "* rollback"
+    ::tacky::media setLocalDescription p1 -type rollback
+    list [lmap e [mockrtc::log] {
+            if {[lindex $e 0] ni {::rtc::pc::restart-ice ::rtc::pc::set-local-description}} continue
+            list [lindex $e 0] {*}[lrange $e 2 end]
+        }] \
+        [lmap e $::rtcEvents { dict get $e fatal }]
+} -result {{::rtc::pc::restart-ice {::rtc::pc::set-local-description offer} {::rtc::pc::set-local-description rollback}} 0}
+
 # A device streams to one opener at a time, so every sender and the preview
 # ride one rtc-mv capture, closed only when the last of them goes.
 proc rtc_video_pc {pc} {
@@ -266,6 +316,13 @@ test media-conformance-host {the host backend conforms to tacky::media} -body {
         -open {-emit conform_host_sink}
 } -result {}
 
+test media-conformance-host-restart {the host backend that restarts ICE conforms to tacky::media} -body {
+    mediaconform::run host -drive conform_drive_host \
+        -open {-emit conform_host_sink -ice-restart 1}
+} -cleanup {
+    ::tacky::media::host::Open -ice-restart 0
+} -result {}
+
 # A backend that owns less than rtc does must still conform: the script asks
 # only for what the capabilities claim. This is the shape a host backend
 # takes, where the embedding app owns the devices and the rendering.
@@ -280,6 +337,51 @@ test media-conformance-minimal {a backend declaring no device control conforms} 
 } -body {
     mediaconform::run mock -drive conform_drive_mock
 } -result {}
+
+foreach {name caps} {
+    full   {iceRestart 1 restartIce 1 rollback 1}
+    follow {iceRestart 1 restartIce 0 rollback 0}
+    start  {iceRestart 0 restartIce 1 rollback 1}
+} {
+    test media-conformance-mock-restart-$name "the mock backend conforms with ICE restart caps: $name" -setup "
+        mockmedia::reset
+        [list mockmedia::capabilities [dict merge $::mockmedia::DEFAULT_CAPS $caps]]
+    " -cleanup {
+        mockmedia::reset
+    } -body {
+        list [mediaconform::run mock -drive conform_drive_mock] \
+            [llength [lsearch -all -index 0 [mockmedia::log] SetLocalDescription]]
+    } -match glob -result {{} *}
+}
+
+test media-ice-restart-option-reaches-backend {-ice-restart and rollback reach the backend that declares them} -setup {
+    mockmedia::reset
+    mockmedia::capabilities [dict merge $::mockmedia::DEFAULT_CAPS \
+        {iceRestart 1 restartIce 1 rollback 1}]
+    ::tacky::media open mock
+} -cleanup {
+    ::tacky::media close
+    mockmedia::reset
+} -body {
+    ::tacky::media createPeer p1 -command {apply {{ev} {}}}
+    ::tacky::media setLocalDescription p1 -type offer -ice-restart 1
+    ::tacky::media setLocalDescription p1 -type rollback
+    ::tacky::media setLocalDescription p1
+    mockmedia::calls SetLocalDescription
+} -result {{p1 -sdp {} -type offer -ice-restart 1} {p1 -sdp {} -type rollback} {p1 -sdp {} -type {}}}
+
+test media-ice-restart-refused-without-capability {a backend that cannot restart or roll back is never asked to} -setup {
+    mockmedia::reset
+    ::tacky::media open mock
+} -cleanup {
+    ::tacky::media close
+    mockmedia::reset
+} -body {
+    ::tacky::media createPeer p1 -command {apply {{ev} {}}}
+    list [catch {::tacky::media setLocalDescription p1 -type offer -ice-restart 1}] \
+        [catch {::tacky::media setLocalDescription p1 -type rollback}] \
+        [mockmedia::calls SetLocalDescription]
+} -result {1 1 {}}
 
 # The script has to actually fail a backend that breaks the contract, or its
 # passing above means nothing.

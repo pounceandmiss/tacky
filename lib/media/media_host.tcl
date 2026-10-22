@@ -23,6 +23,11 @@ package require tacky::media
 
 namespace eval ::tacky::media::host {
     variable Emit {}   ;# command prefix commands for the app go out on
+    # Whether the app restarts ICE: `Open -ice-restart 1` says its pc takes
+    # a second offer and answers it, makes an offer under new credentials
+    # when setLocalDescription carries `iceRestart`, and rolls back on
+    # sdpType rollback.
+    variable IceRestart 0
     variable Mid {}    ;# pc -> track -> mid, as the app reported them
 
     # What the app may send, and what each one owes beyond `pc` and `type`.
@@ -61,8 +66,12 @@ namespace eval ::tacky::media::host {
 # a backend swapped out and back is the same app.
 proc ::tacky::media::host::Open {args} {
     variable Emit
+    variable IceRestart
     if {[dict exists $args -emit]} {
         set Emit [dict get $args -emit]
+    }
+    if {[dict exists $args -ice-restart]} {
+        set IceRestart [expr {[dict get $args -ice-restart] ? 1 : 0}]
     }
     return
 }
@@ -75,10 +84,11 @@ proc ::tacky::media::host::Close {} {
 }
 
 proc ::tacky::media::host::Capabilities {} {
-    return {
-        audioDevices 0 audioVolume 0 cameras 0 videoDevice 0 videoChannel 1
-        preview 1 autoAnswer 0 sdpSanitize 0 trickleIce 1
-    }
+    variable IceRestart
+    return [list \
+        audioDevices 0 audioVolume 0 cameras 0 videoDevice 0 videoChannel 1 \
+        preview 1 autoAnswer 0 sdpSanitize 0 trickleIce 1 \
+        iceRestart $IceRestart restartIce $IceRestart rollback $IceRestart]
 }
 
 # No opinion: what the app's stack decodes is the app's to know.
@@ -116,10 +126,13 @@ proc ::tacky::media::host::AddTrack {h track args} {
     return
 }
 
+# -ice-restart 1 (restartIce): the offer is made under new ICE credentials.
 proc ::tacky::media::host::SetLocalDescription {h args} {
-    set opts [dict merge {-sdp "" -type ""} $args]
+    set opts [dict merge {-sdp "" -type "" -ice-restart 0} $args]
+    set extra {}
+    if {[dict get $opts -ice-restart]} { lappend extra -iceRestart 1 }
     Command setLocalDescription -pc $h \
-        -sdp [dict get $opts -sdp] -sdpType [dict get $opts -type]
+        -sdp [dict get $opts -sdp] -sdpType [dict get $opts -type] {*}$extra
     return
 }
 

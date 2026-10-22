@@ -38,6 +38,7 @@ snit::type taco_media {
     option -backend    -default auto
     option -webrtc-lib -default ""
     option -frame-dir  -default ""
+    option -host-restart -default 0
 
     # What an unset preference tries, in order: the webrtc library when the
     # build carries one, rtc otherwise. Not finding it is the ordinary case,
@@ -166,7 +167,8 @@ snit::type taco_media {
                 return 0
             }
             lappend openArgs -emit \
-                [list $options(-taco) emit media <HostCommand>]
+                [list $options(-taco) emit media <HostCommand>] \
+                -ice-restart $options(-host-restart)
         }
         if {[catch {::tacky::media open $name {*}$openArgs} err]} {
             $self Missed $name $err $asked

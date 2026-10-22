@@ -1456,6 +1456,7 @@ source: the `url` you passed, or the `path` when you passed no `url`.
     calls list {}                                                  -> [call_row]
 
     call_row = {sid: string, peer: string, direction: string, state: string,
+                connection: string,
                 peer_ringing: bool, group: string, video_local: bool,
                 video_remote: bool, verified: bool, fingerprint: string,
                 active_since: int}
@@ -1480,7 +1481,9 @@ the room JID when the call is one of a [group call](#groupcall)'s sessions, else
 Group-call sessions are listed like any call, so a restarted frontend finds them, but they
 raise `groupcall <Session>` instead of `<Outgoing>`/`<Incoming>`.
 `verified` and `fingerprint` are as in the last `<Verified>`. `active_since` is
-the `since` of the call's `<Active>`, `0` until then.
+the `since` of the call's `<Active>`, `0` until then. `connection` is the media
+path: `connecting` until it first connects, then `connected`, `interrupted`
+(it stopped, and may come back) or `reconnecting`, as in `<Connection>`.
 
 Events:
 
@@ -1492,6 +1495,7 @@ Events:
     calls <Missed>       {sid: string, from: string, video: bool, reason: string}
     calls <Failed>       {sid: string, reason: string}
     calls <Warning>      {sid: string, reason: string}
+    calls <Connection>   {sid: string, state: string}
     calls <Verified>     {sid: string, verified: bool, fingerprint: string}
     calls <VideoTrack>   {sid: string, mid: string, direction: string} & frame_stream
     calls <VideoPreview> {sid: string, direction: string}            & frame_stream
@@ -1505,6 +1509,17 @@ informational and doesn't end anything.
 `<Active>`'s `since` is when media first connected, in microseconds; an ICE
 restart can emit `<Active>` again with the same `since`.
 
+`<Connection>` is the media path of a call that was up: `interrupted` when it
+has been down for a couple of seconds (a blip shorter than that is never
+reported), `reconnecting` while it is being re-established, and `connected`
+once media flows again. Show it as a banner over the call; the call goes on
+until `<Ended>`/`<Failed>`. An interruption also comes with a `<Warning>`
+saying so, for frontends that predate `<Connection>`.
+
+An answered call that never gets media flowing within a minute fails with
+`<Failed>`; once media has flowed, a lost path is the business of
+`<Connection>` until it either comes back or fails the call.
+
 `<Ended>`'s `reason`:
 
 | reason | |
@@ -1516,7 +1531,7 @@ restart can emit `<Active>` again with the same `since`.
 | `elsewhere` | another of your devices answered or declined |
 | `timeout` | nobody answered within a minute |
 | `replaced` | your call and the peer's crossed, and theirs won |
-| `reset` | a fresh stream ended every call |
+| `reset` | the stream to the server was lost for good and its replacement could not carry the call: a call still being set up, one whose media was not flowing, or one whose new stream has another resource |
 
 `<Missed>` is a ring nobody here answered: `retracted` or `timeout` (after its
 `<Ended>`), or `busy`, turned away while another call was up, or `proxy`,
@@ -1592,7 +1607,8 @@ to show, `pull` re-sends one.
 - `count` includes you; `participants` is everyone else. `jid` is bare, `""`
   when the room hides it.
 - `leg` is your session with them: `expected`, `connecting`, `active`, or
-  `ended` / `failed` while they stay - nothing redials. Out of a call
+  `ended` / `failed` while they stay; a leg you dialled whose media path
+  failed is dialled again, twice at most. Out of a call
   everyone is `expected`; once you are in, a hidden participant is `failed`.
   `stream` is their video: its frame stream, or on the host backend the
   track `id` the leg's `calls <VideoTrack>` carries.
@@ -1663,8 +1679,8 @@ to grey out a control it would otherwise offer:
 An absent capability breaks nothing: the setter still stores the preference
 and emits its event, enumeration comes back empty, and a frontend that ignores
 all this shows an empty picker. The result also carries `autoAnswer`,
-`sdpSanitize` and `trickleIce`, which tacky's own signalling reads; a
-frontend can ignore them.
+`sdpSanitize`, `trickleIce`, `iceRestart`, `restartIce` and `rollback`, which
+tacky's own signalling reads; a frontend can ignore them.
 
 Events:
 
@@ -1686,7 +1702,8 @@ channel, JNI or JS.
     createPeer             iceServers: [string], sid: string
     closePeer              -
     addTrack               track, kind: audio|video, direction
-    setLocalDescription    sdp, sdpType: offer|answer ("" = your stack decides)
+    setLocalDescription    sdp, sdpType: offer|answer|rollback ("" = your stack decides),
+                           iceRestart?: 1 (restart ICE before making the offer)
     setRemoteDescription   sdp, sdpType
     addRemoteCandidate     candidate, mid
     attachAudio            track, input, output, inputVolume, outputVolume
@@ -1734,6 +1751,19 @@ a missing key comes back as a `calls <Warning>` on that call; one with no
 Devices stay yours, so `audio` and `video` enumerate empty. An offer is
 answered by the `setLocalDescription` that follows it, and your SDP goes on
 the wire as it stands.
+
+Calls on `host` restart ICE when the frontend says its peer connection can:
+start tacky with `-media-host-restart 1` (the browser build does). Then a pc
+that is up may get, at any time, a second `setRemoteDescription` with
+`sdpType` `offer` (the peer moved the call to a new path: answer it with the
+`setLocalDescription` that follows, as for the first), a `setLocalDescription`
+with `iceRestart: 1` (call `restartIce()` and make the offer), the
+`setRemoteDescription` `answer` to that, or a `setLocalDescription` with
+`sdpType` `rollback` (drop the offer you just made, without reporting a
+description). Without the option none of these is sent, and a call whose path
+fails ends. Never renegotiate on your own (`negotiationneeded`): tacky decides
+when a description is made. Report `disconnected` and `failed` as your stack
+does, and do not close the peer connection on either.
 
 ## audio
 

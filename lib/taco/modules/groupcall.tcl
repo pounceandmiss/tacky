@@ -1,6 +1,6 @@
 # Group calls: XEP-0272 Muji with XEP-0482 call invites. Participants
 # announce the call in their MUC presence and each pair holds one Jingle
-# session, a mesh (see calls.tcl "Group-call sessions").
+# session, a mesh: each a taco_calls session with no JMI (calls.tcl).
 # This module picks the room, who calls whom and when, and the payloads.
 #
 # A call is a room; its JID is the call's -jid. Two kinds:
@@ -138,6 +138,19 @@ snit::type taco_groupcall {
     # one unanswered while the last occupant's leave tears the room down.
     typevariable ASK_TIMEOUT_MS 5000
     typevariable ASK_RETRIES 2
+
+    # A leg we dialled whose media path broke past what ICE restarts could
+    # mend is dialled again after this long, this many times, while both of
+    # us are still in the call. Only the side that dialled redials, so two
+    # never cross; the other's leg ended with ours (session-terminate), so
+    # it takes the new session.
+    typevariable REDIAL_DELAY_MS 2000
+    typevariable MAX_REDIALS 2
+    # The calls <Failed> reasons that are the path, not the peer refusing.
+    typevariable PATH_FAILURES {
+        {media path failed*} {no media for *} {no media path within *}
+        {the peer reported connectivity-error}
+    }
 
     # A hosted call's room: only those let in may enter (so a room name is
     # no key), everyone's real JID shows (sessions go to them), and it is
@@ -809,14 +822,18 @@ snit::type taco_groupcall {
         }
     }
 
-    # Start our session with $real.
-    method Dial {room real} {
+    # Start our session with $real; $redials, the times this leg was
+    # dialled again already.
+    method Dial {room real {redials 0}} {
         set occ [$self OccupantOf $room $real]
         set video [expr {[dict get $Rooms($room) video]
                          && $occ ne "" && [dict get $occ call video]}]
         set sid [$client calls StartGroupSession \
             -room $room -peer $real -video $video]
-        dict set Rooms($room) sessions $real [$self NewLeg $sid $video]
+        set leg [$self NewLeg $sid $video]
+        dict set leg dialed 1
+        dict set leg redials $redials
+        dict set Rooms($room) sessions $real $leg
         $client emit groupcall <Session> -jid $room \
             -peer $real -sid $sid -video $video
         $self Met $room
@@ -898,8 +915,8 @@ snit::type taco_groupcall {
     # Sessions ending on their own
     # =========================================================================
 
-    # A session ended (calls <Ended>/<Failed>). The participant stays;
-    # nothing redials.
+    # A session ended (calls <Ended>/<Failed>). The participant stays; a leg
+    # we dialled that lost its media path is dialled again (Redial).
     method OnSessionEnded {how args} {
         set sid [dict get $args -sid]
         foreach room [array names Rooms] {
@@ -924,10 +941,36 @@ snit::type taco_groupcall {
                     $client emit groupcall <Warning> -jid $room -reason $why
                 }
                 dict set Rooms($room) sessions $real $session
+                if {$how eq "failed" && [dict getdef $session dialed 0]
+                        && [dict getdef $session redials 0] < $MAX_REDIALS
+                        && [$self PathFailure [dict get $session reason]]} {
+                    lappend Idle [after $REDIAL_DELAY_MS [mymethod Redial $room $real]]
+                }
                 $self Touch $room
                 return
             }
         }
+    }
+
+    method PathFailure {reason} {
+        foreach pattern $PATH_FAILURES {
+            if {[string match $pattern $reason]} { return 1 }
+        }
+        return 0
+    }
+
+    # Dial $real again, if both of us are still in the call and nothing
+    # replaced the failed leg meanwhile (their new session, or ours).
+    method Redial {room real} {
+        if {![info exists Rooms($room)]
+                || [dict get $Rooms($room) state] ne "announced"} return
+        if {![dict exists $Rooms($room) sessions $real]} return
+        set leg [dict get $Rooms($room) sessions $real]
+        if {[dict get $leg sid] ne "" || [dict get $leg state] ne "failed"} return
+        set occ [$self OccupantOf $room $real]
+        if {$occ eq "" || [$self CallState $occ] ne "announced"} return
+        jlog inform "group call $room: dialling $real again"
+        $self Dial $room $real [expr {[dict getdef $leg redials 0] + 1}]
     }
 
     # =========================================================================
@@ -1457,7 +1500,7 @@ snit::type taco_groupcall {
 
     # <muji> with one <content> per media, in the jingle namespace so Dino
     # reads it (Movim does the same). The content name is the media name,
-    # which is also the session's m-line label (taco_calls MID / VIDEO_MID):
+    # which is also the session's m-line label (taco_calls::call MID / VIDEO_MID):
     # XEP-0272 §3 matches session contents to conference ones by name.
     method ContentsNode {payloads} {
         return [j muji -ns $NS {
