@@ -64,6 +64,29 @@ proc cm_answer_extdisco {} {
     }]
 }
 
+# A Jingle IQ from the peer whose payload is the nodes $children.
+proc cm_jingle_with {action sid children {id cm1}} {
+    set jingle [j jingle -ns urn:xmpp:jingle:1 -action $action -sid $sid]
+    dict set jingle children $children
+    j iq -type set -from $::CM_PEER -to $::CM_ME -id $id { j #as-is $jingle }
+}
+
+# The Jingle error condition (urn:xmpp:jingle:errors:1) of our reply to the
+# IQ with $id, "" if none.
+proc cm_reply_jingle_error {{id cm1}} {
+    xsearch [cm_reply $id] error * -ns urn:xmpp:jingle:errors:1 -get tag
+}
+
+# The last <jingle> with $action we sent, "" if none.
+proc cm_sent {action} {
+    set out ""
+    foreach w [c.conn get_written] {
+        set jn [xsearch $w jingle -ns urn:xmpp:jingle:1 -get node]
+        if {$jn ne "" && [xsearch $jn -get @action] eq $action} { set out $jn }
+    }
+    return $out
+}
+
 # Our reply to the IQ with $id, or "" if none went out.
 proc cm_reply {{id cm1}} {
     foreach w [c.conn get_written] {

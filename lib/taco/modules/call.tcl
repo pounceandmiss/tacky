@@ -73,19 +73,13 @@ snit::type ::taco_calls::call {
     # over.
     typevariable MEDIA_LOSS_MAX_MS 60000
 
-    # XEP-0166's actions (7.2), the ones JINGLE_IN judges. Any other goes
-    # straight to {Jingle other}, which does not implement it.
-    typevariable JINGLE_ACTIONS {
-        content-accept content-add content-modify content-reject
-        content-remove description-info security-info session-accept
-        session-info session-initiate session-terminate transport-accept
-        transport-info transport-reject transport-replace
-    }
-
-    # The set of JINGLE_ACTIONS a session takes from its peer in each state;
-    # one not in it is refused out-of-order before a handler runs, and a
-    # state not here takes none. The handlers check what the table cannot
-    # see (the role, whether a pc is up yet).
+    # The XEP-0166 actions (taco_calls JINGLE_ACTIONS) a session takes from
+    # its peer in each state; one not in its set is refused out-of-order
+    # before a handler runs, and a state not here takes none. Each action
+    # taken has its {Jingle action} method, which checks what the table
+    # cannot see (the role, whether a pc is up yet). No state takes
+    # content-accept, content-reject, transport-accept or transport-reject:
+    # they answer content-add and transport-replace, which we never send.
     typevariable JINGLE_IN {
         proposed {
             session-info session-terminate
@@ -94,29 +88,20 @@ snit::type ::taco_calls::call {
             session-info session-terminate transport-info
         }
         proceeded {
-            content-accept content-add content-modify content-reject
-            content-remove description-info security-info
-            session-info session-initiate session-terminate transport-accept
-            transport-info transport-reject transport-replace
+            content-add content-modify content-remove description-info
+            security-info session-info session-initiate session-terminate
+            transport-info transport-replace
         }
         pending {
-            content-accept content-add content-modify content-reject
-            content-remove description-info security-info session-accept
-            session-info session-initiate session-terminate transport-accept
-            transport-info transport-reject transport-replace
+            content-add content-modify content-remove description-info
+            security-info session-accept session-info session-initiate
+            session-terminate transport-info transport-replace
         }
         established {
-            content-accept content-add content-modify content-reject
-            content-remove description-info security-info session-accept
-            session-info session-terminate transport-accept
-            transport-info transport-reject transport-replace
+            content-add content-modify content-remove description-info
+            security-info session-accept session-info session-terminate
+            transport-info transport-replace
         }
-    }
-
-    # The informational actions, acknowledged and otherwise ignored.
-    typevariable JINGLE_INFO {
-        session-info content-modify content-remove description-info
-        security-info
     }
 
     # Moves Go refused, newest last. A refused move is a bug in this file;
@@ -159,6 +144,8 @@ snit::type ::taco_calls::call {
     # Session
     variable has_session 0      ;# a session-initiate went out or came in:
                                 ;# the peer is told the end in Jingle
+    variable contents {}        ;# the session's contents: name -> media,
+                                ;# senders (XEP-0166 roles)
     variable peer_ringing 0     ;# a device of the peer is alerting
     variable ever_connected 0
     variable active_since 0     ;# [clock microseconds] of the first connect
@@ -354,10 +341,9 @@ snit::type ::taco_calls::call {
     }
 
     # Whether the session in its state takes $action from its peer
-    # (JINGLE_IN). An action outside XEP-0166 is not the table's to judge.
+    # (JINGLE_IN).
     method Takes {action} {
-        expr {$action ni $JINGLE_ACTIONS
-              || $action in [dict getdef $JINGLE_IN $state {}]}
+        expr {$action in [dict getdef $JINGLE_IN $state {}]}
     }
 
     # Bare match while peer is still a bare JID (the JMI window: we
@@ -909,6 +895,7 @@ snit::type ::taco_calls::call {
             }
             # Sent: a crossing initiate is now settled by sid.
             set has_session 1
+            $self NoteContents $jingle
             $self Go state pending
             $self SendDescription $jingle OnInitiateAck
         } else {
@@ -1779,6 +1766,7 @@ snit::type ::taco_calls::call {
         }
         jlog debug "SDP offer from $from (sid=$sid)\n[jlog_redact_sdp $sdp]"
         $self KeepRemoteDescription $jingle
+        $self NoteContents $jingle
         set peer $from
         set has_session 1
         $self Go state pending
@@ -1961,14 +1949,100 @@ snit::type ::taco_calls::call {
         $self SendReject transport-reject $jingle 1
     }
 
-    # Any other action: the informational ones (session-info for ringing,
-    # mute, hold, and the like) are acknowledged, the rest are not
-    # implemented.
-    method {Jingle other} {stanza jingle from} {
-        if {[xsearch $jingle -get @action] in $JINGLE_INFO} {
-            $calls AckIq $stanza
-        } else {
-            $calls IqError $stanza feature-not-implemented
+    # Informational actions (XEP-0166 §6.8): one without a payload is a
+    # ping, and one whose payload we understand is taken note of; any other
+    # gets <feature-not-implemented/> with <unsupported-info/>. We
+    # understand XEP-0167's session-info (ringing, active, hold, mute and
+    # the like), and no description-info. security-info sets no rule for
+    # its receiver.
+    method {Jingle session-info} {stanza jingle from} {
+        $self Informational $stanza $jingle urn:xmpp:jingle:apps:rtp:info:1
+    }
+
+    method {Jingle description-info} {stanza jingle from} {
+        $self Informational $stanza $jingle {}
+    }
+
+    method {Jingle security-info} {stanza jingle from} {
+        $calls AckIq $stanza
+    }
+
+    method Informational {stanza jingle understood} {
+        foreach payload [dict get $jingle children] {
+            if {[dict getdef $payload ns ""] ni $understood} {
+                $calls IqError $stanza feature-not-implemented unsupported-info
+                return
+            }
         }
+        $calls AckIq $stanza
+    }
+
+    # The peer drops contents (XEP-0166 §7.2.5). Dropping video stops ours;
+    # dropping them all ends the session, as the receiver SHOULD.
+    method {Jingle content-remove} {stanza jingle from} {
+        $calls AckIq $stanza
+        foreach c [xsearch $jingle content -gather node] {
+            set name [xsearch $c -get @name]
+            if {![dict exists $contents $name]} continue
+            if {[dict get $contents $name media] eq "video"} {
+                $self StopVideo
+            }
+            dict unset contents $name
+        }
+        if {$has_session && ![dict size $contents]} {
+            $self Finish Ended hangup success
+        }
+    }
+
+    # The peer changes who sends on contents (XEP-0166 §7.2.3). A change
+    # to its own half is taken. Ours stays as negotiated: a change to it is
+    # turned down with a content-modify that restores it, as the receiver
+    # MAY.
+    method {Jingle content-modify} {stanza jingle from} {
+        $calls AckIq $stanza
+        set contrary {}
+        foreach c [xsearch $jingle content -gather node] {
+            lassign [xsearch $c -get {@creator @name @senders}] creator name senders
+            if {$creator eq ""} { set creator initiator }
+            if {![dict exists $contents $name]
+                    || $senders ni {both initiator responder none}} continue
+            set was [dict get $contents $name senders]
+            if {[$self WeSend $senders] == [$self WeSend $was]} {
+                dict set contents $name senders $senders
+            } else {
+                lappend contrary [j content -creator $creator -name $name -senders $was]
+            }
+        }
+        if {![llength $contrary]} return
+        set out [j jingle -ns urn:xmpp:jingle:1]
+        dict set out children $contrary
+        $client iq request -type set -to $peer \
+            -payload [$self Stamp $out content-modify 1]
+    }
+
+    # Whether XEP-0166 $senders has us sending.
+    method WeSend {senders} {
+        expr {$senders eq "both" || $senders eq ($initiator ? "initiator" : "responder")}
+    }
+
+    # The contents of the session's initiate, which the accept echoes.
+    method NoteContents {jingle} {
+        set contents {}
+        foreach c [xsearch $jingle content -gather node] {
+            set media [xsearch $c description -ns urn:xmpp:jingle:apps:rtp:1 -get @media]
+            set senders [xsearch $c -get @senders]
+            if {$senders eq ""} { set senders both }
+            dict set contents [xsearch $c -get @name] [dict create media $media senders $senders]
+        }
+    }
+
+    # The video half is over, while the call goes on.
+    method StopVideo {} {
+        if {$pc ne -1} { ::tacky::media setVideoEnabled $pc -on 0 }
+        if {$vsend || $vrecv} {
+            $client emit calls <VideoEnded> -sid $sid -mid $VIDEO_MID
+        }
+        set vsend 0
+        set vrecv 0
     }
 }

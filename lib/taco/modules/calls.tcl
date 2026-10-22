@@ -42,6 +42,15 @@ package require omemo
 snit::type taco_calls {
     option -client -readonly yes
 
+    # XEP-0166's actions (§7.2). A value not among them is refused with
+    # <bad-request/>, as the spec has it, before any session sees it.
+    typevariable JINGLE_ACTIONS {
+        content-accept content-add content-modify content-reject
+        content-remove description-info security-info session-accept
+        session-info session-initiate session-terminate transport-accept
+        transport-info transport-reject transport-replace
+    }
+
     variable client
     variable Calls      ;# sid -> taco_calls::call
 
@@ -446,7 +455,7 @@ snit::type taco_calls {
 
     # Every action but session-initiate is for a call that exists, from its
     # peer, in a state that takes it; that call's {Jingle action} handles
-    # it, or its {Jingle other}. A sender that isn't the peer gets the same
+    # it. A sender that isn't the peer gets the same
     # answer as an unknown sid, so a guessed sid can't be confirmed.
     method OnJingleIq {stanza} {
         set jingle [xsearch $stanza jingle -ns urn:xmpp:jingle:1 -get node]
@@ -456,6 +465,10 @@ snit::type taco_calls {
         }
         lassign [xsearch $jingle -get {@action @sid}] action sid
         set from [xsearch $stanza -get @from]
+        if {$action ni $JINGLE_ACTIONS} {
+            $self IqError $stanza bad-request
+            return
+        }
         if {$action eq "session-initiate"} {
             if {![$self OpenSession $stanza $jingle $sid $from]} return
         }
@@ -474,9 +487,6 @@ snit::type taco_calls {
         if {$action ne "session-initiate" && ![$call Takes $action]} {
             $self IqError $stanza out-of-order
             return
-        }
-        if {"Jingle $action" ni [$call info methods {Jingle *}]} {
-            set action other
         }
         $call Jingle $action $stanza $jingle $from
     }

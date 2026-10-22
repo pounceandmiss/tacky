@@ -25,14 +25,15 @@ set cm_env [tacky_env -mock conn -capture-emit 1 -taco-client {
 set CM_ACTIONS {
     session-initiate session-accept session-terminate transport-info
     session-info content-add content-modify content-remove transport-replace
-    description-info security-info bogus-action
+    description-info security-info content-accept content-reject
+    transport-accept transport-reject bogus-action
 }
 set CM_SESSIONS {
     proposed caller ringing callee proceeded caller proceeded callee
     pending caller pending callee established caller established callee
 }
 
-test calls-machine-session-table-is-complete {every session state has a row, and every row names only XEP-0166 actions} \
+test calls-machine-session-table-is-complete {every session state has a row, and every row names only XEP-0166 actions, each with its handler} \
     {*}$cm_env -body {
         set bad {}
         foreach state [dict keys $::taco_calls::call::SESSION_NEXT] {
@@ -40,10 +41,14 @@ test calls-machine-session-table-is-complete {every session state has a row, and
                 lappend bad $state
             }
         }
+        set handlers [[call_of [cm_in established caller]] info methods {Jingle *}]
         dict for {state actions} $::taco_calls::call::JINGLE_IN {
             foreach action $actions {
-                if {$action ni $::taco_calls::call::JINGLE_ACTIONS} {
+                if {$action ni $::taco_calls::JINGLE_ACTIONS} {
                     lappend bad $state/$action
+                }
+                if {"Jingle $action" ni $handlers} {
+                    lappend bad $state/$action/handler
                 }
             }
         }
@@ -66,8 +71,10 @@ test calls-machine-session-every-action-in-every-state {each state x action: one
                 if {$reply eq "none"} {
                     lappend bad [list $state $role $action no-reply]
                 }
-                if {!$taken && $reply ne "out-of-order"} {
-                    lappend bad [list $state $role $action want out-of-order got $reply]
+                set want [expr {$action ni $::taco_calls::JINGLE_ACTIONS ? "bad-request"
+                    : $taken ? "" : "out-of-order"}]
+                if {$want ne "" && $reply ne $want} {
+                    lappend bad [list $state $role $action want $want got $reply]
                 }
                 if {[cm_terminal_count] > 1} {
                     lappend bad [list $state $role $action ended [cm_events]]
@@ -318,6 +325,103 @@ test calls-machine-resumed-stream-keeps-everything {resumption ends nothing, con
         c.conn fire_ready 1
         list [dict exists [calls_state] $a] [cm_events]
     } -result {1 {}}
+
+# -- What XEP-0166 has the receiver of each action do --
+
+test calls-machine-undefined-action-bad-request {an action XEP-0166 does not define is a bad-request, for a session or none (7.2)} \
+    {*}$cm_env -body {
+        set sid [cm_in established caller]
+        set out {}
+        foreach s [list $sid nosuch] {
+            c.conn clear
+            c.conn feed [cm_jingle bogus-action $s]
+            lappend out [cm_reply_word]
+        }
+        list $out [dict exists [calls_state] $sid]
+    } -result {{bad-request bad-request} 1}
+
+test calls-machine-session-info-payloads {session-info: a ping and XEP-0167's payloads are taken, any other is not understood (6.8)} \
+    {*}$cm_env -body {
+        set sid [cm_in established callee]
+        set out {}
+        foreach payload [list {} \
+                [list [j ringing -ns urn:xmpp:jingle:apps:rtp:info:1]] \
+                [list [j mute -ns urn:xmpp:jingle:apps:rtp:info:1 -creator initiator -name audio]] \
+                [list [j mystery -ns urn:example:mystery]]] {
+            c.conn clear
+            c.conn feed [cm_jingle_with session-info $sid $payload]
+            lappend out [list [cm_reply_word] [cm_reply_jingle_error]]
+        }
+        list $out [dict exists [calls_state] $sid]
+    } -result {{{result {}} {result {}} {result {}} {feature-not-implemented unsupported-info}} 1}
+
+test calls-machine-description-info-not-understood {description-info: none of its payloads are understood here, an empty one is taken (6.8)} \
+    {*}$cm_env -body {
+        set sid [cm_in established callee]
+        set out {}
+        foreach payload [list {} [list [j content -creator initiator -name audio]]] {
+            c.conn clear
+            c.conn feed [cm_jingle_with description-info $sid $payload]
+            lappend out [list [cm_reply_word] [cm_reply_jingle_error]]
+        }
+        set out
+    } -result {{result {}} {feature-not-implemented unsupported-info}}
+
+test calls-machine-content-remove-last-ends {content-remove of every content ends the session with success (7.2.5)} \
+    {*}$cm_env -body {
+        set sid [cm_in established caller]
+        c.conn feed [cm_jingle_with content-remove $sid \
+            [list [j content -creator initiator -name audio]]]
+        list [cm_reply_word] [xsearch [cm_terminate] reason * -get tag] [cm_events] \
+            [dict exists [calls_state] $sid]
+    } -result {result success <Ended> 0}
+
+test calls-machine-content-remove-unknown-kept {content-remove of a content the session does not have changes nothing} \
+    {*}$cm_env -body {
+        set sid [cm_in established caller]
+        c.conn feed [cm_jingle_with content-remove $sid \
+            [list [j content -creator initiator -name nosuch]]]
+        list [cm_reply_word] [cm_wire] [cm_events] [dict exists [calls_state] $sid]
+    } -result {result {} {} 1}
+
+test calls-machine-content-remove-video {content-remove of the video stops it and the call goes on} \
+    {*}$cm_env -body {
+        set sid [cm_in established callee]
+        set call [call_of $sid]
+        $call NoteContents [j jingle -ns urn:xmpp:jingle:1 {
+            j content -creator initiator -name a0 {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media audio
+            }
+            j content -creator initiator -name v0 {
+                j description -ns urn:xmpp:jingle:apps:rtp:1 -media video
+            }
+        }]
+        mockmedia::drive remoteTrack [cm_pc $sid] video
+        mockmedia::reset_log
+        set ::_emitted {}
+        c.conn feed [cm_jingle_with content-remove $sid \
+            [list [j content -creator initiator -name v0]]]
+        list [cm_reply_word] [cm_events] [mockmedia::calls SetVideoEnabled] \
+            [dict keys [cm_field $sid contents]] [cm_wire]
+    } -result {result <VideoEnded> {{* -on 0}} a0 {}} -match glob
+
+test calls-machine-content-modify {content-modify: a change to the peer's own sending is taken, one to ours turned down with a contrary content-modify (7.2.3)} \
+    {*}$cm_env -body {
+        set sid [cm_in established callee]
+        # Only the responder - we - sends: the peer stops; nothing to say.
+        c.conn feed [cm_jingle_with content-modify $sid \
+            [list [j content -creator initiator -name audio -senders responder]]]
+        set theirs [list [cm_reply_word] [cm_sent content-modify] \
+            [dict get [cm_field $sid contents] audio senders]]
+        c.conn clear
+        # Only the initiator sends: we would stop, which we do not.
+        c.conn feed [cm_jingle_with content-modify $sid \
+            [list [j content -creator initiator -name audio -senders initiator]]]
+        set back [cm_sent content-modify]
+        list $theirs [cm_reply_word] \
+            [xsearch $back content -get {@name @senders}] [xsearch $back -get @responder] \
+            [dict get [cm_field $sid contents] audio senders]
+    } -result {{result {} responder} result {audio responder} user@test.example.com/res responder}
 
 # -- Bookkeeping --
 

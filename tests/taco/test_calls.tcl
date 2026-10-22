@@ -628,7 +628,7 @@ test calls-filter-codecs-video {video keeps VP8, drops H264/VP9/rtx} -constraint
 
 # -- other actions --
 
-test calls-other-actions-checked {other jingle actions: unknown session refused, informational ones acked, unknown ones not implemented} \
+test calls-other-actions-checked {other jingle actions: unknown session refused, a session-info payload nobody defines not understood, an undefined action a bad request} \
     {*}$calls_env -body {
         calls_accepted tk-oa1 $::PEER
         set out {}
@@ -644,7 +644,7 @@ test calls-other-actions-checked {other jingle actions: unknown session refused,
                                : [calls_error_condition $w]}]
         }
         set out
-    } -result {item-not-found item-not-found result result feature-not-implemented}
+    } -result {item-not-found item-not-found feature-not-implemented result bad-request}
 
 # XEP-0166 7.2: acked, then turned down, so the call goes on (an IQ error
 # here ends a Conversations call when its user taps video).
