@@ -1,14 +1,18 @@
 # Helpers shared by the taco_calls test files.
 package provide tacky::callshelpers 0.1
 
-# Live per-call state by sid. The snit instance number differs per test,
-# so match the variable instead of naming the instance.
+# Live per-call state: sid -> the call's fields (taco_calls::call Fields).
 proc calls_state {} {
-    foreach v [c.calls info vars] {
-        if {[string match *::Calls $v]} { return [set $v] }
+    set out {}
+    foreach row [c.calls list] {
+        set sid [dict get $row sid]
+        dict set out $sid [[call_of $sid] Fields]
     }
-    error "calls: no Calls variable"
+    return $out
 }
+
+# The call for $sid (taco_calls::call).
+proc call_of {sid} { c.calls Call $sid }
 
 # Events this module emitted, minus the -acc stamped on every one.
 proc calls_events {} {

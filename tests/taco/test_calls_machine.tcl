@@ -1,5 +1,5 @@
-# Unit tests for taco_calls' two state machines (see the file header of
-# lib/taco/modules/calls.tcl): every session state against every inbound
+# Unit tests for a call's two state machines (see the file headers of
+# lib/taco/modules/calls.tcl and call.tcl): every session state against every inbound
 # Jingle action, every transport state against every backend connection
 # state, and the paths that end a call. Runs against the mock media backend,
 # which does nothing by itself: each test drives the events a backend would
@@ -32,19 +32,22 @@ set CM_SESSIONS {
     pending caller pending callee established caller established callee
 }
 
-test calls-machine-session-table-is-complete {every session state names what each inbound action gets} \
+test calls-machine-session-table-is-complete {every session state has a row, and every row names only XEP-0166 actions} \
     {*}$cm_env -body {
-        set missing {}
-        foreach state [dict keys $::taco_calls::SESSION_NEXT] {
-            if {![dict exists $::taco_calls::JINGLE_IN $state]} {
-                lappend missing $state
-                continue
-            }
-            if {![dict exists [dict get $::taco_calls::JINGLE_IN $state] *]} {
-                lappend missing $state/*
+        set bad {}
+        foreach state [dict keys $::taco_calls::call::SESSION_NEXT] {
+            if {![dict exists $::taco_calls::call::JINGLE_IN $state]} {
+                lappend bad $state
             }
         }
-        set missing
+        dict for {state actions} $::taco_calls::call::JINGLE_IN {
+            foreach action $actions {
+                if {$action ni $::taco_calls::call::JINGLE_ACTIONS} {
+                    lappend bad $state/$action
+                }
+            }
+        }
+        set bad
     } -result {}
 
 test calls-machine-session-every-action-in-every-state {each state x action: one reply, the table's refusal where it refuses, a legal move, at most one end} \
@@ -53,7 +56,7 @@ test calls-machine-session-every-action-in-every-state {each state x action: one
         foreach {state role} $::CM_SESSIONS {
             foreach action $::CM_ACTIONS {
                 set sid [cm_in $state $role]
-                set word [c.calls JingleIn $sid $action]
+                set taken [[call_of $sid] Takes $action]
                 if {[catch {c.conn feed [cm_jingle $action $sid]} err]} {
                     lappend bad [list $state $role $action raised $err]
                     cm_drop_all
@@ -63,8 +66,8 @@ test calls-machine-session-every-action-in-every-state {each state x action: one
                 if {$reply eq "none"} {
                     lappend bad [list $state $role $action no-reply]
                 }
-                if {$word ne "handle" && $reply ne $word} {
-                    lappend bad [list $state $role $action want $word got $reply]
+                if {!$taken && $reply ne "out-of-order"} {
+                    lappend bad [list $state $role $action want out-of-order got $reply]
                 }
                 if {[cm_terminal_count] > 1} {
                     lappend bad [list $state $role $action ended [cm_events]]
@@ -75,7 +78,7 @@ test calls-machine-session-every-action-in-every-state {each state x action: one
                 cm_drop_all
             }
         }
-        list $bad $::taco_calls::IllegalMoves
+        list $bad $::taco_calls::call::IllegalMoves
     } -result {{} {}}
 
 test calls-machine-session-terminate-ends-in-every-state {a terminate from the peer ends the call whatever its state, and is acked} \
@@ -124,7 +127,7 @@ test calls-machine-transport-every-backend-state {each transport state x backend
                 cm_drop_all
             }
         }
-        list $out $::taco_calls::IllegalMoves
+        list $out $::taco_calls::call::IllegalMoves
     } -result {{idle+new=idle: idle+connecting=checking: idle+connected=connected:<Active> idle+disconnected=interrupted: idle+failed=gone:<Failed> idle+closed=gone:<Ended> checking+new=checking: checking+connecting=checking: checking+connected=connected:<Active> checking+disconnected=interrupted: checking+failed=gone:<Failed> checking+closed=gone:<Ended> connected+new=connected: connected+connecting=checking: connected+connected=connected: connected+disconnected=interrupted: connected+failed=gone:<Failed> connected+closed=gone:<Ended> interrupted+new=interrupted: interrupted+connecting=checking: interrupted+connected=connected:<Active> interrupted+disconnected=interrupted: interrupted+failed=gone:<Failed> interrupted+closed=gone:<Ended>} {}}
 
 test calls-machine-failed-path-terminates {a failed path tells the peer with connectivity-error, then <finish/>} \
@@ -151,8 +154,8 @@ test calls-machine-list-connection {list names the media path: connecting, conne
 # -- <Connection> --
 
 set cm_grace_env $cm_env
-dict append cm_grace_env -setup "\nset ::taco_calls::DISCONNECT_GRACE_MS 20"
-dict append cm_grace_env -cleanup "\nset ::taco_calls::DISCONNECT_GRACE_MS 2000"
+dict append cm_grace_env -setup "\nset ::taco_calls::call::DISCONNECT_GRACE_MS 20"
+dict append cm_grace_env -cleanup "\nset ::taco_calls::call::DISCONNECT_GRACE_MS 2000"
 
 test calls-machine-connection-interrupted-and-back {an interruption that lasts is said, and so is its end} \
     {*}$cm_grace_env -body {
@@ -176,8 +179,8 @@ test calls-machine-connection-blip-unsaid {an interruption over within the grace
 # -- Setup timeout --
 
 set cm_setup_env $cm_env
-dict append cm_setup_env -setup "\nset ::taco_calls::SETUP_TIMEOUT_MS 20"
-dict append cm_setup_env -cleanup "\nset ::taco_calls::SETUP_TIMEOUT_MS 60000"
+dict append cm_setup_env -setup "\nset ::taco_calls::call::SETUP_TIMEOUT_MS 20"
+dict append cm_setup_env -cleanup "\nset ::taco_calls::call::SETUP_TIMEOUT_MS 60000"
 
 test calls-machine-setup-timeout-callee {answered, but no session-initiate ever comes: the call fails with timeout} \
     {*}$cm_setup_env -body {
@@ -321,5 +324,5 @@ test calls-machine-resumed-stream-keeps-everything {resumption ends nothing, con
 # IllegalMoves is never reset, so this covers every call test run before it.
 test calls-machine-no-illegal-moves {nothing so far moved a machine its table forbids} \
     {*}$cm_env -body {
-        set ::taco_calls::IllegalMoves
+        set ::taco_calls::call::IllegalMoves
     } -result {}

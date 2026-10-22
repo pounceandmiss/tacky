@@ -450,7 +450,7 @@ proc media_side_calls {which from} {
 test media-attach-error-without-fatal-warns {an attachAudio error with no fatal key warns and the call runs on} \
     {*}$media_env -body {
         set sid [media_caller]
-        c.calls OnMediaError $sid {op attachAudio kind playback reason "no device"}
+        [call_of $sid] Media error {op attachAudio kind playback reason "no device"}
         string map [list $sid SID] [list \
             [lindex [calls_events] end] [dict exists [calls_state] $sid]]
     } -result {{<Warning> -sid SID -reason {output device could not be opened: no device}} 1}
@@ -544,7 +544,7 @@ test media-pending-candidates-drain {candidates buffered before the pc are appli
         media_answer_extdisco
         list $buffered \
             [mockrtc::calls ::rtc::pc::add-remote-candidate] \
-            [dict exists [calls_state] tk-m4 pending_remote_candidates]
+            [llength [dict get [calls_state] tk-m4 pending_remote_candidates]]
     } -result {1 {{101 {candidate:7 1 udp 2122260223 192.0.2.7 7777 typ host} audio}} 0}
 
 # -- Device switching --
@@ -663,7 +663,7 @@ test media-buffered-candidate-rejected-is-skipped \
         media_answer_extdisco
         list \
             [llength [mockrtc::calls ::rtc::pc::add-remote-candidate]] \
-            [dict exists [calls_state] tk-m7 pending_remote_candidates] \
+            [llength [dict get [calls_state] tk-m7 pending_remote_candidates]] \
             [dict exists [calls_state] tk-m7]
     } -result {1 0 1}
 
@@ -802,8 +802,8 @@ test media-endsession-cancels-interrupted-timer {a call whose ICE dropped leaves
     {*}$media_env -body {
         set sid [media_caller]
         mockrtc::fire [media_pc $sid] state-change disconnected
-        set armed [dict exists [dict get [calls_state] $sid] disconnect_timer]
-        set timer [dict get [dict get [calls_state] $sid] disconnect_timer]
+        set armed [dict exists [dict get [calls_state] $sid] interrupted_timer]
+        set timer [dict get [dict get [calls_state] $sid] interrupted_timer]
         c endSession "account removed"
         list $armed [expr {$timer in [after info]}]
     } -result {1 0}

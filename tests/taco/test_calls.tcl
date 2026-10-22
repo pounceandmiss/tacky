@@ -394,19 +394,19 @@ test calls-transport-info-buffer-capped {a peer cannot buffer candidates without
 
 # Past the grace period, so the timer has fired.
 proc calls_wait_grace {} {
-    after [expr {$::taco_calls::DISCONNECT_GRACE_MS + 30}] {set ::calls_grace 1}
+    after [expr {$::taco_calls::call::DISCONNECT_GRACE_MS + 30}] {set ::calls_grace 1}
     vwait ::calls_grace
 }
 
 set calls_grace_env $calls_env
-dict append calls_grace_env -setup "\nset ::taco_calls::DISCONNECT_GRACE_MS 20"
-dict append calls_grace_env -cleanup "\nset ::taco_calls::DISCONNECT_GRACE_MS 2000"
+dict append calls_grace_env -setup "\nset ::taco_calls::call::DISCONNECT_GRACE_MS 20"
+dict append calls_grace_env -cleanup "\nset ::taco_calls::call::DISCONNECT_GRACE_MS 2000"
 
 test calls-pc-disconnected-warns {a media path that stays down warns without ending the call} \
     {*}$calls_grace_env -body {
         c.conn feed [calls_jmi_in propose tk-in11 $::PEER]
         c.calls accept -sid tk-in11
-        c.calls OnPcState tk-in11 disconnected
+        [call_of tk-in11] OnPcState disconnected
         calls_wait_grace
         list \
             [lindex [calls_events] end] \
@@ -417,7 +417,7 @@ test calls-pc-disconnected-then-hangup-is-quiet {a hangup inside the grace perio
     {*}$calls_grace_env -body {
         c.conn feed [calls_jmi_in propose tk-in12 $::PEER]
         c.calls accept -sid tk-in12
-        c.calls OnPcState tk-in12 disconnected
+        [call_of tk-in12] OnPcState disconnected
         c.calls hangup -sid tk-in12
         calls_wait_grace
         lsearch -all -inline [calls_events] <Warning>*
@@ -427,8 +427,8 @@ test calls-pc-disconnected-then-recovers-is-quiet {a path that comes back inside
     {*}$calls_grace_env -body {
         c.conn feed [calls_jmi_in propose tk-in13 $::PEER]
         c.calls accept -sid tk-in13
-        c.calls OnPcState tk-in13 disconnected
-        c.calls OnPcState tk-in13 connected
+        [call_of tk-in13] OnPcState disconnected
+        [call_of tk-in13] OnPcState connected
         calls_wait_grace
         lsearch -all -inline [calls_events] <Warning>*
     } -result {}
@@ -506,13 +506,13 @@ test calls-list-two-calls {calling out while rung at is allowed, and each call k
 # -- Ring timeout, missed calls, and why a ring ended --
 
 proc calls_wait_ring {} {
-    after [expr {$::taco_calls::RING_TIMEOUT_MS + 30}] {set ::calls_ring 1}
+    after [expr {$::taco_calls::call::RING_TIMEOUT_MS + 30}] {set ::calls_ring 1}
     vwait ::calls_ring
 }
 
 set calls_ring_env $calls_env
-dict append calls_ring_env -setup "\nset ::taco_calls::RING_TIMEOUT_MS 20"
-dict append calls_ring_env -cleanup "\nset ::taco_calls::RING_TIMEOUT_MS 60000"
+dict append calls_ring_env -setup "\nset ::taco_calls::call::RING_TIMEOUT_MS 20"
+dict append calls_ring_env -cleanup "\nset ::taco_calls::call::RING_TIMEOUT_MS 60000"
 
 test calls-ring-timeout-callee {a ring nobody answers is turned down with <timeout/> and missed} \
     {*}$calls_ring_env -body {

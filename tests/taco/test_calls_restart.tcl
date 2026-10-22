@@ -1,5 +1,5 @@
-# Unit tests for taco_calls' ICE restart (see "ICE restart" in
-# lib/taco/modules/calls.tcl): ours, the peer's, both at once, and every way
+# Unit tests for a call's ICE restart (see "ICE restart" in
+# lib/taco/modules/call.tcl): ours, the peer's, both at once, and every way
 # one can fail - under each capability profile a backend can have:
 #
 #   none    neither follows nor starts (rtc, today)
@@ -33,17 +33,17 @@ proc cr_env {profile} {
         mockmedia::capabilities {@CAPS@}
         ::tacky::media open mock
         c.iq live 1
-        set ::taco_calls::DISCONNECT_GRACE_MS 10
-        set ::taco_calls::RESTART_AFTER_MS 20
-        set ::taco_calls::RESTART_WAIT_MS 40
-        set ::taco_calls::MEDIA_LOSS_MAX_MS 5000
+        set ::taco_calls::call::DISCONNECT_GRACE_MS 10
+        set ::taco_calls::call::RESTART_AFTER_MS 20
+        set ::taco_calls::call::RESTART_WAIT_MS 40
+        set ::taco_calls::call::MEDIA_LOSS_MAX_MS 5000
     }] -extra-cleanup {
-        set ::taco_calls::DISCONNECT_GRACE_MS 2000
-        set ::taco_calls::RESTART_AFTER_MS 3000
-        set ::taco_calls::RESTART_WAIT_MS 15000
-        set ::taco_calls::MEDIA_LOSS_MAX_MS 60000
-        set ::taco_calls::MAX_RESTART_ATTEMPTS 3
-        set ::taco_calls::MAX_RESTARTS 8
+        set ::taco_calls::call::DISCONNECT_GRACE_MS 2000
+        set ::taco_calls::call::RESTART_AFTER_MS 3000
+        set ::taco_calls::call::RESTART_WAIT_MS 15000
+        set ::taco_calls::call::MEDIA_LOSS_MAX_MS 60000
+        set ::taco_calls::call::MAX_RESTART_ATTEMPTS 3
+        set ::taco_calls::call::MAX_RESTARTS 8
     }
 }
 set none_env   [cr_env none]
@@ -222,7 +222,7 @@ test calls-restart-ours-connects {full: connected again ends the restart: <Activ
         cr_ack [cr_last_ti_id]
         c.conn feed [cr_restart_in $sid pa2 {6001}]
         cr_drive $sid connectionState connected
-        list [cm_field $sid transport] [dict exists [calls_state] $sid restart] \
+        list [cm_field $sid transport] [expr {[cm_field $sid restart] ne ""}] \
             [dict exists [calls_state] $sid restart_timer] \
             [expr {[dict get [lrange [lindex [calls_events] 1] 1 end] -since] == $since}] \
             [cm_events] [cr_conn_events] [cm_field $sid restart_attempts] [cm_field $sid restarts]
@@ -255,7 +255,7 @@ test calls-restart-ours-from-callee {full: the responder restarts too, the spec 
 
 test calls-restart-ours-after-interruption {full: a path interrupted past RESTART_AFTER_MS is restarted} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState disconnected
         cr_wait 80
@@ -264,7 +264,7 @@ test calls-restart-ours-after-interruption {full: a path interrupted past RESTAR
 
 test calls-restart-ours-on-resume {full: the stream coming back while the path is down restarts at once} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_AFTER_MS 100000
+        set ::taco_calls::call::RESTART_AFTER_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState disconnected
         c.conn fire_ready 1
@@ -294,7 +294,7 @@ foreach profile {follow full} {
 
 test calls-restart-follow-answer-on-candidates {follow: our answer's credentials go out on our candidates, at once, and never as session-accept} \
     {*}$follow_env -body {
-        set ::taco_calls::RESTART_AFTER_MS 100000
+        set ::taco_calls::call::RESTART_AFTER_MS 100000
         set sid [cr_live callee]
         cr_drive $sid connectionState disconnected
         c.conn feed [cr_restart_in $sid pn1]
@@ -305,7 +305,7 @@ test calls-restart-follow-answer-on-candidates {follow: our answer's credentials
 
 test calls-restart-follow-candidates-wait-for-answer {follow: candidates the backend reports before our answer wait for it, and go out under its credentials} \
     {*}$follow_env -body {
-        set ::taco_calls::RESTART_AFTER_MS 100000
+        set ::taco_calls::call::RESTART_AFTER_MS 100000
         set sid [cr_live callee]
         cr_drive $sid connectionState disconnected
         c.conn feed [cr_restart_in $sid pn1]
@@ -346,7 +346,7 @@ test calls-restart-follow-over-working-path {follow: a peer's restart over a pat
 test calls-restart-ours-over-working-path {full: our restart's answer applied on a backend that stayed connected ends it} \
     {*}$full_env -body {
         set sid [cr_live]
-        c.calls StartRestart $sid "a test"
+        [call_of $sid] StartRestart "a test"
         cr_drive $sid localDescription [cm_sdp new1] offer
         cr_ack [cr_last_ti_id]
         c.conn feed [cr_restart_in $sid pa2 {6001}]
@@ -355,16 +355,16 @@ test calls-restart-ours-over-working-path {full: our restart's answer applied on
 
 test calls-restart-wait-out-on-working-path {full: a restart whose wait runs out while the backend says connected ends, not fails} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
-        c.calls StartRestart $sid "a test"
-        c.calls RestartWaited $sid
+        [call_of $sid] StartRestart "a test"
+        [call_of $sid] Fire restart
         list [dict exists [calls_state] $sid] [cm_field $sid transport]
     } -result {1 connected}
 
 test calls-restart-follow-connects {follow: the followed restart connecting is <Active> and <Connection connected>} \
     {*}$follow_env -body {
-        set ::taco_calls::RESTART_AFTER_MS 100000
+        set ::taco_calls::call::RESTART_AFTER_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState disconnected
         c.conn feed [cr_restart_in $sid pn1]
@@ -375,7 +375,7 @@ test calls-restart-follow-connects {follow: the followed restart connecting is <
 
 test calls-restart-follow-only-waits-for-peer {follow: a failed path we cannot restart waits for the peer's restart} \
     {*}$follow_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState failed
         list [dict exists [calls_state] $sid] [cm_field $sid transport] \
@@ -455,7 +455,7 @@ test calls-restart-glare-responder-before-own-offer {full, responder: the initia
 
 test calls-restart-glare-tie-break-waits {full, responder: our offer turned down with tie-break waits for the initiator's, failing nothing} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live callee]
         cr_drive $sid connectionState failed
         cr_drive $sid localDescription [cm_sdp new1] offer
@@ -467,7 +467,7 @@ test calls-restart-glare-no-rollback-responder-never-starts {a responder whose b
     {*}$full_env -body {
         mockmedia::capabilities [dict merge [mockmedia::caps] {rollback 0}]
         ::tacky::media open mock
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live callee]
         cr_drive $sid connectionState failed
         list [cr_backend SetLocalDescription] [cm_field $sid transport]
@@ -477,14 +477,14 @@ test calls-restart-glare-no-rollback-responder-never-starts {a responder whose b
 
 test calls-restart-times-out-and-retries {full: a restart that does not connect is followed by another, up to MAX_RESTART_ATTEMPTS, then the call fails} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState failed
         set out {}
         foreach n {1 2 3} {
             cr_drive $sid localDescription [cm_sdp new$n] offer
             lappend out [llength [cr_backend SetLocalDescription]]
-            c.calls RestartWaited $sid
+            [call_of $sid] Fire restart
         }
         list $out [dict exists [calls_state] $sid] [lindex [calls_events] end 0] \
             [xsearch [cm_terminate] reason * -get tag]
@@ -492,22 +492,22 @@ test calls-restart-times-out-and-retries {full: a restart that does not connect 
 
 test calls-restart-wait-paused-while-offline {full: a restart's wait running out while the stream is down starts over instead} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState failed
         c.iq live 0
-        c.calls RestartWaited $sid
+        [call_of $sid] Fire restart
         set offline [list [dict exists [calls_state] $sid restart_timer] \
             [llength [cr_backend SetLocalDescription]]]
         c.iq live 1
-        c.calls RestartWaited $sid
+        [call_of $sid] Fire restart
         list $offline [llength [cr_backend SetLocalDescription]]
     } -result {{1 1} 2}
 
 test calls-restart-media-loss-ceiling {full: however restarts go, a call with no media for MEDIA_LOSS_MAX_MS is over} \
     {*}$full_env -body {
-        set ::taco_calls::MEDIA_LOSS_MAX_MS 50
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::MEDIA_LOSS_MAX_MS 50
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState failed
         cr_wait 90
@@ -516,7 +516,7 @@ test calls-restart-media-loss-ceiling {full: however restarts go, a call with no
 
 test calls-restart-cap-per-call {full: a path that keeps failing and coming back stops being restarted after MAX_RESTARTS} \
     {*}$full_env -body {
-        set ::taco_calls::MAX_RESTARTS 2
+        set ::taco_calls::call::MAX_RESTARTS 2
         set sid [cr_live]
         foreach n {1 2 3} {
             cr_drive $sid connectionState failed
@@ -528,8 +528,8 @@ test calls-restart-cap-per-call {full: a path that keeps failing and coming back
 
 test calls-restart-cap-ends-call {full: past MAX_RESTARTS a failed path is left to the peer's restart, and then fails} \
     {*}$full_env -body {
-        set ::taco_calls::MAX_RESTARTS 1
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::MAX_RESTARTS 1
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         cr_drive $sid connectionState failed
         cr_drive $sid localDescription [cm_sdp new1] offer
@@ -537,7 +537,7 @@ test calls-restart-cap-ends-call {full: past MAX_RESTARTS a failed path is left 
         cr_drive $sid connectionState failed
         set waiting [list [cm_field $sid transport] [llength [cr_backend SetLocalDescription]]]
         foreach n {1 2 3} {
-            if {[dict exists [calls_state] $sid]} { c.calls RestartWaited $sid }
+            if {[dict exists [calls_state] $sid]} { [call_of $sid] Fire restart }
         }
         list $waiting [dict exists [calls_state] $sid] [lindex [calls_events] end 0]
     } -result {{interrupted 1} 0 <Failed>}
@@ -682,7 +682,7 @@ test calls-restart-terminate-midway {the peer's terminate during a restart ends 
 
 test calls-restart-late-failed-ignored {the old path failing during a restart does not end the call} \
     {*}$full_env -body {
-        set ::taco_calls::RESTART_WAIT_MS 100000
+        set ::taco_calls::call::RESTART_WAIT_MS 100000
         set sid [cr_live]
         c.conn feed [cr_restart_in $sid pn1]
         cr_drive $sid connectionState failed
@@ -700,5 +700,5 @@ test calls-restart-list-reconnecting {list shows a restart as reconnecting} \
 
 test calls-restart-no-illegal-moves {no restart moved a machine its table forbids} \
     {*}$full_env -body {
-        set ::taco_calls::IllegalMoves
+        set ::taco_calls::call::IllegalMoves
     } -result {}

@@ -1,6 +1,6 @@
 # Group calls: XEP-0272 Muji with XEP-0482 call invites. Participants
 # announce the call in their MUC presence and each pair holds one Jingle
-# session, a mesh (see calls.tcl "Group-call sessions").
+# session, a mesh: each a taco_calls session with no JMI (calls.tcl).
 # This module picks the room, who calls whom and when, and the payloads.
 #
 # A call is a room; its JID is the call's -jid. Two kinds:
@@ -1500,7 +1500,7 @@ snit::type taco_groupcall {
 
     # <muji> with one <content> per media, in the jingle namespace so Dino
     # reads it (Movim does the same). The content name is the media name,
-    # which is also the session's m-line label (taco_calls MID / VIDEO_MID):
+    # which is also the session's m-line label (taco_calls::call MID / VIDEO_MID):
     # XEP-0272 §3 matches session contents to conference ones by name.
     method ContentsNode {payloads} {
         return [j muji -ns $NS {

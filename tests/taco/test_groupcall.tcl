@@ -2524,8 +2524,8 @@ test groupcall-no-redial-after-leaving {a participant who left the call is not d
         llength [gc_sids_of bob]
     } -result 1
 
-# taco_calls keeps every move its tables refuse; group legs are sessions too.
+# taco_calls::call keeps every move its tables refuse; group legs are sessions too.
 test groupcall-no-illegal-moves {no session or transport move so far was one taco_calls forbids} \
     {*}$groupcall_env -body {
-        set ::taco_calls::IllegalMoves
+        set ::taco_calls::call::IllegalMoves
     } -result {}
