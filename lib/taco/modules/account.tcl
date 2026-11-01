@@ -119,10 +119,20 @@ snit::type taco_account {
         }
         set route {SELECT proxy, tor FROM account WHERE jid=$jid}
         set before [$options(-db) eval $route]
-        $self SetFields $jid $args
+        set checked [$self CheckFields $args]
+        set enable ""
+        if {[dict exists $checked enabled]} {
+            set enable [expr {[dict get $checked enabled] ? 1 : 0}]
+        }
+        # A disable first, so nothing restarts on the way down; an enable
+        # last, after every column of the write is stored, so its connect is
+        # the one dial and goes through the route this write names.
+        if {$enable eq 0} { $self disable -acc $jid }
+        $self WriteColumns $jid $checked
         # A new route ends everything on the old one: what goes through a
         # proxy or Tor, or no longer through this one, must not stay up the
-        # old way. PushConnection then connects an enabled account anew.
+        # old way. PushConnection then connects an enabled account anew,
+        # unless the enable below is about to.
         if {$before ne [$options(-db) eval $route]} {
             set client [$self liveClient -acc $jid]
             if {$client ne ""} {
@@ -131,10 +141,11 @@ snit::type taco_account {
         }
         foreach field $connection_columns {
             if {[dict exists $args -$field]} {
-                $self PushConnection $jid
+                $self PushConnection $jid [expr {$enable ne 1}]
                 break
             }
         }
+        if {$enable eq 1} { $self enable -acc $jid }
     }
 
     # Empty, a DNS name or an IP address; IPv6 brackets are dropped
@@ -150,15 +161,27 @@ snit::type taco_account {
     }
 
     # add writes through here, skipping set's PushConnection: enabling the
-    # new account connects anyway.
+    # new account connects anyway. The enable or disable comes after every
+    # other column is stored, whatever order the fields came in, so an
+    # `add -enabled 1 -tor 1` dials through Tor, not straight out.
     method SetFields {jid fields} {
         set checked [$self CheckFields $fields]
-        dict for {field value} $checked {
-            if {$field eq "enabled"} {
-                if {$value} { $self enable -acc $jid } else { $self disable -acc $jid }
+        $self WriteColumns $jid $checked
+        if {[dict exists $checked enabled]} {
+            if {[dict get $checked enabled]} {
+                $self enable -acc $jid
             } else {
-                $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
+                $self disable -acc $jid
             }
+        }
+    }
+
+    # The checked fields' columns, all but enabled: enable and disable do
+    # more than write it (they connect and disconnect), so they stay the
+    # only way through.
+    method WriteColumns {jid checked} {
+        dict for {field value} [dict remove $checked enabled] {
+            $options(-db) eval "UPDATE account SET \"$field\"=\$value WHERE jid=\$jid"
         }
     }
 
@@ -216,13 +239,14 @@ snit::type taco_account {
     }
 
     # An enabled account that is offline connects again with the new
-    # settings; an online one keeps its session.
-    method PushConnection {jid} {
+    # settings; an online one keeps its session. With connect 0 the client
+    # is only configured: an enable in the same write follows and dials.
+    method PushConnection {jid {connect 1}} {
         set client [$self liveClient -acc $jid]
         if {$client eq ""} return
         $client configure {*}[$self ConnectionOpts $jid]
         set enabled [$options(-db) onecolumn {SELECT enabled FROM account WHERE jid=$jid}]
-        if {$enabled && [$client conn state] in {disconnected waiting}} {
+        if {$connect && $enabled && [$client conn state] in {disconnected waiting}} {
             $client connect
         }
     }

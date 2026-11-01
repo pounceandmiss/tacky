@@ -55,8 +55,11 @@ snit::type mock_conn {
         return $mockState
     }
 
+    # The -proxy each connect went with, in order.
+    variable connectRoutes {}
     method connect {} {
         incr connected
+        lappend connectRoutes $options(-proxy)
     }
 
     method close {} {
@@ -208,6 +211,10 @@ snit::type mock_conn {
     # How many times connect was called.
     method get_connects {} {
         return $connected
+    }
+
+    method get_connect_routes {} {
+        return $connectRoutes
     }
 
     method get_closed {} {

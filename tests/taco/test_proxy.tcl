@@ -210,6 +210,30 @@ test account-proxy-unchanged-keeps-client {setting other fields, or the same pro
         expr {[proxy_instance [tacky client user@example.com]] eq $old}
     } -result 1
 
+# An enable in the same write as the route dials once, through the route,
+# whatever order the options came in: it used to run in the field loop,
+# before the route was stored, and dial straight out first.
+test account-proxy-add-enabled-dials-through-it {an add that enables the account and names its proxy dials once, through it} \
+    {*}[tacky_env -mock conn] -body {
+        tacky account add -acc proxied@example.com -enabled 1 -proxy socks5://127.0.0.1:1080
+        [tacky client proxied@example.com].conn get_connect_routes
+    } -result socks5://127.0.0.1:1080
+
+test account-tor-set-enabled-dials-through-it {a set that enables a disabled account and turns tor on dials once, through Tor} \
+    {*}[tacky_env -mock conn -account user@example.com -enabled 0] -body {
+        tacky account set -acc user@example.com -enabled 1 -tor 1
+        set routes [[tacky client user@example.com].conn get_connect_routes]
+        list [llength $routes] [proxy_endpoint [lindex $routes 0]]
+    } -result {1 127.0.0.1:9050}
+
+test account-proxy-set-enabled-again-dials-once {set -enabled 1 with a new proxy on an enabled account restarts it once, through the proxy} \
+    {*}[tacky_env -mock conn -account user@example.com] -body {
+        tacky account enable -acc user@example.com
+        set c [tacky client user@example.com]
+        tacky account set -acc user@example.com -enabled 1 -proxy socks5://127.0.0.1:1080
+        $c.conn get_connect_routes
+    } -result {{} socks5://127.0.0.1:1080}
+
 # --- nothing goes around a dead proxy -------------------------------------
 #
 # A port with nothing listening stands in for a proxy that is down. Next to
