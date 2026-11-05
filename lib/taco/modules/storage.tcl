@@ -181,6 +181,7 @@ snit::type taco_storage {
         sqlite3 $options(-db) [file join $options(-config-dir) accounts.db]
         # As taco_type's first open does.
         $options(-db) eval {PRAGMA secure_delete = ON}
+        $options(-db) cache size 100
         if {$passphrase ne ""} {
             taco_pragma_key $options(-db) $passphrase
         }

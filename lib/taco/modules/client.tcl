@@ -104,6 +104,8 @@ snit::type taco_client {
                 PRAGMA synchronous = NORMAL;
                 PRAGMA secure_delete = ON;
             }
+            # A catchup page alone runs dozens of distinct statements.
+            $db cache size 100
         }
         set fresh [expr {[$db onecolumn {PRAGMA user_version}] == 0}]
         taco_schema_migrate $db per-account

@@ -360,6 +360,7 @@ snit::type taco_type {
         # account's password, an old setting), not left in the file's free
         # pages. Needs no key: SQLCipher takes it before `storage unlock`.
         $db eval {PRAGMA secure_delete = ON}
+        $db cache size 100
         install storage using taco_storage ${selfns}::storage -db $db -taco $self \
             -config-dir $options(-config-dir) -data-dir $options(-data-dir) \
             -cache-dir $options(-cache-dir)
