@@ -1384,6 +1384,28 @@ test messagestore-unreadcounts-bulk {unreadCounts covers every chat in one pass}
              [dict get $counts bob@example.com]
     } -result {1 1}
 
+# A row stored undecrypted is neither a duplicate nor an archived id the
+# catchup may skip: reconcile hands it back for another decrypt, and once put
+# right it reads as any other message.
+test messagestore-undecrypted-row-is-read-again \
+    {an undecrypted row is offered for another decrypt, and put right in place} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id s1 \
+            body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        set before [list [dict get [store reconcile alice@example.com s1 "" "" 100] verdict] \
+                         [store archivedTs alice@example.com s1]]
+        set msg [ms_msg timestamp 100 server_id s1 body "the real text" \
+            attachments "" sender_fp fp1 encryption omemo mentions_me 0 \
+            reply_id "" reply_to ""]
+        set put [store repairUndecrypted alice@example.com 100 $msg]
+        set again [store repairUndecrypted alice@example.com 100 $msg]
+        list $before $put $again \
+            [testdb eval {SELECT body, undecrypted, encryption FROM chat_message}] \
+            [dict get [store reconcile alice@example.com s1 "" "" 100] verdict] \
+            [store archivedTs alice@example.com s1]
+    } -result {{undecrypted {}} 1 0 {{the real text} 0 omemo} duplicate 100}
+
 # unreadTallies walks the chats and counts each from its read mark on: the
 # same tallies as unreadTally chat by chat, over chats read in part, wholly,
 # never, with only our own messages, and with a hole, a retracted row and a

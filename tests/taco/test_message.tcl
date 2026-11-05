@@ -3192,6 +3192,248 @@ test message-muc-catchup-dedups-join-replay {a replayed message already stored i
         llength [msg_store_latest room@muc.example.com?join]
     } -result {1}
 
+# A row stored undecrypted is decrypted again when its archive copy comes
+# round, and redrawn in place when it opens: no second row, and no <New>.
+# (Here the copy reads as plain, which is what a decrypt that works yields.)
+test message-catchup-undecrypted-row-put-right \
+    {an undecrypted row takes its archive copy's text in place and is redrawn} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_u \
+            timestamp [ParseTimestamp 2024-01-01T09:00:00Z] \
+            body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        set ::_ev {}
+        tacky listen -tag undec message <Edited> {apply {{ev} {
+            lappend ::_ev edited}}}
+        tacky listen -tag undecnew message <New> {apply {{ev} {lappend ::_ev new}}}
+        msg_catchup [dict create complete 1 messages [list \
+            [mam_result id s_u from alice@example.com/phone to $acc \
+                body "the real text" stamp 2024-01-01T09:00:00Z]]]
+        update
+        tacky unlisten undec
+        tacky unlisten undecnew
+        set r [msg_row "server_id='s_u'"]
+        list [dict get $r body] [dict get $r undecrypted] \
+            [[$::_client message messagestore cget -db] onecolumn {SELECT count(*) FROM chat_message WHERE chat_jid='alice@example.com'}] $::_ev
+    } -result {{the real text} 0 1 edited}
+
+# =============================================================================
+# Forward fill: one chat's newest hole walked oldest first
+# =============================================================================
+
+# The query a fill asked: {with after start} from its form and RSM set.
+proc fill_query_of {iq} {
+    set q [lindex [xsearch $iq query -ns urn:xmpp:mam:2] 0]
+    list [xsearch $q x field @var with value -get body] \
+         [xsearch $q set -ns http://jabber.org/protocol/rsm after -get body] \
+         [xsearch $q x field @var start value -get body]
+}
+
+# Connected, with the catchup done (an empty, complete archive), then
+# alice@example.com: s_lo at 09:00, s_hi at 12:00, and a hole between.
+proc fill_seed {} {
+    msg_ready
+    msg_catchup_finish {} true
+    msg_store [list \
+        [msg_msg chat_jid alice@example.com server_id s_lo body lo \
+            timestamp [ParseTimestamp 2024-01-01T09:00:00Z]] \
+        [msg_msg chat_jid alice@example.com server_id s_hi body hi \
+            timestamp [ParseTimestamp 2024-01-01T12:00:00Z]]]
+    $::_client message messagestore hole add alice@example.com newer \
+        [ParseTimestamp 2024-01-01T09:00:00Z]
+}
+
+test message-fill-walks-the-hole-forward \
+    {a fill pages forward from the message below the hole to the one above, and closes it} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        $::_client message QueueFill alice@example.com
+        set q1 [msg_last_mam_iq]
+        set first [fill_query_of $q1]
+        set qid [xsearch $q1 query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $q1 [list \
+            [mam_result id s_a queryid $qid from alice@example.com/phone to $acc body a \
+                stamp 2024-01-01T10:00:00Z] \
+            [mam_result id s_b queryid $qid from alice@example.com/phone to $acc body b \
+                stamp 2024-01-01T11:00:00Z]] false
+        set holeAfterOne [llength [$::_client message messagestore hole list alice@example.com]]
+        set q2 [msg_last_mam_iq]
+        set second [fill_query_of $q2]
+        set qid [xsearch $q2 query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $q2 [list \
+            [mam_result id s_c queryid $qid from alice@example.com/phone to $acc body c \
+                stamp 2024-01-01T11:30:00Z] \
+            [mam_result id s_hi queryid $qid from alice@example.com/phone to $acc body hi \
+                stamp 2024-01-01T12:00:00Z]] false
+        list $first $second $holeAfterOne \
+            [llength [$::_client message messagestore hole list alice@example.com]] \
+            [[$::_client message messagestore cget -db] eval {
+                SELECT body FROM chat_message WHERE chat_jid='alice@example.com'
+                  AND kind='message' ORDER BY timestamp}] \
+            [msg_mam_query_count]
+    } -result {{alice@example.com s_lo {}} {alice@example.com s_b {}} 1 0 {lo a b c hi} 3}
+
+# A drop between pages leaves the hole right above what was stored, so the
+# next fill goes on from there rather than starting over.
+test message-fill-cut-short-goes-on-where-it-stopped \
+    {after a drop the next fill continues after the last message stored} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        $::_client message QueueFill alice@example.com
+        set q1 [msg_last_mam_iq]
+        set qid [xsearch $q1 query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $q1 [list \
+            [mam_result id s_a queryid $qid from alice@example.com/phone to $acc body a \
+                stamp 2024-01-01T10:00:00Z]] false
+        $::_client message OnDisconnect
+        $::_client message QueueFill alice@example.com
+        fill_query_of [msg_last_mam_iq]
+    } -result {alice@example.com s_a {}}
+
+# An archive that no longer knows the id below the hole: the fill asks from
+# that message's time instead.
+test message-fill-unknown-id-goes-by-time \
+    {item-not-found for the id below the hole retries from its stamp} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        $::_client message QueueFill alice@example.com
+        set iq [msg_last_mam_iq]
+        $::_client iq feed [j iq -type error -id [dict get $iq attrs id] {
+            j error -type cancel {
+                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+            }
+        }]
+        fill_query_of [msg_last_mam_iq]
+    } -result {alice@example.com {} 2024-01-01T09:00:00.000001Z}
+
+# A contact whose device's skipped keys we hold gets their chat filled once
+# the account catchup settles.
+test message-fill-follows-saved-keys \
+    {the account catchup settling fills the chat of a sender with saved keys} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        [$::_client message messagestore cget -db] eval {
+            INSERT INTO omemo_skipped(account_jid, peer_jid, peer_device, dh, nr, mk)
+            VALUES('user@test.example.com', 'alice@example.com', 7, x'00', 1, x'00')
+        }
+        $::_client message OnDisconnect
+        msg_ready
+        msg_mam_finish [msg_last_mam_iq] {} true
+        # First the hole the reconnect put above alice's newest message...
+        set q1 [msg_last_mam_iq]
+        set first [fill_query_of $q1]
+        msg_mam_finish $q1 {} true
+        # ...then, the keys still held, the older one.
+        list $first [fill_query_of [msg_last_mam_iq]]
+    } -result {{alice@example.com s_hi {}} {alice@example.com s_lo {}}}
+
+# A room whose one catchup page held OMEMO and stopped short fills on.
+test message-fill-omemo-room \
+    {an incomplete room catchup page with OMEMO in it queues a fill of the room} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid room@muc.example.com?join \
+            from_jid room@muc.example.com/alice server_id r_lo body old \
+            timestamp [ParseTimestamp 2024-01-01T08:00:00Z]]]
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list [j result -ns urn:xmpp:mam:2 -id r_enc -queryid $qid {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T10:00:00Z
+                j message -from room@muc.example.com/alice -type groupchat {
+                    j encrypted -ns eu.siacs.conversations.axolotl {
+                        j header -sid 42 {
+                            j key -rid 1 -body Zm9v
+                            j iv -body AAAAAAAAAAAAAAAA
+                        }
+                        j payload -body Zm9v
+                    }
+                    j body -body "I sent you an OMEMO encrypted message"
+                }
+            }
+        }]] false
+        set q [msg_last_mam_iq]
+        list [xsearch $q -get @to] \
+            [xsearch $q query -ns urn:xmpp:mam:2 set -ns http://jabber.org/protocol/rsm after -get body]
+    } -result {room@muc.example.com r_lo}
+
+# A chat with no hole but a row stored undecrypted (a live message too far
+# ahead of its session, say) is walked from the message below it, and the
+# row is read again on the way.
+test message-fill-reads-undecrypted-rows-again \
+    {a fill walks from below an undecrypted row up to it, and puts it right} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_catchup_finish {} true
+        msg_store [list \
+            [msg_msg chat_jid alice@example.com server_id s_lo body lo \
+                timestamp [ParseTimestamp 2024-01-01T09:00:00Z]] \
+            [msg_msg chat_jid alice@example.com server_id s_u \
+                timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
+                body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        $::_client message QueueOmemoFills {}
+        set q [msg_last_mam_iq]
+        set asked [fill_query_of $q]
+        set qid [xsearch $q query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $q [list \
+            [mam_result id s_m queryid $qid from alice@example.com/phone to $acc \
+                body middle stamp 2024-01-01T10:00:00Z] \
+            [mam_result id s_u queryid $qid from alice@example.com/phone to $acc \
+                body "read at last" stamp 2024-01-01T11:00:00Z]] false
+        list $asked [[$::_client message messagestore cget -db] eval {
+            SELECT body, undecrypted FROM chat_message
+            WHERE chat_jid='alice@example.com' ORDER BY timestamp}]
+    } -result {{alice@example.com s_lo {}} {lo 0 middle 0 {read at last} 0}}
+
+# The fill goes on past the hole's top while a newer row is undecrypted.
+test message-fill-goes-past-the-hole-to-undecrypted-rows \
+    {a fill that closes the hole walks on to an undecrypted row above it} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_u \
+            timestamp [ParseTimestamp 2024-01-01T13:00:00Z] \
+            body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        $::_client message QueueFill alice@example.com
+        set q [msg_last_mam_iq]
+        set qid [xsearch $q query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $q [list \
+            [mam_result id s_hi queryid $qid from alice@example.com/phone to $acc \
+                body hi stamp 2024-01-01T12:00:00Z]] false
+        set holes [llength [$::_client message messagestore hole list alice@example.com]]
+        list $holes [fill_query_of [msg_last_mam_iq]]
+    } -result {0 {alice@example.com s_hi {}}}
+
+# A row a fill could not open in order is given up on: no more fills for it,
+# and its archive copy is a plain duplicate from then on.
+test message-fill-gives-up-on-what-order-cannot-open \
+    {a row given up on asks for no fill and is no longer read again} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_catchup_finish {} true
+        msg_store [list \
+            [msg_msg chat_jid alice@example.com server_id s_lo body lo \
+                timestamp [ParseTimestamp 2024-01-01T09:00:00Z]] \
+            [msg_msg chat_jid alice@example.com server_id s_u \
+                timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
+                body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        $::_client message messagestore giveUpUndecrypted alice@example.com \
+            [ParseTimestamp 2024-01-01T11:00:00Z]
+        set before [msg_mam_query_count]
+        $::_client message QueueOmemoFills {}
+        list [expr {[msg_mam_query_count] - $before}] \
+            [dict get [$::_client message messagestore reconcile alice@example.com \
+                s_u "" "" [ParseTimestamp 2024-01-01T11:00:00Z]] verdict]
+    } -result {0 duplicate}
+
 # A message retracted after it was archived comes back as a tombstone under
 # the archive id of the row we hold: it is no duplicate, and retracts the row.
 test message-muc-catchup-tombstone-under-stored-id {an archive tombstone under a stored message's id retracts it} \

@@ -70,6 +70,18 @@ snit::type taco_message {
     # turning a first login on a busy account into a full archive pull.
     typevariable MaxCatchupPages 5
 
+    # Forward fills (FillChat): chats waiting for one, the one running as
+    # {run chatJid}, and a count that tells a fill's late answer from the
+    # current run's once a drop has dropped it.
+    variable FillQueue {}
+    variable FillBusy ""
+    variable FillRun 0
+    # 1 while a fill's page is processed (Redecrypt).
+    variable InFill 0
+    # Pages one fill walks per connect; the hole it leaves where it stopped
+    # is where the next connect's goes on.
+    typevariable MaxFillPages 200
+
     # The earliest stamp our server or account may put on a live 1:1
     # stanza this session (TrustedStamp), "" for none: what the server held
     # for us while we were offline postdates our previous session.
@@ -328,6 +340,31 @@ snit::type taco_message {
         # Anything still pending after the archive has had its say either
         # never reached the server or predates what the archive covered.
         $self RetryPending [dict get $acc floor] $complete
+        $self QueueOmemoFills [dict keys [dict get $acc mins]]
+    }
+
+    # Fills for the chats whose OMEMO messages a backward walk may have left
+    # behind: a contact with a device whose skipped keys we hold has messages
+    # we have not read in their chat; one of our own devices could have
+    # written in any, so for those the chats this catchup reached.
+    method QueueOmemoFills {runChats} {
+        foreach chatJid [$client db eval {
+            SELECT DISTINCT chat_jid FROM chat_message WHERE undecrypted=1
+        }] {
+            $self QueueFill $chatJid
+        }
+        if {[catch {$client omemo sendersWithSavedKeys} senders]} return
+        set me [jid norm [jid bare [$client cget -jid]]]
+        foreach sender $senders {
+            set sender [jid norm $sender]
+            if {$sender eq $me} {
+                foreach chatJid $runChats {
+                    if {![IsMucChatJid $chatJid]} { $self QueueFill $chatJid }
+                }
+            } else {
+                $self QueueFill $sender
+            }
+        }
     }
 
     # Bound the older edge of what a run that stopped short actually fetched.
@@ -359,13 +396,213 @@ snit::type taco_message {
             return
         }
         $client muc noteArchive $roomJid 1
-        lassign [$self CatchupPage $mamResult $roomChatJid 1] perChatCount _ mins
+        lassign [$self CatchupPage $mamResult $roomChatJid 1] \
+            perChatCount _ mins _ _ omemo
         if {![dict get $mamResult complete]} {
             $self PlaceCatchupFloorHoles $mins
         }
         set n [expr {[dict exists $perChatCount $roomChatJid]
             ? [dict get $perChatCount $roomChatJid] : 0}]
         $self CatchupSettled $roomChatJid $n
+        # One page reaches back 50 messages; an OMEMO room fills the rest
+        # forward (FillChat).
+        if {$omemo > 0 && ![dict get $mamResult complete]} {
+            $self QueueFill $roomChatJid
+        }
+    }
+
+    # =====================================================================
+    # Forward fill
+    # =====================================================================
+    #
+    # The catchup walks back from the newest message and stops short after a
+    # long absence, leaving a hole. For plain text that is fine: the hole
+    # fills when the user scrolls into it. OMEMO is not: a session reads its
+    # chain forward, so a message a backward walk opened first left the keys
+    # of everything before it saved (omemo_skipped), and those are spent or
+    # dropped long before anyone scrolls. A fill walks one chat's newest hole
+    # forward instead, from the message below it to the one above, oldest
+    # first, so each message opens on the key saved for it.
+    #
+    # After each page the hole moves up to sit right above the last message
+    # stored, so a fill a drop cuts short (or MaxFillPages stops) is taken up
+    # where it stopped, by the next connect's.
+
+    # Ask for a fill of $chatJid's newest hole; fills run one at a time.
+    method QueueFill {chatJid} {
+        if {$chatJid in $FillQueue} return
+        if {$FillBusy ne "" && [lindex $FillBusy 1] eq $chatJid} return
+        lappend FillQueue $chatJid
+        if {$FillBusy eq ""} { $self NextFill }
+    }
+
+    method NextFill {} {
+        set FillBusy ""
+        if {![llength $FillQueue]} {
+            # What no fill could read gets the heal it was spared (omemo).
+            catch {$client omemo fillsSettled}
+            return
+        }
+        while {[llength $FillQueue]} {
+            set chatJid [lindex $FillQueue 0]
+            set FillQueue [lrange $FillQueue 1 end]
+            set target [$self FillTarget $chatJid]
+            if {$target eq ""} continue
+            set FillBusy [list [incr FillRun] $chatJid]
+            dict set target pages 0
+            dict set target count 0
+            $self FillQuery $chatJid $target [list -after [dict get $target loSid]]
+            return
+        }
+        catch {$client omemo fillsSettled}
+    }
+
+    # What a fill of $chatJid walks, as {loTs loSid hiTs gapTop}: from the
+    # message below the chat's newest hole (the archive id it continues
+    # after) to the one above it (gapTop; the largest stamp when nothing is
+    # above), and on through the newest row still undecrypted (hiTs), so
+    # those are read again in order too. A chat with no hole but rows
+    # undecrypted is walked from the message below the oldest of them, with
+    # no gapTop. "" when there is nothing to walk, or no message below to
+    # start from.
+    method FillTarget {chatJid} {
+        set holeTs [$client db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='hole'
+        }]
+        set undecNewest [$client db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$chatJid AND undecrypted=1
+        }]
+        if {$holeTs ne ""} {
+            set below $holeTs
+            set gapTop [$client db onecolumn {
+                SELECT MIN(timestamp) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                  AND timestamp > $holeTs
+            }]
+            if {$gapTop eq ""} { set gapTop 9223372036854775807 }
+            set hiTs $gapTop
+            if {$undecNewest ne "" && $undecNewest > $hiTs} { set hiTs $undecNewest }
+        } elseif {$undecNewest ne ""} {
+            set below [$client db onecolumn {
+                SELECT MIN(timestamp) FROM chat_message
+                WHERE chat_jid=$chatJid AND undecrypted=1
+            }]
+            set gapTop ""
+            set hiTs $undecNewest
+        } else {
+            return ""
+        }
+        set lo ""
+        $client db eval {
+            SELECT timestamp, server_id FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+              AND timestamp < $below
+            ORDER BY timestamp DESC LIMIT 1
+        } row {
+            set lo [list $row(timestamp) $row(server_id)]
+        }
+        if {$lo eq ""} { return "" }
+        dict create loTs [lindex $lo 0] loSid [lindex $lo 1] hiTs $hiTs \
+            gapTop $gapTop
+    }
+
+    method FillQuery {chatJid target cursor} {
+        set run [lindex $FillBusy 0]
+        set cmd [mymethod OnFill $run $chatJid $target $cursor]
+        if {[IsRoomChatJid $chatJid]} {
+            $client mam queryChat $chatJid {*}$cursor -max 50 -command $cmd
+        } else {
+            $client mam query -with $chatJid {*}$cursor -max 50 -command $cmd
+        }
+    }
+
+    method OnFill {run chatJid target cursor mamResult} {
+        if {$FillBusy eq "" || [lindex $FillBusy 0] != $run} return
+        if {[dict exists $mamResult error]} {
+            # The archive no longer knows the id below the hole (trimmed, or
+            # another archive's): go on from that message's time instead.
+            if {[dict getdef $mamResult error_condition ""] eq "item-not-found"
+                    && [lindex $cursor 0] eq "-after"} {
+                set from [FormatTimestampISO [expr {[dict get $target loTs] + 1}]]
+                $self FillQuery $chatJid $target [list -start $from]
+                return
+            }
+            # Anything else leaves the hole for the next connect.
+            $self FinishFill $chatJid $target
+            return
+        }
+        set InFill 1
+        try {
+            lassign [$self CatchupPage $mamResult \
+                    [expr {[IsRoomChatJid $chatJid] ? $chatJid : ""}] 0] \
+                counts _ _ _ pageMax
+        } finally {
+            set InFill 0
+        }
+        dict incr target count [dict getdef $counts $chatJid 0]
+        dict incr target pages
+        set loTs [dict get $target loTs]
+        set gapTop [dict get $target gapTop]
+        set last [dict get $mamResult last]
+        set ended [expr {[dict get $mamResult complete] || $last eq ""}]
+        set reached [expr {$pageMax ne "" && $pageMax >= [dict get $target hiTs]}]
+        if {$gapTop ne "" && ($ended || ($pageMax ne "" && $pageMax >= $gapTop))} {
+            $messagestore hole removeBetween $chatJid $loTs $gapTop
+            dict set target gapTop ""
+            dict set target closed 1
+        }
+        # A message that came in undecrypted while the fill ran is read in
+        # order too: the walk goes on through it.
+        if {$reached && !$ended} {
+            set undecNewest [$client db onecolumn {
+                SELECT MAX(timestamp) FROM chat_message
+                WHERE chat_jid=$chatJid AND undecrypted=1
+            }]
+            if {$undecNewest ne "" && $undecNewest > $pageMax} {
+                dict set target hiTs $undecNewest
+                set reached 0
+            }
+        }
+        if {$ended || $reached} {
+            $self FinishFill $chatJid $target
+            return
+        }
+        # Move the hole up above the newest message now stored below the gap's
+        # top, which is where the next page (or connect) goes on from.
+        if {$gapTop ne ""} {
+            set newLo [$client db onecolumn {
+                SELECT MAX(timestamp) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                  AND timestamp < $gapTop
+            }]
+            if {$newLo ne "" && $newLo > $loTs} {
+                $messagestore hole removeBetween $chatJid $loTs $gapTop
+                $messagestore hole add $chatJid newer $newLo
+                dict set target loTs $newLo
+            }
+        }
+        if {[dict get $target pages] >= $MaxFillPages} {
+            $self FinishFill $chatJid $target
+            return
+        }
+        $self FillQuery $chatJid $target [list -after $last]
+    }
+
+    # A contact whose saved keys outlast the hole just closed has messages
+    # in an older one: that is filled next.
+    method FinishFill {chatJid target} {
+        set n [dict get $target count]
+        if {$n > 0} {
+            $client emit message <CatchupDone> -jid $chatJid -count $n
+        }
+        if {[dict getdef $target closed 0] && ![IsMucChatJid $chatJid]
+                && ![catch {$client omemo sendersWithSavedKeys} senders]
+                && $chatJid in [lmap s $senders {jid norm $s}]} {
+            lappend FillQueue $chatJid
+        }
+        $self NextFill
     }
 
     # Per-message walk over one catchup page. Stores without emitting <New>
@@ -402,8 +639,20 @@ snit::type taco_message {
         # Results matching a row stored before the account catchup started
         # (CatchupRowidFloor): the walk has reached history we had.
         set overlap 0
+        # The page's newest stamp, and in a room's page how many results
+        # were OMEMO (a forward fill is worth it only for those).
+        set pageMax ""
+        set omemo 0
 
         foreach resultNode [dict get $mamResult messages] {
+            if {$fixedChatJid ne ""} {
+                set fwdMsg [lindex [xsearch [lindex [xsearch $resultNode \
+                    forwarded -ns urn:xmpp:forward:0] 0] message] 0]
+                if {[llength [xsearch $fwdMsg encrypted \
+                        -ns eu.siacs.conversations.axolotl]]} {
+                    incr omemo
+                }
+            }
             if {$fixedChatJid ne ""} {
                 set chatJid $fixedChatJid
             } else {
@@ -440,6 +689,9 @@ snit::type taco_message {
                 set rts [dict get $r timestamp]
                 if {$rts ne "" && ($archiveFloor eq "" || $rts < $archiveFloor)} {
                     set archiveFloor $rts
+                }
+                if {$rts ne "" && ($pageMax eq "" || $rts > $pageMax)} {
+                    set pageMax $rts
                 }
             }
             # A reaction/edit/retract updates a stored message's display; it
@@ -494,7 +746,8 @@ snit::type taco_message {
         dict for {jid _} $perChatMax {
             $self EmitTail $jid
         }
-        return [list $perChatCount $archiveFloor $perChatMin $overlap]
+        return [list $perChatCount $archiveFloor $perChatMin $overlap \
+            $pageMax $omemo]
     }
 
     # Whether the row at $ts in $chatJid was stored at or below rowid $floor.
@@ -508,6 +761,10 @@ snit::type taco_message {
 
     method OnDisconnect {args} {
         set LastOnlineUs [$self LinkHeardUs]
+        # A fill cut short leaves its hole where its last page put it; the
+        # next connect's catchup asks for it again.
+        set FillQueue {}
+        set FillBusy ""
         array unset PendingRetry
         # The query settles these itself, but not until the session is back -
         # too long to leave a sync showing as running.
@@ -776,6 +1033,12 @@ snit::type taco_message {
         # History a room replays on join is not news: nothing rings for it.
         dict set verdict delayed [expr {$stamp ne ""}]
         $self DispatchLive $chatJid $verdict
+        # One our session could not open yet: what it is ahead of is in the
+        # archive, and a fill reads it in order (FillTarget).
+        if {[dict get $verdict verdict] eq "new"
+                && [dict getdef [dict get $verdict msg] undecrypted 0]} {
+            $self QueueFill $chatJid
+        }
     }
 
     # The <delay> stamp of a live message, if one comes from who may set it:
@@ -2752,6 +3015,14 @@ snit::type taco_message {
                 return [dict create verdict duplicate timestamp $ts \
                     stored_ts [dict get $v stored_ts]]
             }
+            undecrypted {
+                # Stored before with a placeholder: read it again, and put
+                # the row right if it opens now. Either way it is no news.
+                set storedTs [dict get $v stored_ts]
+                $self Redecrypt $chatJid $msgNode $storedTs $serverId $ownId $originId
+                return [dict create verdict duplicate timestamp $ts \
+                    stored_ts $storedTs]
+            }
         }
 
         # decryptForwarded yields a synthesised plaintext stanza, or the
@@ -3119,6 +3390,24 @@ snit::type taco_message {
         $self EmitRetracted $chatJid $targetTs
     }
 
+    # A message stored undecrypted (its row marked so) comes round again:
+    # decrypt it once more, and if it opens, its row takes the text in place
+    # and the GUI redraws it (<Edited>).
+    method Redecrypt {chatJid msgNode storedTs serverId ownId originId} {
+        set node [$client omemo redecrypt $msgNode]
+        set msg [$self ParseMessage $node -chat_jid $chatJid -timestamp $storedTs \
+            -server_id $serverId -own_id $ownId -origin_id $originId]
+        if {$msg eq "" || [dict get $msg undecrypted]} {
+            # A fill reads the chain in order; what it cannot open even so
+            # never will be, and stops asking for fills (undecrypted 2).
+            if {$InFill} { $messagestore giveUpUndecrypted $chatJid $storedTs }
+            return
+        }
+        if {[$messagestore repairUndecrypted $chatJid $storedTs $msg]} {
+            $self EmitMessagePatch $chatJid $storedTs
+        }
+    }
+
     # <Edited> carries a message's whole enriched row so the GUI redraws it
     # in place (edited body, the "(edited)" marker, an invite's state).
     # Reserved for content changes; send-status and upload transitions go
@@ -3240,6 +3529,7 @@ snit::type taco_message {
         # decrypted. The EME marker (XEP-0380) is a cleartext hint anyone can
         # attach to an unencrypted body, so it must not be read here.
         set enc [expr {[dict exists $msgNode decrypted] ? "omemo" : ""}]
+        set undecrypted [expr {[dict exists $msgNode undecrypted] ? 1 : 0}]
         set senderFp [expr {[dict exists $msgNode sender_fp] \
             ? [dict get $msgNode sender_fp] : ""}]
         set originId [expr {[dict exists $args -origin_id] \
@@ -3266,6 +3556,7 @@ snit::type taco_message {
             server_status "" \
             encryption $enc \
             sender_fp  $senderFp \
+            undecrypted $undecrypted \
             mentions_me [expr {($invite ne "" && $ownId eq ""
                 || $call ne "" && !$callOwn)
                 && [IsMucChatJid $chatJid] ? 1

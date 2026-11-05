@@ -1643,6 +1643,36 @@ test omemo-unit-event-decrypt-failed \
         ::test::omemo_unit::emittedOmemo <DecryptFailed>
     } -result {{-acc juliet@capulet.lit -jid romeo@montague.lit -device 42 -reason {[OMEMO] Message not encrypted for this device}}}
 
+# A message our session cannot open is stored with the placeholder and marked
+# undecrypted, so its archive copy can be read again later; one not
+# encrypted for this device never will be, so it is not marked.
+test omemo-unit-undecrypted-row-is-marked \
+    {a message the session cannot open is stored marked undecrypted, one not for us is not} \
+    {*}[tacky_env -taco-client {-db-path :memory:} -extra-setup {
+        c configure -jid $::test::omemo_unit::JULIET
+        c omemo OnReady
+    }] -body {
+        set ourDev [c omemo device_id]
+        foreach {id rid ts} [list wire-ud1 $ourDev 2024-01-01T10:00:00Z \
+                                  wire-ud2 99      2024-01-01T10:01:00Z] {
+            c omemo OnMessage [j message \
+                    -from $::test::omemo_unit::ROMEO \
+                    -to   $::test::omemo_unit::JULIET_BARE \
+                    -type chat -id $id {
+                j encrypted -ns eu.siacs.conversations.axolotl {
+                    j header -sid 42 {
+                        j key -rid $rid -body Zm9v
+                        j iv -body AAAAAAAAAAAAAAAA
+                    }
+                    j payload -body Zm9v
+                }
+                j delay -ns urn:xmpp:delay -stamp $ts
+            }]
+        }
+        c db eval {SELECT undecrypted, body FROM chat_message
+                   WHERE chat_jid='romeo@montague.lit' ORDER BY timestamp}
+    } -result {1 {[OMEMO] Could not decrypt message} 0 {[OMEMO] Message not encrypted for this device}}
+
 # A live message whose <encrypted/> cannot be read at all (no header, or
 # two elements) is a placeholder and a <DecryptFailed>, not silence.
 test omemo-unit-event-malformed-is-a-placeholder \
@@ -2791,9 +2821,16 @@ test omemo-unit-encryptfor-refetches-given-up-bundle \
 # Romeo's server answers the bundle fetches that follows: {kind fetches
 # keytransports}, DoDecrypt's kind, the fetches of 111's bundle, and the
 # key transports Juliet wrote.
-proc ::test::omemo_unit::healOn {enc} {
+proc ::test::omemo_unit::healOn {enc {settle 0}} {
     c conn clear
     set r [c omemo DoDecrypt $enc $::test::omemo_unit::ROMEO 111 0]
+    # A gap's heal waits for the forward fills: no fetch until they settle.
+    set early {}
+    if {$settle} {
+        set early [llength [lmap s [c conn get_written] {
+            expr {[xsearch $s pubsub items -get @node] ne "" ? 1 : [continue]}}]]
+        c omemo fillsSettled
+    }
     set fetches 0
     foreach s [c conn get_written] {
         if {[xsearch $s pubsub items -get @node]
@@ -2807,7 +2844,7 @@ proc ::test::omemo_unit::healOn {enc} {
         set e [lindex [xsearch $s encrypted -ns eu.siacs.conversations.axolotl] 0]
         if {$e ne "" && [llength [xsearch $e payload]] == 0} { lappend kts $e }
     }
-    list [lindex $r 0] $fetches $kts
+    list [lindex $r 0] $fetches $kts {*}$early
 }
 
 # Romeo's TEXT, as Juliet reads it: DoDecrypt's {kind body}.
@@ -2887,9 +2924,11 @@ test omemo-unit-heals-that-only-resend-give-way-to-a-new-exchange \
     } -result {{1 0 0 0 1} {plaintext two} {plaintext three}}
 
 # More than MAX_SKIP of Romeo's messages never reached Juliet: the next one
-# is refused (OnStoreSkipped), and so would every one after it be. It heals.
+# is refused (OnStoreSkipped), and so would every one after it be. The
+# messages in between may be in the archive, where a forward fill reads
+# them in order, so the heal waits for the fills to settle; then it heals.
 test omemo-unit-gap-past-max-skip-heals \
-    {a message past a gap of more than MAX_SKIP heals the session, and Romeo's reply to the heal reads} \
+    {a message past a gap of more than MAX_SKIP heals once the fills settle, and Romeo's reply to the heal reads} \
     {*}$::test::omemo_unit::single_env -body {
         set J $::test::omemo_unit::JULIET_BARE
         ::test::omemo_unit::romeoHeardFrom
@@ -2898,12 +2937,12 @@ test omemo-unit-gap-past-max-skip-heals \
             omemopeer::encrypt romeo $J [c omemo device_id] lost
         }
         lassign [::test::omemo_unit::healOn \
-            [omemopeer::encrypt romeo $J [c omemo device_id] late]] kind fetches kts
-        lappend out $kind $fetches [llength $kts]
+            [omemopeer::encrypt romeo $J [c omemo device_id] late] 1] kind fetches kts early
+        lappend out $kind $early $fetches [llength $kts]
         omemopeer::forget romeo $J [c omemo device_id]
         omemopeer::take romeo $J [lindex $kts 0]
         lappend out [::test::omemo_unit::readFromRomeo after]
-    } -result {{plaintext one} decrypt_error 1 1 {plaintext after}}
+    } -result {{plaintext one} decrypt_error 0 1 1 {plaintext after}}
 
 # Romeo starts a session on a prekey of Juliet's she no longer holds (spent
 # since he fetched her bundle): his key exchange cannot be taken, and he

@@ -379,18 +379,21 @@ snit::type taco_messagestore {
                 set callId [expr {$call eq "" ? "" : [dict get $call id]}]
                 set callState [expr {[info exists m(call_state)] \
                     ? $m(call_state) : ""}]
+                set undecrypted [expr {[info exists m(undecrypted)] \
+                    ? $m(undecrypted) : 0}]
                 $options(-db) eval {
                     INSERT INTO chat_message(timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, sender_fp, fail_reason, mentions_me,
                         attachments, invite, invite_room, call, call_room,
-                        call_id, call_state)
+                        call_id, call_state, undecrypted)
                     VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $senderFp, $failReason, $mention, $attach, $invite,
-                        $inviteRoom, $call, $callRoom, $callId, $callState)
+                        $inviteRoom, $call, $callRoom, $callId, $callState,
+                        $undecrypted)
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
@@ -1427,8 +1430,38 @@ snit::type taco_messagestore {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
-              AND server_status IS NOT 'pending'
+              AND server_status IS NOT 'pending' AND undecrypted != 1
             ORDER BY +timestamp LIMIT 1
+        }
+    }
+
+    # A row stored undecrypted takes the message it turned out to be: its
+    # text, files, reply, mention and the session that read it. 1 if a row
+    # was put right.
+    method repairUndecrypted {jid ts msg} {
+        set body [dict get $msg body]
+        set attach [dict get $msg attachments]
+        set senderFp [dict get $msg sender_fp]
+        set enc [dict get $msg encryption]
+        set mention [dict get $msg mentions_me]
+        set replyId [dict get $msg reply_id]
+        set replyTo [dict get $msg reply_to]
+        $options(-db) eval {
+            UPDATE chat_message
+            SET body=$body, attachments=$attach, sender_fp=$senderFp,
+                encryption=$enc, mentions_me=$mention,
+                reply_id=$replyId, reply_to=$replyTo, undecrypted=0
+            WHERE chat_jid=$jid AND timestamp=$ts AND undecrypted=1
+        }
+        expr {[$options(-db) changes] > 0}
+    }
+
+    # An undecrypted row a fill could not open in order: kept as it is,
+    # never asked about again (undecrypted 2).
+    method giveUpUndecrypted {jid ts} {
+        $options(-db) eval {
+            UPDATE chat_message SET undecrypted=2
+            WHERE chat_jid=$jid AND timestamp=$ts AND undecrypted=1
         }
     }
 
@@ -1440,23 +1473,27 @@ snit::type taco_messagestore {
         # resolveTargetTs).
         set row ""
         $options(-db) eval {
-            SELECT timestamp, server_status, server_id FROM chat_message
+            SELECT timestamp, server_status, server_id, undecrypted
+            FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
             ORDER BY +timestamp LIMIT 1
         } r {
             set row [dict create timestamp $r(timestamp) \
-                server_status $r(server_status) server_id $r(server_id)]
+                server_status $r(server_status) server_id $r(server_id) \
+                undecrypted $r(undecrypted)]
         }
         $options(-db) eval {
-            SELECT timestamp, server_status, server_id FROM chat_message
+            SELECT timestamp, server_status, server_id, undecrypted
+            FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND own_id != '' AND own_id=$ownId
             ORDER BY +timestamp LIMIT 1
         } r {
             if {$row eq "" || $r(timestamp) < [dict get $row timestamp]} {
                 set row [dict create timestamp $r(timestamp) \
-                    server_status $r(server_status) server_id $r(server_id)]
+                    server_status $r(server_status) server_id $r(server_id) \
+                    undecrypted $r(undecrypted)]
             }
         }
         if {$row eq ""} {
@@ -1466,6 +1503,11 @@ snit::type taco_messagestore {
         if {!($status eq "pending"
               || ($status eq "" && [dict get $row server_id] eq ""
                   && $serverId ne ""))} {
+            # Ours to decrypt again rather than to drop (message Redecrypt).
+            if {[dict get $row undecrypted] == 1} {
+                return [dict create verdict undecrypted \
+                    stored_ts [dict get $row timestamp]]
+            }
             return [dict create verdict duplicate \
                 stored_ts [dict get $row timestamp]]
         }

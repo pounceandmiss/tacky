@@ -89,6 +89,11 @@ namespace eval ::taco::omemo {
     variable NS_EME urn:xmpp:eme:0
     # The placeholder for an <encrypted/> that cannot be read at all.
     variable MALFORMED {[OMEMO] Could not read message payload}
+    # The placeholder for a message our session could not open (no session,
+    # a broken one, or a chain further on than it can follow). Its row is
+    # marked undecrypted: a later decrypt, once the session has caught up,
+    # can still read it.
+    variable UNDECRYPTED {[OMEMO] Could not decrypt message}
     # Skipped message keys kept per peer device, the oldest dropped past
     # it; and the most one message may skip (picomemo's n), past which it
     # is refused, as libsignal's MAX_SKIP. One message's skip always fits.
@@ -248,6 +253,13 @@ snit::type taco_omemo {
     # republish, maybe a heartbeat). Live decrypts (isMam=0) heal and run
     # side effects immediately, never postponed.
     variable mamHadOmemo 0
+    # 1 while redecrypt runs (HandleDecryptError).
+    variable Redecrypting 0
+    # "jid|device" -> 1: devices that sent a message further on in its chain
+    # than one decrypt may skip, whose heal waits for the forward fills
+    # (fillsSettled): the messages in between are in the archive, and a heal
+    # would have the peer start a new session before they are read.
+    variable GapHeals {}
     variable Postponed
     variable PostponedHealing
     variable PostponedHeartbeats
@@ -1625,7 +1637,7 @@ snit::type taco_omemo {
         # plaintext OR decrypt_error - both flow as a message bubble.
         # We do NOT call back into the full client chain (that would
         # re-enter OMEMO); jump directly to message.
-        set plain [$self SynthesisePlain $stanza $body $senderFp]
+        set plain [$self SynthesiseResult $stanza $kind $body $senderFp]
         $client message OnMessage $plain
     }
 
@@ -1858,12 +1870,13 @@ snit::type taco_omemo {
             if {[lindex $lastEcode 1] in {EKEYGONE EUSER}} {
                 return [list duplicate ""]
             }
-            return [list decrypt_error \
-                "\[OMEMO\] Could not decrypt message"]
+            return [list decrypt_error $::taco::omemo::UNDECRYPTED]
         }
         # Opened on the held session: the peer has taken the heal's key
         # exchange (or made one of its own), and the replaced session is done.
         if {!$onReplaced} { $self ForgetReplaced $key }
+        # The chain caught up: no heal owed for a gap.
+        dict unset GapHeals $key
 
         # IK-change check on inbound: a prekey message carries the
         # sender's IK inside picomemo's session struct. The bundle-fetch
@@ -2077,6 +2090,9 @@ snit::type taco_omemo {
     }
 
     method HandleDecryptError {peerJid peerDev ecode err candidates isMam} {
+        # A second try at a stored message (redecrypt) changes nothing the
+        # first try did not already set going.
+        if {$Redecrypting} return
         # candidates is the list of (isprekey, encKey) attempted.
         # The last attempt's error is what we route on.
         set tag [lindex $ecode 1]
@@ -2084,8 +2100,14 @@ snit::type taco_omemo {
         set lastWasPrekey [lindex [lindex $candidates end] 0]
         jlog debug "HandleDecryptError $peerJid/$peerDev: tag=$tag prekey=$lastWasPrekey\
             isMam=$isMam err='$err'"
-        # A gap past MAX_SKIP is a session left behind, as below.
-        if {$ecode eq {OMEMO ESTORAGE GAP}} { set tag ESTATE }
+        # A gap past MAX_SKIP: the session is fine, only behind. A fill reads
+        # what lies between in order (message FillTarget); the heal waits for
+        # it, and is spared if a later message from the device opens.
+        if {$ecode eq {OMEMO ESTORAGE GAP}} {
+            dict set GapHeals "$peerJid|$peerDev" 1
+            if {$isMam} { set mamHadOmemo 1 }
+            return
+        }
         switch -- $tag {
             EPROTOBUF -
             ECORRUPT  -
@@ -2373,6 +2395,48 @@ snit::type taco_omemo {
     # `sender_fp` the identity it binds the row to. Both live on the node dict
     # rather than in the XML, so a peer can't put them there by sending an EME
     # marker on cleartext, and jwrite ignores them.
+    # SynthesisePlain for a DoDecrypt result: a message our session could
+    # not open is marked undecrypted, so its row can be read again later.
+    method SynthesiseResult {origStanza kind body fp} {
+        set out [$self SynthesisePlain $origStanza $body $fp]
+        if {$kind eq "decrypt_error" && $body eq $::taco::omemo::UNDECRYPTED} {
+            dict set out undecrypted 1
+        }
+        return $out
+    }
+
+    # The forward fills are done (message NextFill): a device still behind
+    # its chain gets the heal its gap was spared.
+    method fillsSettled {} {
+        set owed [dict keys $GapHeals]
+        set GapHeals {}
+        foreach key $owed {
+            lassign [split $key |] peerJid peerDev
+            $self Heal $peerJid $peerDev
+        }
+    }
+
+    # The bare JIDs with a device whose skipped message keys we still hold:
+    # messages from it we have not read yet, which a forward fill can reach
+    # (message QueueOmemoFills).
+    method sendersWithSavedKeys {} {
+        $db eval {
+            SELECT DISTINCT peer_jid FROM omemo_skipped
+            WHERE account_jid=$accountJid
+        }
+    }
+
+    # redecrypt $msgNode: decryptForwarded for a message stored undecrypted,
+    # without the heal a failure sets going: the first try did that.
+    method redecrypt {msgNode} {
+        set Redecrypting 1
+        try {
+            return [$self decryptForwarded $msgNode]
+        } finally {
+            set Redecrypting 0
+        }
+    }
+
     method SynthesisePlain {origStanza args} {
         if {[llength $args] > 2} {
             error "wrong # args: should be \"SynthesisePlain origStanza ?plaintext ?senderFp??\""
@@ -2426,7 +2490,7 @@ snit::type taco_omemo {
             if {$kind in {keytransport duplicate own}} {
                 return [$self SynthesisePlain $msgNode]
             }
-            return [$self SynthesisePlain $msgNode $body $fp]
+            return [$self SynthesiseResult $msgNode $kind $body $fp]
         }
         set fromBare [jid bare [xsearch $msgNode -get @from]]
         set headerNode [lindex [xsearch $encNode header] 0]
@@ -2466,7 +2530,7 @@ snit::type taco_omemo {
         # plaintext OR decrypt_error: surface as a real <message> with
         # $body either as the decrypted text or as a user-facing
         # placeholder explaining the failure.
-        return [$self SynthesisePlain $msgNode $body $senderFp]
+        return [$self SynthesiseResult $msgNode $kind $body $senderFp]
     }
 
     # =====================================================================
@@ -3215,7 +3279,7 @@ snit::type taco_omemo {
                     -reason $body -room $chat
             }
         }
-        return [$self SynthesisePlain $stanza $body $fp]
+        return [$self SynthesiseResult $stanza $kind $body $fp]
     }
 
     # 1 if this device's bundle is unusable for the rest of the
