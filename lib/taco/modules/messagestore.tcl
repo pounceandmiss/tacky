@@ -692,17 +692,26 @@ snit::type taco_messagestore {
         return $result
     }
 
-    # chat_jid -> newest message, for every chat with history, in one pass.
-    # timestamp is unique within a chat, so the join picks one row per chat.
+    # chat_jid -> newest message, for every chat with history.
+    # Chat by chat down the primary key (chat_jid, timestamp), each chat's
+    # newest message read from its newest end: a GROUP BY over the table
+    # read every row of the account, every page decrypted again on an
+    # encrypted store, at every `chatlist get`.
     method lastMessages {} {
         set out {}
         $options(-db) eval [$self MsgSql {
-            SELECT @cols@ FROM chat_message
-            JOIN (SELECT chat_jid AS tail_jid, MAX(timestamp) AS tail_ts
-                  FROM chat_message WHERE kind='message'
-                  GROUP BY chat_jid) tail
-              ON chat_jid=tail_jid AND timestamp=tail_ts
-            WHERE kind='message'
+            WITH RECURSIVE chats(jid) AS (
+                SELECT MIN(chat_jid) FROM chat_message
+                UNION ALL
+                SELECT (SELECT MIN(chat_jid) FROM chat_message
+                        WHERE chat_jid > chats.jid)
+                    FROM chats WHERE chats.jid IS NOT NULL)
+            SELECT @cols@ FROM chat_message WHERE rowid IN (
+                SELECT (SELECT rowid FROM chat_message
+                        WHERE chat_jid=chats.jid AND kind='message'
+                        ORDER BY timestamp DESC LIMIT 1)
+                    FROM chats WHERE jid IS NOT NULL)
+            ORDER BY chat_jid
         }] row {
             dict set out $row(chat_jid) [$self RowToDict [array get row]]
         }
@@ -1006,14 +1015,25 @@ snit::type taco_messagestore {
     # unread are absent.
     method unreadTallies {} {
         set tallies {}
+        # Chat by chat down the primary key (lastMessages' walk), each
+        # chat's rows read from its read mark on, rather than every message
+        # of the account joined to the read marks. CROSS JOIN keeps the
+        # chats the outer loop.
         $options(-db) eval {
+            WITH RECURSIVE chats(jid) AS (
+                SELECT MIN(chat_jid) FROM chat_message
+                UNION ALL
+                SELECT (SELECT MIN(chat_jid) FROM chat_message
+                        WHERE chat_jid > chats.jid)
+                    FROM chats WHERE chats.jid IS NOT NULL)
             SELECT m.chat_jid AS jid, COUNT(*) AS n,
                    COALESCE(SUM(m.mentions_me=1),0) AS mentions
-            FROM chat_message m
-            LEFT JOIN chat_own_read r ON r.chat_jid=m.chat_jid
-            WHERE m.kind='message' AND COALESCE(m.own_id,'')=''
+            FROM chats c CROSS JOIN chat_message m
+            WHERE c.jid IS NOT NULL AND m.chat_jid=c.jid
+              AND m.kind='message' AND COALESCE(m.own_id,'')=''
               AND m.retracted=0
-              AND m.timestamp > COALESCE(r.read_ts, 0)
+              AND m.timestamp > COALESCE((SELECT read_ts FROM chat_own_read
+                                          WHERE chat_jid=c.jid), 0)
             GROUP BY m.chat_jid
         } row {
             dict set tallies $row(jid) [list unread $row(n) \

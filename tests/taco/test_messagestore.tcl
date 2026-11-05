@@ -1384,6 +1384,53 @@ test messagestore-unreadcounts-bulk {unreadCounts covers every chat in one pass}
              [dict get $counts bob@example.com]
     } -result {1 1}
 
+# unreadTallies walks the chats and counts each from its read mark on: the
+# same tallies as unreadTally chat by chat, over chats read in part, wholly,
+# never, with only our own messages, and with a hole, a retracted row and a
+# NULL own_id besides; a chat with nothing unread is absent.
+test messagestore-unread-tallies-match-each-chat \
+    {unreadTallies answers as unreadTally does chat by chat, and names only chats with something unread} \
+    {*}$ms_common \
+    -body {
+        set chats {alice@example.com bob@example.com carol@example.com
+                   dave@example.com room@muc.example.com?join}
+        ms_batch [list [ms_msg chat_jid room@muc.example.com?join timestamp 100 body "juliet, look" mentions_me 1] \
+                       [ms_msg chat_jid room@muc.example.com?join timestamp 200 body "no one"] \
+                       [ms_msg chat_jid room@muc.example.com?join timestamp 300 body "juliet?" mentions_me 1] \
+                       [ms_msg chat_jid room@muc.example.com?join timestamp 400 server_id sid4 body gone]]
+        store applyRetract room@muc.example.com?join 400
+        store markOwnRead room@muc.example.com?join 100
+        ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
+        testdb eval {UPDATE chat_message SET own_id=NULL WHERE chat_jid='alice@example.com'}
+        ms_batch [list [ms_msg chat_jid bob@example.com timestamp 100 body c]]
+        store markOwnRead bob@example.com 100
+        store hole add bob@example.com newer 100
+        ms_batch [list [ms_msg chat_jid carol@example.com timestamp 100 body mine own_id o1]]
+        set each {}
+        foreach c $chats {
+            set t [store unreadTally $c]
+            if {[dict get $t unread] > 0} { lappend each $c $t }
+        }
+        set all [store unreadTallies]
+        list [expr {$all eq $each}] $all
+    } -result {1 {alice@example.com {unread 2 mentions 0} room@muc.example.com?join {unread 2 mentions 1}}}
+
+test messagestore-last-messages-newest-per-chat \
+    {lastMessages names each chat with a message by its newest one, past a newer hole} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b] \
+                       [ms_msg timestamp 300 body c]]
+        ms_batch [list [ms_msg chat_jid bob@example.com timestamp 150 body d]]
+        store hole add bob@example.com newer 400
+        store hole add carol@example.com newer 500
+        set out {}
+        dict for {jid row} [store lastMessages] {
+            lappend out $jid [dict get $row timestamp]
+        }
+        set out
+    } -result {alice@example.com 300 bob@example.com 150}
+
 # --- Reactions (XEP-0444) ----------------------------------------------------
 
 test messagestore-reaction-aggregate {reactions aggregate per emoji with reactor lists} \
