@@ -42,6 +42,20 @@ proc ms_count {{kind message} {jid alice@example.com}} {
     }
 }
 
+# Helper: the id of the message stamped $ts (tests keep their stamps
+# distinct, so a stamp names one row)
+proc ms_id {ts {jid alice@example.com}} {
+    testdb onecolumn {
+        SELECT id FROM chat_message
+        WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+    }
+}
+
+# Helper: the timestamp row $id shows, "" for no row (or no id)
+proc ms_ts {id {jid alice@example.com}} {
+    store stampOf $jid $id
+}
+
 # Helpers: unwrap {messages ... bounded ...} dict from get
 proc ms_msgs {result} { dict get $result messages }
 proc ms_bounded {result} { dict get $result bounded }
@@ -76,7 +90,7 @@ test messagestore-basic-store-and-get {store a batch, get it back in chronologic
              [dict get [lindex $msgs 2] content body]
     } -result {first second third}
 
-test messagestore-basic-timestamp-bump {identical timestamps are bumped +1 preserving insertion order} \
+test messagestore-basic-timestamp-bump {rows sharing a timestamp keep their insertion order} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -109,14 +123,14 @@ test messagestore-batch-out-of-order-timestamps {batch with non-chronological ti
              [dict get [lindex $msgs 2] content body]
     } -result {c a b}
 
-test messagestore-batch-bumped-ts-covered {bumped timestamps all retrievable} \
+test messagestore-batch-bumped-ts-covered {rows sharing a timestamp are all retrievable} \
     {*}$ms_common \
     -body {
-        ms_batch [list \
+        set ids [dict get [ms_batch [list \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 100 body b] \
-            [ms_msg timestamp 100 body c]]
-        set msgs [ms_msgs [store get after alice@example.com 100]]
+            [ms_msg timestamp 100 body c]]] inserted]
+        set msgs [ms_msgs [store get after alice@example.com [lindex $ids 0]]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body]
@@ -257,7 +271,7 @@ test messagestore-get-before {get before returns messages older than cursor} \
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [ms_msgs [store get before alice@example.com 300]]
+        set msgs [ms_msgs [store get before alice@example.com [ms_id 300]]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body]
@@ -270,7 +284,7 @@ test messagestore-get-after {get after returns messages newer than cursor, ascen
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [ms_msgs [store get after alice@example.com 100]]
+        set msgs [ms_msgs [store get after alice@example.com [ms_id 100]]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body]
@@ -298,7 +312,7 @@ test messagestore-get-before-at-first-ts {get before at oldest timestamp returns
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        ms_msgs [store get before alice@example.com 100]
+        ms_msgs [store get before alice@example.com [ms_id 100]]
     } -result {}
 
 test messagestore-get-after-at-last-ts {get after at newest timestamp returns empty} \
@@ -308,7 +322,7 @@ test messagestore-get-after-at-last-ts {get after at newest timestamp returns em
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        ms_msgs [store get after alice@example.com 300]
+        ms_msgs [store get after alice@example.com [ms_id 300]]
     } -result {}
 
 # =============================================================================
@@ -336,7 +350,7 @@ test messagestore-get-before-with-limit {get before with -limit returns correct 
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c] \
             [ms_msg timestamp 400 body d]]
-        set msgs [ms_msgs [store get before alice@example.com 400 2]]
+        set msgs [ms_msgs [store get before alice@example.com [ms_id 400] 2]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body]
@@ -349,7 +363,7 @@ test messagestore-get-after-with-limit {get after with -limit returns correct sl
             [ms_msg timestamp 100 body a] \
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 300 body c]]
-        set msgs [ms_msgs [store get after alice@example.com 100 1]]
+        set msgs [ms_msgs [store get after alice@example.com [ms_id 100] 1]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body]
     } -result {1 b}
@@ -422,7 +436,7 @@ test messagestore-get-before-includes-pending {get before includes pendings olde
             [ms_msg timestamp 300 server_id s3 body c] \
             [ms_msg timestamp 500 server_id s5 body e]]
         ms_pending [ms_msg timestamp 200 body b own_id oid1 server_status pending]
-        set msgs [ms_msgs [store get before alice@example.com 500]]
+        set msgs [ms_msgs [store get before alice@example.com [ms_id 500]]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body] \
@@ -437,7 +451,7 @@ test messagestore-get-after-includes-pending {get after includes pendings newer 
             [ms_msg timestamp 300 server_id s3 body c] \
             [ms_msg timestamp 500 server_id s5 body e]]
         ms_pending [ms_msg timestamp 400 body d own_id oid1 server_status pending]
-        set msgs [ms_msgs [store get after alice@example.com 100]]
+        set msgs [ms_msgs [store get after alice@example.com [ms_id 100]]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 1] content body] \
@@ -468,7 +482,7 @@ test messagestore-get-around-on-pending-target {get around snapping onto a pendi
             [ms_msg timestamp 500 body e]]
         ms_pending [ms_msg timestamp 300 body out own_id oid1 server_status pending]
         set result [store get around alice@example.com 300 10]
-        set anchor [dict get $result anchor]
+        set anchor [ms_ts [dict get $result anchor]]
         set msgs [dict get $result messages]
         list $anchor [llength $msgs]
     } -result {300 3}
@@ -476,30 +490,29 @@ test messagestore-get-around-on-pending-target {get around snapping onto a pendi
 test messagestore-pending-confirm-same-ts {echo with same timestamp confirms in place} \
     {*}$ms_common \
     -body {
-        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        set id [dict get [ms_pending [ms_msg timestamp 100 body sent \
+            own_id oid1 server_status pending]] inserted]
         set c [store reconcile alice@example.com srv1 oid1 oid1 100]
         set msg [lindex [ms_msgs [store get latest alice@example.com]] 0]
-        list [dict get $c timestamp] [dict get $c newtimestamp] \
+        list [dict get $c verdict] [expr {[dict get $c id] == $id}] \
+             [dict get $c timestamp] \
              [dict get $msg server_id] [dict get $msg server_status]
-    } -result {100 100 srv1 {}}
+    } -result {confirmed 1 100 srv1 {}}
 
-test messagestore-pending-confirm-ts-change {echo with different timestamp moves the row} \
+test messagestore-pending-confirm-ts-change {echo with different timestamp restamps the same row} \
     {*}$ms_common \
     -body {
-        ms_pending [ms_msg timestamp 100 body sent own_id oid1 server_status pending]
+        set id [dict get [ms_pending [ms_msg timestamp 100 body sent \
+            own_id oid1 server_status pending]] inserted]
         # Echo arrives with server timestamp 200
         set c [store reconcile alice@example.com srv1 oid1 oid1 200]
-        set oldExists [testdb exists {
-            SELECT 1 FROM chat_message
-            WHERE chat_jid='alice@example.com' AND timestamp=100
+        set rows [testdb eval {
+            SELECT id, timestamp, server_status FROM chat_message
+            WHERE chat_jid='alice@example.com'
         }]
-        set newStatus [testdb onecolumn {
-            SELECT server_status FROM chat_message
-            WHERE chat_jid='alice@example.com' AND timestamp=200
-        }]
-        list [dict get $c timestamp] [dict get $c newtimestamp] \
-             $oldExists $newStatus
-    } -result {100 200 0 {}}
+        list [expr {[dict get $c id] == $id}] [dict get $c timestamp] \
+             [expr {$rows eq [list $id 200 {}]}]
+    } -result {1 200 1}
 
 test messagestore-pending-confirm-no-bulk-update {confirming one pending does not move others} \
     {*}$ms_common \
@@ -614,9 +627,9 @@ test messagestore-hole-add-adjacent-citizens \
             [ms_msg timestamp 101 server_id s2 body c]]
         store hole add alice@example.com older 101
         list holes [llength [store hole list alice@example.com]] \
-            below [llength [dict get [store get before alice@example.com 101] \
+            below [llength [dict get [store get before alice@example.com [ms_id 101]] \
                 messages]] \
-            bodies [lmap m [ms_msgs [store get before alice@example.com 100]] {
+            bodies [lmap m [ms_msgs [store get before alice@example.com [ms_id 100]]] {
                 dict get $m content body}]
     } -result {holes 1 below 0 bodies a}
 
@@ -653,7 +666,7 @@ test messagestore-hole-removeBetween {removeBetween deletes holes strictly withi
             [ms_msg timestamp 100 server_id s1 body a] \
             [ms_msg timestamp 500 server_id s5 body e]]
         store hole add alice@example.com newer 100
-        # Hole sits at 101 (BumpTs from 100); span (100, 500)
+        # The hole is stamped 101, next to the 100 row; span (100, 500)
         store hole removeBetween alice@example.com 100 500
         llength [store hole list alice@example.com]
     } -result {0}
@@ -684,7 +697,7 @@ test messagestore-get-before-truncates-at-hole {get before stops at hole and sig
         ms_batch [list \
             [ms_msg timestamp 500 server_id s5 body c] \
             [ms_msg timestamp 600 server_id s6 body d]]
-        set r [store get before alice@example.com 600]
+        set r [store get before alice@example.com [ms_id 600]]
         list [llength [ms_msgs $r]] \
              [dict get [lindex [ms_msgs $r] 0] content body] \
              [ms_bounded $r]
@@ -699,7 +712,7 @@ test messagestore-get-after-truncates-at-hole {get after stops at hole and signa
         store hole add alice@example.com newer 200
         ms_batch [list \
             [ms_msg timestamp 500 server_id s5 body c]]
-        set r [store get after alice@example.com 100]
+        set r [store get after alice@example.com [ms_id 100]]
         list [llength [ms_msgs $r]] \
              [dict get [lindex [ms_msgs $r] 0] content body] \
              [ms_bounded $r]
@@ -730,7 +743,7 @@ test messagestore-get-before-ignores-newer-hole {hole on the newer side does not
             [ms_msg timestamp 300 server_id s3 body c]]
         # Hole sits past the cursor — irrelevant to "older" walks.
         store hole add alice@example.com newer 300
-        set r [store get before alice@example.com 300]
+        set r [store get before alice@example.com [ms_id 300]]
         set bodies {}
         foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
@@ -745,7 +758,7 @@ test messagestore-get-after-ignores-older-hole {hole on the older side does not 
             [ms_msg timestamp 300 server_id s3 body c]]
         # Hole sits older than the cursor — irrelevant to "newer" walks.
         store hole add alice@example.com older 100
-        set r [store get after alice@example.com 100]
+        set r [store get after alice@example.com [ms_id 100]]
         set bodies {}
         foreach m [ms_msgs $r] { lappend bodies [dict get $m content body] }
         list $bodies [ms_bounded $r]
@@ -808,7 +821,7 @@ test messagestore-bounded-false-when-limit-satisfied {hole exists but limit sati
             [ms_msg timestamp 300 server_id s3 body c]]
         store hole add alice@example.com older 100
         # limit=2 satisfied without touching the hole range
-        set r [store get before alice@example.com 300 2]
+        set r [store get before alice@example.com [ms_id 300] 2]
         list [llength [ms_msgs $r]] [ms_bounded $r]
     } -result {2 0}
 
@@ -827,7 +840,7 @@ test messagestore-get-around-nearest {get around finds nearest message and retur
             [ms_msg timestamp 500 body e]]
         set result [store get around alice@example.com 300 4]
         set msgs [dict get $result messages]
-        set anchor [dict get $result anchor]
+        set anchor [ms_ts [dict get $result anchor]]
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 2] content body] \
@@ -843,7 +856,7 @@ test messagestore-get-around-nearest-inexact {get around snaps to nearest messag
             [ms_msg timestamp 200 body b] \
             [ms_msg timestamp 500 body c]]
         set result [store get around alice@example.com 190 4]
-        set anchor [dict get $result anchor]
+        set anchor [ms_ts [dict get $result anchor]]
         set msgs [dict get $result messages]
         list $anchor [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
@@ -851,7 +864,7 @@ test messagestore-get-around-nearest-inexact {get around snaps to nearest messag
              [dict get [lindex $msgs 2] content body]
     } -result {200 3 a b c}
 
-test messagestore-get-around-anchor-value {get around anchor = nearest message's timestamp} \
+test messagestore-get-around-anchor-value {get around anchor = nearest message's id} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -860,7 +873,7 @@ test messagestore-get-around-anchor-value {get around anchor = nearest message's
             [ms_msg timestamp 500 body c]]
         # Target 250 is closest to 300
         set result [store get around alice@example.com 250 4]
-        dict get $result anchor
+        ms_ts [dict get $result anchor]
     } -result {300}
 
 test messagestore-get-around-empty {get around on empty chat returns empty messages and empty anchor} \
@@ -887,7 +900,7 @@ test messagestore-get-around-hole-bounds {get around truncates at holes on both 
         list [llength $msgs] \
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs end] content body] \
-             [dict get $result anchor] \
+             [ms_ts [dict get $result anchor]] \
              [dict get $result bounded_before] \
              [dict get $result bounded_after]
     } -result {3 c e 600 1 1}
@@ -911,7 +924,7 @@ test messagestore-get-around-hole-one-side-only {get around truncates asymmetric
         set bodies {}
         foreach m $msgs { lappend bodies [dict get $m content body] }
         list $bodies \
-             [dict get $result anchor] \
+             [ms_ts [dict get $result anchor]] \
              [dict get $result bounded_before] \
              [dict get $result bounded_after]
     } -result {{c d e} 600 1 0}
@@ -942,7 +955,7 @@ test messagestore-search-skips-retracted {a retracted row keeps its body as a to
         ms_batch [list \
             [ms_msg timestamp 100 server_id sid1 body needle] \
             [ms_msg timestamp 200 server_id sid2 body needle]]
-        store applyRetract alice@example.com 100
+        store applyRetract alice@example.com [ms_id 100]
         ms_search_ts alice@example.com needle
     } -result {200}
 
@@ -970,7 +983,7 @@ test messagestore-search-before-cursor {-before excludes rows at or newer than t
             [ms_msg timestamp 100 body x1] \
             [ms_msg timestamp 200 body x2] \
             [ms_msg timestamp 300 body x3]]
-        ms_search_ts alice@example.com x -before 300
+        ms_search_ts alice@example.com x -before [list 300 [ms_id 300]]
     } -result {200 100}
 
 test messagestore-search-unscoped-spans-chats {an empty jid searches every chat, newest first} \
@@ -997,7 +1010,9 @@ test messagestore-search-unscoped-cursor-splits-a-tie {paging stops mid-tie and 
         ms_batch [list [ms_msg chat_jid carol@example.com timestamp 500 body needle]]
         ms_batch [list [ms_msg chat_jid bob@example.com   timestamp 100 body needle]]
         set first [ms_search_pairs needle -limit 1]
-        set rest [ms_search_pairs needle -before [lindex $first 0]]
+        set hit [lindex [store search "" needle -limit 1] 0]
+        set rest [ms_search_pairs needle \
+            -before [list [dict get $hit timestamp] [dict get $hit id]]]
         list $first $rest
     } -result {{{500 carol@example.com}} {{500 alice@example.com} {100 bob@example.com}}}
 
@@ -1065,7 +1080,7 @@ test messagestore-search-follows-an-edit {a corrected message is findable by its
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body {the needle}]]
-        store applyEdit alice@example.com 100 {the pin} "<xml/>" 200 \
+        store applyEdit alice@example.com [ms_id 100] {the pin} "<xml/>" 200 \
             {encryption {} sender_fp {}}
         list [ms_search_ts alice@example.com needle] \
              [ms_search_ts alice@example.com pin]
@@ -1077,7 +1092,7 @@ test messagestore-resolvereply-stanza-id {server_id is authoritative; resolves w
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 500 server_id sid-x body target]]
-        store resolveReply alice@example.com sid-x
+        ms_ts [store resolveReply alice@example.com sid-x]
     } -result {500}
 
 test messagestore-resolvereply-origin-id-author {origin_id collision across senders disambiguated by room PM author} \
@@ -1095,7 +1110,7 @@ test messagestore-resolvereply-origin-id-author {origin_id collision across send
             [dict create timestamp 200 chat_jid $jid \
                 from_jid room@conf.example.com/bob body yo \
                 server_id sid2 own_id "" origin_id oxxx raw_xml ""]]
-        store resolveReply $jid oxxx room@conf.example.com/bob
+        ms_ts [store resolveReply $jid oxxx room@conf.example.com/bob] $jid
     } -result {200}
 
 test messagestore-resolvereply-author-mismatch {origin_id match but wrong room PM author resolves to nothing} \
@@ -1122,7 +1137,7 @@ test messagestore-resolvereply-room-stanza-id-only {in a room an origin-id resol
             from_jid room@conf.example.com/alice body hi \
             server_id sid1 own_id "" origin_id oxxx raw_xml ""]]
         list [store resolveReply $jid oxxx room@conf.example.com/alice] \
-             [store resolveReply $jid sid1]
+             [ms_ts [store resolveReply $jid sid1] $jid]
     } -result {{} 100}
 
 test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when reply-to is a full JID, disambiguating a same-id collision} \
@@ -1133,7 +1148,8 @@ test messagestore-resolvereply-1to1-bare {1:1 author matched by bare JID when re
                 from_jid bob@example.com origin_id u1 body target] \
             [ms_msg timestamp 400 chat_jid bob@example.com \
                 from_jid me@example.com origin_id u1 body other]]
-        store resolveReply bob@example.com u1 bob@example.com/Phone.123
+        ms_ts [store resolveReply bob@example.com u1 bob@example.com/Phone.123] \
+            bob@example.com
     } -result {300}
 
 test messagestore-resolvereply-notfound {unknown reply id resolves to nothing} \
@@ -1266,7 +1282,7 @@ test messagestore-mark-remote-read-reports-each-row {the returned list carries o
             [ms_msg timestamp 100 own_id oid1 body a] \
             [ms_msg timestamp 200 own_id oid2 body b]]
         lmap r [store markRemoteStatus alice@example.com oid2 read] {
-            dict get $r timestamp
+            ms_ts [dict get $r id]
         }
     } -result {100 200}
 
@@ -1303,19 +1319,19 @@ test messagestore-mark-remote-read-skips-incoming {incoming rows inside the cove
 
 # --- Own read watermark ------------------------------------------------------
 
-test messagestore-ownread-unset {a chat we have never read reads as zero} \
+test messagestore-ownread-unset {a chat we have never read reads as unset} \
     {*}$ms_common \
     -body {
-        dict get [store ownRead alice@example.com] read_ts
-    } -result {0}
+        store ownRead alice@example.com
+    } -result {id {} pos {} ref {}}
 
-test messagestore-ownread-monotonic {an older stamp never rewinds the watermark} \
+test messagestore-ownread-monotonic {an earlier row never rewinds the watermark} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
-        set moved [store markOwnRead alice@example.com 200]
-        set back [store markOwnRead alice@example.com 100]
-        list $moved $back [dict get [store ownRead alice@example.com] read_ts]
+        set moved [store markOwnRead alice@example.com [ms_id 200]]
+        set back [store markOwnRead alice@example.com [ms_id 100]]
+        list $moved $back [ms_ts [dict get [store ownRead alice@example.com] id]]
     } -result {1 0 200}
 
 test messagestore-ownread-records-reference-id \
@@ -1323,8 +1339,8 @@ test messagestore-ownread-records-reference-id \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 origin_id oid1]]
-        store markOwnRead alice@example.com 100
-        dict get [store ownRead alice@example.com] read_id
+        store markOwnRead alice@example.com [ms_id 100]
+        dict get [store ownRead alice@example.com] ref
     } -result {sid1}
 
 test messagestore-unread-theirs-only {our own messages are never unread} \
@@ -1341,7 +1357,7 @@ test messagestore-unread-past-watermark {only messages newer than the watermark 
     -body {
         ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b] \
                        [ms_msg timestamp 300 body c]]
-        store markOwnRead alice@example.com 200
+        store markOwnRead alice@example.com [ms_id 200]
         store unreadCount alice@example.com
     } -result {1}
 
@@ -1349,7 +1365,7 @@ test messagestore-unread-excludes-retracted {a tombstone doesn't hold a chat unr
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1]]
-        store applyRetract alice@example.com 100
+        store applyRetract alice@example.com [ms_id 100]
         store unreadCount alice@example.com
     } -result {0}
 
@@ -1357,7 +1373,7 @@ test messagestore-unread-excludes-holes {a hole marker is not an unread message}
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100]]
-        store markOwnRead alice@example.com 100
+        store markOwnRead alice@example.com [ms_id 100]
         store hole add alice@example.com newer 100
         store unreadCount alice@example.com
     } -result {0}
@@ -1367,7 +1383,7 @@ test messagestore-unread-backfill-stays-read \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 500 body a]]
-        store markOwnRead alice@example.com 500
+        store markOwnRead alice@example.com [ms_id 500]
         ms_batch [list [ms_msg timestamp 100 body b] [ms_msg timestamp 200 body c]]
         store unreadCount alice@example.com
     } -result {0}
@@ -1377,7 +1393,7 @@ test messagestore-unreadcounts-bulk {unreadCounts covers every chat in one pass}
     -body {
         ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
         ms_batch [list [ms_msg timestamp 100 chat_jid bob@example.com body c]]
-        store markOwnRead alice@example.com 100
+        store markOwnRead alice@example.com [ms_id 100]
         set counts [store unreadCounts]
         list [dict get $counts alice@example.com] \
              [dict get $counts bob@example.com]
@@ -1392,17 +1408,18 @@ test messagestore-undecrypted-row-is-read-again \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id s1 \
             body {[OMEMO] Could not decrypt message} undecrypted 1]]
+        set id [ms_id 100]
         set before [list [dict get [store reconcile alice@example.com s1 "" "" 100] verdict] \
-                         [store archivedTs alice@example.com s1]]
+                         [store archivedId alice@example.com s1]]
         set msg [ms_msg timestamp 100 server_id s1 body "the real text" \
             attachments "" sender_fp fp1 encryption omemo mentions_me 0 \
             reply_id "" reply_to ""]
-        set put [store repairUndecrypted alice@example.com 100 $msg]
-        set again [store repairUndecrypted alice@example.com 100 $msg]
+        set put [store repairUndecrypted alice@example.com $id $msg]
+        set again [store repairUndecrypted alice@example.com $id $msg]
         list $before $put $again \
             [testdb eval {SELECT body, undecrypted, encryption FROM chat_message}] \
             [dict get [store reconcile alice@example.com s1 "" "" 100] verdict] \
-            [store archivedTs alice@example.com s1]
+            [ms_ts [store archivedId alice@example.com s1]]
     } -result {{undecrypted {}} 1 0 {{the real text} 0 omemo} duplicate 100}
 
 # unreadTallies walks the chats and counts each from its read mark on: the
@@ -1419,12 +1436,14 @@ test messagestore-unread-tallies-match-each-chat \
                        [ms_msg chat_jid room@muc.example.com?join timestamp 200 body "no one"] \
                        [ms_msg chat_jid room@muc.example.com?join timestamp 300 body "juliet?" mentions_me 1] \
                        [ms_msg chat_jid room@muc.example.com?join timestamp 400 server_id sid4 body gone]]
-        store applyRetract room@muc.example.com?join 400
-        store markOwnRead room@muc.example.com?join 100
+        store applyRetract room@muc.example.com?join \
+            [ms_id 400 room@muc.example.com?join]
+        store markOwnRead room@muc.example.com?join \
+            [ms_id 100 room@muc.example.com?join]
         ms_batch [list [ms_msg timestamp 100 body a] [ms_msg timestamp 200 body b]]
         testdb eval {UPDATE chat_message SET own_id=NULL WHERE chat_jid='alice@example.com'}
         ms_batch [list [ms_msg chat_jid bob@example.com timestamp 100 body c]]
-        store markOwnRead bob@example.com 100
+        store markOwnRead bob@example.com [ms_id 100 bob@example.com]
         store hole add bob@example.com newer 100
         ms_batch [list [ms_msg chat_jid carol@example.com timestamp 100 body mine own_id o1]]
         set each {}
@@ -1460,7 +1479,7 @@ test messagestore-reaction-aggregate {reactions aggregate per emoji with reactor
         ms_batch [list [ms_msg timestamp 5000 server_id sid1 body hi]]
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍 ❤️} 100
         store applyReaction alice@example.com sid1 carol@x carol@x 0 {👍} 110
-        set agg [store reactionsForMessage alice@example.com 5000]
+        set agg [store reactionsForMessage alice@example.com [ms_id 5000]]
         list [dict get $agg 👍 reactors] [dict get $agg 👍 mine] \
              [dict get $agg ❤️ reactors]
     } -result {{bob@x carol@x} 0 bob@x}
@@ -1496,7 +1515,7 @@ test messagestore-reaction-mine-flag {our own reaction marks the emoji as mine} 
     -body {
         ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
         store applyReaction alice@example.com sid1 me@x me@x 1 {🎉} 100
-        dict get [store reactionsForMessage alice@example.com 5000] 🎉 mine
+        dict get [store reactionsForMessage alice@example.com [ms_id 5000]] 🎉 mine
     } -result 1
 
 test messagestore-reaction-lww {an older reaction set does not overwrite a newer one} \
@@ -1505,7 +1524,7 @@ test messagestore-reaction-lww {an older reaction set does not overwrite a newer
         ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 200
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {❤️} 150
-        dict keys [store reactionsForMessage alice@example.com 5000]
+        dict keys [store reactionsForMessage alice@example.com [ms_id 5000]]
     } -result 👍
 
 test messagestore-reaction-retract {an empty set retracts a reactor's reactions} \
@@ -1514,7 +1533,7 @@ test messagestore-reaction-retract {an empty set retracts a reactor's reactions}
         ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100
         store applyReaction alice@example.com sid1 bob@x bob@x 0 {} 110
-        dict size [store reactionsForMessage alice@example.com 5000]
+        dict size [store reactionsForMessage alice@example.com [ms_id 5000]]
     } -result 0
 
 test messagestore-reaction-before-message {a reaction stored before its target surfaces once the message lands} \
@@ -1522,7 +1541,7 @@ test messagestore-reaction-before-message {a reaction stored before its target s
     -body {
         set early [store applyReaction alice@example.com sid1 bob@x bob@x 0 {👍} 100]
         ms_batch [list [ms_msg timestamp 5000 server_id sid1]]
-        list $early [dict keys [store reactionsForMessage alice@example.com 5000]]
+        list $early [dict keys [store reactionsForMessage alice@example.com [ms_id 5000]]]
     } -result {{} 👍}
 
 test messagestore-reaction-room-ignores-origin-id \
@@ -1537,9 +1556,9 @@ test messagestore-reaction-room-ignores-origin-id \
                 [dict create timestamp 200 chat_jid $jid from_jid $jid/m \
                     body m server_id sidM own_id "" origin_id sidA raw_xml ""]]
             store applyReaction $jid sidA bob@x bob@x 0 {👍} 300
-            lappend out [dict size [store reactionsForMessage $jid 100]] \
-                [dict size [store reactionsForMessage $jid 200]] \
-                [store resolveTargetTs $jid oa]
+            lappend out [dict size [store reactionsForMessage $jid [ms_id 100 $jid]]] \
+                [dict size [store reactionsForMessage $jid [ms_id 200 $jid]]] \
+                [ms_ts [store resolveTargetId $jid oa] $jid]
         }
         set out
     } -result {1 0 {} 1 1 100}
@@ -1553,25 +1572,26 @@ test messagestore-alias-names-the-message \
             store store [list [dict create timestamp 100 chat_jid $jid \
                 from_jid $jid/a body a server_id sidA own_id "" \
                 origin_id oa raw_xml ""]]
-            store addAliases $jid 100 sidC oc
+            set id [ms_id 100 $jid]
+            store addAliases $jid $id sidC oc
             store applyReaction $jid sidC bob@x bob@x 0 {👍} 300
-            lappend out [store resolveTargetTs $jid sidC] \
-                [store resolveTargetTs $jid oc] \
-                [store resolveReply $jid sidC] \
-                [dict keys [store reactionsForMessage $jid 100]]
+            lappend out [ms_ts [store resolveTargetId $jid sidC] $jid] \
+                [ms_ts [store resolveTargetId $jid oc] $jid] \
+                [ms_ts [store resolveReply $jid sidC] $jid] \
+                [dict keys [store reactionsForMessage $jid $id]]
         }
         set out
     } -result {100 {} 100 👍 100 100 100 👍}
 
 test messagestore-alias-follows-confirmed-row \
-    {an alias of a pending send still names it once its echo moves it} \
+    {an alias of a pending send still names it once its echo restamps it} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 own_id o1 origin_id o1 \
             server_status pending]]
-        store addAliases alice@example.com 100 "" oc
+        store addAliases alice@example.com [ms_id 100] "" oc
         store reconcile alice@example.com s1 o1 o1 500
-        store resolveTargetTs alice@example.com oc
+        ms_ts [store resolveTargetId alice@example.com oc]
     } -result {500}
 
 # A peer that copies the origin-id of our message into one of its own does
@@ -1583,14 +1603,14 @@ test messagestore-own-target-wins-over-a-copied-origin-id {an id that is our own
             [ms_msg timestamp 100 origin_id copied-x body "peer's copy" server_id s-peer] \
             [ms_msg timestamp 200 own_id copied-x origin_id copied-x \
                 from_jid juliet@example.com/pc body mine server_id s-mine]]
-        store resolveTargetTs alice@example.com copied-x
+        ms_ts [store resolveTargetId alice@example.com copied-x]
     } -result 200
 
 test messagestore-forget-chat-drops-aliases {forgetting a chat drops its aliases too} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sidA]]
-        store addAliases alice@example.com 100 sidC oc
+        store addAliases alice@example.com [ms_id 100] sidC oc
         store forgetChat alice@example.com
         testdb onecolumn {SELECT COUNT(*) FROM message_alias}
     } -result {0}
@@ -1623,18 +1643,19 @@ test messagestore-sender-fp-on-every-read-path \
     {sender_fp reaches the message dict from every getter} \
     {*}$ms_common \
     -body {
-        ms_batch [list [ms_msg timestamp 100 body needle sender_fp aabbcc]]
+        ms_batch [list [ms_msg timestamp 50 body first sender_fp aabbcc] \
+                       [ms_msg timestamp 100 body needle sender_fp aabbcc] \
+                       [ms_msg timestamp 200 body last sender_fp aabbcc]]
         set out {}
-        foreach getter {
-            {get latest alice@example.com}
-            {get before alice@example.com 200}
-            {get after  alice@example.com 50}
-            {get around alice@example.com 100 4}
-        } {
+        foreach getter [list \
+            {get latest alice@example.com} \
+            [list get before alice@example.com [ms_id 200]] \
+            [list get after  alice@example.com [ms_id 50]] \
+            {get around alice@example.com 100 4}] {
             lappend out [dict get \
                 [lindex [ms_msgs [store {*}$getter]] 0] sender_fp]
         }
-        foreach rows [list [store get ids alice@example.com 100] \
+        foreach rows [list [store get ids alice@example.com [ms_id 100]] \
                            [store search alice@example.com needle]] {
             lappend out [dict get [lindex $rows 0] sender_fp]
         }
@@ -1654,7 +1675,7 @@ test messagestore-edit-swaps-body {applyEdit replaces body and sets edited} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com 100 corrected "<xml/>" 200 \
+        store applyEdit alice@example.com [ms_id 100] corrected "<xml/>" 200 \
             {encryption {} sender_fp {}}
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list [dict get $m content body] [dict get $m edited]
@@ -1665,7 +1686,7 @@ test messagestore-edit-stamps-encryption \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com 100 corrected "<xml/>" 200 \
+        store applyEdit alice@example.com [ms_id 100] corrected "<xml/>" 200 \
             {encryption omemo sender_fp aabb}
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] \
             encryption
@@ -1682,9 +1703,9 @@ test messagestore-edit-lww-rejects-older {an older edit does not overwrite a new
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com 100 newer "<xml/>" 300 \
+        store applyEdit alice@example.com [ms_id 100] newer "<xml/>" 300 \
             {encryption {} sender_fp {}}
-        store applyEdit alice@example.com 100 older "<xml/>" 200 \
+        store applyEdit alice@example.com [ms_id 100] older "<xml/>" 200 \
             {encryption {} sender_fp {}}
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {newer}
@@ -1698,9 +1719,9 @@ test messagestore-edit-server-after-local \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
         store noteArchiveTs alice@example.com 1000
-        store applyEdit alice@example.com 100 mine "<xml/>" 5000 \
+        store applyEdit alice@example.com [ms_id 100] mine "<xml/>" 5000 \
             {encryption {} sender_fp {}} local
-        store applyEdit alice@example.com 100 theirs "<xml/>" 2000 \
+        store applyEdit alice@example.com [ms_id 100] theirs "<xml/>" 2000 \
             {encryption {} sender_fp {}} server
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {theirs}
@@ -1711,9 +1732,9 @@ test messagestore-edit-server-before-local \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
         store noteArchiveTs alice@example.com 1000
-        store applyEdit alice@example.com 100 mine "<xml/>" 5000 \
+        store applyEdit alice@example.com [ms_id 100] mine "<xml/>" 5000 \
             {encryption {} sender_fp {}} local
-        store applyEdit alice@example.com 100 old "<xml/>" 900 \
+        store applyEdit alice@example.com [ms_id 100] old "<xml/>" 900 \
             {encryption {} sender_fp {}} server
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {mine}
@@ -1723,9 +1744,9 @@ test messagestore-edit-live-beats-server \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyEdit alice@example.com 100 archived "<xml/>" 5000 \
+        store applyEdit alice@example.com [ms_id 100] archived "<xml/>" 5000 \
             {encryption {} sender_fp {}} server
-        store applyEdit alice@example.com 100 live "<xml/>" 4000 \
+        store applyEdit alice@example.com [ms_id 100] live "<xml/>" 4000 \
             {encryption {} sender_fp {}} local
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] content body
     } -result {live}
@@ -1738,7 +1759,7 @@ test messagestore-reaction-server-after-local \
         store noteArchiveTs alice@example.com 1000
         store applyReaction alice@example.com sid1 me@x me@x 1 {👍} 9000 local
         store applyReaction alice@example.com sid1 me@x me@x 1 {} 2000 server
-        dict size [store reactionsForMessage alice@example.com 5000]
+        dict size [store reactionsForMessage alice@example.com [ms_id 5000]]
     } -result 0
 
 test messagestore-archive-mark-forward-only {the mark only moves forward} \
@@ -1771,7 +1792,7 @@ test messagestore-retract-tombstones {applyRetract sets retracted} \
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1]]
-        store applyRetract alice@example.com 100
+        store applyRetract alice@example.com [ms_id 100]
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] retracted
     } -result {1}
 
@@ -1779,8 +1800,8 @@ test messagestore-retract-is-sticky {a retracted message cannot be edited afterw
     {*}$ms_common \
     -body {
         ms_batch [list [ms_msg timestamp 100 server_id sid1 body original]]
-        store applyRetract alice@example.com 100
-        set skipped [store applyEdit alice@example.com 100 sneaky "<xml/>" 500 \
+        store applyRetract alice@example.com [ms_id 100]
+        set skipped [store applyEdit alice@example.com [ms_id 100] sneaky "<xml/>" 500 \
             {encryption {} sender_fp {}}]
         set m [lindex [ms_msgs [store get latest alice@example.com]] 0]
         list $skipped [dict exists $m content] [dict get $m retracted]
@@ -1799,13 +1820,13 @@ test messagestore-reconcile-backfills-occupant-id \
 test ms-ids-never-come-back {a row's id is not given to another after the row is gone} \
     {*}$ms_common \
     -body {
-        store store [list [ms_msg timestamp 100 server_id s1 body a]]
-        set first [testdb onecolumn {SELECT id FROM chat_message WHERE timestamp=100}]
+        set first [lindex [dict get [store store [list [ms_msg timestamp 100 \
+            server_id s1 body a]]] inserted] 0]
         store hole add alice@example.com newer 100
         set holeId [testdb onecolumn {SELECT MAX(id) FROM chat_message}]
         store hole clear alice@example.com "" ""
-        store store [list [ms_msg timestamp 200 server_id s2 body b]]
-        set next [testdb onecolumn {SELECT id FROM chat_message WHERE timestamp=200}]
+        set next [lindex [dict get [store store [list [ms_msg timestamp 200 \
+            server_id s2 body b]]] inserted] 0]
         expr {$next > $holeId && $holeId > $first}
     } -result {1}
 
@@ -1870,10 +1891,10 @@ test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invi
     -cleanup {
         store destroy
         testdb close
-    } -result {{{room@muc.example.com?join 10}} 1}
+    } -result {{{room@muc.example.com?join 1}} 1}
 
 # The id lookups a catch-up makes for every archived stanza (reconcile, the
-# duplicate check of store, resolveTargetTs, resolveReply, a receipt's
+# duplicate check of store, resolveTargetId, resolveReply, a receipt's
 # markRemoteStatus, the SM ack's confirmByOwnIds) go through the partial
 # indexes on server_id, own_id and origin_id, and the pending rows' index,
 # rather than the chat's or the account's rows. Counted in the virtual
@@ -1910,7 +1931,7 @@ test ms-id-lookups-take-the-indexes-not-the-chat \
                 store reconcile $chat nosuch nosuchown nosuchorigin 9000000000
                 store store [list [ms_msg chat_jid $chat timestamp 9000000000 \
                     server_id fresh origin_id freshorigin]]
-                store resolveTargetTs $chat nosuch
+                store resolveTargetId $chat nosuch
                 store resolveReply $chat nosuch
                 store markRemoteStatus $chat nosuch delivered
             }]

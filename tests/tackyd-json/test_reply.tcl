@@ -248,15 +248,15 @@ test reply-dispatch-disable-fails-waiting {disabling an account answers what was
         list $waiting [llength $r] [lindex $r 0 0]
     } -result {{} 1 error}
 
-test reply-dispatch-send {message send answers with the stored row's timestamp} \
+test reply-dispatch-send {message send answers with the stored row's id} \
     -setup rsSetup -cleanup rsCleanup -body {
         set r [rsRequest message send \
             [list acc $::rsAcc chat bob@example.com body hi] 1]
-        set ts [lindex $r 0 1]
+        set id [lindex $r 0 1]
         set stored [[taco client $::rsAcc] db eval {
-            SELECT timestamp FROM chat_message WHERE chat_jid='bob@example.com'
+            SELECT id FROM chat_message WHERE chat_jid='bob@example.com'
         }]
-        list [llength $r] [lindex $r 0 0] [expr {$stored eq $ts}]
+        list [llength $r] [lindex $r 0 0] [expr {$stored eq $id}]
     } -result {1 result 1}
 
 test reply-dispatch-debugtap-write {debugtap write takes XML text, and refuses an unknown tap} \

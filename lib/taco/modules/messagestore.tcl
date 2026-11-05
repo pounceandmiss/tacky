@@ -77,7 +77,7 @@ snit::type taco_messagestore {
     # state. Unset, no room counts as joined.
     option -joinedcmd -default ""
     # A call row's `active` and `live`: {*}incallcmd $room -> 0|1 (we are in
-    # it), {*}livecmd $chat $ts $room -> 1|0|"" (anyone is; "" unknown).
+    # it), {*}livecmd $chat $id $room -> 1|0|"" (anyone is; "" unknown).
     option -incallcmd -default ""
     option -livecmd -default ""
     # {*}deferredcmd $chat $patches, after a store inserted the target of
@@ -119,13 +119,13 @@ snit::type taco_messagestore {
 
     # --- Group call invites -------------------------------------------
 
-    # One stored call invite as {call state}, or "" when the row at $ts in
-    # $jid is not one.
-    method callAt {jid ts} {
+    # One stored call invite as {call state}, or "" when row $id in $jid is
+    # not one.
+    method callAt {jid id} {
         set found ""
         $options(-db) eval {
             SELECT call, call_state FROM chat_message
-            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+            WHERE chat_jid=$jid AND id=$id AND kind='message'
               AND call_room != ''
         } r {
             set found [dict create call $r(call) state $r(call_state)]
@@ -133,61 +133,61 @@ snit::type taco_messagestore {
         return $found
     }
 
-    method setCallState {jid ts state} {
+    method setCallState {jid id state} {
         $options(-db) eval {
             UPDATE chat_message SET call_state=$state
-            WHERE chat_jid=$jid AND timestamp=$ts AND call_room != ''
+            WHERE chat_jid=$jid AND id=$id AND call_room != ''
         }
     }
 
-    # The rows in $jid holding the invite with id $id, as {ts state room}.
-    method callsById {jid id} {
+    # The rows in $jid holding the call invite $callId, as {id state room}.
+    method callsById {jid callId} {
         set found {}
         $options(-db) eval {
-            SELECT timestamp, call_state, call_room FROM chat_message
-            WHERE chat_jid=$jid AND call_id=$id AND call_room != ''
+            SELECT id, call_state, call_room FROM chat_message
+            WHERE chat_jid=$jid AND call_id=$callId AND call_room != ''
               AND kind='message'
         } r {
-            lappend found [list $r(timestamp) $r(call_state) $r(call_room)]
+            lappend found [list $r(id) $r(call_state) $r(call_room)]
         }
         return $found
     }
 
-    # The newest call invite in $jid, as {ts room}, or "".
+    # The last call invite in $jid, as {id room}, or "".
     method newestCall {jid} {
         set found ""
         $options(-db) eval {
-            SELECT timestamp, call_room FROM chat_message
+            SELECT id, call_room FROM chat_message
             WHERE chat_jid=$jid AND call_room != '' AND kind='message'
             ORDER BY pos DESC LIMIT 1
         } r {
-            set found [list $r(timestamp) $r(call_room)]
+            set found [list $r(id) $r(call_room)]
         }
         return $found
     }
 
     # Every stored invite to the call in $room, wherever it sits, as
-    # {chat_jid ts}.
+    # {chat_jid id}.
     method callsToRoom {room} {
         set found {}
         $options(-db) eval {
-            SELECT chat_jid, timestamp FROM chat_message
+            SELECT chat_jid, id FROM chat_message
             WHERE call_room=$room AND kind='message'
         } r {
-            lappend found [list $r(chat_jid) $r(timestamp)]
+            lappend found [list $r(chat_jid) $r(id)]
         }
         return $found
     }
 
     # --- Invites ----------------------------------------------------
 
-    # One stored invitation as {invite declined}, or "" when the row at $ts
-    # in $jid is not one.
-    method inviteAt {jid ts} {
+    # One stored invitation as {invite declined}, or "" when row $id in $jid
+    # is not one.
+    method inviteAt {jid id} {
         set found ""
         $options(-db) eval {
             SELECT invite, invite_declined FROM chat_message
-            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+            WHERE chat_jid=$jid AND id=$id AND kind='message'
               AND invite_room != ''
         } r {
             set found [dict create invite $r(invite) declined $r(invite_declined)]
@@ -195,21 +195,21 @@ snit::type taco_messagestore {
         return $found
     }
 
-    method setInviteDeclined {jid ts declined} {
+    method setInviteDeclined {jid id declined} {
         $options(-db) eval {
             UPDATE chat_message SET invite_declined=$declined
-            WHERE chat_jid=$jid AND timestamp=$ts AND invite_room != ''
+            WHERE chat_jid=$jid AND id=$id AND invite_room != ''
         }
     }
 
-    # Every stored invitation to $room, wherever it sits, as {chat_jid ts}.
+    # Every stored invitation to $room, wherever it sits, as {chat_jid id}.
     method invitesToRoom {room} {
         set found {}
         $options(-db) eval {
-            SELECT chat_jid, timestamp FROM chat_message
+            SELECT chat_jid, id FROM chat_message
             WHERE invite_room != '' AND invite_room=$room AND kind='message'
         } r {
-            lappend found [list $r(chat_jid) $r(timestamp)]
+            lappend found [list $r(chat_jid) $r(id)]
         }
         return $found
     }
@@ -287,14 +287,13 @@ snit::type taco_messagestore {
         set pos [$self PosOfTs $jid $anchorTs]
         if {$pos eq ""} {
             set pos [$self PosForTs $jid $anchorTs]
-            set ts [$self BumpTs $jid $anchorTs 1]
             lassign [$self GapBounds $jid $direction $pos] lo hi
             if {[$self HoleIn $jid $lo $hi]} return
             $options(-db) eval {
                 INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
-                VALUES($pos, $ts, $jid, 'hole')
+                VALUES($pos, $anchorTs, $jid, 'hole')
             }
-            return $ts
+            return $anchorTs
         }
         switch -- $direction {
             newer { set holePos [$self hole addAfter $jid $pos] }
@@ -397,10 +396,9 @@ snit::type taco_messagestore {
         "
     }
 
-    # A hole at $pos, stamped next to $nearTs ($step away) for display; its
-    # pos. Stamps stay unique per chat while lookups go by them.
+    # A hole at $pos, stamped next to $nearTs ($step away); its pos.
     method InsertHole {jid pos nearTs step} {
-        set ts [$self BumpTs $jid [expr {$nearTs + $step}] $step]
+        set ts [expr {$nearTs + $step}]
         $options(-db) eval {
             INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
             VALUES($pos, $ts, $jid, 'hole')
@@ -454,18 +452,38 @@ snit::type taco_messagestore {
         "
     }
 
-    # The pos of the message stamped $ts when it can stand for where the
-    # archive has it: "" for a send of ours, which sits where it was written
-    # however much later the archive took it in.
-    method PlaceOfTs {jid ts} {
+    # The pos of row $id in $jid, "" when there is none.
+    method PosOf {jid id} {
         $options(-db) onecolumn {
-            SELECT pos FROM chat_message
-            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
-              AND COALESCE(own_id, '') = ''
+            SELECT pos FROM chat_message WHERE chat_jid=$jid AND id=$id
         }
     }
 
-    # The pos of the message stamped $ts, "" when none is.
+    # The timestamp row $id in $jid shows, "" when there is no such row.
+    method stampOf {jid id} {
+        $options(-db) onecolumn {
+            SELECT timestamp FROM chat_message WHERE chat_jid=$jid AND id=$id
+        }
+    }
+
+    # The pos of row $id when it can stand for where the archive has it: ""
+    # for a send of ours, which sits where it was written however much later
+    # the archive took it in.
+    method PlaceOf {jid id} {
+        $options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND id=$id AND COALESCE(own_id, '') = ''
+        }
+    }
+
+    # The id of the row at $pos in $jid, "" when there is none.
+    method IdAt {jid pos} {
+        $options(-db) onecolumn {
+            SELECT id FROM chat_message WHERE chat_jid=$jid AND pos=$pos
+        }
+    }
+
+    # Tests-only: the pos of the message stamped $ts, "" when none is.
     method PosOfTs {jid ts} {
         $options(-db) onecolumn {
             SELECT pos FROM chat_message
@@ -479,27 +497,6 @@ snit::type taco_messagestore {
         }
     }
 
-    # Where a timestamp cursor falls, for paging by it: the row stamped
-    # $ts, else the nearest one on the far side ($side before: the oldest
-    # stamped after it, so the rows before that are the ones before $ts;
-    # after: the newest stamped before it). "" when there is none, which
-    # is the open end.
-    method CursorPos {jid ts side} {
-        set pos [$self PosOfTs $jid $ts]
-        if {$pos ne ""} { return $pos }
-        if {$side eq "before"} {
-            return [$options(-db) onecolumn {
-                SELECT pos FROM chat_message
-                WHERE chat_jid=$jid AND timestamp > $ts
-                ORDER BY timestamp ASC LIMIT 1
-            }]
-        }
-        $options(-db) onecolumn {
-            SELECT pos FROM chat_message
-            WHERE chat_jid=$jid AND timestamp < $ts
-            ORDER BY timestamp DESC LIMIT 1
-        }
-    }
 
     # --- Store ----------------------------------------------------------
 
@@ -508,16 +505,16 @@ snit::type taco_messagestore {
     # Confirming our own sends is `reconcile`'s job. Where each goes: its
     # `pos` when it has one, else by $placement: `append` after the chat's
     # last row (a live message), `ts` among the rows by timestamp (one with
-    # nothing better to go by). Returns dict with `inserted` (list of stored
-    # timestamps) and `positions` (their pos).
+    # nothing better to go by; a batch keeps its own order). Returns dict
+    # with `inserted` (the stored rows' ids) and `positions` (their pos).
     method store {messages {placement ts}} {
         if {[llength $messages] == 0} { return {} }
 
         set jid [dict get [lindex $messages 0] chat_jid]
-        set insertedTimestamps {}
+        set inserted {}
         set positions {}
         set deferred {}
-        set prevTs -1
+        set prev ""
 
         $options(-db) transaction {
             foreach msg $messages {
@@ -526,12 +523,12 @@ snit::type taco_messagestore {
                 array set m $msg
 
                 set ts $m(timestamp)
-                if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }
-                set ts [$self BumpTs $jid $ts 1]
                 if {[info exists m(pos)] && $m(pos) ne ""} {
                     set pos $m(pos)
                 } elseif {$placement eq "append"} {
                     set pos [poskey between [$self PosPrev $jid ""] ""]
+                } elseif {$prev ne ""} {
+                    set pos [poskey between $prev [$self PosNext $jid $prev]]
                 } else {
                     set pos [$self PosForTs $jid $ts]
                 }
@@ -584,8 +581,8 @@ snit::type taco_messagestore {
                     -- edited_ts/retracted take table defaults (only ever set
                     -- by applyEdit/applyRetract, never at insert time)
                 }
-                set prevTs $ts
-                lappend insertedTimestamps $ts
+                set prev $pos
+                lappend inserted [$options(-db) last_insert_rowid]
                 lappend positions $pos
                 lappend deferred {*}[$self TakeDeferred $jid \
                     [list $m(server_id) $m(own_id) $originId]]
@@ -594,7 +591,7 @@ snit::type taco_messagestore {
         if {[llength $deferred] && $options(-deferredcmd) ne ""} {
             {*}$options(-deferredcmd) $jid $deferred
         }
-        return [dict create inserted $insertedTimestamps positions $positions]
+        return [dict create inserted $inserted positions $positions]
     }
 
     # --- Deferred corrections/retractions -------------------------------
@@ -637,12 +634,12 @@ snit::type taco_messagestore {
 
     # --- Get ------------------------------------------------------------
 
-    # Messages older than cursor (a timestamp; see CursorPos). Truncates at
-    # the nearest older hole (cannot cross a gap). Returns {messages $list
-    # bounded $b} where bounded=1 iff a hole exists older than cursor and we
-    # didn't satisfy the limit (caller should fall through to MAM).
+    # Messages before row $cursor (an id). Truncates at the nearest hole
+    # before it (cannot cross a gap). Returns {messages $list bounded $b}
+    # where bounded=1 iff a hole exists before the cursor and we didn't
+    # satisfy the limit (caller should fall through to MAM).
     method "get before" {jid cursor {limit 50}} {
-        $self GetBeforePos $jid [$self CursorPos $jid $cursor before] $limit
+        $self GetBeforePos $jid [$self PosOf $jid $cursor] $limit
     }
 
     method GetBeforePos {jid cursor limit} {
@@ -669,7 +666,7 @@ snit::type taco_messagestore {
 
     # Symmetric to `get before`. Truncates at the nearest newer hole.
     method "get after" {jid cursor {limit 50}} {
-        $self GetAfterPos $jid [$self CursorPos $jid $cursor after] $limit
+        $self GetAfterPos $jid [$self PosOf $jid $cursor] $limit
     }
 
     method GetAfterPos {jid cursor limit} {
@@ -742,12 +739,10 @@ snit::type taco_messagestore {
     # read back with no content, so they're excluded too. A query with no
     # indexable word matches nothing rather than everything.
     #
-    # An empty jid searches every chat in the account. Equal timestamps in
-    # different chats are common - MAM ingest derives them from second-
-    # granularity delay stamps and BumpTs only keeps them unique within one
-    # chat - so the unscoped order breaks ties on chat_jid and its -before is
-    # the {timestamp chat_jid} pair rather than a bare timestamp. A scoped
-    # search keeps the scalar cursor.
+    # An empty jid searches every chat in the account. Hits come newest
+    # first by timestamp, ties broken by id, so -before is the {timestamp
+    # id} of the last hit already had: stamps repeat (an archive stamping
+    # whole seconds).
     method search {jid query args} {
         array set opts {-limit 500 -before ""}
         array set opts $args
@@ -760,18 +755,13 @@ snit::type taco_messagestore {
                  WHERE kind='message' AND retracted=0
                    AND rowid IN (SELECT rowid FROM msg_fts
                                  WHERE msg_fts MATCH $match)}]
-        if {$jid ne ""} {
-            append sql { AND chat_jid=$jid}
-            if {$before ne ""} { append sql { AND timestamp < $before} }
-            append sql { ORDER BY timestamp DESC}
-        } else {
-            if {$before ne ""} {
-                lassign $before beforeTs beforeChat
-                append sql { AND (timestamp < $beforeTs
-                             OR (timestamp = $beforeTs AND chat_jid < $beforeChat))}
-            }
-            append sql { ORDER BY timestamp DESC, chat_jid DESC}
+        if {$jid ne ""} { append sql { AND chat_jid=$jid} }
+        if {$before ne ""} {
+            lassign $before beforeTs beforeId
+            append sql { AND (timestamp < $beforeTs
+                         OR (timestamp = $beforeTs AND id < $beforeId))}
         }
+        append sql { ORDER BY timestamp DESC, id DESC}
         append sql { LIMIT $limit}
         set rows {}
         $options(-db) eval $sql row {
@@ -780,51 +770,46 @@ snit::type taco_messagestore {
         return $rows
     }
 
-    # Find the nearest message to timestamp and return context around
-    # it (limit/2 before + target + limit/2 after). Each side is
+    # Find the message nearest in time to $timestamp and return context
+    # around it (limit/2 before + target + limit/2 after). Each side is
     # truncated independently at the nearest hole.
-    # Returns dict: {messages $list anchor $nearestTs
+    # Returns dict: {messages $list anchor $id
     #                bounded_before $b bounded_after $b}.
     method "get around" {jid timestamp limit} {
-        set nearestTs ""
-        $options(-db) eval {
-            SELECT timestamp FROM chat_message
+        set nearest [$options(-db) onecolumn {
+            SELECT id FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
             ORDER BY ABS(timestamp - $timestamp) LIMIT 1
-        } row {
-            set nearestTs $row(timestamp)
-        }
-        if {$nearestTs eq ""} {
+        }]
+        if {$nearest eq ""} {
             return [dict create messages {} anchor "" \
                 bounded_before 0 bounded_after 0]
         }
+        $self around $jid $nearest $limit
+    }
+
+    # Context around row $id, as `get around` returns it.
+    method around {jid id limit} {
         set halfLimit [expr {$limit / 2}]
-        set before [$self get before $jid $nearestTs $halfLimit]
-        set after  [$self get after  $jid $nearestTs $halfLimit]
-        set target {}
-        $options(-db) eval [$self MsgSql {
-            SELECT @cols@
-            FROM chat_message
-            WHERE chat_jid=$jid AND kind='message' AND timestamp=$nearestTs
-        }] row {
-            set target [list [$self RowToDict [array get row]]]
-        }
+        set before [$self get before $jid $id $halfLimit]
+        set after  [$self get after  $jid $id $halfLimit]
+        set target [$self get ids $jid [list $id]]
         return [dict create \
             messages [concat [dict get $before messages] $target \
                              [dict get $after messages]] \
-            anchor $nearestTs \
+            anchor $id \
             bounded_before [dict get $before bounded] \
             bounded_after  [dict get $after  bounded]]
     }
 
-    # Fetch rows by exact timestamps.
-    method "get ids" {jid timestamps} {
+    # The messages with these ids, in the order given.
+    method "get ids" {jid ids} {
         set rows {}
-        foreach ts $timestamps {
+        foreach id $ids {
             $options(-db) eval [$self MsgSql {
                 SELECT @cols@
                 FROM chat_message
-                WHERE chat_jid=$jid AND kind='message' AND timestamp=$ts
+                WHERE chat_jid=$jid AND kind='message' AND id=$id
             }] row {
                 lappend rows [$self RowToDict [array get row]]
             }
@@ -887,36 +872,34 @@ snit::type taco_messagestore {
     # `to` is often a full JID while we store the bare author).
     method resolveReply {jid replyId {replyTo ""}} {
         if {$replyId eq ""} { return "" }
-        set ts [$options(-db) onecolumn {
-            SELECT timestamp FROM chat_message
+        set id [$options(-db) onecolumn {
+            SELECT id FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$replyId
             LIMIT 1
         }]
-        if {$ts eq ""} { set ts [$self AliasTarget $jid server $replyId] }
-        if {$ts ne "" || [IsRoomChatJid $jid]} { return $ts }
+        if {$id eq ""} { set id [$self AliasTarget $jid server $replyId] }
+        if {$id ne "" || [IsRoomChatJid $jid]} { return $id }
 
         set isMuc [IsMucChatJid $jid]
         set candidates {}
-        # One arm per id, each by its own index (see resolveTargetTs).
+        # One arm per id, each by its own index (see resolveTargetId).
         $options(-db) eval {
-            SELECT timestamp, from_jid FROM chat_message
-            WHERE chat_jid=$jid AND timestamp IN (
-                SELECT timestamp FROM chat_message
+            SELECT id, from_jid FROM chat_message
+            WHERE +chat_jid=$jid AND id IN (
+                SELECT id FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND origin_id != '' AND origin_id=$replyId
                 UNION ALL
-                SELECT timestamp FROM chat_message
+                SELECT id FROM chat_message
                 WHERE chat_jid=$jid AND kind='message'
                   AND own_id != '' AND own_id=$replyId
                 UNION ALL
-                SELECT m.timestamp FROM message_alias a
-                JOIN chat_message m ON m.id=a.target_id
-                WHERE a.chat_jid=$jid AND a.kind='origin'
-                  AND a.alias_id=$replyId)
+                SELECT target_id FROM message_alias
+                WHERE chat_jid=$jid AND kind='origin' AND alias_id=$replyId)
             ORDER BY +pos
         } row {
-            lappend candidates [list $row(timestamp) $row(from_jid)]
+            lappend candidates [list $row(id) $row(from_jid)]
         }
         # A lone 1:1 candidate is trusted even if the peer's reply-to
         # attribute names the wrong author (real clients get this wrong):
@@ -927,11 +910,11 @@ snit::type taco_messagestore {
             return [lindex $candidates 0 0]
         }
         foreach candidate $candidates {
-            lassign $candidate ts fromJid
+            lassign $candidate id fromJid
             if {$replyTo eq ""
                 || ($isMuc && [jid equal $fromJid $replyTo])
                 || (!$isMuc && [jid equal [jid bare $fromJid] [jid bare $replyTo]])} {
-                return $ts
+                return $id
             }
         }
         return ""
@@ -981,7 +964,7 @@ snit::type taco_messagestore {
     }
 
     # Flip pending → '' (server-confirmed) for each own_id (SM ack path).
-    # Returns list of {chat_jid, timestamp} for confirmed messages.
+    # Returns list of {chat_jid, id} for confirmed messages.
     # With no chat to narrow by, the pending rows are the ones read
     # (idx_chat_message_pending); the + keeps the planner off the own_id
     # index, which would walk every send of ours in every chat.
@@ -991,11 +974,11 @@ snit::type taco_messagestore {
             foreach oid $ownIds {
                 if {$oid eq ""} continue
                 $options(-db) eval {
-                    SELECT chat_jid, timestamp FROM chat_message
+                    SELECT chat_jid, id FROM chat_message
                     WHERE server_status='pending' AND +own_id=$oid
                 } row {
                     lappend confirmed [dict create \
-                        chat_jid $row(chat_jid) timestamp $row(timestamp)]
+                        chat_jid $row(chat_jid) id $row(id)]
                 }
                 $options(-db) eval {
                     UPDATE chat_message SET server_status=''
@@ -1023,34 +1006,34 @@ snit::type taco_messagestore {
     # 'read' is an XEP-0333 <displayed/>, which means all messages up to
     # this point, so it also covers earlier rows; 'delivered' is an
     # XEP-0184 receipt and covers only the row it names.
-    # Returns a list, in chat order, of {chat_jid, timestamp,
-    # remote_status}, one per changed row, empty if nothing moved.
+    # Returns a list, in chat order, of {chat_jid, id, remote_status}, one
+    # per changed row, empty if nothing moved.
     method markRemoteStatus {chatJid targetId status} {
         if {$targetId eq ""} { return {} }
         set changed {}
         $options(-db) transaction {
             # Ours by its own id, else by its origin-id, one indexed lookup
-            # each (see resolveTargetTs).
-            set targetTs [$options(-db) onecolumn {
-                SELECT timestamp FROM chat_message
+            # each (see resolveTargetId).
+            set target [$options(-db) onecolumn {
+                SELECT id FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND own_id != '' AND own_id=$targetId
                 ORDER BY +pos LIMIT 1
             }]
-            if {$targetTs eq ""} {
-                set targetTs [$options(-db) onecolumn {
-                    SELECT timestamp FROM chat_message
+            if {$target eq ""} {
+                set target [$options(-db) onecolumn {
+                    SELECT id FROM chat_message
                     WHERE chat_jid=$chatJid AND kind='message'
                       AND origin_id != '' AND origin_id=$targetId
                       AND own_id != ''
                     ORDER BY +pos LIMIT 1
                 }]
             }
-            if {$targetTs eq ""} {
-                set targetTs [$self AliasTarget $chatJid origin $targetId]
+            if {$target eq ""} {
+                set target [$self AliasTarget $chatJid origin $targetId]
             }
-            if {$targetTs ne ""} {
-                set targetPos [$self PosOfTs $chatJid $targetTs]
+            if {$target ne ""} {
+                set targetPos [$self PosOf $chatJid $target]
                 set from [expr {$status eq "read" ? "" : $targetPos}]
                 set rank [RemoteStatusRank $status]
                 # Collected first; updating mid-eval would edit the table
@@ -1059,23 +1042,23 @@ snit::type taco_messagestore {
                 # only keeps a repeat marker from re-UPDATEing every row.
                 set stale {}
                 $options(-db) eval "
-                    SELECT timestamp, remote_status FROM chat_message
+                    SELECT id, remote_status FROM chat_message
                     WHERE chat_jid=\$chatJid AND kind='message' AND own_id != ''
                       [Bound pos >= from] AND pos <= \$targetPos
                       AND remote_status != \$status
                     ORDER BY pos
                 " row {
                     if {$rank > [RemoteStatusRank $row(remote_status)]} {
-                        lappend stale $row(timestamp)
+                        lappend stale $row(id)
                     }
                 }
-                foreach ts $stale {
+                foreach id $stale {
                     $options(-db) eval {
                         UPDATE chat_message SET remote_status=$status
-                        WHERE chat_jid=$chatJid AND timestamp=$ts
+                        WHERE chat_jid=$chatJid AND id=$id
                     }
                     lappend changed [dict create \
-                        chat_jid $chatJid timestamp $ts remote_status $status]
+                        chat_jid $chatJid id $id remote_status $status]
                 }
             }
         }
@@ -1084,24 +1067,30 @@ snit::type taco_messagestore {
 
     # --- Own read watermark ----------------------------------------
 
-    # {read_ts read_id}; a chat we have never read reads as {0 ""}.
+    # How far we have read $chatJid: {id I pos P ref R}, the last row read,
+    # its place, and its archive (else origin) id; all "" for a chat never
+    # read.
     method ownRead {chatJid} {
-        set res [dict create read_ts 0 read_id ""]
+        set res [dict create id "" pos "" ref ""]
         $options(-db) eval {
-            SELECT read_ts, read_id FROM chat_own_read WHERE chat_jid=$chatJid
+            SELECT r.read_pos AS pos, r.read_id AS ref, m.id AS id
+            FROM chat_own_read r
+            LEFT JOIN chat_message m ON m.chat_jid=r.chat_jid AND m.pos=r.read_pos
+            WHERE r.chat_jid=$chatJid
         } row {
-            dict set res read_ts $row(read_ts)
-            dict set res read_id $row(read_id)
+            dict set res id $row(id)
+            dict set res pos $row(pos)
+            dict set res ref $row(ref)
         }
         return $res
     }
 
-    # Advance the watermark to the row at $ts, forward-only: one at or
-    # before the mark (a replayed or out-of-order marker) is a no-op.
-    # read_id comes from that row. Returns 1 if it moved.
-    method markOwnRead {chatJid ts} {
-        if {![string is entier -strict $ts] || $ts <= 0} { return 0 }
-        set at [$self PosOfTs $chatJid $ts]
+    # Advance the watermark to row $id, forward-only: one at or before the
+    # mark (a replayed or out-of-order marker) is a no-op. read_id comes
+    # from that row. Returns 1 if it moved.
+    method markOwnRead {chatJid id} {
+        if {$id eq ""} { return 0 }
+        set at [$self PosOf $chatJid $id]
         if {$at eq ""} { return 0 }
         set moved 0
         $options(-db) transaction {
@@ -1109,22 +1098,14 @@ snit::type taco_messagestore {
                 SELECT read_pos FROM chat_own_read WHERE chat_jid=$chatJid
             }]
             if {$prev eq "" || [string compare $at $prev] > 0} {
-                set refId ""
-                set readPos ""
-                $options(-db) eval {
-                    SELECT CASE WHEN COALESCE(server_id,'') != ''
-                                THEN server_id ELSE COALESCE(origin_id,'') END
-                           AS ref, pos
-                    FROM chat_message
-                    WHERE chat_jid=$chatJid AND timestamp=$ts
-                } row {
-                    set refId $row(ref)
-                    set readPos $row(pos)
-                }
                 $options(-db) eval {
                     INSERT OR REPLACE INTO
                         chat_own_read(chat_jid, read_ts, read_id, read_pos)
-                    VALUES($chatJid, $ts, $refId, $readPos)
+                    SELECT chat_jid, timestamp,
+                           CASE WHEN COALESCE(server_id,'') != ''
+                                THEN server_id ELSE COALESCE(origin_id,'') END,
+                           pos
+                    FROM chat_message WHERE chat_jid=$chatJid AND id=$id
                 }
                 set moved 1
             }
@@ -1132,13 +1113,13 @@ snit::type taco_messagestore {
         return $moved
     }
 
-    # The newest unread messages past $floorTs, newest first, as
-    # {timestamp mention from_jid} triples. The catch-up sweep caps how many
+    # The last unread messages stamped past $floorTs, last first, as {id
+    # mention from_jid body attachments}. The catch-up sweep caps how many
     # it takes; `unreadCount` still reports the true total.
     method unreadTail {chatJid floorTs limit} {
         set rows {}
         $options(-db) eval {
-            SELECT timestamp, mentions_me, from_jid, body, attachments
+            SELECT id, mentions_me, from_jid, body, attachments
             FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
@@ -1147,7 +1128,7 @@ snit::type taco_messagestore {
                                   WHERE chat_jid=$chatJid), '')
             ORDER BY pos DESC LIMIT $limit
         } row {
-            lappend rows [list $row(timestamp) $row(mentions_me) \
+            lappend rows [list $row(id) $row(mentions_me) \
                 $row(from_jid) $row(body) $row(attachments)]
         }
         return $rows
@@ -1216,10 +1197,10 @@ snit::type taco_messagestore {
 
     # Did one stored message name us? Queried rather than carried on the
     # message dict, which keeps it out of every SELECT list.
-    method mentionAt {chatJid ts} {
+    method mentionAt {chatJid id} {
         set v [$options(-db) onecolumn {
             SELECT mentions_me FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$ts
+            WHERE chat_jid=$chatJid AND id=$id
         }]
         return [expr {$v eq "" ? 0 : $v}]
     }
@@ -1328,7 +1309,7 @@ snit::type taco_messagestore {
 
     # Apply a reactor's full emoji set. Last-writer-wins (PatchWins) against
     # the reactor's stored set; $clock is `server` or `local`, the clock $ts
-    # is on. Returns the target message's local timestamp (so the caller can
+    # is on. Returns the target message's id (so the caller can
     # <Reactions>), or "" when LWW skipped it or the target message isn't
     # stored yet.
     method applyReaction {chatJid targetId senderId senderLabel isOwn emojis ts
@@ -1351,9 +1332,9 @@ snit::type taco_messagestore {
             VALUES($chatJid, $targetId, $senderId, $senderLabel, $isOwn,
                    $emojis, $ts, $clock, $after)
         }
-        set targetTs [$self resolveTargetTs $chatJid $targetId]
-        if {$targetTs eq ""} { $self CapOrphanReactions $chatJid $senderId }
-        return $targetTs
+        set target [$self resolveTargetId $chatJid $targetId]
+        if {$target eq ""} { $self CapOrphanReactions $chatJid $senderId }
+        return $target
     }
 
     # Keep a chat's orphan reactions (no stored message goes by their
@@ -1392,7 +1373,7 @@ snit::type taco_messagestore {
         }]
     }
 
-    # Local timestamp of a stored message matched by its wire id, against
+    # The id of a stored message matched by its wire id, against
     # the stored envelope ids (mirrors resolveReply's id match). In a room
     # only the room's stanza-id counts: an origin-id is the sender's choice.
     # "" if not stored. For reactions and markers; corrections and
@@ -1400,7 +1381,7 @@ snit::type taco_messagestore {
     # A stanza-id match wins, then our own send's id (a peer may copy our
     # origin-id into a message of its own), then the oldest, so the answer
     # never rests on the order SQLite reads the rows in.
-    method resolveTargetTs {chatJid targetId} {
+    method resolveTargetId {chatJid targetId} {
         if {$targetId eq ""} { return "" }
         set room [IsRoomChatJid $chatJid]
         set db $options(-db)
@@ -1410,33 +1391,33 @@ snit::type taco_messagestore {
         # OR-ing the ids, or asking `server_id=$x` alone, walked every row
         # of the chat. `+pos`, not `pos`: ordered by the column, the
         # planner walks the (chat_jid, pos) index for the order instead.
-        set ts [$db onecolumn {
-            SELECT timestamp FROM chat_message
+        set id [$db onecolumn {
+            SELECT id FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND server_id != '' AND server_id=$targetId
             ORDER BY +pos LIMIT 1
         }]
-        if {$ts eq "" && !$room} {
-            set ts [$db onecolumn {
-                SELECT timestamp FROM chat_message
+        if {$id eq "" && !$room} {
+            set id [$db onecolumn {
+                SELECT id FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND own_id != '' AND own_id=$targetId
                 ORDER BY +pos LIMIT 1
             }]
         }
-        if {$ts eq "" && !$room} {
-            set ts [$db onecolumn {
-                SELECT timestamp FROM chat_message
+        if {$id eq "" && !$room} {
+            set id [$db onecolumn {
+                SELECT id FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND origin_id != '' AND origin_id=$targetId
                 ORDER BY +pos LIMIT 1
             }]
         }
-        if {$ts eq ""} { set ts [$self AliasTarget $chatJid server $targetId] }
-        if {$ts eq "" && !$room} {
-            set ts [$self AliasTarget $chatJid origin $targetId]
+        if {$id eq ""} { set id [$self AliasTarget $chatJid server $targetId] }
+        if {$id eq "" && !$room} {
+            set id [$self AliasTarget $chatJid origin $targetId]
         }
-        return $ts
+        return $id
     }
 
     # --- Correction aliases ---------------------------------------------
@@ -1448,22 +1429,17 @@ snit::type taco_messagestore {
     method AliasTarget {chatJid kind id} {
         if {$id eq ""} { return "" }
         return [$options(-db) onecolumn {
-            SELECT m.timestamp FROM message_alias a
-            JOIN chat_message m ON m.id=a.target_id
-            WHERE a.chat_jid=$chatJid AND a.kind=$kind AND a.alias_id=$id
+            SELECT target_id FROM message_alias
+            WHERE chat_jid=$chatJid AND kind=$kind AND alias_id=$id
         }]
     }
 
-    # Record a correction's {serverId originId} as names of the row at
-    # $targetTs, then hand any patch held for those ids to -deferredcmd,
-    # as `store` does for a new row's own ids.
-    method addAliases {chatJid targetTs serverId originId} {
+    # Record a correction's {serverId originId} as names of row $targetId,
+    # then hand any patch held for those ids to -deferredcmd, as `store`
+    # does for a new row's own ids.
+    method addAliases {chatJid targetId serverId originId} {
         set deferred {}
         $options(-db) transaction {
-            set targetId [$options(-db) onecolumn {
-                SELECT id FROM chat_message
-                WHERE chat_jid=$chatJid AND timestamp=$targetTs
-            }]
             foreach kind {server origin} id [list $serverId $originId] {
                 if {$id eq "" || $targetId eq ""} continue
                 $options(-db) eval {
@@ -1482,24 +1458,23 @@ snit::type taco_messagestore {
 
     # --- Corrections (XEP-0308) / retractions (XEP-0424/0425) ------
 
-    # The target comes as its row's timestamp: the caller picks it among
-    # the rows carrying the referenced id by who wrote it.
+    # The target comes as its row's id: the caller picks it among the rows
+    # carrying the referenced id by who wrote it.
     #
     # Replace a stored message's body with a correction. Last-writer-wins on
     # edited_ts (PatchWins; $clock as for applyReaction); a retracted
-    # message is immutable. Returns the target's local
-    # timestamp (so the caller can <Edited>), or "" when not stored or skipped.
+    # message is immutable. Returns the target's id (so the caller can
+    # <Edited>), or "" when not stored or skipped.
     # `stamp` is the correction's own {encryption sender_fp}, so the row
     # tracks the body now displayed. No default: it would be a downgrade.
-    method applyEdit {chatJid targetTs newBody rawXml ts stamp {clock server}} {
+    method applyEdit {chatJid target newBody rawXml ts stamp {clock server}} {
         set enc [dict get $stamp encryption]
         set senderFp [dict get $stamp sender_fp]
         set found 0
         $options(-db) eval {
             SELECT edited_ts, edited_clock, edited_after, retracted
             FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$targetTs
-              AND kind='message'
+            WHERE chat_jid=$chatJid AND id=$target AND kind='message'
         } row {
             set found 1
             set held [list $row(edited_ts) $row(edited_clock) \
@@ -1514,21 +1489,20 @@ snit::type taco_messagestore {
             SET body=$newBody, raw_xml=$rawXml, edited_ts=$ts,
                 edited_clock=$clock, edited_after=$after,
                 encryption=$enc, sender_fp=$senderFp
-            WHERE chat_jid=$chatJid AND timestamp=$targetTs
+            WHERE chat_jid=$chatJid AND id=$target
         }
-        return $targetTs
+        return $target
     }
 
     # Tombstone a stored message. Sticky: once retracted, later edits no-op.
-    # Returns the target's local timestamp, or "" when not stored.
-    method applyRetract {chatJid targetTs} {
+    # Returns the target's id, or "" when not stored.
+    method applyRetract {chatJid target} {
         $options(-db) eval {
             UPDATE chat_message SET retracted=1
-            WHERE chat_jid=$chatJid AND timestamp=$targetTs
-              AND kind='message'
+            WHERE chat_jid=$chatJid AND id=$target AND kind='message'
         }
         if {[$options(-db) changes] == 0} { return "" }
-        return $targetTs
+        return $target
     }
 
     # Per-emoji aggregation of reactions on a displayed message, for the
@@ -1537,7 +1511,7 @@ snit::type taco_messagestore {
     # (MUC; only that one there). Emoji order is first-seen; count is left
     # to the GUI. Shape:
     #   {emoji {reactors {Alice Bob} mine 0|1} ...}
-    method reactionsForMessage {chatJid ts} {
+    method reactionsForMessage {chatJid id} {
         set room [IsRoomChatJid $chatJid]
         set order {}
         array set reactors {}
@@ -1559,7 +1533,7 @@ snit::type taco_messagestore {
                       AND a.target_id = m.id
                       AND a.alias_id = r.target_id
                       AND (NOT $room OR a.kind = 'server')) )
-            WHERE m.chat_jid = $chatJid AND m.timestamp = $ts
+            WHERE m.chat_jid = $chatJid AND m.id = $id
         } r {
             foreach e $r(emojis) {
                 if {![info exists reactors($e)]} {
@@ -1585,15 +1559,15 @@ snit::type taco_messagestore {
     # by `store`. Verdicts:
     #   confirmed - matched a pending send (or an SM-acked one still lacking
     #               a server_id this copy carries): flip to '', capture
-    #               server_id, relocate to the server ts; returns old/new ts
-    #               for the <Confirmed>.
-    #   duplicate - matched any other row; returns its `stored_ts`.
+    #               server_id, take the server's stamp; returns the row's
+    #               `id` and that `timestamp` for the <Confirmed>.
+    #   duplicate - matched any other row; returns its `stored_id`.
     #   new       - no id match.
-    # The timestamp of the row $jid holds under archive id $serverId, or ""
-    # when there is none. A pending row is left out: reconcile confirms it.
-    method archivedTs {jid serverId} {
+    # The id of the row $jid holds under archive id $serverId, or "" when
+    # there is none. A pending row is left out: reconcile confirms it.
+    method archivedId {jid serverId} {
         $options(-db) onecolumn {
-            SELECT timestamp FROM chat_message
+            SELECT id FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
               AND server_status IS NOT 'pending' AND undecrypted != 1
@@ -1604,7 +1578,7 @@ snit::type taco_messagestore {
     # A row stored undecrypted takes the message it turned out to be: its
     # text, files, reply, mention and the session that read it. 1 if a row
     # was put right.
-    method repairUndecrypted {jid ts msg} {
+    method repairUndecrypted {jid id msg} {
         set body [dict get $msg body]
         set attach [dict get $msg attachments]
         set senderFp [dict get $msg sender_fp]
@@ -1617,17 +1591,17 @@ snit::type taco_messagestore {
             SET body=$body, attachments=$attach, sender_fp=$senderFp,
                 encryption=$enc, mentions_me=$mention,
                 reply_id=$replyId, reply_to=$replyTo, undecrypted=0
-            WHERE chat_jid=$jid AND timestamp=$ts AND undecrypted=1
+            WHERE chat_jid=$jid AND id=$id AND undecrypted=1
         }
         expr {[$options(-db) changes] > 0}
     }
 
     # An undecrypted row a fill could not open in order: kept as it is,
     # never asked about again (undecrypted 2).
-    method giveUpUndecrypted {jid ts} {
+    method giveUpUndecrypted {jid id} {
         $options(-db) eval {
             UPDATE chat_message SET undecrypted=2
-            WHERE chat_jid=$jid AND timestamp=$ts AND undecrypted=1
+            WHERE chat_jid=$jid AND id=$id AND undecrypted=1
         }
     }
 
@@ -1635,22 +1609,22 @@ snit::type taco_messagestore {
         if {$serverId eq "" && $ownId eq ""} {
             return [dict create verdict new]
         }
-        # The earliest row with either id, each by its own index (see
-        # resolveTargetTs).
+        # The first row with either id, each by its own index (see
+        # resolveTargetId).
         set row ""
         $options(-db) eval {
-            SELECT timestamp, pos, server_status, server_id, undecrypted
+            SELECT id, pos, server_status, server_id, undecrypted
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
             ORDER BY +pos LIMIT 1
         } r {
-            set row [dict create timestamp $r(timestamp) pos $r(pos) \
+            set row [dict create id $r(id) pos $r(pos) \
                 server_status $r(server_status) server_id $r(server_id) \
                 undecrypted $r(undecrypted)]
         }
         $options(-db) eval {
-            SELECT timestamp, pos, server_status, server_id, undecrypted
+            SELECT id, pos, server_status, server_id, undecrypted
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND own_id != '' AND own_id=$ownId
@@ -1658,7 +1632,7 @@ snit::type taco_messagestore {
         } r {
             if {$row eq ""
                     || [string compare $r(pos) [dict get $row pos]] < 0} {
-                set row [dict create timestamp $r(timestamp) pos $r(pos) \
+                set row [dict create id $r(id) pos $r(pos) \
                     server_status $r(server_status) server_id $r(server_id) \
                     undecrypted $r(undecrypted)]
             }
@@ -1666,37 +1640,30 @@ snit::type taco_messagestore {
         if {$row eq ""} {
             return [dict create verdict new]
         }
+        set id [dict get $row id]
         set status [dict get $row server_status]
         if {!($status eq "pending"
               || ($status eq "" && [dict get $row server_id] eq ""
                   && $serverId ne ""))} {
             # Ours to decrypt again rather than to drop (message Redecrypt).
             if {[dict get $row undecrypted] == 1} {
-                return [dict create verdict undecrypted \
-                    stored_ts [dict get $row timestamp]]
+                return [dict create verdict undecrypted stored_id $id]
             }
-            return [dict create verdict duplicate \
-                stored_ts [dict get $row timestamp]]
+            return [dict create verdict duplicate stored_id $id]
         }
-        set dupTs [dict get $row timestamp]
-        if {$timestamp == $dupTs} {
-            set newTs $dupTs
-        } else {
-            set newTs [$self BumpTs $jid $timestamp 1]
-        }
-        # The row keeps its place; only its stamp becomes the server's.
+        # The row keeps its place; its stamp becomes the copy's.
         $options(-db) eval {
             UPDATE chat_message
-            SET timestamp=$newTs,
+            SET timestamp=$timestamp,
                 server_status='',
                 server_id = CASE WHEN $serverId != ''
                     THEN $serverId ELSE server_id END,
                 occupant_id = CASE WHEN $occupantId != ''
                     THEN $occupantId ELSE occupant_id END
-            WHERE chat_jid=$jid AND timestamp=$dupTs
+            WHERE chat_jid=$jid AND id=$id
         }
-        return [dict create verdict confirmed chat_jid $jid \
-            timestamp $dupTs newtimestamp $newTs]
+        return [dict create verdict confirmed chat_jid $jid id $id \
+            timestamp $timestamp]
     }
 
     # Single enrichment point for DB rows -> message dicts.
@@ -1718,15 +1685,15 @@ snit::type taco_messagestore {
         dict set d retracted [expr {[dict get $d retracted] != 0}]
         if {[dict exists $d reply_id] && [dict get $d reply_id] ne ""} {
             set chatJid [dict get $d chat_jid]
-            set targetTs [$self resolveReply $chatJid \
+            set target [$self resolveReply $chatJid \
                 [dict get $d reply_id] [dict get $d reply_to]]
-            if {$targetTs ne ""} {
-                dict set d reply_to_ts $targetTs
+            if {$target ne ""} {
+                dict set d reply_to_id $target
                 # Trust the resolved row's own from_jid over the stanza's
                 # reply-to attribute, which peer clients can get wrong.
                 lassign [$options(-db) eval {
                     SELECT from_jid, body FROM chat_message
-                    WHERE chat_jid=$chatJid AND timestamp=$targetTs
+                    WHERE chat_jid=$chatJid AND id=$target
                 }] targetFrom targetBody
                 dict set d reply_author_jid \
                     [NormalizeAuthorJid $chatJid $targetFrom]
@@ -1779,7 +1746,7 @@ snit::type taco_messagestore {
                 # Absent until the call's room has been asked.
                 if {$options(-livecmd) ne "" && $room ne ""} {
                     set live [{*}$options(-livecmd) [dict get $d chat_jid] \
-                        [dict get $d timestamp] $room]
+                        [dict get $d id] $room]
                     if {$live ne ""} { dict set content live $live }
                 }
             } else {
@@ -1793,7 +1760,7 @@ snit::type taco_messagestore {
             dict unset d $k
         }
         set reactions [$self reactionsForMessage \
-            [dict get $d chat_jid] [dict get $d timestamp]]
+            [dict get $d chat_jid] [dict get $d id]]
         if {[dict size $reactions] > 0} {
             dict set d reactions $reactions
         }
@@ -1813,7 +1780,7 @@ snit::type taco_messagestore {
         set sid [dict get $msg server_id]
         set oid [dict get $msg own_id]
         if {$sid ne "" || $oid ne ""} {
-            # Each id by its own index (see resolveTargetTs).
+            # Each id by its own index (see resolveTargetId).
             return [expr {[$options(-db) exists {
                     SELECT 1 FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
@@ -1825,9 +1792,8 @@ snit::type taco_messagestore {
                 }]}]
         } else {
             # Content-based fallback for messages without server_id/own_id
-            # (e.g. IRC bridge messages). Match within the same second —
-            # BumpTs may have shifted the stored timestamp by a few
-            # microseconds, so an exact match would miss it.
+            # (e.g. IRC bridge messages). Match within the same second: a
+            # copy may be stamped to the second where the first was not.
             # Tradeoff: identical sender+body within the same second is
             # treated as a duplicate (false positive), but that's rare
             # and far better than the alternative of unbounded duplicates
@@ -1866,17 +1832,6 @@ snit::type taco_messagestore {
         poskey between [$self PosPrev $jid $hi] $hi
     }
 
-    method BumpTs {jid ts step} {
-        while {1} {
-            if {![$options(-db) exists {
-                SELECT 1 FROM chat_message
-                WHERE chat_jid=$jid AND timestamp=$ts
-            }]} {
-                return $ts
-            }
-            incr ts $step
-        }
-    }
 }
 
 # The words of a search query. A word with nothing alphanumeric in it indexes

@@ -420,17 +420,17 @@ snit::type app_type {
         set acc [dict get $ev -acc]
         set from [dict get $ev -from]
         set chat [dict get $ev -chat]
-        set ts [dict get $ev -timestamp]
+        set id [dict get $ev -id]
         set who [expr {$from eq "" ? "Someone" : $from}]
         set answer [tk_messageBox -type yesno -icon question \
             -title "Group call" \
             -message "$who is calling [regsub {\?join$} $chat {}]. Join?"]
         if {$answer eq "yes"} {
-            ::tacky groupcall join -acc $acc -chat $chat -timestamp $ts \
+            ::tacky groupcall join -acc $acc -chat $chat -id $id \
                 -video [dict get $ev -video] \
                 -onerror [list ::tacky reportError [dict create acc $acc]]
         } else {
-            ::tacky groupcall decline -acc $acc -chat $chat -timestamp $ts
+            ::tacky groupcall decline -acc $acc -chat $chat -id $id
         }
     }
 }

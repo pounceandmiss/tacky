@@ -171,7 +171,7 @@ namespace eval ::test::groupcall_video {
         set out {}
         foreach m [dict get [[tacky client $acc] message messagestore get latest $ROOM?join] messages] {
             if {[dict exists $m content] && [dict get $m content type] eq "call"} {
-                lappend out [list [dict get $m timestamp] [dict get $m content]]
+                lappend out [list [dict get $m id] [dict get $m content]]
             }
         }
         return $out
@@ -191,7 +191,7 @@ namespace eval ::test::groupcall_video {
         foreach acc $order {
             waitUntil {[llength [callRows $acc]] > 0}
             tacky groupcall join -acc $acc -chat $ROOM?join \
-                -timestamp [lindex [callRows $acc] end 0] -video [expr {$acc ni $audioOnly}]
+                -id [lindex [callRows $acc] end 0] -video [expr {$acc ni $audioOnly}]
             waitUntil {[has $acc <Joined>]}
         }
         waitUntil {[meshLive [list $ROMEO {*}$order]]} $LIVE_TIMEOUT

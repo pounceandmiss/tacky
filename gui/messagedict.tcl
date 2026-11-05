@@ -71,12 +71,12 @@ proc enrich_store_message {storeDict resolve} {
     # re-derive it. Older dicts without the flag fall back to "incoming".
     set isOutgoing [expr {[dict exists $storeDict is_outgoing]
         && [dict get $storeDict is_outgoing]}]
-    # `key` identifies the row, `sort` places it. Both are the timestamp,
-    # which is unique within one chat; a caller drawing several chats into
-    # one area overrides `key` with something that separates them.
+    # `key` identifies the row (its id), `sort` places it (its pos in the
+    # chat). A caller drawing several chats into one area sorts by
+    # `timestamp` instead: places are only comparable within one chat.
     set d [dict create \
-        key          [dict get $storeDict timestamp] \
-        sort         [dict get $storeDict timestamp] \
+        key          [dict get $storeDict id] \
+        sort         [dict get $storeDict pos] \
         from_jid     $fromJid \
         display_name $displayName \
         avatar_jid   $fromJid \

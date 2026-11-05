@@ -119,7 +119,7 @@ snit::type messageactions {
 
     method viewxml {key} {
         ::tacky message rawxml -acc $options(-acc) \
-            -chat $options(-chat) -timestamp $key \
+            -chat $options(-chat) -id $key \
             -command {apply {{xml} {
                 xmlstanza showxml $xml
             }}}
@@ -201,7 +201,7 @@ snit::type messageactions {
 
     method React {key emoji} {
         ::tacky message react -acc $options(-acc) -chat $options(-chat) \
-            -timestamp $key -emoji $emoji
+            -id $key -emoji $emoji
     }
 
     # A role change reaches us as our own presence. Every other occupant's says

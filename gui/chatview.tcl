@@ -63,8 +63,8 @@ snit::widget chatview {
     # UpdateLoading; cleared by the next page that lands.
     variable LoadError ""
 
-    # Backend-pushed newest real-message timestamp for this chat (message
-    # <Tail>). The at-tail check compares the newest displayed id against it;
+    # Backend-pushed id of this chat's last message (message <Tail>). The
+    # at-tail check compares the last displayed id against it;
     # tracking it by event instead of a per-scroll query keeps the check
     # correct under the async (threaded/process) transports.
     variable DbNewest ""
@@ -78,8 +78,8 @@ snit::widget chatview {
     # The file transfers behind this chat's attachments.
     component transfers
 
-    # Read state: newest incoming id shown, and the last one we reported
-    # read. See MaybeMarkRead.
+    # Read state: the last incoming message shown as {pos id}, and the
+    # last one we reported read. See MaybeMarkRead.
     variable NewestIncoming ""
     variable LastMarkedRead ""
 
@@ -210,8 +210,9 @@ snit::widget chatview {
         set AtTail 0
     }
 
+    # Jump to a time (microseconds), `end`, or with -id to a message.
     method goto {target args} {
-        set defaults [dict create -source local]
+        set defaults [dict create -source local -id ""]
         set opts [dict merge $defaults $args]
         set source [dict get $opts -source]
 
@@ -225,6 +226,14 @@ snit::widget chatview {
             return
         }
 
+        if {[dict get $opts -id] ne ""} {
+            ::tacky message goto -acc $options(-acc) \
+                -chat $options(-jid) -id [dict get $opts -id] \
+                -limit 50 -tag $win/goto \
+                -command [mymethod OnGotoDone] \
+                -onerror [mymethod OnGotoFailed]
+            return
+        }
         if {$source eq "remote"} {
             set GotoBusy 1
             $self UpdateLoading
@@ -330,7 +339,7 @@ snit::widget chatview {
 
     # Catchup stores without emitting <New>, and live messages that landed
     # mid-sync were dropped, so reconcile against the pushed tail. Matching
-    # timestamps mean nothing moved here, at no round trip.
+    # ids mean nothing moved here, at no round trip.
     method MaybeCatchupRepaint {} {
         if {!$AtTail} return
         if {[::tacky listening $win/new]} return
@@ -351,7 +360,7 @@ snit::widget chatview {
     # live; leave them the scroll-to-bottom button.
     method OnCatchupLoadDone {messages} {
         if {[llength $messages] > 0
-            && [dict get [lindex $messages end] timestamp] ne $DbNewest} {
+            && [dict get [lindex $messages end] id] ne $DbNewest} {
             return
         }
         $self OnLoadDone new $messages
@@ -436,7 +445,7 @@ snit::widget chatview {
     # Send/receipt/upload status change: merge onto the checkmark row. Carries
     # any of server_status / remote_status / fail_reason / encryption.
     method OnStatus {ev} {
-        set ts [dict get $ev -timestamp]
+        set ts [dict get $ev -id]
         if {![$area messages has $ts]} return
         set patch [dict create]
         foreach k {server_status remote_status fail_reason encryption} {
@@ -453,27 +462,25 @@ snit::widget chatview {
         $area patchFields $ts $patch
     }
 
-    # A pending send was acknowledged by the server. When the stamp held
-    # (newtimestamp == timestamp) just update the checkmark in place; when the
-    # server relocated the row, rekey the stored dict to the new timestamp and
-    # redraw it at its new position.
+    # A pending send was acknowledged by the server. It keeps its place;
+    # the checkmark updates, and the time shown when the server stamped it.
     method OnConfirmed {ev} {
-        set ts [dict get $ev -timestamp]
-        if {![$area messages has $ts]} return
-        set newTs [dict get $ev -newtimestamp]
-        if {$newTs == $ts} {
-            $area patchFields $ts \
+        set id [dict get $ev -id]
+        if {![$area messages has $id]} return
+        set storeDict [$area messages get $id]
+        dict set storeDict server_status [dict get $ev -server_status]
+        if {![dict exists $ev -timestamp]
+                || [dict get $ev -timestamp] == [dict get $storeDict timestamp]} {
+            $area patchFields $id \
                 [dict create server_status [dict get $ev -server_status]]
             return
         }
-        set storeDict [$area messages get $ts]
-        dict set storeDict timestamp $newTs
-        dict set storeDict server_status [dict get $ev -server_status]
-        $self KeepingTail { $self Redraw $ts $storeDict }
+        dict set storeDict timestamp [dict get $ev -timestamp]
+        $self KeepingTail { $self Redraw $id $storeDict }
     }
 
     method OnReactions {ev} {
-        set ts [dict get $ev -timestamp]
+        set ts [dict get $ev -id]
         if {![$area messages has $ts]} return
         $area reactions update $ts [dict get $ev -reactions]
     }
@@ -481,16 +488,16 @@ snit::widget chatview {
     # Full-row redraw: the backend re-sends the whole store dict.
     method OnEdited {ev} {
         set msg [dict get $ev -message]
-        set ts [dict get $msg timestamp]
+        set ts [dict get $msg id]
         if {![$area messages has $ts]} return
         $self KeepingTail { $self Redraw $ts $msg }
     }
 
     # Retraction flips the shown entry to a tombstone. The event is lean
-    # (just the timestamp), so reuse the retained store dict and set the
+    # (just the id), so reuse the retained store dict and set the
     # retracted flag; DrawMessage renders the tombstone from the header alone.
     method OnRetracted {ev} {
-        set ts [dict get $ev -timestamp]
+        set ts [dict get $ev -id]
         if {![$area messages has $ts]} return
         set sd [$area messages get $ts]
         dict set sd retracted 1
@@ -518,10 +525,10 @@ snit::widget chatview {
         $self UpdateScrollBtn
     }
 
-    # Backend-pushed newest-message timestamp. Recomputing here keeps the
+    # Backend-pushed last message. Recomputing here keeps the
     # tail state correct regardless of <Tail>/<New> arrival order.
     method OnTail {ev} {
-        set DbNewest [dict get $ev -timestamp]
+        set DbNewest [dict get $ev -id]
         $self UpdateViewAtTail
     }
 
@@ -552,13 +559,16 @@ snit::widget chatview {
     # watermark, and tell the peer too in a 1:1 chat.
     method MaybeMarkRead {} {
         if {!$AtTail || $NewestIncoming eq ""} return
-        if {$LastMarkedRead ne "" && $NewestIncoming <= $LastMarkedRead} return
+        if {$LastMarkedRead ne ""
+            && [string compare [lindex $NewestIncoming 0] \
+                    [lindex $LastMarkedRead 0]] <= 0} return
         if {![$self WindowFocused]} return
+        set id [lindex $NewestIncoming 1]
         ::tacky message markOwnRead -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $NewestIncoming
+            -chat $options(-jid) -id $id
         if {!$IsMuc} {
             ::tacky message markDisplayed -acc $options(-acc) \
-                -chat $options(-jid) -timestamp $NewestIncoming
+                -chat $options(-jid) -id $id
         }
         set LastMarkedRead $NewestIncoming
     }
@@ -571,9 +581,8 @@ snit::widget chatview {
         }
     }
 
-    # Redraw a message already on screen from a fresh store dict. $key is the
-    # row it currently occupies, which is not the new dict's key when the
-    # server moved it.
+    # Redraw a message already on screen from a fresh store dict, in the row
+    # it occupies ($key).
     method Redraw {key msg} {
         set emsg [$self PrepareMessage $msg]
         $area replace $key $emsg
@@ -586,9 +595,10 @@ snit::widget chatview {
     method PrepareMessage {msg} {
         if {(![dict exists $msg is_outgoing] || ![dict get $msg is_outgoing])
                 && (![dict exists $msg kind] || [dict get $msg kind] eq "message")} {
-            set id [dict get $msg timestamp]
-            if {$NewestIncoming eq "" || $id > $NewestIncoming} {
-                set NewestIncoming $id
+            set at [list [dict get $msg pos] [dict get $msg id]]
+            if {$NewestIncoming eq ""
+                || [string compare [lindex $at 0] [lindex $NewestIncoming 0]] > 0} {
+                set NewestIncoming $at
             }
         }
         set emsg [$self EnrichMessage $msg]

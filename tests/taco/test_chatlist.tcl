@@ -36,7 +36,7 @@ proc bookmark_insert {jid args} {
     }
 }
 
-# Helper: insert a chat message
+# Helper: insert a chat message; returns its row id
 proc chatlist_chat_insert {chat_jid args} {
     set defaults [dict create \
         timestamp [clock microseconds] \
@@ -47,7 +47,7 @@ proc chatlist_chat_insert {chat_jid args} {
         raw_xml "" \
         server_status ""]
     set msg [dict merge $defaults [dict create chat_jid $chat_jid] $args]
-    c message messagestore store [list $msg]
+    lindex [dict get [c message messagestore store [list $msg]] inserted] 0
 }
 
 # Helper: build a jid -> field dict from a flat get result
@@ -103,9 +103,9 @@ test chatlist-unread-counts {entries carry unread; a read chat and a quiet conta
     -body {
         chatlist_chat_insert loud@example.com timestamp 100 body a
         chatlist_chat_insert loud@example.com timestamp 200 body b
-        chatlist_chat_insert seen@example.com timestamp 300 body c
+        set seen [chatlist_chat_insert seen@example.com timestamp 300 body c]
         roster_insert quiet@example.com name Quiet
-        c message messagestore markOwnRead seen@example.com 300
+        c message messagestore markOwnRead seen@example.com $seen
         set unread [by_jid [c chatlist get] unread]
         list [dict get $unread loud@example.com] \
             [dict get $unread seen@example.com] \
@@ -128,14 +128,14 @@ test chatlist-unread-mentions {entries count the unread messages that named us} 
 test chatlist-ownread-reemits-item {a watermark move re-emits the entry with a fresh count} \
     {*}$chatlist_common \
     -body {
-        chatlist_chat_insert alice@example.com timestamp 100 body a
+        set id [chatlist_chat_insert alice@example.com timestamp 100 body a]
         set counts {}
         tacky listen chatlist <Item> \
             {apply {{ev} {
                 lappend ::counts [dict get [dict get $ev -item] unread]
             }}}
-        c message messagestore markOwnRead alice@example.com 100
-        c bus publish message:<OwnRead> -jid alice@example.com -timestamp 100
+        c message messagestore markOwnRead alice@example.com $id
+        c bus publish message:<OwnRead> -jid alice@example.com -id $id
         set ::counts
     } -result {0}
 
@@ -463,8 +463,8 @@ test chatlist-item-carries-last-message {the event path resolves the tail the sa
 test chatlist-edit-of-tail-reemits {editing the tail message re-emits the entry with the new body} \
     {*}$chatlist_common \
     -body {
-        chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1
-        c message messagestore applyEdit alice@example.com 100 fixed "<xml/>" 150 \
+        set id [chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1]
+        c message messagestore applyEdit alice@example.com $id fixed "<xml/>" 150 \
             {encryption "" sender_fp ""}
         set bodies {}
         tacky listen chatlist <Item> \
@@ -479,15 +479,15 @@ test chatlist-edit-of-tail-reemits {editing the tail message re-emits the entry 
 test chatlist-edit-of-older-is-silent {a change behind the tail changes nothing a list shows} \
     {*}$chatlist_common \
     -body {
-        chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1
+        set id [chatlist_chat_insert alice@example.com timestamp 100 body old server_id sid1]
         chatlist_chat_insert alice@example.com timestamp 200 body tail
         set n 0
         tacky listen chatlist <Item> \
             {apply {{e} { incr ::n }}}
-        set msg [lindex [c message messagestore get ids alice@example.com 100] 0]
+        set msg [lindex [c message messagestore get ids alice@example.com $id] 0]
         c bus publish message:<Edited> -jid alice@example.com -message $msg
-        c bus publish message:<Retracted> -jid alice@example.com -timestamp 100
-        c bus publish message:<Status> -jid alice@example.com -timestamp 100 \
+        c bus publish message:<Retracted> -jid alice@example.com -id $id
+        c bus publish message:<Status> -jid alice@example.com -id $id \
             -remote_status read
         set n
     } -result {0}
@@ -495,25 +495,25 @@ test chatlist-edit-of-older-is-silent {a change behind the tail changes nothing 
 test chatlist-retract-of-tail-reemits {retracting the tail re-emits a tombstone entry} \
     {*}$chatlist_common \
     -body {
-        chatlist_chat_insert alice@example.com timestamp 100 body gone server_id sid1
-        c message messagestore applyRetract alice@example.com 100
+        set id [chatlist_chat_insert alice@example.com timestamp 100 body gone server_id sid1]
+        c message messagestore applyRetract alice@example.com $id
         set got {}
         tacky listen chatlist <Item> \
             {apply {{e} {
                 set m [dict get [dict get $e -item] last_message]
                 lappend ::got [dict get $m retracted] [dict exists $m content]
             }}}
-        c bus publish message:<Retracted> -jid alice@example.com -timestamp 100
+        c bus publish message:<Retracted> -jid alice@example.com -id $id
         set got
     } -result {1 0}
 
-test chatlist-confirm-reemits-at-new-slot {a confirmation that moved the tail row is judged where it landed} \
+test chatlist-confirm-reemits-at-new-slot {a confirmation that restamped the tail row re-emits it} \
     {*}$chatlist_common \
     -body {
-        chatlist_chat_insert alice@example.com timestamp 100 body mine own_id oid1 \
-            server_status pending
+        set id [chatlist_chat_insert alice@example.com timestamp 100 body mine own_id oid1 \
+            server_status pending]
         c db eval {UPDATE chat_message SET timestamp=150, server_status=''
-                   WHERE chat_jid='alice@example.com' AND timestamp=100}
+                   WHERE id=$id}
         set got {}
         tacky listen chatlist <Item> \
             {apply {{e} {
@@ -521,7 +521,7 @@ test chatlist-confirm-reemits-at-new-slot {a confirmation that moved the tail ro
                 lappend ::got [dict get $m timestamp] [dict get $m server_status]
             }}}
         c bus publish message:<Confirmed> -jid alice@example.com \
-            -timestamp 100 -newtimestamp 150 -server_status ""
+            -id $id -timestamp 150 -server_status ""
         set got
     } -result {150 {}}
 

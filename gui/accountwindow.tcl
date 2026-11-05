@@ -249,8 +249,8 @@ snit::widget accountwindow {
 
     # --- Chat routing ---
 
-    # -goto jumps the opened chat to a timestamp, for arriving from a search
-    # hit rather than the chat list.
+    # -goto jumps the opened chat to a message (its id), for arriving from a
+    # search hit rather than the chat list.
     method OpenChat {args} {
         array set opts {-groupchat 0 -goto ""}
         array set opts $args
@@ -342,10 +342,10 @@ snit::widget accountwindow {
     # An account-wide hit names its own chat, verbatim - the ?join suffix is
     # what makes it a groupchat, as it is everywhere else.
     method OnSearchGoto {hit} {
-        lassign $hit chat timestamp
+        lassign $hit chat id
         $self OpenChat -acc $currentAccount -jid $chat \
             -groupchat [expr {[string match {*\?join} $chat] ? 1 : 0}] \
-            -goto $timestamp
+            -goto $id
     }
 
     # By label, not index: the entry moves whenever the menu above it changes.

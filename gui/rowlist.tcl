@@ -22,7 +22,15 @@ snit::type rowlist {
     # Does a row sort after another? Ties break on the key, so the order is
     # total no matter what the caller's identities look like.
     proc After {aSort aKey bSort bKey} {
-        if {$aSort != $bSort} { return [expr {$aSort > $bSort}] }
+        if {$aSort ne $bSort} {
+            # A chat's order key (pos) is a string that sorts as such; a
+            # timestamp, for rows of several chats, is a number.
+            if {[string is entier -strict $aSort]
+                    && [string is entier -strict $bSort]} {
+                return [expr {$aSort > $bSort}]
+            }
+            return [expr {[string compare $aSort $bSort] > 0}]
+        }
         return [expr {[string compare $aKey $bKey] > 0}]
     }
 

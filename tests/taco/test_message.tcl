@@ -39,6 +39,27 @@ proc msg_row {where} {
     return $found
 }
 
+# Helper: the id of the last chat_message row matching $where, "" if none.
+proc msg_id {where} {
+    set db [$::_client message messagestore cget -db]
+    $db onecolumn "SELECT id FROM chat_message WHERE $where ORDER BY pos DESC LIMIT 1"
+}
+
+# Helper: the id of the last message in $chat whose body is $body.
+proc msg_id_of {body {chat alice@example.com}} {
+    set db [$::_client message messagestore cget -db]
+    $db onecolumn {
+        SELECT id FROM chat_message
+        WHERE chat_jid=$chat AND kind='message' AND body=$body
+        ORDER BY pos DESC LIMIT 1
+    }
+}
+
+# Helper: store messages and return the new rows' ids.
+proc msg_store_ids {msgs} {
+    dict get [msg_store $msgs] inserted
+}
+
 # Helper: call history and collect result via -command
 proc msg_history {args} {
     set ::_msg_hist_result {}
@@ -412,7 +433,7 @@ test message-live-fields {stored live message has correct fields} \
              [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
              [expr {[$::_client message rawxml -chat alice@example.com \
-                 -timestamp [dict get $msg timestamp]] ne ""}]
+                 -id [dict get $msg id]] ne ""}]
     } -result {alice@example.com alice@example.com hi srv42 {} 1 1}
 
 test message-live-delayed-uses-stamp {delayed message uses delay timestamp} \
@@ -836,14 +857,14 @@ test message-resend-plaintext-downgrades \
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-pt server_status pending \
             encryption omemo]]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat alice@example.com \
-            -timestamp $ts -plaintext 1
+            -id $id -plaintext 1
         set last [lindex [$::_client conn get_written] end]
         set db [$::_client message messagestore cget -db]
         set enc [$db onecolumn {
-            SELECT encryption FROM chat_message WHERE timestamp=$ts}]
+            SELECT encryption FROM chat_message WHERE id=$id}]
         list enc $enc \
             has_body [expr {[llength [xsearch $last body]] > 0}] \
             has_enc [expr {[llength [xsearch $last encrypted]] > 0}] \
@@ -857,14 +878,14 @@ test message-resend-plaintext-status-carries-stamp \
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-ps server_status pending \
             encryption omemo]]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         set ::_st {}
         set tag [tacky listen message <Status> {apply {{ev} {
             lappend ::_st [expr {[dict exists $ev -encryption]
                 ? [list enc [dict get $ev -encryption]] : "no-enc"}]
         }}}]
         tacky message resend -acc $acc -chat alice@example.com \
-            -timestamp $ts -plaintext 1
+            -id $id -plaintext 1
         tacky unlisten $tag
         set ::_st
     } -result {{enc {}}}
@@ -876,11 +897,11 @@ test message-resend-honors-stamp \
         msg_store [list [msg_msg chat_jid alice@example.com body "secret" \
             from_jid $acc own_id oid-st server_status pending \
             encryption omemo]]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         set before [llength [$::_client conn get_written]]
         tacky message resend -acc $acc -chat alice@example.com \
-            -timestamp $ts
-        set r [msg_row "timestamp=$ts"]
+            -id $id
+        set r [msg_row "id=$id"]
         # Store is uninitialised here (no OnReady), so encrypt is
         # NOT_READY: the row stays pending, NOT downgraded to plaintext
         # (encryption still 'omemo', nothing written to the wire).
@@ -1469,18 +1490,19 @@ test message-history-acked-send-becomes-cursor \
     {an acked own send adopts its archive id from MAM and anchors the next page} \
     {*}$msg_common -body {
         set tsR [ParseTimestamp 2024-03-01T10:00:00Z]
-        msg_store [list [msg_msg chat_jid alice@example.com body mine \
-            from_jid $acc own_id oid-c1 server_status "" timestamp $tsR]]
+        set idR [lindex [dict get [msg_store [list [msg_msg \
+            chat_jid alice@example.com body mine from_jid $acc own_id oid-c1 \
+            server_status "" timestamp $tsR]]] inserted] 0]
         # No citizen yet: this page goes by time and returns our send's copy.
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsR -limit 50 -command [list apply {{r} {}}]
+            -before $idR -limit 50 -command [list apply {{r} {}}]
         update
         msg_mam_respond [list [list id arc-c1 from $acc/res to alice@example.com \
             body mine origin_id oid-c1 stamp 2024-03-01T10:00:05Z]] -complete false
         set rows [msg_store_latest alice@example.com]
-        set newTs [dict get [lindex $rows 0] timestamp]
+        set newId [dict get [lindex $rows 0] id]
         tacky message history -acc $acc -chat alice@example.com \
-            -before $newTs -limit 50 -command [list apply {{r} {}}]
+            -before $newId -limit 50 -command [list apply {{r} {}}]
         update
         set q [lindex [xsearch [lindex [$::_client conn get_written] end] \
             query -ns urn:xmpp:mam:2] 0]
@@ -1746,7 +1768,7 @@ test message-marker-not-stored-as-message \
 
 # Our own read watermark: our reads, not the peer's (that is remote_status).
 proc msg_own_read {jid} {
-    dict get [$::_client message messagestore ownRead $jid] read_ts
+    dict get [$::_client message messagestore ownRead $jid] id
 }
 
 # A `displayed` marker we sent from another device, as the server carbons it.
@@ -1767,9 +1789,9 @@ test message-own-marker-advances-watermark \
     {*}$msg_common -body {
         $::_client conn feed [j message -type chat -id m1 \
             -from alice@example.com/phone { j body -body hi }]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         msg_own_marker_carbon alice@example.com m1
-        expr {[msg_own_read alice@example.com] == $ts}
+        expr {[msg_own_read alice@example.com] == $id}
     } -result 1
 
 test message-own-marker-emits-ownread \
@@ -1792,7 +1814,7 @@ test message-own-marker-unknown-id-noop \
             -from alice@example.com/phone { j body -body hi }]
         msg_own_marker_carbon alice@example.com nosuch
         msg_own_read alice@example.com
-    } -result 0
+    } -result {}
 
 test message-peer-marker-leaves-watermark \
     {the peer reading our message is not us reading theirs} \
@@ -1804,7 +1826,7 @@ test message-peer-marker-leaves-watermark \
             j displayed -ns urn:xmpp:chat-markers:0 -id $oid
         }]
         list [dict get [lindex [msg_store_latest alice@example.com] 0] remote_status] \
-            [expr {[msg_own_read alice@example.com] == $before}]
+            [expr {[msg_own_read alice@example.com] eq $before}]
     } -result {read 1}
 
 test message-own-carbon-marks-read \
@@ -1931,7 +1953,7 @@ test message-history-local-before {local -before returns correct slice} \
             [msg_msg timestamp 100 server_id s1 body a] \
             [msg_msg timestamp 200 server_id s2 body b] \
             [msg_msg timestamp 300 server_id s3 body c]]
-        set result [msg_history -chat alice@example.com -before 300 -limit 2]
+        set result [msg_history -chat alice@example.com -before [msg_id_of c] -limit 2]
         list [llength $result] \
              [dict get [lindex $result 0] content body] \
              [dict get [lindex $result 1] content body]
@@ -1959,7 +1981,7 @@ test message-history-after-at-latest-no-mam {-after at latest message returns em
             [msg_msg timestamp 100 server_id s1 body a] \
             [msg_msg timestamp 200 server_id s2 body b]]
         set written1 [$::_client conn get_written]
-        set result [msg_history -chat alice@example.com -after 200 -limit 50]
+        set result [msg_history -chat alice@example.com -after [msg_id_of b] -limit 50]
         set written2 [$::_client conn get_written]
         list [llength $result] \
              [expr {[llength $written1] == [llength $written2]}]
@@ -2005,9 +2027,9 @@ test message-history-before-empty-queries-mam {-before with empty local still qu
         # Store one message as the cursor anchor
         msg_store [list [msg_msg timestamp 500 server_id s1 body anchor]]
         set written1 [$::_client conn get_written]
-        # -before 500: no local data before the cursor -> should trigger MAM
+        # -before the anchor: no local data before the cursor -> should trigger MAM
         tacky message history -acc $acc -chat alice@example.com \
-            -before 500 -limit 50 \
+            -before [msg_id_of anchor] -limit 50 \
             -command [list apply {{r} {}}]
         update
         set written2 [$::_client conn get_written]
@@ -2055,7 +2077,7 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [dict get $m1 chat_jid] \
              [expr {[dict get $m1 timestamp] > 0}] \
              [expr {[$::_client message rawxml -chat alice@example.com \
-                 -timestamp [dict get $m1 timestamp]] ne ""}] \
+                 -id [dict get $m1 id]] ne ""}] \
              [dict get $m2 content body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
 
@@ -2063,8 +2085,11 @@ test message-history-mam-before-timestamp {-before with no local citizen pages b
     {*}$msg_common \
     -body {
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
+        # The cursor row is no citizen: it has no archive id to page from.
+        set id [lindex [msg_store_ids [list [msg_msg timestamp $ts \
+            server_id "" body cursor]]] 0]
         tacky message history -acc $acc -chat alice@example.com \
-            -before $ts -limit 10 \
+            -before $id -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
         update
         set iqStanza [lindex [$::_client conn get_written] end]
@@ -2079,13 +2104,16 @@ test message-history-mam-after-timestamp {-after with no at-or-before citizen pa
     {*}$msg_common \
     -body {
         set ts [ParseTimestamp 2024-06-15T12:00:00Z]
-        # Store a message newer than the cursor so MAM fires (latestTs > after)
-        msg_store [list [msg_msg timestamp [expr {$ts + 1000000}] \
-            chat_jid alice@example.com server_id s-later body later]]
+        # The cursor row is no citizen; a message newer than it makes MAM
+        # fire (the cursor is not the latest).
+        msg_store [list \
+            [msg_msg timestamp $ts server_id "" body cursor] \
+            [msg_msg timestamp [expr {$ts + 1000000}] \
+                chat_jid alice@example.com server_id s-later body later]]
         # Place a hole between cursor and latest so get after is bounded
         $::_client message messagestore hole add alice@example.com newer $ts
         tacky message history -acc $acc -chat alice@example.com \
-            -after $ts -limit 10 \
+            -after [msg_id_of cursor] -limit 10 \
             -command [list apply {{r} { set ::result $r }}]
         update
         set iqStanza [lindex [$::_client conn get_written] end]
@@ -2130,7 +2158,7 @@ test message-history-nearest-citizen-skips-noncitizen \
             [msg_msg timestamp $tsN server_id "" body n] \
             [msg_msg timestamp $tsC server_id Cgood body c]]
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsN -limit 50 \
+            -before [msg_id_of n] -limit 50 \
             -command [list apply {{r} {}}]
         update
         set q1 [lindex [xsearch [lindex [$::_client conn get_written] end] \
@@ -2151,7 +2179,7 @@ test message-history-dead-cursor-retries-by-time \
 
         set ::result {}
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsP -limit 50 \
+            -before [msg_id_of p] -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
         update
 
@@ -2189,7 +2217,7 @@ test message-history-time-retry-not-found-falls-back \
         msg_store [list [msg_msg timestamp $tsP server_id Pgone body p]]
         set ::result none
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsP -limit 50 \
+            -before [msg_id_of p] -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
         update
         foreach _ {1 2} {
@@ -2211,7 +2239,7 @@ test message-history-transient-error-no-retry \
         msg_store [list [msg_msg timestamp $tsP server_id Pbad body p]]
         set ::result none
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsP -limit 50 \
+            -before [msg_id_of p] -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
         update
         set queriesBefore [mam_iq_count]
@@ -2247,7 +2275,7 @@ test message-history-archive-error-with-nothing-local-is-reported \
         set ::result none
         set ::failure none
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsP -limit 50 \
+            -before [msg_id_of p] -limit 50 \
             -command [list apply {{r} { set ::result $r }}] \
             -onerror [list apply {{m} { set ::failure $m }}]
         update
@@ -2263,7 +2291,7 @@ test message-history-archive-error-without-onerror-falls-back-to-local \
         msg_store [list [msg_msg timestamp $tsP server_id Pbad body p]]
         set ::result none
         tacky message history -acc $acc -chat alice@example.com \
-            -before $tsP -limit 50 \
+            -before [msg_id_of p] -limit 50 \
             -command [list apply {{r} { set ::result $r }}]
         update
         msg_history_fails
@@ -2281,7 +2309,7 @@ test message-history-archive-error-still-answers-a-partial-page \
         set ::result none
         set ::failure none
         tacky message history -acc $acc -chat alice@example.com \
-            -before 500 -limit 50 \
+            -before [msg_id_of e] -limit 50 \
             -command [list apply {{r} { set ::result $r }}] \
             -onerror [list apply {{m} { set ::failure $m }}]
         update
@@ -2405,11 +2433,11 @@ test message-history-hole-triggers-mam-on-pagination {cursor-based pagination ac
             [msg_msg timestamp 100 server_id s1 body a] \
             [msg_msg timestamp 500 server_id s5 body e]]
         $::_client message messagestore hole add alice@example.com newer 100
-        # -before 500: local returns empty (hole sits between 100
+        # -before e: local returns empty (hole sits between 100
         # and 500, truncating). bounded=true with cursor -> MAM fires.
         set written1 [$::_client conn get_written]
         tacky message history -acc $acc -chat alice@example.com \
-            -before 500 -limit 50 \
+            -before [msg_id_of e] -limit 50 \
             -command [list apply {{r} {}}]
         update
         set written2 [$::_client conn get_written]
@@ -2443,7 +2471,7 @@ test message-history-mam-sweeps-bounding-hole {a page fetched past a hole goes i
         set sentBefore [llength [$::_client message messagestore hole list alice@example.com]]
         # Trigger -before pagination past the hole (should hit MAM)
         tacky message history -acc $acc -chat alice@example.com \
-            -before 100 -limit 50 \
+            -before [msg_id_of anchor] -limit 50 \
             -command [list apply {{r} {}}]
         update
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
@@ -2467,7 +2495,8 @@ test message-history-mam-sweeps-bounding-hole {a page fetched past a hole goes i
         # The page went in between the hole and the cursor, and the hole
         # stays below it, where the archive goes on: still 1.
         list $sentBefore $sentAfter [lmap m [dict get \
-            [$::_client message messagestore get before alice@example.com 100] \
+            [$::_client message messagestore get before alice@example.com \
+                [msg_id_of anchor]] \
             messages] {dict get $m content body}]
     } -result {1 1 older}
 
@@ -2477,11 +2506,11 @@ test message-history-mam-complete-removes-bounding-hole {MAM complete=true on a 
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body anchor]]
         $::_client message messagestore hole add alice@example.com older 100
-        # -before 100: local empty + bounded (hole older than cursor)
+        # -before anchor: local empty + bounded (hole older than cursor)
         # -> MAM fires. Server says "complete=true" -> archive exhausted
         # in the older direction. The bounding hole must clear.
         tacky message history -acc $acc -chat alice@example.com \
-            -before 100 -limit 50 \
+            -before [msg_id_of anchor] -limit 50 \
             -command [list apply {{r} {}}]
         update
         set iqId [dict get [lindex [$::_client conn get_written] end] attrs id]
@@ -2505,7 +2534,7 @@ test message-history-complete-returns-rows-behind-hole {an empty complete page r
         # A reset archive knows s5 but nothing before it.
         set ::_got ""
         tacky message history -acc $acc -chat alice@example.com \
-            -before 500 -limit 50 \
+            -before [msg_id_of new] -limit 50 \
             -command [list apply {{r} {set ::_got $r}}]
         update
         msg_mam_respond {} -complete true
@@ -2629,9 +2658,9 @@ test message-goto-local {goto -source local returns getAround result with anchor
              [dict get [lindex $msgs 0] content body] \
              [dict get [lindex $msgs 2] content body] \
              [dict get [lindex $msgs end] content body] \
-             [dict get $result anchor] \
+             [expr {[dict get $result anchor] == [msg_id_of c]}] \
              [expr {[llength $written1] == [llength $written2]}]
-    } -result {5 a c e 300 1}
+    } -result {5 a c e 1 1}
 
 test message-goto-remote {goto -source remote fetches MAM then returns getAround} \
     {*}$msg_common \
@@ -3055,16 +3084,16 @@ test message-catchup-still-patches {a reaction in a catchup page still patches i
     } -result {1}
 
 # Mention detection (feeds the notification policy; rooms only).
-proc msg_mention_at {jid ts} {
-    return [$::_client message messagestore mentionAt $jid $ts]
+proc msg_mention_at {jid id} {
+    return [$::_client message messagestore mentionAt $jid $id]
 }
 
 proc msg_room_says {nick body} {
     $::_client conn feed [j message -type groupchat \
         -from room@muc.example.com/$nick { j body -body $body }]
     set res [$::_client message messagestore get latest room@muc.example.com?join]
-    set ts [dict get [lindex [dict get $res messages] end] timestamp]
-    return [msg_mention_at room@muc.example.com?join $ts]
+    set id [dict get [lindex [dict get $res messages] end] id]
+    return [msg_mention_at room@muc.example.com?join $id]
 }
 
 test message-mention-nick-match {a room message naming our nick is flagged} \
@@ -3101,8 +3130,8 @@ test message-mention-direct-chat-never {a 1:1 message is never a mention} \
         $::_client conn feed [j message -type chat -id d1 \
             -from alice@example.com/phone { j body -body "user hello" }]
         set res [$::_client message messagestore get latest alice@example.com]
-        set ts [dict get [lindex [dict get $res messages] end] timestamp]
-        msg_mention_at alice@example.com $ts
+        set id [dict get [lindex [dict get $res messages] end] id]
+        msg_mention_at alice@example.com $id
     } -result {0}
 
 test message-mention-set-on-mam-path {the flag is stamped on the MAM path too} \
@@ -3117,8 +3146,8 @@ test message-mention-set-on-mam-path {the flag is stamped on the MAM path too} \
                 from room@muc.example.com/alice type groupchat \
                 body "bob: from the archive" stamp 2024-01-01T10:00:00Z]]
         set res [$::_client message messagestore get latest room@muc.example.com?join]
-        set ts [dict get [lindex [dict get $res messages] end] timestamp]
-        msg_mention_at room@muc.example.com?join $ts
+        set id [dict get [lindex [dict get $res messages] end] id]
+        msg_mention_at room@muc.example.com?join $id
     } -result {1}
 
 test message-muc-catchup-on-join {joining a room queries its own archive} \
@@ -3460,7 +3489,7 @@ test message-fill-gives-up-on-what-order-cannot-open \
                 timestamp [ParseTimestamp 2024-01-01T11:00:00Z] \
                 body {[OMEMO] Could not decrypt message} undecrypted 1]]
         $::_client message messagestore giveUpUndecrypted alice@example.com \
-            [ParseTimestamp 2024-01-01T11:00:00Z]
+            [msg_id "server_id='s_u'"]
         set before [msg_mam_query_count]
         $::_client message QueueOmemoFills {}
         list [expr {[msg_mam_query_count] - $before}] \
@@ -3720,7 +3749,7 @@ test message-search-results-parsed-and-stored {search results parsed and stored 
              [dict get [lindex $msgs 0] server_id] \
              [dict get [lindex $msgs 1] content body] \
              [dict get $result complete] \
-             [dict get $result last_id] \
+             [dict get $result last_archive] \
              [dict get $result last] \
              $dbCount
     } -result {2 {found it} sid1 {found another} 0 sid2 {} 2}
@@ -3798,12 +3827,12 @@ test message-search-skips-empty-body {search skips results with empty body} \
         list [llength $msgs] [dict get [lindex $msgs 0] content body]
     } -result {1 {has content}}
 
-test message-search-pagination-before {search with -before_id sends RSM before element} \
+test message-search-pagination-before {search with -before_archive sends RSM before element} \
     {*}$msg_common \
     -body {
         msg_prime_search
         tacky message search -source remote -acc $acc -chat alice@example.com \
-            -query "test" -before_id "page-cursor-id" -limit 10 \
+            -query "test" -before_archive "page-cursor-id" -limit 10 \
             -command [list apply {{r} {}}]
         update
         set iqStanza [lindex [$::_client conn get_written] end]
@@ -3898,7 +3927,7 @@ test message-search-wraps-inserted-hit-with-holes {a new search hit gets older a
 
         set hitTs [dict get [lindex [dict get $result messages] 0] timestamp]
         set sents [$::_client message messagestore hole list alice@example.com]
-        # Two holes straddling the hit (BumpTs places them +-1us).
+        # Two holes straddling the hit, stamped just either side of it.
         list [llength $sents] \
              [expr {[lindex $sents 0] < $hitTs}] \
              [expr {[lindex $sents 1] > $hitTs}]
@@ -4061,8 +4090,8 @@ test message-search-local-basic {source local returns matching message dicts new
         list [lmap m [dict get $r messages] {dict get $m timestamp}] \
              [dict get [lindex [dict get $r messages] 0] content body] \
              [dict get $r complete] \
-             [dict get $r last]
-    } -result {{200 100} {find me too} 1 100}
+             [expr {[dict get $r last] == [msg_id_of {find me}]}]
+    } -result {{200 100} {find me too} 1 1}
 
 test message-search-local-complete-flag {source local marks complete false and reports last when the limit is hit} \
     {*}$msg_common \
@@ -4074,8 +4103,8 @@ test message-search-local-complete-flag {source local marks complete false and r
         set r [msg_search -chat alice@example.com -query x -source local -limit 2]
         list [lmap m [dict get $r messages] {dict get $m timestamp}] \
              [dict get $r complete] \
-             [dict get $r last]
-    } -result {{300 200} 0 200}
+             [expr {[dict get $r last] == [msg_id_of x2]}]
+    } -result {{300 200} 0 1}
 
 test message-search-local-before {source local -before pages to older matches} \
     {*}$msg_common \
@@ -4084,7 +4113,8 @@ test message-search-local-before {source local -before pages to older matches} \
             [msg_msg timestamp 100 body x1] \
             [msg_msg timestamp 200 body x2] \
             [msg_msg timestamp 300 body x3]]
-        set r [msg_search -chat alice@example.com -query x -source local -before 300]
+        set r [msg_search -chat alice@example.com -query x -source local \
+            -before [msg_id_of x3]]
         lmap m [dict get $r messages] {dict get $m timestamp}
     } -result {200 100}
 
@@ -4261,10 +4291,10 @@ test message-search-both-answers-from-store {both ingests the remote page, then 
         }]
 
         # Both the pre-existing local row and the freshly stored remote hit,
-        # newest first, and `last` is a timestamp rather than an RSM id.
+        # newest first, and `last` is a row id rather than an RSM id.
         list [lmap m [dict get $::result messages] {dict get $m content body}] \
-             [dict get $::result last]
-    } -result {{{a remote needle} {a local needle}} 100}
+             [expr {[dict get $::result last] == [msg_id_of {a local needle}]}]
+    } -result {{{a remote needle} {a local needle}} 1}
 
 test message-search-both-degrades-to-local-when-unsupported {both answers from the store when the archive cannot search} \
     {*}$msg_common \
@@ -4290,7 +4320,7 @@ test message-search-both-before-pages-locally {a -before cursor walks the fetche
             [msg_msg timestamp 200 body {needle two}]]
         set ::result {}
         tacky message search -source both -acc $acc -chat alice@example.com \
-            -query "needle" -limit 10 -before 200 \
+            -query "needle" -limit 10 -before [msg_id_of {needle two}] \
             -command [list apply {{r} { set ::result $r }}]
         update
         list [mam_query_count] \
@@ -4407,9 +4437,9 @@ test message-live-origin-id-captured {origin-id element is captured and resolvab
             j stanza-id -ns urn:xmpp:sid:0 -id srvX -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG-A
         }]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         expr {[$::_client message messagestore resolveReply \
-                   alice@example.com ORIG-A alice@example.com] == $ts}
+                   alice@example.com ORIG-A alice@example.com] == $id}
     } -result {1}
 
 test message-live-origin-id-fallback {origin_id falls back to @id when no origin-id element} \
@@ -4419,9 +4449,9 @@ test message-live-origin-id-fallback {origin_id falls back to @id when no origin
             j body -body hi
             j stanza-id -ns urn:xmpp:sid:0 -id srvB -by user@test.example.com
         }]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         expr {[$::_client message messagestore resolveReply \
-                   alice@example.com ATID alice@example.com] == $ts}
+                   alice@example.com ATID alice@example.com] == $id}
     } -result {1}
 
 test message-live-nonreply-empty {non-reply message has empty reply fields} \
@@ -4468,9 +4498,9 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
             j stanza-id -ns urn:xmpp:sid:0 -id SRV1 -by user@test.example.com
             j origin-id -ns urn:xmpp:sid:0 -id ORIG1
         }]
-        set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set tgtId [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         tacky message send -acc $acc -chat alice@example.com \
-            -body "my answer" -reply_to_ts $tgtTs
+            -body "my answer" -reply_to_id $tgtId
         set stanza [lindex [$::_client conn get_written] end]
         set fb [lindex [xsearch $stanza fallback -ns urn:xmpp:fallback:0] 0]
         set fbEnd [xsearch [lindex [xsearch $fb body] 0] -get @end]
@@ -4492,9 +4522,9 @@ test message-send-reply-no-quote-of-encrypted {a cleartext reply to an OMEMO mes
         msg_store [list [msg_msg chat_jid alice@example.com \
             from_jid alice@example.com/phone origin_id ENC1 \
             body "the secret" encryption omemo]]
-        set tgtTs [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
+        set tgtId [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         tacky message send -acc $acc -chat alice@example.com \
-            -body "my answer" -reply_to_ts $tgtTs
+            -body "my answer" -reply_to_id $tgtId
         set stanza [lindex [$::_client conn get_written] end]
         list [xsearch $stanza reply -ns urn:xmpp:reply:0 -get @id] \
              [xsearch $stanza body -get body] \
@@ -4508,10 +4538,10 @@ test message-send-reply-own-pending {replying to our own pending message cites i
         $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "mine"
         set own [lindex [msg_store_latest alice@example.com] end]
-        set ownTs [dict get $own timestamp]
+        set ownId [dict get $own id]
         set ownOid [dict get $own own_id]
         tacky message send -acc $acc -chat alice@example.com \
-            -body "follow up" -reply_to_ts $ownTs
+            -body "follow up" -reply_to_id $ownId
         set stanza [lindex [$::_client conn get_written] end]
         set reply [lindex [msg_store_latest alice@example.com] end]
         list [dict get $own server_id] \
@@ -4520,7 +4550,7 @@ test message-send-reply-own-pending {replying to our own pending message cites i
     } -result {{} 1 1}
 
 test message-maxts-ignores-hole \
-    {maxTimestamp reflects the newest message, not a tail hole} \
+    {Tail reflects the newest message, not a tail hole} \
     {*}$msg_common \
     -body {
         set room room@muc.example.com?join
@@ -4530,11 +4560,11 @@ test message-maxts-ignores-hole \
         # A 'newer' hole marks an unfetched tail gap one usec past the
         # newest message; it must not be mistaken for the newest message.
         $::_client message messagestore hole add $room newer $ts
-        expr {[$::_client message maxTimestamp -chat $room] == $ts}
+        expr {[lindex [$::_client message Tail $room] 1] == $ts}
     } -result 1
 
 test message-maxts-after-confirm-move \
-    {maxTimestamp tracks a pending row whose timestamp moves on confirmation} \
+    {Tail tracks a pending row restamped on confirmation} \
     {*}$msg_common \
     -body {
         set room room@muc.example.com?join
@@ -4544,29 +4574,29 @@ test message-maxts-after-confirm-move \
         # Room echoes it back with a later stamp; the pending row's timestamp
         # is moved in place via UPDATE (which the insert trigger misses).
         set echoTs [expr {$oid + 5000}]
+        set id [dict get [lindex [msg_store_latest $room] 0] id]
         $::_client message messagestore reconcile $room sid-echo $oid $oid $echoTs
-        expr {[$::_client message maxTimestamp -chat $room] == $echoTs}
+        expr {[$::_client message Tail $room] eq [list $id $echoTs]}
     } -result 1
 
 # The GUI tracks the conversation tail from the pushed message <Tail> event
-# instead of polling maxTimestamp (which only resolves inline in the direct
-# transport). A live insert must push the current newest timestamp.
+# instead of polling. A live insert must push the current last row.
 test message-tail-emitted-on-live \
     {a live message emits message <Tail> carrying the newest timestamp} \
     {*}$msg_common \
     -body {
         set ::_tail ""
         tacky listen message <Tail> -jid alice@example.com \
-            {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
+            {apply {{ev} { set ::_tail [list [dict get $ev -id] [dict get $ev -timestamp]] }}}
         $::_client conn feed [j message -type chat -from alice@example.com/phone {
             j body -body "hi"
         }]
-        expr {$::_tail ne ""
-            && $::_tail == [$::_client message maxTimestamp -chat alice@example.com]}
+        expr {[lindex $::_tail 0] ne ""
+            && $::_tail eq [$::_client message Tail alice@example.com]}
     } -result 1
 
-# The confirmation rekey (echo stamp replaces the local send stamp) can move
-# the tail, so HandleConfirmation must re-push <Tail> with the corrected max.
+# The confirmation restamps the row (echo stamp replaces the local send
+# stamp), so HandleConfirmation must re-push <Tail> with the new stamp.
 test message-tail-repushed-on-confirm-move \
     {a self-echo that moves the pending row's timestamp re-emits message <Tail>} \
     {*}$msg_common \
@@ -4576,15 +4606,15 @@ test message-tail-repushed-on-confirm-move \
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
         set ::_tail ""
         tacky listen -tag tailmove message <Tail> -jid alice@example.com \
-            {apply {{ev} { set ::_tail [dict get $ev -timestamp] }}}
+            {apply {{ev} { set ::_tail [list [dict get $ev -id] [dict get $ev -timestamp]] }}}
         $::_client conn feed [j message -type chat \
             -from user@test.example.com/res -to alice@example.com -id $oid {
             j body -body "echo me"
             j stanza-id -ns urn:xmpp:sid:0 -id srv-echo-tail -by user@test.example.com
         }]
         tacky unlisten tailmove
-        expr {$::_tail ne ""
-            && $::_tail == [$::_client message maxTimestamp -chat alice@example.com]}
+        expr {[lindex $::_tail 0] ne ""
+            && $::_tail eq [$::_client message Tail alice@example.com]}
     } -result 1
 
 # XEP-0184/0333 marker sending.
@@ -4834,7 +4864,7 @@ test message-markdisplayed-sends \
         msg_contact alice@example.com
         msg_store [list [msg_msg timestamp 5000000 origin_id oid9]]
         tacky message markDisplayed -acc $acc \
-            -chat alice@example.com -timestamp 5000000
+            -chat alice@example.com -id [msg_id "origin_id='oid9'"]
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
 
@@ -4847,7 +4877,7 @@ test message-markdisplayed-names-theirs-under-ours \
             [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
                 from_jid $acc]]
         tacky message markDisplayed -acc $acc \
-            -chat alice@example.com -timestamp 5100000
+            -chat alice@example.com -id [msg_id "origin_id='oid10'"]
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
 
@@ -4860,7 +4890,8 @@ test message-markdisplayed-after \
             [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
                 from_jid $acc]]
         tacky message markDisplayed -acc $acc \
-            -chat alice@example.com -timestamp 5100000 -after 5000000
+            -chat alice@example.com -id [msg_id "origin_id='oid10'"] \
+            -after [msg_id "origin_id='oid9'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
@@ -4872,7 +4903,8 @@ test message-markdisplayed-not-to-strangers \
         foreach jid {stranger@example.com bob@example.com} {
             msg_store [list [msg_msg timestamp 5000000 chat_jid $jid \
                 from_jid $jid/phone origin_id oid-$jid]]
-            tacky message markDisplayed -acc $acc -chat $jid -timestamp 5000000
+            tacky message markDisplayed -acc $acc -chat $jid \
+                -id [msg_id "origin_id='oid-$jid'"]
         }
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
@@ -4885,7 +4917,7 @@ test message-markdisplayed-own-message-noop \
         msg_store [list [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
             from_jid $acc]]
         tacky message markDisplayed -acc $acc \
-            -chat alice@example.com -timestamp 5100000
+            -chat alice@example.com -id [msg_id "origin_id='oid10'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
@@ -4894,7 +4926,7 @@ test message-markdisplayed-muc-noop \
     {*}$msg_common \
     -body {
         tacky message markDisplayed -acc $acc \
-            -chat room@conf.example.com?join -timestamp 6000000
+            -chat room@conf.example.com?join -id 1
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
@@ -4906,7 +4938,7 @@ test message-markdisplayed-disabled \
         $::_client setting set -key send_chat_markers -value 0
         msg_store [list [msg_msg timestamp 7000000 origin_id oid7]]
         tacky message markDisplayed -acc $acc \
-            -chat alice@example.com -timestamp 7000000
+            -chat alice@example.com -id [msg_id "origin_id='oid7'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
@@ -4955,8 +4987,8 @@ test message-reaction-incoming-1to1 {a peer reaction aggregates onto the target 
 test message-react-sends-reactions {react writes a <reactions> carrying the emoji and a store hint} \
     {*}$msg_common -body {
         tacky message send -acc $acc -chat alice@example.com -body "hi"
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message react -acc $acc -chat alice@example.com -id $id -emoji 👍
         set stanza [lindex [$::_client conn get_written] end]
         list [xsearch $stanza reactions -ns urn:xmpp:reactions:0 reaction -get body] \
              [llength [xsearch $stanza store -ns urn:xmpp:hints]]
@@ -4965,17 +4997,17 @@ test message-react-sends-reactions {react writes a <reactions> carrying the emoj
 test message-react-own-shows-mine {our own reaction is marked mine on the message} \
     {*}$msg_common -body {
         tacky message send -acc $acc -chat alice@example.com -body "hi"
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message react -acc $acc -chat alice@example.com -id $id -emoji 👍
         dict get [lindex [msg_store_latest alice@example.com] 0] reactions
     } -result {👍 {reactors user@test.example.com mine 1}}
 
 test message-react-toggle-off-retracts {toggling the same emoji twice sends an empty reactions set} \
     {*}$msg_common -body {
         tacky message send -acc $acc -chat alice@example.com -body "hi"
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
-        tacky message react -acc $acc -chat alice@example.com -timestamp $ts -emoji 👍
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message react -acc $acc -chat alice@example.com -id $id -emoji 👍
+        tacky message react -acc $acc -chat alice@example.com -id $id -emoji 👍
         set stanza [lindex [$::_client conn get_written] end]
         list [llength [xsearch $stanza reactions -ns urn:xmpp:reactions:0 reaction]] \
              [dict exists [lindex [msg_store_latest alice@example.com] 0] reactions]
@@ -5025,8 +5057,8 @@ test message-reaction-mam-bounds-the-page \
 # Our clock ahead of the server's: what we do here is stamped later than
 # what the archive says another device of ours did after it.
 
-proc msg_at {jid ts} {
-    lindex [$::_client message messagestore get ids $jid [list $ts]] 0
+proc msg_at {jid id} {
+    lindex [$::_client message messagestore get ids $jid [list $id]] 0
 }
 
 proc msg_stamp_ago {secs} {
@@ -5056,7 +5088,7 @@ test message-reaction-removed-elsewhere-despite-skew \
         msg_catchup [dict create messages [list [msg_archived_hello a1 600]] \
             complete 1]
         tacky message react -acc $acc -chat alice@example.com \
-            -timestamp [dict get $own timestamp] -emoji 👍
+            -id [dict get $own id] -emoji 👍
         set rn [j result -ns urn:xmpp:mam:2 -id a2 {
             j forwarded -ns urn:xmpp:forward:0 {
                 j delay -ns urn:xmpp:delay -stamp [msg_stamp_ago 300]
@@ -5067,7 +5099,7 @@ test message-reaction-removed-elsewhere-despite-skew \
             }
         }]
         msg_catchup [dict create messages [list $rn] complete 1]
-        dict exists [msg_at alice@example.com [dict get $own timestamp]] \
+        dict exists [msg_at alice@example.com [dict get $own id]] \
             reactions
     } -result {0}
 
@@ -5081,7 +5113,7 @@ test message-edit-elsewhere-despite-skew \
         msg_catchup [dict create messages [list [msg_archived_hello a1 600]] \
             complete 1]
         tacky message edit -acc $acc -chat alice@example.com \
-            -timestamp [dict get $own timestamp] -body "hi here"
+            -id [dict get $own id] -body "hi here"
         set rn [j result -ns urn:xmpp:mam:2 -id a2 {
             j forwarded -ns urn:xmpp:forward:0 {
                 j delay -ns urn:xmpp:delay -stamp [msg_stamp_ago 300]
@@ -5093,7 +5125,7 @@ test message-edit-elsewhere-despite-skew \
             }
         }]
         msg_catchup [dict create messages [list $rn] complete 1]
-        dict get [msg_at alice@example.com [dict get $own timestamp]] \
+        dict get [msg_at alice@example.com [dict get $own id]] \
             content body
     } -result {hi from the phone}
 
@@ -5271,8 +5303,8 @@ test message-edit-own-1to1 {editing our own message swaps its body and marks edi
     {*}$msg_common -body {
         $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message edit -acc $acc -chat alice@example.com -id $id -body "hello"
         set m [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $m content body] [dict get $m edited]
     } -result {hello 1}
@@ -5282,8 +5314,8 @@ test message-edit-sends-replace {edit puts <replace> referencing the original id
         $::_client omemo setEnabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message edit -acc $acc -chat alice@example.com -timestamp $ts -body "hello"
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message edit -acc $acc -chat alice@example.com -id $id -body "hello"
         set stanza [lindex [$::_client conn get_written] end]
         list [expr {[xsearch $stanza replace -ns urn:xmpp:message-correct:0 -get @id] eq $oid}] \
              [xsearch $stanza body -get body]
@@ -5323,8 +5355,8 @@ test message-retract-own-1to1 {retract tombstones our message and sends <retract
     {*}$msg_common -body {
         tacky message send -acc $acc -chat alice@example.com -body "oops"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
-        set ts [dict get [lindex [msg_store_latest alice@example.com] 0] timestamp]
-        tacky message retract -acc $acc -chat alice@example.com -timestamp $ts
+        set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
+        tacky message retract -acc $acc -chat alice@example.com -id $id
         set stanza [lindex [$::_client conn get_written] end]
         set m [lindex [msg_store_latest alice@example.com] 0]
         list [expr {[xsearch $stanza retract -ns urn:xmpp:message-retract:1 -get @id] eq $oid}] \
@@ -5371,11 +5403,11 @@ test message-retract-own-drops-the-file {our own retraction drops the downloaded
         set full [::msgretract::cache $url]
         msg_store [list [msg_msg from_jid $acc own_id o1 body $url timestamp 5000000 \
             attachments [list [list url $url type image name mine.png size "" mime ""]]]]
-        tacky message retract -acc $acc -chat alice@example.com -timestamp 5000000
+        tacky message retract -acc $acc -chat alice@example.com -id [msg_id_of $url]
         ::msgretract::left $url $full
     } -result {0 0}
 
-# Helper: store an incoming room message and return its timestamp. Enters via
+# Helper: store an incoming room message and return its id. Enters via
 # ingestLive, the same door the MUC module uses for groupchat.
 proc msg_feed_room {{id srv1}} {
     $::_client message ingestLive room@conf.example.com?join \
@@ -5383,7 +5415,7 @@ proc msg_feed_room {{id srv1}} {
             j body -body "spam"
             j stanza-id -ns urn:xmpp:sid:0 -id $id -by room@conf.example.com
         }]
-    dict get [lindex [msg_store_latest room@conf.example.com?join] 0] timestamp
+    dict get [lindex [msg_store_latest room@conf.example.com?join] 0] id
 }
 
 # Helper: reply to the last written IQ with an error condition.
@@ -5399,9 +5431,9 @@ proc msg_fail_last_iq {condition} {
 
 test message-moderate-sends-request {moderate asks the room to retract by stanza-id} \
     {*}$msg_common -body {
-        set ts [msg_feed_room srv1]
+        set id [msg_feed_room srv1]
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
-            -timestamp $ts -reason spam
+            -id $id -reason spam
         set req [lindex [$::_client conn get_written] end]
         list [xsearch $req moderate -ns urn:xmpp:message-moderate:1 -get @id] \
              [xsearch $req moderate reason -get body]
@@ -5415,7 +5447,8 @@ test message-moderate-unechoed-reports {a message the room hasn't echoed has no 
             own_id o1 origin_id o1 server_status pending]]
         set before [llength [$::_client conn get_written]]
         set got ""
-        tacky message moderate -acc $acc -chat $room -timestamp 100 \
+        tacky message moderate -acc $acc -chat $room \
+            -id [msg_id "own_id='o1'"] \
             -onerror [list apply {{msg} { set ::got $msg }}]
         update
         list [expr {[llength [$::_client conn get_written]] - $before}] $got
@@ -5424,10 +5457,10 @@ test message-moderate-unechoed-reports {a message the room hasn't echoed has no 
 test message-moderate-error-maps-condition \
     {a rejected moderation request reports friendly text} \
     {*}$msg_common -body {
-        set ts [msg_feed_room srv1]
+        set id [msg_feed_room srv1]
         set got ""
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
-            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+            -id $id -onerror [list apply {{msg} { set ::got $msg }}]
         update
         msg_fail_last_iq forbidden
         set got
@@ -5435,10 +5468,10 @@ test message-moderate-error-maps-condition \
 
 test message-moderate-error-unknown-condition {an unmapped condition still reports} \
     {*}$msg_common -body {
-        set ts [msg_feed_room srv1]
+        set id [msg_feed_room srv1]
         set got ""
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
-            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+            -id $id -onerror [list apply {{msg} { set ::got $msg }}]
         update
         msg_fail_last_iq service-unavailable
         set got
@@ -5447,9 +5480,9 @@ test message-moderate-error-unknown-condition {an unmapped condition still repor
 test message-moderate-rejection-leaves-message-intact \
     {a rejected moderation request does not tombstone the message} \
     {*}$msg_common -body {
-        set ts [msg_feed_room srv1]
+        set id [msg_feed_room srv1]
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
-            -timestamp $ts -onerror [list apply {{msg} {}}]
+            -id $id -onerror [list apply {{msg} {}}]
         update
         msg_fail_last_iq forbidden
         dict get [lindex [msg_store_latest room@conf.example.com?join] 0] retracted
@@ -5457,10 +5490,10 @@ test message-moderate-rejection-leaves-message-intact \
 
 test message-moderate-success-is-silent {a successful moderation request does not report an error} \
     {*}$msg_common -body {
-        set ts [msg_feed_room srv1]
+        set id [msg_feed_room srv1]
         set got none
         tacky message moderate -acc $acc -chat room@conf.example.com?join \
-            -timestamp $ts -onerror [list apply {{msg} { set ::got $msg }}]
+            -id $id -onerror [list apply {{msg} { set ::got $msg }}]
         update
         set req [lindex [$::_client conn get_written] end]
         $::_client iq feed [j iq -type result -id [xsearch $req -get @id] \
@@ -5488,28 +5521,28 @@ test message-search-unscoped-covers-every-chat {omitting -chat searches the whol
         }
     } -result {bob@example.com alice@example.com}
 
-test message-search-unscoped-cursor-carries-the-chat {an account-wide cursor names the chat it stopped in} \
+test message-search-unscoped-cursor-is-the-row {an account-wide cursor is the id of the row it stopped at} \
     {*}$msg_common -body {
-        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        set id [lindex [msg_store_ids [list [msg_msg chat_jid bob@example.com \
+            timestamp 200 body needle]]] 0]
         set r [msg_search -query needle]
-        list [dict get $r last] [dict get $r last_chat_jid]
-    } -result {200 bob@example.com}
+        list [expr {[dict get $r last] == $id}] [dict get $r last_archive]
+    } -result {1 {}}
 
-test message-search-scoped-cursor-stays-a-timestamp {naming a chat leaves the chat half of the cursor empty} \
+test message-search-scoped-cursor-is-the-row {naming a chat pages by row id too, with no archive half} \
     {*}$msg_common -body {
-        msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
+        set id [lindex [msg_store_ids [list [msg_msg chat_jid bob@example.com \
+            timestamp 200 body needle]]] 0]
         set r [msg_search -chat bob@example.com -query needle]
-        list [dict get $r last] [dict get $r last_chat_jid] [dict get $r last_id]
-    } -result {200 {} {}}
+        list [expr {[dict get $r last] == $id}] [dict get $r last_archive]
+    } -result {1 {}}
 
-test message-search-unscoped-pages-without-dropping-a-tie {feeding both cursor halves back resumes mid-tie} \
+test message-search-unscoped-pages-without-dropping-a-tie {feeding the cursor back resumes mid-tie} \
     {*}$msg_common -body {
         msg_store [list [msg_msg chat_jid alice@example.com timestamp 200 body needle]]
         msg_store [list [msg_msg chat_jid bob@example.com timestamp 200 body needle]]
         set first [msg_search -query needle -limit 1]
-        set rest [msg_search -query needle \
-            -before [dict get $first last] \
-            -before_chat_jid [dict get $first last_chat_jid]]
+        set rest [msg_search -query needle -before [dict get $first last]]
         list [lmap m [dict get $first messages] {dict get $m chat_jid}] \
              [lmap m [dict get $rest messages] {dict get $m chat_jid}]
     } -result {bob@example.com alice@example.com}
@@ -5539,29 +5572,18 @@ proc msg_search_refused {args} {
 test message-search-refuses-an-archive-cursor-locally {an RSM id can't page the store, where it would match every row} \
     {*}$msg_common -body {
         msg_search_refused -chat alice@example.com -source local \
-            -before_id archive-uuid-42
-    } -result {search: -before_id needs -source "remote"}
+            -before_archive archive-uuid-42
+    } -result {search: -before_archive needs -source "remote"}
 
-test message-search-refuses-a-store-cursor-remotely {a timestamp can't page the archive} \
+test message-search-refuses-a-store-cursor-remotely {a row id can't page the archive} \
     {*}$msg_common -body {
         msg_search_refused -chat alice@example.com -source remote -before 200
-    } -result {search: -source "remote" pages with -before_id}
+    } -result {search: -source "remote" pages with -before_archive}
 
-test message-search-refuses-a-non-timestamp-before {anything but a timestamp is refused} \
+test message-search-refuses-a-non-id-before {anything but a row id is refused} \
     {*}$msg_common -body {
         msg_search_refused -chat alice@example.com -before archive-uuid-42
-    } -result {search: -before is a timestamp, got "archive-uuid-42"}
-
-test message-search-refuses-a-chat-half-when-scoped {the tie-break half belongs to an account-wide search} \
-    {*}$msg_common -body {
-        msg_search_refused -chat alice@example.com -before 200 \
-            -before_chat_jid alice@example.com
-    } -result {search: -before_chat_jid belongs to a search with no -chat}
-
-test message-search-refuses-half-an-account-wide-cursor {an account-wide cursor is both halves or neither} \
-    {*}$msg_common -body {
-        msg_search_refused -before 200
-    } -result {search: an account-wide cursor is -before and -before_chat_jid together}
+    } -result {search: -before is a message id, got "archive-uuid-42"}
 
 # -- Error stanzas are never content ------------------------------------------
 #
@@ -5613,7 +5635,7 @@ test message-error-mam-wrapped-drop {an error nested in a MAM result is not cont
     } -result drop
 
 test message-carbon-reply-resolves \
-    {a reply carbon-copied from another device resolves reply_body/reply_to_ts against its target} \
+    {a reply carbon-copied from another device resolves reply_body/reply_to_id against its target} \
     {*}$msg_common \
     -body {
         $::_client omemo setEnabled -jid alice@example.com -value 0
@@ -5648,7 +5670,7 @@ test message-carbon-reply-resolves \
         set reply [lindex [msg_store_latest alice@example.com] 1]
         list [dict get $reply reply_id] \
             [dict get $reply reply_body] \
-            [expr {[dict get $reply reply_to_ts] ne ""}]
+            [expr {[dict get $reply reply_to_id] ne ""}]
     } -result {1788479977524793 {original text} 1}
 
 # A bounce (type='error') from the peer's side fails the message it echoes,
@@ -5749,7 +5771,8 @@ test message-pm-reference-is-origin-id {a reply in a room PM cites the origin-id
         msg_store [list [msg_msg chat_jid room@muc.example.com/alice \
             from_jid room@muc.example.com/alice body "hi" \
             server_id our-archive-id origin_id alices-id timestamp 3000000]]
-        $::_client message ReferenceId room@muc.example.com/alice 3000000
+        $::_client message ReferenceId room@muc.example.com/alice \
+            [msg_id_of hi room@muc.example.com/alice]
     } -result alices-id
 
 test message-pm-author-may-retract {the PM partner's own retraction is honoured, another's is not} \

@@ -7,12 +7,12 @@ package require snit
 # centre and do-not-disturb never see them.
 #
 # Nothing here watches window focus: the backend gates on the read watermark, so
-# a chat being read never alerts, and message <OwnRead> retracts whatever is
+# a chat being read never alerts, and notify <Dismiss> retracts whatever is
 # still on screen.
 snit::type notifier {
     option -controller -readonly yes
 
-    # {acc jid} -> {win W timer TOKEN timestamp TS command CMD}
+    # {acc jid} -> {win W timer TOKEN command CMD}
     variable Toasts
     # Stacking order, first element nearest the screen corner.
     variable Order
@@ -43,7 +43,7 @@ snit::type notifier {
         set Toasts [dict create]
         set Order [list]
         ::tacky listen -tag $self notify <Notify> [mymethod OnNotify]
-        ::tacky listen -tag $self message <OwnRead> [mymethod OnOwnRead]
+        ::tacky listen -tag $self notify <Dismiss> [mymethod OnDismiss]
     }
 
     destructor {
@@ -60,30 +60,27 @@ snit::type notifier {
             -body [dict get $ev -body] \
             -count [dict get $ev -unread] \
             -mention [dict get $ev -mention] \
-            -timestamp [dict get $ev -timestamp] \
             -command [list $options(-controller) OpenChatFor $acc $jid]
     }
 
-    # Reading the chat - here or on another device - takes the alert down. A
-    # watermark behind the message we announced leaves it up.
-    method OnOwnRead {ev} {
+    # Reading the chat - here or on another device - as far as the message we
+    # announced takes the alert down (notify decides how far is far enough).
+    method OnDismiss {ev} {
         set key [list [dict get $ev -acc] [dict get $ev -jid]]
         if {![dict exists $Toasts $key]} return
-        if {[dict get $ev -timestamp] < [dict get $Toasts $key timestamp]} return
         $self Dismiss $key
     }
 
     # Show an alert, or refresh the one already up for that chat.
     method post {args} {
         set opts [dict merge {-title "" -subtitle "" -body "" -count 0 \
-            -mention 0 -timestamp 0 -command ""} $args]
+            -mention 0 -command ""} $args]
         set key [dict get $opts -key]
         if {![dict exists $Toasts $key]} {
             $self Create $key
             lappend Order $key
         }
         $self Fill $key $opts
-        dict set Toasts $key timestamp [dict get $opts -timestamp]
         dict set Toasts $key command [dict get $opts -command]
         $self Arm $key
         $self Layout

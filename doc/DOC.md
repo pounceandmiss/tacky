@@ -223,7 +223,7 @@ request.
     ["event", "module", "EventName", {payload}]
     ["event", "message", "New",
       {"acc": "me@host", "jid": "peer@host",
-       "message": {"timestamp": 1700000000, "is_outgoing": false,
+       "message": {"id": 4211, "pos": "a1Fz", "timestamp": 1700000000, "is_outgoing": false,
                    "content": {"type": "text", "body": "hi"}}}]
 
 Event subscription and filtering is up to the frontend. Per-account events
@@ -600,7 +600,7 @@ message. `groupchat` is `true` when the jid has `?join`. `is_self` is
 `true` for the chat with your own bare JID (notes to yourself). `source` is
 `roster` (a roster contact, bare JID), `bookmarks` (a bookmarked room), or
 `free` (came from chat history, with no roster or bookmark entry). `name`
-can be `""` (always is for `free`). `last_message` is the chat's newest
+can be `""` (always is for `free`). `last_message` is the chat's last
 message, whole, in the shape [message](#message) `history` returns; absent
 when the chat has no history. `last_activity` is that message's time in
 microseconds, or `0`. `unread` counts the other side's messages past
@@ -667,7 +667,7 @@ Which chats the frontend shows, and how far down.
 
     chat open  {acc, chat}
     chat close {acc, chat}
-    chat view  {acc, chat, timestamp}
+    chat view  {acc, chat, id}
     chat isOpen    {acc, chat}   -> bool
     chat isLooking {acc, chat}   -> bool
     chat setClientData {acc, chat, data: string}
@@ -677,9 +677,9 @@ Which chats the frontend shows, and how far down.
 windows show it. A chat is looked at (`isLooking`) while open and the
 [app](#app) is active.
 
-`view` gives the newest message on screen. While the chat is looked at it
-reads up to there: `markOwnRead`, plus `markDisplayed` in a 1:1. Call it on
-every scroll and arrival; stamps at or behind the watermark are ignored.
+`view` gives the `id` of the last message on screen. While the chat is looked
+at it reads up to there: `markOwnRead`, plus `markDisplayed` in a 1:1. Call it
+on every scroll and arrival; a message at or before the watermark is ignored.
 Views sent while the app is inactive are held until it is active again;
 views of a chat that isn't open are dropped.
 
@@ -841,28 +841,30 @@ carries it in `client`.
 
 ## message
 
-    message send {chat: string, body: string, reply_to_ts?: int}            -> int   the new row's timestamp
-    message sendFile {chat: string, path: string}                           -> int   the new row's timestamp
+    message send {chat: string, body: string, reply_to_id?: int}            -> int   the new row's id
+    message sendFile {chat: string, path: string}                           -> int   the new row's id
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
     message goto {chat: string, date: int, source?: "local" | "remote", limit?: int, tag?: string} -> goto_result
+    message goto {chat: string, id: int, limit?: int, tag?: string}                                -> goto_result
     message gotoReply {chat: string, reply_id: string, reply_to?: string, limit?: int, tag?: string} -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int,
-                    before?: int, before_chat_jid?: string, before_id?: string,
+                    before?: int, before_archive?: string,
                     field?: string, tag?: string}                                       -> search_result
-    message edit {chat: string, timestamp: int, body: string}
-    message retract {chat: string, timestamp: int}
-    message moderate {chat: string, timestamp: int, reason?: string}
-    message react {chat: string, timestamp: int, emoji: string}
-    message reactClear {chat: string, timestamp: int}
-    message resend {chat: string, timestamp: int, plaintext?: bool}
-    message retryUpload {chat: string, timestamp: int}
+    message edit {chat: string, id: int, body: string}
+    message retract {chat: string, id: int}
+    message moderate {chat: string, id: int, reason?: string}
+    message react {chat: string, id: int, emoji: string}
+    message reactClear {chat: string, id: int}
+    message resend {chat: string, id: int, plaintext?: bool}
+    message retryUpload {chat: string, id: int}
     message cancel {tag: string}
-    message rawxml {chat: string, timestamp: int} -> string  raw stanza (debug)
-    message markDisplayed {chat: string, timestamp: int, after?: int}
-    message markOwnRead {chat: string, timestamp: int}
-    message ownRead {chat: string} -> {timestamp: int, unread: int}
+    message rawxml {chat: string, id: int} -> string  raw stanza (debug)
+    message markDisplayed {chat: string, id: int, after?: int}
+    message markOwnRead {chat: string, id: int}
+    message ownRead {chat: string} -> {id: int | "", unread: int}
 
-    message = {timestamp: int, chat_jid: string, from_jid: string,
+    message = {id: int, pos: string, timestamp: int,
+               chat_jid: string, from_jid: string,
                from_resource: string, is_outgoing: bool,
                server_id: string, own_id: string, occupant_id: string,
                server_status: string, remote_status: string,
@@ -871,7 +873,7 @@ carries it in `client`.
                content?: content,
                reply_id?: string, reply_to?: string,
                reply_author_jid?: string, reply_body?: string,
-               reply_to_ts?: int,
+               reply_to_id?: int,
                reactions?: {*: {reactors: [string], mine: bool}}}
 
     content = {type: "text",  body: string, formatting?: formatting, matches?: matches}
@@ -890,14 +892,14 @@ carries it in `client`.
 
     goto_result   = {messages: [message], anchor: int, bounded_before: bool, bounded_after: bool}
     search_result = {messages: [message], complete: bool,
-                     last: int, last_chat_jid: string, last_id: string}
+                     last: int | "", last_archive: string}
 
 An incoming text message, as it arrives on `<New>`:
 
     ["event", "message", "New",
      {"acc": "me@example.com", "jid": "peer@example.com",
       "message": {
-        "timestamp": 1786637183834216,
+        "id": 4211, "pos": "a1Fz", "timestamp": 1786637183834216,
         "chat_jid": "peer@example.com",
         "from_jid": "peer@example.com", "from_resource": "phone",
         "is_outgoing": false,
@@ -917,9 +919,19 @@ becomes `caption`, and the files are listed in `attachments`.
         {"url": "https://upload.example.com/8f2a/roof.jpg", "type": "image",
          "name": "roof.jpg", "size": 184320, "mime": "image/jpeg"}]}
 
-- `timestamp` doubles as the row id - unique within a chat, and the backend
-  bumps it by a microsecond if two would collide. `before`/`after` on
-  `history` are exclusive cursors. `limit` defaults to 50 on `history`,
+- `id` is the message's identity: an integer, unique across the account and
+  stable for the row's life. Every command that names a message takes it.
+  `before`/`after` on `history` are exclusive cursors, both ids.
+- `pos` is the message's place in its chat. A chat's rows sort by comparing
+  `pos` as plain strings (code-unit order, not a locale collation). It is
+  opaque: never parse it or send it back. A row never moves once placed - a
+  live message goes after the chat's last row, an archive page into the gap
+  it was fetched for.
+- `timestamp` is when the message was sent, in microseconds, as its source
+  stamped it: the server's for archived and delayed messages, our clock for
+  live ones. It is for display only - neither unique nor an order, so the
+  times of neighbouring rows can look out of order when clocks disagree.
+- `limit` defaults to 50 on `history`,
   `goto` and `gotoReply`, and to 20 on `search`; `goto`'s `source` defaults
   to `local`.
 - `from_resource` is the sender's resource. `server_id` is the XEP-0359
@@ -986,50 +998,51 @@ See [The chat window](#the-chat-window), [Attachments](#attachments),
 Events:
 
     message <New>         {jid: string, message: message}
-    message <Status>      {jid: string, timestamp: int, server_status?: string, remote_status?: string, fail_reason?: string, encryption?: string}
-    message <Confirmed>   {jid: string, timestamp: int, newtimestamp: int, server_status: string}
-    message <Reactions>   {jid: string, timestamp: int, reactions: {*: {reactors: [string], mine: bool}}}
+    message <Status>      {jid: string, id: int, server_status?: string, remote_status?: string, fail_reason?: string, encryption?: string}
+    message <Confirmed>   {jid: string, id: int, timestamp?: int, server_status: string}
+    message <Reactions>   {jid: string, id: int, reactions: {*: {reactors: [string], mine: bool}}}
     message <Edited>      {jid: string, message: message}
-    message <Retracted>   {jid: string, timestamp: int}
-    message <OwnRead>     {jid: string, timestamp: int}
+    message <Retracted>   {jid: string, id: int}
+    message <OwnRead>     {jid: string, id: int}
     message <CatchupStarted> {jid: string}
     message <CatchupDone> {jid: string, count: int}
-    message <Tail>        {jid: string, timestamp: int}               pullable
+    message <Tail>        {jid: string, id: int, timestamp: int}      pullable
 
 `<Status>`, `<Confirmed>`, `<Reactions>`, `<Edited>` and `<Retracted>` each
-change a message already on screen, found by `timestamp` - drop one whose
-target isn't displayed. `<Status>` carries only the fields that changed, plus
-`encryption` when a resend rewrote the row to cleartext. `<Confirmed>` always
-carries `newtimestamp` and is the only event that clears `server_status` to
-`""`, and the only one that can move a message's slot. What to do with each is
+change a message already on screen, found by `id` - drop one whose target
+isn't displayed. `<Status>` carries only the fields that changed, plus
+`encryption` when a resend rewrote the row to cleartext. `<Confirmed>` is the
+only event that clears `server_status` to `""`; the message keeps its place,
+and `timestamp`, when present, is the stamp it shows now (an XEP-0198 ack
+carries none). `<Tail>` names the chat's last message. What to do with each is
 in [The chat window](#the-chat-window).
 
 ### Read state
 
-The read watermark is how far you have read a chat: one timestamp per chat,
-not a per-message flag, so backfilled history landing behind it does not
-become unread. (`remote_status` on a message is the other direction, the
+The read watermark is how far you have read a chat: the last message read,
+one per chat, by its place in the chat rather than its time. Unread is every
+message after it, and history backfilled behind it does not become unread. (`remote_status` on a message is the other direction, the
 peer's read state of something you sent.)
 
-`markOwnRead` sets it, forward-only - an older-or-equal stamp is ignored. It is
+`markOwnRead` sets it, forward-only - a message at or before it is ignored. It is
 local state and applies to group chats; `markDisplayed` is the separate wire
 half (a XEP-0333 `<displayed>`, 1:1 only, only to a contact who may see
 our presence, as for delivery receipts, and never with the
 [`send_chat_markers`](#setting) setting at `0`). It names the newest of the peer's
-messages at or before `timestamp` and past `after`, so ours on screen below
+messages at or before `id` and past `after` (an `id` too), so ours on screen below
 theirs still marks theirs read; with none in that range it sends nothing. The
 watermark also advances on its own on [chat](#chat) `view`, when you send a
 message from any of your devices, and when another device's `<displayed>`
 marker reaches this one.
 
 `<OwnRead>` fires on every move, from any of those sources. `ownRead` gives one
-chat's watermark and unread count. See [Read state and
+chat's watermark (`id` is `""` when nothing is read) and unread count. See [Read state and
 alerts](#read-state-and-alerts).
 
 ## muc
 
-    muc acceptInvite  {chat: string, timestamp: int}
-    muc declineInvite {chat: string, timestamp: int, reason?: string}
+    muc acceptInvite  {chat: string, id: int}
+    muc declineInvite {chat: string, id: int, reason?: string}
     muc invite        {jid: string, to: string, reason?: string}
     muc requestVoice  {jid: string}
     muc kick          {jid: string, nick: string, reason?: string}
@@ -1148,7 +1161,7 @@ senders all come back absent, known by the occupant-ids on file.
 
 Group chat invitations arrive as messages with `content.type` `"invite"`
 (see [message](#message)). These two answer one, named by that message's
-chat and timestamp as for `edit` and `react`. Both answer `""` and ignore a
+chat and `id` as for `edit` and `react`. Both answer `""` and ignore a
 row that isn't an invite.
 
 Where an invite sits depends on who sent it:
@@ -1188,13 +1201,16 @@ changed.
 
 Events:
 
-    notify <Notify>     {jid: string, timestamp: int, nick: string, from: string,
+    notify <Notify>     {jid: string, id: int, timestamp: int, nick: string, from: string,
                          body: string, unread: int, mention: bool}
     notify <MissedCall> {jid: string, timestamp: int, nick: string, video: bool}
     notify <Settings>   {jid: string, muted: bool, mentions: bool}
+    notify <Dismiss>    {jid: string}
 
 `<Notify>` means this message is worth telling the user about even if they are
-not looking at the app; how to tell them is the frontend's job.
+not looking at the app; how to tell them is the frontend's job. `<Dismiss>`
+means the read watermark reached the last message alerted for that chat: take
+its alert down.
 
 - `nick` is who sent it, resolved the way `author get` does; `from` is the
   sender's JID (the occupant JID in a room), for an avatar.
@@ -1442,7 +1458,7 @@ Event:
 or `idle`. `idle` is the neutral end - nothing transferring, nothing on disk,
 a fetch will start it - and covers a declined autofetch, a size-capped abort
 and a cancel. `error` is only ever set on `failed`. For an upload, `id` is the
-message timestamp; for a download, match on `url`, which echoes back the
+message's `id`; for a download, match on `url`, which echoes back the
 source: the `url` you passed, or the `path` when you passed no `url`.
 
 ## calls
@@ -1561,9 +1577,9 @@ tear the video half down on its own. See
 ## groupcall
 
     groupcall start    {chat: string, video?: bool}            a hosted call for a chat
-    groupcall join     {jid: string, video?: bool, chat?: string, id?: string}
-    groupcall join     {chat: string, timestamp: int, video?: bool}   answer an invite
-    groupcall decline  {chat: string, timestamp: int}
+    groupcall join     {jid: string, video?: bool, chat?: string, call_id?: string}
+    groupcall join     {chat: string, id: int, video?: bool}          answer an invite
+    groupcall decline  {chat: string, id: int}
     groupcall leave    {jid: string}
     groupcall setVideo {jid: string, on?: bool}                on default: true
     groupcall invite   {jid: string, to: string}               XEP-0482, to a bare JID
@@ -1582,7 +1598,7 @@ tear the video half down on its own. See
 Events:
 
     groupcall <State>        call_state                                       pullable
-    groupcall <Invited>      {jid: string, from: string, chat: string, timestamp: int, video: bool}
+    groupcall <Invited>      {jid: string, from: string, chat: string, id: int, video: bool}
     groupcall <StartFailed>  {chat: string, reason: string}
 
 `<StartFailed>` is a `start` that failed after it answered: no service to
@@ -1614,7 +1630,7 @@ to show, `pull` re-sends one.
   track `id` the leg's `calls <VideoTrack>` carries.
 
 `<Invited>` is when to ring (live invites only); answer with `join` by `chat`
-and `timestamp`, or `decline`. `start` in a chat whose last call is still
+and `id`, or `decline`. `start` in a chat whose last call is still
 going joins it. `leave` tells a hosted call's chat, or retracts the invite if
 nobody came. `invite` sends a contact the invite, first letting them into
 the room when the call is hosted.
@@ -2026,25 +2042,27 @@ Three things have to stay true:
 - **No stale displays** - never apply a result whose cursor has been
   invalidated (the user culled or jumped away).
 
-**Data model.** A message is keyed by its chat plus its `timestamp`, which is
-unique within that chat and doubles as the sort key. Equal timestamps in
-different chats are ordinary, so anything spanning chats keys on both. The
-backend keeps one ordered timeline per chat and hands back contiguous batches
-for pagination queries. Pending outgoing messages sort in by timestamp like
-everything else.
+**Data model.** A message is keyed by its `id`, unique across the account.
+The backend keeps one ordered timeline per chat, sorted by `pos`, and hands
+back contiguous batches for pagination queries. A row never moves once placed:
+live messages, pending sends included, go after the chat's last row in arrival
+order, and an archive page goes into the gap it was fetched for. So insert a
+message where its `pos` sorts among the rows you hold - usually the end.
+`timestamp` is only for display; when clocks disagree, neighbours' times can
+look out of order, and that is expected.
 
 **Reaching the tail.** Track whether the window reaches the end of the
 conversation; an empty window counts as reaching it. Live events may only be
 applied while that holds - otherwise a `<New>` lands beside a message it does
 not belong next to, and contiguity is gone. Culling the newer end or jumping
-with `goto` ends it; a newer-page result whose newest timestamp matches the
-last `<Tail>` restores it.
+with `goto` ends it; a newer-page result whose newest `id` matches the last
+`<Tail>` restores it.
 
 Requests carry a `tag`, and cancelling by tag (`message cancel`) is what keeps
 a result that outlived its cursor from being applied: each pending request
 under the tag is answered at once with the error `cancelled`, and its result
 never arrives. The pagination cursors are just the
-first and last timestamps in the window, passed as `before` and `after`.
+first and last `id`s in the window, passed as `before` and `after`.
 
 **Paging.** `message history` with no cursor gives you the newest page.
 `before` (exclusive) pages older, `after` (exclusive) pages newer, always
@@ -2061,9 +2079,9 @@ from MAM. When the user scrolls toward an edge, fire a tagged `history` for
 that direction, unless one is already in flight there. When the window
 culls an end, cancel any in-flight request on that end, since its cursor
 just moved and the result would be stale. Culling the newer end also gives up
-the tail. Subscribe to `message <Tail>`, which pushes the chat's newest
-real-message timestamp whenever it changes. On a newer-page result, a window
-whose newest timestamp matches the last `<Tail>` has reached it again.
+the tail. Subscribe to `message <Tail>`, which pushes the `id` of the chat's
+last real message whenever it changes. On a newer-page result, a window whose
+newest `id` matches the last `<Tail>` has reached it again.
 
 **Initial load.** When the chat opens, call `message history` with no cursor;
 the newest page comes back, local if it's stored and from MAM if not. That
@@ -2073,20 +2091,21 @@ and the catchup reconcile below fill an empty window once you're connected.
 "Scroll to bottom" cancels in-flight requests, clears the window, gives up the
 tail, and re-runs this.
 
-**Jumping.** `message goto` returns an `anchor`: scroll to it if it's already
-in the window, otherwise clear and apply `messages`. A jump gives up the tail
+**Jumping.** `message goto` jumps to a time (`date`) or to a stored message
+(`id`), and returns an `anchor`, the `id` to land on: scroll to it if it's
+already in the window, otherwise clear and apply `messages`. A jump gives up the tail
 until the user returns to it. `bounded_before` and `bounded_after` mark a side
 cut off at a hole - there's more history that way, and paging fills it in.
 `gotoReply` (XEP-0461) jumps to a reply's target and returns the same shape.
 
-**Replies.** `message send` takes an optional `reply_to_ts` - the `timestamp`
-of the message being answered. The backend resolves that row to the id a peer
+**Replies.** `message send` takes an optional `reply_to_id` - the `id` of the
+message being answered. The backend resolves that row to the id a peer
 resolves against - stanza-id in a room, origin-id in a 1:1, since peers never
 see our server id - and prefixes the wire body with a `> ` quote of the target
 marked as a XEP-0428 fallback span. Pass the reply text alone: the quote is
 added on the way out and stripped on the way in, so a stored `body` never
 contains it.
-A `reply_to_ts` naming a row that isn't stored, or a room message the room
+A `reply_to_id` naming a row that isn't stored, or a room message the room
 hasn't given an id yet, sends as an ordinary message rather than failing. A
 cleartext reply to an OMEMO message carries no quote, so the target's text
 doesn't leak. Under OMEMO the quote is skipped and `<reply>` carries the
@@ -2095,7 +2114,7 @@ against before it decrypts, so no offset into the encrypted text is publishable.
 
 A message that is a reply carries five fields. `reply_id` is the wire id it
 answers and `reply_to` the JID it was addressed to, both as they appeared on
-the wire. `reply_to_ts` is the `timestamp` of the target row, and `reply_body` a
+the wire. `reply_to_id` is the `id` of the target row, and `reply_body` a
 shortened preview of it for rendering the quote inline; both are absent when the
 target isn't in the store. `reply_author_jid` is the target's author normalized
 the way `from_jid` is - an occupant JID in a room, a bare JID in a 1:1 - so it
@@ -2123,31 +2142,30 @@ room's. Those per-chat counts are what unread or notification UI should read;
 `<New>` is not, since it also fires for your own outgoing messages.
 
 Take the bracket that matches your chat - its own `jid`, or the empty one if
-it isn't a room - and reconcile when it closes: if your newest displayed
-timestamp differs from the last `<Tail>`, request an `after` page from it.
+it isn't a room - and reconcile when it closes: if your last displayed
+`id` differs from the last `<Tail>`, request an `after` page from it.
 Discard a page whose newest doesn't reach that `<Tail>`, since a hole sits
 between you and the tail and appending would only walk the user backwards;
 leave them the scroll-to-bottom path instead.
 
-**Live messages.** On `<New>`, insert it at its timestamp-sorted spot if the
-window reaches the tail, otherwise drop it. Drop it inside an open catchup
+**Live messages.** On `<New>`, insert it where its `pos` sorts (the end, in
+practice) if the window reaches the tail, otherwise drop it. Drop it inside an open catchup
 bracket too: the archive may hold history you don't have yet, so reaching the
 tail is a claim you can't check, and the reconcile above places the message
 once the sync settles.
 
 **Updates to a shown message.** Five events change a message already on
-screen rather than adding one. All find their target by `timestamp` and drop
+screen rather than adding one. All find their target by `id` and drop
 silently if it isn't displayed. `<Status>` updates the send/receipt state where the row
 sits. `<Reactions>` swaps the reaction map. `<Edited>` carries a full
 `message` row to redraw in place, for a content edit or a change to an invite's
 or call's `state`. `<Retracted>` flips the
-row to a tombstone in place - it carries only `timestamp`, so redraw the
+row to a tombstone in place - it carries only `id`, so redraw the
 placeholder from the header you already hold. `<Confirmed>` acknowledges a
-pending send: update its checkmark in place when `newtimestamp == timestamp`,
-or rekey to `newtimestamp` and re-sort when the server relocated it - the
-only one that shifts a message's slot.
+pending send: update its checkmark in place, and its shown time to `timestamp`
+when one comes. The row stays where it is.
 
-**Causing those updates.** Five calls, all naming their target by `timestamp`
+**Causing those updates.** Five calls, all naming their target by `id`
 and all doing nothing when it isn't stored (`moderate` says so through
 `onerror`). `edit` (XEP-0308) sends a
 correction of one of your own messages and swaps the stored body immediately,
@@ -2169,11 +2187,11 @@ also answers `onerror` for a message the room hasn't given an id yet (your own
 send before its echo).
 
 **Outgoing.** Your own messages show up right away on `<New>`
-(optimistically) at their pending timestamp. Once they're confirmed - a MUC
-echo, or your own message coming back via MAM - a `<Confirmed>` clears
-`server_status` and, if the server relocated the row, moves it to
-`newtimestamp`. `send` is fire-and-forget, so
-`<New>` is its acknowledgement, and it fires on every send - even one
+(optimistically) after the chat's last row; `send` and `sendFile` answer
+the new row's `id`. Once they're confirmed - a MUC echo, or your own message
+coming back via MAM - a `<Confirmed>` clears `server_status` and, when the
+copy carries a stamp, gives the time to show. `send` is fire-and-forget,
+so `<New>` is its acknowledgement, and it fires on every send - even one
 that's stored `failed` immediately, like an encryption that can't go
 through. The only send that gives you nothing is one that throws before
 `<New>` (a malformed request). `server_status` tracks whether the server
@@ -2196,15 +2214,16 @@ with `fail_reason: "too-large"`, and no retry sends it. Shorten it and send
 again.
 
 **Search.** `message search` takes a `source`, mirroring `goto`. `source:
-local` (the default) runs over the bodies already stored for one chat, with
-`before` as an exclusive timestamp cursor. Each query word matches a body word
+local` (the default) runs over the bodies already stored for one chat,
+newest first by `timestamp` (ties by `id`), with `before` as an exclusive
+cursor: the `id` of the last hit you have. Each query word matches a body word
 from its start and every word must match, in any order: `нужн` finds `нужный`,
 `needle haystack` finds a body carrying both, and `eedle` finds nothing -
 mid-word text isn't findable. Case and diacritics are ignored.
 Retracted messages never match.
 
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
-`before_id: last_id`, the archive's own cursor.
+`before_archive: last_archive`, the archive's own cursor.
 Few servers implement the field, so check first with `mam fulltextSupported
 {chat: string} -> bool`; a search against an archive that advertises none is an
 error reply rather than a silent match of everything. `field` names the
@@ -2223,9 +2242,9 @@ that is local-only: a remote `source` without a `chat` is an error. Each result
 carries the `chat_jid` it came from.
 
 Each source pages with its own cursor and refuses the others: `before`
-(exclusive) walks the store, `before_id` walks the archive. An account-wide
-search pairs `before` with `before_chat_jid`, since two chats can share a
-timestamp. Cursor fields a search doesn't page with come back empty.
+(exclusive, `last` of the previous page) walks the store, account-wide too,
+and `before_archive` walks the archive. Cursor fields a search doesn't page
+with come back empty.
 
 Every hit carries `content.matches`: where the query matched, in the offsets
 `formatting` uses - into `body`, or `caption` for a media message. One entry
@@ -2235,8 +2254,9 @@ the match isn't literally in that string: an attachment URL the caption drops,
 a styling character stripped on the way out, a diacritic the matcher ignored
 (`grun` finding `GRÜN`), or a stem the archive matched remotely.
 
-Jump to a hit with `message goto {date: ts, source: remote}`, which fills the
-context around a hit stored as an isolated island. Whichever source found it,
+Every hit is stored, so jump to one with `message goto {chat, id}`; a hit
+stored as an isolated island comes back bounded, and paging fills in its
+context. Whichever source found it,
 the results aren't chat-view content - show them somewhere separate.
 
 **Sender names.** A message row carries a `from_jid`, not a display name.
@@ -2264,15 +2284,15 @@ What the user has read is one watermark per chat, and the backend moves it
 for you as long as it knows what is on screen.
 
 **A chat on screen.** `chat open` it once however many windows show it,
-`chat close` it when the last one goes, and call `chat view` with the newest
-message on screen on every scroll and arrival. While the app is active that
+`chat close` it when the last one goes, and call `chat view` with the `id` of
+the last message on screen on every scroll and arrival. While the app is active that
 reads the chat up to there - the watermark, plus a `<displayed>` to a 1:1
 peer - and keeps [notify](#notify) quiet for it. Report focus with `app
 setActive`, so a chat left on screen behind another window isn't read.
 Messages below the fold stay unread until scrolled to.
 
 **A chat not on screen.** To mark one read from a menu, call `message
-markOwnRead` with its newest timestamp, plus `markDisplayed` in a 1:1. Both
+markOwnRead` with its last message's `id`, plus `markDisplayed` in a 1:1. Both
 are safe to repeat.
 
 **The chat list.** Each `chatlist` entry carries `unread` and
@@ -2280,9 +2300,9 @@ are safe to repeat.
 the list needs no calls of its own.
 
 **Alerts.** Show each `notify <Notify>`; the backend has already left out
-chats being looked at, muted ones and messages already read. Dismiss it when
-`message <OwnRead>` for its chat moves past its `timestamp` - that covers
-reads on your other devices too.
+chats being looked at, muted ones and messages already read. Take a chat's
+alert down on `notify <Dismiss>` for it - that covers reads on your other
+devices too.
 
 ## Attachments
 
@@ -2311,7 +2331,7 @@ any other send. A failed upload marks the row `failed` with `fail_reason:
 upload transition rides `message <Status>` as a `server_status` change:
 `uploading -> pending` on success, `uploading -> failed` on error, and
 `failed -> uploading` on retry. Byte-level progress and terminal state come
-on `file <Update>` (keyed by the message `timestamp`), which is also where
+on `file <Update>` (keyed by the message `id`), which is also where
 the attachment's public URL lands - the row keeps its `path`, so it still
 renders from the local file, and gains the `url` that anyone else needs. In an
 OMEMO chat the file is AES-256-GCM

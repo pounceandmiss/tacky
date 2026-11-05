@@ -29,14 +29,14 @@ set nf_common {
 proc nf_key {jid} { return [list $::nf_acc $jid] }
 
 proc nf_notify {jid body args} {
-    array set opts {-unread 1 -mention 0 -nick Alice -timestamp 0}
+    array set opts {-unread 1 -mention 0 -nick Alice -id 1}
     array set opts $args
-    if {$opts(-timestamp) == 0} { set opts(-timestamp) [clock microseconds] }
-    $::_client emit notify <Notify> -jid $jid -timestamp $opts(-timestamp) \
+    $::_client emit notify <Notify> -jid $jid -id $opts(-id) \
+        -timestamp [clock microseconds] \
         -nick $opts(-nick) -body $body -unread $opts(-unread) \
         -mention $opts(-mention)
     wait
-    return $opts(-timestamp)
+    return $opts(-id)
 }
 
 proc nf_text {jid part} {
@@ -63,18 +63,18 @@ test notifier-separate-chats-stack {each chat gets its own toast} \
         llength [nf keys]
     } -result {2}
 
-test notifier-own-read-retracts {reading the chat takes its toast down} \
+test notifier-own-read-retracts {notify's dismissal for the chat takes its toast down} \
     {*}$nf_common -body {
-        set ts [nf_notify alice@example.com "one"]
-        $::_client emit message <OwnRead> -jid alice@example.com -timestamp $ts
+        nf_notify alice@example.com "one"
+        $::_client emit notify <Dismiss> -jid alice@example.com
         wait
         nf keys
     } -result {}
 
-test notifier-stale-own-read-leaves-it {a watermark behind the message leaves the toast up} \
+test notifier-other-chat-dismiss-leaves-it {a dismissal for another chat leaves the toast up} \
     {*}$nf_common -body {
-        nf_notify alice@example.com "one" -timestamp 5000
-        $::_client emit message <OwnRead> -jid alice@example.com -timestamp 4999
+        nf_notify alice@example.com "one"
+        $::_client emit notify <Dismiss> -jid bob@example.com
         wait
         llength [nf keys]
     } -result {1}

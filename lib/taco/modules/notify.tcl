@@ -11,9 +11,11 @@
 # mute. Rooms default to muted, which leaves a public room pinging on your
 # nick alone.
 #
-#   notify <Notify>     -jid J -timestamp T -nick N -body S -unread C -mention B
+#   notify <Notify>     -jid J -id I -timestamp T -nick N -body S -unread C -mention B
 #   notify <MissedCall> -jid J -timestamp T -nick N -video B
 #   notify <Settings>   -jid J -muted B -mentions B
+#   notify <Dismiss>    -jid J      read up to the last message alerted: take
+#                                   its alert down
 #
 # A missed call (calls <Missed>) follows the chat's mute like a message.
 
@@ -21,10 +23,10 @@ snit::type taco_notify {
     option -client -readonly yes
 
     variable client
-    # {chat_jid timestamp} -> after token for an alert not yet fired.
+    # {chat_jid id} -> after token for an alert not yet fired.
     variable Pending
-    # chat_jid -> newest timestamp already alerted. Memory-only, so a
-    # restart re-announces a backlog that is still unread.
+    # chat_jid -> the place (pos) of the last message already alerted.
+    # Memory-only, so a restart re-announces a backlog that is still unread.
     variable LastAlerted
 
     # Alerts emitted for one chat in one catch-up; `unread` still carries
@@ -85,12 +87,14 @@ snit::type taco_notify {
         if {$opts(-jid) eq "" || $opts(-message) eq ""} return
         if {[dict get $opts(-message) is_outgoing]} return
         set ts [dict get $opts(-message) timestamp]
+        set id [dict get $opts(-message) id]
         if {$ts < [$self Floor]} return
-        if {$ts <= [$self Watermark $opts(-jid)]} return
+        if {[$self Read $opts(-jid) $id]} return
         if {[$client chat isLooking -chat $opts(-jid)]} return
-        set mention [$self Store mentionAt $opts(-jid) $ts]
+        set mention [$self Store mentionAt $opts(-jid) $id]
         if {![$self ShouldNotify $opts(-jid) $mention]} return
-        $self Schedule [dict create jid $opts(-jid) ts $ts mention $mention \
+        $self Schedule [dict create jid $opts(-jid) id $id ts $ts \
+            mention $mention \
             from [dict get $opts(-message) from_jid] \
             body [ContentPreview $opts(-message)]]
     }
@@ -109,7 +113,7 @@ snit::type taco_notify {
     method Fire {alert} {
         dict unset Pending [PendingKey $alert]
         set chatJid [dict get $alert jid]
-        if {[dict get $alert ts] <= [$self Watermark $chatJid]} return
+        if {[$self Read $chatJid [dict get $alert id]]} return
         if {[$client chat isLooking -chat $chatJid]} return
         $self Notify $alert
     }
@@ -118,11 +122,14 @@ snit::type taco_notify {
     # announce the same message twice.
     method Notify {alert} {
         set chatJid [dict get $alert jid]
-        set ts [dict get $alert ts]
+        set id [dict get $alert id]
+        set pos [$self Store PosOf $chatJid $id]
+        if {$pos eq ""} return
         if {[dict exists $LastAlerted $chatJid]
-            && $ts <= [dict get $LastAlerted $chatJid]} return
-        dict set LastAlerted $chatJid $ts
-        $client emit notify <Notify> -jid $chatJid -timestamp $ts \
+            && [string compare $pos [dict get $LastAlerted $chatJid]] <= 0} return
+        dict set LastAlerted $chatJid $pos
+        $client emit notify <Notify> -jid $chatJid -id $id \
+            -timestamp [dict get $alert ts] \
             -nick [$self SenderName $chatJid [dict get $alert from]] \
             -from [dict get $alert from] \
             -body [dict get $alert body] \
@@ -154,12 +161,19 @@ snit::type taco_notify {
     # Reading cancels anything still waiting out its delay. Dismissing an
     # alert already shown is the frontend's job, off the same event.
     method OnOwnRead {args} {
-        array set opts {-jid "" -timestamp 0}
+        array set opts {-jid "" -id ""}
         array set opts $args
+        if {[dict exists $LastAlerted $opts(-jid)]} {
+            set mark [dict get [$self Store ownRead $opts(-jid)] pos]
+            if {$mark ne "" && [string compare \
+                    [dict get $LastAlerted $opts(-jid)] $mark] <= 0} {
+                $client emit notify <Dismiss> -jid $opts(-jid)
+            }
+        }
         set stale {}
         dict for {key token} $Pending {
-            lassign $key jid ts
-            if {$jid eq $opts(-jid) && $ts <= $opts(-timestamp)} {
+            lassign $key jid id
+            if {$jid eq $opts(-jid) && [$self Read $jid $id]} {
                 after cancel $token
                 lappend stale $key
             }
@@ -177,9 +191,10 @@ snit::type taco_notify {
         set rows [$self Store unreadTail \
             $opts(-jid) [$self Floor] $CatchupBurstMax]
         foreach row [lreverse $rows] {
-            lassign $row ts mention fromJid body attachments
+            lassign $row id mention fromJid body attachments
             if {![$self ShouldNotify $opts(-jid) $mention]} continue
-            $self Notify [dict create jid $opts(-jid) ts $ts mention $mention \
+            $self Notify [dict create jid $opts(-jid) id $id \
+                ts [$self Store stampOf $opts(-jid) $id] mention $mention \
                 from $fromJid body [RowPreview $body $attachments]]
         }
     }
@@ -200,8 +215,12 @@ snit::type taco_notify {
         return [$client message messagestore {*}$args]
     }
 
-    method Watermark {chatJid} {
-        return [dict get [$self Store ownRead $chatJid] read_ts]
+    # Whether row $id in $chatJid is at or before our read mark.
+    method Read {chatJid id} {
+        set mark [dict get [$self Store ownRead $chatJid] pos]
+        if {$mark eq ""} { return 0 }
+        set pos [$self Store PosOf $chatJid $id]
+        expr {$pos eq "" || [string compare $pos $mark] <= 0}
     }
 
     method Floor {} {
@@ -218,7 +237,7 @@ snit::type taco_notify {
     }
 
     proc PendingKey {alert} {
-        return [list [dict get $alert jid] [dict get $alert ts]]
+        return [list [dict get $alert jid] [dict get $alert id]]
     }
 
     # Preview text, from a message dict and from a stored row respectively. An

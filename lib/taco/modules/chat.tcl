@@ -2,7 +2,7 @@
 #
 #   chat open  -chat J
 #   chat close -chat J
-#   chat view  -chat J -timestamp T    T: newest message on screen
+#   chat view  -chat J -id I           I: last message on screen
 #   chat setClientData -chat J -data S
 #   chat clientData    -chat J          -> S
 #
@@ -14,7 +14,8 @@ snit::type taco_chat {
     option -client -readonly yes
 
     variable client
-    # chat_jid -> newest view held while the app was inactive, 0 for none
+    # chat_jid -> the last message in view while the app was inactive, ""
+    # for none
     variable Open
 
     constructor args {
@@ -26,7 +27,7 @@ snit::type taco_chat {
     tackymethod open {args} {
         array set opts $args
         if {[dict exists $Open $opts(-chat)]} return
-        dict set Open $opts(-chat) 0
+        dict set Open $opts(-chat) ""
     }
 
     tackymethod close {args} {
@@ -37,13 +38,15 @@ snit::type taco_chat {
     tackymethod view {args} {
         array set opts $args
         set chatJid $opts(-chat)
-        set ts $opts(-timestamp)
+        set id $opts(-id)
         if {![dict exists $Open $chatJid]} return
         if {![$self isLooking -chat $chatJid]} {
-            if {$ts > [dict get $Open $chatJid]} { dict set Open $chatJid $ts }
+            if {[$self Below [dict get $Open $chatJid] $id $chatJid]} {
+                dict set Open $chatJid $id
+            }
             return
         }
-        $self Read $chatJid $ts
+        $self Read $chatJid $id
     }
 
     tackymethod setClientData {args} {
@@ -68,21 +71,28 @@ snit::type taco_chat {
 
     # app setActive calls this when the app becomes active.
     method ApplyHeld {} {
-        dict for {chatJid ts} $Open {
-            if {$ts <= 0} continue
-            dict set Open $chatJid 0
-            $self Read $chatJid $ts
+        dict for {chatJid id} $Open {
+            if {$id eq ""} continue
+            dict set Open $chatJid ""
+            $self Read $chatJid $id
         }
+    }
+
+    # Whether row $a ("" for none) sits before row $b in $chatJid.
+    method Below {a b chatJid} {
+        if {$a eq ""} { return 1 }
+        set pa [$client message messagestore PosOf $chatJid $a]
+        set pb [$client message messagestore PosOf $chatJid $b]
+        expr {$pb ne "" && ($pa eq "" || [string compare $pa $pb] < 0)}
     }
 
     # Only a forward move, and only for what lies past the old watermark, so
     # each displayed marker goes out once.
-    method Read {chatJid ts} {
-        set readTs [dict get [$client message messagestore ownRead $chatJid] read_ts]
-        if {$ts <= $readTs} return
-        $client message markOwnRead -chat $chatJid -timestamp $ts
-        $client message markDisplayed -chat $chatJid -timestamp $ts \
-            -after $readTs
+    method Read {chatJid id} {
+        set read [dict get [$client message messagestore ownRead $chatJid] id]
+        if {![$self Below $read $id $chatJid]} return
+        $client message markOwnRead -chat $chatJid -id $id
+        $client message markDisplayed -chat $chatJid -id $id -after $read
     }
 
     # A standalone client (tests) has no taco.

@@ -6,14 +6,14 @@
 #
 # With no -jid it searches every chat in the account instead. That is local
 # only - MAM queries one archive - so the server box never appears, rows label
-# their chat, and -goto-command receives a {chat timestamp} pair rather than a
-# bare timestamp.
+# their chat, and -goto-command receives a {chat id} pair rather than a bare
+# message id.
 #
 # Displays search results in a chatarea. Clicking a result navigates
 # to that message via -goto-command.
 #
 # Usage:
-#   searchwindow $w -acc $acc -jid $jid -goto-command {apply {{ts} {...}}}
+#   searchwindow $w -acc $acc -jid $jid -goto-command {apply {{id} {...}}}
 #   searchwindow $w -acc $acc -goto-command {apply {{pair} {...}}}
 
 snit::widget searchwindow {
@@ -25,8 +25,7 @@ snit::widget searchwindow {
 
     variable query ""
     variable alsoRemote 0
-    variable lastTs ""
-    variable lastChat ""
+    variable lastId ""
     variable isComplete 0
     variable searchTag
     variable ca
@@ -162,8 +161,7 @@ snit::widget searchwindow {
         if {$query eq ""} return
         ::tacky message cancel -acc $options(-acc) -tag $searchTag
         $ca clear
-        set lastTs ""
-        set lastChat ""
+        set lastId ""
         set isComplete 0
         $win.bot.status configure -text "Searching\u2026"
         $win.bot.more configure -state disabled
@@ -190,12 +188,9 @@ snit::widget searchwindow {
         return [list -chat $options(-jid)]
     }
 
-    # Account-wide, two chats can share a timestamp, so the cursor needs both.
+    # The last hit had: the store pages on from it.
     method CursorArgs {} {
-        if {$wholeAccount} {
-            return [list -before $lastTs -before_chat_jid $lastChat]
-        }
-        return [list -before $lastTs]
+        return [list -before $lastId]
     }
 
     # "cancelled" is our own cancel.
@@ -208,8 +203,7 @@ snit::widget searchwindow {
         if {![winfo exists $win]} return
         $win.bot.status configure -text ""
 
-        set lastTs [dict get $result last]
-        set lastChat [dict get $result last_chat_jid]
+        set lastId [dict get $result last]
         set isComplete [dict get $result complete]
 
         if {$isComplete} {
@@ -238,16 +232,17 @@ snit::widget searchwindow {
         }
     }
 
-    # A timestamp only identifies a message within its own chat, so an
-    # account-wide row is keyed by the pair. `sort` stays the timestamp, and
-    # rowlist's tiebreak on the key orders equal stamps by chat, as the store
-    # already did. avatar_jid keeps the real JID either way - avatars are per
+    # Hits sort by time, as the store returns them: a place in a chat
+    # orders that chat only. Ties break on the key, the id, as the store
+    # does. An account-wide row's key is {chat id}, which the goto command
+    # needs. avatar_jid keeps the real JID either way - avatars are per
     # person, not per chat.
     method Enrich {msg} {
         set chat [dict get $msg chat_jid]
         set d [enrich_store_message $msg [mymethod Label $chat]]
+        dict set d sort [dict get $msg timestamp]
         if {$wholeAccount} {
-            dict set d key [list $chat [dict get $msg timestamp]]
+            dict set d key [list $chat [dict get $msg id]]
             dict set d from_jid [$self Author $chat [dict get $msg from_jid]]
         }
         return $d

@@ -196,7 +196,7 @@ $db eval {
     CREATE INDEX idx_chat_message_call_room
         ON chat_message(call_room) WHERE call_room != '';
     CREATE INDEX idx_chat_message_pending
-        ON chat_message(timestamp) WHERE server_status='pending';
+        ON chat_message(id) WHERE server_status='pending';
     CREATE INDEX idx_chat_message_undecrypted
         ON chat_message(chat_jid, pos) WHERE undecrypted=1;
 

@@ -175,7 +175,7 @@ snit::type jsonify_type {
 
 jsonify_type jsonify \
     -types {
-        message     {timestamp int newtimestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_ts int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string id string inviter string reason string state string video bool active bool live bool formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
+        message     {id int pos string timestamp int is_outgoing bool edited bool edited_ts int retracted bool reply_to_id int reactions {map {dict {reactors list mine bool}}} content {dict {type string body string caption string room string id string inviter string reason string state string video bool active bool live bool formatting {tuples {type string offset int length int}} matches {tuples {offset int length int}} attachments {list {dict {url string path string type string name string size int mime string}}}}}}
         occupant    {jids list caps {dict {kick bool ban bool make_moderator bool grant_voice bool revoke_voice bool grant_membership bool revoke_membership bool}}}
         roster_item {approved bool groups list}
         bookmark    {autojoin bool}
@@ -204,7 +204,7 @@ jsonify_type jsonify \
         message/history         {list message}
         message/goto            goto_result
         message/gotoReply       goto_result
-        message/search          {dict {messages {list message} complete bool last int last_chat_jid string last_id string}}
+        message/search          {dict {messages {list message} complete bool last int last_archive string}}
         muc/getList             {list {dict {}}}
         muc/discoverRooms       {list {dict {occupants int}}}
         muc/reservedNick        string
@@ -273,7 +273,7 @@ jsonify_type jsonify \
         app/isActive            bool
         app/idleSeconds         int
         message/rawxml          string
-        message/ownRead         {dict {timestamp int unread int}}
+        message/ownRead         {dict {id int unread int}}
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int}}
         mam/formfields          list
@@ -292,14 +292,14 @@ jsonify_type jsonify \
         notify/get              {dict {muted bool mentions bool}}
 
         message/<New>           {dict {message message}}
-        message/<Status>        {dict {timestamp int server_status string remote_status string fail_reason string encryption string}}
-        message/<Confirmed>     {dict {timestamp int newtimestamp int server_status string}}
-        message/<Reactions>     {dict {timestamp int reactions {map {dict {reactors list mine bool}}}}}
+        message/<Status>        {dict {id int server_status string remote_status string fail_reason string encryption string}}
+        message/<Confirmed>     {dict {id int timestamp int server_status string}}
+        message/<Reactions>     {dict {id int reactions {map {dict {reactors list mine bool}}}}}
         message/<Edited>        {dict {message message}}
-        message/<Retracted>     {dict {timestamp int}}
-        message/<OwnRead>       {dict {timestamp int}}
+        message/<Retracted>     {dict {id int}}
+        message/<OwnRead>       {dict {id int}}
         message/<CatchupDone>   {dict {count int}}
-        message/<Tail>          {dict {timestamp int}}
+        message/<Tail>          {dict {id int timestamp int}}
         file/<Update>           {dict {id int direction string state string loaded int total int url string localpath string error string}}
         muc/<Presence>          {dict {occupant occupant replay bool}}
         muc/<Unavailable>       {dict {codes {list int} occupant occupant}}
@@ -310,10 +310,10 @@ jsonify_type jsonify \
         muc/<RoomInfo>          {dict {info muc_room_info}}
         chatlist/<Item>         {dict {item chat_entry}}
         blocking/<Changed>      {dict {list list}}
-        notify/<Notify>         {dict {timestamp int nick string unread int mention bool}}
+        notify/<Notify>         {dict {id int timestamp int nick string unread int mention bool}}
         notify/<Settings>       {dict {muted bool mentions bool}}
         notify/<MissedCall>     {dict {timestamp int video bool}}
-        groupcall/<Invited>     {dict {timestamp int video bool}}
+        groupcall/<Invited>     {dict {id int video bool}}
         groupcall/<Session>     {dict {video bool}}
         groupcall/<State>       groupcall_state
         calls/<Outgoing>        {dict {video bool}}

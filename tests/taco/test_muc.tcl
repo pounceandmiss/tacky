@@ -971,9 +971,9 @@ test muc-invite-redelivered-once {the same invite relayed twice is stored once} 
             WHERE chat_jid='room@muc.example.com?join' AND kind='message'}
     } -result 1
 
-# The timestamp of the newest invite stored in $chat.
-proc muc_invite_ts {chat} {
-    dict get [muc_latest $chat] timestamp
+# The row id of the newest invite stored in $chat.
+proc muc_invite_id {chat} {
+    dict get [muc_latest $chat] id
 }
 
 # Every <Edited> the test sees, as {jid state}.
@@ -991,7 +991,7 @@ test muc-accept-invite-joins {accepting bookmarks the room with the invite's pas
         c.conn feed [muc_invite sid inv-5]
         muc_watch_edits
         c muc acceptInvite -chat room@muc.example.com?join \
-            -timestamp [muc_invite_ts room@muc.example.com?join]
+            -id [muc_invite_id room@muc.example.com?join]
         list [c db eval {SELECT autojoin, password FROM bookmark
                          WHERE jid='room@muc.example.com'}] \
              $::edits \
@@ -1021,7 +1021,7 @@ test muc-decline-invite-forgets-room {declining tells the inviter and drops the 
         tacky listen chatlist <Remove> {apply {{ev} { lappend ::gone [dict get $ev -jid] }}}
         c.conn feed [muc_invite sid inv-3]
         c muc declineInvite -chat room@muc.example.com?join \
-            -timestamp [muc_invite_ts room@muc.example.com?join] -reason "not now"
+            -id [muc_invite_id room@muc.example.com?join] -reason "not now"
         set m [lindex [c.conn get_written] end]
         list [xsearch $m -get @to] \
              [xsearch $m x -ns http://jabber.org/protocol/muc#user decline -get @to] \
@@ -1041,7 +1041,7 @@ test muc-decline-invite-keeps-history {declining in a room with history keeps th
         c.conn feed [muc_invite sid inv-4]
         muc_watch_edits
         c muc declineInvite -chat room@muc.example.com?join \
-            -timestamp [muc_invite_ts room@muc.example.com?join]
+            -id [muc_invite_id room@muc.example.com?join]
         list $::edits \
              [c db eval {SELECT count(*) FROM chat_message
                          WHERE chat_jid='room@muc.example.com?join'
@@ -1057,9 +1057,9 @@ test muc-accept-takes-back-a-decline {accepting a declined invite joins and clea
             chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
             body earlier server_id r-1 own_id "" raw_xml ""]]
         c.conn feed [muc_invite sid inv-7]
-        set ts [muc_invite_ts room@muc.example.com?join]
-        c muc declineInvite -chat room@muc.example.com?join -timestamp $ts
-        c muc acceptInvite -chat room@muc.example.com?join -timestamp $ts
+        set id [muc_invite_id room@muc.example.com?join]
+        c muc declineInvite -chat room@muc.example.com?join -id $id
+        c muc acceptInvite -chat room@muc.example.com?join -id $id
         c bookmarks leave -jid room@muc.example.com
         dict get [muc_latest room@muc.example.com?join] content state
     } -result pending
@@ -1073,7 +1073,7 @@ test muc-decline-direct-invite {declining a direct invite sends nothing and keep
         }]
         set before [llength [c.conn get_written]]
         c muc declineInvite -chat bob@example.com \
-            -timestamp [muc_invite_ts bob@example.com]
+            -id [muc_invite_id bob@example.com]
         list [expr {[llength [c.conn get_written]] - $before}] \
              [dict get [muc_latest bob@example.com] content state]
     } -result {0 declined}
@@ -1085,7 +1085,7 @@ test muc-invited-room-listed {an unjoined room with a waiting invite is marked i
         set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
         set before [list [dict get $entry source] [dict get $entry invited]]
         c muc acceptInvite -chat room@muc.example.com?join \
-            -timestamp [muc_invite_ts room@muc.example.com?join]
+            -id [muc_invite_id room@muc.example.com?join]
         set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
         list $before [list [dict get $entry source] [dict get $entry invited]]
     } -result {{free 1} {bookmarks 0}}
@@ -1093,12 +1093,12 @@ test muc-invited-room-listed {an unjoined room with a waiting invite is marked i
 test muc-answer-ignores-other-rows {accept and decline leave a row that is no invite alone} \
     {*}$muc_common \
     -body {
-        c message messagestore store [list [dict create timestamp 1000000 \
+        set id [lindex [dict get [c message messagestore store [list [dict create timestamp 1000000 \
             chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
-            body earlier server_id r-1 own_id "" raw_xml ""]]
+            body earlier server_id r-1 own_id "" raw_xml ""]]] inserted] 0]
         set before [llength [c.conn get_written]]
-        c muc acceptInvite -chat room@muc.example.com?join -timestamp 1000000
-        c muc declineInvite -chat room@muc.example.com?join -timestamp 1000000
+        c muc acceptInvite -chat room@muc.example.com?join -id $id
+        c muc declineInvite -chat room@muc.example.com?join -id $id
         list [expr {[llength [c.conn get_written]] - $before}] \
              [c db onecolumn {SELECT count(*) FROM bookmark}]
     } -result {0 0}
@@ -2014,8 +2014,8 @@ test muc-own-reaction-keyed-by-occupant-id \
             j stanza-id -ns urn:xmpp:sid:0 -id srv1 -by room@muc.example.com
             j body -body "hi all"
         }]
-        set ts [dict get [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0] timestamp]
-        c message react -chat room@muc.example.com?join -timestamp $ts -emoji 👍
+        set id [dict get [lindex [dict get [c message messagestore get latest room@muc.example.com?join] messages] 0] id]
+        c message react -chat room@muc.example.com?join -id $id -emoji 👍
         # Room reflects our reaction back stamped with our occupant-id.
         c.conn feed [j message -type groupchat -from room@muc.example.com/me {
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-me
@@ -2409,8 +2409,8 @@ test muc-moderate-sends-iq \
             j occupant-id -ns urn:xmpp:occupant-id:0 -id occ-other
             j body -body "spam"
         }]
-        set ts [dict get [lindex [muc_msgs] 0] timestamp]
-        c message moderate -chat room@muc.example.com?join -timestamp $ts
+        set id [dict get [lindex [muc_msgs] 0] id]
+        c message moderate -chat room@muc.example.com?join -id $id
         set iq [lindex [c.conn get_written] end]
         list [xsearch $iq moderate -ns urn:xmpp:message-moderate:1 -get @id] \
              [llength [xsearch $iq moderate retract \
@@ -2438,7 +2438,7 @@ test muc-own-edit-roundtrip-no-duplicate \
         # Correct it. The edit references the origin-id (our @id, oid), NOT
         # the stanza-id, so a strict peer can correlate it (XEP-0308).
         c message edit -chat room@muc.example.com?join \
-            -timestamp [dict get $m timestamp] -body "б"
+            -id [dict get $m id] -body "б"
         # Room echoes the correction back, reflecting our <replace id=oid>.
         c.conn feed [j message -type groupchat -id corr1 \
             -from room@muc.example.com/me {
@@ -2468,7 +2468,7 @@ test muc-edit-replace-id-is-origin-not-stanza-id \
         }]
         set m [lindex [muc_msgs] 0]
         c message edit -chat room@muc.example.com?join \
-            -timestamp [dict get $m timestamp] -body "б"
+            -id [dict get $m id] -body "б"
         set sent [lindex [c.conn get_written] end]
         set replaceId [xsearch $sent replace \
             -ns urn:xmpp:message-correct:0 -get @id]

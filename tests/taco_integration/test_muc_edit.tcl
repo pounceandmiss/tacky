@@ -236,10 +236,10 @@ namespace eval ::test::muc_edit_int {
             }
 
             # Juliet edits her own message; wait for Romeo's in-place patch.
-            set jts [dict get $jRow timestamp]
+            set jid_ [dict get $jRow id]
             awaitEvent message <Edited> -acc $ROMEO -jid $CHAT {
                 [tacky client $JULIET] message edit \
-                    -chat $CHAT -timestamp $jts -body "второе"
+                    -chat $CHAT -id $jid_ -body "второе"
             }
 
             # Romeo's stored row: the correction applied in place (no dup),
@@ -254,7 +254,7 @@ namespace eval ::test::muc_edit_int {
                     "второе" {
                         incr nSecond
                         set rawxml [[tacky client $ROMEO] message rawxml \
-                            -chat $CHAT -timestamp [dict get $m timestamp]]
+                            -chat $CHAT -id [dict get $m id]]
                     }
                 }
             }
@@ -281,7 +281,7 @@ namespace eval ::test::muc_edit_int {
             awaitEvent message <New> -acc $ROMEO -jid $CHAT {
                 [tacky client $JULIET] message send -chat $CHAT -body "helo"
             }
-            set jts [dict get [rowOfBody $JULIET "helo"] timestamp]
+            set jid_ [dict get [rowOfBody $JULIET "helo"] id]
             # Juliet edits at once, then again from the room's echo of her
             # correction, which records its stanza-id.
             set edits [namespace current]::_julietEdits
@@ -290,16 +290,15 @@ namespace eval ::test::muc_edit_int {
                 [list apply {{v args} { incr $v }} $edits]]
             awaitEvent message <Edited> -acc $ROMEO -jid $CHAT {
                 [tacky client $JULIET] message edit \
-                    -chat $CHAT -timestamp $jts -body "hello"
+                    -chat $CHAT -id $jid_ -body "hello"
             }
             wait_value $edits 2 10000
             tacky unlisten $tag
-            # The room's echo moved Juliet's row to its own time.
-            set jts [dict get [rowOfBody $JULIET "hello"] timestamp]
+            # The row the correction names.
+            set jid_ [dict get [rowOfBody $JULIET "hello"] id]
             set corrSid [[tacky client $JULIET] db onecolumn {
-                SELECT a.alias_id FROM message_alias a
-                JOIN chat_message m ON m.id=a.target_id
-                WHERE a.chat_jid=$CHAT AND a.kind='server' AND m.timestamp=$jts
+                SELECT alias_id FROM message_alias
+                WHERE chat_jid=$CHAT AND kind='server' AND target_id=$jid_
             }]
             if {$corrSid eq ""} { error "no stanza-id recorded for the correction" }
 

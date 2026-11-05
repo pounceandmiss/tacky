@@ -95,23 +95,41 @@ test accountwindow-search-hit-opens-its-room-as-a-groupchat {the ?join suffix on
     aw_cleanup
 } -result {room@conf.example.com?join 1}
 
+# The chat view under $w, found by its class.
+proc aw_chatview {w} {
+    if {[winfo class $w] eq "Chatview"} { return $w }
+    foreach c [winfo children $w] {
+        set found [aw_chatview $c]
+        if {$found ne ""} { return $found }
+    }
+    return ""
+}
+
 test accountwindow-search-hit-jumps-in-an-already-open-chat {a hit in the chat already showing still jumps to it} -setup {
     aw_setup
 } -body {
-    # Enabled, so the jump's archive query goes out (a disabled account's
-    # would be refused), without dialing
-    [tacky client user@test.example.com] configure -enabled 1
+    set client [tacky client user@test.example.com]
+    set id [lindex [dict get [$client message messagestore store [list [dict create \
+        timestamp 300 chat_jid alice@example.com from_jid alice@example.com \
+        body "the hit" server_id s-hit own_id "" raw_xml ""]]] inserted] 0]
+    # Enough after it that opening the chat shows a page without it.
+    for {set i 0} {$i < 60} {incr i} {
+        $client message messagestore store [list [dict create \
+            timestamp [expr {1000 + $i}] chat_jid alice@example.com \
+            from_jid alice@example.com body "later $i" server_id s-$i \
+            own_id "" raw_xml ""]]
+    }
     accountwindow .aw -account user@test.example.com -controller aw_ctrl
     wait
     .aw OpenChat -acc user@test.example.com -jid alice@example.com
     wait
-    set before [aw_mam_queries]
-    .aw OnSearchGoto {alice@example.com 300}
+    set before [[aw_chatview .aw] messages has $id]
+    .aw OnSearchGoto [list alice@example.com $id]
     wait
-    expr {[aw_mam_queries] > $before}
+    list $before [[aw_chatview .aw] messages has $id]
 } -cleanup {
     aw_cleanup
-} -result 1
+} -result {0 1}
 
 test accountwindow-log-reveal-follows-the-file-switch {Show Log File is live only while a file is written} -setup {
     aw_setup

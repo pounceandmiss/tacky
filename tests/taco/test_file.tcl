@@ -328,8 +328,8 @@ test file-store-caption-derived {messagestore derives an empty caption for a URL
     set m [dict create timestamp 5100000 chat_jid bob@example.com \
         from_jid bob@example.com body https://h/p.png server_id sid-2 \
         own_id "" raw_xml "" attachments $att]
-    $::_client message messagestore store [list $m]
-    set got [lindex [$::_client message messagestore get ids bob@example.com [list 5100000]] 0]
+    set id [lindex [dict get [$::_client message messagestore store [list $m]] inserted] 0]
+    set got [lindex [$::_client message messagestore get ids bob@example.com [list $id]] 0]
     dict get $got content caption
 } -result {}
 
@@ -339,8 +339,8 @@ test file-store-caption-keeps-text {messagestore keeps a body with real text as 
     set m [dict create timestamp 5200000 chat_jid bob@example.com \
         from_jid bob@example.com body "look here https://h/p.png" server_id sid-3 \
         own_id "" raw_xml "" attachments $att]
-    $::_client message messagestore store [list $m]
-    set got [lindex [$::_client message messagestore get ids bob@example.com [list 5200000]] 0]
+    set id [lindex [dict get [$::_client message messagestore store [list $m]] inserted] 0]
+    set got [lindex [$::_client message messagestore get ids bob@example.com [list $id]] 0]
     dict get $got content caption
 } -result {look here https://h/p.png}
 
@@ -349,15 +349,22 @@ test file-store-caption-keeps-text {messagestore keeps a body with real text as 
 proc up_ms {args} {
     $::_client message messagestore {*}$args
 }
+# Stores an uploading share stamped $ts, own_id $ts; returns its row id.
 proc up_store_uploading {jid ts} {
-    up_ms store [list [dict create timestamp $ts chat_jid $jid \
+    lindex [dict get [up_ms store [list [dict create timestamp $ts chat_jid $jid \
         from_jid me@x body "" server_id "" own_id $ts raw_xml "" \
         attachments [list [dict create url "" path /tmp/a.png type image \
             name a.png size 4 mime image/png]] \
-        server_status uploading]]
+        server_status uploading]]] inserted] 0
 }
-proc up_status {jid ts} {
-    dict get [lindex [up_ms get ids $jid [list $ts]] 0] server_status
+# The row id of our message with own_id $ownId.
+proc up_id {jid ownId} {
+    $::_client db onecolumn {
+        SELECT id FROM chat_message WHERE chat_jid=$jid AND own_id=$ownId
+    }
+}
+proc up_status {jid ownId} {
+    dict get [lindex [up_ms get ids $jid [list [up_id $jid $ownId]]] 0] server_status
 }
 
 test file-markuploaded-promotes {markUploaded promotes uploading -> pending with the remote URL} {*}$file_env -body {
@@ -365,13 +372,13 @@ test file-markuploaded-promotes {markUploaded promotes uploading -> pending with
     up_ms markUploaded bob@example.com 7000000 https://h/a.png "<message/>" \
         [list [dict create url https://h/a.png type image name a.png \
             size 4 mime image/png]]
-    set m [lindex [up_ms get ids bob@example.com [list 7000000]] 0]
+    set m [lindex [up_ms get ids bob@example.com [list [up_id bob@example.com 7000000]]] 0]
     list [dict get $m server_status] \
         [dict get [lindex [dict get $m content attachments] 0] url]
 } -result {pending https://h/a.png}
 
-proc up_fail_reason {jid ts} {
-    dict get [lindex [up_ms get ids $jid [list $ts]] 0] fail_reason
+proc up_fail_reason {jid ownId} {
+    dict get [lindex [up_ms get ids $jid [list [up_id $jid $ownId]]] 0] fail_reason
 }
 
 test file-markuploadfailed {markUploadFailed sets the row to failed, naming the upload} {*}$file_env -body {
@@ -438,18 +445,18 @@ proc up_patch_statuses {script} {
 }
 
 test file-upload-success-patches-pending {a completed upload emits a <Status> flipping the row to pending} {*}$file_env -body {
-    up_store_uploading bob@example.com 7300000
+    set id [up_store_uploading bob@example.com 7300000]
     up_patch_statuses {
-        $::_client message OnUploaded bob@example.com 7300000 7300000 \
+        $::_client message OnUploaded bob@example.com 7300000 $id \
             /tmp/a.png "" https://h/a.png
     }
 } -result pending
 
 # Without the markers remote_status can never leave 'sent'.
 test file-upload-share-asks-for-markers {the plaintext share requests receipts and markers} {*}$file_env -body {
-    up_store_uploading bob@example.com 7350000
+    set id [up_store_uploading bob@example.com 7350000]
     $::_client conn clear
-    $::_client message OnUploaded bob@example.com 7350000 7350000 \
+    $::_client message OnUploaded bob@example.com 7350000 $id \
         /tmp/a.png "" https://h/a.png
     set stanza [lindex [$::_client conn get_written] end]
     set oob [lindex [xsearch $stanza x -ns jabber:x:oob] 0]
@@ -461,9 +468,9 @@ test file-upload-share-asks-for-markers {the plaintext share requests receipts a
 # The share goes out off the send path, so it has to mark itself in flight or
 # the reconnect retry sends the row a second time.
 test file-upload-share-not-resent-by-retry {RetryPending leaves a just-sent share alone} {*}$file_env -body {
-    up_store_uploading bob@example.com 7360000
+    set id [up_store_uploading bob@example.com 7360000]
     $::_client conn clear
-    $::_client message OnUploaded bob@example.com 7360000 7360000 \
+    $::_client message OnUploaded bob@example.com 7360000 $id \
         /tmp/a.png "" https://h/a.png
     set afterSend [llength [$::_client conn get_written]]
     $::_client message RetryPending
@@ -471,9 +478,9 @@ test file-upload-share-not-resent-by-retry {RetryPending leaves a just-sent shar
 } -result {1 1}
 
 test file-upload-failure-patches-failed {a failed upload emits a <Status> flipping the row to failed} {*}$file_env -body {
-    up_store_uploading bob@example.com 7400000
+    set id [up_store_uploading bob@example.com 7400000]
     up_patch_statuses {
-        $::_client message OnUploaded bob@example.com 7400000 7400000 \
+        $::_client message OnUploaded bob@example.com 7400000 $id \
             /tmp/a.png "" ""
     }
 } -result failed
@@ -483,10 +490,10 @@ test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping t
     # server never replies) instead of failing straight back on an unreadable
     # path, so the only transition is failed -> uploading.
     set f [open /tmp/a.png w]; puts -nonewline $f data; close $f
-    up_store_uploading bob@example.com 7500000
+    set id [up_store_uploading bob@example.com 7500000]
     up_ms markUploadFailed bob@example.com 7500000
     set res [up_patch_statuses {
-        tacky message retryUpload -acc $acc -chat bob@example.com -timestamp 7500000
+        tacky message retryUpload -acc $acc -chat bob@example.com -id $id
     }]
     file delete /tmp/a.png
     set res
@@ -495,16 +502,16 @@ test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping t
 # A frontend redrawing from <Status> alone sets and clears the reason too.
 test file-upload-status-carries-fail-reason {failure names the upload; retry clears it} {*}$file_env -body {
     set f [open /tmp/a.png w]; puts -nonewline $f data; close $f
-    up_store_uploading bob@example.com 7600000
+    set id [up_store_uploading bob@example.com 7600000]
     set ::_up_reasons {}
     set tag [tacky listen message <Status> {apply {{ev} {
         if {[dict exists $ev -fail_reason]} {
             lappend ::_up_reasons [dict get $ev -fail_reason]
         }
     }}}]
-    $::_client message OnUploaded bob@example.com 7600000 7600000 \
+    $::_client message OnUploaded bob@example.com 7600000 $id \
         /tmp/a.png "" ""
-    tacky message retryUpload -acc $acc -chat bob@example.com -timestamp 7600000
+    tacky message retryUpload -acc $acc -chat bob@example.com -id $id
     tacky unlisten $tag
     file delete /tmp/a.png
     set ::_up_reasons
@@ -1265,7 +1272,7 @@ test file-endsession-fails-upload-row {a share still uploading is marked failed,
                 set status [dict get [lrange $e 2 end] -server_status]
             }
         }
-        list $status [up_status bob@example.com [dict get $m timestamp]]
+        list $status [up_status bob@example.com [dict get $m own_id]]
     } -result {failed failed}
 
 file delete -force -- $::_upcache

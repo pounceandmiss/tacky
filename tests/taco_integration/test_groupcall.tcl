@@ -736,13 +736,13 @@ namespace eval ::test::groupcall_int {
 
     # == Call invites as messages ==============================================
 
-    # The call rows $acc holds in the room's chat, as {timestamp content}.
+    # The call rows $acc holds in the room's chat, as {id content}.
     proc callRows {acc} {
         variable ROOM
         set out {}
         foreach m [dict get [[tacky client $acc] message messagestore get latest $ROOM?join] messages] {
             if {[dict exists $m content] && [dict get $m content type] eq "call"} {
-                lappend out [list [dict get $m timestamp] [dict get $m content]]
+                lappend out [list [dict get $m id] [dict get $m content]]
             }
         }
         return $out
@@ -762,7 +762,7 @@ namespace eval ::test::groupcall_int {
             waitUntil {[has $JULIET <Invited>]}
             set inv [lindex [events $JULIET <Invited>] 0]
             tacky groupcall join -acc $JULIET -chat [dict get $inv -chat] \
-                -timestamp [dict get $inv -timestamp]
+                -id [dict get $inv -id]
             waitUntil {[dict size [peers $JULIET]] == 1}
             set sid [lindex [dict values [peers $JULIET]] 0]
             waitUntil {[legActive $ROMEO $sid] && [legActive $JULIET $sid]} $LIVE_TIMEOUT
@@ -783,7 +783,7 @@ namespace eval ::test::groupcall_int {
             waitUntil {[has $JULIET <Invited>]}
             set inv [lindex [events $JULIET <Invited>] 0]
             tacky groupcall decline -acc $JULIET -chat [dict get $inv -chat] \
-                -timestamp [dict get $inv -timestamp]
+                -id [dict get $inv -id]
             settle 500
             list [callState $JULIET] [dict get [status $ROMEO $call] count] \
                 [has $JULIET <Joined>]
@@ -807,8 +807,8 @@ namespace eval ::test::groupcall_int {
     # $acc answers the newest call invite it holds in the chat.
     proc answerInvite {acc} {
         waitUntil {[llength [callRows $acc]] > 0}
-        set ts [lindex [callRows $acc] end 0]
-        tacky groupcall join -acc $acc -chat $::test::groupcall_int::ROOM?join -timestamp $ts
+        set id [lindex [callRows $acc] end 0]
+        tacky groupcall join -acc $acc -chat $::test::groupcall_int::ROOM?join -id $id
     }
 
     # $acc's newest call row's `live`, once the call's room has answered.

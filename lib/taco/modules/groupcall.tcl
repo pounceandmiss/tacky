@@ -16,13 +16,13 @@
 #   ;# a hosted call for $chat (a group chat, bare or ?join, or a contact):
 #   ;# <Started> once its room is up, then as join; <StartFailed> if no room
 #   ;# could be made. If the chat's newest call's room still exists
-#   ;# (disco#info), that call is joined instead (join -chat -timestamp).
-# tacky groupcall join         -acc $jid -jid $room ?-video 0|1? ?-chat $chat? ?-id $inviteId?
+#   ;# (disco#info), that call is joined instead (join -chat -id).
+# tacky groupcall join         -acc $jid -jid $room ?-video 0|1? ?-chat $chat? ?-call_id $inviteId?
 #   ;# a room we are in: its in-room call. Any other: a hosted call's room,
-#   ;# entered hidden; -chat and -id (from the invite) let the chat know.
-# tacky groupcall join         -acc $jid -chat $chat -timestamp $ts ?-video 0|1?
-#   ;# answer the call invite stored at $ts in $chat (content type "call")
-# tacky groupcall decline      -acc $jid -chat $chat -timestamp $ts
+#   ;# entered hidden; -chat and -call_id (from the invite) let the chat know.
+# tacky groupcall join         -acc $jid -chat $chat -id $id ?-video 0|1?
+#   ;# answer the call invite stored as message $id in $chat (content type "call")
+# tacky groupcall decline      -acc $jid -chat $chat -id $id
 # tacky groupcall inCall       -acc $jid -jid $room      ;# -> bool
 # tacky groupcall leave        -acc $jid -jid $room
 # tacky groupcall setVideo     -acc $jid -jid $room -on 0|1   ;# camera mute, every session
@@ -58,7 +58,7 @@
 # tacky listen groupcall <Joined>     $cmd ;# -jid $room ?-chat $chat?
 # tacky listen groupcall <Session>    $cmd ;# -jid $room -peer $fullJid -sid $sid -video $b
 # tacky listen groupcall <Left>       $cmd ;# -jid $room -reason $t ?-chat $chat?
-# tacky listen groupcall <Invited>    $cmd ;# -jid $room -from $bareJid -chat $chat -timestamp $ts -video $b
+# tacky listen groupcall <Invited>    $cmd ;# -jid $room -from $bareJid -chat $chat -id $id -video $b
 # tacky listen groupcall <Warning>    $cmd ;# -jid $room -reason $t
 # tacky listen groupcall <VideoPreview> $cmd ;# -jid $room ?-chat $chat? ?-name $n? ?-id $i?
 #
@@ -255,8 +255,8 @@ snit::type taco_groupcall {
         foreach stored [list $chat?join $chat] {
             set newest [$client message messagestore newestCall $stored]
             if {$newest eq ""} continue
-            lassign $newest ts room
-            $self AskRoom $room [mymethod StartAsked $spec $stored $ts]
+            lassign $newest id room
+            $self AskRoom $room [mymethod StartAsked $spec $stored $id]
             return
         }
         $self Create $spec
@@ -264,14 +264,14 @@ snit::type taco_groupcall {
     }
 
     tackymethod join {args} {
-        array set opts {-jid "" -video 0 -chat "" -id "" -timestamp ""}
+        array set opts {-jid "" -video 0 -chat "" -call_id "" -id ""}
         array set opts $args
         # An invite stored as a message: its call, and the chat to tell.
-        if {$opts(-timestamp) ne ""} {
-            set at [$client message messagestore callAt $opts(-chat) $opts(-timestamp)]
-            if {$at eq ""} { error "join: no call invite at $opts(-timestamp) in $opts(-chat)" }
+        if {$opts(-id) ne ""} {
+            set at [$client message messagestore callAt $opts(-chat) $opts(-id)]
+            if {$at eq ""} { error "join: no call invite $opts(-id) in $opts(-chat)" }
             set opts(-jid) [dict get $at call room]
-            set opts(-id) [dict get $at call id]
+            set opts(-call_id) [dict get $at call id]
         }
         if {$opts(-jid) eq ""} { error "join: -jid required" }
         set why [$client calls Blocked]
@@ -299,7 +299,7 @@ snit::type taco_groupcall {
                 [dict create chat $chat hosted 1 video $video]]
             return
         }
-        set Calls($room) [dict create chat $chat id $opts(-id) ours 0 \
+        set Calls($room) [dict create chat $chat id $opts(-call_id) ours 0 \
             met 0 admitted {} video $video]
         $self Touch $room
         $client muc join -jid $room -nick [$self RandomHex 4] -hidden 1 \
@@ -310,12 +310,12 @@ snit::type taco_groupcall {
     # Turn down a stored call invite: the chat hears <reject>, the row says
     # declined. Nothing for a call we are in, or one already answered.
     tackymethod decline {args} {
-        array set opts {-chat "" -timestamp ""}
+        array set opts {-chat "" -id ""}
         array set opts $args
-        set at [$client message messagestore callAt $opts(-chat) $opts(-timestamp)]
+        set at [$client message messagestore callAt $opts(-chat) $opts(-id)]
         if {$at eq "" || [dict get $at state] ne ""} return
-        $client message messagestore setCallState $opts(-chat) $opts(-timestamp) declined
-        $client message EmitMessagePatch $opts(-chat) $opts(-timestamp)
+        $client message messagestore setCallState $opts(-chat) $opts(-id) declined
+        $client message EmitMessagePatch $opts(-chat) $opts(-id)
         set chat [jid norm [regsub {\?join$} $opts(-chat) {}]]
         set id [dict get $at call id]
         if {$id ne ""} { $self SendToChat $chat [j reject -ns $NS_INVITES -id $id] }
@@ -980,12 +980,12 @@ snit::type taco_groupcall {
     # A live call invite from someone else, just stored in $chat: <Invited>
     # lets a frontend ring. Parsing and storing are the message module's
     # (ParseCallInvite, ApplyCallVerdict).
-    method OnInvited {chat ts} {
-        set at [$client message messagestore callAt $chat $ts]
+    method OnInvited {chat id} {
+        set at [$client message messagestore callAt $chat $id]
         if {$at eq ""} return
         set call [dict get $at call]
         $client emit groupcall <Invited> -jid [dict get $call room] \
-            -from [dict get $call inviter] -chat $chat -timestamp $ts \
+            -from [dict get $call inviter] -chat $chat -id $id \
             -video [dict get $call video]
     }
 
@@ -1341,9 +1341,9 @@ snit::type taco_groupcall {
     # start, once the chat's newest call's room has answered. `start` has
     # replied by now, so a join that fails outright (calls blocked meanwhile)
     # is a start that failed.
-    method StartAsked {spec stored ts live} {
+    method StartAsked {spec stored id live} {
         if {$live eq "1"} {
-            if {[catch {$self join -chat $stored -timestamp $ts \
+            if {[catch {$self join -chat $stored -id $id \
                     -video [dict get $spec video]} err]} {
                 $self StartFailed $spec $err
             }

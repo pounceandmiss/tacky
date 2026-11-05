@@ -71,7 +71,7 @@ test json-backend-callback-search-result {a search result's flags and cursor are
 } -body {
     set result [dict create \
         messages {} complete 0 \
-        last "" last_chat_jid "" last_id ""]
+        last "" last_archive ""]
     _test_on_result 42 message/search $result
     lindex [_test_sent] 0
 } -result [json::write array \
@@ -80,8 +80,7 @@ test json-backend-callback-search-result {a search result's flags and cursor are
         messages [json::write array] \
         complete false \
         last null \
-        last_chat_jid {""} \
-        last_id {""}]]
+        last_archive {""}]]
 
 test json-backend-callback-list {callback with list of ints} -setup {
     _test_clear
@@ -397,15 +396,15 @@ test json-backend-emit-attachments {emit message with attachments and caption} -
                         name {"p.png"} size 20480 mime {"image/png"}]] \
                 caption {""}]]]]
 
-test json-backend-emit-retracted {retraction emits lean jid + int timestamp, no row} -setup {
+test json-backend-emit-retracted {retraction emits lean jid + int id, no row} -setup {
     _test_clear
 } -body {
-    _test_emit message <Retracted> -jid room@conf.example.com -timestamp 1700
+    _test_emit message <Retracted> -jid room@conf.example.com -id 1700
     lindex [_test_sent] 0
 } -result [json::write array \
     {"event"} {"message"} {"Retracted"} \
     [json::write object \
-        jid {"room@conf.example.com"} timestamp 1700]]
+        jid {"room@conf.example.com"} id 1700]]
 
 # "verified" must be a real bool: the string "0" is truthy in JS.
 test json-backend-emit-call-verified {calls <Verified> carries a real bool} -setup {

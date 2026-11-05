@@ -49,17 +49,19 @@ test ds-ms-store-null-status {messages without server_status default to empty} \
         dict get [lindex $msgs 0] server_status
     } -result {}
 
-test ds-ms-confirm-on-echo {an echo matching a pending send by own_id confirms it to ''} \
+test ds-ms-confirm-on-echo {an echo matching a pending send by own_id confirms it to '', taking the echo's stamp} \
     {*}$ds_ms_common \
     -body {
-        ds_batch [list \
-            [ds_msg timestamp 100 own_id oid1 body sent server_status pending]]
+        set id [lindex [dict get [ds_batch [list \
+            [ds_msg timestamp 100 own_id oid1 body sent server_status pending]]] \
+            inserted] 0]
         set v [store reconcile alice@example.com "" oid1 oid1 200]
         set status [testdb onecolumn {
             SELECT server_status FROM chat_message WHERE own_id='oid1'
         }]
-        list $status [dict get $v verdict] [dict get $v timestamp]
-    } -result {{} confirmed 100}
+        list $status [dict get $v verdict] [expr {[dict get $v id] eq $id}] \
+            [dict get $v timestamp]
+    } -result {{} confirmed 1 200}
 
 test ds-ms-no-confirm-non-pending {a non-pending match with no archive id to adopt is a duplicate} \
     {*}$ds_ms_common \
@@ -538,9 +540,9 @@ test ds-resend-too-large-fails-again {resending a too-large message fails it aga
     -body {
         c omemo setEnabled -jid bob@example.com -value 0
         c.conn set_max_bytes 500
-        set ts [c message send -chat bob@example.com -body [string repeat x 1000]]
+        set id [c message send -chat bob@example.com -body [string repeat x 1000]]
         ds_status_events
-        c message resend -chat bob@example.com -timestamp $ts
+        c message resend -chat bob@example.com -id $id
         list $::ds_statuses [llength [c.conn get_written]]
     } -result {{{pending {}} {failed too-large}} 0}
 

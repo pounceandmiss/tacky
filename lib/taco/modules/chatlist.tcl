@@ -378,19 +378,19 @@ snit::type taco_chatlist {
 
     # Only a change to the tail row is a chat-list change.
     method OnTailChanged {args} {
-        array set opts {-jid "" -timestamp "" -message ""}
+        array set opts {-jid "" -id "" -message ""}
         array set opts $args
-        if {$opts(-timestamp) eq "" && $opts(-message) ne ""} {
-            set opts(-timestamp) [dict get $opts(-message) timestamp]
+        if {$opts(-id) eq "" && $opts(-message) ne ""} {
+            set opts(-id) [dict get $opts(-message) id]
         }
-        $self EmitIfTail $opts(-jid) $opts(-timestamp)
+        $self EmitIfTail $opts(-jid) $opts(-id)
     }
 
-    # A confirmation may relocate the row: test where it landed.
+    # A confirmation restamps the row, so the chat's last activity moves.
     method OnTailConfirmed {args} {
-        array set opts {-jid "" -newtimestamp ""}
+        array set opts {-jid "" -id ""}
         array set opts $args
-        $self EmitIfTail $opts(-jid) $opts(-newtimestamp)
+        $self EmitIfTail $opts(-jid) $opts(-id)
     }
 
     # Re-emit the existing entries whose blocked flag flipped.
@@ -414,9 +414,9 @@ snit::type taco_chatlist {
         if {[$self EntryFor $opts(-jid)] ne ""} { $self EmitEntry $opts(-jid) }
     }
 
-    method EmitIfTail {chatJid ts} {
-        if {$chatJid eq "" || $ts eq ""} return
-        if {$ts != [$client message maxTimestamp -chat $chatJid]} return
+    method EmitIfTail {chatJid id} {
+        if {$chatJid eq "" || $id eq ""} return
+        if {$id != [lindex [$client message Tail $chatJid] 0]} return
         $self EmitEntry $chatJid
     }
 

@@ -44,10 +44,10 @@ proc notify_join {room nick} {
     }]
 }
 
-# Helper: local timestamp of a chat's newest stored message.
-proc notify_newest_ts {jid} {
+# Helper: row id of a chat's newest stored message.
+proc notify_newest_id {jid} {
     set res [$::_client message messagestore get latest $jid]
-    return [dict get [lindex [dict get $res messages] end] timestamp]
+    return [dict get [lindex [dict get $res messages] end] id]
 }
 
 # Helper: just the chat jids that alerted.
@@ -77,17 +77,17 @@ test notify-muted-chat-silent {a muted 1:1 chat does not alert} \
 test notify-already-read-silent {a message behind the watermark never alerts} \
     {*}$notify_common -body {
         notify_incoming "first"
-        set ts [notify_newest_ts alice@example.com]
+        set id [notify_newest_id alice@example.com]
         tacky message markOwnRead -acc $acc -chat alice@example.com \
-            -timestamp $ts
+            -id $id
         set ::alerts {}
         notify_incoming "second" m2
         tacky message markOwnRead -acc $acc -chat alice@example.com \
-            -timestamp [notify_newest_ts alice@example.com]
+            -id [notify_newest_id alice@example.com]
         set ::alerts {}
         # Re-announcing a watermark we already passed changes nothing.
         tacky message markOwnRead -acc $acc -chat alice@example.com \
-            -timestamp $ts
+            -id $id
         notify_jids
     } -result {}
 
@@ -96,9 +96,29 @@ test notify-read-cancels-pending {reading inside the delay window cancels the al
         [$::_client cget -taco] setting set -key notify_delay_ms -value 5000
         notify_incoming "hello"
         tacky message markOwnRead -acc $acc -chat alice@example.com \
-            -timestamp [notify_newest_ts alice@example.com]
+            -id [notify_newest_id alice@example.com]
         notify_jids
     } -result {}
+
+# A read as far as the alerted message takes its alert down; one that stops
+# short of it, as another device's can, leaves it up.
+test notify-read-dismisses {reading up to the alerted message dismisses it, short of it does not} \
+    {*}$notify_common -body {
+        set ::dismissed {}
+        tacky listen notify <Dismiss> {apply {{ev} {
+            lappend ::dismissed [dict get $ev -jid]
+        }}}
+        notify_incoming "one" m1
+        set first [notify_newest_id alice@example.com]
+        notify_incoming "two" m2
+        set second [notify_newest_id alice@example.com]
+        tacky message markOwnRead -acc $acc -chat alice@example.com -id $first
+        update
+        set short $::dismissed
+        tacky message markOwnRead -acc $acc -chat alice@example.com -id $second
+        update
+        list [llength $::alerts] $short $::dismissed
+    } -result {2 {} alice@example.com}
 
 test notify-looking-silent {a chat the user is looking at never alerts, read or not} \
     {*}$notify_common -body {
@@ -294,7 +314,7 @@ test notify-catchup-skips-read {a backlog already read elsewhere stays silent} \
     {*}$notify_common -body {
         notify_store_unread alice@example.com 3
         tacky message markOwnRead -acc $acc -chat alice@example.com \
-            -timestamp [notify_newest_ts alice@example.com]
+            -id [notify_newest_id alice@example.com]
         set ::alerts {}
         notify_catchup_done alice@example.com
         notify_jids

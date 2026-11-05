@@ -35,8 +35,8 @@ snit::widget chatpanel {
     variable findMatches {}
     variable findIndex -1
     variable findQuery ""
-    variable replyToTs ""
-    variable editingTs ""
+    variable replyToId ""
+    variable editingId ""
     variable dropBg -array {}
     variable groupCall {active 0 count 0 joined 0 jid ""}
     # blockEntry is "" when the Chat menu has no Block entry.
@@ -302,15 +302,15 @@ snit::widget chatpanel {
     }
 
     method Send {text} {
-        if {$editingTs ne ""} {
+        if {$editingId ne ""} {
             ::tacky message edit -acc $options(-acc) -chat $options(-jid) \
-                -timestamp $editingTs -body $text
+                -id $editingId -body $text
             $self CancelEdit
             return
         }
         set sendArgs [list -acc $options(-acc) -chat $options(-jid) -body $text]
-        if {$replyToTs ne ""} {
-            lappend sendArgs -reply_to_ts $replyToTs
+        if {$replyToId ne ""} {
+            lappend sendArgs -reply_to_id $replyToId
         }
         ::tacky message send {*}$sendArgs
         $self CancelReply
@@ -319,9 +319,9 @@ snit::widget chatpanel {
     # Begin an XEP-0308 correction: banner + prefill the composer with the
     # current body. The next Send routes to `message edit` (see Send).
     method StartEdit {data} {
-        lassign $data ts body
+        lassign $data id body
         $self CancelReply
-        set editingTs $ts
+        set editingId $id
         set slot [[$self ShowBanner edit \
             -close-command [mymethod CancelEdit]] body]
         if {![winfo exists $slot.lbl]} {
@@ -333,7 +333,7 @@ snit::widget chatpanel {
     }
 
     method CancelEdit {} {
-        set editingTs ""
+        set editingId ""
         $self HideBanner edit
     }
 
@@ -343,7 +343,7 @@ snit::widget chatpanel {
             -message "Delete this message? This cannot be undone."]
         if {$ans ne "yes"} return
         ::tacky message retract -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $id
+            -chat $options(-jid) -id $id
     }
 
     method ConfirmModerate {id} {
@@ -352,7 +352,7 @@ snit::widget chatpanel {
             -message "Retract this message for everyone in the room?"]
         if {$ans ne "yes"} return
         ::tacky message moderate -acc $options(-acc) \
-            -chat $options(-jid) -timestamp $id \
+            -chat $options(-jid) -id $id \
             -tag $win -onerror [mymethod ShowModerateError]
     }
 
@@ -363,9 +363,9 @@ snit::widget chatpanel {
     }
 
     method StartReply {data} {
-        lassign $data ts author snippet
+        lassign $data id author snippet
         $self CancelEdit
-        set replyToTs $ts
+        set replyToId $id
         set slot [[$self ShowBanner reply \
             -icon mate/16x16/actions/mail-reply-sender.png \
             -close-command [mymethod CancelReply]] body]
@@ -377,7 +377,7 @@ snit::widget chatpanel {
     }
 
     method CancelReply {} {
-        set replyToTs ""
+        set replyToId ""
         $self HideBanner reply
     }
 
@@ -783,7 +783,7 @@ snit::widget chatpanel {
     }
 
     method OnFindResults {result} {
-        set findMatches [lmap m [dict get $result messages] {dict get $m timestamp}]
+        set findMatches [lmap m [dict get $result messages] {dict get $m id}]
         if {[llength $findMatches] > 0} {
             set findIndex 0
             $self GotoFindMatch
@@ -810,8 +810,7 @@ snit::widget chatpanel {
     }
 
     method GotoFindMatch {} {
-        set ts [lindex $findMatches $findIndex]
-        $cv goto $ts
+        $cv goto "" -id [lindex $findMatches $findIndex]
     }
 
     method UpdateFindStatus {} {
@@ -831,9 +830,9 @@ snit::widget chatpanel {
             -goto-command [mymethod GotoMessage]
     }
 
-    # Remote-sourced: a hit may be an isolated island in the local cache, so
-    # the surrounding page has to come from the archive.
-    method GotoMessage {timestamp} {
-        $cv goto $timestamp -source remote
+    # A hit may be an isolated island in the local cache: the holes around it
+    # bring the surrounding pages from the archive as the view pages on.
+    method GotoMessage {id} {
+        $cv goto "" -id $id
     }
 }

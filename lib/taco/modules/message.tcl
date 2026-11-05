@@ -1,8 +1,14 @@
 # Overview: see messagestore.tcl for the sparse-cache complexities.
 
-# Message dict keys: timestamp, chat_jid, from_jid, from_resource, body,
-#   server_id, own_id, origin_id, reply_id, reply_to, raw_xml (debug),
+# Message dict keys: id, pos, timestamp, chat_jid, from_jid, from_resource,
+#   body, server_id, own_id, origin_id, reply_id, reply_to, raw_xml (debug),
 #   server_status, encryption, fail_reason, attachments.
+#
+# A message is named by its id (the row's, stable, unique in the account);
+# pos is where it sits in its chat, a string that sorts in the chat's order
+# (see messagestore); timestamp is when it was sent, for display. Commands
+# take -id; events that change a message carry -id; a message dict, as <New>
+# and every read return it, carries all three.
 
 # chat_jid: MUC groupchat - room@muc?join; MUC PM - room@muc/nick;
 #   1:1 - bare JID.
@@ -19,9 +25,9 @@
 # (ParseResultNode) stanzas share one ingestion core, Classify:
 #   1. Dedup on the envelope ids (server stanza-id / @id), before
 #      anything else:
-#      1.1 an outgoing message may be confirmed - and its timestamp
-#          relocated to the incoming stamp (MAM archive delay or MUC
-#          ack live arrival time)
+#      1.1 an outgoing message may be confirmed - it takes the incoming
+#          copy's stamp (MAM archive delay or MUC echo arrival time) and
+#          keeps its place
 #      1.2 a match against an existing non-outgoing -> discard as duplicate
 #      1.3 no id match -> new, carry on
 #   2. Decrypt OMEMO
@@ -34,10 +40,10 @@
 #               incoming) and checkmark derive from the message dict
 #               (is_outgoing / server_status), not the event name
 #   <Status>    update a displayed entry's send/receipt state in place
-#   <Confirmed> a pending send was acknowledged; rekey if the stamp moved
+#   <Confirmed> a pending send was acknowledged (-timestamp: its stamp now)
 #   <Reactions> replace a displayed entry's aggregated reaction map
 #   <Edited>    re-send a full row to redraw an edited message in place
-#   <Retracted> flip a displayed entry to a tombstone (jid + timestamp only)
+#   <Retracted> flip a displayed entry to a tombstone (jid + id only)
 #   <OwnRead>   our own read watermark moved (this device or another one)
 #
 snit::type taco_message {
@@ -807,11 +813,11 @@ snit::type taco_message {
                         [list [dict get $r reconciled]]
                 }
                 duplicate {
-                    set storedTs [dict get $r stored_ts]
-                    set pos [$messagestore PlaceOfTs $chatJid $storedTs]
+                    set storedId [dict get $r stored_id]
+                    set pos [$messagestore PlaceOf $chatJid $storedId]
                     if {$pos ne ""} { dict lappend entries $chatJid [list fixed $pos] }
-                    if {$CatchupRowidFloor ne "" && [$self StoredBefore \
-                            $chatJid $storedTs $CatchupRowidFloor]} {
+                    # Stored before the catchup started: history we had.
+                    if {$CatchupRowidFloor ne "" && $storedId <= $CatchupRowidFloor} {
                         incr overlap
                     }
                 }
@@ -941,15 +947,6 @@ snit::type taco_message {
         return [dict create count $count min "" max "" rows {}]
     }
 
-    # Whether the row at $ts in $chatJid was stored at or below rowid $floor.
-    method StoredBefore {chatJid ts floor} {
-        set rowid [$client db onecolumn {
-            SELECT rowid FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$ts
-        }]
-        expr {$rowid ne "" && $rowid <= $floor}
-    }
-
     method OnDisconnect {args} {
         set LastOnlineUs [$self LinkHeardUs]
         # A walk the drop cut short leaves its floor bounded as a finished
@@ -1006,9 +1003,9 @@ snit::type taco_message {
 
     # A call row's `live`: whether anyone is in the call. Only a chat's
     # newest call is asked about; older ones read as over.
-    method CallLive {chat ts room} {
+    method CallLive {chat id room} {
         set newest [$messagestore newestCall $chat]
-        if {$newest eq "" || [lindex $newest 0] != $ts} { return 0 }
+        if {$newest eq "" || [lindex $newest 0] != $id} { return 0 }
         if {[catch {$client groupcall Liveness $room} live]} { return "" }
         return $live
     }
@@ -1017,11 +1014,11 @@ snit::type taco_message {
     # ended).
     method SettleCall {room state} {
         foreach row [$messagestore callsToRoom [jid norm $room]] {
-            lassign $row chat ts
-            set at [$messagestore callAt $chat $ts]
+            lassign $row chat id
+            set at [$messagestore callAt $chat $id]
             if {$at eq "" || [dict get $at state] ne ""} continue
-            $messagestore setCallState $chat $ts $state
-            $self EmitMessagePatch $chat $ts
+            $messagestore setCallState $chat $id $state
+            $self EmitMessagePatch $chat $id
         }
     }
 
@@ -1040,10 +1037,10 @@ snit::type taco_message {
             set rows [$messagestore invitesToRoom [jid norm $opts(-jid)]]
         } else {
             set rows [$client db eval {
-                SELECT chat_jid, timestamp FROM chat_message
+                SELECT chat_jid, id FROM chat_message
                 WHERE invite_room != '' AND kind='message'
             }]
-            set rows [lmap {c t} $rows {list $c $t}]
+            set rows [lmap {c i} $rows {list $c $i}]
         }
         foreach row $rows {
             $self EmitMessagePatch {*}$row
@@ -1180,7 +1177,7 @@ snit::type taco_message {
         if {$tier eq ""} { return 0 }
         foreach row [$messagestore markRemoteStatus $chatJid $targetId $tier] {
             $client emit message <Status> -jid $chatJid \
-                -timestamp [dict get $row timestamp] \
+                -id [dict get $row id] \
                 -remote_status [dict get $row remote_status]
         }
         return 1
@@ -1195,8 +1192,8 @@ snit::type taco_message {
         set targetId [xsearch $stanza displayed \
             -ns urn:xmpp:chat-markers:0 -get @id]
         if {$targetId eq ""} { return 0 }
-        set ts [$messagestore resolveTargetTs $chatJid $targetId]
-        if {$ts ne ""} { $self AdvanceOwnRead $chatJid $ts }
+        set id [$messagestore resolveTargetId $chatJid $targetId]
+        if {$id ne ""} { $self AdvanceOwnRead $chatJid $id }
         return 1
     }
 
@@ -1367,26 +1364,26 @@ snit::type taco_message {
             default { format "" }
         }]
         foreach row [$messagestore callsById $chatJid [dict get $r id]] {
-            lassign $row ts state room
+            lassign $row id state room
             set moved [expr {$tag in {accept left retract}}]
             if {$moved} { catch {$client groupcall ForgetLiveness $room} }
             if {$to ne "" && $state eq ""} {
-                $messagestore setCallState $chatJid $ts $to
+                $messagestore setCallState $chatJid $id $to
                 set moved 1
             }
-            if {$moved} { $self EmitMessagePatch $chatJid $ts }
+            if {$moved} { $self EmitMessagePatch $chatJid $id }
         }
     }
 
     # Echo of a pending outgoing message: messagestore has already flipped
-    # server_status pending → '' (server has it) and captured server_id.
-    # <Confirmed> always carries newtimestamp - equal to timestamp when the
-    # stamp held, or the relocated server ts when it moved, so the GUI rekeys.
+    # server_status pending → '' (server has it), captured server_id and
+    # taken the copy's stamp. The row keeps its place: <Confirmed> carries
+    # the stamp it shows now.
     method HandleConfirmation {chatJid confirmed} {
         foreach c $confirmed {
             $client emit message <Confirmed> -jid $chatJid \
-                -timestamp [dict get $c timestamp] \
-                -newtimestamp [dict get $c newtimestamp] -server_status ""
+                -id [dict get $c id] -timestamp [dict get $c timestamp] \
+                -server_status ""
         }
         $self EmitTail $chatJid
     }
@@ -1398,16 +1395,16 @@ snit::type taco_message {
         # reading there. Catchup pages don't come through here, so paging
         # history can't move the watermark.
         if {[dict get $dbMsg is_outgoing]} {
-            $self AdvanceOwnRead $chatJid [dict get $dbMsg timestamp]
+            $self AdvanceOwnRead $chatJid [dict get $dbMsg id]
         }
         $client emit message <New> -jid $chatJid -message $dbMsg
         $self EmitTail $chatJid
     }
 
     # Move the watermark, emitting only on a real move.
-    method AdvanceOwnRead {chatJid ts} {
-        if {![$messagestore markOwnRead $chatJid $ts]} return
-        $client emit message <OwnRead> -jid $chatJid -timestamp $ts
+    method AdvanceOwnRead {chatJid id} {
+        if {![$messagestore markOwnRead $chatJid $id]} return
+        $client emit message <OwnRead> -jid $chatJid -id $id
     }
 
     # own_id -> 1 for sends written to the CURRENT stream, i.e. the ones
@@ -1568,8 +1565,8 @@ snit::type taco_message {
         set wireBody $opts(-body)
         set fbEnd 0
         set encMode [$self OutgoingEncMode $opts(-chat) $msgType]
-        if {[info exists opts(-reply_to_ts)] && $opts(-reply_to_ts) ne ""} {
-            lassign [$self BuildReplyTarget $opts(-chat) $opts(-reply_to_ts)] \
+        if {[info exists opts(-reply_to_id)] && $opts(-reply_to_id) ne ""} {
+            lassign [$self BuildReplyTarget $opts(-chat) $opts(-reply_to_id)] \
                 replyId replyTo quoteBody quoteEnc
             # An OMEMO-encrypted body is only visible after decryption, by
             # which point a peer's XEP-0428 fallback-stripping has already
@@ -1632,24 +1629,24 @@ snit::type taco_message {
             -jid $opts(-chat) -message $dbMsg
         $self EmitTail $opts(-chat)
         # Writing here means we have read what was above.
-        $self AdvanceOwnRead $opts(-chat) [dict get $dbMsg timestamp]
+        $self AdvanceOwnRead $opts(-chat) [dict get $dbMsg id]
 
         if {$stanza ne ""} {
             $self MarkWired $oid
             $self WriteOrFail $opts(-chat) $oid $stanza
         }
-        return [dict get $dbMsg timestamp]
+        return [dict get $dbMsg id]
     }
 
     # Look up the replied-to row and resolve its reply id (reply::pick_id).
     # Returns {replyId author fullBody encryption}; the body is used for the
     # wire quote unless the target was encrypted.
-    method BuildReplyTarget {chatJid ts} {
+    method BuildReplyTarget {chatJid id} {
         set found 0
         $client db eval {
             SELECT server_id, origin_id, own_id, from_jid, body, encryption
             FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$ts
+            WHERE chat_jid=$chatJid AND kind='message' AND id=$id
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return [list "" "" "" ""] }
@@ -1681,31 +1678,31 @@ snit::type taco_message {
             attachments [OutgoingAttachment "" $path] \
             server_status uploading]
         set inserted [dict get [$messagestore store [list $msg] append] inserted]
-        set ts [lindex $inserted 0]
+        set id [lindex $inserted 0]
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <New> -jid $chatJid -message $dbMsg
         $self EmitTail $chatJid
-        $self AdvanceOwnRead $chatJid $ts
-        $self StartUpload $chatJid $oid $ts $path $encMode
-        return $ts
+        $self AdvanceOwnRead $chatJid $id
+        $self StartUpload $chatJid $oid $id $path $encMode
+        return $id
     }
 
-    # The transfer id is the message id (== own_id == timestamp), so the GUI,
-    # which keys an outgoing attachment by its message id, correlates upload
-    # progress without a handshake. Progress/terminal state reach the GUI via
-    # the file module's `file <Update>` event; OnUploaded is the internal
-    # completion that turns the GET URL into the actual outgoing stanza.
-    method StartUpload {chatJid oid ts path encMode} {
-        $client file upload -id $ts -path $path \
+    # The transfer id is the message's row id, so the GUI, which keys an
+    # outgoing attachment by its message, correlates upload progress without
+    # a handshake. Progress/terminal state reach the GUI via the file
+    # module's `file <Update>` event; OnUploaded is the internal completion
+    # that turns the GET URL into the actual outgoing stanza.
+    method StartUpload {chatJid oid id path encMode} {
+        $client file upload -id $id -path $path \
             -encrypt [expr {$encMode eq "omemo"}] \
-            -command [mymethod OnUploaded $chatJid $oid $ts $path $encMode]
+            -command [mymethod OnUploaded $chatJid $oid $id $path $encMode]
     }
 
-    method OnUploaded {chatJid oid ts path encMode url} {
+    method OnUploaded {chatJid oid id path encMode url} {
         if {$url eq ""} {
             $messagestore markUploadFailed $chatJid $oid
             $client emit message <Status> -jid $chatJid \
-                -timestamp $ts -server_status failed -fail_reason upload
+                -id $id -server_status failed -fail_reason upload
             return
         }
         lassign [$self DeriveAddressing $chatJid] msgType toJid
@@ -1718,7 +1715,7 @@ snit::type taco_message {
                     $msgType $toJid omemo]] \
                 [OutgoingAttachment $url $path] omemo
             $client emit message <Status> -jid $chatJid \
-                -timestamp $ts -server_status pending
+                -id $id -server_status pending
             $self RetrySend [dict create chat_jid $chatJid body $url \
                 own_id $oid encryption omemo reply_id "" reply_to ""]
             return
@@ -1729,7 +1726,7 @@ snit::type taco_message {
         $messagestore markUploaded $chatJid $oid $url [jwrite $stanza] \
             [OutgoingAttachment $url $path] ""
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status pending
+            -id $id -server_status pending
         # In flight from here, so RetryPending doesn't send it twice.
         $self MarkWired $oid
         $self WriteOrFail $chatJid $oid $stanza
@@ -1741,8 +1738,8 @@ snit::type taco_message {
     tackymethod -noreturn retryUpload {args} {
         array set opts $args
         set chatJid $opts(-chat)
-        set ts $opts(-timestamp)
-        set row [lindex [$messagestore get ids $chatJid [list $ts]] 0]
+        set id $opts(-id)
+        set row [lindex [$messagestore get ids $chatJid [list $id]] 0]
         if {$row eq "" || ![dict exists $row content] \
             || [dict get $row content type] ne "media"} return
         set atts [dict get $row content attachments]
@@ -1752,8 +1749,8 @@ snit::type taco_message {
             ? [dict get $row encryption] : ""}]
         $messagestore markUploading $chatJid $oid
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status uploading -fail_reason ""
-        $self StartUpload $chatJid $oid $ts $path $encMode
+            -id $id -server_status uploading -fail_reason ""
+        $self StartUpload $chatJid $oid $id $path $encMode
     }
 
     method OnSmAck {args} {
@@ -1774,11 +1771,9 @@ snit::type taco_message {
         }
         set confirmed [$messagestore confirmByOwnIds $ownIds]
         foreach c $confirmed {
-            # SM-ack never relocates the row (confirmByOwnIds keeps its ts),
-            # so newtimestamp == timestamp.
+            # An SM ack carries no stamp: the row keeps the one it has.
             $client emit message <Confirmed> -jid [dict get $c chat_jid] \
-                -timestamp [dict get $c timestamp] \
-                -newtimestamp [dict get $c timestamp] -server_status ""
+                -id [dict get $c id] -server_status ""
         }
     }
 
@@ -1791,7 +1786,7 @@ snit::type taco_message {
     # in-flight is per-connection state, so it isn't in the table.
     method PendingSends {scope {peerJid ""}} {
         set sql {SELECT chat_jid, body, own_id, encryption, reply_id, reply_to,
-                        timestamp
+                        timestamp, id
                  FROM chat_message
                  WHERE kind='message' AND server_status='pending'}
         switch $scope {
@@ -1803,7 +1798,7 @@ snit::type taco_message {
         # Read through idx_chat_message_pending, which the literal
         # server_status='pending' selects; the + keeps peer-omemo off the
         # primary key, which would walk the peer's whole chat.
-        append sql { ORDER BY timestamp}
+        append sql { ORDER BY id}
         set pending {}
         $client db eval $sql row {
             if {$scope ne "all" && [$self IsWired $row(own_id)]} continue
@@ -1811,7 +1806,7 @@ snit::type taco_message {
                 chat_jid $row(chat_jid) body $row(body) \
                 own_id $row(own_id) encryption $row(encryption) \
                 reply_id $row(reply_id) reply_to $row(reply_to) \
-                timestamp $row(timestamp)]
+                timestamp $row(timestamp) id $row(id)]
         }
         return $pending
     }
@@ -2004,10 +1999,9 @@ snit::type taco_message {
         }
     }
 
-    # resend -chat X -timestamp T ?-plaintext 0|1?
+    # resend -chat X -id I ?-plaintext 0|1?
     #
-    # User-driven resend of a pending/failed outgoing message, keyed by
-    # the GUI's stable (chat_jid, timestamp) id. Default honors the
+    # User-driven resend of a pending/failed outgoing message, row $I. Default honors the
     # row's stamped `encryption` — "try again, same way". `-plaintext 1`
     # rewrites the stamp to '' and is the ONLY path allowed to downgrade
     # an OMEMO message to cleartext, so a stuck encrypted message can be
@@ -2020,12 +2014,12 @@ snit::type taco_message {
         array set opts {-plaintext 0}
         array set opts $args
         set chatJid $opts(-chat)
-        set ts      $opts(-timestamp)
+        set id      $opts(-id)
 
         set row [$client db eval {
             SELECT own_id, body, encryption, reply_id, reply_to
             FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$ts AND kind='message'
+            WHERE chat_jid=$chatJid AND id=$id AND kind='message'
         }]
         if {[llength $row] == 0} return
         lassign $row oid body enc replyId replyTo
@@ -2038,7 +2032,7 @@ snit::type taco_message {
             set enc ""
             $client db eval {
                 UPDATE chat_message SET encryption=''
-                WHERE chat_jid=$chatJid AND timestamp=$ts
+                WHERE chat_jid=$chatJid AND id=$id
             }
             set stamp [list -encryption ""]
         }
@@ -2052,10 +2046,10 @@ snit::type taco_message {
         $client db eval {
             UPDATE chat_message
             SET server_status='pending', fail_reason=''
-            WHERE chat_jid=$chatJid AND timestamp=$ts
+            WHERE chat_jid=$chatJid AND id=$id
         }
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status pending -fail_reason "" {*}$stamp
+            -id $id -server_status pending -fail_reason "" {*}$stamp
 
         $self RetrySend [dict create \
             chat_jid $chatJid body $body own_id $oid encryption $enc \
@@ -2075,14 +2069,14 @@ snit::type taco_message {
             WHERE chat_jid=$chatJid AND own_id=$oid
               AND server_status='pending'
         }
-        set ts [$client db onecolumn {
-            SELECT timestamp FROM chat_message
+        set id [$client db onecolumn {
+            SELECT id FROM chat_message
             WHERE chat_jid=$chatJid AND own_id=$oid
         }]
-        if {$ts eq ""} return
+        if {$id eq ""} return
         $self ClearWired $oid
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status failed -fail_reason $reason
+            -id $id -server_status failed -fail_reason $reason
     }
 
     # The peer's side refused a message we sent. Unlike MarkOutgoingFailed
@@ -2092,12 +2086,12 @@ snit::type taco_message {
     # later must not fail a message long delivered.
     method MarkBounced {chatJid oid} {
         if {$oid eq ""} return
-        set ts [$client db onecolumn {
-            SELECT timestamp FROM chat_message
+        lassign [$client db eval {
+            SELECT id, timestamp FROM chat_message
             WHERE chat_jid=$chatJid AND own_id=$oid
               AND server_status IN ('pending', '')
-        }]
-        if {$ts eq ""} return
+        }] id ts
+        if {$id eq ""} return
         if {$ts < [clock microseconds] - $BounceWindowUs && [$client db onecolumn {
                 SELECT server_status FROM chat_message
                 WHERE chat_jid=$chatJid AND own_id=$oid
@@ -2112,40 +2106,35 @@ snit::type taco_message {
         }
         $self ClearWired $oid
         $client emit message <Status> -jid $chatJid \
-            -timestamp $ts -server_status failed -fail_reason delivery
+            -id $id -server_status failed -fail_reason delivery
     }
 
-    # rawxml -chat $chatJid -timestamp $ts -command $cb
+    # rawxml -chat $chatJid -id $id -command $cb
     tackymethod rawxml {args} {
         array set opts $args
         $client db onecolumn {
             SELECT raw_xml FROM chat_message
-            WHERE chat_jid=$opts(-chat) AND timestamp=$opts(-timestamp)
+            WHERE chat_jid=$opts(-chat) AND id=$opts(-id)
         }
     }
 
-    # Newest real message timestamp for the chat: the value EmitTail pushes
-    # in the message <Tail> event (internal, not a public API method).
-    # A fresh query, not the chats-module MaxTimestamps cache: that cache
-    # counts hole rows and misses the timestamp UPDATE on MUC-echo
-    # confirmation, so it can't answer this authoritatively.
-    # The timestamp of the chat's last message, "" for none.
-    method maxTimestamp {args} {
-        array set opts $args
-        $client db onecolumn {
-            SELECT timestamp FROM chat_message
-            WHERE chat_jid=$opts(-chat) AND kind='message'
+    # The chat's last message as {id timestamp}, {"" ""} for none: what
+    # EmitTail pushes in the message <Tail> event.
+    method Tail {chatJid} {
+        set tail [$client db eval {
+            SELECT id, timestamp FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message'
             ORDER BY pos DESC LIMIT 1
-        }
+        }]
+        expr {[llength $tail] ? $tail : {"" ""}}
     }
 
-    # Push the chat's current newest-message timestamp so the GUI tracks the
-    # tail without polling. Emitted wherever MAX(timestamp) can change: new
-    # inserts and the MUC-echo confirmation rekey (which can move the tail
-    # backward, so a fresh authoritative value is required).
+    # Push the chat's last message so the GUI tracks the tail without
+    # polling. Emitted wherever it can change: new inserts and a
+    # confirmation (which restamps it).
     method EmitTail {chatJid} {
-        $client emit message <Tail> -jid $chatJid \
-            -timestamp [$self maxTimestamp -chat $chatJid]
+        lassign [$self Tail $chatJid] id ts
+        $client emit message <Tail> -jid $chatJid -id $id -timestamp $ts
     }
 
     # observe hook: re-emit the current tail so a fresh listener seeds.
@@ -2160,56 +2149,62 @@ snit::type taco_message {
         }
     }
 
-    # markDisplayed -chat $chatJid -timestamp $ts ?-after $afterTs?
-    # Send a `displayed` marker for the newest of the peer's messages at or
-    # before $ts and past $afterTs, which marks everything up to it read.
+    # markDisplayed -chat $chatJid -id $id ?-after $afterId?
+    # Send a `displayed` marker for the last of the peer's messages up to
+    # row $id and past row $afterId, which marks everything up to it read.
     # A marker for a message of our own means nothing, so with ours on
     # screen below theirs it is theirs that is named. No-op for MUC, when
     # disabled, to who may not see our presence, or when there is no such
     # message with an origin id to reference.
     tackymethod markDisplayed {args} {
-        set opts(-after) 0
+        set opts(-after) ""
         array set opts $args
         if {![$self MarkersEnabled]} return
         if {[string match {*\?join} $opts(-chat)]} return
         if {![$self MaySeePresence $opts(-chat)]} return
-        set originId [$client db onecolumn {
+        set upTo [$messagestore PosOf $opts(-chat) $opts(-id)]
+        if {$upTo eq ""} return
+        set from [expr {$opts(-after) eq "" ? ""
+            : [$messagestore PosOf $opts(-chat) $opts(-after)]}]
+        set chat $opts(-chat)
+        set originId [$client db onecolumn "
             SELECT origin_id FROM chat_message
-            WHERE chat_jid=$opts(-chat) AND kind='message'
-              AND timestamp > $opts(-after) AND timestamp <= $opts(-timestamp)
+            WHERE chat_jid=\$chat AND kind='message'
+              [expr {$from eq "" ? "" : {AND pos > $from}}] AND pos <= \$upTo
               AND (own_id IS NULL OR own_id = '') AND origin_id != ''
-            ORDER BY timestamp DESC LIMIT 1
-        }]
+            ORDER BY pos DESC LIMIT 1
+        "]
         if {$originId eq ""} return
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId
     }
 
-    # markOwnRead -chat $chatJid -timestamp $ts
-    # Record that we have read this chat up to $ts. Local state only (the
+    # markOwnRead -chat $chatJid -id $id
+    # Record that we have read this chat up to row $id. Local state only (the
     # wire marker is markDisplayed's job), and applies to MUC as well.
     # Forward-only, so it is safe to call on every focus and scroll.
     tackymethod markOwnRead {args} {
         array set opts $args
-        $self AdvanceOwnRead $opts(-chat) $opts(-timestamp)
+        $self AdvanceOwnRead $opts(-chat) $opts(-id)
     }
 
     # ownRead -chat $chatJid
-    # Our read watermark for one chat and what is still unread past it.
+    # Our read watermark for one chat (the id of the last row read, "" for
+    # none) and what is still unread past it.
     tackymethod ownRead {args} {
         array set opts $args
         return [dict create \
-            timestamp [dict get [$messagestore ownRead $opts(-chat)] read_ts] \
+            id [dict get [$messagestore ownRead $opts(-chat)] id] \
             unread [$messagestore unreadCount $opts(-chat)]]
     }
 
-    # react -chat $chatJid -timestamp $targetTs -emoji $emoji
+    # react -chat $chatJid -id $id -emoji $emoji
     # Toggle one emoji in our XEP-0444 reaction set for a message. The set
     # is recomputed and sent whole (the protocol sends the complete set, not
     # a delta); toggling off the last emoji sends an empty <reactions/>.
     tackymethod react {args} {
         array set opts $args
-        set targetTs $opts(-timestamp)
-        set targetId [$self ReferenceId $opts(-chat) $targetTs]
+        set target $opts(-id)
+        set targetId [$self ReferenceId $opts(-chat) $target]
         if {$targetId eq ""} return
         set ownId [$self OwnReactionSenderId $opts(-chat)]
         set current [$messagestore ownReactions $opts(-chat) $targetId $ownId]
@@ -2219,16 +2214,16 @@ snit::type taco_message {
         } else {
             lappend current $opts(-emoji)
         }
-        $self SetReactions $opts(-chat) $targetTs $current
+        $self SetReactions $opts(-chat) $target $current
     }
 
-    # reactClear -chat $chatJid -timestamp $targetTs — drop all our reactions.
+    # reactClear -chat $chatJid -id $id — drop all our reactions.
     tackymethod reactClear {args} {
         array set opts $args
-        $self SetReactions $opts(-chat) $opts(-timestamp) {}
+        $self SetReactions $opts(-chat) $opts(-id) {}
     }
 
-    # edit -chat $chatJid -timestamp $targetTs -body $newText
+    # edit -chat $chatJid -id $id -body $newText
     # XEP-0308 correction of our own message: send a fresh message carrying
     # <replace id=original> + the new body, then optimistically swap the
     # stored body and <Edited>. The MUC echo / 1:1 carbon re-applies
@@ -2236,7 +2231,7 @@ snit::type taco_message {
     tackymethod edit {args} {
         array set opts $args
         set chatJid $opts(-chat)
-        set targetId [$self CorrectionAnchorId $chatJid $opts(-timestamp)]
+        set targetId [$self CorrectionAnchorId $chatJid $opts(-id)]
         if {$targetId eq ""} return
         set newBody $opts(-body)
         set oid [clock microseconds]
@@ -2257,14 +2252,14 @@ snit::type taco_message {
             $newBody $oid $msgType $toJid $encMode "" "" 0 $targetId]]
         # No sender_fp on our own rows: we never decrypt our own sends, and
         # is_own already authorizes correcting them from any of our devices.
-        $messagestore addAliases $chatJid $opts(-timestamp) "" $oid
-        set targetTs [$messagestore applyEdit $chatJid $opts(-timestamp) \
+        $messagestore addAliases $chatJid $opts(-id) "" $oid
+        set target [$messagestore applyEdit $chatJid $opts(-id) \
             $newBody $readable [clock microseconds] \
             [dict create encryption $encMode sender_fp ""] local]
-        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+        if {$target ne ""} { $self EmitMessagePatch $chatJid $target }
     }
 
-    # retract -chat $chatJid -timestamp $targetTs
+    # retract -chat $chatJid -id $id
     # XEP-0424 self-retraction of our own 1:1 message (MUC retraction is
     # moderation - see `moderate`). Sends a <retract> with a 0428 fallback
     # body + 0334 store hint, then tombstones locally.
@@ -2272,7 +2267,7 @@ snit::type taco_message {
         array set opts $args
         set chatJid $opts(-chat)
         if {[IsRoomChatJid $chatJid]} return
-        set targetId [$self CorrectionAnchorId $chatJid $opts(-timestamp)]
+        set targetId [$self CorrectionAnchorId $chatJid $opts(-id)]
         if {$targetId eq ""} return
         lassign [$self DeriveAddressing $chatJid] msgType toJid
         $client write [j message -to $toJid -type $msgType \
@@ -2282,31 +2277,31 @@ snit::type taco_message {
             j fallback -ns urn:xmpp:fallback:0 -for urn:xmpp:message-retract:1
             j store -ns urn:xmpp:hints
         }]
-        set targetTs [$self Retract $chatJid $opts(-timestamp)]
-        if {$targetTs ne ""} { $self EmitRetracted $chatJid $targetTs }
+        set target [$self Retract $chatJid $opts(-id)]
+        if {$target ne ""} { $self EmitRetracted $chatJid $target }
     }
 
-    # Tombstone the row at $targetTs and drop the downloaded files of its
-    # attachments with their at-rest keys (file uncache), so a retracted
-    # picture is not left on disk, readable with its key. The row's
-    # timestamp, or "" when nothing was stored there.
-    method Retract {chatJid targetTs} {
+    # Tombstone row $target and drop the downloaded files of its attachments
+    # with their at-rest keys (file uncache), so a retracted picture is not
+    # left on disk, readable with its key. The row's id, or "" when there
+    # is no such message.
+    method Retract {chatJid target} {
         set atts [$client db onecolumn {
             SELECT attachments FROM chat_message
-            WHERE chat_jid=$chatJid AND timestamp=$targetTs AND kind='message'
+            WHERE chat_jid=$chatJid AND id=$target AND kind='message'
         }]
-        set targetTs [$messagestore applyRetract $chatJid $targetTs]
-        if {$targetTs eq ""} { return "" }
+        set target [$messagestore applyRetract $chatJid $target]
+        if {$target eq ""} { return "" }
         foreach att $atts {
             if {[catch {dict get $att url} url] || $url eq ""} continue
             if {[catch {$client file uncache -url $url} err]} {
                 jlog warn "message: a retracted message's file stays: $err"
             }
         }
-        return $targetTs
+        return $target
     }
 
-    # moderate -chat $chatJid -timestamp $targetTs ?-reason $text? ?-onerror $cb?
+    # moderate -chat $chatJid -id $id ?-reason $text? ?-onerror $cb?
     # XEP-0425 moderated retraction: a moderator asks the room (IQ set) to
     # retract a message. We do NOT tombstone here - the room's broadcast
     # drives it through the receive path, so a rejected request leaves the
@@ -2315,7 +2310,7 @@ snit::type taco_message {
         array set opts {-reason "" -command "" -onerror ""}
         array set opts $args
         set chatJid $opts(-chat)
-        set targetId [$self ReferenceId $chatJid $opts(-timestamp)]
+        set targetId [$self ReferenceId $chatJid $opts(-id)]
         if {$targetId eq ""} {
             if {$opts(-onerror) ne ""} {
                 {*}$opts(-onerror) "That message hasn't reached the room yet"
@@ -2369,14 +2364,14 @@ snit::type taco_message {
     # Persist our full reaction set for a message (optimistic, is_own=1),
     # patch the local view, and put the set on the wire. In a MUC the room
     # reflects it back, re-applying idempotently to the same own-keyed row.
-    method SetReactions {chatJid targetTs emojis} {
-        set targetId [$self ReferenceId $chatJid $targetTs]
+    method SetReactions {chatJid target emojis} {
+        set targetId [$self ReferenceId $chatJid $target]
         if {$targetId eq ""} return
         set ownId [$self OwnReactionSenderId $chatJid]
         set ownLabel [$self OwnReactionLabel $chatJid]
         $messagestore applyReaction $chatJid $targetId $ownId $ownLabel 1 \
             $emojis [clock microseconds] local
-        $self EmitReactionPatch $chatJid $targetTs
+        $self EmitReactionPatch $chatJid $target
         lassign [$self DeriveAddressing $chatJid] msgType toJid
         $self SendReactions $toJid $msgType $targetId $emojis
     }
@@ -2388,11 +2383,11 @@ snit::type taco_message {
     # render as a fresh message on their side. Contrast ReferenceId, whose
     # MUC-uses-the-stanza-id rule is right for replies (0461), reactions (0444),
     # and moderation (0425). "" if the target is not stored.
-    method CorrectionAnchorId {chatJid targetTs} {
+    method CorrectionAnchorId {chatJid target} {
         set found 0
         $client db eval {
             SELECT origin_id, own_id FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$targetTs
+            WHERE chat_jid=$chatJid AND kind='message' AND id=$target
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return "" }
@@ -2403,11 +2398,11 @@ snit::type taco_message {
     # Wire id that references a stored message: MUC stanza-id, else 1:1
     # origin/own (reply::pick_id). "" if unresolved. Shared by reactions,
     # replies, and moderation; corrections/retractions use CorrectionAnchorId.
-    method ReferenceId {chatJid targetTs} {
+    method ReferenceId {chatJid target} {
         set found 0
         $client db eval {
             SELECT server_id, origin_id, own_id FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='message' AND timestamp=$targetTs
+            WHERE chat_jid=$chatJid AND kind='message' AND id=$target
             LIMIT 1
         } row { set found 1 }
         if {!$found} { return "" }
@@ -2525,7 +2520,7 @@ snit::type taco_message {
                 SELECT MAX(pos) FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
             }]
-            set at [$messagestore CursorPos $chatJid $after after]
+            set at [$messagestore PosOf $chatJid $after]
             if {$last eq "" || ($at ne "" && [string compare $at $last] >= 0)} {
                 {*}$callback $localMessages
                 return
@@ -2563,12 +2558,12 @@ snit::type taco_message {
         if {$byTime} {
             # No cursor: page by time below.
         } elseif {$before ne ""} {
-            set at [$messagestore CursorPos $chatJid $before before]
+            set at [$messagestore PosOf $chatJid $before]
             if {$at ne ""} {
                 set cursor [$self CursorRow $chatJid "pos >= \$at" ASC]
             }
         } elseif {$after ne ""} {
-            set at [$messagestore CursorPos $chatJid $after after]
+            set at [$messagestore PosOf $chatJid $after]
             if {$at ne ""} {
                 set cursor [$self CursorRow $chatJid "pos <= \$at" DESC]
             }
@@ -2580,9 +2575,11 @@ snit::type taco_message {
         if {$cursorId ne ""} {
             lappend mamArgs [expr {$after ne "" ? "-after" : "-before"}] $cursorId
         } elseif {$before ne ""} {
-            lappend mamArgs -end [FormatTimestampISO $before] -before ""
+            lappend mamArgs -end [FormatTimestampISO \
+                [$self RowStamp $chatJid $before]] -before ""
         } elseif {$after ne ""} {
-            lappend mamArgs -start [FormatTimestampISO $after]
+            lappend mamArgs -start [FormatTimestampISO \
+                [$self RowStamp $chatJid $after]]
         } else {
             lappend mamArgs -before ""
         }
@@ -2619,6 +2616,11 @@ snit::type taco_message {
             if {[llength $row]} { return $row }
         }
         return {}
+    }
+
+    # The timestamp row $id shows, for asking the archive by time.
+    method RowStamp {chatJid id} {
+        $messagestore stampOf $chatJid $id
     }
 
     # The CatchupPage context for a history page placed as $place says
@@ -2759,7 +2761,9 @@ snit::type taco_message {
 
     # goto -chat $jid -date $ts -source local|remote -limit 50
     #      ?-tag $tag? -command $cb
-    # Jump to a point in time. Returns {messages $list anchor $ts}.
+    # goto -chat $jid -id $id -limit 50 ?-tag $tag? -command $cb
+    # Jump to a point in time, or to a stored message. Returns {messages
+    # $list anchor $id}.
     #   local:  get around from local store
     #   remote: MAM fetch from -start $date, store, then get around
     tackymethod -async goto {args} {
@@ -2767,7 +2771,7 @@ snit::type taco_message {
         set opts [dict merge $defaults $args]
 
         set chatJid  [dict get $opts -chat]
-        set date     [dict get $opts -date]
+        set date     [dict getdef $opts -date ""]
         set source   [dict get $opts -source]
         set limit    [dict get $opts -limit]
         set tag      [dict get $opts -tag]
@@ -2778,6 +2782,10 @@ snit::type taco_message {
             lassign [$self TagWrap $tag $callback $onerror] callback onerror
         }
 
+        if {[dict exists $opts -id]} {
+            {*}$callback [$messagestore around $chatJid [dict get $opts -id] $limit]
+            return
+        }
         if {$source eq "local"} {
             set result [$messagestore get around $chatJid $date $limit]
             {*}$callback $result
@@ -2841,45 +2849,47 @@ snit::type taco_message {
         set tag      [dict get $opts -tag]
         set callback [dict get $opts -command]
 
-        set ts [$messagestore resolveReply $chatJid $replyId $replyTo]
-        if {$ts eq ""} {
+        set id [$messagestore resolveReply $chatJid $replyId $replyTo]
+        if {$id eq ""} {
             {*}$callback [dict create messages {} anchor ""]
             return
         }
-        $self goto -chat $chatJid -date $ts -source local \
-            -limit $limit -tag $tag -command $callback
+        if {$tag ne ""} {
+            lassign [$self TagWrap $tag $callback ""] callback
+        }
+        {*}$callback [$messagestore around $chatJid $id $limit]
     }
 
-    # search ?-chat $jid? -query "text" ?-source local|remote|both? ?-before $cursor?
+    # search ?-chat $jid? -query "text" ?-source local|remote|both?
+    #        ?-before $id | -before_archive $archiveId?
     #        ?-limit 20? ?-field $var? ?-tag $tag? -command $cb
     #
     # Omitting -chat searches every chat in the account. That is local-only -
     # MAM queries one archive - so it rejects a remote source rather than
-    # quietly downgrading, and its cursor is the {timestamp chat_jid} pair the
-    # store pages by.
+    # quietly downgrading.
     #
-    # Full text search. -source local (the default) is a LIKE match over
-    # already-stored bodies, with -before as an exclusive timestamp cursor. It
-    # is the only source that sees OMEMO bodies, which reach the store
-    # decrypted but sit on the server as ciphertext.
-    # -source remote queries MAM; new hits are stored to the local cache and
+    # Full text search. -source local (the default) matches already-stored
+    # bodies, newest first, and pages with -before: the id of the last hit
+    # had. It is the only source that sees OMEMO bodies, which reach the
+    # store decrypted but sit on the server as ciphertext.
+    # -source remote queries MAM and pages with -before_archive, the archive
+    # id of the last hit had; new hits are stored to the local cache and
     # wrapped with holes on each side - a hit is an isolated island whose
     # surroundings we know nothing about, so future pagination across it must
-    # fall through to MAM. `hole add` is a no-op when the target gap is already
-    # holeed, so repeated searches don't accumulate. A hit already cached is
-    # returned from the store as it stands: its position is known, so it
-    # neither stores nor holes. An archive advertising no fulltext field
-    # answers `unsupported` rather than running the query without the term.
+    # fall through to MAM. A hit already cached is returned from the store as
+    # it stands: its place is known, so it neither stores nor holes. An
+    # archive advertising no fulltext field answers `unsupported` rather than
+    # running the query without the term.
     # -source both runs the remote leg for its cache-filling effect and then
     # answers from the store, so one matching rule covers the whole result. It
     # falls back to the store alone when the archive can't run the search, and
     # pages locally: a -before cursor means the caller is walking a result set
     # already fetched, so it skips the remote leg.
-    # -before with -before_chat_jid pages the store, -before_id the archive.
-    # Callback receives dict: messages, complete, last, last_chat_jid, last_id
+    # Callback receives dict: messages, complete, last (the last hit's id,
+    # local), last_archive (its archive id, remote)
     tackymethod -async search {args} {
         array set opts {-limit 20 -tag "" -field "" -source local -chat "" \
-            -before "" -before_chat_jid "" -before_id ""}
+            -before "" -before_archive ""}
         array set opts $args
 
         set chatJid $opts(-chat)
@@ -2893,10 +2903,17 @@ snit::type taco_message {
         set query $opts(-query)
         set limit $opts(-limit)
         set before $opts(-before)
-        set beforeChat $opts(-before_chat_jid)
-        set beforeId $opts(-before_id)
+        set beforeArchive $opts(-before_archive)
 
-        $self CheckCursor $source $chatJid $before $beforeChat $beforeId
+        if {$source eq "remote" && $before ne ""} {
+            error "search: -source \"remote\" pages with -before_archive"
+        }
+        if {$source ne "remote" && $beforeArchive ne ""} {
+            error "search: -before_archive needs -source \"remote\""
+        }
+        if {$before ne "" && ![string is entier -strict $before]} {
+            error "search: -before is a message id, got \"$before\""
+        }
 
         if {$tag ne ""} {
             lassign [$self TagWrap $tag $callback $onerror] callback onerror
@@ -2904,20 +2921,19 @@ snit::type taco_message {
 
         switch -exact -- $source {
             local {
-                $self LocalSearch $chatJid $query $limit \
-                    $before $beforeChat $callback
+                $self LocalSearch $chatJid $query $limit $before $callback
             }
             both {
                 if {$before ne ""} {
-                    $self LocalSearch $chatJid $query $limit \
-                        $before $beforeChat $callback
+                    $self LocalSearch $chatJid $query $limit $before $callback
                     return
                 }
                 $self MamSearch $chatJid $query $limit "" $opts(-field) \
                     [mymethod OnSearchBoth $chatJid $query $limit $tag $callback]
             }
             remote {
-                $self MamSearch $chatJid $query $limit $beforeId $opts(-field) \
+                $self MamSearch $chatJid $query $limit $beforeArchive \
+                    $opts(-field) \
                     [mymethod OnSearch $chatJid $query $callback $onerror $tag]
             }
             default {
@@ -2926,52 +2942,18 @@ snit::type taco_message {
         }
     }
 
-    # Reading a store cursor as an archive one pages nothing rather than
-    # failing: SQLite ranks INTEGER below TEXT, so `timestamp < $rsmId`
-    # matches every row.
-    method CheckCursor {source chatJid before beforeChat beforeId} {
-        if {$source eq "remote"} {
-            if {$before ne "" || $beforeChat ne ""} {
-                error "search: -source \"remote\" pages with -before_id"
-            }
-            return
-        }
-        if {$beforeId ne ""} {
-            error "search: -before_id needs -source \"remote\""
-        }
-        if {$before ne "" && ![string is entier -strict $before]} {
-            error "search: -before is a timestamp, got \"$before\""
-        }
-        if {$chatJid ne ""} {
-            if {$beforeChat ne ""} {
-                error "search: -before_chat_jid belongs to a search with no -chat"
-            }
-            return
-        }
-        if {($before eq "") != ($beforeChat eq "")} {
-            error "search: an account-wide cursor is -before and\
-                   -before_chat_jid together"
-        }
-    }
-
-    method LocalSearch {chatJid query limit before beforeChat callback} {
-        set cursor $before
-        if {$chatJid eq "" && $before ne ""} {
-            set cursor [list $before $beforeChat]
+    method LocalSearch {chatJid query limit before callback} {
+        set cursor ""
+        if {$before ne ""} {
+            set cursor [list [$client db onecolumn {
+                SELECT timestamp FROM chat_message WHERE id=$before
+            }] $before]
         }
         set rows [$messagestore search $chatJid $query -limit $limit -before $cursor]
         set complete [expr {[llength $rows] < $limit}]
-        set last ""
-        set lastChat ""
-        if {[llength $rows]} {
-            set tail [lindex $rows end]
-            set last [dict get $tail timestamp]
-            if {$chatJid eq ""} {
-                set lastChat [dict get $tail chat_jid]
-            }
-        }
+        set last [expr {[llength $rows] ? [dict get [lindex $rows end] id] : ""}]
         {*}$callback [dict create messages [$self AnnotateMatches $rows $query] \
-            complete $complete last $last last_chat_jid $lastChat last_id ""]
+            complete $complete last $last last_archive ""]
     }
 
     # Say where each hit matched, so the caller highlights it instead of
@@ -3010,7 +2992,7 @@ snit::type taco_message {
         if {![dict exists $mamResult error]} {
             $self SearchIngest $chatJid $mamResult
         }
-        $self LocalSearch $chatJid $query $limit "" "" $callback
+        $self LocalSearch $chatJid $query $limit "" $callback
     }
 
     method OnSearch {chatJid query callback onerror tag mamResult} {
@@ -3031,7 +3013,7 @@ snit::type taco_message {
         {*}$callback [dict create \
             messages [$self AnnotateMatches $messages $query] \
             complete [dict get $mamResult complete] \
-            last "" last_chat_jid "" last_id [dict get $mamResult last]]
+            last "" last_archive [dict get $mamResult last]]
     }
 
     method SearchIngest {chatJid mamResult} {
@@ -3044,12 +3026,12 @@ snit::type taco_message {
                 set rec [dict get $r reconciled]
                 $self HandleConfirmation $chatJid [list $rec]
                 lappend messages {*}[$messagestore get ids $chatJid \
-                    [list [dict get $rec newtimestamp]]]
+                    [list [dict get $rec id]]]
                 continue
             }
             if {$verdict eq "duplicate"} {
                 lappend messages {*}[$messagestore get ids $chatJid \
-                    [list [dict get $r stored_ts]]]
+                    [list [dict get $r stored_id]]]
                 continue
             }
             if {$verdict ne "new"} continue
@@ -3090,10 +3072,10 @@ snit::type taco_message {
         # it goes the whole way.
         set fwdMsg [lindex [xsearch $fwdNode message] 0]
         if {$serverId ne "" && ![IsTombstone $fwdMsg]} {
-            set storedTs [$messagestore archivedTs $chatJid $serverId]
-            if {$storedTs ne ""} {
+            set storedId [$messagestore archivedId $chatJid $serverId]
+            if {$storedId ne ""} {
                 return [dict create verdict duplicate timestamp $ts \
-                    stored_ts $storedTs]
+                    stored_id $storedId]
             }
         }
         set msgNode [$client ingressAddresses $fwdMsg]
@@ -3163,7 +3145,7 @@ snit::type taco_message {
     # Returns one verdict; `timestamp` (server stamp) rides every verdict
     # so the MAM loops can reason over the true archive span:
     #   {verdict confirmed timestamp T reconciled V}  pending send echoed
-    #   {verdict duplicate timestamp T stored_ts S}   already a citizen at S
+    #   {verdict duplicate timestamp T stored_id I}   already a citizen, row I
     #   {verdict drop      timestamp T}               new but displayless
     #   {verdict new       timestamp T msg M}         new, store M
     #   {verdict reaction  timestamp T ...}           XEP-0444 reaction
@@ -3236,15 +3218,15 @@ snit::type taco_message {
             }
             duplicate {
                 return [dict create verdict duplicate timestamp $ts \
-                    stored_ts [dict get $v stored_ts]]
+                    stored_id [dict get $v stored_id]]
             }
             undecrypted {
                 # Stored before with a placeholder: read it again, and put
                 # the row right if it opens now. Either way it is no news.
-                set storedTs [dict get $v stored_ts]
-                $self Redecrypt $chatJid $msgNode $storedTs $serverId $ownId $originId
+                set storedId [dict get $v stored_id]
+                $self Redecrypt $chatJid $msgNode $storedId $serverId $ownId $originId
                 return [dict create verdict duplicate timestamp $ts \
-                    stored_ts $storedTs]
+                    stored_id $storedId]
             }
         }
 
@@ -3356,12 +3338,12 @@ snit::type taco_message {
     # any of their wire ids (the id-triple) or an earlier correction's
     # (message_alias), oldest first. Several can match: origin-ids are the
     # sender's choice, so the caller picks by author. Each is a dict
-    # {ts occ from own enc fp by_server}, where own is whether it is our
+    # {id occ from own enc fp by_server}, where own is whether it is our
     # own send (own_id set) and by_server whether a stanza-id matched.
     method TargetCandidates {chatJid targetId} {
         set out {}
         $client db eval {
-            SELECT m.timestamp AS ts, m.occupant_id AS occ, m.from_jid AS fr,
+            SELECT m.id AS id, m.occupant_id AS occ, m.from_jid AS fr,
                    m.own_id AS own, m.encryption AS enc, m.sender_fp AS fp,
                    (m.server_id = $targetId OR EXISTS (
                        SELECT 1 FROM message_alias a
@@ -3371,27 +3353,26 @@ snit::type taco_message {
                        AS by_server
             FROM chat_message m
             WHERE m.chat_jid=$chatJid AND m.kind='message'
-              AND m.timestamp IN (
+              AND m.id IN (
                   -- One arm per id, each by its own partial index, which
                   -- an OR of the ids never took (messagestore
-                  -- resolveTargetTs).
-                  SELECT timestamp FROM chat_message
+                  -- resolveTargetId).
+                  SELECT id FROM chat_message
                   WHERE chat_jid=$chatJid
                     AND server_id != '' AND server_id=$targetId
                   UNION ALL
-                  SELECT timestamp FROM chat_message
+                  SELECT id FROM chat_message
                   WHERE chat_jid=$chatJid
                     AND origin_id != '' AND origin_id=$targetId
                   UNION ALL
-                  SELECT timestamp FROM chat_message
+                  SELECT id FROM chat_message
                   WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$targetId
                   UNION ALL
-                  SELECT t.timestamp FROM message_alias a
-                  JOIN chat_message t ON t.id=a.target_id
-                  WHERE a.chat_jid=$chatJid AND a.alias_id=$targetId)
-            ORDER BY m.timestamp
+                  SELECT target_id FROM message_alias
+                  WHERE chat_jid=$chatJid AND alias_id=$targetId)
+            ORDER BY +m.pos
         } row {
-            lappend out [dict create ts $row(ts) occ $row(occ) \
+            lappend out [dict create id $row(id) occ $row(occ) \
                 from $row(fr) own [expr {$row(own) ne ""}] \
                 enc $row(enc) fp $row(fp) by_server $row(by_server)]
         }
@@ -3477,7 +3458,7 @@ snit::type taco_message {
         if {$targetFp ne "" && [dict get $edit sender_fp] ne $targetFp} {
             return deny
         }
-        return [list ok [dict get $target ts]]
+        return [list ok [dict get $target id]]
     }
 
     # Extract an XEP-0424/0425 retraction into {target_id from}, or "" when
@@ -3522,7 +3503,7 @@ snit::type taco_message {
             } else {
                 set ok [jid equal [jid bare $rawFrom] [jid bare $targetFrom]]
             }
-            if {$ok} { return [list ok [dict get $c ts]] }
+            if {$ok} { return [list ok [dict get $c id]] }
         }
         return deny
     }
@@ -3538,7 +3519,7 @@ snit::type taco_message {
         switch [lindex $auth 0] {
             ok {
                 return [dict create verdict $kind timestamp $ts {*}$patch \
-                    target_ts [lindex $auth 1]]
+                    target_row [lindex $auth 1]]
             }
             missing {
                 return [dict create verdict defer timestamp $ts \
@@ -3565,70 +3546,71 @@ snit::type taco_message {
     # message is present locally, emit a <Reactions> refreshing its aggregated
     # reactions. Shared by the live and every MAM dispatch path.
     method ApplyReactionVerdict {chatJid verdict} {
-        set targetTs [$messagestore applyReaction $chatJid \
+        set target [$messagestore applyReaction $chatJid \
             [dict get $verdict target_id] [dict get $verdict sender_id] \
             [dict get $verdict sender_label] [dict get $verdict is_own] \
             [dict get $verdict emojis] [dict get $verdict timestamp] \
             [dict get $verdict clock]]
-        if {$targetTs eq ""} return
-        $self EmitReactionPatch $chatJid $targetTs
+        if {$target eq ""} return
+        $self EmitReactionPatch $chatJid $target
     }
 
-    method EmitReactionPatch {chatJid targetTs} {
-        set agg [$messagestore reactionsForMessage $chatJid $targetTs]
-        $client emit message <Reactions> -jid $chatJid \
-            -timestamp $targetTs -reactions $agg
+    method EmitReactionPatch {chatJid target} {
+        set agg [$messagestore reactionsForMessage $chatJid $target]
+        $client emit message <Reactions> -jid $chatJid -id $target \
+            -reactions $agg
     }
 
     # Apply an `edit`/`retract` verdict to the store and, when the target is
     # stored, <Edited> its full row so the GUI redraws (edited body/marker or
     # tombstone). Shared by the live and every MAM dispatch path.
     method ApplyEditVerdict {chatJid verdict} {
-        set targetTs [$messagestore applyEdit $chatJid \
-            [dict get $verdict target_ts] [dict get $verdict new_body] \
+        set target [$messagestore applyEdit $chatJid \
+            [dict get $verdict target_row] [dict get $verdict new_body] \
             [dict get $verdict raw_xml] [dict get $verdict timestamp] \
             [dict create encryption [dict get $verdict encryption] \
                 sender_fp [dict get $verdict sender_fp]] \
             [dict getdef $verdict clock server]]
-        if {$targetTs ne ""} { $self EmitMessagePatch $chatJid $targetTs }
+        if {$target ne ""} { $self EmitMessagePatch $chatJid $target }
         # The correction names the message from now on, whether or not its
         # body is the newest. After the edit, so a patch held for these
         # ids lands on top of it.
         if {[dict exists $verdict ids]} {
-            $messagestore addAliases $chatJid [dict get $verdict target_ts] \
+            $messagestore addAliases $chatJid [dict get $verdict target_row] \
                 {*}[dict get $verdict ids]
         }
     }
 
     method ApplyRetractVerdict {chatJid verdict} {
         # A MAM tombstone names the archive id and needs no author check.
-        if {[dict exists $verdict target_ts]} {
-            set targetTs [dict get $verdict target_ts]
+        if {[dict exists $verdict target_row]} {
+            set target [dict get $verdict target_row]
         } else {
-            set targetTs [$messagestore resolveTargetTs $chatJid \
+            set target [$messagestore resolveTargetId $chatJid \
                 [dict get $verdict target_id]]
-            if {$targetTs eq ""} return
+            if {$target eq ""} return
         }
-        set targetTs [$self Retract $chatJid $targetTs]
-        if {$targetTs eq ""} return
-        $self EmitRetracted $chatJid $targetTs
+        set target [$self Retract $chatJid $target]
+        if {$target eq ""} return
+        $self EmitRetracted $chatJid $target
     }
 
     # A message stored undecrypted (its row marked so) comes round again:
     # decrypt it once more, and if it opens, its row takes the text in place
     # and the GUI redraws it (<Edited>).
-    method Redecrypt {chatJid msgNode storedTs serverId ownId originId} {
+    method Redecrypt {chatJid msgNode storedId serverId ownId originId} {
         set node [$client omemo redecrypt $msgNode]
-        set msg [$self ParseMessage $node -chat_jid $chatJid -timestamp $storedTs \
+        set msg [$self ParseMessage $node -chat_jid $chatJid \
+            -timestamp [$self RowStamp $chatJid $storedId] \
             -server_id $serverId -own_id $ownId -origin_id $originId]
         if {$msg eq "" || [dict get $msg undecrypted]} {
             # A fill reads the chain in order; what it cannot open even so
             # never will be, and stops asking for fills (undecrypted 2).
-            if {$InFill} { $messagestore giveUpUndecrypted $chatJid $storedTs }
+            if {$InFill} { $messagestore giveUpUndecrypted $chatJid $storedId }
             return
         }
-        if {[$messagestore repairUndecrypted $chatJid $storedTs $msg]} {
-            $self EmitMessagePatch $chatJid $storedTs
+        if {[$messagestore repairUndecrypted $chatJid $storedId $msg]} {
+            $self EmitMessagePatch $chatJid $storedId
         }
     }
 
@@ -3636,17 +3618,17 @@ snit::type taco_message {
     # in place (edited body, the "(edited)" marker, an invite's state).
     # Reserved for content changes; send-status and upload transitions go
     # through <Status>, retractions through <Retracted>.
-    method EmitMessagePatch {chatJid targetTs} {
-        set dbMsg [lindex [$messagestore get ids $chatJid [list $targetTs]] 0]
+    method EmitMessagePatch {chatJid target} {
+        set dbMsg [lindex [$messagestore get ids $chatJid [list $target]] 0]
         if {$dbMsg eq ""} return
         $client emit message <Edited> -jid $chatJid -message $dbMsg
     }
 
     # <Retracted> flips the shown entry to a tombstone. The row is kept
-    # (retracted=1, no content), so only jid + timestamp cross the wire; the
-    # GUI already holds the header it needs to redraw the placeholder.
-    method EmitRetracted {chatJid targetTs} {
-        $client emit message <Retracted> -jid $chatJid -timestamp $targetTs
+    # (retracted=1, no content), so only jid + id cross the wire; the GUI
+    # already holds the header it needs to redraw the placeholder.
+    method EmitRetracted {chatJid target} {
+        $client emit message <Retracted> -jid $chatJid -id $target
     }
 
     # {serverId ownId originId} off a <message>, derived once for the dedup

@@ -240,7 +240,7 @@ namespace eval ::test::omemo_muc_int {
             list $got [dict get $confirmed -server_status] \
                 [dict get $mine encryption] \
                 [string match "*OMEMO*" [[tacky client $ANNA] message rawxml \
-                    -chat $CHAT -timestamp [dict get $mine timestamp]]]
+                    -chat $CHAT -id [dict get $mine id]]]
         } -result {{{hello room} omemo {hello room} omemo} {} omemo 1}
 
     test omemo-muc-int-reply {a member's reply is read by the others} \

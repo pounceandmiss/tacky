@@ -835,7 +835,7 @@ test groupcall-hosted-join-offline {joining a hosted call with no session up end
 test groupcall-hosted-join {joining a hosted call: hidden, a nick of our own, and the chat told} \
     {*}$groupcall_env -body {
         gc_room
-        c.groupcall join -jid call@muc.example.com -chat $ROOM?join -id inv42
+        c.groupcall join -jid call@muc.example.com -chat $ROOM?join -call_id inv42
         set to [gc_last_join]
         c.conn feed [gc_presence [jid resource $to] -room call@muc.example.com -self 1 \
             -jid user@test.example.com/res]
@@ -878,7 +878,7 @@ test groupcall-hosted-leave-alone-retracts {leaving a call of ours nobody came t
 test groupcall-hosted-leave-after-company {leaving once someone came says left, not retract} \
     {*}$groupcall_env -body {
         gc_room
-        c.groupcall join -jid call@muc.example.com -chat $ROOM -id inv42
+        c.groupcall join -jid call@muc.example.com -chat $ROOM -call_id inv42
         set nick [jid resource [gc_last_join]]
         c.conn feed [gc_presence bob -room call@muc.example.com -jid $BOB \
             -contents [list audio [list $OPUS_111]]]
@@ -991,12 +991,12 @@ proc gc_call_answer {from type tag id args} {
     }
 }
 
-# The call rows stored in $chat, oldest first, as {timestamp content}.
+# The call rows stored in $chat, oldest first, as {id content}.
 proc gc_call_rows {chat} {
     set out {}
     foreach m [dict get [c message messagestore get latest $chat] messages] {
         if {[dict exists $m content] && [dict get $m content type] eq "call"} {
-            lappend out [list [dict get $m timestamp] [dict get $m content]]
+            lappend out [list [dict get $m id] [dict get $m content]]
         }
     }
     return $out
@@ -1009,12 +1009,12 @@ proc gc_call_state {chat} {
 test groupcall-invite-stored {a contact's call invite is kept in their chat, pending, and rings} \
     {*}$groupcall_env -body {
         c.conn feed [gc_call_invite $BOB chat -video true]
-        lassign [lindex [gc_call_rows bob@example.com] 0] ts content
+        lassign [lindex [gc_call_rows bob@example.com] 0] rowid content
         set inv [lsearch -inline [gc_events] {<Invited>*}]
         list [dict get $content room] [dict get $content id] [dict get $content inviter] \
             [dict get $content video] [dict get $content state] [dict get $content active] \
             [dict get $content body] \
-            [expr {[dict get [lrange $inv 1 end] -timestamp] == $ts}] \
+            [expr {[dict get [lrange $inv 1 end] -id] == $rowid}] \
             [dict get [lrange $inv 1 end] -chat] [dict get [lrange $inv 1 end] -jid]
     } -result {call@muc.example.com inv1 bob@example.com 1 pending 0 {Group video call} 1 bob@example.com call@muc.example.com}
 
@@ -1045,7 +1045,7 @@ test groupcall-room-invite-dino-shaped {an invite posted to a room: in its chat,
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat]
-        lassign [lindex [gc_call_rows $ROOM?join] 0] ts content
+        lassign [lindex [gc_call_rows $ROOM?join] 0] rowid content
         set inv [lrange [lsearch -inline [gc_events] {<Invited>*}] 1 end]
         list [dict get $content inviter] [dict get $content state] \
             [dict get $inv -chat] [dict get $inv -from]
@@ -1071,8 +1071,8 @@ test groupcall-join-from-invite {answering the stored invite: its room, the chat
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat -id inv9]
-        set ts [lindex [gc_call_rows $ROOM?join] 0 0]
-        c.groupcall join -chat $ROOM?join -timestamp $ts
+        set rowid [lindex [gc_call_rows $ROOM?join] 0 0]
+        c.groupcall join -chat $ROOM?join -id $rowid
         set to [gc_last_join]
         c.conn feed [gc_presence [jid resource $to] -room call@muc.example.com -self 1 \
             -jid user@test.example.com/res]
@@ -1084,8 +1084,8 @@ test groupcall-join-from-invite {answering the stored invite: its room, the chat
 test groupcall-decline-invite {declining the stored invite: the chat hears reject, the row says declined} \
     {*}$groupcall_env -body {
         c.conn feed [gc_call_invite $BOB chat -id inv7]
-        set ts [lindex [gc_call_rows bob@example.com] 0 0]
-        c.groupcall decline -chat bob@example.com -timestamp $ts
+        set rowid [lindex [gc_call_rows bob@example.com] 0 0]
+        c.groupcall decline -chat bob@example.com -id $rowid
         list [lrange [gc_invite_sent bob@example.com reject] 0 1] [gc_call_state bob@example.com]
     } -result {{chat inv7} declined}
 
@@ -1102,8 +1102,8 @@ test groupcall-own-invite-echo-joined {our own call's invite, echoed by the room
 test groupcall-join-from-invite-ended {answering an invite to a call that is over: the row says ended} \
     {*}$groupcall_env -body {
         c.conn feed [gc_call_invite $BOB chat]
-        set ts [lindex [gc_call_rows bob@example.com] 0 0]
-        c.groupcall join -chat bob@example.com -timestamp $ts
+        set rowid [lindex [gc_call_rows bob@example.com] 0 0]
+        c.groupcall join -chat bob@example.com -id $rowid
         c.conn feed [gc_presence [jid resource [gc_last_join]] -room call@muc.example.com \
             -self 1 -jid user@test.example.com/res -role moderator -affiliation owner -codes 201]
         gc_call_state bob@example.com
@@ -1120,11 +1120,11 @@ test groupcall-join-own-room-refused {an invite naming a room we are joining or 
         }
         c.conn feed [gc_call_invite $BOB chat -room $ROOM -id inv1]
         c.conn feed [gc_call_invite $CAROL chat -room marked@muc.example.com -id inv2]
-        set ts1 [lindex [gc_call_rows bob@example.com] 0 0]
-        set ts2 [lindex [gc_call_rows carol@example.com] 0 0]
+        set rowid1 [lindex [gc_call_rows bob@example.com] 0 0]
+        set rowid2 [lindex [gc_call_rows carol@example.com] 0 0]
         c.conn clear
-        list [catch {c.groupcall join -chat bob@example.com -timestamp $ts1} err1] $err1 \
-            [catch {c.groupcall join -chat carol@example.com -timestamp $ts2} err2] $err2 \
+        list [catch {c.groupcall join -chat bob@example.com -id $rowid1} err1] $err1 \
+            [catch {c.groupcall join -chat carol@example.com -id $rowid2} err2] $err2 \
             [c muc isHidden -jid $ROOM] [gc_last_join]
     } -result [list 1 "join: $ROOM is one of your group chats, not a call's room" \
         1 "join: marked@muc.example.com is one of your group chats, not a call's room" 0 ""]
@@ -1132,8 +1132,8 @@ test groupcall-join-own-room-refused {an invite naming a room we are joining or 
 test groupcall-call-row-active {a call row reads active while we are in its call} \
     {*}$groupcall_env -body {
         c.conn feed [gc_call_invite $BOB chat -room call@muc.example.com]
-        set ts [lindex [gc_call_rows bob@example.com] 0 0]
-        c.groupcall join -chat bob@example.com -timestamp $ts
+        set rowid [lindex [gc_call_rows bob@example.com] 0 0]
+        c.groupcall join -chat bob@example.com -id $rowid
         set nick [jid resource [gc_last_join]]
         c.conn feed [gc_presence $nick -room call@muc.example.com -self 1 -jid user@test.example.com/res]
         c.conn feed [gc_presence $nick -room call@muc.example.com -self 1 \
@@ -1454,7 +1454,7 @@ test groupcall-live-while-in {a call we are in is live without asking; leaving a
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat -id inv5]
         gc_answer_room call@muc.example.com there
-        c.groupcall join -chat $ROOM?join -timestamp [lindex [gc_call_rows $ROOM?join] 0 0]
+        c.groupcall join -chat $ROOM?join -id [lindex [gc_call_rows $ROOM?join] 0 0]
         gc_in_hosted call@muc.example.com
         set asks [llength [gc_disco_asks call@muc.example.com]]
         set during [gc_live $ROOM?join]
@@ -1467,7 +1467,7 @@ test groupcall-live-found-gone-joining {a join finding the room gone makes the c
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat]
         gc_answer_room call@muc.example.com there
-        c.groupcall join -chat $ROOM?join -timestamp [lindex [gc_call_rows $ROOM?join] 0 0]
+        c.groupcall join -chat $ROOM?join -id [lindex [gc_call_rows $ROOM?join] 0 0]
         c.conn feed [gc_presence [jid resource [gc_last_join]] -room call@muc.example.com \
             -self 1 -jid user@test.example.com/res -role moderator -affiliation owner -codes 201]
         list [gc_live $ROOM?join] [gc_call_state $ROOM?join] \
@@ -1556,7 +1556,7 @@ test groupcall-rejoin-after-leaving {left a call others are still in: start goes
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB] [gc_presence carol -jid $CAROL]
         c.conn feed [gc_call_invite $ROOM/bob groupchat -id inv4]
-        c.groupcall join -chat $ROOM?join -timestamp [lindex [gc_call_rows $ROOM?join] 0 0]
+        c.groupcall join -chat $ROOM?join -id [lindex [gc_call_rows $ROOM?join] 0 0]
         gc_in_hosted call@muc.example.com
         set nick [jid resource [gc_last_join]]
         c.groupcall leave -jid call@muc.example.com
@@ -1768,7 +1768,7 @@ test groupcall-preview-names-chat {a hosted call's self-view names the chat it b
     {*}$groupcall_env -body {
         gc_room [gc_presence bob -jid $BOB]
         c.conn feed [gc_call_invite $ROOM/bob groupchat -id inv8]
-        c.groupcall join -chat $ROOM?join -timestamp [lindex [gc_call_rows $ROOM?join] 0 0] -video 1
+        c.groupcall join -chat $ROOM?join -id [lindex [gc_call_rows $ROOM?join] 0 0] -video 1
         gc_in_hosted call@muc.example.com
         set pv [lindex [gc_event_args <VideoPreview>] 0]
         list [dict get $pv -jid] [dict get $pv -chat]

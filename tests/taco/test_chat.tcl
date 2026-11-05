@@ -10,20 +10,21 @@ set chat_common [tacky_env -mock conn -account $acc -extra-setup {
 }]
 
 # Helper: a message from alice, stored as if it had arrived.
+# Returns the row's id.
 proc chat_theirs {ts {oid ""}} {
     if {$oid eq ""} { set oid oid$ts }
-    $::_client message messagestore store [list [dict create \
+    lindex [dict get [$::_client message messagestore store [list [dict create \
         timestamp $ts chat_jid alice@example.com \
         from_jid alice@example.com/phone body "hello $ts" \
-        server_id "" own_id "" raw_xml "" origin_id $oid]]
+        server_id "" own_id "" raw_xml "" origin_id $oid]]] inserted] 0
 }
 
 # Helper: our own message, sent at $ts.
 proc chat_ours {ts} {
-    $::_client message messagestore store [list [dict create \
+    lindex [dict get [$::_client message messagestore store [list [dict create \
         timestamp $ts chat_jid alice@example.com \
         from_jid $::acc body "reply $ts" \
-        server_id "" own_id own$ts raw_xml "" origin_id own$ts]]
+        server_id "" own_id own$ts raw_xml "" origin_id own$ts]]] inserted] 0
 }
 
 # Helper: alice may see our presence, so markers go to her.
@@ -43,8 +44,9 @@ proc chat_displayed_ids {} {
     return $ids
 }
 
-proc chat_read_ts {} {
-    dict get [tacky message ownRead -acc $::acc -chat alice@example.com] timestamp
+# The id of the last row read, "" for none.
+proc chat_read_id {} {
+    dict get [tacky message ownRead -acc $::acc -chat alice@example.com] id
 }
 
 proc chat_displayed_count {} {
@@ -85,69 +87,69 @@ test chat-looking-needs-active-app {a chat is looked at only while the app is ac
 test chat-view-reads-up-to-the-row {a view reads up to the row on screen, not past it} \
     {*}$chat_common \
     -body {
-        chat_theirs 100
+        set a [chat_theirs 100]
         chat_theirs 200
         tacky chat open -acc $acc -chat alice@example.com
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
-        list [chat_read_ts] \
+        tacky chat view -acc $acc -chat alice@example.com -id $a
+        list [expr {[chat_read_id] eq $a}] \
             [dict get [tacky message ownRead -acc $acc -chat alice@example.com] unread]
-    } -result {100 1}
+    } -result {1 1}
 
 test chat-view-forward-only {a view behind the watermark moves nothing} \
     {*}$chat_common \
     -body {
-        chat_theirs 100
-        chat_theirs 200
+        set a [chat_theirs 100]
+        set b [chat_theirs 200]
         tacky chat open -acc $acc -chat alice@example.com
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 200
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
-        chat_read_ts
-    } -result 200
+        tacky chat view -acc $acc -chat alice@example.com -id $b
+        tacky chat view -acc $acc -chat alice@example.com -id $a
+        expr {[chat_read_id] eq $b}
+    } -result 1
 
 test chat-view-closed-dropped {a view of a chat no one has open reads nothing} \
     {*}$chat_common \
     -body {
-        chat_theirs 100
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
+        set a [chat_theirs 100]
+        tacky chat view -acc $acc -chat alice@example.com -id $a
         tacky chat open -acc $acc -chat alice@example.com
         chat_active 0
         chat_active 1
-        chat_read_ts
-    } -result 0
+        chat_read_id
+    } -result {}
 
 test chat-view-held-while-inactive {a view while the app is inactive lands when it comes back} \
     {*}$chat_common \
     -body {
         chat_theirs 100
-        chat_theirs 200
+        set b [chat_theirs 200]
         tacky chat open -acc $acc -chat alice@example.com
         chat_active 0
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 200
-        set before [chat_read_ts]
+        tacky chat view -acc $acc -chat alice@example.com -id $b
+        set before [chat_read_id]
         chat_active 1
-        list $before [chat_read_ts]
-    } -result {0 200}
+        list $before [expr {[chat_read_id] eq $b}]
+    } -result {{} 1}
 
 test chat-view-held-dropped-on-close {closing a chat drops the view it held} \
     {*}$chat_common \
     -body {
-        chat_theirs 100
+        set a [chat_theirs 100]
         tacky chat open -acc $acc -chat alice@example.com
         chat_active 0
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
+        tacky chat view -acc $acc -chat alice@example.com -id $a
         tacky chat close -acc $acc -chat alice@example.com
         chat_active 1
-        chat_read_ts
-    } -result 0
+        chat_read_id
+    } -result {}
 
 test chat-view-sends-displayed {a 1:1 view sends one displayed marker per move} \
     {*}$chat_common \
     -body {
         chat_contact
-        chat_theirs 100 oid1
+        set a [chat_theirs 100 oid1]
         tacky chat open -acc $acc -chat alice@example.com
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 100
+        tacky chat view -acc $acc -chat alice@example.com -id $a
+        tacky chat view -acc $acc -chat alice@example.com -id $a
         chat_displayed_count
     } -result 1
 
@@ -156,11 +158,11 @@ test chat-view-ours-on-the-bottom {a view ending on our own reply marks theirs u
     -body {
         chat_contact
         chat_theirs 100 oid1
-        chat_ours 200
+        set b [chat_ours 200]
         tacky chat open -acc $acc -chat alice@example.com
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 200
-        chat_ours 300
-        tacky chat view -acc $acc -chat alice@example.com -timestamp 300
+        tacky chat view -acc $acc -chat alice@example.com -id $b
+        set c [chat_ours 300]
+        tacky chat view -acc $acc -chat alice@example.com -id $c
         chat_displayed_ids
     } -result oid1
 
@@ -168,14 +170,14 @@ test chat-view-room-no-displayed {a room view moves the watermark and sends no m
     {*}$chat_common \
     -body {
         set room room@conf.example.com?join
-        $::_client message messagestore store [list [dict create \
+        set a [lindex [dict get [$::_client message messagestore store [list [dict create \
             timestamp 100 chat_jid $room from_jid room@conf.example.com/bob \
-            body hi server_id "" own_id "" raw_xml "" origin_id oid2]]
+            body hi server_id "" own_id "" raw_xml "" origin_id oid2]]] inserted] 0]
         tacky chat open -acc $acc -chat $room
-        tacky chat view -acc $acc -chat $room -timestamp 100
-        list [dict get [tacky message ownRead -acc $acc -chat $room] timestamp] \
+        tacky chat view -acc $acc -chat $room -id $a
+        list [expr {[dict get [tacky message ownRead -acc $acc -chat $room] id] eq $a}] \
             [chat_displayed_count]
-    } -result {100 0}
+    } -result {1 0}
 
 test chat-client-data-roundtrip {client data comes back as stored, open or not} \
     {*}$chat_common \

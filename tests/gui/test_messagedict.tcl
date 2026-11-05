@@ -4,6 +4,8 @@
 
 proc md_store {args} {
     dict merge {
+        id 7
+        pos a5
         from_jid alice@example.com
         timestamp 100
         server_status ""
@@ -33,11 +35,11 @@ test messagedict-reply-author-defaults-to-reply-to {with no reply_author_jid the
         dict get $d reply_author
     } -result BOB@EXAMPLE.COM
 
-test messagedict-key-and-sort-are-the-timestamp {a single chat identifies and places rows by timestamp} \
+test messagedict-key-is-the-id-sort-the-place {a chat identifies a row by its id and places it by its pos} \
     -body {
-        set d [enrich_store_message [md_store timestamp 1700] md_shout]
-        list [dict get $d key] [dict get $d sort]
-    } -result {1700 1700}
+        set d [enrich_store_message [md_store id 42 pos a3V timestamp 1700] md_shout]
+        list [dict get $d key] [dict get $d sort] [dict get $d timestamp]
+    } -result {42 a3V 1700}
 
 test messagedict-media-content-splits-into-caption-and-attachments {a media payload draws as a caption plus attachments, not a body} \
     -body {

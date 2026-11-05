@@ -171,15 +171,18 @@ proc cv_create {args} {
 }
 
 # Simulate a server echo (MUC-style) for a previously sent message.
-# sentTs: the timestamp (= own_id) of the sent message
+# sentId: the id of the sent message's row
 # echoSid: server_id for the echo
-# echoStamp: ISO timestamp for the echo (defaults to same as sentTs)
-proc cv_muc_echo {sentTs echoSid {echoStamp ""}} {
+# echoStamp: ISO timestamp for the echo (defaults to the row's own)
+proc cv_muc_echo {sentId echoSid {echoStamp ""}} {
+    lassign [$::_client db eval {
+        SELECT own_id, timestamp FROM chat_message WHERE id=$sentId
+    }] ownId ts
     if {$echoStamp eq ""} {
-        set echoStamp [FormatTimestampISO $sentTs]
+        set echoStamp [FormatTimestampISO $ts]
     }
     $::_client message ingestLive alice@example.com [j message -type chat \
-        -from alice@example.com/phone -id $sentTs {
+        -from alice@example.com/phone -id $ownId {
         j body -body "echo"
         j stanza-id -ns urn:xmpp:sid:0 -id $echoSid -by user@test.example.com
         j delay -ns urn:xmpp:delay -from test.example.com -stamp $echoStamp
@@ -465,7 +468,7 @@ test chatview-muc-echo-same-ts {echo with same timestamp confirms in place} \
         list [llength [.cv messages keys]] receipt=$receipt
     } -result "1 {receipt= receiptmark.sent}"
 
-test chatview-muc-echo-different-ts {echo with different timestamp moves message} \
+test chatview-muc-echo-different-ts {an echo with another stamp confirms the message where it is} \
     {*}$cv_common \
     -body {
         tacky message send -acc $::acc -chat alice@example.com -body "hello"
@@ -473,20 +476,19 @@ test chatview-muc-echo-different-ts {echo with different timestamp moves message
         set sentId [.cv messages newest]
         # Echo a second earlier: a later stamp would be in the future,
         # which ingest clamps to now.
-        set echoTs [expr {$sentId - 1000000}]
-        set echoStamp [FormatTimestampISO $echoTs]
-        cv_muc_echo $sentId echo-sid2 $echoStamp
+        set sentTs [dict get [.cv messages get $sentId] timestamp]
+        set echoTs [expr {$sentTs - 1000000}]
+        cv_muc_echo $sentId echo-sid2 [FormatTimestampISO $echoTs]
         wait
         set ids [.cv messages keys]
-        set newId [lindex $ids 0]
-        # Old id should be gone, new id should be present
-        set tag [.cv messages tag $newId].receipt
+        set tag [.cv messages tag $sentId].receipt
         set receipt [receipt_shown [.cv textwidget] $tag]
-        list [llength $ids] [expr {$sentId ni $ids}] \
-            [expr {$newId == $echoTs}] receipt=$receipt
-    } -result "1 1 1 {receipt= receiptmark.sent}"
+        list $ids [expr {$ids eq [list $sentId]}] \
+            [expr {[dict get [.cv messages get $sentId] timestamp] == $echoTs}] \
+            receipt=$receipt
+    } -match glob -result "* 1 1 {receipt= receiptmark.sent}"
 
-test chatview-muc-echo-reorders {echo reorders message among interleaved messages} \
+test chatview-muc-echo-keeps-place {an echo stamped later leaves the message where it was} \
     {*}$cv_common \
     -body {
         cv_feed "A" srv-a -stamp [cv_ago 120]
@@ -504,16 +506,12 @@ test chatview-muc-echo-reorders {echo reorders message among interleaved message
         set echoTs [clock microseconds]
         cv_muc_echo $tsX echo-reorder [FormatTimestampISO $echoTs]
         wait
-        set ids [.cv messages keys]
-        # Expected: A, B, X' — X moved after B
-        list count=$countBefore \
-            [llength $ids] \
-            [expr {[lindex $ids 0] == $tsA}] \
-            [expr {[lindex $ids 1] == $tsB}] \
-            [expr {[lindex $ids 2] == $echoTs}]
-    } -result {count=3 3 1 1 1}
+        # Still A, X, B: a row never moves.
+        expr {[.cv messages keys] eq [list $tsA $tsX $tsB]
+              ? "count=$countBefore same" : [.cv messages keys]}
+    } -result {count=3 same}
 
-test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-message view} \
+test chatview-muc-echo-keeps-place-4msg {an echo stamped between two later messages leaves the order alone} \
     {*}$cv_common \
     -body {
         # Setup: A(100) → X(200,pending) → B(300) → C(400)
@@ -532,17 +530,14 @@ test chatview-muc-echo-reorders-4msg {MUC echo with new timestamp reorders 4-mes
         # Verify initial order: A, X, B, C
         set before [.cv messages keys]
         # Echo X at timestamp between B and C
-        set echoTs [expr {$tsB + ($tsC - $tsB) / 2}]
+        set stampB [dict get [.cv messages get $tsB] timestamp]
+        set stampC [dict get [.cv messages get $tsC] timestamp]
+        set echoTs [expr {$stampB + ($stampC - $stampB) / 2}]
         cv_muc_echo $tsX echo-4msg [FormatTimestampISO $echoTs]
         wait
         set after [.cv messages keys]
-        # Expected: A, B, X', C — X moved between B and C
-        list [llength $before] [llength $after] \
-            [expr {[lindex $after 0] == $tsA}] \
-            [expr {[lindex $after 1] == $tsB}] \
-            [expr {[lindex $after 2] == $echoTs}] \
-            [expr {[lindex $after 3] == $tsC}]
-    } -result {4 4 1 1 1 1}
+        list [llength $before] [expr {$after eq [list $tsA $tsX $tsB $tsC]}]
+    } -result {4 1}
 
 foreach {direction seedCmd} {
     outgoing {tacky message send -acc $::acc -chat alice@example.com -body "pending"}
@@ -576,12 +571,13 @@ proc cv_gaps_closed {} {
 
 proc cv_store_behind {body sid stamp} {
     set ts [ParseTimestamp $stamp]
-    $::_client message messagestore store [list [dict create \
+    set id [lindex [dict get [$::_client message messagestore store [list [dict create \
         timestamp $ts chat_jid alice@example.com \
         from_jid alice@example.com/phone body $body \
-        server_id $sid own_id "" raw_xml ""]]
+        server_id $sid own_id "" raw_xml ""]] append] inserted] 0]
     cv_gaps_closed
-    tacky emit message <Tail> -acc $::acc -jid alice@example.com -timestamp $ts
+    tacky emit message <Tail> -acc $::acc -jid alice@example.com -id $id \
+        -timestamp $ts
 }
 
 test chatview-catchup-repaints-own-chat {CatchupDone for this chat pulls in what catchup stored} \
@@ -668,7 +664,7 @@ test chatview-catchup-declines-page-short-of-tail {a page that stops short of th
         # A tail beyond anything stored stands in for a hole between the
         # window and the real tail: the fetched page can't reach it.
         tacky emit message <Tail> -acc $::acc -jid alice@example.com \
-            -timestamp [ParseTimestamp [cv_ago 10]]
+            -id 999999 -timestamp [ParseTimestamp [cv_ago 10]]
         cv_catchup_done alice@example.com 1
         llength [.cv messages keys]
     } -result {1}
@@ -996,8 +992,9 @@ test chatview-goto-timestamp {goto -source remote fetches MAM then displays arou
         set countAfter [llength [.cv messages keys]]
 
         # First result should be visible (anchor is nearest to target date)
-        set firstId [ParseTimestamp 2024-06-15T12:00:01Z]
-        set hasFirst [expr {$firstId in [.cv messages keys]}]
+        set firstId [$::_client db onecolumn {
+            SELECT id FROM chat_message WHERE server_id='s1'}]
+        set hasFirst [expr {$firstId ne "" && $firstId in [.cv messages keys]}]
         list before=$countBefore pending=$countPending \
             after=$countAfter hasFirst=$hasFirst
     } -result {before=2 pending=2 after=5 hasFirst=1}
@@ -1910,16 +1907,16 @@ test chatview-plaintext-resend-drops-the-padlock \
     -setup { cv_setup } -cleanup cv_cleanup \
     -body {
         set ts [ParseTimestamp 2024-01-01T10:00:00Z]
-        $::_client message messagestore store [list [dict create \
+        set id [lindex [dict get [$::_client message messagestore store [list [dict create \
             timestamp $ts chat_jid alice@example.com \
             from_jid $::acc body "secret" \
             server_id "" own_id oid-lock raw_xml "" \
-            server_status failed fail_reason encrypt encryption omemo]]
+            server_status failed fail_reason encrypt encryption omemo]]] inserted] 0]
         cv_create -pack
         wait
         set before [cv_lock_count]
         tacky emit message <Status> -acc $::acc -jid alice@example.com \
-            -timestamp $ts -server_status pending -fail_reason "" -encryption ""
+            -id $id -server_status pending -fail_reason "" -encryption ""
         wait
         list before=$before after=[cv_lock_count]
     } -result {before=1 after=0}

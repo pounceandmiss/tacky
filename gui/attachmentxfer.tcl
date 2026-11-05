@@ -126,7 +126,7 @@ snit::type attachmentxfer {
     method retry {key} {
         {*}$options(-update-command) $key 0 upload active 0 0 ""
         ::tacky message retryUpload -acc $options(-acc) \
-            -chat $options(-chat) -timestamp $key
+            -chat $options(-chat) -id $key
     }
 
     # Every action runs on a local copy: our own file where it lies, or the

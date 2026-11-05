@@ -111,11 +111,12 @@ proc sw_create_global {} {
     wait
 }
 
+# Store a message; its id.
 proc sw_store {chat ts body {from ""}} {
     if {$from eq ""} { set from $chat }
-    $::_client message messagestore store [list [dict create \
+    lindex [dict get [$::_client message messagestore store [list [dict create \
         timestamp $ts chat_jid $chat from_jid $from body $body \
-        server_id "" own_id "" raw_xml ""]]
+        server_id "" own_id "" raw_xml ""]]] inserted] 0
 }
 
 proc sw_store_own {chat ts body} {
@@ -150,11 +151,12 @@ test sw-global-spans-every-chat {results come from every chat, in one time order
     sw_setup
 } -body {
     sw_create_global
-    sw_store alice@example.com 100 "a needle here"
-    sw_store bob@example.com 300 "another needle"
+    set a [sw_store alice@example.com 100 "a needle here"]
+    set b [sw_store bob@example.com 300 "another needle"]
     sw_run needle
-    .sw.ca messages keys
-} -cleanup { sw_cleanup } -result {{alice@example.com 100} {bob@example.com 300}}
+    expr {[.sw.ca messages keys] eq [list [list alice@example.com $a] \
+                                         [list bob@example.com $b]]}
+} -cleanup { sw_cleanup } -result {1}
 
 # 26 hits over a page of 20, with the tie at 600 straddling the boundary.
 test sw-global-load-more-resumes-mid-tie {a second page picks up the tied hit the first one stopped on} -setup {
@@ -181,15 +183,15 @@ test sw-global-hides-the-server-box {no archive spans an account, so the server 
     winfo manager .sw.top.remote
 } -cleanup { sw_cleanup } -result {}
 
-test sw-global-click-names-the-chat {a hit identifies itself by chat and timestamp} -setup {
+test sw-global-click-names-the-chat {a hit identifies itself by chat and id} -setup {
     sw_setup
 } -body {
     sw_create_global
-    sw_store bob@example.com 300 "the needle"
+    set id [sw_store bob@example.com 300 "the needle"]
     sw_run needle
     event generate .sw.ca <<MessageClick>> -data [lindex [.sw.ca messages keys] 0]
-    set ::sw_goto
-} -cleanup { sw_cleanup } -result {bob@example.com 300}
+    expr {$::sw_goto eq [list bob@example.com $id]}
+} -cleanup { sw_cleanup } -result {1}
 
 test sw-global-labels-a-room-row-with-its-room {a room hit says which room it came from} -setup {
     sw_setup
@@ -210,14 +212,14 @@ test sw-global-leaves-a-1to1-row-unprefixed {a 1:1 author already names the chat
     string match "*bob@example.com -*" [sw_text]
 } -cleanup { sw_cleanup } -result {0}
 
-test sw-per-chat-key-stays-a-timestamp {a chat-scoped window keys rows by timestamp alone} -setup {
+test sw-per-chat-key-is-the-id {a chat-scoped window keys rows by id alone} -setup {
     sw_setup
 } -body {
     sw_create
-    sw_store alice@example.com 300 "the needle"
+    set id [sw_store alice@example.com 300 "the needle"]
     sw_run needle
-    .sw.ca messages keys
-} -cleanup { sw_cleanup } -result {300}
+    expr {[.sw.ca messages keys] eq [list $id]}
+} -cleanup { sw_cleanup } -result {1}
 
 # We author messages in every 1:1, so our own bare JID is the one author that
 # appears in more than one chat. chatarea repaints an author by JID across every
