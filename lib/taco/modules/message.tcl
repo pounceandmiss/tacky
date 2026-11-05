@@ -66,11 +66,19 @@ snit::type taco_message {
     # The account catchup's accumulator so far, "" outside a run: a drop
     # that cuts the walk short bounds what it covered (OnDisconnect).
     variable CatchupAcc ""
-    # The holes this connect's PlaceReconnectHoles put above each chat's
-    # newest message, as {chatJid ts ...}: they mark what may have come since
+    # The holes this connect's PlaceReconnectHoles put after each chat's
+    # last row, as {chatJid pos ...}: they mark what may have come since
     # the previous session, and a walk that reaches history we had has read
     # all of that, for every chat.
     variable ReconnectHoles {}
+    # The first message to arrive live, undelayed, in each chat while its
+    # catchup runs: chat -> pos. The archive took it in after the catchup
+    # asked, so what the catchup fetches goes below it (CatchupTop).
+    variable LiveTop {}
+    # The lowest row each chat's catchup stored or met this connection:
+    # chat -> pos. A message the server held for us that its pages did not
+    # have is older than everything they did, so it goes right below this.
+    variable WalkBottom {}
 
     # Pages the account catchup will walk back before giving up on reaching
     # the previous session. Deep enough that an ordinary absence lands whole
@@ -89,6 +97,9 @@ snit::type taco_message {
     # Pages one fill walks per connect; the hole it leaves where it stopped
     # is where the next connect's goes on.
     typevariable MaxForwardFillPages 200
+    # Ids below a fill's gap it tries when the archive no longer has the
+    # one it continues after, before it walks the archive from its start.
+    typevariable MaxFillRetries 5
 
     # The earliest stamp our server or account may put on a live 1:1
     # stanza this session (TrustedStamp), "" for none: what the server held
@@ -179,26 +190,22 @@ snit::type taco_message {
         set OfflineFloorUs [expr {$last - $OfflineSkewUs}]
     }
 
-    # Bracket any history that arrived during the disconnect window:
-    # a `newer` hole after each chat's newest citizen. Catchup may
-    # then sweep these as far back as its pages reach; otherwise they
-    # remain and bound future pagination.
+    # Bracket any history that arrived during the disconnect window: a hole
+    # after each chat's last row. The catchup's pages go in above it, and
+    # clear it once they reach history we had; otherwise it remains and
+    # bounds future pagination.
     method PlaceReconnectHoles {} {
-        # Collected before any insert: `hole add` writes to the table this
+        # Collected before any insert: `hole append` writes to the table this
         # cursor is reading.
-        set newest {}
-        $client db eval {
-            SELECT chat_jid, MAX(timestamp) AS newest FROM chat_message
+        set chats [$client db eval {
+            SELECT DISTINCT chat_jid FROM chat_message
             WHERE kind='message' AND server_id IS NOT NULL
               AND server_id != ''
-            GROUP BY chat_jid
-        } row {
-            lappend newest $row(chat_jid) $row(newest)
-        }
+        }]
         set ReconnectHoles {}
-        foreach {jid newestTs} $newest {
-            set ts [$messagestore hole add $jid newer $newestTs]
-            if {$ts ne ""} { lappend ReconnectHoles $jid $ts }
+        foreach jid $chats {
+            set pos [$messagestore hole append $jid]
+            if {$pos ne ""} { lappend ReconnectHoles $jid $pos }
         }
     }
 
@@ -213,12 +220,11 @@ snit::type taco_message {
         array set opts $args
         if {!$opts(-involuntary)} return
         set chatJid $opts(-jid)?join
-        set newestTs [$client db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
+        if {![$client db exists {
+            SELECT 1 FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-        }]
-        if {$newestTs eq ""} return
-        $messagestore hole add $chatJid newer $newestTs
+        }]} return
+        $messagestore hole append $chatJid
     }
 
     # False when a sync is already running for this key, so a rejoin can't
@@ -244,19 +250,39 @@ snit::type taco_message {
         set CatchupRowidFloor [$client db onecolumn {
             SELECT COALESCE(MAX(rowid), 0) FROM chat_message
         }]
+        foreach var {LiveTop WalkBottom} {
+            dict for {jid _} [set $var] {
+                if {![IsRoomChatJid $jid]} { dict unset $var $jid }
+            }
+        }
         $client mam query -before {} -max 50 \
             -command [mymethod OnCatchup \
                 [dict create counts {} mins {} floor "" overlap 0] 1]
     }
 
+    method NoteWalkBottom {chatJid pos} {
+        if {![dict exists $WalkBottom $chatJid]
+                || [string compare $pos [dict get $WalkBottom $chatJid]] < 0} {
+            dict set WalkBottom $chatJid $pos
+        }
+    }
+
+    # Where a catchup page goes in $chatJid when the walk has stored nothing
+    # there yet: below the first message that arrived live since it asked,
+    # else at the chat's end.
+    method CatchupTop {chatJid} {
+        dict getdef $LiveTop $chatJid ""
+    }
+
     # One page of the account catchup. $acc carries what the earlier pages of
-    # this run established (per-chat counts, per-chat oldest, the run's floor,
-    # and how many results matched history we already had); $page is this
-    # page's number. A single page only reaches back 50 messages, which on an
-    # account that was away a while leaves the other chats untouched and the
-    # floor high enough that RetryPending condemns delivered sends. The walk
-    # stops at the first page that reaches history we already had: below it,
-    # everything was read before this connection.
+    # this run established (per-chat counts, the lowest place the walk has
+    # stored in each chat, the run's floor, and how many results matched
+    # history we already had); $page is this page's number. A single page
+    # only reaches back 50 messages, which on an account that was away a
+    # while leaves the other chats untouched and the floor high enough that
+    # RetryPending condemns delivered sends. The walk stops at the first page
+    # that reaches history we already had: below it, everything was read
+    # before this connection.
     method OnCatchup {acc page mamResult} {
         if {[dict exists $mamResult error]} {
             # Whatever earlier pages established still stands; only this
@@ -266,9 +292,15 @@ snit::type taco_message {
             return
         }
 
+        # Each page goes in right below what the walk has stored above it.
+        set ctx [dict create dir down above [dict get $acc mins] \
+            topcmd [mymethod CatchupTop]]
         set acc [$self MergeCatchupPage $acc \
-            [$self CatchupPage $mamResult "" [expr {$page == 1}]]]
+            [$self CatchupPage $mamResult "" $ctx]]
         set CatchupAcc $acc
+        dict for {jid pos} [dict get $acc mins] {
+            $self NoteWalkBottom $jid $pos
+        }
 
         if {![$self CatchupIsLast $acc $mamResult $page]} {
             $client mam query -before [dict get $mamResult first] -max 50 \
@@ -311,22 +343,23 @@ snit::type taco_message {
     }
 
     method MergeCatchupPage {acc pageResult} {
-        lassign $pageResult pageCounts pageFloor pageMin pageOverlap
         dict set acc overlap [expr {[dict getdef $acc overlap 0]
-            + ($pageOverlap eq "" ? 0 : $pageOverlap)}]
+            + [dict get $pageResult overlap]}]
         set counts [dict get $acc counts]
-        dict for {jid n} $pageCounts {
+        dict for {jid n} [dict get $pageResult counts] {
             dict incr counts $jid $n
         }
         dict set acc counts $counts
         set mins [dict get $acc mins]
-        dict for {jid ts} $pageMin {
-            if {![dict exists $mins $jid] || $ts < [dict get $mins $jid]} {
-                dict set mins $jid $ts
+        dict for {jid pos} [dict get $pageResult min] {
+            if {![dict exists $mins $jid]
+                    || [string compare $pos [dict get $mins $jid]] < 0} {
+                dict set mins $jid $pos
             }
         }
         dict set acc mins $mins
         set floor [dict get $acc floor]
+        set pageFloor [dict get $pageResult floor]
         if {$pageFloor ne "" && ($floor eq "" || $pageFloor < $floor)} {
             dict set acc floor $pageFloor
         }
@@ -341,8 +374,8 @@ snit::type taco_message {
         set CatchupRowidFloor ""
         set CatchupAcc ""
         if {$complete || [dict getdef $acc overlap 0] > 0} {
-            foreach {jid ts} $ReconnectHoles {
-                $messagestore hole removeBetween $jid [expr {$ts - 1}] [expr {$ts + 1}]
+            foreach {jid pos} $ReconnectHoles {
+                $messagestore hole drop $jid $pos
             }
         }
         set ReconnectHoles {}
@@ -385,12 +418,13 @@ snit::type taco_message {
         }
     }
 
-    # Bound the older edge of what a run that stopped short actually fetched.
-    # Belongs to the run, not a page: an intermediate page's oldest sits inside
+    # Bound the older edge of what a run that stopped short actually fetched:
+    # a hole below the lowest row it stored in each chat ($mins: chat -> pos).
+    # Belongs to the run, not a page: an intermediate page's lowest sits inside
     # the range the next page goes on to prove contiguous.
     method PlaceCatchupFloorHoles {mins} {
-        dict for {jid minTs} $mins {
-            $messagestore hole add $jid older $minTs
+        dict for {jid pos} $mins {
+            $messagestore hole addBefore $jid $pos
         }
     }
 
@@ -398,6 +432,8 @@ snit::type taco_message {
     # groupchat, so nothing else syncs a room.
     method DoMucCatchup {roomChatJid} {
         if {![$self CatchupStart $roomChatJid]} return
+        dict unset LiveTop $roomChatJid
+        dict unset WalkBottom $roomChatJid
         $client mam queryChat $roomChatJid -before {} -max 50 \
             -command [mymethod OnMucCatchup $roomChatJid]
     }
@@ -414,17 +450,17 @@ snit::type taco_message {
             return
         }
         $client muc noteArchive $roomJid 1
-        lassign [$self CatchupPage $mamResult $roomChatJid 1] \
-            perChatCount _ mins _ _ omemo
+        set page [$self CatchupPage $mamResult $roomChatJid \
+            [dict create dir down above {} topcmd [mymethod CatchupTop]]]
         if {![dict get $mamResult complete]} {
-            $self PlaceCatchupFloorHoles $mins
+            $self PlaceCatchupFloorHoles [dict get $page min]
         }
-        set n [expr {[dict exists $perChatCount $roomChatJid]
-            ? [dict get $perChatCount $roomChatJid] : 0}]
+        dict for {jid pos} [dict get $page min] { $self NoteWalkBottom $jid $pos }
+        set n [dict getdef [dict get $page counts] $roomChatJid 0]
         $self CatchupSettled $roomChatJid $n
         # One page reaches back 50 messages; an OMEMO room fills the rest
         # forward (FillChat).
-        if {$omemo > 0 && ![dict get $mamResult complete]} {
+        if {[dict get $page omemo] > 0 && ![dict get $mamResult complete]} {
             $self QueueFill $roomChatJid
         }
     }
@@ -475,54 +511,72 @@ snit::type taco_message {
         catch {$client omemo fillsSettled}
     }
 
-    # What a fill of $chatJid walks, as {loTs loSid hiTs gapTop}: from the
-    # message below the chat's newest hole (the archive id it continues
-    # after) to the one above it (gapTop; the largest stamp when nothing is
-    # above), and on through the newest row still undecrypted (hiTs), so
+    # What a fill of $chatJid walks, as a dict: from the message below the
+    # chat's last hole - the last below its first undecrypted message, when
+    # it has one (loPos, and loSid, the archive id it continues after)
+    # to the one above it (gapTop, its pos; "" when nothing
+    # is above), and on through the last row still undecrypted (hiPos), so
     # those are read again in order too. A chat with no hole but rows
-    # undecrypted is walked from the message below the oldest of them, with
+    # undecrypted is walked from the message below the first of them, with
     # no gapTop. "" when there is nothing to walk, or no message below to
     # start from.
     method FillTarget {chatJid} {
-        set holeTs [$client db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='hole'
-        }]
-        set undecNewest [$client db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
+        set undecLast [$client db onecolumn {
+            SELECT MAX(pos) FROM chat_message
             WHERE chat_jid=$chatJid AND undecrypted=1
         }]
-        if {$holeTs ne ""} {
-            set below $holeTs
-            set gapTop [$client db onecolumn {
-                SELECT MIN(timestamp) FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-                  AND timestamp > $holeTs
+        # Messages not read yet: the gap below the first of them is where
+        # their chain goes on from, whatever holes sit above.
+        set undecFirst [$client db onecolumn {
+            SELECT MIN(pos) FROM chat_message
+            WHERE chat_jid=$chatJid AND undecrypted=1
+        }]
+        set holePos ""
+        if {$undecFirst ne ""} {
+            set holePos [$client db onecolumn {
+                SELECT MAX(pos) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='hole' AND pos < $undecFirst
             }]
-            if {$gapTop eq ""} { set gapTop 9223372036854775807 }
-            set hiTs $gapTop
-            if {$undecNewest ne "" && $undecNewest > $hiTs} { set hiTs $undecNewest }
-        } elseif {$undecNewest ne ""} {
+        }
+        if {$holePos eq ""} {
+            set holePos [$client db onecolumn {
+                SELECT MAX(pos) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='hole'
+            }]
+        }
+        if {$holePos ne ""} {
+            set below $holePos
+            set gapTop [$client db onecolumn {
+                SELECT MIN(pos) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                  AND pos > $holePos
+            }]
+            set hiPos $gapTop
+            if {$hiPos ne "" && $undecLast ne ""
+                    && [string compare $undecLast $hiPos] > 0} {
+                set hiPos $undecLast
+            }
+        } elseif {$undecLast ne ""} {
             set below [$client db onecolumn {
-                SELECT MIN(timestamp) FROM chat_message
+                SELECT MIN(pos) FROM chat_message
                 WHERE chat_jid=$chatJid AND undecrypted=1
             }]
             set gapTop ""
-            set hiTs $undecNewest
+            set hiPos $undecLast
         } else {
             return ""
         }
-        set lo ""
-        $client db eval {
-            SELECT timestamp, server_id FROM chat_message
+        # Not one of our own sends: placed when written, it may have
+        # reached the archive much later (written offline, sent on a retry),
+        # and what follows it there is not what the gap is missing.
+        set lo [$client db eval {
+            SELECT pos, server_id FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-              AND timestamp < $below
-            ORDER BY timestamp DESC LIMIT 1
-        } row {
-            set lo [list $row(timestamp) $row(server_id)]
-        }
+              AND COALESCE(own_id, '') = '' AND pos < $below
+            ORDER BY pos DESC LIMIT 1
+        }]
         if {$lo eq ""} { return "" }
-        dict create loTs [lindex $lo 0] loSid [lindex $lo 1] hiTs $hiTs \
+        dict create loPos [lindex $lo 0] loSid [lindex $lo 1] hiPos $hiPos \
             gapTop $gapTop
     }
 
@@ -539,49 +593,78 @@ snit::type taco_message {
     method OnFill {run chatJid target cursor mamResult} {
         if {$FillBusy eq "" || [lindex $FillBusy 0] != $run} return
         if {[dict exists $mamResult error]} {
-            # The archive no longer knows the id below the hole (trimmed, or
-            # another archive's): go on from that message's time instead.
+            # The archive no longer knows the id below the hole (trimmed,
+            # or another archive's): go on after the message below that
+            # one. An archive trims its oldest first, so once none of ours
+            # is left in it, all it holds came after them: walk it from its
+            # start. Not from a time: the stamp we hold may be our clock's.
             if {[dict getdef $mamResult error_condition ""] eq "item-not-found"
                     && [lindex $cursor 0] eq "-after"} {
-                set from [FormatTimestampISO [expr {[dict get $target loTs] + 1}]]
-                $self FillQuery $chatJid $target [list -start $from]
+                set from [lindex $cursor 1]
+                set older [$client db eval {
+                    SELECT server_id FROM chat_message
+                    WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+                      AND pos < (SELECT pos FROM chat_message
+                                 WHERE chat_jid=$chatJid AND kind='message'
+                                   AND server_id=$from ORDER BY pos LIMIT 1)
+                    ORDER BY pos DESC LIMIT 1
+                }]
+                dict incr target tries
+                if {$older ne "" && [dict get $target tries] <= $MaxFillRetries} {
+                    $self FillQuery $chatJid $target [list -after $older]
+                } else {
+                    $self FillQuery $chatJid $target {}
+                }
                 return
             }
             # Anything else leaves the hole for the next connect.
             $self FinishFill $chatJid $target
             return
         }
+        set loPos [dict get $target loPos]
+        # The page goes on right after the message below the gap, under the
+        # hole, which stays above it until the walk reaches the gap's top.
         set InFill 1
         try {
-            lassign [$self CatchupPage $mamResult \
-                    [expr {[IsRoomChatJid $chatJid] ? $chatJid : ""}] 0] \
-                counts _ _ _ _ _ heldMax
+            set page [$self CatchupPage $mamResult \
+                [expr {[IsRoomChatJid $chatJid] ? $chatJid : ""}] \
+                [dict create dir up below [dict create $chatJid $loPos]]]
         } finally {
             set InFill 0
         }
-        dict incr target count [dict getdef $counts $chatJid 0]
+        dict incr target count [dict getdef [dict get $page counts] $chatJid 0]
         dict incr target pages
-        set loTs [dict get $target loTs]
         set gapTop [dict get $target gapTop]
+        set top [dict getdef [dict get $page max] $chatJid ""]
         set last [dict get $mamResult last]
         set ended [expr {[dict get $mamResult complete] || $last eq ""}]
-        # Reached: the page held the message at the top (by our own stamp of
-        # it; the server's clock may run ahead of ours).
-        set reached [expr {$heldMax ne "" && $heldMax >= [dict get $target hiTs]}]
-        if {$gapTop ne "" && ($ended || ($heldMax ne "" && $heldMax >= $gapTop))} {
-            $messagestore hole removeBetween $chatJid $loTs $gapTop
+        set hiPos [dict get $target hiPos]
+        set reached [expr {$top ne "" && $hiPos ne ""
+            && [string compare $top $hiPos] >= 0}]
+        # Nothing after the page's last message, when the archive says it
+        # has nothing more: the gap above it is none.
+        if {$ended} {
+            $messagestore hole removeGap $chatJid newer \
+                [expr {$top ne "" ? $top : $loPos}]
+        }
+        # The gap is closed once the walk has reached the row above it and
+        # the pages' sweeps left no hole below that.
+        if {$gapTop ne "" && ($ended
+                || ($top ne "" && [string compare $top $gapTop] >= 0))} {
+            if {![$messagestore HoleIn $chatJid $loPos $gapTop]} {
+                dict set target closed 1
+            }
             dict set target gapTop ""
-            dict set target closed 1
         }
         # A message that came in undecrypted while the fill ran is read in
         # order too: the walk goes on through it.
         if {$reached && !$ended} {
-            set undecNewest [$client db onecolumn {
-                SELECT MAX(timestamp) FROM chat_message
+            set undecLast [$client db onecolumn {
+                SELECT MAX(pos) FROM chat_message
                 WHERE chat_jid=$chatJid AND undecrypted=1
             }]
-            if {$undecNewest ne "" && $undecNewest > $heldMax} {
-                dict set target hiTs $undecNewest
+            if {$undecLast ne "" && [string compare $undecLast $top] > 0} {
+                dict set target hiPos $undecLast
                 set reached 0
             }
         }
@@ -589,20 +672,8 @@ snit::type taco_message {
             $self FinishFill $chatJid $target
             return
         }
-        # Move the hole up above the newest message now stored below the gap's
-        # top, which is where the next page (or connect) goes on from.
-        if {$gapTop ne ""} {
-            set newLo [$client db onecolumn {
-                SELECT MAX(timestamp) FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-                  AND timestamp < $gapTop
-            }]
-            if {$newLo ne "" && $newLo > $loTs} {
-                $messagestore hole removeBetween $chatJid $loTs $gapTop
-                $messagestore hole add $chatJid newer $newLo
-                dict set target loTs $newLo
-            }
-        }
+        # The next page goes on after the last message this one stored.
+        if {$top ne ""} { dict set target loPos $top }
         if {[dict get $target pages] >= $MaxForwardFillPages} {
             $self FinishFill $chatJid $target
             return
@@ -625,47 +696,57 @@ snit::type taco_message {
         $self NextFill
     }
 
-    # Per-message walk over one catchup page. Stores without emitting <New>
-    # (backfill is not an arrival); the in-place patch verdicts still fire,
-    # since they correct rows that may already be on screen.
+    # One page from the archive, oldest result first. Every result is routed
+    # to its chat and classified first, in order (Classify decrypts, and an
+    # OMEMO chain reads forward), then each chat's new messages are placed
+    # among the rows the page already held and stored (StorePage), without
+    # <New> (backfill is not an arrival); the in-place patch verdicts still
+    # fire, since they correct rows that may already be on screen.
     #
     # $fixedChatJid keys every message to one chat, for a room page whose
     # stanzas carry the room in `from` and can't be routed by envelope.
     # Empty routes per message off the envelope.
     #
+    # $ctx says where the page goes in each chat:
+    #   dir     down: a walk back, the next page goes below this one; up: a
+    #           walk forward, the next goes above; none: no walk, the page
+    #           is placed by timestamp (an island: a jump, a search)
+    #   below   chat -> pos of the row the page continues after
+    #   above   chat -> pos of the row the page goes below
+    #   topcmd  for a chat `above` does not name: {*}topcmd chat gives the
+    #           pos the page goes below, "" for the chat's end. The page is
+    #           the archive's newest then (or right below what was): nothing
+    #           stands between it and that row.
+    #   tail    0: emit no <Tail> (default 1)
+    #
     # One archive answered this page, so RSM makes it contiguous from its
-    # floor to its top for every chat it covers - not just the chats that
-    # happened to dedup against the cache. Any hole a covered chat holds in
-    # that span is therefore a proven false positive and gets swept.
+    # oldest result to its newest for every chat it covers - and from the
+    # row it continues after, or up to the row it goes below. Any hole a
+    # covered chat holds in that span is a proven false positive and is
+    # swept. Bounding the far edge is the caller's job, once its whole run
+    # has stopped.
     #
-    # Returns {perChatCount archiveFloor perChatMin}. Bounding the older edge
-    # is the caller's job, once its whole run has stopped.
-    #
-    # $tail is 1 for the archive's newest page (a query with an empty
-    # <before/>): nothing newer was archived when it answered, so the page
-    # also speaks for everything above its newest message, up to now.
-    method CatchupPage {mamResult fixedChatJid {tail 0}} {
+    # Returns a dict:
+    #   counts   chat -> messages stored
+    #   floor    the oldest server stamp on the page, over every result
+    #   min/max  chat -> lowest/highest pos the page's messages hold
+    #   overlap  results matching a row stored before the account catchup
+    #            started (CatchupRowidFloor)
+    #   omemo    a room page's OMEMO results
+    method CatchupPage {mamResult fixedChatJid ctx} {
         set myBareJid [jid bare [$client cget -jid]]
-        set perChatCount [dict create]
+        set dir [dict getdef $ctx dir none]
         # Oldest timestamp this page returned: the floor of the range the
         # archive just spoke for. Taken over EVERY result node, including
         # the drop/reaction/edit verdicts that skip the citizen loop below
         # - they still bound the page, and a citizen-only minimum would
         # sit above the true floor and over-report non-delivery.
         set archiveFloor ""
-        # Per-chat min/max input timestamps.
-        set perChatMin [dict create]
-        set perChatMax [dict create]
-        # Results matching a row stored before the account catchup started
-        # (CatchupRowidFloor): the walk has reached history we had.
         set overlap 0
-        # The page's newest stamp, and in a room's page how many results
-        # were OMEMO (a forward fill is worth it only for those).
-        set pageMax ""
         set omemo 0
-        # The newest of our own stamps among results the store already held
-        # (a fill knows the top of its gap by it: our clock, not the server's).
-        set heldMax ""
+        # chat -> the page's results for it, in order: {fixed pos} for one
+        # the store already held, {new msg} for one to store.
+        set entries [dict create]
 
         foreach resultNode [dict get $mamResult messages] {
             if {$fixedChatJid ne ""} {
@@ -675,8 +756,6 @@ snit::type taco_message {
                         -ns eu.siacs.conversations.axolotl]]} {
                     incr omemo
                 }
-            }
-            if {$fixedChatJid ne ""} {
                 set chatJid $fixedChatJid
             } else {
                 set fwdNode [lindex [xsearch $resultNode forwarded \
@@ -713,73 +792,153 @@ snit::type taco_message {
                 if {$rts ne "" && ($archiveFloor eq "" || $rts < $archiveFloor)} {
                     set archiveFloor $rts
                 }
-                if {$rts ne "" && ($pageMax eq "" || $rts > $pageMax)} {
-                    set pageMax $rts
-                }
             }
             # A reaction/edit/retract updates a stored message's display; it
-            # isn't a citizen and doesn't bound a hole (like drop).
+            # isn't a row and doesn't bound a hole (like drop).
             if {[$self ApplyPatchVerdict $chatJid $r]} continue
-            # drop = displayless new stanza; doesn't bound a hole (as before).
             if {$verdict eq "drop"} continue
 
-            # Where the result sits in the store, on our own clock: a row the
-            # store already held keeps the stamp it was stored under (a live
-            # one's is ours, not the server's), a new one the one it got.
-            set msgTs [dict get $r timestamp]
             switch $verdict {
                 confirmed {
-                    # pending->"" echo; not an overlap proof
+                    # pending->"" echo; not an overlap proof. Nor a place:
+                    # a send of ours sits where it was written, which is not
+                    # where the archive took it in if that was later.
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
-                    set msgTs [dict get $r reconciled newtimestamp]
                 }
                 duplicate {
-                    set msgTs [dict get $r stored_ts]
-                    if {$heldMax eq "" || $msgTs > $heldMax} { set heldMax $msgTs }
+                    set storedTs [dict get $r stored_ts]
+                    set pos [$messagestore PlaceOfTs $chatJid $storedTs]
+                    if {$pos ne ""} { dict lappend entries $chatJid [list fixed $pos] }
                     if {$CatchupRowidFloor ne "" && [$self StoredBefore \
-                            $chatJid $msgTs $CatchupRowidFloor]} {
+                            $chatJid $storedTs $CatchupRowidFloor]} {
                         incr overlap
                     }
                 }
                 new {
-                    set result [$messagestore store [list [dict get $r msg]]]
-                    if {[llength [dict get $result inserted]] > 0} {
-                        dict incr perChatCount $chatJid
-                        set msgTs [lindex [dict get $result inserted] 0]
-                    }
+                    dict lappend entries $chatJid [list new [dict get $r msg]]
                 }
             }
-            if {![dict exists $perChatMin $chatJid]
-                || $msgTs < [dict get $perChatMin $chatJid]} {
-                dict set perChatMin $chatJid $msgTs
-            }
-            if {![dict exists $perChatMax $chatJid]
-                || $msgTs > [dict get $perChatMax $chatJid]} {
-                dict set perChatMax $chatJid $msgTs
-            }
         }
 
-        # Between a chat's own results on the page the archive held nothing
-        # else of the chat's, so no hole stands there; on the newest page
-        # nothing either from its last result up to now. Swept by where the
-        # results sit in the store (our clock): the page's own stamps are the
-        # server's, which may run behind or ahead of the stamps a live
-        # message was stored under, and a sweep from them would clear holes
-        # the page never spoke for. (A reconnect hole below the chat's
-        # results stays; the walk clears those once it reaches history we
-        # had: SettleCatchup.)
-        set now [clock microseconds]
-        dict for {jid maxTs} $perChatMax {
-            $messagestore hole removeBetween $jid [dict get $perChatMin $jid] \
-                [expr {$tail ? max($maxTs, $now) : $maxTs}]
+        set counts [dict create]
+        set mins [dict create]
+        set maxs [dict create]
+        dict for {chatJid list} $entries {
+            set placed [$self StorePage $chatJid $list $ctx]
+            if {[dict get $placed count] > 0} {
+                dict set counts $chatJid [dict get $placed count]
+            }
+            set lo [dict get $placed min]
+            set hi [dict get $placed max]
+            if {$lo eq ""} continue
+            dict set mins $chatJid $lo
+            dict set maxs $chatJid $hi
+            # Swept along the page in the archive's order, from the row it
+            # continues after to the row it goes below; with neither above
+            # it, the newest page speaks up to the chat's end.
+            set seq [dict get $placed rows]
+            set below [dict getdef [dict getdef $ctx below {}] $chatJid ""]
+            if {$below ne ""} { set seq [linsert $seq 0 $below] }
+            set openTop 0
+            if {[dict exists [dict getdef $ctx above {}] $chatJid]} {
+                lappend seq [dict get $ctx above $chatJid]
+            } elseif {[dict exists $ctx topcmd]} {
+                set to [{*}[dict get $ctx topcmd] $chatJid]
+                if {$to eq ""} { set openTop 1 } else { lappend seq $to }
+            }
+            $messagestore hole clearProven $chatJid $seq $openTop
         }
 
-        dict for {jid _} $perChatMax {
-            $self EmitTail $jid
+        if {[dict getdef $ctx tail 1]} {
+            dict for {chatJid _} $maxs {
+                $self EmitTail $chatJid
+            }
         }
-        return [list $perChatCount $archiveFloor $perChatMin $overlap \
-            $pageMax $omemo $heldMax]
+        dict create counts $counts floor $archiveFloor min $mins max $maxs \
+            overlap $overlap omemo $omemo
+    }
+
+    # Store one chat's share of a page ($entries, from CatchupPage) where it
+    # goes, and return {count n min pos max pos rows {pos ...}}: the page's
+    # rows there, rows in the page's (the archive's) order.
+    # A run of new messages goes right after the row before it on the page
+    # (or the row the page continues after) and before whatever followed
+    # that; a run with nothing before it goes right below the row after it
+    # (or the row the page goes below, or the chat's end). Either way it
+    # stays below the next row the page held: nothing the archive held
+    # between them is missing, or the page would have had it.
+    method StorePage {chatJid entries ctx} {
+        set dir [dict getdef $ctx dir none]
+        set prev [dict getdef [dict getdef $ctx below {}] $chatJid ""]
+        if {[dict exists [dict getdef $ctx above {}] $chatJid]} {
+            set end [dict get $ctx above $chatJid]
+        } elseif {[dict exists $ctx topcmd]} {
+            set end [{*}[dict get $ctx topcmd] $chatJid]
+        } else {
+            set end ""
+        }
+        set count 0
+        set held {}
+        set n [llength $entries]
+        set i 0
+        while {$i < $n} {
+            lassign [lindex $entries $i] kind value
+            if {$kind eq "fixed"} {
+                set prev $value
+                lappend held $value
+                incr i
+                continue
+            }
+            # The run of new messages from here to the next row held.
+            set run {}
+            set j $i
+            while {$j < $n && [lindex $entries $j 0] eq "new"} {
+                lappend run [lindex $entries $j 1]
+                incr j
+            }
+            set next [expr {$j < $n ? [lindex $entries $j 1] : $end}]
+            if {$dir eq "none"} {
+                set keys [lrepeat [llength $run] ""]
+            } elseif {$prev ne ""} {
+                set lo $prev
+                set hi [$messagestore PosNext $chatJid $prev]
+                if {$next ne "" && [string compare $next $lo] > 0
+                        && ($hi eq "" || [string compare $next $hi] < 0)} {
+                    set hi $next
+                }
+                set keys [expr {$j == $n && $dir eq "up"
+                    ? [poskey page $lo $hi [llength $run] up]
+                    : [poskey nBetween $lo $hi [llength $run]]}]
+            } else {
+                set hi $next
+                set lo [$messagestore PosPrev $chatJid $hi]
+                set keys [expr {$dir eq "down"
+                    ? [poskey page $lo $hi [llength $run] down]
+                    : [poskey nBetween $lo $hi [llength $run]]}]
+            }
+            foreach msg $run key $keys {
+                if {$key ne ""} { dict set msg pos $key }
+                set result [$messagestore store [list $msg]]
+                set got [dict getdef $result positions {}]
+                if {[llength $got]} {
+                    incr count
+                    set prev [lindex $got 0]
+                    lappend held $prev
+                } elseif {$key ne ""} {
+                    # Already stored after all (repeated on the page): what
+                    # follows goes after where it would have been.
+                    set prev $key
+                }
+            }
+            set i $j
+        }
+        if {[llength $held]} {
+            set sorted [lsort $held]
+            return [dict create count $count min [lindex $sorted 0] \
+                max [lindex $sorted end] rows $held]
+        }
+        return [dict create count $count min "" max "" rows {}]
     }
 
     # Whether the row at $ts in $chatJid was stored at or below rowid $floor.
@@ -1073,14 +1232,18 @@ snit::type taco_message {
         set verdict [$self Classify $chatJid $stanza $ts $ids $tsClock]
         # History a room replays on join is not news: nothing rings for it.
         dict set verdict delayed [expr {$stamp ne ""}]
-        $self DispatchLive $chatJid $verdict
+        # Held for us by the server (its offline store, a room's history),
+        # whether or not its stamp is one we take: archived before anything
+        # we asked since, so not news to the archive's order either.
+        dict set verdict held [expr {[llength [xsearch $stanza delay \
+            -ns urn:xmpp:delay]] > 0}]
+        set placed [$self DispatchLive $chatJid $verdict]
         # A message the server held for us (its offline store, a room's
         # history on join) is from the past: what came after it is unknown
         # until a catchup or a fill reaches it, so a hole marks that.
-        if {[dict get $verdict verdict] eq "new" && $stamp ne ""
+        if {[dict get $verdict verdict] eq "new" && [dict get $verdict held]
                 && [dict get [dict get $verdict msg] server_id] ne ""} {
-            $messagestore hole add $chatJid newer \
-                [dict get [dict get $verdict msg] timestamp]
+            foreach pos $placed { $messagestore hole addAfter $chatJid $pos }
         }
         # One our session could not open yet: what it is ahead of is in the
         # archive, and a fill reads it in order (FillTarget).
@@ -1145,8 +1308,11 @@ snit::type taco_message {
         return 1
     }
 
+    # The pos of what it stored, if anything.
+    # Returns the pos of what it stored, if anything.
     method DispatchLive {chatJid verdict} {
         if {[$self ApplyPatchVerdict $chatJid $verdict]} return
+        set stored {}
         switch [dict get $verdict verdict] {
             confirmed {
                 $self HandleConfirmation $chatJid \
@@ -1154,8 +1320,26 @@ snit::type taco_message {
             }
             new {
                 set msg [dict get $verdict msg]
-                set result [$messagestore store [list $msg]]
+                # Held for us and not on the catchup's pages: older than all
+                # they stored, so below the lowest of it.
+                if {[dict getdef $verdict held 0]
+                        && [dict exists $WalkBottom $chatJid]} {
+                    set bottom [dict get $WalkBottom $chatJid]
+                    dict set msg pos [poskey between \
+                        [$messagestore PosPrev $chatJid $bottom] $bottom]
+                }
+                set result [$messagestore store [list $msg] append]
+                set positions [dict getdef $result positions {}]
+                # The first to come in undelayed while the chat's catchup
+                # runs: the archive took it after the catchup asked.
+                if {[llength $positions] && ![dict getdef $verdict held 0]
+                        && ![dict exists $LiveTop $chatJid]
+                        && [dict exists $CatchupInFlight [expr {
+                            [IsRoomChatJid $chatJid] ? $chatJid : ""}]]} {
+                    dict set LiveTop $chatJid [lindex $positions 0]
+                }
                 $self HandleInsertion $chatJid [dict get $result inserted]
+                set stored $positions
                 # Someone else's group call invite, arriving now: a ring.
                 if {[dict exists $msg call] && [dict get $msg call] ne ""
                         && [dict get $msg call_state] eq ""
@@ -1166,6 +1350,7 @@ snit::type taco_message {
                 }
             }
         }
+        return $stored
     }
 
     # An XEP-0482 accept/reject/retract/left for a stored call invite.
@@ -1439,7 +1624,7 @@ snit::type taco_message {
             encryption $encMode \
             fail_reason $failReason]
 
-        set result [$messagestore store [list $msg]]
+        set result [$messagestore store [list $msg] append]
         set inserted [dict get $result inserted]
         set dbMsg [lindex [$messagestore get ids $opts(-chat) $inserted] 0]
 
@@ -1495,7 +1680,7 @@ snit::type taco_message {
             encryption $encMode \
             attachments [OutgoingAttachment "" $path] \
             server_status uploading]
-        set inserted [dict get [$messagestore store [list $msg]] inserted]
+        set inserted [dict get [$messagestore store [list $msg] append] inserted]
         set ts [lindex $inserted 0]
         set dbMsg [lindex [$messagestore get ids $chatJid $inserted] 0]
         $client emit message <New> -jid $chatJid -message $dbMsg
@@ -1944,13 +2129,14 @@ snit::type taco_message {
     # A fresh query, not the chats-module MaxTimestamps cache: that cache
     # counts hole rows and misses the timestamp UPDATE on MUC-echo
     # confirmation, so it can't answer this authoritatively.
+    # The timestamp of the chat's last message, "" for none.
     method maxTimestamp {args} {
         array set opts $args
-        set ts [$client db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
+        $client db onecolumn {
+            SELECT timestamp FROM chat_message
             WHERE chat_jid=$opts(-chat) AND kind='message'
-        }]
-        return [expr {$ts eq "" ? "" : $ts}]
+            ORDER BY pos DESC LIMIT 1
+        }
     }
 
     # Push the chat's current newest-message timestamp so the GUI tracks the
@@ -2335,8 +2521,12 @@ snit::type taco_message {
         # cursor is at or past the latest stored message — there's
         # nothing newer in the archive.
         if {$after ne "" && !$bounded} {
-            set latestTs [$self maxTimestamp -chat $chatJid]
-            if {$latestTs eq "" || $after >= $latestTs} {
+            set last [$client db onecolumn {
+                SELECT MAX(pos) FROM chat_message
+                WHERE chat_jid=$chatJid AND kind='message'
+            }]
+            set at [$messagestore CursorPos $chatJid $after after]
+            if {$last eq "" || ($at ne "" && [string compare $at $last] >= 0)} {
                 {*}$callback $localMessages
                 return
             }
@@ -2349,13 +2539,13 @@ snit::type taco_message {
     # Whether a hole sits above $chatJid's newest message.
     method TopHole {chatJid} {
         set top [$client db onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
+            SELECT MAX(pos) FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
         }]
         if {$top eq ""} { return 0 }
         $client db exists {
             SELECT 1 FROM chat_message
-            WHERE chat_jid=$chatJid AND kind='hole' AND timestamp > $top
+            WHERE chat_jid=$chatJid AND kind='hole' AND pos > $top
         }
     }
 
@@ -2369,30 +2559,23 @@ snit::type taco_message {
                         wasBounded byTime} {
         set direction [expr {$after ne "" ? "newer" : "older"}]
         set mamArgs [list -max $limit]
-        set cursorId ""
+        set cursor ""
         if {$byTime} {
             # No cursor: page by time below.
         } elseif {$before ne ""} {
-            set cursorId [$client db onecolumn {
-                SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-                  AND timestamp >= $before
-                ORDER BY timestamp ASC LIMIT 1
-            }]
+            set at [$messagestore CursorPos $chatJid $before before]
+            if {$at ne ""} {
+                set cursor [$self CursorRow $chatJid "pos >= \$at" ASC]
+            }
         } elseif {$after ne ""} {
-            set cursorId [$client db onecolumn {
-                SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-                  AND timestamp <= $after
-                ORDER BY timestamp DESC LIMIT 1
-            }]
+            set at [$messagestore CursorPos $chatJid $after after]
+            if {$at ne ""} {
+                set cursor [$self CursorRow $chatJid "pos <= \$at" DESC]
+            }
         } else {
-            set cursorId [$client db onecolumn {
-                SELECT server_id FROM chat_message
-                WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
-                ORDER BY timestamp ASC LIMIT 1
-            }]
+            set cursor [$self CursorRow $chatJid 1 ASC]
         }
+        lassign $cursor cursorId anchor
 
         if {$cursorId ne ""} {
             lappend mamArgs [expr {$after ne "" ? "-after" : "-before"}] $cursorId
@@ -2403,15 +2586,56 @@ snit::type taco_message {
         } else {
             lappend mamArgs -before ""
         }
+        # Where the page goes: next to the cursor's row; at the chat's end
+        # for its newest page; by time when the query was by time.
+        if {$cursorId ne ""} {
+            set place [list $direction $anchor]
+        } elseif {$before eq "" && $after eq ""} {
+            set place {tail ""}
+        } else {
+            set place {time ""}
+        }
 
         lappend mamArgs -command [mymethod OnFetch $chatJid $before $after \
-            $limit $callback $onerror $tag $direction $wasBounded $cursorId 1]
+            $limit $callback $onerror $tag $direction $wasBounded $cursorId \
+            $place 1]
 
         $client mam queryChat $chatJid {*}$mamArgs
     }
 
+    # {server_id pos} of the first citizen meeting $cond in $order: one
+    # not ours if there is one (a send of ours sits where it was written,
+    # perhaps long before the archive took it in), else ours. The caller's
+    # variables are in scope for $cond.
+    method CursorRow {chatJid cond order} {
+        upvar 1 at at
+        foreach own {{AND COALESCE(own_id, '') = ''} {}} {
+            set row [$client db eval "
+                SELECT server_id, pos FROM chat_message
+                WHERE chat_jid=\$chatJid AND kind='message' AND server_id != ''
+                  AND $cond $own
+                ORDER BY pos $order LIMIT 1
+            "]
+            if {[llength $row]} { return $row }
+        }
+        return {}
+    }
+
+    # The CatchupPage context for a history page placed as $place says
+    # ({older|newer pos}: beside that row; {tail ""}: the chat's newest
+    # page; {time ""}: by timestamp).
+    method FetchContext {chatJid place} {
+        lassign $place how anchor
+        switch -- $how {
+            older { dict create dir down above [dict create $chatJid $anchor] tail 0 }
+            newer { dict create dir up below [dict create $chatJid $anchor] tail 0 }
+            tail  { dict create dir down topcmd [list apply {{jid} {}}] tail 0 }
+            default { dict create dir none tail 0 }
+        }
+    }
+
     method OnFetch {chatJid before after limit callback onerror tag direction \
-                    wasBounded cursorId page mamResult} {
+                    wasBounded cursorId place page mamResult} {
         if {[dict exists $mamResult error]} {
             if {$tag ne "" && ![info exists ActiveTags($tag)]} return
             # item-not-found: the cursor left the archive; retry once by
@@ -2434,15 +2658,17 @@ snit::type taco_message {
             return
         }
 
-        # Only `new` messages are stored; `parsed` keeps every verdict
-        # (each carries a timestamp) so the hole ops below still span the
-        # true archive range.
-        lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
-        # Store the new batch (even if cancelled - data is useful)
-        if {[llength $toStore] > 0} {
-            $messagestore store $toStore
-        }
-        $self SweepFetchedRange $chatJid $parsed $direction $before $after
+        # Store the new batch (even if cancelled - data is useful), placed
+        # next to the cursor's row and swept between them.
+        set got [$self CatchupPage $mamResult $chatJid \
+            [$self FetchContext $chatJid $place]]
+        set lo [dict getdef [dict get $got min] $chatJid ""]
+        set hi [dict getdef [dict get $got max] $chatJid ""]
+        # The next page, and the far edge's hole, go on from this page's edge.
+        lassign $place how anchor
+        if {$how eq "tail"} { set how older }
+        if {$how eq "older" && $lo ne ""} { set place [list older $lo] }
+        if {$how eq "newer" && $hi ne ""} { set place [list newer $hi] }
 
         set cancelled [expr {$tag ne "" && ![info exists ActiveTags($tag)]}]
         set local [$self GetLocal $chatJid $before $after $limit]
@@ -2461,7 +2687,8 @@ snit::type taco_message {
         # while one caller waits on it - the thirst loop asks again.
         if {!$cancelled
             && [llength [dict get $local messages]] == 0
-            && !$complete && $pageSize > 0 && $page < $MaxFillPages} {
+            && !$complete && $pageSize > 0 && $page < $MaxFillPages
+            && [lindex $place 0] in {older newer tail}} {
             set nextCursor [expr {$direction eq "older"
                 ? [dict get $mamResult first] : [dict get $mamResult last]}]
             if {$nextCursor ne ""} {
@@ -2469,79 +2696,31 @@ snit::type taco_message {
                 $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
                     -command [mymethod OnFetch $chatJid $before $after $limit \
                         $callback $onerror $tag $direction $wasBounded "" \
-                        [expr {$page + 1}]]
+                        $place [expr {$page + 1}]]
                 return
             }
         }
 
         # Terminal page (enough collected, archive exhausted, no cursor to
         # advance, or cancelled): finalise the queried-direction boundary.
+        lassign $place how edge
         if {$complete} {
-            $self ClearBoundingHole $chatJid $direction $before $after \
-                $wasBounded
+            # Nothing past the page's edge (or the cursor, for an empty
+            # page) that way: the hole there was a false positive.
+            if {$wasBounded && $how in {older newer} && $edge ne ""} {
+                $messagestore hole removeGap $chatJid $how $edge
+            }
             # Rows the archive no longer has (wiped, expired) were behind
             # that hole; return them rather than an empty page.
             set local [$self GetLocal $chatJid $before $after $limit]
-        } else {
-            $self PlaceFarEdgeHole $chatJid $parsed $direction
+        } elseif {$direction eq "older" && $lo ne ""} {
+            $messagestore hole addBefore $chatJid $lo
+        } elseif {$direction eq "newer" && $hi ne ""} {
+            $messagestore hole addAfter $chatJid $hi
         }
 
         if {$cancelled} return
         {*}$callback [dict get $local messages]
-    }
-
-    # Cursor timestamp on the queried side (older->before, newer->after);
-    # empty on an initial open, where there's no anchor.
-    proc fetch_cursor_ts {direction before after} {
-        expr {$direction eq "older" ? $before : $after}
-    }
-
-    # Sweep holes between the cursor and the batch's far edge. RSM
-    # guarantees that range is contiguous, so any hole there was a false
-    # positive (paginated past, or stale). No-op without a cursor or batch.
-    method SweepFetchedRange {chatJid messages direction before after} {
-        set cursorTs [fetch_cursor_ts $direction $before $after]
-        if {[llength $messages] == 0 || $cursorTs eq ""} return
-        set tsList [lmap m $messages {dict get $m timestamp}]
-        if {$direction eq "older"} {
-            $messagestore hole removeBetween $chatJid \
-                [tcl::mathfunc::min {*}$tsList] $cursorTs
-        } else {
-            $messagestore hole removeBetween $chatJid \
-                $cursorTs [tcl::mathfunc::max {*}$tsList]
-        }
-    }
-
-    # Mark "archive continues beyond here, not yet fetched" at the batch's far
-    # edge. Only once the fill loop stops short (complete=false): on an
-    # intermediate page it would truncate the next page on the cursorless path.
-    method PlaceFarEdgeHole {chatJid messages direction} {
-        if {[llength $messages] == 0} return
-        set tsList [lmap m $messages {dict get $m timestamp}]
-        if {$direction eq "older"} {
-            $messagestore hole add $chatJid older [tcl::mathfunc::min {*}$tsList]
-        } else {
-            $messagestore hole add $chatJid newer [tcl::mathfunc::max {*}$tsList]
-        }
-    }
-
-    # Cursorless sibling of SweepFetchedRange: an anchorless page still spans
-    # a server-contiguous range, so holes inside it were false positives.
-    method SweepFetchedSpan {chatJid messages} {
-        if {[llength $messages] == 0} return
-        set tsList [lmap m $messages {dict get $m timestamp}]
-        $messagestore hole removeBetween $chatJid \
-            [tcl::mathfunc::min {*}$tsList] [tcl::mathfunc::max {*}$tsList]
-    }
-
-    # Remove the bounding hole proven false by complete=true: the server
-    # confirms nothing exists past the cursor in this direction. Applies even
-    # for an empty terminal page.
-    method ClearBoundingHole {chatJid direction before after wasBounded} {
-        set cursorTs [fetch_cursor_ts $direction $before $after]
-        if {$wasBounded && $cursorTs ne ""} {
-            $messagestore hole remove $chatJid $direction $cursorTs
-        }
     }
 
     tackymethod -noreturn cancel {args} {
@@ -2628,17 +2807,16 @@ snit::type taco_message {
             return
         }
 
-        lassign [$self IngestMamBatch $chatJid $mamResult] parsed toStore
-        if {[llength $toStore] > 0} {
-            $messagestore store $toStore
-        }
-        # The page is an island: contiguous within itself, unfetched on both
-        # edges - `-start $date` covers nothing older, a short page leaves
-        # archive above.
-        $self SweepFetchedSpan $chatJid $parsed
-        $self PlaceFarEdgeHole $chatJid $parsed older
-        if {![dict get $mamResult complete]} {
-            $self PlaceFarEdgeHole $chatJid $parsed newer
+        # The page is an island: placed by time, contiguous within itself
+        # (CatchupPage sweeps it), unfetched on both edges - `-start $date`
+        # covers nothing older, a short page leaves archive above.
+        set got [$self CatchupPage $mamResult $chatJid \
+            [dict create dir none tail 0]]
+        set lo [dict getdef [dict get $got min] $chatJid ""]
+        set hi [dict getdef [dict get $got max] $chatJid ""]
+        if {$lo ne ""} { $messagestore hole addBefore $chatJid $lo }
+        if {$hi ne "" && ![dict get $mamResult complete]} {
+            $messagestore hole addAfter $chatJid $hi
         }
 
         if {$tag ne "" && ![info exists ActiveTags($tag)]} return
@@ -2878,36 +3056,13 @@ snit::type taco_message {
             set result [$messagestore store [list [dict get $r msg]]]
             set ins [dict get $result inserted]
             if {[llength $ins] > 0} {
-                set storedTs [lindex $ins 0]
-                $messagestore hole add $chatJid older $storedTs
-                $messagestore hole add $chatJid newer $storedTs
+                set pos [lindex [dict get $result positions] 0]
+                $messagestore hole addBefore $chatJid $pos
+                $messagestore hole addAfter $chatJid $pos
                 lappend messages [lindex [$messagestore get ids $chatJid $ins] 0]
             }
         }
         return $messages
-    }
-
-    # Walk a single-chat MAM batch through Classify, firing patch events for each
-    # envelope-confirmed send. Returns {parsed toStore}: `parsed` is every
-    # verdict (so callers can reason about the true archive span when
-    # placing/sweeping holes) and `toStore` the new message dicts to
-    # persist in one store call.
-    method IngestMamBatch {chatJid mamResult} {
-        set parsed {}
-        set toStore {}
-        foreach resultNode [dict get $mamResult messages] {
-            set r [$self ParseResultNode $resultNode $chatJid]
-            lappend parsed $r
-            if {[$self ApplyPatchVerdict $chatJid $r]} continue
-            switch [dict get $r verdict] {
-                confirmed {
-                    $self HandleConfirmation $chatJid \
-                        [list [dict get $r reconciled]]
-                }
-                new { lappend toStore [dict get $r msg] }
-            }
-        }
-        return [list $parsed $toStore]
     }
 
     # MAM preamble: pull the envelope (archive id, server stamp, ids) off one
@@ -3035,8 +3190,8 @@ snit::type taco_message {
         set reaction [$self ParseReaction $chatJid $msgNode]
         if {$reaction ne ""} {
             # `timestamp` keeps the reaction verdict uniform with the
-            # others so the MAM parsed-list consumers (SweepFetchedRange /
-            # PlaceFarEdgeHole) can span it; it's also the LWW ts, on $clock.
+            # others so a MAM page's floor counts it (CatchupPage); it's
+            # also the LWW ts, on $clock.
             return [dict create verdict reaction timestamp $ts clock $clock \
                 {*}$reaction]
         }
@@ -3211,7 +3366,7 @@ snit::type taco_message {
                    (m.server_id = $targetId OR EXISTS (
                        SELECT 1 FROM message_alias a
                        WHERE a.chat_jid = m.chat_jid
-                         AND a.target_ts = m.timestamp
+                         AND a.target_id = m.id
                          AND a.kind = 'server' AND a.alias_id = $targetId))
                        AS by_server
             FROM chat_message m
@@ -3231,8 +3386,9 @@ snit::type taco_message {
                   SELECT timestamp FROM chat_message
                   WHERE chat_jid=$chatJid AND own_id != '' AND own_id=$targetId
                   UNION ALL
-                  SELECT target_ts FROM message_alias
-                  WHERE chat_jid=$chatJid AND alias_id=$targetId)
+                  SELECT t.timestamp FROM message_alias a
+                  JOIN chat_message t ON t.id=a.target_id
+                  WHERE a.chat_jid=$chatJid AND a.alias_id=$targetId)
             ORDER BY m.timestamp
         } row {
             lappend out [dict create ts $row(ts) occ $row(occ) \

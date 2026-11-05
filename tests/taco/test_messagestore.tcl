@@ -520,7 +520,7 @@ test messagestore-pending-confirm-no-bulk-update {confirming one pending does no
         list $sid2 $status2
     } -result {{} pending}
 
-test messagestore-pending-confirm-reorders {confirmed pending moves to its new sorted slot} \
+test messagestore-pending-confirm-keeps-place {a confirmed send keeps its place when the server stamps it later} \
     {*}$ms_common \
     -body {
         ms_batch [list \
@@ -537,13 +537,13 @@ test messagestore-pending-confirm-reorders {confirmed pending moves to its new s
         # Server confirms X at timestamp 400 (between B and C)
         store reconcile alice@example.com srv1 oid1 oid1 400
 
-        # After confirmation: order should be a, b, x, c
+        # After confirmation: still a, x, b, c - a row never moves
         set after [ms_msgs [store get latest alice@example.com]]
         set afterBodies {}
         foreach m $after { lappend afterBodies [dict get $m content body] }
 
         list $beforeBodies $afterBodies
-    } -result {{a x b c} {a b x c}}
+    } -result {{a x b c} {a x b c}}
 
 test messagestore-pending-confirm-visible {confirmed pending (status='') still shows up in get} \
     {*}$ms_common \
@@ -602,24 +602,23 @@ test messagestore-hole-add-different-gaps {holes in different gaps both stored} 
         llength [store hole list alice@example.com]
     } -result {2}
 
-test messagestore-hole-add-adjacent-citizens-no-room \
-    {no hole is placed between citizens a microsecond apart} \
+test messagestore-hole-add-adjacent-citizens \
+    {a hole goes between two rows however close their stamps} \
     {*}$ms_common \
     -body {
-        # One store batch packs colliding stamps onto consecutive
-        # microseconds, so 100 and 101 are contiguous by construction and the
-        # gap below 101 has nowhere to put a marker.
+        # Stamps a microsecond apart left no free stamp between them; places
+        # always have room.
         ms_batch [list \
             [ms_msg timestamp 50 server_id s0 body a] \
             [ms_msg timestamp 100 server_id s1 body b] \
             [ms_msg timestamp 101 server_id s2 body c]]
         store hole add alice@example.com older 101
-        # Placing it anyway walks past 100 and lands at 99, bracketing the
-        # run at 50 that the batch already proved contiguous.
         list holes [llength [store hole list alice@example.com]] \
             below [llength [dict get [store get before alice@example.com 101] \
-                messages]]
-    } -result {holes 0 below 2}
+                messages]] \
+            bodies [lmap m [ms_msgs [store get before alice@example.com 100]] {
+                dict get $m content body}]
+    } -result {holes 1 below 0 bodies a}
 
 test messagestore-hole-add-skips-pending {pendings don't count as gap bounds; hole sits adjacent to citizen} \
     {*}$ms_common \
@@ -1797,6 +1796,19 @@ test messagestore-reconcile-backfills-occupant-id \
         dict get [lindex [ms_msgs [store get latest alice@example.com]] 0] occupant_id
     } -result {occ-me}
 
+test ms-ids-never-come-back {a row's id is not given to another after the row is gone} \
+    {*}$ms_common \
+    -body {
+        store store [list [ms_msg timestamp 100 server_id s1 body a]]
+        set first [testdb onecolumn {SELECT id FROM chat_message WHERE timestamp=100}]
+        store hole add alice@example.com newer 100
+        set holeId [testdb onecolumn {SELECT MAX(id) FROM chat_message}]
+        store hole clear alice@example.com "" ""
+        store store [list [ms_msg timestamp 200 server_id s2 body b]]
+        set next [testdb onecolumn {SELECT id FROM chat_message WHERE timestamp=200}]
+        expr {$next > $holeId && $holeId > $first}
+    } -result {1}
+
 # A pre-invite store with a relayed invite filed as a 1:1 chat with the room:
 # upgrading drops that chat and leaves real ones alone.
 test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phantoms} \
@@ -1807,15 +1819,16 @@ test ms-migrate-drops-room-phantoms {upgrading an old store removes invite phant
         testdb eval {PRAGMA user_version = 0}
         set inviteXml "<message from='room@muc.example.com'><x xmlns='http://jabber.org/protocol/muc#user'><invite from='alice@example.com/phone'/></x><body>hi</body></message>"
         testdb eval {
-            INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
+            INSERT INTO chat_message(pos, timestamp, chat_jid, from_jid, body,
                 server_id, own_id, raw_xml)
-            VALUES(10, 'room@muc.example.com', 'room@muc.example.com', 'hi',
-                   's1', '', $inviteXml),
-                  (20, 'alice@example.com', 'alice@example.com', 'hello',
+            VALUES('a0', 10, 'room@muc.example.com', 'room@muc.example.com',
+                   'hi', 's1', '', $inviteXml),
+                  ('a0', 20, 'alice@example.com', 'alice@example.com', 'hello',
                    's2', '', '<message/>');
-            INSERT INTO chat_message(timestamp, chat_jid, kind)
-            VALUES(11, 'room@muc.example.com', 'hole');
-            INSERT INTO chat_own_read VALUES('room@muc.example.com', 10, 's1');
+            INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
+            VALUES('a1', 11, 'room@muc.example.com', 'hole');
+            INSERT INTO chat_own_read(chat_jid, read_ts, read_id)
+            VALUES('room@muc.example.com', 10, 's1');
         }
     } \
     -body {
@@ -1841,9 +1854,9 @@ test ms-migrate-backfills-invite-room {upgrading fills invite_room from the invi
             DROP INDEX idx_chat_message_invite_room;
             ALTER TABLE chat_message DROP COLUMN invite_room;
             ALTER TABLE chat_message DROP COLUMN invite_declined;
-            INSERT INTO chat_message(timestamp, chat_jid, from_jid, body,
+            INSERT INTO chat_message(pos, timestamp, chat_jid, from_jid, body,
                 server_id, own_id, raw_xml, invite)
-            VALUES(10, 'room@muc.example.com?join', 'room@muc.example.com',
+            VALUES('a0', 10, 'room@muc.example.com?join', 'room@muc.example.com',
                    'hi', 's1', '', '',
                    'room room@muc.example.com inviter a@example.com reason {} password {}');
         }

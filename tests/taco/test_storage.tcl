@@ -648,8 +648,8 @@ proc storagetest_plant_chat_message {jidDbFile url} {
     taco_schema_migrate ::_storagetestmsgdb per-account
     set atts [list [dict create url $url type file name f size "" mime ""]]
     ::_storagetestmsgdb eval {
-        INSERT INTO chat_message(timestamp, chat_jid, attachments)
-        VALUES (1, 'peer@example.com', $atts)
+        INSERT INTO chat_message(pos, timestamp, chat_jid, attachments)
+        VALUES ('a0', 1, 'peer@example.com', $atts)
     }
     ::_storagetestmsgdb close
 }

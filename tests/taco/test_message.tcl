@@ -1832,7 +1832,7 @@ test message-send-marks-read \
         $::_client message messagestore unreadCount alice@example.com
     } -result 0
 
-test message-send-then-receive-earlier-ts {incoming with earlier timestamp inserts before sent} \
+test message-send-then-receive-earlier-ts {a live message stamped before our send still goes after it, in the order they came} \
     {*}$msg_common \
     -body {
         tacky message send -acc $acc -chat alice@example.com -body "outgoing"
@@ -1845,13 +1845,13 @@ test message-send-then-receive-earlier-ts {incoming with earlier timestamp inser
             j body -body "earlier"
             j delay -ns urn:xmpp:delay -from test.example.com -stamp $earlyStamp
         }]
-        # Both messages should be in DB
+        # Both messages should be in DB, in the order they came: the
+        # stamp is the sender's word, the arrival the server's order.
         set all [msg_store_latest alice@example.com]
-        # Chronological order: earlier first, then our sent
         list [llength $all] \
              [dict get [lindex $all 0] content body] \
              [dict get [lindex $all 1] content body]
-    } -result {2 earlier outgoing}
+    } -result {2 outgoing earlier}
 
 test message-get-latest-real-plus-pending {get latest returns real + pending interleaved} \
     {*}$msg_common \
@@ -2434,12 +2434,12 @@ test message-history-hole-initial-no-mam {bounded result on initial load (no cur
         expr {[llength $written2] == [llength $written1]}
     } -result {1}
 
-test message-history-mam-sweeps-bounding-hole {MAM response with overlap sweeps prior hole} \
+test message-history-mam-sweeps-bounding-hole {a page fetched past a hole goes in above it, and the hole stays below it} \
     {*}$msg_common \
     -body {
         msg_store [list \
             [msg_msg timestamp 100 server_id s1 body anchor]]
-        $::_client message messagestore hole add alice@example.com newer 100
+        $::_client message messagestore hole add alice@example.com older 100
         set sentBefore [llength [$::_client message messagestore hole list alice@example.com]]
         # Trigger -before pagination past the hole (should hit MAM)
         tacky message history -acc $acc -chat alice@example.com \
@@ -2464,10 +2464,12 @@ test message-history-mam-sweeps-bounding-hole {MAM response with overlap sweeps 
             }
         }]
         set sentAfter [llength [$::_client message messagestore hole list alice@example.com]]
-        # Sweep removed the cursor-side hole; placement added a new
-        # one at the far older edge. Net: still 1.
-        list $sentBefore $sentAfter
-    } -result {1 1}
+        # The page went in between the hole and the cursor, and the hole
+        # stays below it, where the archive goes on: still 1.
+        list $sentBefore $sentAfter [lmap m [dict get \
+            [$::_client message messagestore get before alice@example.com 100] \
+            messages] {dict get $m content body}]
+    } -result {1 1 older}
 
 test message-history-mam-complete-removes-bounding-hole {MAM complete=true on a bounded fetch clears the bounding hole} \
     {*}$msg_common \
@@ -3306,20 +3308,43 @@ test message-fill-cut-short-goes-on-where-it-stopped \
 
 # An archive that no longer knows the id below the hole: the fill asks from
 # that message's time instead.
-test message-fill-unknown-id-goes-by-time \
-    {item-not-found for the id below the hole retries from its stamp} \
+test message-fill-unknown-id-steps-back \
+    {item-not-found for the id below the hole retries after the one below that, then from the archive's start} \
     {*}$msg_common \
     -body {
         fill_seed
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_older \
+            body older timestamp [ParseTimestamp 2024-01-01T08:00:00Z]]]
         $::_client message QueueFill alice@example.com
-        set iq [msg_last_mam_iq]
-        $::_client iq feed [j iq -type error -id [dict get $iq attrs id] {
-            j error -type cancel {
-                j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
-            }
-        }]
+        set out [list [fill_query_of [msg_last_mam_iq]]]
+        # Not from a time: the stamp held for the message may be our clock's.
+        foreach _ {1 2} {
+            $::_client iq feed [j iq -type error \
+                -id [dict get [msg_last_mam_iq] attrs id] {
+                j error -type cancel {
+                    j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
+                }
+            }]
+            lappend out [fill_query_of [msg_last_mam_iq]]
+        }
+        set out
+    } -result {{alice@example.com s_lo {}} {alice@example.com s_older {}} {alice@example.com {} {}}}
+
+# Unread OMEMO messages above the gap, and a hole above them too (one the
+# catchup left above the chat's last message): the fill takes the gap below
+# the first unread one, where their chain goes on from.
+test message-fill-takes-the-gap-below-the-undecrypted \
+    {with holes above and below undecrypted messages, a fill starts below them} \
+    {*}$msg_common \
+    -body {
+        fill_seed
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_u \
+            body "" undecrypted 1 timestamp [ParseTimestamp 2024-01-01T13:00:00Z]]]
+        $::_client message messagestore hole add alice@example.com newer \
+            [ParseTimestamp 2024-01-01T13:00:00Z]
+        $::_client message QueueFill alice@example.com
         fill_query_of [msg_last_mam_iq]
-    } -result {alice@example.com {} 2024-01-01T09:00:00.000001Z}
+    } -result {alice@example.com s_lo {}}
 
 # A contact whose device's skipped keys we hold gets their chat filled once
 # the account catchup settles.
@@ -3523,7 +3548,7 @@ test message-room-archive-our-nick-is-not-us \
             }
         }]
         $::_client message CatchupPage [dict create complete 1 messages [list $rn]] \
-            room@muc.example.com?join
+            room@muc.example.com?join {dir down}
         lmap m [msg_store_latest room@muc.example.com?join] {
             list [dict get $m content body] [dict get $m own_id]
         }
@@ -4974,8 +4999,8 @@ test message-reaction-from-mam {a reaction arriving via MAM catchup aggregates o
         dict get [lindex [msg_store_latest alice@example.com] 0] reactions
     } -result {👍 {reactors alice@example.com mine 0}}
 
-test message-reaction-mam-parsed-has-timestamp \
-    {a reaction in a scroll-back MAM page carries a timestamp so hole-sweep can span it} \
+test message-reaction-mam-bounds-the-page \
+    {a reaction in a scroll-back MAM page counts toward the page's floor} \
     {*}$msg_common -body {
         tacky message send -acc $acc -chat alice@example.com -body "hi"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
@@ -4989,12 +5014,13 @@ test message-reaction-mam-parsed-has-timestamp \
                 }
             }
         }]
-        lassign [$::_client message IngestMamBatch alice@example.com \
-            [dict create messages [list $rn]]] parsed toStore
-        # SweepFetchedRange / PlaceFarEdgeHole lmap `dict get $m timestamp`
-        # over parsed; a reaction disp lacking the key would throw here.
-        list [llength [lmap m $parsed {dict get $m timestamp}]] [llength $toStore]
-    } -result {1 0}
+        set page [$::_client message CatchupPage \
+            [dict create messages [list $rn] complete 1] alice@example.com \
+            {dir none tail 0}]
+        list [expr {[dict get $page floor]
+                    == [ParseTimestamp 2024-01-02T00:00:00Z]}] \
+            [dict get $page counts]
+    } -result {1 {}}
 
 # Our clock ahead of the server's: what we do here is stamped later than
 # what the archive says another device of ours did after it.
@@ -5181,12 +5207,13 @@ test message-mam-retract-same-page {a retraction in the same MAM page as its tar
                 }
             }
         }]
-        lassign [$::_client message IngestMamBatch alice@example.com \
-            [dict create messages [list $orig $edit $retract]]] parsed toStore
-        msg_store $toStore
+        set page [$::_client message CatchupPage \
+            [dict create messages [list $orig $edit $retract] complete 1] \
+            alice@example.com {dir none tail 0}]
         set rows [msg_store_latest alice@example.com]
-        list [llength $toStore] [llength $rows] [dict get [lindex $rows 0] retracted]
-    } -result {1 1 1}
+        list [dict get $page counts] [llength $rows] \
+            [dict get [lindex $rows 0] retracted]
+    } -result {{alice@example.com 1} 1 1}
 
 # Feed an incoming message the decrypt path's way: `decrypted` and `sender_fp`
 # ride the node dict, not the XML.

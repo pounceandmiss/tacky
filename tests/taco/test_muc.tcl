@@ -2074,12 +2074,11 @@ test muc-mam-own-by-occupant-id {our message in the room archive is ours by occu
         muc_join room@muc.example.com me -occupant occ-me
         c message send -chat room@muc.example.com?join -body mine
         set oid [dict get [lindex [muc_msgs] end] own_id]
-        lassign [c message IngestMamBatch room@muc.example.com?join \
-            [dict create messages [list \
+        c message CatchupPage [dict create complete 1 messages [list \
                 [muc_archived srv1 $oid occ-me mine] \
                 [muc_archived srv2 other-device occ-me "from my phone"] \
-                [muc_archived srv3 someone occ-other "not mine"]]]] parsed toStore
-        c message messagestore store $toStore
+                [muc_archived srv3 someone occ-other "not mine"]]] \
+            room@muc.example.com?join {dir none tail 0}
         lmap m [muc_msgs] {
             list [dict get $m content body] [dict get $m is_outgoing] \
                 [dict get $m server_status]
@@ -2263,13 +2262,11 @@ test muc-chained-correction-deferred \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
-        lassign [c message IngestMamBatch room@muc.example.com?join \
-            [dict create messages [list \
+        c message CatchupPage [dict create complete 1 messages [list \
                 [muc_archived_from srvC2 2024-01-01T00:00:03Z alice occ-a oC2 v3 oC1] \
                 [muc_archived_from srvC1 2024-01-01T00:00:02Z alice occ-a oC1 v2 oA] \
-                [muc_archived_from srvA 2024-01-01T00:00:01Z alice occ-a oA v1]]]] \
-            parsed toStore
-        c message messagestore store $toStore
+                [muc_archived_from srvA 2024-01-01T00:00:01Z alice occ-a oA v1]]] \
+            room@muc.example.com?join {dir none tail 0}
         lmap m [muc_msgs] { dict get $m content body }
     } -result {v3}
 
@@ -2354,10 +2351,11 @@ test muc-mam-tombstone-retracts-cached {an archive tombstone retracts the copy w
                 j body -body "spam $id"
             }]
         }
-        lassign [c message IngestMamBatch room@muc.example.com?join \
-            [dict create messages [list [muc_tombstone srv1 v1] \
-                                        [muc_tombstone srv2 v0]]]] parsed toStore
-        list [llength $toStore] [lmap m [muc_msgs] {dict get $m retracted}]
+        set page [c message CatchupPage [dict create complete 1 \
+            messages [list [muc_tombstone srv1 v1] [muc_tombstone srv2 v0]]] \
+            room@muc.example.com?join {dir none tail 0}]
+        list [dict size [dict get $page counts]] \
+            [lmap m [muc_msgs] {dict get $m retracted}]
     } -result {0 {1 1}}
 
 test muc-occupant-retract-other-ignored \

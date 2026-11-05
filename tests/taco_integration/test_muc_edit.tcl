@@ -297,8 +297,9 @@ namespace eval ::test::muc_edit_int {
             # The room's echo moved Juliet's row to its own time.
             set jts [dict get [rowOfBody $JULIET "hello"] timestamp]
             set corrSid [[tacky client $JULIET] db onecolumn {
-                SELECT alias_id FROM message_alias
-                WHERE chat_jid=$CHAT AND kind='server' AND target_ts=$jts
+                SELECT a.alias_id FROM message_alias a
+                JOIN chat_message m ON m.id=a.target_id
+                WHERE a.chat_jid=$CHAT AND a.kind='server' AND m.timestamp=$jts
             }]
             if {$corrSid eq ""} { error "no stanza-id recorded for the correction" }
 

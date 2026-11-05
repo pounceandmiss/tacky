@@ -133,8 +133,8 @@ test schema-per-account-upgrade {a <jid>.db from before migrations reaches the f
             DROP TABLE caps_cache;
             CREATE TABLE caps_cache(ver TEXT PRIMARY KEY, features TEXT);
             INSERT INTO caps_cache VALUES('v1', 'urn:x');
-            INSERT INTO chat_message(timestamp, chat_jid, from_jid, body)
-                VALUES(10, 'alice@example.com', 'alice@example.com', 'hello');
+            INSERT INTO chat_message(pos, timestamp, chat_jid, from_jid, body)
+                VALUES('a0', 10, 'alice@example.com', 'alice@example.com', 'hello');
             PRAGMA user_version = 0;
         }
     } -cleanup {
@@ -145,7 +145,60 @@ test schema-per-account-upgrade {a <jid>.db from before migrations reaches the f
              [::_db eval {SELECT body FROM chat_message}] \
              [::_db eval {SELECT count(*) FROM caps_cache}] \
              [expr {[schema_shape ::_db] eq [schema_fresh_shape per-account]}]
-    } -result {9 hello 0 1}
+    } -result {10 hello 0 1}
+
+# Step 10 rebuilds chat_message around an id and a pos: a store from step 9
+# keeps every row under its old rowid, in the order its timestamps gave,
+# with its aliases, read mark and search index still pointing right.
+test schema-per-account-pos {a store from before pos keeps its rows, order, aliases, read mark and search} \
+    -setup {
+        set dir [file tempdir tacky-schema-test]
+        foreach f [glob [file join $::taco_schema::dir per-account *]] {
+            if {[regexp {^0*(\d+)-} [file tail $f] -> n] && $n < 10} {
+                file copy $f $dir
+            }
+        }
+        sqlite3 ::_db :memory:
+        taco_schema_migrate ::_db per-account -dir $dir
+        ::_db eval {
+            INSERT INTO chat_message(timestamp, chat_jid, body, server_id)
+            VALUES(300, 'a@x', 'third apple', 's3'),
+                  (100, 'a@x', 'first banana', 's1'),
+                  (200, 'b@x', 'other cherry', 's9'),
+                  (200, 'a@x', 'second damson', 's2');
+            INSERT INTO chat_message(timestamp, chat_jid, kind)
+            VALUES(150, 'a@x', 'hole');
+            INSERT INTO message_alias VALUES('a@x', 'server', 'corr-1', 200);
+            INSERT INTO chat_own_read(chat_jid, read_ts, read_id)
+            VALUES('a@x', 200, 's2');
+        }
+    } -cleanup {
+        ::_db close
+        file delete -force $dir
+    } -body {
+        set before [::_db eval {
+            SELECT rowid, chat_jid, timestamp FROM chat_message ORDER BY rowid}]
+        taco_schema_migrate ::_db per-account
+        set after [::_db eval {
+            SELECT id, chat_jid, timestamp FROM chat_message ORDER BY id}]
+        set byPos [::_db eval {
+            SELECT timestamp FROM chat_message WHERE chat_jid='a@x' ORDER BY pos}]
+        ::_db eval {DELETE FROM chat_message WHERE server_id='s1'}
+        ::_db eval {INSERT INTO chat_message(pos, timestamp, chat_jid, body)
+                    VALUES('zz', 400, 'a@x', 'fourth elder')}
+        list [::_db onecolumn {PRAGMA user_version}] \
+             [expr {$before eq $after}] $byPos \
+             [::_db eval {SELECT m.body FROM message_alias a
+                          JOIN chat_message m ON m.id=a.target_id}] \
+             [::_db eval {SELECT m.body FROM chat_own_read r
+                          JOIN chat_message m ON m.chat_jid=r.chat_jid
+                           AND m.pos=r.read_pos}] \
+             [lmap w {apple banana elder} {
+                  ::_db onecolumn {SELECT m.body FROM msg_fts f
+                              JOIN chat_message m ON m.id=f.rowid
+                              WHERE msg_fts MATCH $w}}] \
+             [expr {[schema_shape ::_db] eq [schema_fresh_shape per-account]}]
+    } -result {10 1 {100 150 200 300} {{second damson}} {{second damson}} {{third apple} {} {fourth elder}} 1}
 
 test schema-step-kinds {.sql and .tcl steps run in number order} \
     -setup {

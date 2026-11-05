@@ -439,8 +439,8 @@ test chatlist-last-message-skips-hole {a tail hole is not a message and never pr
     -body {
         chatlist_chat_insert alice@example.com timestamp 100 body real
         c db eval {
-            INSERT INTO chat_message(timestamp, chat_jid, kind)
-            VALUES (101, 'alice@example.com', 'hole')
+            INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
+            VALUES ('zz', 101, 'alice@example.com', 'hole')
         }
         set e [lindex [c chatlist get] 0]
         list [dict get $e last_activity] \

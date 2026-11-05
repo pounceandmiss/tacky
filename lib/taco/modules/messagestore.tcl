@@ -48,10 +48,20 @@
 #
 # A hole marks "unfetched history may exist here" - e.g. we page back from the
 # newest message and stop at a threshold, leaving a gap below.
-#   place:   `hole add $jid $direction $anchorTs`
-#   remove:  `hole remove` (RSM-complete), `hole removeBetween` (post-MAM
-#            sweep), or implicitly when `store` proves overlap with cache.
-# Older/newer sense is positional, from where the hole's timestamp falls.
+#   place:   `hole addAfter`/`addBefore $jid $pos` beside a row, `hole
+#            append $jid` at a chat's end
+#   remove:  `hole removeGap` (RSM-complete), `hole clearProven` (what a
+#            MAM page proves contiguous), `hole drop` (one hole)
+# A hole sits at a pos like any row: older/newer is where it sits among them.
+#
+# === Order ===
+#
+# Rows sort by pos (see poskey), the order the archive holds them in, which
+# is not their timestamps': a live message carries our clock, an archived one
+# the server's. A live message goes after the chat's last row; a page from
+# the archive goes in the gap it was fetched for, between the rows either
+# side of it (message.tcl decides which, StorePage). A row never moves once
+# placed.
 #
 # === Pagination ===
 #
@@ -77,7 +87,7 @@ snit::type taco_messagestore {
 
     # Columns every message read path returns, in one place so a new column
     # reaches all of them. Spliced in for the @cols@ placeholder by MsgSql.
-    typevariable MsgCols {timestamp, chat_jid, from_jid, from_resource, body,
+    typevariable MsgCols {id, pos, timestamp, chat_jid, from_jid, from_resource, body,
                           server_id, own_id, occupant_id, edited_ts, retracted,
                           reply_id, reply_to, server_status, remote_status,
                           encryption, sender_fp, fail_reason, attachments,
@@ -96,6 +106,15 @@ snit::type taco_messagestore {
 
     method MsgSql {sql} {
         return [string map [list @cols@ $MsgCols] $sql]
+    }
+
+    # SQL bounding $col by the caller's variable $var with $op, or nothing
+    # when that is "" (an open end). Spelled out rather than `($v = '' OR
+    # ...)`, which keeps SQLite off the index.
+    proc Bound {col op var} {
+        upvar 1 $var v
+        if {$v eq ""} { return "" }
+        return " AND $col $op \$$var"
     }
 
     # --- Group call invites -------------------------------------------
@@ -140,7 +159,7 @@ snit::type taco_messagestore {
         $options(-db) eval {
             SELECT timestamp, call_room FROM chat_message
             WHERE chat_jid=$jid AND call_room != '' AND kind='message'
-            ORDER BY timestamp DESC LIMIT 1
+            ORDER BY pos DESC LIMIT 1
         } r {
             set found [list $r(timestamp) $r(call_room)]
         }
@@ -229,50 +248,123 @@ snit::type taco_messagestore {
 
     # --- Holes ------------------------------------------------------
 
-    # Insert a hole in the gap immediately $direction of $anchorTs.
-    # direction is `older` | `newer`. Enforces at-most-one-per-gap: if a
-    # hole already lies between $anchorTs and the next citizen in
-    # $direction (treating "no citizen on that side" as +/-inf), this is a
-    # no-op. Synthetic ts derived via BumpTs one step off the anchor.
-    method "hole add" {jid direction anchorTs} {
-        lassign [$self GapBounds $jid $direction $anchorTs] lo hi
-        set exists [$options(-db) onecolumn {
-            SELECT 1 FROM chat_message
-            WHERE chat_jid=$jid AND kind='hole'
-              AND timestamp > $lo AND timestamp < $hi
-            LIMIT 1
-        }]
-        if {$exists ne ""} return
-        set step [expr {$direction eq "older" ? -1 : 1}]
-        set ts [$self BumpTs $jid [expr {$anchorTs + $step}] $step]
-        # BumpTs walks until it finds a free microsecond, which can carry it
-        # out of the gap entirely when the neighbouring one is taken - and
-        # `store` packs colliding stamps into consecutive microseconds, so
-        # that happens. Landing outside would mark a gap that isn't there and
-        # leave the one we meant unmarked. Nowhere to land means the two
-        # citizens came out of one contiguous batch, so there is no gap.
-        if {$ts <= $lo || $ts >= $hi} return
-        $options(-db) eval {
-            INSERT INTO chat_message(timestamp, chat_jid, kind)
-            VALUES($ts, $jid, 'hole')
-        }
-        return $ts
+    # A hole right after the row at $pos (the gap on its newer side), unless
+    # one already marks that gap (at most one between two citizens). The
+    # new hole's pos, or "" when none was needed.
+    method "hole addAfter" {jid pos} {
+        lassign [$self GapBounds $jid newer $pos] lo hi
+        if {[$self HoleIn $jid $lo $hi]} return
+        set next [$self PosNext $jid $pos]
+        $self InsertHole $jid [poskey between $pos $next] [$self TsAt $jid $pos] 1
     }
 
-    # Remove any hole(s) in the gap immediately $direction of
-    # $anchorTs. Invariant says at most one; defensive plural costs the
-    # same as a range delete.
+    # A hole right before the row at $pos (the gap on its older side).
+    method "hole addBefore" {jid pos} {
+        lassign [$self GapBounds $jid older $pos] lo hi
+        if {[$self HoleIn $jid $lo $hi]} return
+        set prev [$self PosPrev $jid $pos]
+        $self InsertHole $jid [poskey between $prev $pos] [$self TsAt $jid $pos] -1
+    }
+
+    # A hole after a chat's last row, unless that is one: whatever the
+    # archive took in since. Its pos, or "" when none was added.
+    method "hole append" {jid} {
+        set last ""
+        $options(-db) eval {
+            SELECT pos, kind, timestamp FROM chat_message
+            WHERE chat_jid=$jid ORDER BY pos DESC LIMIT 1
+        } row {
+            set last [list $row(pos) $row(kind) $row(timestamp)]
+        }
+        if {$last eq "" || [lindex $last 1] eq "hole"} return
+        $self InsertHole $jid [poskey between [lindex $last 0] ""] \
+            [lindex $last 2] 1
+    }
+
+    # Tests-only: by the timestamp of the row it goes beside, `newer` after
+    # it, `older` before it. An anchor no row holds is placed by time.
+    method "hole add" {jid direction anchorTs} {
+        set pos [$self PosOfTs $jid $anchorTs]
+        if {$pos eq ""} {
+            set pos [$self PosForTs $jid $anchorTs]
+            set ts [$self BumpTs $jid $anchorTs 1]
+            lassign [$self GapBounds $jid $direction $pos] lo hi
+            if {[$self HoleIn $jid $lo $hi]} return
+            $options(-db) eval {
+                INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
+                VALUES($pos, $ts, $jid, 'hole')
+            }
+            return $ts
+        }
+        switch -- $direction {
+            newer { set holePos [$self hole addAfter $jid $pos] }
+            older { set holePos [$self hole addBefore $jid $pos] }
+            default { error "direction must be older or newer, got: $direction" }
+        }
+        if {$holePos eq ""} return
+        $self TsAt $jid $holePos
+    }
+
+    # Remove the hole(s) in the gap on the $direction side of the row at
+    # $pos. Invariant says at most one; defensive plural costs the same.
+    method "hole removeGap" {jid direction pos} {
+        lassign [$self GapBounds $jid $direction $pos] lo hi
+        $self hole clear $jid $lo $hi
+    }
+
+    # Tests-only: by the timestamp of the row the gap is beside.
     method "hole remove" {jid direction anchorTs} {
-        lassign [$self GapBounds $jid $direction $anchorTs] lo hi
+        set pos [$self PosOfTs $jid $anchorTs]
+        if {$pos eq ""} return
+        $self hole removeGap $jid $direction $pos
+    }
+
+    # Delete the holes a page proves false. $seq is the places of what the
+    # page held, in the archive's order (with the row it continues after
+    # first and the row it goes below last, when it has them): each pair next
+    # to each other there has nothing between them in the archive. A hole
+    # between such a pair goes, unless another citizen sits between them
+    # here - one the page did not hold, placed where it came in (an offline
+    # store's message), whose gap is its own. Sends of ours are no evidence
+    # either way: they sit where they were written (PlaceOf).
+    # $openTop: the page speaks for everything after its last row too.
+    method "hole clearProven" {jid seq openTop} {
+        foreach a [lrange $seq 0 end-1] b [lrange $seq 1 end] {
+            if {[string compare $a $b] >= 0} continue
+            if {[$options(-db) exists {
+                SELECT 1 FROM chat_message
+                WHERE chat_jid=$jid AND kind='message' AND server_id != ''
+                  AND COALESCE(own_id, '') = '' AND pos > $a AND pos < $b
+            }]} continue
+            $self hole clear $jid $a $b
+        }
+        set last [lindex $seq end]
+        if {$openTop && $last ne "" && ![$options(-db) exists {
+                SELECT 1 FROM chat_message
+                WHERE chat_jid=$jid AND kind='message' AND server_id != ''
+                  AND COALESCE(own_id, '') = '' AND pos > $last
+            }]} {
+            $self hole clear $jid $last ""
+        }
+    }
+
+    # Delete the hole at $pos.
+    method "hole drop" {jid pos} {
         $options(-db) eval {
             DELETE FROM chat_message
-            WHERE chat_jid=$jid AND kind='hole'
-              AND timestamp > $lo AND timestamp < $hi
+            WHERE chat_jid=$jid AND kind='hole' AND pos=$pos
         }
     }
 
-    # Internal: delete holes strictly between $loTs and $hiTs.
-    # Used by `store` overlap-proof and by post-MAM sweep in message.tcl.
+    # Delete the holes strictly between $lo and $hi ("" for an open end).
+    method "hole clear" {jid lo hi} {
+        $options(-db) eval "
+            DELETE FROM chat_message
+            WHERE chat_jid=\$jid AND kind='hole' [Bound pos > lo] [Bound pos < hi]
+        "
+    }
+
+    # Tests-only: delete the holes stamped strictly between $loTs and $hiTs.
     method "hole removeBetween" {jid loTs hiTs} {
         $options(-db) eval {
             DELETE FROM chat_message
@@ -281,62 +373,149 @@ snit::type taco_messagestore {
         }
     }
 
-    # Tests-only: ordered list of hole timestamps.
+    # Tests-only: the holes' timestamps, in the order they sit.
     method "hole list" {jid} {
-        set rows {}
         $options(-db) eval {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$jid AND kind='hole'
-            ORDER BY timestamp ASC
-        } row {
-            lappend rows $row(timestamp)
+            ORDER BY pos ASC
         }
-        return $rows
     }
 
-    # Bounds of the gap immediately $direction of $anchorTs, inclusive
-    # of $anchorTs on the anchor side. Returns {lo hi} with holes
-    # found via `timestamp > lo AND timestamp < hi`.
-    method GapBounds {jid direction anchorTs} {
+    # The pos of each hole in $jid, in order.
+    method "hole positions" {jid} {
+        $options(-db) eval {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND kind='hole' ORDER BY pos ASC
+        }
+    }
+
+    method HoleIn {jid lo hi} {
+        $options(-db) exists "
+            SELECT 1 FROM chat_message
+            WHERE chat_jid=\$jid AND kind='hole' [Bound pos > lo] [Bound pos < hi]
+        "
+    }
+
+    # A hole at $pos, stamped next to $nearTs ($step away) for display; its
+    # pos. Stamps stay unique per chat while lookups go by them.
+    method InsertHole {jid pos nearTs step} {
+        set ts [$self BumpTs $jid [expr {$nearTs + $step}] $step]
+        $options(-db) eval {
+            INSERT INTO chat_message(pos, timestamp, chat_jid, kind)
+            VALUES($pos, $ts, $jid, 'hole')
+        }
+        return $pos
+    }
+
+    # Bounds of the gap immediately $direction of the row at $pos, as {lo
+    # hi}: the nearest citizen's pos that way ("" for none) and $pos itself.
+    method GapBounds {jid direction pos} {
         switch -- $direction {
             older {
-                set bound [$options(-db) onecolumn {
-                    SELECT MAX(timestamp) FROM chat_message
+                set lo [$options(-db) onecolumn {
+                    SELECT MAX(pos) FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND server_id IS NOT NULL AND server_id != ''
-                      AND timestamp < $anchorTs
+                      AND pos < $pos
                 }]
-                set lo [expr {$bound eq "" ? -9223372036854775807 : $bound}]
-                set hi $anchorTs
+                return [list $lo $pos]
             }
             newer {
-                set bound [$options(-db) onecolumn {
-                    SELECT MIN(timestamp) FROM chat_message
+                set hi [$options(-db) onecolumn {
+                    SELECT MIN(pos) FROM chat_message
                     WHERE chat_jid=$jid AND kind='message'
                       AND server_id IS NOT NULL AND server_id != ''
-                      AND timestamp > $anchorTs
+                      AND pos > $pos
                 }]
-                set lo $anchorTs
-                set hi [expr {$bound eq "" ? 9223372036854775807 : $bound}]
+                return [list $pos $hi]
             }
             default {
                 error "direction must be older or newer, got: $direction"
             }
         }
-        return [list $lo $hi]
+    }
+
+    # --- Places ---------------------------------------------------------
+
+    # The pos of the row after/before $pos in $jid, of any kind; "" at
+    # the end. With $pos "", the first/last row.
+    method PosNext {jid pos} {
+        $options(-db) onecolumn "
+            SELECT MIN(pos) FROM chat_message
+            WHERE chat_jid=\$jid [Bound pos > pos]
+        "
+    }
+
+    method PosPrev {jid pos} {
+        $options(-db) onecolumn "
+            SELECT MAX(pos) FROM chat_message
+            WHERE chat_jid=\$jid [Bound pos < pos]
+        "
+    }
+
+    # The pos of the message stamped $ts when it can stand for where the
+    # archive has it: "" for a send of ours, which sits where it was written
+    # however much later the archive took it in.
+    method PlaceOfTs {jid ts} {
+        $options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+              AND COALESCE(own_id, '') = ''
+        }
+    }
+
+    # The pos of the message stamped $ts, "" when none is.
+    method PosOfTs {jid ts} {
+        $options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND timestamp=$ts AND kind='message'
+        }
+    }
+
+    method TsAt {jid pos} {
+        $options(-db) onecolumn {
+            SELECT timestamp FROM chat_message WHERE chat_jid=$jid AND pos=$pos
+        }
+    }
+
+    # Where a timestamp cursor falls, for paging by it: the row stamped
+    # $ts, else the nearest one on the far side ($side before: the oldest
+    # stamped after it, so the rows before that are the ones before $ts;
+    # after: the newest stamped before it). "" when there is none, which
+    # is the open end.
+    method CursorPos {jid ts side} {
+        set pos [$self PosOfTs $jid $ts]
+        if {$pos ne ""} { return $pos }
+        if {$side eq "before"} {
+            return [$options(-db) onecolumn {
+                SELECT pos FROM chat_message
+                WHERE chat_jid=$jid AND timestamp > $ts
+                ORDER BY timestamp ASC LIMIT 1
+            }]
+        }
+        $options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND timestamp < $ts
+            ORDER BY timestamp DESC LIMIT 1
+        }
     }
 
     # --- Store ----------------------------------------------------------
 
     # Insert messages, skipping any already stored (by server_id/own_id, or
     # content for id-less ones), e.g. one repeated within a MAM page.
-    # Confirming our own sends is `reconcile`'s job. Returns dict with
-    # `inserted` (list of stored timestamps).
-    method store {messages} {
+    # Confirming our own sends is `reconcile`'s job. Where each goes: its
+    # `pos` when it has one, else by $placement: `append` after the chat's
+    # last row (a live message), `ts` among the rows by timestamp (one with
+    # nothing better to go by). Returns dict with `inserted` (list of stored
+    # timestamps) and `positions` (their pos).
+    method store {messages {placement ts}} {
         if {[llength $messages] == 0} { return {} }
 
         set jid [dict get [lindex $messages 0] chat_jid]
         set insertedTimestamps {}
+        set positions {}
         set deferred {}
         set prevTs -1
 
@@ -349,6 +528,13 @@ snit::type taco_messagestore {
                 set ts $m(timestamp)
                 if {$ts <= $prevTs} { set ts [expr {$prevTs + 1}] }
                 set ts [$self BumpTs $jid $ts 1]
+                if {[info exists m(pos)] && $m(pos) ne ""} {
+                    set pos $m(pos)
+                } elseif {$placement eq "append"} {
+                    set pos [poskey between [$self PosPrev $jid ""] ""]
+                } else {
+                    set pos [$self PosForTs $jid $ts]
+                }
 
                 set status [expr {[info exists m(server_status)] \
                     ? $m(server_status) : ""}]
@@ -383,13 +569,13 @@ snit::type taco_messagestore {
                 set undecrypted [expr {[info exists m(undecrypted)] \
                     ? $m(undecrypted) : 0}]
                 $options(-db) eval {
-                    INSERT INTO chat_message(timestamp, chat_jid, from_jid,
+                    INSERT INTO chat_message(pos, timestamp, chat_jid, from_jid,
                         from_resource, body, server_id, own_id, origin_id,
                         occupant_id, reply_id, reply_to, raw_xml, server_status,
                         encryption, sender_fp, fail_reason, mentions_me,
                         attachments, invite, invite_room, call, call_room,
                         call_id, call_state, undecrypted)
-                    VALUES($ts, $jid, $m(from_jid), $fromRes, $m(body),
+                    VALUES($pos, $ts, $jid, $m(from_jid), $fromRes, $m(body),
                         $m(server_id), $m(own_id), $originId,
                         $occId, $replyId, $replyTo, $m(raw_xml), $status, $enc,
                         $senderFp, $failReason, $mention, $attach, $invite,
@@ -400,6 +586,7 @@ snit::type taco_messagestore {
                 }
                 set prevTs $ts
                 lappend insertedTimestamps $ts
+                lappend positions $pos
                 lappend deferred {*}[$self TakeDeferred $jid \
                     [list $m(server_id) $m(own_id) $originId]]
             }
@@ -407,7 +594,7 @@ snit::type taco_messagestore {
         if {[llength $deferred] && $options(-deferredcmd) ne ""} {
             {*}$options(-deferredcmd) $jid $deferred
         }
-        return [dict create inserted $insertedTimestamps]
+        return [dict create inserted $insertedTimestamps positions $positions]
     }
 
     # --- Deferred corrections/retractions -------------------------------
@@ -450,80 +637,58 @@ snit::type taco_messagestore {
 
     # --- Get ------------------------------------------------------------
 
-    # Messages older than cursor. Truncates at the nearest older
-    # hole (cannot cross a gap). Returns {messages $list bounded $b}
-    # where bounded=1 iff a hole exists older than cursor and we
+    # Messages older than cursor (a timestamp; see CursorPos). Truncates at
+    # the nearest older hole (cannot cross a gap). Returns {messages $list
+    # bounded $b} where bounded=1 iff a hole exists older than cursor and we
     # didn't satisfy the limit (caller should fall through to MAM).
     method "get before" {jid cursor {limit 50}} {
-        set sentTs [$options(-db) onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='hole'
-              AND timestamp < $cursor
-        }]
+        $self GetBeforePos $jid [$self CursorPos $jid $cursor before] $limit
+    }
+
+    method GetBeforePos {jid cursor limit} {
+        set sentPos [$options(-db) onecolumn "
+            SELECT MAX(pos) FROM chat_message
+            WHERE chat_jid=\$jid AND kind='hole' [Bound pos < cursor]
+        "]
         set rows {}
-        if {$sentTs eq ""} {
-            $options(-db) eval [$self MsgSql {
-                SELECT * FROM (
-                    SELECT @cols@
-                    FROM chat_message
-                    WHERE chat_jid=$jid AND kind='message'
-                      AND timestamp < $cursor
-                    ORDER BY timestamp DESC
-                    LIMIT $limit
-                ) ORDER BY timestamp ASC
-            }] row {
-                lappend rows [$self RowToDict [array get row]]
-            }
-            return [dict create messages $rows bounded 0]
-        }
-        $options(-db) eval [$self MsgSql {
+        $options(-db) eval [$self MsgSql "
             SELECT * FROM (
                 SELECT @cols@
                 FROM chat_message
-                WHERE chat_jid=$jid AND kind='message'
-                  AND timestamp < $cursor AND timestamp > $sentTs
-                ORDER BY timestamp DESC
-                LIMIT $limit
-            ) ORDER BY timestamp ASC
-        }] row {
+                WHERE chat_jid=\$jid AND kind='message'
+                  [Bound pos < cursor] [Bound pos > sentPos]
+                ORDER BY pos DESC
+                LIMIT \$limit
+            ) ORDER BY pos ASC
+        "] row {
             lappend rows [$self RowToDict [array get row]]
         }
-        set bounded [expr {[llength $rows] < $limit}]
+        set bounded [expr {$sentPos ne "" && [llength $rows] < $limit}]
         return [dict create messages $rows bounded $bounded]
     }
 
     # Symmetric to `get before`. Truncates at the nearest newer hole.
     method "get after" {jid cursor {limit 50}} {
-        set sentTs [$options(-db) onecolumn {
-            SELECT MIN(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='hole'
-              AND timestamp > $cursor
-        }]
+        $self GetAfterPos $jid [$self CursorPos $jid $cursor after] $limit
+    }
+
+    method GetAfterPos {jid cursor limit} {
+        set sentPos [$options(-db) onecolumn "
+            SELECT MIN(pos) FROM chat_message
+            WHERE chat_jid=\$jid AND kind='hole' [Bound pos > cursor]
+        "]
         set rows {}
-        if {$sentTs eq ""} {
-            $options(-db) eval [$self MsgSql {
-                SELECT @cols@
-                FROM chat_message
-                WHERE chat_jid=$jid AND kind='message'
-                  AND timestamp > $cursor
-                ORDER BY timestamp ASC
-                LIMIT $limit
-            }] row {
-                lappend rows [$self RowToDict [array get row]]
-            }
-            return [dict create messages $rows bounded 0]
-        }
-        $options(-db) eval [$self MsgSql {
+        $options(-db) eval [$self MsgSql "
             SELECT @cols@
             FROM chat_message
-            WHERE chat_jid=$jid AND kind='message'
-              AND timestamp > $cursor AND timestamp < $sentTs
-            ORDER BY timestamp ASC
-            LIMIT $limit
-        }] row {
+            WHERE chat_jid=\$jid AND kind='message'
+              [Bound pos > cursor] [Bound pos < sentPos]
+            ORDER BY pos ASC
+            LIMIT \$limit
+        "] row {
             lappend rows [$self RowToDict [array get row]]
         }
-        set bounded [expr {[llength $rows] < $limit}]
+        set bounded [expr {$sentPos ne "" && [llength $rows] < $limit}]
         return [dict create messages $rows bounded $bounded]
     }
 
@@ -533,51 +698,35 @@ snit::type taco_messagestore {
     # the existing citizens are still the latest cluster — but it
     # does flip bounded=1 to signal more might arrive via MAM.
     method "get latest" {jid {limit 50}} {
-        set latestMsgTs [$options(-db) onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
+        set latestPos [$options(-db) onecolumn {
+            SELECT MAX(pos) FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
         }]
-        if {$latestMsgTs eq ""} {
+        if {$latestPos eq ""} {
             return [dict create messages {} bounded 0]
         }
-        # Truncation hole = latest hole strictly older than the
-        # latest message. A hole sitting newer than all messages
-        # never separates clusters, so it cannot truncate.
-        set truncTs [$options(-db) onecolumn {
-            SELECT MAX(timestamp) FROM chat_message
-            WHERE chat_jid=$jid AND kind='hole'
-              AND timestamp < $latestMsgTs
+        # Truncation hole = latest hole below the latest message. A hole
+        # sitting above all messages never separates clusters, so it
+        # cannot truncate.
+        set truncPos [$options(-db) onecolumn {
+            SELECT MAX(pos) FROM chat_message
+            WHERE chat_jid=$jid AND kind='hole' AND pos < $latestPos
         }]
         set anyHole [$options(-db) exists {
             SELECT 1 FROM chat_message
             WHERE chat_jid=$jid AND kind='hole'
         }]
         set rows {}
-        if {$truncTs eq ""} {
-            $options(-db) eval [$self MsgSql {
-                SELECT * FROM (
-                    SELECT @cols@
-                    FROM chat_message
-                    WHERE chat_jid=$jid AND kind='message'
-                    ORDER BY timestamp DESC
-                    LIMIT $limit
-                ) ORDER BY timestamp ASC
-            }] row {
-                lappend rows [$self RowToDict [array get row]]
-            }
-        } else {
-            $options(-db) eval [$self MsgSql {
-                SELECT * FROM (
-                    SELECT @cols@
-                    FROM chat_message
-                    WHERE chat_jid=$jid AND kind='message'
-                      AND timestamp > $truncTs
-                    ORDER BY timestamp DESC
-                    LIMIT $limit
-                ) ORDER BY timestamp ASC
-            }] row {
-                lappend rows [$self RowToDict [array get row]]
-            }
+        $options(-db) eval [$self MsgSql "
+            SELECT * FROM (
+                SELECT @cols@
+                FROM chat_message
+                WHERE chat_jid=\$jid AND kind='message' [Bound pos > truncPos]
+                ORDER BY pos DESC
+                LIMIT \$limit
+            ) ORDER BY pos ASC
+        "] row {
+            lappend rows [$self RowToDict [array get row]]
         }
         # bounded if any hole exists and we didn't satisfy the
         # limit — either a cluster-separating hole truncated us,
@@ -689,7 +838,7 @@ snit::type taco_messagestore {
         $options(-db) eval [$self MsgSql {
             SELECT @cols@ FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
-            ORDER BY timestamp DESC LIMIT 1
+            ORDER BY pos DESC LIMIT 1
         }] row {
             set result [$self RowToDict [array get row]]
         }
@@ -697,7 +846,7 @@ snit::type taco_messagestore {
     }
 
     # chat_jid -> newest message, for every chat with history.
-    # Chat by chat down the primary key (chat_jid, timestamp), each chat's
+    # Chat by chat down the (chat_jid, pos) index, each chat's
     # newest message read from its newest end: a GROUP BY over the table
     # read every row of the account, every page decrypted again on an
     # encrypted store, at every `chatlist get`.
@@ -713,7 +862,7 @@ snit::type taco_messagestore {
             SELECT @cols@ FROM chat_message WHERE rowid IN (
                 SELECT (SELECT rowid FROM chat_message
                         WHERE chat_jid=chats.jid AND kind='message'
-                        ORDER BY timestamp DESC LIMIT 1)
+                        ORDER BY pos DESC LIMIT 1)
                     FROM chats WHERE jid IS NOT NULL)
             ORDER BY chat_jid
         }] row {
@@ -761,9 +910,11 @@ snit::type taco_messagestore {
                 WHERE chat_jid=$jid AND kind='message'
                   AND own_id != '' AND own_id=$replyId
                 UNION ALL
-                SELECT target_ts FROM message_alias
-                WHERE chat_jid=$jid AND kind='origin' AND alias_id=$replyId)
-            ORDER BY timestamp
+                SELECT m.timestamp FROM message_alias a
+                JOIN chat_message m ON m.id=a.target_id
+                WHERE a.chat_jid=$jid AND a.kind='origin'
+                  AND a.alias_id=$replyId)
+            ORDER BY +pos
         } row {
             lappend candidates [list $row(timestamp) $row(from_jid)]
         }
@@ -872,7 +1023,7 @@ snit::type taco_messagestore {
     # 'read' is an XEP-0333 <displayed/>, which means all messages up to
     # this point, so it also covers earlier rows; 'delivered' is an
     # XEP-0184 receipt and covers only the row it names.
-    # Returns a timestamp-ordered list of {chat_jid, timestamp,
+    # Returns a list, in chat order, of {chat_jid, timestamp,
     # remote_status}, one per changed row, empty if nothing moved.
     method markRemoteStatus {chatJid targetId status} {
         if {$targetId eq ""} { return {} }
@@ -884,7 +1035,7 @@ snit::type taco_messagestore {
                 SELECT timestamp FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND own_id != '' AND own_id=$targetId
-                ORDER BY +timestamp LIMIT 1
+                ORDER BY +pos LIMIT 1
             }]
             if {$targetTs eq ""} {
                 set targetTs [$options(-db) onecolumn {
@@ -892,27 +1043,28 @@ snit::type taco_messagestore {
                     WHERE chat_jid=$chatJid AND kind='message'
                       AND origin_id != '' AND origin_id=$targetId
                       AND own_id != ''
-                    ORDER BY +timestamp LIMIT 1
+                    ORDER BY +pos LIMIT 1
                 }]
             }
             if {$targetTs eq ""} {
                 set targetTs [$self AliasTarget $chatJid origin $targetId]
             }
             if {$targetTs ne ""} {
-                set from [expr {$status eq "read" ? 0 : $targetTs}]
+                set targetPos [$self PosOfTs $chatJid $targetTs]
+                set from [expr {$status eq "read" ? "" : $targetPos}]
                 set rank [RemoteStatusRank $status]
                 # Collected first; updating mid-eval would edit the table
                 # being walked. A 'read' marker range-scans the chat back to
                 # its start every time; the != can't narrow that scan, it
                 # only keeps a repeat marker from re-UPDATEing every row.
                 set stale {}
-                $options(-db) eval {
+                $options(-db) eval "
                     SELECT timestamp, remote_status FROM chat_message
-                    WHERE chat_jid=$chatJid AND kind='message' AND own_id != ''
-                      AND timestamp BETWEEN $from AND $targetTs
-                      AND remote_status != $status
-                    ORDER BY timestamp
-                } row {
+                    WHERE chat_jid=\$chatJid AND kind='message' AND own_id != ''
+                      [Bound pos >= from] AND pos <= \$targetPos
+                      AND remote_status != \$status
+                    ORDER BY pos
+                " row {
                     if {$rank > [RemoteStatusRank $row(remote_status)]} {
                         lappend stale $row(timestamp)
                     }
@@ -944,27 +1096,35 @@ snit::type taco_messagestore {
         return $res
     }
 
-    # Advance the watermark to $ts, forward-only: an older-or-equal stamp
-    # (a replayed or out-of-order marker) is a no-op. read_id comes from
-    # the row at $ts. Returns 1 if it moved.
+    # Advance the watermark to the row at $ts, forward-only: one at or
+    # before the mark (a replayed or out-of-order marker) is a no-op.
+    # read_id comes from that row. Returns 1 if it moved.
     method markOwnRead {chatJid ts} {
         if {![string is entier -strict $ts] || $ts <= 0} { return 0 }
+        set at [$self PosOfTs $chatJid $ts]
+        if {$at eq ""} { return 0 }
         set moved 0
         $options(-db) transaction {
             set prev [$options(-db) onecolumn {
-                SELECT read_ts FROM chat_own_read WHERE chat_jid=$chatJid
+                SELECT read_pos FROM chat_own_read WHERE chat_jid=$chatJid
             }]
-            if {$prev eq "" || $ts > $prev} {
-                set refId [$options(-db) onecolumn {
+            if {$prev eq "" || [string compare $at $prev] > 0} {
+                set refId ""
+                set readPos ""
+                $options(-db) eval {
                     SELECT CASE WHEN COALESCE(server_id,'') != ''
                                 THEN server_id ELSE COALESCE(origin_id,'') END
+                           AS ref, pos
                     FROM chat_message
                     WHERE chat_jid=$chatJid AND timestamp=$ts
-                }]
+                } row {
+                    set refId $row(ref)
+                    set readPos $row(pos)
+                }
                 $options(-db) eval {
                     INSERT OR REPLACE INTO
-                        chat_own_read(chat_jid, read_ts, read_id)
-                    VALUES($chatJid, $ts, $refId)
+                        chat_own_read(chat_jid, read_ts, read_id, read_pos)
+                    VALUES($chatJid, $ts, $refId, $readPos)
                 }
                 set moved 1
             }
@@ -983,9 +1143,9 @@ snit::type taco_messagestore {
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
               AND timestamp > $floorTs
-              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
-                                        WHERE chat_jid=$chatJid), 0)
-            ORDER BY timestamp DESC LIMIT $limit
+              AND pos > COALESCE((SELECT read_pos FROM chat_own_read
+                                  WHERE chat_jid=$chatJid), '')
+            ORDER BY pos DESC LIMIT $limit
         } row {
             lappend rows [list $row(timestamp) $row(mentions_me) \
                 $row(from_jid) $row(body) $row(attachments)]
@@ -1003,8 +1163,8 @@ snit::type taco_messagestore {
             FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND COALESCE(own_id,'')='' AND retracted=0
-              AND timestamp > COALESCE((SELECT read_ts FROM chat_own_read
-                                        WHERE chat_jid=$chatJid), 0)
+              AND pos > COALESCE((SELECT read_pos FROM chat_own_read
+                                  WHERE chat_jid=$chatJid), '')
         } row {
             set tally [list unread $row(n) mentions $row(mentions)]
         }
@@ -1036,8 +1196,8 @@ snit::type taco_messagestore {
             WHERE c.jid IS NOT NULL AND m.chat_jid=c.jid
               AND m.kind='message' AND COALESCE(m.own_id,'')=''
               AND m.retracted=0
-              AND m.timestamp > COALESCE((SELECT read_ts FROM chat_own_read
-                                          WHERE chat_jid=c.jid), 0)
+              AND m.pos > COALESCE((SELECT read_pos FROM chat_own_read
+                                    WHERE chat_jid=c.jid), '')
             GROUP BY m.chat_jid
         } row {
             dict set tallies $row(jid) [list unread $row(n) \
@@ -1248,20 +1408,20 @@ snit::type taco_messagestore {
         # index's condition (`server_id != ''` and so on): SQLite takes a
         # partial index only for a query that states it, and a statement
         # OR-ing the ids, or asking `server_id=$x` alone, walked every row
-        # of the chat. `+timestamp`, not `timestamp`: ordered by the
-        # column, the planner walks the primary key for the order instead.
+        # of the chat. `+pos`, not `pos`: ordered by the column, the
+        # planner walks the (chat_jid, pos) index for the order instead.
         set ts [$db onecolumn {
             SELECT timestamp FROM chat_message
             WHERE chat_jid=$chatJid AND kind='message'
               AND server_id != '' AND server_id=$targetId
-            ORDER BY +timestamp LIMIT 1
+            ORDER BY +pos LIMIT 1
         }]
         if {$ts eq "" && !$room} {
             set ts [$db onecolumn {
                 SELECT timestamp FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND own_id != '' AND own_id=$targetId
-                ORDER BY +timestamp LIMIT 1
+                ORDER BY +pos LIMIT 1
             }]
         }
         if {$ts eq "" && !$room} {
@@ -1269,7 +1429,7 @@ snit::type taco_messagestore {
                 SELECT timestamp FROM chat_message
                 WHERE chat_jid=$chatJid AND kind='message'
                   AND origin_id != '' AND origin_id=$targetId
-                ORDER BY +timestamp LIMIT 1
+                ORDER BY +pos LIMIT 1
             }]
         }
         if {$ts eq ""} { set ts [$self AliasTarget $chatJid server $targetId] }
@@ -1288,8 +1448,9 @@ snit::type taco_messagestore {
     method AliasTarget {chatJid kind id} {
         if {$id eq ""} { return "" }
         return [$options(-db) onecolumn {
-            SELECT target_ts FROM message_alias
-            WHERE chat_jid=$chatJid AND kind=$kind AND alias_id=$id
+            SELECT m.timestamp FROM message_alias a
+            JOIN chat_message m ON m.id=a.target_id
+            WHERE a.chat_jid=$chatJid AND a.kind=$kind AND a.alias_id=$id
         }]
     }
 
@@ -1299,12 +1460,16 @@ snit::type taco_messagestore {
     method addAliases {chatJid targetTs serverId originId} {
         set deferred {}
         $options(-db) transaction {
+            set targetId [$options(-db) onecolumn {
+                SELECT id FROM chat_message
+                WHERE chat_jid=$chatJid AND timestamp=$targetTs
+            }]
             foreach kind {server origin} id [list $serverId $originId] {
-                if {$id eq ""} continue
+                if {$id eq "" || $targetId eq ""} continue
                 $options(-db) eval {
                     INSERT OR IGNORE INTO message_alias(chat_jid, kind,
-                        alias_id, target_ts)
-                    VALUES($chatJid, $kind, $id, $targetTs)
+                        alias_id, target_id)
+                    VALUES($chatJid, $kind, $id, $targetId)
                 }
             }
             set deferred [$self TakeDeferred $chatJid \
@@ -1391,7 +1556,7 @@ snit::type taco_messagestore {
                     AND m.own_id = r.target_id)
                 OR EXISTS (SELECT 1 FROM message_alias a
                     WHERE a.chat_jid = m.chat_jid
-                      AND a.target_ts = m.timestamp
+                      AND a.target_id = m.id
                       AND a.alias_id = r.target_id
                       AND (NOT $room OR a.kind = 'server')) )
             WHERE m.chat_jid = $chatJid AND m.timestamp = $ts
@@ -1432,7 +1597,7 @@ snit::type taco_messagestore {
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
               AND server_status IS NOT 'pending' AND undecrypted != 1
-            ORDER BY +timestamp LIMIT 1
+            ORDER BY +pos LIMIT 1
         }
     }
 
@@ -1474,25 +1639,26 @@ snit::type taco_messagestore {
         # resolveTargetTs).
         set row ""
         $options(-db) eval {
-            SELECT timestamp, server_status, server_id, undecrypted
+            SELECT timestamp, pos, server_status, server_id, undecrypted
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND server_id != '' AND server_id=$serverId
-            ORDER BY +timestamp LIMIT 1
+            ORDER BY +pos LIMIT 1
         } r {
-            set row [dict create timestamp $r(timestamp) \
+            set row [dict create timestamp $r(timestamp) pos $r(pos) \
                 server_status $r(server_status) server_id $r(server_id) \
                 undecrypted $r(undecrypted)]
         }
         $options(-db) eval {
-            SELECT timestamp, server_status, server_id, undecrypted
+            SELECT timestamp, pos, server_status, server_id, undecrypted
             FROM chat_message
             WHERE chat_jid=$jid AND kind='message'
               AND own_id != '' AND own_id=$ownId
-            ORDER BY +timestamp LIMIT 1
+            ORDER BY +pos LIMIT 1
         } r {
-            if {$row eq "" || $r(timestamp) < [dict get $row timestamp]} {
-                set row [dict create timestamp $r(timestamp) \
+            if {$row eq ""
+                    || [string compare $r(pos) [dict get $row pos]] < 0} {
+                set row [dict create timestamp $r(timestamp) pos $r(pos) \
                     server_status $r(server_status) server_id $r(server_id) \
                     undecrypted $r(undecrypted)]
             }
@@ -1518,6 +1684,7 @@ snit::type taco_messagestore {
         } else {
             set newTs [$self BumpTs $jid $timestamp 1]
         }
+        # The row keeps its place; only its stamp becomes the server's.
         $options(-db) eval {
             UPDATE chat_message
             SET timestamp=$newTs,
@@ -1526,9 +1693,7 @@ snit::type taco_messagestore {
                     THEN $serverId ELSE server_id END,
                 occupant_id = CASE WHEN $occupantId != ''
                     THEN $occupantId ELSE occupant_id END
-            WHERE chat_jid=$jid AND timestamp=$dupTs;
-            UPDATE message_alias SET target_ts=$newTs
-            WHERE chat_jid=$jid AND target_ts=$dupTs
+            WHERE chat_jid=$jid AND timestamp=$dupTs
         }
         return [dict create verdict confirmed chat_jid $jid \
             timestamp $dupTs newtimestamp $newTs]
@@ -1679,6 +1844,26 @@ snit::type taco_messagestore {
                   AND from_jid=$from AND body=$body
             }]
         }
+    }
+
+    # The pos for a row at $ts in $jid, by time, for one with nothing better
+    # to go by: right after the row stamped last before $ts, else right
+    # before the row stamped first after it.
+    method PosForTs {jid ts} {
+        set lo [$options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND timestamp < $ts
+            ORDER BY timestamp DESC LIMIT 1
+        }]
+        if {$lo ne ""} {
+            return [poskey between $lo [$self PosNext $jid $lo]]
+        }
+        set hi [$options(-db) onecolumn {
+            SELECT pos FROM chat_message
+            WHERE chat_jid=$jid AND timestamp > $ts
+            ORDER BY timestamp ASC LIMIT 1
+        }]
+        poskey between [$self PosPrev $jid $hi] $hi
     }
 
     method BumpTs {jid ts step} {
