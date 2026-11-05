@@ -1420,6 +1420,18 @@ snit::type taco_messagestore {
     #               for the <Confirmed>.
     #   duplicate - matched any other row; returns its `stored_ts`.
     #   new       - no id match.
+    # The timestamp of the row $jid holds under archive id $serverId, or ""
+    # when there is none. A pending row is left out: reconcile confirms it.
+    method archivedTs {jid serverId} {
+        $options(-db) onecolumn {
+            SELECT timestamp FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+              AND server_id != '' AND server_id=$serverId
+              AND server_status IS NOT 'pending'
+            ORDER BY +timestamp LIMIT 1
+        }
+    }
+
     method reconcile {jid serverId ownId originId timestamp {occupantId ""}} {
         if {$serverId eq "" && $ownId eq ""} {
             return [dict create verdict new]

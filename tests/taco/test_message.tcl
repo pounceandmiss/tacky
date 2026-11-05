@@ -1116,6 +1116,74 @@ test message-catchup-pages-settle-once \
         list cursor $cursor done $::_done
     } -result {cursor p1 done {alice@example.com 2}}
 
+# The walk stops at the first page that reaches a message stored before this
+# connection: below it everything was read already. A chat new on that page
+# gets no older-edge hole, since the archive is one timeline and contiguous
+# from that message up.
+test message-catchup-stops-at-history-we-had \
+    {a page holding a message stored before the catchup ends the walk without floor holes} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_old \
+            timestamp [ParseTimestamp 2024-01-01T09:00:00Z] body anchor]]
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s_old queryid $qid from alice@example.com/phone \
+                to $acc body anchor stamp 2024-01-01T09:00:00Z] \
+            [mam_result id s_bob queryid $qid from bob@example.com/phone \
+                to $acc body hi stamp 2024-01-01T10:00:00Z]] false
+        list queries [msg_mam_query_count] \
+            bob_holes [llength [$::_client message messagestore hole list bob@example.com]]
+    } -result {queries 1 bob_holes 0}
+
+# A message that came in during this connection (live, or from the server's
+# offline store at our presence) and then shows up on the page proves nothing
+# about what lies below it, so the walk goes on.
+test message-catchup-match-from-this-connection-walks-on \
+    {a page whose only known message was stored during this connection does not end the walk} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_live \
+            timestamp [ParseTimestamp 2024-01-01T09:00:00Z] body live]]
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s_live queryid $qid from alice@example.com/phone \
+                to $acc body live stamp 2024-01-01T09:00:00Z]] false
+        msg_mam_query_count
+    } -result 2
+
+# A send still pending from an earlier stream may have its archive copy below
+# the page that matched; the walk goes on until its floor is below the send,
+# so the copy confirms it rather than RetryPending failing it.
+test message-catchup-match-walks-past-a-pending-send \
+    {the walk goes past a matching page until it reaches a pending send's archive copy} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid bob@example.com body "landed" \
+            from_jid $acc own_id oid-below server_status pending encryption "" \
+            timestamp [ParseTimestamp 2024-01-01T08:00:00Z]]]
+        msg_store [list [msg_msg chat_jid alice@example.com server_id s_old \
+            timestamp [ParseTimestamp 2024-01-01T09:00:00Z] body anchor]]
+        msg_ready
+        set qid [xsearch [mam_catchup_iq] query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_catchup_finish [list \
+            [mam_result id s_old queryid $qid from alice@example.com/phone \
+                to $acc body anchor stamp 2024-01-01T09:00:00Z] \
+            [mam_result id s_new queryid $qid from alice@example.com/phone \
+                to $acc body new stamp 2024-01-01T10:00:00Z]] false
+        set afterFirst [msg_mam_query_count]
+        set cont [msg_last_mam_iq]
+        set qid2 [xsearch $cont query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $cont [list \
+            [mam_result id s_sent queryid $qid2 from $acc to bob@example.com \
+                origin_id oid-below body "landed" stamp 2024-01-01T08:00:00Z]] false
+        set r [msg_row "own_id='oid-below'"]
+        list queries $afterFirst [msg_mam_query_count] \
+            status [dict get $r server_status] reason [dict get $r fail_reason]
+    } -result {queries 2 2 status {} reason {}}
+
 # =============================================================================
 # Stranded sends: settle pending rows against the archive after catchup
 #
@@ -3122,6 +3190,32 @@ test message-muc-catchup-dedups-join-replay {a replayed message already stored i
                 from room@muc.example.com/alice type groupchat \
                 body "room msg" stamp 2024-01-01T10:00:00Z]]
         llength [msg_store_latest room@muc.example.com?join]
+    } -result {1}
+
+# A message retracted after it was archived comes back as a tombstone under
+# the archive id of the row we hold: it is no duplicate, and retracts the row.
+test message-muc-catchup-tombstone-under-stored-id {an archive tombstone under a stored message's id retracts it} \
+    {*}$msg_common \
+    -body {
+        msg_ready
+        msg_muc_join room@muc.example.com me
+        $::_client conn feed [j message -type groupchat \
+            -from room@muc.example.com/alice {
+            j body -body "soon gone"
+            j stanza-id -ns urn:xmpp:sid:0 -id r9 -by room@muc.example.com
+            j delay -ns urn:xmpp:delay -from room@muc.example.com -stamp 2024-01-01T10:00:00Z
+        }]
+        set iq [mam_iq_to room@muc.example.com]
+        set qid [xsearch $iq query -ns urn:xmpp:mam:2 -get @queryid]
+        msg_mam_finish $iq [list [j result -ns urn:xmpp:mam:2 -id r9 -queryid $qid {
+            j forwarded -ns urn:xmpp:forward:0 {
+                j delay -ns urn:xmpp:delay -stamp 2024-01-01T10:00:00Z
+                j message -from room@muc.example.com/alice -type groupchat {
+                    j retracted -ns urn:xmpp:message-retract:1 -stamp 2024-01-01T10:05:00Z
+                }
+            }
+        }]]
+        dict get [msg_row "chat_jid='room@muc.example.com?join' AND server_id='r9'"] retracted
     } -result {1}
 
 # A room's archive speaks for that room alone: a chat message it claims is

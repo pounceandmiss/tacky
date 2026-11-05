@@ -56,6 +56,14 @@ snit::type taco_message {
     # <CatchupDone>, keyed by room chat jid or "" for the account archive.
     variable CatchupInFlight
 
+    # The highest chat_message rowid when the account catchup started, ""
+    # outside one. A result the store already holds in a row at or below it
+    # was there before this connection, so the walk has reached history we
+    # had: proof it can stop. A row above it came in during this connection
+    # (live, or from the server's offline store at our presence) and proves
+    # nothing about what the archive holds below it.
+    variable CatchupRowidFloor ""
+
     # Pages the account catchup will walk back before giving up on reaching
     # the previous session. Deep enough that an ordinary absence lands whole
     # - a shallow floor over-reports pending sends as undelivered - without
@@ -211,17 +219,22 @@ snit::type taco_message {
 
     method DoCatchup {} {
         if {![$self CatchupStart ""]} return
+        set CatchupRowidFloor [$client db onecolumn {
+            SELECT COALESCE(MAX(rowid), 0) FROM chat_message
+        }]
         $client mam query -before {} -max 50 \
             -command [mymethod OnCatchup \
-                [dict create counts {} mins {} floor ""] 1]
+                [dict create counts {} mins {} floor "" overlap 0] 1]
     }
 
     # One page of the account catchup. $acc carries what the earlier pages of
-    # this run established (per-chat counts, per-chat oldest, and the run's
-    # floor); $page is this page's number. A single page only reaches back 50
-    # messages, which on an account that was away a while leaves the other
-    # chats untouched and the floor high enough that RetryPending condemns
-    # delivered sends.
+    # this run established (per-chat counts, per-chat oldest, the run's floor,
+    # and how many results matched history we already had); $page is this
+    # page's number. A single page only reaches back 50 messages, which on an
+    # account that was away a while leaves the other chats untouched and the
+    # floor high enough that RetryPending condemns delivered sends. The walk
+    # stops at the first page that reaches history we already had: below it,
+    # everything was read before this connection.
     method OnCatchup {acc page mamResult} {
         if {[dict exists $mamResult error]} {
             # Whatever earlier pages established still stands; only this
@@ -234,7 +247,7 @@ snit::type taco_message {
         set acc [$self MergeCatchupPage $acc \
             [$self CatchupPage $mamResult "" [expr {$page == 1}]]]
 
-        if {![$self CatchupIsLast $mamResult $page]} {
+        if {![$self CatchupIsLast $acc $mamResult $page]} {
             $client mam query -before [dict get $mamResult first] -max 50 \
                 -command [mymethod OnCatchup $acc [expr {$page + 1}]]
             return
@@ -244,16 +257,40 @@ snit::type taco_message {
     }
 
     # False while the archive says more history exists, we have a cursor to
-    # ask from, and we haven't walked back far enough already.
-    method CatchupIsLast {mamResult page} {
+    # ask from, we haven't walked back far enough already, and we haven't yet
+    # reached history we had. Reaching it is enough only once the run's floor
+    # is below every send still pending from an earlier stream: until then
+    # the archive copy that would confirm one may lie further back, and
+    # RetryPending fails what predates the floor.
+    method CatchupIsLast {acc mamResult page} {
         if {[dict get $mamResult complete]} { return 1 }
         if {$page >= $MaxCatchupPages} { return 1 }
+        if {[dict getdef $acc overlap 0] > 0
+                && ![$self PendingBelow [dict get $acc floor]]} {
+            return 1
+        }
         return [expr {![dict exists $mamResult first]
             || [dict get $mamResult first] eq ""}]
     }
 
+    # Whether a 1:1 send still pending from an earlier stream is older than
+    # $floor. A room's sends wait for the room's own walk, and one written to
+    # this stream is SM's to settle; RetryPending judges neither by the floor.
+    method PendingBelow {floor} {
+        if {$floor eq ""} { return 0 }
+        foreach msg [$self PendingSends all] {
+            if {[string match {*\?join} [dict get $msg chat_jid]]} continue
+            if {[$self IsWired [dict get $msg own_id]]} continue
+            set ts [dict get $msg timestamp]
+            if {$ts ne "" && $ts < $floor} { return 1 }
+        }
+        return 0
+    }
+
     method MergeCatchupPage {acc pageResult} {
-        lassign $pageResult pageCounts pageFloor pageMin
+        lassign $pageResult pageCounts pageFloor pageMin pageOverlap
+        dict set acc overlap [expr {[dict getdef $acc overlap 0]
+            + ($pageOverlap eq "" ? 0 : $pageOverlap)}]
         set counts [dict get $acc counts]
         dict for {jid n} $pageCounts {
             dict incr counts $jid $n
@@ -275,8 +312,11 @@ snit::type taco_message {
 
     # Close the whole run at once: one <CatchupDone> per chat carrying every
     # page's share, so notify doesn't alert per page and re-alert on the next.
+    # A run that reached history we had leaves no floor holes: the archive is
+    # one timeline, so from that point up it is contiguous for every chat.
     method SettleCatchup {acc complete} {
-        if {!$complete} {
+        set CatchupRowidFloor ""
+        if {!$complete && [dict getdef $acc overlap 0] == 0} {
             $self PlaceCatchupFloorHoles [dict get $acc mins]
         }
         set totalCount 0
@@ -359,6 +399,9 @@ snit::type taco_message {
         # Per-chat min/max input timestamps.
         set perChatMin [dict create]
         set perChatMax [dict create]
+        # Results matching a row stored before the account catchup started
+        # (CatchupRowidFloor): the walk has reached history we had.
+        set overlap 0
 
         foreach resultNode [dict get $mamResult messages] {
             if {$fixedChatJid ne ""} {
@@ -421,6 +464,12 @@ snit::type taco_message {
                     $self HandleConfirmation $chatJid \
                         [list [dict get $r reconciled]]
                 }
+                duplicate {
+                    if {$CatchupRowidFloor ne "" && [$self StoredBefore \
+                            $chatJid [dict get $r stored_ts] $CatchupRowidFloor]} {
+                        incr overlap
+                    }
+                }
                 new {
                     set result [$messagestore store [list [dict get $r msg]]]
                     if {[llength [dict get $result inserted]] > 0} {
@@ -445,7 +494,16 @@ snit::type taco_message {
         dict for {jid _} $perChatMax {
             $self EmitTail $jid
         }
-        return [list $perChatCount $archiveFloor $perChatMin]
+        return [list $perChatCount $archiveFloor $perChatMin $overlap]
+    }
+
+    # Whether the row at $ts in $chatJid was stored at or below rowid $floor.
+    method StoredBefore {chatJid ts floor} {
+        set rowid [$client db onecolumn {
+            SELECT rowid FROM chat_message
+            WHERE chat_jid=$chatJid AND timestamp=$ts
+        }]
+        expr {$rowid ne "" && $rowid <= $floor}
     }
 
     method OnDisconnect {args} {
@@ -2538,8 +2596,21 @@ snit::type taco_message {
             set tsClock server
             $messagestore noteArchiveTs $chatJid $ts
         }
-        set msgNode [$client ingressAddresses \
-            [lindex [xsearch $fwdNode message] 0]]
+        # A result this chat already holds under its archive id is a
+        # duplicate before anything else is read: a reconnect gets the
+        # archive's newest page again, and routing, id extraction and the
+        # patch parsers cost as much for it as for a new message. A
+        # tombstone comes back under the id of the message it retracted, so
+        # it goes the whole way.
+        set fwdMsg [lindex [xsearch $fwdNode message] 0]
+        if {$serverId ne "" && ![IsTombstone $fwdMsg]} {
+            set storedTs [$messagestore archivedTs $chatJid $serverId]
+            if {$storedTs ne ""} {
+                return [dict create verdict duplicate timestamp $ts \
+                    stored_ts $storedTs]
+            }
+        }
+        set msgNode [$client ingressAddresses $fwdMsg]
         if {$msgNode eq ""} {
             jlog warn "MAM: skipping result with unroutable address" \
                 -stanza $resultNode
