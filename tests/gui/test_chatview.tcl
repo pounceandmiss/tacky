@@ -31,6 +31,18 @@ proc receipt_shown {w tag} {
     return $out
 }
 
+# What a catch-up leaves of the gap above a backdated message: nothing.
+proc cv_gaps_closed {} {
+    $::_client db eval {
+        DELETE FROM chat_message
+        WHERE chat_jid='alice@example.com' AND kind='hole'
+    }
+}
+
+# A message from alice, live. -stamp backdates it with a delay stamp, as an
+# offline store's delivery would carry: such a message leaves a gap above it
+# (anything newer may be in the archive only), which a catch-up then finds
+# closed. The tests here stand in for that catch-up.
 proc cv_feed {body sid args} {
     $::_client conn feed [j message -type chat \
         -from alice@example.com/phone {
@@ -40,6 +52,7 @@ proc cv_feed {body sid args} {
             j delay -ns urn:xmpp:delay -from test.example.com -stamp [dict get $args -stamp]
         }
     }]
+    if {[dict exists $args -stamp]} { cv_gaps_closed }
 }
 
 # A stamp `minutes` ago. Ingest only trusts our server's stamps from
@@ -551,12 +564,23 @@ foreach {direction seedCmd} {
 
 # Store a message without the widget seeing it, standing in for what a
 # catchup writes: no <New>, but the pushed tail still moves.
+# What a catch-up that reached the history we had leaves behind: the gaps
+# above messages delivered while we were away (an offline store's, with a
+# delay stamp) are known not to be gaps after all.
+proc cv_gaps_closed {} {
+    $::_client db eval {
+        DELETE FROM chat_message
+        WHERE chat_jid='alice@example.com' AND kind='hole'
+    }
+}
+
 proc cv_store_behind {body sid stamp} {
     set ts [ParseTimestamp $stamp]
     $::_client message messagestore store [list [dict create \
         timestamp $ts chat_jid alice@example.com \
         from_jid alice@example.com/phone body $body \
         server_id $sid own_id "" raw_xml ""]]
+    cv_gaps_closed
     tacky emit message <Tail> -acc $::acc -jid alice@example.com -timestamp $ts
 }
 
@@ -617,6 +641,7 @@ proc cv_catchup_start {{jid ""}} {
 }
 
 proc cv_catchup_done {{jid ""} {count 0}} {
+    cv_gaps_closed
     tacky emit message <CatchupDone> -acc $::acc -jid $jid -count $count
     wait
 }

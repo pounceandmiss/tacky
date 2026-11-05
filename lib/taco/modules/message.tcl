@@ -63,6 +63,14 @@ snit::type taco_message {
     # (live, or from the server's offline store at our presence) and proves
     # nothing about what the archive holds below it.
     variable CatchupRowidFloor ""
+    # The account catchup's accumulator so far, "" outside a run: a drop
+    # that cuts the walk short bounds what it covered (OnDisconnect).
+    variable CatchupAcc ""
+    # The holes this connect's PlaceReconnectHoles put above each chat's
+    # newest message, as {chatJid ts ...}: they mark what may have come since
+    # the previous session, and a walk that reaches history we had has read
+    # all of that, for every chat.
+    variable ReconnectHoles {}
 
     # Pages the account catchup will walk back before giving up on reaching
     # the previous session. Deep enough that an ordinary absence lands whole
@@ -80,7 +88,7 @@ snit::type taco_message {
     variable InFill 0
     # Pages one fill walks per connect; the hole it leaves where it stopped
     # is where the next connect's goes on.
-    typevariable MaxFillPages 200
+    typevariable MaxForwardFillPages 200
 
     # The earliest stamp our server or account may put on a live 1:1
     # stanza this session (TrustedStamp), "" for none: what the server held
@@ -187,8 +195,10 @@ snit::type taco_message {
         } row {
             lappend newest $row(chat_jid) $row(newest)
         }
+        set ReconnectHoles {}
         foreach {jid newestTs} $newest {
-            $messagestore hole add $jid newer $newestTs
+            set ts [$messagestore hole add $jid newer $newestTs]
+            if {$ts ne ""} { lappend ReconnectHoles $jid $ts }
         }
     }
 
@@ -258,6 +268,7 @@ snit::type taco_message {
 
         set acc [$self MergeCatchupPage $acc \
             [$self CatchupPage $mamResult "" [expr {$page == 1}]]]
+        set CatchupAcc $acc
 
         if {![$self CatchupIsLast $acc $mamResult $page]} {
             $client mam query -before [dict get $mamResult first] -max 50 \
@@ -328,6 +339,13 @@ snit::type taco_message {
     # one timeline, so from that point up it is contiguous for every chat.
     method SettleCatchup {acc complete} {
         set CatchupRowidFloor ""
+        set CatchupAcc ""
+        if {$complete || [dict getdef $acc overlap 0] > 0} {
+            foreach {jid ts} $ReconnectHoles {
+                $messagestore hole removeBetween $jid [expr {$ts - 1}] [expr {$ts + 1}]
+            }
+        }
+        set ReconnectHoles {}
         if {!$complete && [dict getdef $acc overlap 0] == 0} {
             $self PlaceCatchupFloorHoles [dict get $acc mins]
         }
@@ -537,7 +555,7 @@ snit::type taco_message {
         try {
             lassign [$self CatchupPage $mamResult \
                     [expr {[IsRoomChatJid $chatJid] ? $chatJid : ""}] 0] \
-                counts _ _ _ pageMax
+                counts _ _ _ _ _ heldMax
         } finally {
             set InFill 0
         }
@@ -547,8 +565,10 @@ snit::type taco_message {
         set gapTop [dict get $target gapTop]
         set last [dict get $mamResult last]
         set ended [expr {[dict get $mamResult complete] || $last eq ""}]
-        set reached [expr {$pageMax ne "" && $pageMax >= [dict get $target hiTs]}]
-        if {$gapTop ne "" && ($ended || ($pageMax ne "" && $pageMax >= $gapTop))} {
+        # Reached: the page held the message at the top (by our own stamp of
+        # it; the server's clock may run ahead of ours).
+        set reached [expr {$heldMax ne "" && $heldMax >= [dict get $target hiTs]}]
+        if {$gapTop ne "" && ($ended || ($heldMax ne "" && $heldMax >= $gapTop))} {
             $messagestore hole removeBetween $chatJid $loTs $gapTop
             dict set target gapTop ""
             dict set target closed 1
@@ -560,7 +580,7 @@ snit::type taco_message {
                 SELECT MAX(timestamp) FROM chat_message
                 WHERE chat_jid=$chatJid AND undecrypted=1
             }]
-            if {$undecNewest ne "" && $undecNewest > $pageMax} {
+            if {$undecNewest ne "" && $undecNewest > $heldMax} {
                 dict set target hiTs $undecNewest
                 set reached 0
             }
@@ -583,7 +603,7 @@ snit::type taco_message {
                 dict set target loTs $newLo
             }
         }
-        if {[dict get $target pages] >= $MaxFillPages} {
+        if {[dict get $target pages] >= $MaxForwardFillPages} {
             $self FinishFill $chatJid $target
             return
         }
@@ -643,6 +663,9 @@ snit::type taco_message {
         # were OMEMO (a forward fill is worth it only for those).
         set pageMax ""
         set omemo 0
+        # The newest of our own stamps among results the store already held
+        # (a fill knows the top of its gap by it: our clock, not the server's).
+        set heldMax ""
 
         foreach resultNode [dict get $mamResult messages] {
             if {$fixedChatJid ne ""} {
@@ -700,7 +723,33 @@ snit::type taco_message {
             # drop = displayless new stanza; doesn't bound a hole (as before).
             if {$verdict eq "drop"} continue
 
+            # Where the result sits in the store, on our own clock: a row the
+            # store already held keeps the stamp it was stored under (a live
+            # one's is ours, not the server's), a new one the one it got.
             set msgTs [dict get $r timestamp]
+            switch $verdict {
+                confirmed {
+                    # pending->"" echo; not an overlap proof
+                    $self HandleConfirmation $chatJid \
+                        [list [dict get $r reconciled]]
+                    set msgTs [dict get $r reconciled newtimestamp]
+                }
+                duplicate {
+                    set msgTs [dict get $r stored_ts]
+                    if {$heldMax eq "" || $msgTs > $heldMax} { set heldMax $msgTs }
+                    if {$CatchupRowidFloor ne "" && [$self StoredBefore \
+                            $chatJid $msgTs $CatchupRowidFloor]} {
+                        incr overlap
+                    }
+                }
+                new {
+                    set result [$messagestore store [list [dict get $r msg]]]
+                    if {[llength [dict get $result inserted]] > 0} {
+                        dict incr perChatCount $chatJid
+                        set msgTs [lindex [dict get $result inserted] 0]
+                    }
+                }
+            }
             if {![dict exists $perChatMin $chatJid]
                 || $msgTs < [dict get $perChatMin $chatJid]} {
                 dict set perChatMin $chatJid $msgTs
@@ -709,37 +758,20 @@ snit::type taco_message {
                 || $msgTs > [dict get $perChatMax $chatJid]} {
                 dict set perChatMax $chatJid $msgTs
             }
-
-            switch $verdict {
-                confirmed {
-                    # pending->"" echo; not an overlap proof
-                    $self HandleConfirmation $chatJid \
-                        [list [dict get $r reconciled]]
-                }
-                duplicate {
-                    if {$CatchupRowidFloor ne "" && [$self StoredBefore \
-                            $chatJid [dict get $r stored_ts] $CatchupRowidFloor]} {
-                        incr overlap
-                    }
-                }
-                new {
-                    set result [$messagestore store [list [dict get $r msg]]]
-                    if {[llength [dict get $result inserted]] > 0} {
-                        dict incr perChatCount $chatJid
-                    }
-                }
-            }
         }
 
-        # The page speaks for everything from its floor up, so sweep from
-        # there rather than from the chat's own oldest message: a reconnect
-        # hole sits below the new arrivals that displaced it. The newest page
-        # speaks up to now: a reconnect hole sits just above the last message
-        # we had, and when that message is the page's newest (what followed
-        # it came in live, not yet archived) the page's own range is empty.
+        # Between a chat's own results on the page the archive held nothing
+        # else of the chat's, so no hole stands there; on the newest page
+        # nothing either from its last result up to now. Swept by where the
+        # results sit in the store (our clock): the page's own stamps are the
+        # server's, which may run behind or ahead of the stamps a live
+        # message was stored under, and a sweep from them would clear holes
+        # the page never spoke for. (A reconnect hole below the chat's
+        # results stays; the walk clears those once it reaches history we
+        # had: SettleCatchup.)
         set now [clock microseconds]
         dict for {jid maxTs} $perChatMax {
-            $messagestore hole removeBetween $jid $archiveFloor \
+            $messagestore hole removeBetween $jid [dict get $perChatMin $jid] \
                 [expr {$tail ? max($maxTs, $now) : $maxTs}]
         }
 
@@ -747,7 +779,7 @@ snit::type taco_message {
             $self EmitTail $jid
         }
         return [list $perChatCount $archiveFloor $perChatMin $overlap \
-            $pageMax $omemo]
+            $pageMax $omemo $heldMax]
     }
 
     # Whether the row at $ts in $chatJid was stored at or below rowid $floor.
@@ -761,6 +793,15 @@ snit::type taco_message {
 
     method OnDisconnect {args} {
         set LastOnlineUs [$self LinkHeardUs]
+        # A walk the drop cut short leaves its floor bounded as a finished
+        # one would: below what it reached is unknown. Unbounded, what it
+        # stored would pass for history we had at the next connect.
+        if {$CatchupAcc ne ""} {
+            if {[dict getdef $CatchupAcc overlap 0] == 0} {
+                $self PlaceCatchupFloorHoles [dict get $CatchupAcc mins]
+            }
+            set CatchupAcc ""
+        }
         # A fill cut short leaves its hole where its last page put it; the
         # next connect's catchup asks for it again.
         set FillQueue {}
@@ -1033,6 +1074,14 @@ snit::type taco_message {
         # History a room replays on join is not news: nothing rings for it.
         dict set verdict delayed [expr {$stamp ne ""}]
         $self DispatchLive $chatJid $verdict
+        # A message the server held for us (its offline store, a room's
+        # history on join) is from the past: what came after it is unknown
+        # until a catchup or a fill reaches it, so a hole marks that.
+        if {[dict get $verdict verdict] eq "new" && $stamp ne ""
+                && [dict get [dict get $verdict msg] server_id] ne ""} {
+            $messagestore hole add $chatJid newer \
+                [dict get [dict get $verdict msg] timestamp]
+        }
         # One our session could not open yet: what it is ahead of is in the
         # archive, and a fill reads it in order (FillTarget).
         if {[dict get $verdict verdict] eq "new"
@@ -2269,6 +2318,12 @@ snit::type taco_message {
         # exception: a cursorless load with nothing stored falls through
         # to a cursorless MAM fetch (first open of a chat pulls its
         # newest archive page).
+        # A hole above the chat's newest message (left by a catchup that
+        # did not reach the chat) is no older page to scroll into: a fill
+        # walks it forward, and <CatchupDone> tells when it has.
+        if {!$hasCursor && [$self TopHole $chatJid]} {
+            $self QueueFill $chatJid
+        }
         if {[llength $localMessages] >= $limit
             || ([llength $localMessages] > 0
                 && (!$bounded || !$hasCursor))} {
@@ -2289,6 +2344,19 @@ snit::type taco_message {
 
         $self QueryServer $chatJid $before $after $limit $callback $onerror \
             $tag $bounded 0
+    }
+
+    # Whether a hole sits above $chatJid's newest message.
+    method TopHole {chatJid} {
+        set top [$client db onecolumn {
+            SELECT MAX(timestamp) FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='message' AND server_id != ''
+        }]
+        if {$top eq ""} { return 0 }
+        $client db exists {
+            SELECT 1 FROM chat_message
+            WHERE chat_jid=$chatJid AND kind='hole' AND timestamp > $top
+        }
     }
 
     # Fire one MAM page anchored on the nearest citizen in the queried

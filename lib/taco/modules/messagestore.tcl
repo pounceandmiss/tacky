@@ -256,6 +256,7 @@ snit::type taco_messagestore {
             INSERT INTO chat_message(timestamp, chat_jid, kind)
             VALUES($ts, $jid, 'hole')
         }
+        return $ts
     }
 
     # Remove any hole(s) in the gap immediately $direction of

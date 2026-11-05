@@ -993,35 +993,47 @@ test message-catchup-displayless-confirms-send \
             body [dict get [lindex $rows 0] content body]
     } -result {nrows 1 status {} body secret}
 
-# A reconnect brackets every chat with a `newer` hole. One archive answered the
-# catchup page, so RSM proves that span contiguous for every chat it covers -
-# including chats whose messages all happen to be new. Sweeping only the chats
-# that dedup leaves the others bracketed mid-history, where `get latest` truncates
-# and the chat repaints as if its history were gone.
+# A reconnect brackets every chat with a `newer` hole. A walk that reaches the
+# archive's start (complete) or history we had has read everything since the
+# previous session, for every chat, so the brackets this connect placed go -
+# including those of chats whose messages are all new.
 test message-catchup-floor-sweeps-undeduped-chat \
-    {a catchup page lifts a reconnect bracket without a per-chat duplicate} \
+    {a complete catchup lifts this connect's reconnect brackets, deduped or not} \
     {*}$msg_common \
     -body {
-        # alice's newest sits above the page floor, bob's below it.
         msg_store [list [msg_msg chat_jid alice@example.com \
             timestamp 1704067230000000 server_id sa1 body old-alice]]
         msg_store [list [msg_msg chat_jid bob@example.com \
             from_jid bob@example.com/phone \
             timestamp 1704067100000000 server_id sb1 body old-bob]]
         $::_client message PlaceReconnectHoles
-        # The floor is bob's 00:00:00 message; nothing in the page dedups.
         msg_catchup [dict create complete 1 messages [list \
             [mam_result id sb2 from bob@example.com \
                 stamp 2024-01-01T00:00:00Z body new-bob] \
             [mam_result id sa2 from alice@example.com \
                 stamp 2024-01-01T00:01:00Z body new-alice]]]
-        # alice's bracket sat inside the covered span; bob's sits below it, where
-        # the page says nothing, so it stays.
         list alice [llength [$::_client message messagestore hole list \
                 alice@example.com]] \
              bob [llength [$::_client message messagestore hole list \
                 bob@example.com]]
-    } -result {alice 0 bob 1}
+    } -result {alice 0 bob 0}
+
+# A page that neither ends the archive nor reaches history we had says
+# nothing of what lies between a chat's last message and its first one on
+# the page: the page's own stamps are the server's, and our stored ones may
+# be on another clock. The bracket stays.
+test message-catchup-short-page-keeps-brackets \
+    {an incomplete catchup page with no message we had keeps the reconnect brackets} \
+    {*}$msg_common \
+    -body {
+        msg_store [list [msg_msg chat_jid alice@example.com \
+            timestamp 1704067230000000 server_id sa1 body old-alice]]
+        $::_client message PlaceReconnectHoles
+        msg_catchup [dict create complete 0 messages [list \
+            [mam_result id sa2 from alice@example.com \
+                stamp 2024-01-01T00:01:00Z body new-alice]]]
+        llength [$::_client message messagestore hole list alice@example.com]
+    } -result 1
 
 # A room-relayed invite as our archive holds it: from the room's bare JID.
 proc mam_invite_result {id {kind invite}} {
@@ -3322,14 +3334,11 @@ test message-fill-follows-saved-keys \
         }
         $::_client message OnDisconnect
         msg_ready
+        # The catchup reads the whole archive, so the hole the reconnect put
+        # above alice's newest message goes; the fill takes the one below.
         msg_mam_finish [msg_last_mam_iq] {} true
-        # First the hole the reconnect put above alice's newest message...
-        set q1 [msg_last_mam_iq]
-        set first [fill_query_of $q1]
-        msg_mam_finish $q1 {} true
-        # ...then, the keys still held, the older one.
-        list $first [fill_query_of [msg_last_mam_iq]]
-    } -result {{alice@example.com s_hi {}} {alice@example.com s_lo {}}}
+        fill_query_of [msg_last_mam_iq]
+    } -result {alice@example.com s_lo {}}
 
 # A room whose one catchup page held OMEMO and stopped short fills on.
 test message-fill-omemo-room \
