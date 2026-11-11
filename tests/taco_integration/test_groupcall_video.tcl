@@ -145,7 +145,7 @@ namespace eval ::test::groupcall_video {
         variable ROOM
         variable NICK
         tacky muc join -acc $acc -jid $ROOM -nick [dict get $NICK $acc]
-        waitUntil {[tacky muc isJoined -acc $acc -jid $ROOM]}
+        waitUntil {[tacky muc is_joined -acc $acc -jid $ROOM]}
     }
 
     proc createRoom {} {
@@ -154,13 +154,13 @@ namespace eval ::test::groupcall_video {
         variable RoomSeq
         set ROOM "gv[incr RoomSeq]-[clock milliseconds]@conference.example.local"
         enterRoom $ROMEO
-        [tacky client $ROMEO] muc configGet -jid $ROOM \
+        [tacky client $ROMEO] muc get_config -jid $ROOM \
             -command [list apply {{f} { set ::test::groupcall_video::_form $f }}]
         waitUntil {[info exists ::test::groupcall_video::_form]}
         set form [::tacky::forms::apply $::test::groupcall_video::_form \
             {muc#roomconfig_whois anyone}]
         unset ::test::groupcall_video::_form
-        [tacky client $ROMEO] muc configSet -jid $ROOM -form $form \
+        [tacky client $ROMEO] muc set_config -jid $ROOM -form $form \
             -command [list apply {{s} { set ::test::groupcall_video::_set 1 }}]
         waitUntil {[info exists ::test::groupcall_video::_set]}
         unset ::test::groupcall_video::_set

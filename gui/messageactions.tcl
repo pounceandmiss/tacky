@@ -30,7 +30,7 @@ snit::type messageactions {
     option -label-command -default ""
 
     # MUC only: the bare room JID, and our role in it. The role is cached from
-    # muc <Presence> because a live `muc myRole` query only resolves inline in
+    # muc <Presence> because a live `muc my_role` query only resolves inline in
     # the direct transport, and the menu has to gate on it synchronously.
     variable Room ""
     variable MyRole ""
@@ -50,7 +50,7 @@ snit::type messageactions {
             -acc $options(-acc) -jid $Room [mymethod OnJoined]
         ::tacky listen -tag $options(-tag) muc <NickChanged> \
             -acc $options(-acc) -jid $Room [mymethod OnNickChanged]
-        ::tacky muc myNick -acc $options(-acc) -jid $Room \
+        ::tacky muc my_nick -acc $options(-acc) -jid $Room \
             -tag $options(-tag) -command [mymethod SetMyNick]
         $self RefreshMyRole
     }
@@ -118,7 +118,7 @@ snit::type messageactions {
     }
 
     method viewxml {key} {
-        ::tacky message rawxml -acc $options(-acc) \
+        ::tacky message raw_xml -acc $options(-acc) \
             -chat $options(-chat) -id $key \
             -command {apply {{xml} {
                 xmlstanza showxml $xml
@@ -137,7 +137,7 @@ snit::type messageactions {
         }
         # A room message's key is a member's: find whose, by the room's list.
         set chat ${Room}?join
-        ::tacky omemo trustList -acc $options(-acc) -jid $chat \
+        ::tacky omemo trust_list -acc $options(-acc) -jid $chat \
             -command [list apply {{acc chat fp rows} {
                 foreach row $rows {
                     if {[dict get $row fingerprint] eq $fp} {
@@ -226,7 +226,7 @@ snit::type messageactions {
     method SetMyNick {nick} { set MyNick $nick }
 
     method RefreshMyRole {} {
-        ::tacky muc myRole -acc $options(-acc) -jid $Room \
+        ::tacky muc my_role -acc $options(-acc) -jid $Room \
             -tag $options(-tag) -command [mymethod SetMyRole]
     }
 

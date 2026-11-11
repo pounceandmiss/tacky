@@ -165,7 +165,7 @@ snit::type taco_author {
     # (OccupantsGone).
     method OnMucPresence {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         set roomJid [dict get $args -jid]
         set nick    [dict get $args -nick]
         set fromJid $roomJid/$nick

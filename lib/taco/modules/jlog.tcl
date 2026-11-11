@@ -407,18 +407,18 @@ snit::type taco_log {
     option -cache-dir -default "" -readonly yes
 
     tackymethod write {args} { jlog write {*}$args }
-    tackymethod setlevel {args} { jlog setlevel {*}$args }
-    tackymethod getlevel {args} { jlog getlevel {*}$args }
-    tackymethod setnativelevel {args} { jlog setnativelevel {*}$args }
-    tackymethod getnativelevel {args} { jlog getnativelevel {*}$args }
-    tackymethod setfile {args} { jlog setfile {*}$args }
+    tackymethod set_level {args} { jlog setlevel {*}$args }
+    tackymethod get_level {args} { jlog getlevel {*}$args }
+    tackymethod set_native_level {args} { jlog setnativelevel {*}$args }
+    tackymethod get_native_level {args} { jlog getnativelevel {*}$args }
+    tackymethod set_file {args} { jlog setfile {*}$args }
     # Ours last: the directory is not the caller's to name.
-    tackymethod setenabled {args} {
+    tackymethod set_enabled {args} {
         jlog setenabled {*}$args -dir $options(-cache-dir)
     }
-    tackymethod getfile {args} { jlog getfile {*}$args }
-    tackymethod setredact {args} { jlog setredact {*}$args }
-    tackymethod getredact {args} { jlog getredact {*}$args }
+    tackymethod get_file {args} { jlog getfile {*}$args }
+    tackymethod set_redact {args} { jlog setredact {*}$args }
+    tackymethod get_redact {args} { jlog getredact {*}$args }
 }
 
 # A stanza as it may be written to a log: secrets replaced. Covers what a

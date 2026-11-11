@@ -284,14 +284,14 @@ test chatview-sent-appears {sent message appears in chatview} \
         llength [.cv messages keys]
     } -result {1}
 
-test chatview-sendfile-optimistic {sendFile shows the message immediately in an uploading state} \
+test chatview-sendfile-optimistic {send_file shows the message immediately in an uploading state} \
     {*}$cv_common \
     -body {
         set tmp /tmp/cv_sendfile_[pid].png
         set fh [open $tmp w]; puts -nonewline $fh "x"; close $fh
         # Upload stalls at service discovery (mock server never replies),
         # so the optimistic message stays in the uploading state.
-        tacky message sendFile -acc $::acc \
+        tacky message send_file -acc $::acc \
             -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
@@ -311,7 +311,7 @@ test chatview-sendfile-image-thumbnail \
         set f [open $tmp wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
+        tacky message send_file -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
         cv_wait_until {winfo exists [.cv attachment path $id 0].img}
@@ -394,7 +394,7 @@ test chatview-cancel-upload-offers-retry \
         close $fh
         # Upload stalls at service discovery (mock server never replies), so it
         # is still in flight when the test clicks.
-        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
+        tacky message send_file -acc $::acc -chat alice@example.com -path $tmp
         wait
         set f [.cv attachment path [.cv messages newest] 0]
         set inFlight [winfo exists $f.up.cancel]
@@ -412,7 +412,7 @@ test chatview-sm-ack-shows-receipt {SM ack triggers Patch and shows checkmark} \
         # Plaintext chat: with OMEMO on, the send would park on
         # devicelist warming (mock server never answers) and no
         # message would reach the wire to be acked
-        tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
+        tacky omemo set_enabled -acc $::acc -jid alice@example.com -value 0
         tacky message send -acc $::acc -chat alice@example.com \
             -body "outgoing msg"
         wait
@@ -791,7 +791,7 @@ test chatview-scrollbtn-hidden-after-async-thumbnail \
         set f [open $tmp wb]
         puts -nonewline $f [::tclwuffs::encode_png $w $h $px]
         close $f
-        tacky message sendFile -acc $::acc -chat alice@example.com -path $tmp
+        tacky message send_file -acc $::acc -chat alice@example.com -path $tmp
         wait
         set id [.cv messages newest]
         cv_wait_until {winfo exists [.cv attachment path $id 0].img}
@@ -1878,7 +1878,7 @@ test chatview-send-confirm-timestamp-move-keeps-tail \
     -body {
         # OMEMO on would park the send on devicelist warming; disable it so
         # the message reaches the wire and can be confirmed.
-        tacky omemo setEnabled -acc $::acc -jid alice@example.com -value 0
+        tacky omemo set_enabled -acc $::acc -jid alice@example.com -value 0
         tacky message send -acc $::acc -chat alice@example.com -body "hello"
         wait
         set atEndAfterSend [expr {[lindex [[.cv textwidget] yview] 1] >= 1.0}]

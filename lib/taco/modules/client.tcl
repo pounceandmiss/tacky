@@ -137,7 +137,7 @@ snit::type taco_client {
 
     # Whether the user is using the app, for conn's CSI (XEP-0352).
     method AppActive {} {
-        $options(-taco) app isActive
+        $options(-taco) app is_active
     }
 
     # An explicit disconnect ends the session. conn doesn't report its own
@@ -249,7 +249,7 @@ snit::type taco_client {
     # use): mint a fresh one, persist it, and reconnect with it.
     method OnResourceConflict {} {
         set acc [jid bare $options(-jid)]
-        set new [$options(-taco) account rerollResource -acc $acc]
+        set new [$options(-taco) account reroll_resource -acc $acc]
         $conn configure -resource $new
         $conn connect
     }
@@ -425,7 +425,7 @@ snit::type taco_client {
                     # reads an occupant's.
                     if {[llength [xsearch $stanza x \
                             -ns http://jabber.org/protocol/muc#user]] == 0
-                            && ![$muc isTracked -jid [xsearch $stanza -get @from]]} {
+                            && ![$muc is_tracked -jid [xsearch $stanza -get @from]]} {
                         $caps OnPresence $stanza
                         $presence OnPresence $stanza
                     }

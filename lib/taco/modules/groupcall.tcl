@@ -23,9 +23,9 @@
 # tacky groupcall join         -acc $jid -chat $chat -id $id ?-video 0|1?
 #   ;# answer the call invite stored as message $id in $chat (content type "call")
 # tacky groupcall decline      -acc $jid -chat $chat -id $id
-# tacky groupcall inCall       -acc $jid -jid $room      ;# -> bool
+# tacky groupcall in_call       -acc $jid -jid $room      ;# -> bool
 # tacky groupcall leave        -acc $jid -jid $room
-# tacky groupcall setVideo     -acc $jid -jid $room -on 0|1   ;# camera mute, every session
+# tacky groupcall set_video     -acc $jid -jid $room -on 0|1   ;# camera mute, every session
 # tacky groupcall invite       -acc $jid -jid $room -to $bareJid
 # tacky groupcall list         -acc $jid
 #   ;# -> one dict per room we are in a call in: jid chat hosted count video mode
@@ -105,7 +105,7 @@
 #   warned   : nicks already warned about a hidden JID
 #   preview  : the media preview we hold for the self-view, "" when none
 #   view     : its channel, {name $n} or {id $i}, {} until it is up
-#   camera   : 1 while our camera is on (setVideo)
+#   camera   : 1 while our camera is on (set_video)
 #   since    : [clock microseconds] of our announce, 0 before
 #   warning  : the call's current warning for <State>
 #
@@ -279,7 +279,7 @@ snit::type taco_groupcall {
         set room [jid norm $opts(-jid)]
         set video [expr {$opts(-video) ? 1 : 0}]
         if {[info exists Rooms($room)] || [info exists Calls($room)]} return
-        if {[$client muc isJoined -jid $room]} {
+        if {[$client muc is_joined -jid $room]} {
             $client message SettleCall $room joined
             $self BeginJoin $room $video
             return
@@ -287,8 +287,8 @@ snit::type taco_groupcall {
         # A hosted call's room is never one of our group chats: anyone who
         # can post an invite may name one, and entering it hidden would
         # drop its messages and leave it with the call.
-        if {([$client muc isTracked -jid $room] && ![$client muc isHidden -jid $room])
-                || [$client muc isKnownRoom -jid $room]} {
+        if {([$client muc is_tracked -jid $room] && ![$client muc is_hidden -jid $room])
+                || [$client muc is_known_room -jid $room]} {
             error "join: $room is one of your group chats, not a call's room"
         }
         # A hosted call: its room, under a nick no other device of ours has.
@@ -322,7 +322,7 @@ snit::type taco_groupcall {
         return
     }
 
-    tackymethod inCall {args} {
+    tackymethod in_call {args} {
         array set opts {-jid ""}
         array set opts $args
         info exists Rooms([jid norm $opts(-jid)])
@@ -337,7 +337,7 @@ snit::type taco_groupcall {
             if {[info exists Calls($room)]} {
                 $self Gone $room "left"
                 unset Calls($room)
-                if {[$client muc isJoined -jid $room]} { $client muc leave -jid $room }
+                if {[$client muc is_joined -jid $room]} { $client muc leave -jid $room }
             }
             return
         }
@@ -349,7 +349,7 @@ snit::type taco_groupcall {
         return
     }
 
-    tackymethod setVideo {args} {
+    tackymethod set_video {args} {
         array set opts {-jid "" -on 1}
         array set opts $args
         set room [jid norm $opts(-jid)]
@@ -357,7 +357,7 @@ snit::type taco_groupcall {
         dict set Rooms($room) camera [expr {$opts(-on) ? 1 : 0}]
         dict for {real session} [dict get $Rooms($room) sessions] {
             if {[dict get $session sid] eq ""} continue
-            $client calls setVideo -sid [dict get $session sid] -on $opts(-on)
+            $client calls set_video -sid [dict get $session sid] -on $opts(-on)
         }
         $self Touch $room
         return
@@ -366,7 +366,7 @@ snit::type taco_groupcall {
     # Hook called by the global `video` module after the preferred camera
     # changes. The sessions switch through calls; this reaches the self-view,
     # which may be all there is while we are alone in the call.
-    tackymethod applyPreferredCamera {args} {
+    tackymethod apply_preferred_camera {args} {
         array set opts {-id ""}
         array set opts $args
         if {![::tacky::media capability videoDevice]} return
@@ -490,8 +490,8 @@ snit::type taco_groupcall {
     method StateOf {room} {
         set inCall [info exists Rooms($room)]
         set entering [expr {!$inCall && [info exists Calls($room)]}]
-        set inRoom [expr {[$client muc isJoined -jid $room]
-                          && ($inCall || $entering || ![$client muc isHidden -jid $room])}]
+        set inRoom [expr {[$client muc is_joined -jid $room]
+                          && ($inCall || $entering || ![$client muc is_hidden -jid $room])}]
         if {!$inCall && !$entering && !$inRoom} { return "" }
 
         if {$inCall} {
@@ -503,7 +503,7 @@ snit::type taco_groupcall {
         set people {}
         set count 0
         if {$inRoom} {
-            set myNick [$client muc myNick -jid $room]
+            set myNick [$client muc my_nick -jid $room]
             foreach occ [$client muc Occupants -jid $room] {
                 set cs [$self CallState $occ]
                 if {$cs eq ""} continue
@@ -671,7 +671,7 @@ snit::type taco_groupcall {
         $self Touch $room
         if {![info exists Rooms($room)]} return
         set occ [dict get $args -occupant]
-        if {[dict get $args -nick] eq [$client muc myNick -jid $room]} {
+        if {[dict get $args -nick] eq [$client muc my_nick -jid $room]} {
             $self OnOwnPresence $room $occ
             return
         }
@@ -809,7 +809,7 @@ snit::type taco_groupcall {
         $client emit groupcall <Joined> -jid $room {*}[$self ChatArgs $room]
         $client message PatchCallRows $room
 
-        set myNick [$client muc myNick -jid $room]
+        set myNick [$client muc my_nick -jid $room]
         foreach occ [$client muc Occupants -jid $room] {
             if {[dict get $occ nick] eq $myNick || [$self CallState $occ] ne "announced"} continue
             set real [dict get $occ jid]
@@ -934,7 +934,7 @@ snit::type taco_groupcall {
                         && [dict get $args -reason] eq "session-initiate rejected"} {
                     set occ [$self OccupantOf $room $real]
                     set who [expr {$occ eq "" ? $real : [dict get $occ nick]}]
-                    set me [$client muc myNick -jid $room]
+                    set me [$client muc my_nick -jid $room]
                     set why "$who does not see you in the call; is another\
                         device of yours in this room as $me?"
                     dict set session reason $why
@@ -1018,7 +1018,7 @@ snit::type taco_groupcall {
         # A hosted call's room is the call's alone: out of the call, out of it.
         if {[info exists Calls($room)]} {
             unset Calls($room)
-            if {[$client muc isJoined -jid $room]} { $client muc leave -jid $room }
+            if {[$client muc is_joined -jid $room]} { $client muc leave -jid $room }
         }
     }
 
@@ -1032,7 +1032,7 @@ snit::type taco_groupcall {
     # when that is a group chat (an in-room call).
     method ChatOf {room} {
         if {[info exists Calls($room)]} { return [dict get $Calls($room) chat] }
-        if {[$client muc isJoined -jid $room] && ![$client muc isHidden -jid $room]} {
+        if {[$client muc is_joined -jid $room] && ![$client muc is_hidden -jid $room]} {
             return $room
         }
         return ""
@@ -1098,7 +1098,7 @@ snit::type taco_groupcall {
     # is ours. Video is announced only if we offer it.
     method AgreedPayloads {room} {
         set mine [::tacky::media payloadTypes]
-        set myNick [$client muc myNick -jid $room]
+        set myNick [$client muc my_nick -jid $room]
         set media {audio}
         if {[dict get $Rooms($room) video]} { lappend media video }
         set out {}
@@ -1158,7 +1158,7 @@ snit::type taco_groupcall {
         if {[catch {::tacky::media capability preview} has] || !$has} return
         set name "groupcall:$client:$room"
         set cam ""
-        catch {set cam [[$client cget -taco] video getPreferredCamera]}
+        catch {set cam [[$client cget -taco] video get_preferred_camera]}
         dict set Rooms($room) preview $name
         if {[catch {::tacky::media openPreview $name \
                 -command [mymethod OnPreviewEvent $room $name] -device-id $cam} err]} {
@@ -1207,16 +1207,16 @@ snit::type taco_groupcall {
     # refuses us, or for a 1:1 chat.
     method Create {spec} {
         set chat [dict get $spec chat]
-        if {[$client muc isJoined -jid $chat]} {
+        if {[$client muc is_joined -jid $chat]} {
             $self CreateOn $spec [jid domain $chat] chat
         } else {
-            $client muc findService -command [mymethod OnOwnService $spec ""]
+            $client muc find_service -command [mymethod OnOwnService $spec ""]
         }
     }
 
     method CreateOn {spec service where} {
         set room "[$self RandomHex 6]@$service"
-        $client muc createRoom -jid $room -nick [dict get $spec nick] -hidden 1 \
+        $client muc create_room -jid $room -nick [dict get $spec nick] -hidden 1 \
             -config $ROOM_CONFIG \
             -command [mymethod OnCreated $spec] \
             -onerror [mymethod OnCreateFailed $spec $service $where]
@@ -1225,7 +1225,7 @@ snit::type taco_groupcall {
     # The chat's service would not have us: ours, if that is another one.
     method OnCreateFailed {spec service where reason} {
         if {$where eq "chat"} {
-            $client muc findService -command [mymethod OnOwnService $spec $service]
+            $client muc find_service -command [mymethod OnOwnService $spec $service]
             return
         }
         $self StartFailed $spec "no room for the call: $reason"
@@ -1411,7 +1411,7 @@ snit::type taco_groupcall {
     # to the contact.
     method SendToChat {chat node} {
         if {$chat eq ""} return
-        set type [expr {[$client muc isJoined -jid $chat] ? "groupchat" : "chat"}]
+        set type [expr {[$client muc is_joined -jid $chat] ? "groupchat" : "chat"}]
         $client write [j message -to $chat -type $type { j #as-is $node }]
     }
 
@@ -1436,7 +1436,7 @@ snit::type taco_groupcall {
     method AdmitChat {room} {
         set chat [dict get $Calls($room) chat]
         if {$chat eq ""} return
-        if {![$client muc isJoined -jid $chat]} {
+        if {![$client muc is_joined -jid $chat]} {
             $self Admit $room [list $chat]
             return
         }
@@ -1446,7 +1446,7 @@ snit::type taco_groupcall {
         }
         $self Admit $room $jids
         foreach what {members admins owners} {
-            $client muc getList -jid $chat -what $what \
+            $client muc get_list -jid $chat -what $what \
                 -command [mymethod OnChatList $room] -onerror {apply {{args} {}}}
         }
     }
@@ -1475,14 +1475,14 @@ snit::type taco_groupcall {
     # Someone entering a chat whose hosted call we are in is let into its
     # room, so a late arrival can still come to the call.
     method OnChatPresence {args} {
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         set chat [jid norm [dict get $args -jid]]
         set occ [dict get $args -occupant]
         if {![dict exists $occ jid] || [dict get $occ jid] eq ""} return
         foreach room [array names Calls] {
             if {[dict get $Calls($room) chat] ne $chat} continue
             if {![info exists Rooms($room)]} continue
-            if {[$client muc myAffiliation -jid $room] ni {owner admin}} continue
+            if {[$client muc my_affiliation -jid $room] ni {owner admin}} continue
             $self Admit $room [list [jid bare [dict get $occ jid]]]
         }
     }

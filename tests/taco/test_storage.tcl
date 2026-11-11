@@ -38,13 +38,13 @@ proc storagetest_unstub_tacky {} {
 # into the pre-boot gate, and migrate there. $name is recreated by $type and
 # left booted and unlocked (or plaintext) afterwards, as after a real gate.
 proc storagetest_gate_encrypt {type name cfg data cache pass} {
-    $name storage requestEncrypt
+    $name storage request_encrypt
     $name destroy
     $type create $name -transient 0 -config-dir $cfg -data-dir $data -cache-dir $cache
     $name storage encrypt -passphrase $pass
 }
 proc storagetest_gate_decrypt {type name cfg data cache pass} {
-    $name storage requestDecrypt
+    $name storage request_decrypt
     $name destroy
     $type create $name -transient 0 -config-dir $cfg -data-dir $data -cache-dir $cache
     $name storage unlock -passphrase $pass
@@ -167,10 +167,10 @@ test storage-decrypt-when-plaintext-errors {decrypt requires unlocked} \
         set err
     } -result {storage is not unlocked}
 
-# -- requestEncrypt/requestDecrypt/cancelPending -----------------------------
+# -- request_encrypt/request_decrypt/cancel_pending -----------------------------
 
 test storage-request-encrypt-sets-pending-status \
-    {requestEncrypt records intent without touching any file; status reflects it immediately} \
+    {request_encrypt records intent without touching any file; status reflects it immediately} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
@@ -180,7 +180,7 @@ test storage-request-encrypt-sets-pending-status \
         file delete -force $cfg
     } -body {
         set before [tacky storage status]
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
         list $before [tacky storage status] [file exists [file join $cfg .storage-pending]]
     } -result {plaintext pending-encrypt 1}
 
@@ -190,11 +190,11 @@ test storage-request-encrypt-requires-persistent-storage {transient mode has not
     } -cleanup {
         tacky destroy
     } -body {
-        catch {tacky storage requestEncrypt} err
+        catch {tacky storage request_encrypt} err
         set err
     } -result {local storage encryption requires persistent storage}
 
-test storage-request-encrypt-requires-plaintext {requestEncrypt requires plaintext, like encrypt itself} \
+test storage-request-encrypt-requires-plaintext {request_encrypt requires plaintext, like encrypt itself} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         storagetest_plantgarbage [file join $cfg accounts.db]
@@ -204,7 +204,7 @@ test storage-request-encrypt-requires-plaintext {requestEncrypt requires plainte
         tacky destroy
         file delete -force $cfg
     } -body {
-        catch {tacky storage requestEncrypt} err
+        catch {tacky storage request_encrypt} err
         set err
     } -result {storage is not plaintext}
 
@@ -213,16 +213,16 @@ test storage-request-encrypt-rejects-when-already-pending {a second request is r
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
     } -cleanup {
         tacky destroy
         file delete -force $cfg
     } -body {
-        catch {tacky storage requestEncrypt} err
+        catch {tacky storage request_encrypt} err
         set err
     } -result {a storage migration is already pending}
 
-test storage-request-decrypt-requires-unlocked {requestDecrypt requires unlocked, like decrypt itself} \
+test storage-request-decrypt-requires-unlocked {request_decrypt requires unlocked, like decrypt itself} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
@@ -231,32 +231,32 @@ test storage-request-decrypt-requires-unlocked {requestDecrypt requires unlocked
         tacky destroy
         file delete -force $cfg
     } -body {
-        catch {tacky storage requestDecrypt} err
+        catch {tacky storage request_decrypt} err
         set err
     } -result {storage is not unlocked}
 
-test storage-cancel-pending-errors-when-nothing-pending {cancelPending errors rather than silently no-op'ing} \
+test storage-cancel-pending-errors-when-nothing-pending {cancel_pending errors rather than silently no-op'ing} \
     -setup {
         tacky_type create ::tacky
     } -cleanup {
         tacky destroy
     } -body {
-        catch {tacky storage cancelPending} err
+        catch {tacky storage cancel_pending} err
         set err
     } -result {nothing is pending}
 
-test storage-cancel-pending-clears-marker {cancelPending reverts status to the plain (unmigrated) state} \
+test storage-cancel-pending-clears-marker {cancel_pending reverts status to the plain (unmigrated) state} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
     } -cleanup {
         tacky destroy
         file delete -force $cfg
     } -body {
         set before [tacky storage status]
-        tacky storage cancelPending
+        tacky storage cancel_pending
         list $before [tacky storage status]
     } -result {pending-encrypt plaintext}
 
@@ -266,7 +266,7 @@ test storage-cancel-pending-encrypt-completes-boot \
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
         tacky destroy
     } -cleanup {
         catch {tacky destroy}
@@ -276,7 +276,7 @@ test storage-cancel-pending-encrypt-completes-boot \
             -config-dir $cfg -data-dir $data -cache-dir $cache
         set results {}
         lappend results relaunch=[tacky storage status]
-        tacky storage cancelPending
+        tacky storage cancel_pending
         lappend results settings-usable=[expr {![catch {tacky setting get -key log_to_file}]}]
         lappend results accounts-usable=[expr {![catch {tacky account list}]}]
         set results
@@ -289,7 +289,7 @@ test storage-cancel-pending-decrypt-completes-boot \
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
         storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache cancelpass
-        tacky storage requestDecrypt
+        tacky storage request_decrypt
         tacky destroy
     } -cleanup {
         catch {tacky destroy}
@@ -300,7 +300,7 @@ test storage-cancel-pending-decrypt-completes-boot \
         set results {}
         tacky storage unlock -passphrase cancelpass
         lappend results after-unlock=[tacky storage status]
-        tacky storage cancelPending
+        tacky storage cancel_pending
         lappend results after-cancel=[tacky storage status]
         lappend results settings-usable=[expr {![catch {tacky setting get -key log_to_file}]}]
         set results
@@ -313,7 +313,7 @@ test storage-cancel-pending-decrypt-while-locked-stays-locked \
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
         storagetest_gate_encrypt tacky_type ::tacky $cfg $data $cache cancelpass
-        tacky storage requestDecrypt
+        tacky storage request_decrypt
         tacky destroy
     } -cleanup {
         catch {tacky destroy}
@@ -322,7 +322,7 @@ test storage-cancel-pending-decrypt-while-locked-stays-locked \
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
         set results {}
-        tacky storage cancelPending
+        tacky storage cancel_pending
         lappend results status=[tacky storage status]
         lappend results settings-installed=[expr {![catch {tacky setting get -key log_to_file}]}]
         tacky storage unlock -passphrase cancelpass
@@ -382,7 +382,7 @@ test storage-encrypt-refused-without-request \
     } -body {
         list [catch {tacky storage encrypt -passphrase x} err] $err \
             [tacky storage status]
-    } -result {1 {storage encrypt runs only at startup, after requestEncrypt} plaintext}
+    } -result {1 {storage encrypt runs only at startup, after request_encrypt} plaintext}
 
 test storage-encrypt-refused-in-the-requesting-session \
     {a request takes effect at the next launch, not in the session that made it} \
@@ -403,10 +403,10 @@ test storage-encrypt-refused-in-the-requesting-session \
         rename _real_conn conn
         file delete -force $cfg
     } -body {
-        t storage requestEncrypt
+        t storage request_encrypt
         list [catch {t storage encrypt -passphrase x} err] $err \
             [expr {[info commands $client] ne ""}] [t storage status]
-    } -result {1 {storage encrypt runs only at startup, after requestEncrypt} 1 pending-encrypt}
+    } -result {1 {storage encrypt runs only at startup, after request_encrypt} 1 pending-encrypt}
 
 test storage-decrypt-refused-without-request \
     {an unlocked install can't be decrypted without a request and a relaunch} \
@@ -420,7 +420,7 @@ test storage-decrypt-refused-without-request \
         file delete -force $cfg
     } -body {
         list [catch {tacky storage decrypt} err] $err [tacky storage status]
-    } -result {1 {storage decrypt runs only at startup, after requestDecrypt} unlocked}
+    } -result {1 {storage decrypt runs only at startup, after request_decrypt} unlocked}
 
 # Regression: a real per-account db opened the normal way (client.tcl sets
 # WAL mode) leaves -wal/-shm sidecar files on disk. Merely disconnecting the
@@ -518,7 +518,7 @@ test storage-migration-refuses-reentry \
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
         tacky destroy
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
@@ -568,7 +568,7 @@ test storage-unfinished-swap-is-left-to-the-next-launch \
         file delete -force $cfg
     } -body {
         set results {}
-        t storage requestEncrypt
+        t storage request_encrypt
         t destroy
         taco_type create ::t -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
@@ -819,12 +819,12 @@ test storage-full-migration-cycle \
 # -- End-to-end pending-encrypt/pending-decrypt via the gate -----------------
 
 test storage-pending-encrypt-end-to-end \
-    {requestEncrypt, relaunch, status is pending-encrypt, encrypt resolves it and proceeds straight to unlocked} \
+    {request_encrypt, relaunch, status is pending-encrypt, encrypt resolves it and proceeds straight to unlocked} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
         tacky destroy
     } -cleanup {
         catch {tacky destroy}
@@ -841,7 +841,7 @@ test storage-pending-encrypt-end-to-end \
     } -result {relaunch=pending-encrypt after=unlocked marker=0}
 
 test storage-pending-decrypt-end-to-end \
-    {requestDecrypt while unlocked, relaunch, unlocking reveals pending-decrypt, decrypt resolves it and proceeds straight to plaintext} \
+    {request_decrypt while unlocked, relaunch, unlocking reveals pending-decrypt, decrypt resolves it and proceeds straight to plaintext} \
     -setup {
         lassign [storagetest_newdirs] cfg data cache
         tacky_type create ::tacky -transient 0 \
@@ -850,7 +850,7 @@ test storage-pending-decrypt-end-to-end \
         # encrypt itself proceeds straight to unlocked - request a decrypt
         # in this same session, then relaunch to simulate the real
         # request-now/act-next-launch flow.
-        tacky storage requestDecrypt
+        tacky storage request_decrypt
         tacky destroy
     } -cleanup {
         catch {tacky destroy}

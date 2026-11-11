@@ -15,8 +15,8 @@
 # tacky bookmarks nick -acc $jid -jid $roomJid -nick $nick
 # tacky bookmarks leave -acc $jid -jid $roomJid
 # tacky bookmarks autojoin -acc $jid -jid $roomJid
-# tacky bookmarks defaultNick -acc $jid ?-nick $newNick?
-# tacky bookmarks setNickAll -acc $jid -nick $nick
+# tacky bookmarks default_nick -acc $jid ?-nick $newNick?
+# tacky bookmarks set_nick_all -acc $jid -nick $nick
 #
 # Changes made on another device arrive as notifications and are applied
 # here too: autojoin turned on joins the room, turned off leaves it, a new
@@ -114,7 +114,7 @@ snit::type taco_bookmarks {
 
     # Add or update a bookmark
     # Omitted options are preserved from the DB if the bookmark exists.
-    # If -nick is omitted for a new bookmark, defaults to defaultNick.
+    # If -nick is omitted for a new bookmark, defaults to default_nick.
     # A publish: a disabled account would keep the edit only until its next
     # session's fetch replaced the table.
     tackymethod -online -noreturn item {args} {
@@ -140,7 +140,7 @@ snit::type taco_bookmarks {
         }
 
         if {$bm(nick) eq ""} {
-            set bm(nick) [$self defaultNick]
+            set bm(nick) [$self default_nick]
         }
 
         # Optimistic local update
@@ -260,7 +260,7 @@ snit::type taco_bookmarks {
     tackymethod -noreturn nick {args} {
         array set opts $args
         set opts(-jid) [jid norm [jid bare $opts(-jid)]]
-        if {[$client muc isJoined -jid $opts(-jid)]} {
+        if {[$client muc is_joined -jid $opts(-jid)]} {
             dict set nickWanted $opts(-jid) $opts(-nick)
         } else {
             $self item -jid $opts(-jid) -nick $opts(-nick)
@@ -293,7 +293,7 @@ snit::type taco_bookmarks {
     # Re-send a join request using the bookmark's stored nick/password,
     # without touching the autojoin flag.  Used to re-attempt a room that
     # was dropped (e.g. an IRC gateway disconnect) without auto-retrying.
-    tackymethod forceJoin {args} {
+    tackymethod force_join {args} {
         set jid [jid norm [jid bare [dict get $args -jid]]]
         set nick ""
         set password ""
@@ -310,7 +310,7 @@ snit::type taco_bookmarks {
     # the account default, an empty password means the room is unlocked.
     method Join {jid nick password} {
         if {$nick eq ""} {
-            set nick [$self defaultNick]
+            set nick [$self default_nick]
         }
         if {$password ne ""} {
             $client muc join -jid $jid -nick $nick -password $password
@@ -321,7 +321,7 @@ snit::type taco_bookmarks {
 
     # Get or set the default nickname for new bookmarks.
     # Falls back to JID username if unset.
-    tackymethod defaultNick {args} {
+    tackymethod default_nick {args} {
         if {[dict exists $args -nick]} {
             set newNick [dict get $args -nick]
             $client db eval {
@@ -351,7 +351,7 @@ snit::type taco_bookmarks {
 
     method OnMucJoining {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         array set opts {-jid ""}
         array set opts $args
         dict set mucStatus $opts(-jid) joining
@@ -361,7 +361,7 @@ snit::type taco_bookmarks {
 
     method OnMucJoined {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         array set opts {-jid ""}
         array set opts $args
         dict set mucStatus $opts(-jid) joined
@@ -371,7 +371,7 @@ snit::type taco_bookmarks {
 
     method OnMucError {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         array set opts {-jid "" -error ""}
         array set opts $args
         dict set mucStatus $opts(-jid) error
@@ -381,7 +381,7 @@ snit::type taco_bookmarks {
 
     method OnMucLeft {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         array set opts {-jid "" -involuntary 0 -codes {} -destroyed 0}
         array set opts $args
         dict set mucStatus $opts(-jid) left
@@ -479,7 +479,7 @@ snit::type taco_bookmarks {
         array set opts $args
         set jid [jid norm [jid bare $opts(-jid)]]
         set doLeave [expr {$opts(-leave) ni {0 false}}]
-        if {$doLeave && [$client muc isJoined -jid $jid]} {
+        if {$doLeave && [$client muc is_joined -jid $jid]} {
             $client muc leave -jid $jid
         }
         $client db eval {DELETE FROM bookmark WHERE jid=$jid}
@@ -602,8 +602,8 @@ snit::type taco_bookmarks {
         } elseif {$oldAutojoin && !$newAutojoin} {
             $self LeaveIfIn $jid
         } elseif {$newNick ne "" && $newNick ne $oldNick
-                && [$client muc isJoined -jid $jid]
-                && [$client muc myNick -jid $jid] ne $newNick} {
+                && [$client muc is_joined -jid $jid]
+                && [$client muc my_nick -jid $jid] ne $newNick} {
             $client muc nick -jid $jid -nick $newNick
         }
     }
@@ -632,7 +632,7 @@ snit::type taco_bookmarks {
     # Leave $jid if we are in it or joining it (its bookmark was removed or
     # its autojoin turned off on another device).
     method LeaveIfIn {jid} {
-        if {[$client muc isTracked -jid $jid]} {
+        if {[$client muc is_tracked -jid $jid]} {
             $client muc leave -jid $jid
         }
     }
@@ -699,15 +699,15 @@ snit::type taco_bookmarks {
     }
 
     # Update nickname on all bookmarks and optionally in joined rooms.
-    tackymethod -online setNickAll {args} {
+    tackymethod -online set_nick_all {args} {
         set newNick [dict get $args -nick]
-        $self defaultNick -nick $newNick
+        $self default_nick -nick $newNick
 
         $client db eval {UPDATE bookmark SET nick=$newNick}
 
         $client db eval {SELECT jid FROM bookmark} row {
             $client emit bookmarks <Changed> -action update -jid $row(jid)
-            if {[$client muc isJoined -jid $row(jid)]} {
+            if {[$client muc is_joined -jid $row(jid)]} {
                 $client muc nick -jid $row(jid) -nick $newNick
             }
         }
@@ -724,7 +724,7 @@ snit::type taco_bookmarks {
 
     method AutojoinAll {} {
         $client db eval {SELECT jid, nick, password FROM bookmark WHERE autojoin=1} row {
-            if {[$client muc isTracked -jid $row(jid)]} continue
+            if {[$client muc is_tracked -jid $row(jid)]} continue
             $self Join $row(jid) $row(nick) $row(password)
         }
     }
@@ -734,7 +734,7 @@ snit::type taco_bookmarks {
             SELECT autojoin, nick, password FROM bookmark WHERE jid=$jid
         } row {
             if {!$row(autojoin)} return
-            if {[$client muc isTracked -jid $jid]} return
+            if {[$client muc is_tracked -jid $jid]} return
             $self Join $jid $row(nick) $row(password)
         }
     }

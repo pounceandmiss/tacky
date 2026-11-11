@@ -9,7 +9,7 @@
 # are folded to their header line, so a large room stays one screen.
 #
 # Whether a member needs attention, and the counts the summary is worded
-# from, are the backend's: each member in omemo roomStatus.
+# from, are the backend's: each member in omemo room_status.
 #
 # One window per account and room; `open` raises the existing one.
 #
@@ -25,7 +25,7 @@ snit::widget omemoroomkeys {
     option -chat -readonly yes
 
     variable room ""
-    # omemo roomStatus, {} until it arrives
+    # omemo room_status, {} until it arrives
     variable status {}
     # real bare jid -> nick, for members in the room
     variable nickOf -array {}
@@ -75,7 +75,7 @@ snit::widget omemoroomkeys {
         }
         $self RefreshNicks
         # Keys of members never fetched yet: their devicelists and bundles.
-        ::tacky omemo prepareChat -acc $options(-acc) -jid $options(-chat) \
+        ::tacky omemo prepare_chat -acc $options(-acc) -jid $options(-chat) \
             -tag $win
     }
 
@@ -241,7 +241,7 @@ snit::widget omemoroomkeys {
     }
 
     method TurnOff {} {
-        ::tacky omemo setEnabled -acc $options(-acc) -jid $options(-chat) \
+        ::tacky omemo set_enabled -acc $options(-acc) -jid $options(-chat) \
             -value 0 -tag $win
     }
 

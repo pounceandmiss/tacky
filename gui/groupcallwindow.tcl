@@ -195,7 +195,7 @@ snit::widgetadaptor groupcallwindow {
     # -- controls ---------------------------------------------------------------
 
     method ToggleCamera {} {
-        ::tacky groupcall setVideo -acc $options(-acc) -jid $options(-jid) \
+        ::tacky groupcall set_video -acc $options(-acc) -jid $options(-jid) \
             -on $cameraOn
     }
 

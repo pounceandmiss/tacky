@@ -352,7 +352,7 @@ test bookmarks-own-echo-is-not-a-change {the echo of our own publish or retract 
         c bookmarks remove -jid room@muc.example.com -leave 0
         c.conn clear
         bm_push_retract room@muc.example.com
-        list [bm_presences] [c muc isJoined -jid room@muc.example.com]
+        list [bm_presences] [c muc is_joined -jid room@muc.example.com]
     } -result {{} 1}
 
 test bookmarks-crossed-echo-keeps-the-newer-change {an echo of an older publish doesn't undo a newer local change} \
@@ -448,13 +448,13 @@ test bookmarks-wire-foreign-notification-dropped {bookmark events from other sen
     } -result {missing 0}
 
 test bookmarks-set-nick-all-one-item-per-publish \
-    {setNickAll publishes each bookmark on its own, with the node's options} \
+    {set_nick_all publishes each bookmark on its own, with the node's options} \
     {*}$bookmarks_common \
     -body {
         bm_insert a@muc.example.com nick old
         bm_insert b@muc.example.com nick old
         c.conn clear
-        c bookmarks setNickAll -nick new
+        c bookmarks set_nick_all -nick new
         lmap st [c.conn get_written] {
             if {[xsearch $st pubsub publish -get @node] ne "urn:xmpp:bookmarks:1"} continue
             list [llength [xsearch $st pubsub publish item]] \

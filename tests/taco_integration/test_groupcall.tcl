@@ -205,7 +205,7 @@ namespace eval ::test::groupcall_int {
         variable ROOM
         variable NICK
         tacky muc join -acc $acc -jid $ROOM -nick [dict get $NICK $acc]
-        waitUntil {[tacky muc isJoined -acc $acc -jid $ROOM]}
+        waitUntil {[tacky muc is_joined -acc $acc -jid $ROOM]}
     }
 
     # Romeo creates the room and configures it. whois: `anyone` shows every
@@ -218,7 +218,7 @@ namespace eval ::test::groupcall_int {
         set ROOM "gc[incr RoomSeq]-[clock milliseconds]@conference.example.local"
         enterRoom $ROMEO
         set form ""
-        [tacky client $ROMEO] muc configGet -jid $ROOM \
+        [tacky client $ROMEO] muc get_config -jid $ROOM \
             -command [list apply {{f} { set ::test::groupcall_int::_form $f }}] \
             -onerror [list apply {{m} { set ::test::groupcall_int::_form [list error $m] }}]
         waitUntil {[info exists ::test::groupcall_int::_form]}
@@ -226,7 +226,7 @@ namespace eval ::test::groupcall_int {
         unset ::test::groupcall_int::_form
         if {[lindex $form 0] eq "error"} { error "room config: [lindex $form 1]" }
         set form [::tacky::forms::apply $form [list muc#roomconfig_whois $whois]]
-        [tacky client $ROMEO] muc configSet -jid $ROOM -form $form \
+        [tacky client $ROMEO] muc set_config -jid $ROOM -form $form \
             -command [list apply {{s} { set ::test::groupcall_int::_set 1 }}]
         waitUntil {[info exists ::test::groupcall_int::_set]}
         unset ::test::groupcall_int::_set
@@ -331,7 +331,7 @@ namespace eval ::test::groupcall_int {
         # Bound is not ready; the room join wants the session up.
         settle 500
         $Twin muc join -jid $ROOM -nick [dict get $NICK $acc]
-        waitUntil {[$Twin muc isJoined -jid $ROOM]}
+        waitUntil {[$Twin muc is_joined -jid $ROOM]}
     }
 
     set common {
@@ -663,7 +663,7 @@ namespace eval ::test::groupcall_int {
             set sid [lindex [dict values [peers $JULIET]] 0]
             waitUntil {[legActive $ROMEO $sid] && [legActive $JULIET $sid]} $LIVE_TIMEOUT
             list [expr {$call ne $ROOM}] \
-                [tacky muc isHidden -acc $ROMEO -jid $call] \
+                [tacky muc is_hidden -acc $ROMEO -jid $call] \
                 [expr {$call in [tacky muc rooms -acc $ROMEO]}] \
                 [expr {$call in [tacky muc rooms -acc $JULIET]}] \
                 [direction $JULIET $sid] [dict get [status $ROMEO $call] count]
@@ -731,7 +731,7 @@ namespace eval ::test::groupcall_int {
             waitUntil {[has $JULIET <Left>]}
             list [dict get [lindex [events $JULIET <Left>] 0] -reason] \
                 [expr {$call in [tacky muc rooms -acc $JULIET]}] \
-                [tacky muc isJoined -acc $JULIET -jid $call]
+                [tacky muc is_joined -acc $JULIET -jid $call]
         } -result {{the call has ended} 0 0}
 
     # == Call invites as messages ==============================================

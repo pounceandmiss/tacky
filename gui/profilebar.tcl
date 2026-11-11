@@ -62,7 +62,7 @@ snit::widget profilebar {
             -tag $win -command [mymethod OnEnabled]
 
         # Fetch display name
-        $t bookmarks defaultNick -acc $acc \
+        $t bookmarks default_nick -acc $acc \
             -tag $win -command [mymethod OnDefaultNick]
     }
 

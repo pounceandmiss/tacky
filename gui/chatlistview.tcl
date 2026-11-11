@@ -481,7 +481,7 @@ snit::widget chatlistview {
     method OnForceJoin {} {
         set jid [$self SelectedLeafJid]
         if {$jid eq ""} return
-        $options(-tacky) bookmarks forceJoin \
+        $options(-tacky) bookmarks force_join \
             -acc $options(-acc) -jid $jid
     }
 

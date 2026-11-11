@@ -511,7 +511,7 @@ proc ds_status_events {} {
 test ds-send-too-large-fails {a message over the server's limit is marked failed with reason too-large} \
     {*}$ds_msg_common \
     -body {
-        c omemo setEnabled -jid bob@example.com -value 0
+        c omemo set_enabled -jid bob@example.com -value 0
         c.conn set_max_bytes 500
         c.conn clear
         ds_status_events
@@ -527,7 +527,7 @@ test ds-send-too-large-fails {a message over the server's limit is marked failed
 test ds-too-large-not-retried {a too-large failure is not retried on reconnect} \
     {*}$ds_msg_common \
     -body {
-        c omemo setEnabled -jid bob@example.com -value 0
+        c omemo set_enabled -jid bob@example.com -value 0
         c.conn set_max_bytes 500
         c message send -chat bob@example.com -body [string repeat x 1000]
         c.conn clear
@@ -538,7 +538,7 @@ test ds-too-large-not-retried {a too-large failure is not retried on reconnect} 
 test ds-resend-too-large-fails-again {resending a too-large message fails it again rather than raising} \
     {*}$ds_msg_common \
     -body {
-        c omemo setEnabled -jid bob@example.com -value 0
+        c omemo set_enabled -jid bob@example.com -value 0
         c.conn set_max_bytes 500
         set id [c message send -chat bob@example.com -body [string repeat x 1000]]
         ds_status_events
@@ -549,7 +549,7 @@ test ds-resend-too-large-fails-again {resending a too-large message fails it aga
 test ds-send-under-limit-unaffected {a message under the limit is written and stays pending} \
     {*}$ds_msg_common \
     -body {
-        c omemo setEnabled -jid bob@example.com -value 0
+        c omemo set_enabled -jid bob@example.com -value 0
         c.conn set_max_bytes 500
         c.conn clear
         c message send -chat bob@example.com -body hello

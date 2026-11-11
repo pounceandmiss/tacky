@@ -162,7 +162,7 @@ snit::widget blocklistwindow {
         if {[tk_messageBox -type yesno -icon question \
                 -parent [winfo toplevel $win] \
                 -message "Unblock everyone on this list?"] ne "yes"} return
-        $options(-tacky) blocking unblockAll -acc $options(-acc) \
+        $options(-tacky) blocking unblock_all -acc $options(-acc) \
             -tag $win -onerror [list blocking_show_error $win "Unblock"]
     }
 }

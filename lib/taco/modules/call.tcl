@@ -686,10 +686,10 @@ snit::type ::taco_calls::call {
         set taco [$client cget -taco]
         set track $tr
         ::tacky::media attachAudio $pc $tr \
-            -input         [$taco audio getPreferredDevice -kind capture] \
-            -output        [$taco audio getPreferredDevice -kind playback] \
-            -input-volume  [$taco audio getVolume -kind capture] \
-            -output-volume [$taco audio getVolume -kind playback]
+            -input         [$taco audio get_preferred_device -kind capture] \
+            -output        [$taco audio get_preferred_device -kind playback] \
+            -input-volume  [$taco audio get_volume -kind capture] \
+            -output-volume [$taco audio get_volume -kind playback]
     }
 
     # Camera -> the peer, plus a self-view: the backend answers with a
@@ -697,7 +697,7 @@ snit::type ::taco_calls::call {
     method AttachVideoSender {tr} {
         if {$vsend} return
         set camId ""
-        catch {set camId [[$client cget -taco] video getPreferredCamera]}
+        catch {set camId [[$client cget -taco] video get_preferred_camera]}
         set vsend 1
         ::tacky::media attachVideoSender $pc $tr -device-id $camId
     }

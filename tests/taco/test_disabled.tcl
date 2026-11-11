@@ -46,7 +46,7 @@ test disabled-connect-dials-nothing {connect does not dial while disabled} \
 
 test disabled-send-waits-for-enable {a message sent while disabled stays pending, and goes out once after enable} \
     {*}$disabled_common -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $::acc -chat alice@example.com -body queued
         set status [$::_client db onecolumn {
             SELECT server_status FROM chat_message WHERE body='queued'
@@ -124,7 +124,7 @@ test disabled-room-join-refused {a room join answers at once and leaves nothing 
         set ::_join {}
         $::_client muc join -jid room@muc.example.com -nick me \
             -command {apply {{r} { set ::_join $r }}}
-        list $::_join [$::_client muc isTracked -jid room@muc.example.com]
+        list $::_join [$::_client muc is_tracked -jid room@muc.example.com]
     } -result {{-jid room@muc.example.com -error account-disabled} 0}
 
 test disabled-upload-refused {an upload fails, saying why} \
@@ -160,11 +160,11 @@ test disabled-mam-fields-not-cached {a refused field discovery leaves no "no ful
 test disabled-muc-service-not-cached {a refused service probe finds nothing now, and asks again later} \
     {*}$disabled_common -body {
         set ::_svc none
-        $::_client muc findService -command {apply {{j} { set ::_svc $j }}}
+        $::_client muc find_service -command {apply {{j} { set ::_svc $j }}}
         dis_settle
         set first $::_svc
         $::_client configure -enabled 1
-        $::_client muc findService -command {apply {{j} { set ::_svc $j }}}
+        $::_client muc find_service -command {apply {{j} { set ::_svc $j }}}
         list $first [dis_written_ns http://jabber.org/protocol/disco#items]
     } -result {{} 1}
 
@@ -179,7 +179,7 @@ test disabled-online-method-to-onerror {an -online method answers -onerror befor
     {*}$disabled_common -body {
         set ::_nick {}
         $::_client nick set -nick romeo -onerror {apply {{e} { set ::_nick $e }}}
-        list $::_nick [$::_client bookmarks defaultNick]
+        list $::_nick [$::_client bookmarks default_nick]
     } -result {{account disabled} user}
 
 cleanupTests

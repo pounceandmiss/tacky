@@ -53,7 +53,7 @@ namespace eval ::test::omemo_fill_int {
             after 100 [list set ::test::omemo_fill_int::_tick 1]
             vwait ::test::omemo_fill_int::_tick
         }
-        wait_call [tacky client $SENDER] omemo prepareChat -jid $ME
+        wait_call [tacky client $SENDER] omemo prepare_chat -jid $ME
     }
 
     proc rows {} {

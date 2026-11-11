@@ -1,7 +1,7 @@
 /*
  * The page's end of the `host` media backend (lib/media/media_host.tcl,
  * DOC.md "The host backend"): an RTCPeerConnection per pc, driven by
- * `media <HostCommand>` events, answering with `media hostEvent`.
+ * `media <HostCommand>` events, answering with `media host_event`.
  *
  * Backend-facing names are pcs and track handles; page-facing ones
  * (onRemoteStream, setAudioEnabled) are call sids, from createPeer. Tracks
@@ -39,7 +39,7 @@ export function createMediaHost({
     const camera = { track: null, opening: null, users: new Set() };
 
     const emit = (pc, type, fields = {}) =>
-        send(['media', 'hostEvent', { pc, type, ...fields }]);
+        send(['media', 'host_event', { pc, type, ...fields }]);
 
     const fail = (pc, op, reason, fatal = 0) => {
         log(`media: ${op} on ${pc}: ${reason}`);

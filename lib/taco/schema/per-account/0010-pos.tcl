@@ -104,7 +104,7 @@ $db eval {
         invite         TEXT,
         -- the invite's room, to find a room's invites; '' else.
         invite_room    TEXT NOT NULL DEFAULT '',
-        -- turned down with `muc declineInvite`.
+        -- turned down with `muc decline_invite`.
         invite_declined INTEGER NOT NULL DEFAULT 0,
         -- XEP-0482 group call invite {room id inviter video}
         -- (see ParseCallInvite); empty for anything else.

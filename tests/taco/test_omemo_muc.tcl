@@ -309,10 +309,10 @@ set mucenv [tacky_env -capture-emit 1 -mock conn \
 test omemo-muc-private-room-eligible-off {a members-only, non-anonymous room can use OMEMO, and is off until turned on} \
     {*}$mucenv -body {
         ::t::join {} members [list $::t::ROMEO member]
-        set st [c omemo roomStatus -jid $::t::CHAT]
+        set st [c omemo room_status -jid $::t::CHAT]
         c message send -chat $::t::CHAT -body hello
         list [dict get $st eligible] [dict get $st enabled] \
-            [c omemo isEnabled -jid $::t::CHAT] \
+            [c omemo is_enabled -jid $::t::CHAT] \
             [xsearch [::t::sent] body -get body] \
             [expr {[::t::sentEncrypted] eq ""}]
     } -result {1 0 0 hello 1}
@@ -320,33 +320,33 @@ test omemo-muc-private-room-eligible-off {a members-only, non-anonymous room can
 test omemo-muc-public-room-refused {a room anyone may join cannot be switched on} \
     {*}$mucenv -body {
         ::t::join {} features {http://jabber.org/protocol/muc muc_open muc_nonanonymous}
-        set code [catch {c omemo setEnabled -jid $::t::CHAT -value 1} msg opts]
+        set code [catch {c omemo set_enabled -jid $::t::CHAT -value 1} msg opts]
         list $code [dict get $opts -errorcode] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] reasons] \
-            [c omemo isEnabled -jid $::t::CHAT]
+            [dict get [c omemo room_status -jid $::t::CHAT] reasons] \
+            [c omemo is_enabled -jid $::t::CHAT]
     } -result {1 {OMEMO ROOM_NOT_ELIGIBLE} not_members_only 0}
 
 test omemo-muc-anonymous-room-refused {a room that hides real JIDs cannot be switched on} \
     {*}$mucenv -body {
         ::t::join {} features {http://jabber.org/protocol/muc muc_membersonly muc_semianonymous}
-        list [catch {c omemo setEnabled -jid $::t::CHAT -value 1}] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] reasons] \
+        list [catch {c omemo set_enabled -jid $::t::CHAT -value 1}] \
+            [dict get [c omemo room_status -jid $::t::CHAT] reasons] \
             [llength [::t::adminRequest member]]
     } -result {1 anonymous 0}
 
 test omemo-muc-unknown-room-refused {a room that has never said what it is cannot be switched on} \
     {*}$mucenv -body {
-        list [catch {c omemo setEnabled -jid $::t::CHAT -value 1}] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] reasons]
+        list [catch {c omemo set_enabled -jid $::t::CHAT -value 1}] \
+            [dict get [c omemo room_status -jid $::t::CHAT] reasons]
     } -result {1 unknown}
 
 test omemo-muc-switched-on-and-off {a private room is switched on and off, each told as <Enabled>} \
     {*}$mucenv -body {
         ::t::join {}
-        c omemo setEnabled -jid $::t::CHAT -value 1
-        set on [c omemo isEnabled -jid $::t::CHAT]
-        c omemo setEnabled -jid $::t::CHAT -value 0
-        list $on [c omemo isEnabled -jid $::t::CHAT] \
+        c omemo set_enabled -jid $::t::CHAT -value 1
+        set on [c omemo is_enabled -jid $::t::CHAT]
+        c omemo set_enabled -jid $::t::CHAT -value 0
+        list $on [c omemo is_enabled -jid $::t::CHAT] \
             [lmap e [::t::emitted omemo <Enabled>] {dict get $e -value}]
     } -result {1 0 {1 0}}
 
@@ -355,14 +355,14 @@ test omemo-muc-remembers-a-private-room {a room seen private is known as one aft
         ::t::join {}
         c.conn feed [::t::presence juliet jid $::t::JFULL self 1 type unavailable \
             affiliation member role none]
-        list [c muc isJoined -jid $::t::ROOM] [c muc roomPrivacy -jid $::t::ROOM] \
-            [catch {c omemo setEnabled -jid $::t::CHAT -value 1}]
+        list [c muc is_joined -jid $::t::ROOM] [c muc room_privacy -jid $::t::ROOM] \
+            [catch {c omemo set_enabled -jid $::t::CHAT -value 1}]
     } -result {0 {} 0}
 
 test omemo-muc-room-pm-stays-off {a room's private message (room/nick) is not a room chat and stays off by default} \
     {*}$mucenv -body {
-        list [c omemo isEnabled -jid $::t::ROOM/romeo] \
-            [catch {c omemo roomStatus -jid $::t::ROOM/romeo}]
+        list [c omemo is_enabled -jid $::t::ROOM/romeo] \
+            [catch {c omemo room_status -jid $::t::ROOM/romeo}]
     } -result {0 1}
 
 # =====================================================================
@@ -527,7 +527,7 @@ test omemo-muc-send-keys-every-member {a message is keyed for every device of ev
         ::t::injectDevicelist $::t::MERC {201}
         ::t::injectDevicelist $::t::JBARE [list [c omemo device_id] 301]
         ::t::join {} members [list $::t::ROMEO owner $::t::MERC member $::t::JBARE member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "wherefore"
         set enc [::t::sentEncrypted]
         list [::t::rids $enc] \
@@ -543,7 +543,7 @@ test omemo-muc-own-echo-confirms-silently {the room's echo of our message confir
         ::t::device $::t::ROMEO 101
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} members [list $::t::ROMEO member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "soft"
         set echo [::t::sent]
         dict set echo attrs from $::t::ROOM/juliet
@@ -561,7 +561,7 @@ test omemo-muc-send-waits-for-member-list {a send before the member list is in w
         ::t::device $::t::ROMEO 101
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} lists 0
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "early"
         set before [list [::t::sent] [lindex [::t::rows] 3]]
         ::t::answerLists [list $::t::ROMEO member]
@@ -574,12 +574,12 @@ test omemo-muc-member-without-devices-fails-closed {a member with no OMEMO devic
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::injectDevicelist $::t::MERC {}
         ::t::join {} members [list $::t::ROMEO member $::t::MERC member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "secret"
         set ev [lindex [::t::emitted omemo <MembersUnreachable>] 0]
         list [::t::sent] [lindex [::t::rows] 3] \
             [dict get $ev -jid] [dict get $ev -members] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] unreachable]
+            [dict get [c omemo room_status -jid $::t::CHAT] unreachable]
     } -result [list {} failed $::t::CHAT \
         [list [list jid $::t::MERC reason no_devices]] \
         [list [list jid $::t::MERC reason no_devices]]]
@@ -592,7 +592,7 @@ test omemo-muc-untrusted-member-fails-closed {a member whose every device is unt
         c db eval {INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
             identity_pk, trust, active, last_activation)
             VALUES($::t::JBARE, $::t::ROMEO, 101, 'x', 'untrusted', 1, 0)}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "secret"
         list [::t::sent] [lindex [::t::rows] 3] \
             [dict get [lindex [::t::emitted omemo <MembersUnreachable>] 0] -members]
@@ -607,7 +607,7 @@ test omemo-muc-untrusted-device-left-out {an untrusted device is left out while 
         c db eval {INSERT INTO omemo_trust(account_jid, peer_jid, peer_device,
             identity_pk, trust, active, last_activation)
             VALUES($::t::JBARE, $::t::ROMEO, 102, 'x', 'untrusted', 1, 0)}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "hi"
         ::t::rids [::t::sentEncrypted]
     } -result 101
@@ -616,7 +616,7 @@ test omemo-muc-warming-member-holds-then-fails {a member whose only bundle is st
     {*}$mucenv -body {
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} members [list $::t::ROMEO member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "wait"
         set held [list [::t::sent] [lindex [::t::rows] 3]]
         c omemo OnBundleFetchTimeout $::t::ROMEO 101
@@ -667,7 +667,7 @@ test omemo-muc-member-bundle-published-after-its-list-still-gets-the-send {a mem
         ::t::device $::t::ROMEO 101 -nosession
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} members [list $::t::ROMEO member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "late keys"
         set first [::t::bundleFetch $::t::ROMEO 101]
         ::t::refuse $first
@@ -682,7 +682,7 @@ test omemo-muc-member-bundle-published-after-its-list-still-gets-the-send {a mem
 test omemo-muc-unfetched-devicelist-holds {a member whose devicelist is not in yet holds the send and has it fetched} \
     {*}$mucenv -body {
         ::t::join {} members [list $::t::ROMEO member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "wait"
         set fetch [::t::written {expr {[xsearch $w -get @to] eq $::t::ROMEO
             && [xsearch $w pubsub items -get @node] eq "eu.siacs.conversations.axolotl.devicelist"}}]
@@ -694,15 +694,15 @@ test omemo-muc-room-no-longer-private-fails-closed {a room that stops qualifying
         ::t::device $::t::ROMEO 101
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} members [list $::t::ROMEO member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c.conn feed [j message -from $::t::ROOM -type groupchat {
             j x -ns http://jabber.org/protocol/muc#user { j status -code 172 }
         }]
         # 172 made it ask again; now it says it is open.
         ::t::answerInfo {http://jabber.org/protocol/muc muc_open muc_nonanonymous}
         c message send -chat $::t::CHAT -body "secret"
-        list [::t::sent] [lindex [::t::rows] 3] [c omemo isEnabled -jid $::t::CHAT] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] reasons]
+        list [::t::sent] [lindex [::t::rows] 3] [c omemo is_enabled -jid $::t::CHAT] \
+            [dict get [c omemo room_status -jid $::t::CHAT] reasons]
     } -result {{} failed 1 not_members_only}
 
 test omemo-muc-parked-send-fails-when-room-turns-public {a send waiting on the member list fails once the room says it is no longer private} \
@@ -710,7 +710,7 @@ test omemo-muc-parked-send-fails-when-room-turns-public {a send waiting on the m
         ::t::device $::t::ROMEO 101
         ::t::injectDevicelist $::t::ROMEO {101}
         ::t::join {} lists 0
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "secret"
         set before [lindex [::t::rows] 3]
         c.conn feed [j message -from $::t::ROOM -type groupchat {
@@ -728,7 +728,7 @@ test omemo-muc-removed-member-not-keyed {a member removed from the room is not k
         ::t::injectDevicelist $::t::MERC {201}
         ::t::join [list [list merc $::t::MERC occ-m]] \
             members [list $::t::ROMEO member $::t::MERC member]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body one
         set first [::t::rids [::t::sentEncrypted]]
         c.conn feed [::t::presence merc jid $::t::MERC/res type unavailable \
@@ -742,7 +742,7 @@ test omemo-muc-room-without-others-keys-own-devices {a room with no other member
         ::t::device $::t::JBARE 301
         ::t::injectDevicelist $::t::JBARE [list [c omemo device_id] 301]
         ::t::join {}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "note"
         ::t::read $::t::JBARE 301 [::t::sentEncrypted]
     } -result note
@@ -773,7 +773,7 @@ test omemo-muc-crossed-sessions-adopt-theirs {a prekey message from a member we 
             [::t::encryptedFrom $::t::ROMEO 101 "crossed"] occ occ-r]
         # And what Juliet sends next reads on Romeo's side.
         ::t::injectDevicelist $::t::ROMEO {101}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body "back"
         list [lindex [::t::rows] 0] [::t::emitted omemo <DecryptFailed>] \
             [::t::read $::t::ROMEO 101 [::t::sentEncrypted]]
@@ -975,7 +975,7 @@ test omemo-muc-archive-fallback-by-session {an archived message no occupant-id n
         c.conn feed [::t::roomMessage romeo \
             [::t::encryptedFrom $::t::ROMEO 101 first] occ occ-r]
         ::t::injectDevicelist $::t::ROMEO {101}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body reply
         ::t::read $::t::ROMEO 101 [::t::sentEncrypted]
         set enc [::t::encryptedFrom $::t::ROMEO 101 "from the archive"]
@@ -1033,16 +1033,16 @@ test omemo-muc-trust-list-of-a-room {the trust list of a room lists every member
             c omemo EnsureTrustRow $jid $dev [$::t::Store($jid,$dev) identity_pub]
         }
         ::t::join {} members [list $::t::ROMEO member $::t::MERC member]
-        lmap trow [c omemo trustList -jid $::t::CHAT] {
+        lmap trow [c omemo trust_list -jid $::t::CHAT] {
             list [dict get $trow jid] [dict get $trow device] [dict get $trow trust]
         }
     } -result [list [list $::t::MERC 201 undecided] [list $::t::ROMEO 101 undecided]]
 
-test omemo-muc-room-status {roomStatus says whether the room qualifies, whether it is on and who it is keyed for} \
+test omemo-muc-room-status {room_status says whether the room qualifies, whether it is on and who it is keyed for} \
     {*}$mucenv -body {
         ::t::join {} members [list $::t::ROMEO member $::t::JBARE owner]
-        c omemo setEnabled -jid $::t::CHAT -value 1
-        set st [c omemo roomStatus -jid $::t::CHAT]
+        c omemo set_enabled -jid $::t::CHAT -value 1
+        set st [c omemo room_status -jid $::t::CHAT]
         list [dict get $st jid] [dict get $st eligible] [dict get $st enabled] \
             [dict get $st offered] [dict get $st member_list] \
             [lmap m [dict get $st members] {dict get $m jid}] \
@@ -1053,7 +1053,7 @@ test omemo-muc-enabling-fetches-member-devicelists {switching a room on fetches 
     {*}$mucenv -body {
         ::t::join {} members [list $::t::ROMEO member]
         set before [::t::written {expr {[xsearch $w -get @to] eq $::t::ROMEO}}]
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         set after [::t::written {expr {[xsearch $w -get @to] eq $::t::ROMEO}}]
         list [expr {$before eq ""}] [xsearch $after pubsub items -get @node]
     } -result {1 eu.siacs.conversations.axolotl.devicelist}
@@ -1078,7 +1078,7 @@ proc ::t::key {jid dev} {
 
 # {jid keys trusted undecided attention reason} of each member, in order.
 proc ::t::memberKeys {} {
-    lmap m [dict get [c omemo roomStatus -jid $::t::CHAT] members] {
+    lmap m [dict get [c omemo room_status -jid $::t::CHAT] members] {
         list [dict get $m jid] [dict get $m keys] [dict get $m trusted] \
             [dict get $m undecided] [dict get $m attention] [dict get $m reason]
     }
@@ -1097,7 +1097,7 @@ test omemo-muc-member-keys {each member's keys are counted, those needing attent
         set verified [::t::memberKeys]
         c omemo trust -jid $::t::ROMEO -device 12 -state trusted
         list $blind $verified [::t::memberKeys] \
-            [dict get [c omemo roomStatus -jid $::t::CHAT] attention]
+            [dict get [c omemo room_status -jid $::t::CHAT] attention]
     } -result [list \
         [list [list $::t::MERC 0 0 0 1 {}] [list $::t::ROMEO 2 0 2 0 {}]] \
         [list [list $::t::MERC 0 0 0 1 {}] [list $::t::ROMEO 2 1 1 1 {}]] \
@@ -1121,7 +1121,7 @@ test omemo-muc-member-keys-follow-blind-trust {turning blind trust off re-tells 
         ::t::key $::t::ROMEO 11
         set before [::t::memberKeys]
         set ::_emitted {}
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         list $before [llength [::t::emitted omemo <RoomStatus>]] [::t::memberKeys]
     } -result [list [list [list $::t::ROMEO 1 0 1 0 {}]] 1 [list [list $::t::ROMEO 1 0 1 1 {}]]]
 
@@ -1129,7 +1129,7 @@ test omemo-muc-member-keys-name-who-stopped-a-send {a member who stopped the las
     {*}$mucenv -body {
         ::t::join {} members [list $::t::ROMEO member]
         ::t::injectDevicelist $::t::ROMEO {}
-        c omemo setEnabled -jid $::t::CHAT -value 1
+        c omemo set_enabled -jid $::t::CHAT -value 1
         c message send -chat $::t::CHAT -body hello
         ::t::memberKeys
     } -result [list [list $::t::ROMEO 0 0 0 1 no_devices]]

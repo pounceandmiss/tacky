@@ -71,11 +71,11 @@ test entity-last-activity-follows-the-app {last activity is 0 while active and g
         tacky setting set -acc user@test.example.com -key answer_last_activity -value 1
         set active [xsearch [entity_ask friend@example.com/x jabber:iq:last] \
             query -get @seconds]
-        tacky app setActive -active 0
+        tacky app set_active -active 0
         after 1100
         set idle [xsearch [entity_ask friend@example.com/x jabber:iq:last] \
             query -get @seconds]
-        tacky app setActive -active 1
+        tacky app set_active -active 1
         list $active [expr {$idle >= 1}]
     } -result {0 1}
 

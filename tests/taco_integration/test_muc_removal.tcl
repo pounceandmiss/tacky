@@ -58,7 +58,7 @@ namespace eval ::test::muc_removal_int {
             variable TIMEOUT
             set done [namespace current]::_unlock_[incr [namespace current]::_awaitCounter]
             set ${done} 0
-            [tacky client $acc] muc createInstant -jid $ROOM \
+            [tacky client $acc] muc create_instant -jid $ROOM \
                 -command [list apply {{dv args} { set $dv 1 }} $done]
             wait_var $done $TIMEOUT
         }
@@ -148,7 +148,7 @@ namespace eval ::test::muc_removal_int {
             }]
             list [dict get $ev -involuntary] \
                  [expr {307 in [dict get $ev -codes]}] \
-                 [[tacky client $JULIET] muc isJoined -jid $ROOM]
+                 [[tacky client $JULIET] muc is_joined -jid $ROOM]
         } -result {1 1 0}
 
     test muc-int-kick-is-not-rejoined \
@@ -164,7 +164,7 @@ namespace eval ::test::muc_removal_int {
                 [tacky client $ROMEO] muc kick -jid $ROOM -nick juliet
             }
             settleWithRoom $JULIET
-            [tacky client $JULIET] muc isJoined -jid $ROOM
+            [tacky client $JULIET] muc is_joined -jid $ROOM
         } -result 0
 
     test muc-int-bounced-groupchat-is-not-a-chat \

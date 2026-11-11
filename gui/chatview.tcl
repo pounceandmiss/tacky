@@ -309,7 +309,7 @@ snit::widget chatview {
         lassign $data replyId replyTo
         if {$replyId eq ""} return
         $self ResetForGoto
-        ::tacky message gotoReply -acc $options(-acc) \
+        ::tacky message goto_reply -acc $options(-acc) \
             -chat $options(-jid) -reply_id $replyId -reply_to $replyTo \
             -limit 50 -tag $win/goto \
             -command [mymethod OnGotoDone]
@@ -564,10 +564,10 @@ snit::widget chatview {
                     [lindex $LastMarkedRead 0]] <= 0} return
         if {![$self WindowFocused]} return
         set id [lindex $NewestIncoming 1]
-        ::tacky message markOwnRead -acc $options(-acc) \
+        ::tacky message mark_own_read -acc $options(-acc) \
             -chat $options(-jid) -id $id
         if {!$IsMuc} {
-            ::tacky message markDisplayed -acc $options(-acc) \
+            ::tacky message mark_displayed -acc $options(-acc) \
                 -chat $options(-jid) -id $id
         }
         set LastMarkedRead $NewestIncoming

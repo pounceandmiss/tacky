@@ -4,14 +4,14 @@ snit::type taco_app {
     # Whether the user is using the app, as the frontend reports it. Without
     # a report (no frontend attached) it counts as active.
     variable active 1
-    # When the app last became inactive (clock seconds), for idleSeconds.
+    # When the app last became inactive (clock seconds), for idle_seconds.
     variable inactiveSince 0
 
     constructor args {
         $self configurelist $args
     }
 
-    tackymethod -noreturn setActive {args} {
+    tackymethod -noreturn set_active {args} {
         set now [string is true -strict [dict get $args -active]]
         if {$now == $active} return
         set active $now
@@ -25,12 +25,12 @@ snit::type taco_app {
         }
     }
 
-    tackymethod isActive {args} {
+    tackymethod is_active {args} {
         return $active
     }
 
     # Seconds since the user last used the app: 0 while active.
-    tackymethod idleSeconds {args} {
+    tackymethod idle_seconds {args} {
         if {$active} { return 0 }
         expr {max(0, [clock seconds] - $inactiveSince)}
     }

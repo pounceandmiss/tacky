@@ -1,6 +1,6 @@
 # taco_notify - which arriving message deserves an alert.
 #
-# A chat being looked at (chat isLooking) never alerts. Otherwise a message
+# A chat being looked at (chat is_looking) never alerts. Otherwise a message
 # alerts only while past chat_own_read; the watermark moving cancels or
 # dismisses it.
 #
@@ -90,7 +90,7 @@ snit::type taco_notify {
         set id [dict get $opts(-message) id]
         if {$ts < [$self Floor]} return
         if {[$self Read $opts(-jid) $id]} return
-        if {[$client chat isLooking -chat $opts(-jid)]} return
+        if {[$client chat is_looking -chat $opts(-jid)]} return
         set mention [$self Store mentionAt $opts(-jid) $id]
         if {![$self ShouldNotify $opts(-jid) $mention]} return
         $self Schedule [dict create jid $opts(-jid) id $id ts $ts \
@@ -114,7 +114,7 @@ snit::type taco_notify {
         dict unset Pending [PendingKey $alert]
         set chatJid [dict get $alert jid]
         if {[$self Read $chatJid [dict get $alert id]]} return
-        if {[$client chat isLooking -chat $chatJid]} return
+        if {[$client chat is_looking -chat $chatJid]} return
         $self Notify $alert
     }
 
@@ -187,7 +187,7 @@ snit::type taco_notify {
         array set opts {-jid "" -count 0}
         array set opts $args
         if {$opts(-jid) eq ""} return
-        if {[$client chat isLooking -chat $opts(-jid)]} return
+        if {[$client chat is_looking -chat $opts(-jid)]} return
         set rows [$self Store unreadTail \
             $opts(-jid) [$self Floor] $CatchupBurstMax]
         foreach row [lreverse $rows] {

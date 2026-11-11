@@ -368,7 +368,7 @@ snit::widget accountwindow {
     }
 
     method ShowLogFile {} {
-        ::tacky log getfile -tag $win -command [mymethod OnLogPath]
+        ::tacky log get_file -tag $win -command [mymethod OnLogPath]
     }
 
     method OnLogPath {path} {

@@ -5,7 +5,7 @@
 #
 # Every command becomes one event for the app (taco sends it as
 # `media <HostCommand>`, with `op` naming the verb); every answer comes back
-# through `event` below (taco exposes it as `media hostEvent`). Nothing waits:
+# through `event` below (taco exposes it as `media host_event`). Nothing waits:
 # commands are fire and forget, answers arrive whenever the app gets to them,
 # and one for a pc that has gone is dropped.
 #
@@ -281,7 +281,7 @@ proc ::tacky::media::host::event {ev} {
 }
 
 proc ::tacky::media::host::Reject {pc reason} {
-    ::tacky::media::emit $pc error op hostEvent reason $reason fatal 0
+    ::tacky::media::emit $pc error op host_event reason $reason fatal 0
     return
 }
 

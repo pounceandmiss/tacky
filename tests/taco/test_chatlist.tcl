@@ -654,7 +654,7 @@ test chatlist-setpinned-reorders-and-unpins {the list given is the pinned list; 
     -body {
         chatlist_chat_insert bob@example.com timestamp 200
         foreach j {alice bob carol} { c chatlist pin -jid $j@example.com -pinned 1 }
-        c chatlist setPinned -jids {carol@example.com alice@example.com}
+        c chatlist set_pinned -jids {carol@example.com alice@example.com}
         list [top_down [c chatlist get]] \
             [lsort -stride 2 [by_jid [c chatlist get] pinned]]
     } -result {{carol@example.com alice@example.com bob@example.com user@test.example.com} {alice@example.com 1 bob@example.com 0 carol@example.com 1 user@test.example.com 0}}
@@ -665,9 +665,9 @@ test chatlist-setpinned-emits-only-moved-rows {rows whose place in the pins held
         foreach j {alice bob carol} { c chatlist pin -jid $j@example.com -pinned 1 }
         set ::items {}
         tacky listen chatlist <Item> {apply {{ev} { lappend ::items [dict get $ev -jid] }}}
-        c chatlist setPinned -jids {carol@example.com bob@example.com alice@example.com}
+        c chatlist set_pinned -jids {carol@example.com bob@example.com alice@example.com}
         set same $::items
-        c chatlist setPinned -jids {bob@example.com carol@example.com alice@example.com}
+        c chatlist set_pinned -jids {bob@example.com carol@example.com alice@example.com}
         list $same [lsort $::items]
     } -result {{} {bob@example.com carol@example.com}}
 
@@ -676,7 +676,7 @@ test chatlist-setpinned-rejects-duplicates {a chat named twice is an error, and 
     -body {
         c chatlist pin -jid alice@example.com -pinned 1
         set code [catch {
-            c chatlist setPinned -jids {bob@example.com bob@example.com}
+            c chatlist set_pinned -jids {bob@example.com bob@example.com}
         } _ opts]
         list $code [dict get $opts -errorcode] [by_jid [c chatlist get] pinned]
     } -result {1 TACO_CHATLIST_DUPLICATE {alice@example.com 1 user@test.example.com 0}}

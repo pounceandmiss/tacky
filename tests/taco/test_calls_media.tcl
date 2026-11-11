@@ -425,7 +425,7 @@ test media-ontrack-audio-numeric-mid \
 
 test media-input-device-falls-back {an unusable mic warns and falls back to the default} \
     {*}$media_env -body {
-        tacky audio setPreferredDevice -kind capture -id mic9
+        tacky audio set_preferred_device -kind capture -id mic9
         mockrtc::fail ::rtcma::capturer::new "device gone" "-device-id mic9"
         set sid [media_caller]
         string map [list $sid SID] [list \
@@ -482,7 +482,7 @@ test media-output-late-open {picking a speaker mid-call opens the missing side} 
         mockrtc::fail ::rtcma::player::new "no device" "-device-id {}"
         set sid [media_caller]
         set from [llength [mockrtc::log]]
-        c.calls setDevices -sid $sid -output spk2
+        c.calls set_devices -sid $sid -output spk2
         list [media_side_calls player $from] \
             [lindex [mockrtc::calls ::rtcma::player::new] end] \
             [expr {[lindex [mockrtc::calls ::rtcma::player::attach] 0 1]
@@ -494,7 +494,7 @@ test media-input-late-open {picking a mic mid-call opens the missing side} \
         mockrtc::fail ::rtcma::capturer::new "no device" "-device-id {}"
         set sid [media_caller]
         set from [llength [mockrtc::log]]
-        c.calls setDevices -sid $sid -input mic2
+        c.calls set_devices -sid $sid -input mic2
         media_side_calls capturer $from
     } -result {new attach start set-volume}
 
@@ -502,10 +502,10 @@ test media-late-open-fails-retries {a late open that fails warns and is tried ag
     {*}$media_env -body {
         mockrtc::fail ::rtcma::player::new "no device" "*"
         set sid [media_caller]
-        c.calls setDevices -sid $sid -output spk2
+        c.calls set_devices -sid $sid -output spk2
         set warning [lindex [calls_events] end]
         set from [llength [mockrtc::log]]
-        c.calls setDevices -sid $sid -output spk3
+        c.calls set_devices -sid $sid -output spk3
         string map [list $sid SID] [list $warning \
             [media_side_calls player $from]]
     } -result {{<Warning> -sid SID -reason {output device unavailable: no device}} {new new}}
@@ -515,9 +515,9 @@ test media-late-open-takes-volume {a side opened late gets the volume set while 
         mockrtc::fail ::rtcma::player::new "no device" "-device-id {}"
         set sid [media_caller]
         set from [llength [mockrtc::log]]
-        c.calls applyVolume -kind playback -volume 0.25
+        c.calls apply_volume -kind playback -volume 0.25
         set before [media_side_calls player $from]
-        c.calls setDevices -sid $sid -output spk2
+        c.calls set_devices -sid $sid -output spk2
         list $before [lindex [mockrtc::calls ::rtcma::player::set-volume] end 1]
     } -result {{} 0.25}
 
@@ -553,7 +553,7 @@ test media-setdevices-warns-on-failure {a mic that will not reopen warns and kee
     {*}$media_env -body {
         set sid [media_caller]
         mockrtc::fail ::rtcma::capturer::reopen "busy"
-        c.calls setDevices -sid $sid -input other
+        c.calls set_devices -sid $sid -input other
         string map [list $sid SID] [list \
             [lindex [calls_events] end] \
             [dict exists [calls_state] $sid]]

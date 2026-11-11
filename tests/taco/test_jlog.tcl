@@ -243,7 +243,7 @@ test jlog-setenabled-rejects-non-boolean {enabling takes only a boolean} \
 test log-setenabled-uses-taco-cache-dir {the module logs into taco's cache dir} \
     -setup {set logdir [makeDirectory jlog-cache]} -body {
         taco_log create logprobe -cache-dir $logdir
-        logprobe setenabled -enabled 1 -dir /should/be/overridden
+        logprobe set_enabled -enabled 1 -dir /should/be/overridden
         string equal [jlog getfile] [file join $logdir tacky.log]
     } -cleanup {
         jlog setfile -path ""
@@ -416,25 +416,25 @@ test jlog-file-recreated-stays-private {a log deleted underneath comes back owne
 
 tacky_test log-getlevel-default {getlevel with no -obj reports the default level} \
     -body {
-        wait_call tacky log getlevel
+        wait_call tacky log get_level
     } -result warning
 
 tacky_test log-setlevel-roundtrip {a level set for an object reads back for its children} \
     -body {
-        tacky log setlevel -obj ::probe -level verbose
-        list [wait_call tacky log getlevel -obj ::probe] \
-             [wait_call tacky log getlevel -obj ::probe.child]
+        tacky log set_level -obj ::probe -level verbose
+        list [wait_call tacky log get_level -obj ::probe] \
+             [wait_call tacky log get_level -obj ::probe.child]
     } -result {verbose verbose}
 
 tacky_test log-setlevel-rejects-unknown {a bad level reaches -onerror across the wire} \
     -body {
-        wait_call_error tacky log setlevel -obj ::probe -level chatty
+        wait_call_error tacky log set_level -obj ::probe -level chatty
     } -match glob -result {unknown log level "chatty"*}
 
 tacky_test log-write-sugar {the level-first sugar reaches write across the wire} \
     -body {
         # Silenced first, so the record never reaches the suite's own output.
-        tacky log setlevel -obj gui.testcase -level none
+        tacky log set_level -obj gui.testcase -level none
         tacky log warning "quiet please" -obj gui.testcase
         return reached
     } -result reached
@@ -443,8 +443,8 @@ tacky_test log-write-sugar {the level-first sugar reaches write across the wire}
 # configured level into write will sooner or later pass it one.
 tacky_test log-write-takes-a-level-from-getlevel {writing at a level the API returned does not throw} \
     -body {
-        tacky log setlevel -obj gui.testcase -level none
-        tacky log [wait_call tacky log getlevel -obj gui.testcase] \
+        tacky log set_level -obj gui.testcase -level none
+        tacky log [wait_call tacky log get_level -obj gui.testcase] \
             "goes nowhere" -obj gui.testcase
         return reached
     } -result reached

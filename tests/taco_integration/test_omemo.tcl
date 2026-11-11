@@ -72,12 +72,12 @@ namespace eval ::test::omemo_int {
         variable BOT
         variable TESTER
         coldSetup
-        # prepareChat is async since the vwait-removal refactor -
+        # prepare_chat is async since the vwait-removal refactor -
         # wait for it explicitly at the test top level (vwait here is
         # fine; the rule is no vwait inside the business path).
         set client [tacky client $TESTER]
         set ::test::omemo_int::_prepDone 0
-        $client omemo prepareChat -jid $BOT -command [list apply {args {
+        $client omemo prepare_chat -jid $BOT -command [list apply {args {
             set ::test::omemo_int::_prepDone 1
         }}]
         if {!$::test::omemo_int::_prepDone} {
@@ -169,7 +169,7 @@ namespace eval ::test::omemo_int {
             string trimright [::test::helpers::msgText $msg]
         } -result {hello bot}
 
-    # 1b. Cold-cache optimistic send: no prepareChat warming. The first
+    # 1b. Cold-cache optimistic send: no prepare_chat warming. The first
     # send finds no cached devicelist, so encrypt throws NOT_READY and
     # the row is persisted pending (not on the wire). Warming runs in the
     # background; <SessionReady> drives the retry; the bot decrypts and
@@ -409,7 +409,7 @@ namespace eval ::test::omemo_int {
             variable BOT
             variable TESTER
             set client [tacky client $TESTER]
-            set botDev [lindex [$client omemo devicelist -jid $BOT] 0]
+            set botDev [lindex [$client omemo device_list -jid $BOT] 0]
             set ::_ef ""
             $client omemo encryptFor $BOT $botDev AA:BB:CC:DD \
                 [list apply {args { set ::_ef $args }}]

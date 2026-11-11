@@ -125,7 +125,7 @@ snit::type attachmentxfer {
 
     method retry {key} {
         {*}$options(-update-command) $key 0 upload active 0 0 ""
-        ::tacky message retryUpload -acc $options(-acc) \
+        ::tacky message retry_upload -acc $options(-acc) \
             -chat $options(-chat) -id $key
     }
 

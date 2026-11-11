@@ -6,8 +6,8 @@
 #   right-click      → device-selection context menu
 #
 # State syncs through the backend so sibling pickers in other windows stay
-# aligned: ::tacky audio enumerateDevices + getPreferredDevice on init,
-# <PreferredDevice> / <Volume> listeners, setPreferredDevice / setVolume on
+# aligned: ::tacky audio enumerate_devices + get_preferred_device on init,
+# <PreferredDevice> / <Volume> listeners, set_preferred_device / set_volume on
 # user input.
 #
 # Usage:
@@ -42,14 +42,14 @@ snit::widgetadaptor audiobutton {
 
         $self Redraw
 
-        ::tacky audio getVolume -kind $options(-kind) -tag $win \
+        ::tacky audio get_volume -kind $options(-kind) -tag $win \
             -command [mymethod OnInitialVolume]
         ::tacky listen -tag $win audio <Volume> \
             -kind $options(-kind) [mymethod OnVolumeChanged]
 
-        ::tacky audio enumerateDevices -tag $win \
+        ::tacky audio enumerate_devices -tag $win \
             -command [mymethod OnDevices]
-        ::tacky audio getPreferredDevice \
+        ::tacky audio get_preferred_device \
             -kind $options(-kind) -tag $win \
             -command [mymethod OnInitialDevice]
         ::tacky listen -tag $win audio <PreferredDevice> \
@@ -85,9 +85,9 @@ snit::widgetadaptor audiobutton {
 
     method ToggleMute {} {
         if {$currentValue > 0} {
-            ::tacky audio setVolume -kind $options(-kind) -volume 0.0
+            ::tacky audio set_volume -kind $options(-kind) -volume 0.0
         } else {
-            ::tacky audio setVolume -kind $options(-kind) -volume $lastVolume
+            ::tacky audio set_volume -kind $options(-kind) -volume $lastVolume
         }
     }
 
@@ -139,13 +139,13 @@ snit::widgetadaptor audiobutton {
     }
 
     # ttk::scale fires -command on every pixel of drag; coalesce to 3 decimal
-    # places (~0.1%) so we don't spam setVolume. Also skip self-echo while we
+    # places (~0.1%) so we don't spam set_volume. Also skip self-echo while we
     # drive the slider in OnVolumeChanged.
     method OnScale {value} {
         if {$applying} return
         set rounded [format %.3f $value]
         if {$rounded eq [format %.3f $currentValue]} return
-        ::tacky audio setVolume -kind $options(-kind) -volume $rounded
+        ::tacky audio set_volume -kind $options(-kind) -volume $rounded
     }
 
     method MaybeClosePopover {X Y} {
@@ -189,7 +189,7 @@ snit::widgetadaptor audiobutton {
     }
 
     method SelectDevice {id} {
-        ::tacky audio setPreferredDevice -kind $options(-kind) -id $id
+        ::tacky audio set_preferred_device -kind $options(-kind) -id $id
     }
 }
 

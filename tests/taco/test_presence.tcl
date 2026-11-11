@@ -74,11 +74,11 @@ test presence-stranger-cap {strangers past the cap are not tracked; contacts are
                 c.conn feed [presence_available s$i@example.com/r]
             }
             c.conn feed [presence_available friend@example.com/r]
-            set first [lmap i {0 1 2 3 4} {c presence isOnline -jid s$i@example.com}]
-            set friend [c presence isOnline -jid friend@example.com]
+            set first [lmap i {0 1 2 3 4} {c presence is_online -jid s$i@example.com}]
+            set friend [c presence is_online -jid friend@example.com]
             c.conn feed [j presence -type unavailable -from s0@example.com/r]
             c.conn feed [presence_available s4@example.com/r]
-            list $first $friend [c presence isOnline -jid s4@example.com]
+            list $first $friend [c presence is_online -jid s4@example.com]
         } finally {
             set ::taco_presence::MaxStrangers 256
         }
@@ -154,7 +154,7 @@ test presence-ignores-room-occupants {an occupant's room presence makes no conta
                 j item -affiliation member -role participant
             }
         }]
-        list [c presence isOnline -jid room@muc.example.com] $::presence_changed
+        list [c presence is_online -jid room@muc.example.com] $::presence_changed
     } -result {0 {}}
 
 test presence-offline-shape {an unknown JID reports the full offline shape} \

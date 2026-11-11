@@ -171,7 +171,7 @@ namespace eval ::test::message_int {
             variable ROMEO
             variable JULIET
             set romeo [tacky client $ROMEO]
-            $romeo omemo setEnabled -jid $JULIET -value 0
+            $romeo omemo set_enabled -jid $JULIET -value 0
             # The confirmation comes from Romeo's server and may come before
             # Juliet has the message, so wait for both.
             set heard [awaitEvent message <New> -acc $JULIET -jid $ROMEO {

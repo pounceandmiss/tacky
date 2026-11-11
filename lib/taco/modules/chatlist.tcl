@@ -14,12 +14,12 @@
 # chat, room@muc/nick = MUC PM. The ?join suffix is the tell for group vs 1:1.
 #
 # Each entry also carries `unread`: how many of the other side's messages
-# sit past our own read watermark (see message markOwnRead), and
+# sit past our own read watermark (see message mark_own_read), and
 # `unread_mentions`: how many of those named us. A chat with history carries
 # its newest message as `last_message` (a `history` dict), and `last_activity`
 # is that message's timestamp. Rendering a preview from it is the frontend's job.
 #
-# Pinned chats (`pin`, `setPinned`) are local to this device. They and the
+# Pinned chats (`pin`, `set_pinned`) are local to this device. They and the
 # chat with our own bare JID (`is_self`) are listed even with no history.
 # Each entry carries an opaque `order`: the list reads by `order` descending,
 # ties broken by jid, and pins sit above any activity.
@@ -157,13 +157,13 @@ snit::type taco_chatlist {
         $self EmitEntry $chatJid
     }
 
-    # setPinned -jids {top ... bottom}: the whole pinned list, in order.
+    # set_pinned -jids {top ... bottom}: the whole pinned list, in order.
     # A pinned chat left out is unpinned.
-    tackymethod -noreturn setPinned {args} {
+    tackymethod -noreturn set_pinned {args} {
         set jids [dict get $args -jids]
         if {[llength [lsort -unique $jids]] != [llength $jids]} {
             return -code error -errorcode TACO_CHATLIST_DUPLICATE \
-                "setPinned: a chat is listed twice"
+                "set_pinned: a chat is listed twice"
         }
         set old [dict create]
         $db eval {SELECT chat_jid, ord FROM chat_pin} {

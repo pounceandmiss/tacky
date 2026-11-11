@@ -279,7 +279,7 @@ test calls-omemo-nothing-announced-before-the-list-is-out \
 test calls-verify-nothing-announced-when-off \
     {with OMEMO off for the chat, neither propose nor proceed names a device} \
     {*}$::test::cv::env -body {
-        c omemo setEnabled -jid $::test::cv::BARE -value 0
+        c omemo set_enabled -jid $::test::cv::BARE -value 0
         c.calls hangup -sid [c.calls start -to $::test::cv::BARE]
         c.conn feed [::test::cv::jmi propose tk-v2]
         c.calls accept -sid tk-v2
@@ -305,7 +305,7 @@ test calls-verify-plain-initiate-when-peer-announced-nothing \
 test calls-verify-plain-initiate-when-off \
     {with OMEMO off for the chat our fingerprint goes plain, whatever the peer announced} \
     {*}$::test::cv::env -body {
-        c omemo setEnabled -jid $::test::cv::BARE -value 0
+        c omemo set_enabled -jid $::test::cv::BARE -value 0
         ::test::cv::offered
         set ::test::cv::ours
     } -result {plain AA:BB}
@@ -390,7 +390,7 @@ proc ::test::cv::answered {} {
 test calls-verify-trusted-device-verifies \
     {without blind trust an undecided key does not verify the call; trusting it mid-call does} \
     {*}$::test::cv::env -body {
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         set sid [::test::cv::offered]
         c.conn feed [::test::cv::jingle session-accept $sid \
             [list [list encrypted [::test::cv::peerEncrypts CC:DD]]]]
@@ -408,7 +408,7 @@ test calls-verify-blind-trust-off-mid-call \
     {*}$::test::cv::env -body {
         ::test::cv::answered
         set before [::test::cv::lastVerified]
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         list $before [::test::cv::lastVerified] \
             [dict get [lindex [c.calls list] 0] verified]
     } -result {1 0 0}

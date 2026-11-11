@@ -7,7 +7,7 @@ if 0 {
     Tacky API:
         tacky vcard nick -acc $acc
             Returns cached nickname (empty string if not yet fetched)
-        tacky vcard setNick -acc $acc -nick $name -command $cb
+        tacky vcard set_nick -acc $acc -nick $name -command $cb
             Update NICKNAME and republish vCard
             Callback: {*}$cb ok "" | {*}$cb error $msg
 
@@ -48,7 +48,7 @@ snit::type taco_vcard {
     }
 
     # Update NICKNAME and republish the full vCard.
-    method setNick {args} {
+    method set_nick {args} {
         array set opts {-command ""}
         array set opts $args
         if {$CachedVCard eq ""} {
@@ -98,7 +98,7 @@ snit::type taco_vcard {
         if {[xsearch $stanza -get @type] eq "error"} {
             # Only item-not-found means there is no vCard. Anything else (a
             # timeout included) leaves it unknown: an empty one cached here
-            # would be published by the next setNick, wiping the photo and
+            # would be published by the next set_nick, wiping the photo and
             # every other field.
             set condition [dict get [stanza_error $stanza] condition]
             if {$condition ne "item-not-found"} {

@@ -8,23 +8,23 @@
 #   tacky omemo device_id       -acc $jid                    -> int
 #   tacky omemo account_jid     -acc $jid                    -> bare jid
 #   tacky omemo own_fingerprint -acc $jid                    -> hex or {}
-#   tacky omemo devicelist      -acc $jid -jid $j            -> list of dev ids
+#   tacky omemo device_list      -acc $jid -jid $j            -> list of dev ids
 #   tacky omemo trust           -acc $jid -jid $j -device $d -state $s
 #                                                           -> set trust state
 #                                                              (validates transitions)
-#   tacky omemo trustList       -acc $jid -jid $j            -> list of dicts
+#   tacky omemo trust_list       -acc $jid -jid $j            -> list of dicts
 #                                                              {device trust active fingerprint}
-#   tacky omemo blindTrust      -acc $jid                    -> 0|1 (BTBV setting)
-#   tacky omemo setBlindTrust   -acc $jid -value 0|1         -> persists BTBV setting
-#   tacky omemo setEnabled      -acc $jid -jid $j -value 0|1 -> per-chat OMEMO toggle
-#   tacky omemo isEnabled       -acc $jid -jid $j            -> 0|1 (that toggle)
-#   tacky omemo roomStatus      -acc $jid -jid $room?join    -> dict {jid eligible
+#   tacky omemo blind_trust      -acc $jid                    -> 0|1 (BTBV setting)
+#   tacky omemo set_blind_trust   -acc $jid -value 0|1         -> persists BTBV setting
+#   tacky omemo set_enabled      -acc $jid -jid $j -value 0|1 -> per-chat OMEMO toggle
+#   tacky omemo is_enabled       -acc $jid -jid $j            -> 0|1 (that toggle)
+#   tacky omemo room_status      -acc $jid -jid $room?join    -> dict {jid eligible
 #                     reasons enabled member_list members unreachable}
-#   (trustList, setEnabled, isEnabled and prepareChat take a room chat,
+#   (trust_list, set_enabled, is_enabled and prepare_chat take a room chat,
 #   room@service?join, too: see "Group chats (XEP-0384 §5.7)" below)
 #
 # Async (tackymethod -async; pass -command):
-#   $client omemo prepareChat -jid $j ?-command cb?         -> warms peer cache
+#   $client omemo prepare_chat -jid $j ?-command cb?         -> warms peer cache
 #
 # Internal (caller is taco_message):
 #   $client omemo encrypt $chat_jid $plaintext              -> <encrypted> node
@@ -47,7 +47,7 @@
 #                                                           live decrypt error; -room
 #                                                           the chat: room?join, or
 #                                                           room/nick for a room PM
-#   omemo <RoomStatus>          -jid $room?join -status S   roomStatus changed [pullable]
+#   omemo <RoomStatus>          -jid $room?join -status S   room_status changed [pullable]
 #   omemo <MembersUnreachable>  -jid $room?join -members {{jid J reason R} ...}
 #                                                           a room send failed closed
 #
@@ -2565,7 +2565,7 @@ snit::type taco_omemo {
             WHERE account_jid=$accountJid
               AND peer_jid=$peerJid AND peer_device=$peerDev
         }]
-        set blind [expr {[$self blindTrust] && ![$self HasVerifiedKeys $peerJid]}]
+        set blind [expr {[$self blind_trust] && ![$self HasVerifiedKeys $peerJid]}]
         if {[llength $row] == 0} {
             return [expr {$blind ? 0 : 1}]
         }
@@ -2793,7 +2793,7 @@ snit::type taco_omemo {
     # A room can use OMEMO when it is members-only and non-anonymous: only
     # then does it tell us every reader's real JID, which is what the keys
     # are wrapped for. Whether it is, and who its members are, is the muc
-    # module's (roomPrivacy, members); this module only reads them.
+    # module's (room_privacy, members); this module only reads them.
     #
     # Sending fails closed per member, as Conversations and Dino do: a
     # message is keyed for every device of every member (and our own other
@@ -2829,7 +2829,7 @@ snit::type taco_omemo {
     }
 
     method RoomReasons {room} {
-        if {[catch {$client muc roomPrivacy -jid $room} reasons]} {
+        if {[catch {$client muc room_privacy -jid $room} reasons]} {
             return {unknown}
         }
         return $reasons
@@ -2904,7 +2904,7 @@ snit::type taco_omemo {
         set list [$self RoomMemberList $room]
         if {$list in {none pending}} {
             if {$list eq "none"
-                    && ![catch {$client muc isJoined -jid $room} joined] && $joined} {
+                    && ![catch {$client muc is_joined -jid $room} joined] && $joined} {
                 catch {$client muc FetchMembers $room}
             }
             return -code error -errorcode TACO_OMEMO_NOT_READY \
@@ -3079,10 +3079,10 @@ snit::type taco_omemo {
         catch {$client muc peopleChanged $room}
     }
 
-    # roomStatus -jid room@service?join -> RoomStatus dict: whether the
+    # room_status -jid room@service?join -> RoomStatus dict: whether the
     # room can use OMEMO and why not, whether it is on, who it is keyed
     # for, and who stopped the last send that failed.
-    tackymethod roomStatus {args} {
+    tackymethod room_status {args} {
         set room [::taco::omemo::roomOf [dict get $args -jid]]
         if {$room eq ""} {
             return -code error "not a room chat: [dict get $args -jid]"
@@ -3116,7 +3116,7 @@ snit::type taco_omemo {
             }
         }
         if {$occId eq ""} { return "" }
-        if {![catch {$client muc myOccupantId -jid $room} mine]
+        if {![catch {$client muc my_occupant_id -jid $room} mine]
                 && $mine ne "" && $mine eq $occId} {
             return $accountJid
         }
@@ -3373,7 +3373,7 @@ snit::type taco_omemo {
     }
 
     # devicelist -jid $peerJid -> list of device ids (empty if not cached)
-    tackymethod devicelist {args} {
+    tackymethod device_list {args} {
         array set opts $args
         set peerJid $opts(-jid)
         if {[dict exists $DeviceLists $peerJid]} {
@@ -3405,7 +3405,7 @@ snit::type taco_omemo {
     # +notify arrival populates the devicelist cache for roster
     # contacts; this method is mainly for tests that need to warm
     # against the OMEMO bot without sending a real message.
-    tackymethod -async prepareChat {args} {
+    tackymethod -async prepare_chat {args} {
         array set opts {-command {apply {args {}}}}
         array set opts $args
         set peerJid $opts(-jid)
@@ -3434,14 +3434,14 @@ snit::type taco_omemo {
     #
     # For a room chat (room@service?join): every member's devices, each row
     # with a `jid` naming its member, members in order.
-    tackymethod trustList {args} {
+    tackymethod trust_list {args} {
         array set opts $args
         set peerJid $opts(-jid)
         set room [::taco::omemo::roomOf $peerJid]
         if {$room ne ""} {
             set out [list]
             foreach m [$self RoomMembers $room] {
-                foreach row [$self trustList -jid $m] {
+                foreach row [$self trust_list -jid $m] {
                     lappend out [dict merge [dict create jid $m] $row]
                 }
             }
@@ -3471,19 +3471,19 @@ snit::type taco_omemo {
     method EmitTrustList {peerJid} {
         $client emit omemo <TrustList> \
             -jid $peerJid \
-            -trustList [$self trustList -jid $peerJid]
+            -trustList [$self trust_list -jid $peerJid]
         # The rooms it is a member of list its devices too, and count them.
         if {[catch {$client muc roomsOfMember $peerJid} rooms]} return
         foreach room $rooms {
             $client emit omemo <TrustList> -jid ${room}?join \
-                -trustList [$self trustList -jid ${room}?join]
+                -trustList [$self trust_list -jid ${room}?join]
             $self EmitRoomStatus $room
         }
     }
 
     # blindTrust -> 0|1 (current BTBV setting; defaults to 1 if unset,
     # 0 if the settings store is unreachable - fail closed).
-    tackymethod blindTrust {args} {
+    tackymethod blind_trust {args} {
         if {[catch {$client setting get -key omemo_blindly_trust} v]} {
             return 0
         }
@@ -3491,8 +3491,8 @@ snit::type taco_omemo {
         return [expr {!![string is true -strict $v]}]
     }
 
-    # setBlindTrust -value 0|1 -> persist BTBV and emit <BlindTrust>.
-    tackymethod setBlindTrust {args} {
+    # set_blind_trust -value 0|1 -> persist BTBV and emit <BlindTrust>.
+    tackymethod set_blind_trust {args} {
         array set opts $args
         set v [expr {!![string is true -strict $opts(-value)]}]
         $client setting set -key omemo_blindly_trust -value $v
@@ -3524,14 +3524,14 @@ snit::type taco_omemo {
         return [expr {!![string is true -strict $v]}]
     }
 
-    # setEnabled -jid X -value 0|1 -> persist per-chat toggle, emit
+    # set_enabled -jid X -value 0|1 -> persist per-chat toggle, emit
     # <Enabled>. Pure setting write; pending messages are untouched
     # (their stamped `encryption` is honored on automatic retry).
     #
     # A room chat (room@service?join) can only be switched on while it
     # qualifies (members-only and non-anonymous): {OMEMO ROOM_NOT_ELIGIBLE}
     # otherwise. Off is always allowed.
-    tackymethod setEnabled {args} {
+    tackymethod set_enabled {args} {
         array set opts $args
         set peerJid $opts(-jid)
         set v [expr {!![string is true -strict $opts(-value)]}]
@@ -3552,11 +3552,11 @@ snit::type taco_omemo {
         return $v
     }
 
-    # isEnabled -jid X -> the per-chat toggle, defaulting on for a 1:1
+    # is_enabled -jid X -> the per-chat toggle, defaulting on for a 1:1
     # chat nobody has set, off for a room. A caller that has to know before it draws needs an
     # answer it can wait for; <Enabled> only says when it changes, and a
     # pull of it cannot report having gone missing.
-    tackymethod isEnabled {args} {
+    tackymethod is_enabled {args} {
         array set opts $args
         return [$self IsEnabled $opts(-jid)]
     }
@@ -3571,7 +3571,7 @@ snit::type taco_omemo {
                 $self EmitTrustList $opts(-jid)
             }
             <BlindTrust> {
-                $client emit omemo <BlindTrust> -value [$self blindTrust]
+                $client emit omemo <BlindTrust> -value [$self blind_trust]
             }
             <Enabled> {
                 $client emit omemo <Enabled> \

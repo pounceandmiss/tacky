@@ -8,8 +8,8 @@
 # anyone else gets service-unavailable, as when the setting is off. The
 # features are advertised only while the setting is on (caps addFeature -if).
 #
-# Last Activity answers how long the app has been inactive (app idleSeconds,
-# from the frontend's app setActive), 0 while it is in use.
+# Last Activity answers how long the app has been inactive (app idle_seconds,
+# from the frontend's app set_active), 0 while it is in use.
 
 snit::type taco_entity {
     option -client -readonly yes
@@ -53,7 +53,7 @@ snit::type taco_entity {
             return
         }
         set idle 0
-        catch {set idle [[$client cget -taco] app idleSeconds]}
+        catch {set idle [[$client cget -taco] app idle_seconds]}
         $self Reply $stanza [j query -ns jabber:iq:last -seconds $idle]
     }
 

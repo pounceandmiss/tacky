@@ -49,7 +49,7 @@ namespace eval ::test::muc_avatar_int {
         if {$unlock} {
             set done [namespace current]::_unlock_[incr [namespace current]::_awaitCounter]
             set $done 0
-            [tacky client $acc] muc createInstant -jid $ROOM \
+            [tacky client $acc] muc create_instant -jid $ROOM \
                 -command [list apply {{dv args} { set $dv 1 }} $done]
             wait_var $done $TIMEOUT
         }

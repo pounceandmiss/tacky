@@ -1,6 +1,6 @@
 # App-level (not per-account) storage encryption settings: current status
 # plus the one action available from it. Encrypt/Remove Encryption only ever
-# request a migration (see taco_storage's requestEncrypt/requestDecrypt) -
+# request a migration (see taco_storage's request_encrypt/request_decrypt) -
 # the actual migration runs at the pre-boot gate on the next launch (see
 # app.tcl's OnStorageStatus / StorageGateDialog), not from here.
 snit::widget storagesettingsdialog {
@@ -94,7 +94,7 @@ snit::widget storagesettingsdialog {
             -message "You'll be asked to set a passphrase the next time Tacky starts. There is no way to recover your data if you forget it. Continue?" \
             -parent [winfo toplevel $win]]
         if {[tk_messageBox {*}$args] ne "ok"} return
-        $options(-tacky) storage requestEncrypt \
+        $options(-tacky) storage request_encrypt \
             -command [mymethod OnRequestDone] -onerror [mymethod OnActionFailed]
     }
 
@@ -103,12 +103,12 @@ snit::widget storagesettingsdialog {
             -message "Local storage will be written back out as plaintext the next time Tacky starts. Continue?" \
             -parent [winfo toplevel $win]]
         if {[tk_messageBox {*}$args] ne "yes"} return
-        $options(-tacky) storage requestDecrypt \
+        $options(-tacky) storage request_decrypt \
             -command [mymethod OnRequestDone] -onerror [mymethod OnActionFailed]
     }
 
     method CancelPending {} {
-        $options(-tacky) storage cancelPending \
+        $options(-tacky) storage cancel_pending \
             -command [mymethod OnRequestDone] -onerror [mymethod OnActionFailed]
     }
 

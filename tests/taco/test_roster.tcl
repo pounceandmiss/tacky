@@ -141,5 +141,5 @@ test roster-subscription-not-tracked-as-availability {subscription presence is n
     {*}$roster_common \
     -body {
         $_client.conn feed [j presence -type subscribe -from bob@example.com/res]
-        tacky presence isOnline -acc user@example.com -jid bob@example.com
+        tacky presence is_online -acc user@example.com -jid bob@example.com
     } -result {0}

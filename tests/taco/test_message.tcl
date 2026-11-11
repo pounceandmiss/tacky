@@ -287,7 +287,7 @@ proc msg_mam_respond {specs args} {
     }]
 }
 
-# Helper: prime MAM fulltext field cache (avoids formfields discovery IQ in search tests)
+# Helper: prime MAM fulltext field cache (avoids form_fields discovery IQ in search tests)
 proc msg_prime_search {{chatJid alice@example.com}} {
     if {[regexp {(.*)\?join$} $chatJid -> mucjid]} {
         $::_client mam discoverFields -to $mucjid
@@ -432,7 +432,7 @@ test message-live-fields {stored live message has correct fields} \
              [dict get $msg server_id] \
              [dict get $msg own_id] \
              [expr {[dict get $msg timestamp] > 0}] \
-             [expr {[$::_client message rawxml -chat alice@example.com \
+             [expr {[$::_client message raw_xml -chat alice@example.com \
                  -id [dict get $msg id]] ne ""}]
     } -result {alice@example.com alice@example.com hi srv42 {} 1 1}
 
@@ -724,7 +724,7 @@ test message-send-stored-as-pending {sent message stored with empty server_id an
     {*}$msg_common \
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "outgoing"
         set msg [lindex [msg_store_latest alice@example.com] 0]
         list [dict get $msg server_id] \
@@ -1893,7 +1893,7 @@ test message-self-echo-confirms {1:1 self-echo confirms pending, emits Confirmed
     {*}$msg_common \
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "echo me"
         set msgs [msg_store_latest alice@example.com]
         set oid [dict get [lindex $msgs 0] own_id]
@@ -2076,7 +2076,7 @@ test message-history-mam-results-parsed-and-stored {MAM results are correctly pa
              [dict get $m1 server_id] [dict get $m1 own_id] \
              [dict get $m1 chat_jid] \
              [expr {[dict get $m1 timestamp] > 0}] \
-             [expr {[$::_client message rawxml -chat alice@example.com \
+             [expr {[$::_client message raw_xml -chat alice@example.com \
                  -id [dict get $m1 id]] ne ""}] \
              [dict get $m2 content body] [dict get $m2 server_id]
     } -result {2 {first msg} bob@example.com mam1 {} alice@example.com 1 1 {second msg} mam2}
@@ -4346,7 +4346,7 @@ test message-search-both-cancel-suppresses-callback {cancelling during the remot
         set ::result
     } -result UNTOUCHED
 
-# XEP-0461 replies: ingest parsing + gotoReply
+# XEP-0461 replies: ingest parsing + goto_reply
 
 test message-live-reply-fields {reply target id + author parsed into stored fields} \
     {*}$msg_common \
@@ -4464,7 +4464,7 @@ test message-live-nonreply-empty {non-reply message has empty reply fields} \
         list [dict get $msg reply_id] [dict get $msg reply_to]
     } -result {{} {}}
 
-test message-gotoreply-local {gotoReply resolves a reply target locally and returns it as the anchor} \
+test message-gotoreply-local {goto_reply resolves a reply target locally and returns it as the anchor} \
     {*}$msg_common \
     -body {
         $::_client conn feed [j message -type chat -id t1 -from alice@example.com/phone {
@@ -4477,7 +4477,7 @@ test message-gotoreply-local {gotoReply resolves a reply target locally and retu
             j reply -ns urn:xmpp:reply:0 -to alice@example.com -id SRV-TGT
         }]
         set ::_gr {}
-        tacky message gotoReply -acc $acc -chat alice@example.com \
+        tacky message goto_reply -acc $acc -chat alice@example.com \
             -reply_id SRV-TGT -reply_to alice@example.com -source local \
             -command [list apply {{r} {set ::_gr $r}}]
         update
@@ -4491,7 +4491,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
     {*}$msg_common \
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         set orig "line one\nline two is long enough to clearly exceed the eighty-character display preview cap"
         $::_client conn feed [j message -type chat -id tOrig -from alice@example.com/phone {
             j body -body $orig
@@ -4518,7 +4518,7 @@ test message-send-reply-stanza {1:1 reply cites origin-id, quotes the full multi
 test message-send-reply-no-quote-of-encrypted {a cleartext reply to an OMEMO message cites it without quoting its decrypted body} \
     {*}$msg_common \
     -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         msg_store [list [msg_msg chat_jid alice@example.com \
             from_jid alice@example.com/phone origin_id ENC1 \
             body "the secret" encryption omemo]]
@@ -4535,7 +4535,7 @@ test message-send-reply-own-pending {replying to our own pending message cites i
     {*}$msg_common \
     -body {
         # Plaintext-path test — OMEMO defaults on, so disable it here.
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "mine"
         set own [lindex [msg_store_latest alice@example.com] end]
         set ownId [dict get $own id]
@@ -4601,7 +4601,7 @@ test message-tail-repushed-on-confirm-move \
     {a self-echo that moves the pending row's timestamp re-emits message <Tail>} \
     {*}$msg_common \
     -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "echo me"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
         set ::_tail ""
@@ -4825,7 +4825,7 @@ test message-pm-carbon-filed-under-occupant {a carbon of a room PM we sent elsew
 test message-pm-send-marked {a room PM we send carries the muc#user mark; a 1:1 message does not} \
     {*}$msg_common \
     -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat room@muc.example.com/alice -body pm
         set pm [lindex [$::_client conn get_written] end]
         tacky message send -acc $acc -chat alice@example.com -body dm
@@ -4858,12 +4858,12 @@ test message-autoreceipt-disabled \
     } -result 0
 
 test message-markdisplayed-sends \
-    {markDisplayed sends a displayed marker referencing the stored origin id} \
+    {mark_displayed sends a displayed marker referencing the stored origin id} \
     {*}$msg_common \
     -body {
         msg_contact alice@example.com
         msg_store [list [msg_msg timestamp 5000000 origin_id oid9]]
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat alice@example.com -id [msg_id "origin_id='oid9'"]
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
@@ -4876,7 +4876,7 @@ test message-markdisplayed-names-theirs-under-ours \
         msg_store [list [msg_msg timestamp 5000000 origin_id oid9] \
             [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
                 from_jid $acc]]
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat alice@example.com -id [msg_id "origin_id='oid10'"]
         msg_written_marker displayed urn:xmpp:chat-markers:0
     } -result oid9
@@ -4889,7 +4889,7 @@ test message-markdisplayed-after \
         msg_store [list [msg_msg timestamp 5000000 origin_id oid9] \
             [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
                 from_jid $acc]]
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat alice@example.com -id [msg_id "origin_id='oid10'"] \
             -after [msg_id "origin_id='oid9'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
@@ -4903,29 +4903,29 @@ test message-markdisplayed-not-to-strangers \
         foreach jid {stranger@example.com bob@example.com} {
             msg_store [list [msg_msg timestamp 5000000 chat_jid $jid \
                 from_jid $jid/phone origin_id oid-$jid]]
-            tacky message markDisplayed -acc $acc -chat $jid \
+            tacky message mark_displayed -acc $acc -chat $jid \
                 -id [msg_id "origin_id='oid-$jid'"]
         }
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
 test message-markdisplayed-own-message-noop \
-    {markDisplayed sends nothing for a message of our own} \
+    {mark_displayed sends nothing for a message of our own} \
     {*}$msg_common \
     -body {
         msg_contact alice@example.com
         msg_store [list [msg_msg timestamp 5100000 origin_id oid10 own_id own10 \
             from_jid $acc]]
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat alice@example.com -id [msg_id "origin_id='oid10'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
 
 test message-markdisplayed-muc-noop \
-    {markDisplayed is a no-op for MUC chats} \
+    {mark_displayed is a no-op for MUC chats} \
     {*}$msg_common \
     -body {
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat room@conf.example.com?join -id 1
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
@@ -4937,7 +4937,7 @@ test message-markdisplayed-disabled \
         msg_contact alice@example.com
         $::_client setting set -key send_chat_markers -value 0
         msg_store [list [msg_msg timestamp 7000000 origin_id oid7]]
-        tacky message markDisplayed -acc $acc \
+        tacky message mark_displayed -acc $acc \
             -chat alice@example.com -id [msg_id "origin_id='oid7'"]
         msg_written_marker_count displayed urn:xmpp:chat-markers:0
     } -result 0
@@ -5106,7 +5106,7 @@ test message-reaction-removed-elsewhere-despite-skew \
 test message-edit-elsewhere-despite-skew \
     {a correction from another device beats our own, though our clock stamped ours later} \
     {*}$msg_common -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "hi"
         set own [lindex [msg_store_latest alice@example.com] end]
         set oid [dict get $own own_id]
@@ -5301,7 +5301,7 @@ test message-edit-same-identity-rewrites-omemo \
 
 test message-edit-own-1to1 {editing our own message swaps its body and marks edited} \
     {*}$msg_common -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
         set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
         tacky message edit -acc $acc -chat alice@example.com -id $id -body "hello"
@@ -5311,7 +5311,7 @@ test message-edit-own-1to1 {editing our own message swaps its body and marks edi
 
 test message-edit-sends-replace {edit puts <replace> referencing the original id on the wire} \
     {*}$msg_common -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         tacky message send -acc $acc -chat alice@example.com -body "helo"
         set oid [dict get [lindex [msg_store_latest alice@example.com] 0] own_id]
         set id [dict get [lindex [msg_store_latest alice@example.com] 0] id]
@@ -5638,7 +5638,7 @@ test message-carbon-reply-resolves \
     {a reply carbon-copied from another device resolves reply_body/reply_to_id against its target} \
     {*}$msg_common \
     -body {
-        $::_client omemo setEnabled -jid alice@example.com -value 0
+        $::_client omemo set_enabled -jid alice@example.com -value 0
         $::_client conn feed [j message -type chat -from $::acc {
             j sent -ns urn:xmpp:carbons:2 {
                 j forwarded -ns urn:xmpp:forward:0 {

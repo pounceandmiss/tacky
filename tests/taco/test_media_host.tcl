@@ -151,7 +151,7 @@ test media-host-error-needs-fatal {an error that doesn't say whether it is fatal
         host_send type error op openPreview reason "no camera"
         set ev [host_event error]
         list [dict get $ev op] [dict get $ev fatal] [dict get $ev reason]
-    } -result {hostEvent 0 {error event has no fatal}}
+    } -result {host_event 0 {error event has no fatal}}
 
 test media-host-event-needs-a-pc {an event naming no pc is refused outright} \
     {*}$host_env -body {
@@ -185,11 +185,11 @@ test media-host-commands-are-events {a command for the app leaves as media <Host
     } -result {{<HostCommand> -op createPeer -pc p3 -iceServers {} -sid {}}}
 
 test media-host-event-needs-the-host-backend \
-    {hostEvent on another backend is a mistake worth reporting} -constraints !wasm \
+    {host_event on another backend is a mistake worth reporting} -constraints !wasm \
     {*}[tacky_env] -body {
-        catch {tacky media hostEvent -pc p1 -type connectionState -state failed} err
+        catch {tacky media host_event -pc p1 -type connectionState -state failed} err
         set err
-    } -result {media hostEvent: the host backend is not open}
+    } -result {media host_event: the host backend is not open}
 
 # -- ICE restart --------------------------------------------------------------
 

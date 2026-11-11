@@ -3,8 +3,8 @@
 #   chat open  -chat J
 #   chat close -chat J
 #   chat view  -chat J -id I           I: last message on screen
-#   chat setClientData -chat J -data S
-#   chat clientData    -chat J          -> S
+#   chat set_client_data -chat J -data S
+#   chat client_data    -chat J          -> S
 #
 # A chat is looked at while open and the app is active. Only then does a view
 # move the read watermark, and notify skips it. Open is membership, not a
@@ -40,7 +40,7 @@ snit::type taco_chat {
         set chatJid $opts(-chat)
         set id $opts(-id)
         if {![dict exists $Open $chatJid]} return
-        if {![$self isLooking -chat $chatJid]} {
+        if {![$self is_looking -chat $chatJid]} {
             if {[$self Below [dict get $Open $chatJid] $id $chatJid]} {
                 dict set Open $chatJid $id
             }
@@ -49,27 +49,27 @@ snit::type taco_chat {
         $self Read $chatJid $id
     }
 
-    tackymethod setClientData {args} {
+    tackymethod set_client_data {args} {
         array set opts $args
         $client message messagestore setClientData $opts(-chat) $opts(-data)
     }
 
-    tackymethod clientData {args} {
+    tackymethod client_data {args} {
         array set opts $args
         $client message messagestore clientData $opts(-chat)
     }
 
-    tackymethod isOpen {args} {
+    tackymethod is_open {args} {
         array set opts $args
         dict exists $Open $opts(-chat)
     }
 
-    tackymethod isLooking {args} {
+    tackymethod is_looking {args} {
         array set opts $args
         expr {[dict exists $Open $opts(-chat)] && [$self AppActive]}
     }
 
-    # app setActive calls this when the app becomes active.
+    # app set_active calls this when the app becomes active.
     method ApplyHeld {} {
         dict for {chatJid id} $Open {
             if {$id eq ""} continue
@@ -91,8 +91,8 @@ snit::type taco_chat {
     method Read {chatJid id} {
         set read [dict get [$client message messagestore ownRead $chatJid] id]
         if {![$self Below $read $id $chatJid]} return
-        $client message markOwnRead -chat $chatJid -id $id
-        $client message markDisplayed -chat $chatJid -id $id -after $read
+        $client message mark_own_read -chat $chatJid -id $id
+        $client message mark_displayed -chat $chatJid -id $id -after $read
     }
 
     # A standalone client (tests) has no taco.

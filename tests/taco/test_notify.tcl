@@ -33,7 +33,7 @@ proc notify_room_message {room nick body {id r1}} {
 }
 
 # Helper: join a room - send it, then feed the self-presence that makes muc
-# emit <Joined>, so myNick resolves for mention detection.
+# emit <Joined>, so my_nick resolves for mention detection.
 proc notify_join {room nick} {
     $::_client muc join -jid $room -nick $nick
     $::_client conn feed [j presence -from $room/$nick {
@@ -78,15 +78,15 @@ test notify-already-read-silent {a message behind the watermark never alerts} \
     {*}$notify_common -body {
         notify_incoming "first"
         set id [notify_newest_id alice@example.com]
-        tacky message markOwnRead -acc $acc -chat alice@example.com \
+        tacky message mark_own_read -acc $acc -chat alice@example.com \
             -id $id
         set ::alerts {}
         notify_incoming "second" m2
-        tacky message markOwnRead -acc $acc -chat alice@example.com \
+        tacky message mark_own_read -acc $acc -chat alice@example.com \
             -id [notify_newest_id alice@example.com]
         set ::alerts {}
         # Re-announcing a watermark we already passed changes nothing.
-        tacky message markOwnRead -acc $acc -chat alice@example.com \
+        tacky message mark_own_read -acc $acc -chat alice@example.com \
             -id $id
         notify_jids
     } -result {}
@@ -95,7 +95,7 @@ test notify-read-cancels-pending {reading inside the delay window cancels the al
     {*}$notify_common -body {
         [$::_client cget -taco] setting set -key notify_delay_ms -value 5000
         notify_incoming "hello"
-        tacky message markOwnRead -acc $acc -chat alice@example.com \
+        tacky message mark_own_read -acc $acc -chat alice@example.com \
             -id [notify_newest_id alice@example.com]
         notify_jids
     } -result {}
@@ -112,10 +112,10 @@ test notify-read-dismisses {reading up to the alerted message dismisses it, shor
         set first [notify_newest_id alice@example.com]
         notify_incoming "two" m2
         set second [notify_newest_id alice@example.com]
-        tacky message markOwnRead -acc $acc -chat alice@example.com -id $first
+        tacky message mark_own_read -acc $acc -chat alice@example.com -id $first
         update
         set short $::dismissed
-        tacky message markOwnRead -acc $acc -chat alice@example.com -id $second
+        tacky message mark_own_read -acc $acc -chat alice@example.com -id $second
         update
         list [llength $::alerts] $short $::dismissed
     } -result {2 {} alice@example.com}
@@ -125,13 +125,13 @@ test notify-looking-silent {a chat the user is looking at never alerts, read or 
         tacky chat open -acc $acc -chat alice@example.com
         notify_incoming "hello"
         list [notify_jids] [dict get \
-            [tacky message ownRead -acc $acc -chat alice@example.com] unread]
+            [tacky message own_read -acc $acc -chat alice@example.com] unread]
     } -result {{} 1}
 
 test notify-open-inactive-alerts {an open chat in an app in the background still alerts} \
     {*}$notify_common -body {
         tacky chat open -acc $acc -chat alice@example.com
-        [$::_client cget -taco] app setActive -active 0
+        [$::_client cget -taco] app set_active -active 0
         notify_incoming "hello"
         notify_jids
     } -result {alice@example.com}
@@ -313,7 +313,7 @@ test notify-catchup-respects-mute {a muted chat's backlog stays silent} \
 test notify-catchup-skips-read {a backlog already read elsewhere stays silent} \
     {*}$notify_common -body {
         notify_store_unread alice@example.com 3
-        tacky message markOwnRead -acc $acc -chat alice@example.com \
+        tacky message mark_own_read -acc $acc -chat alice@example.com \
             -id [notify_newest_id alice@example.com]
         set ::alerts {}
         notify_catchup_done alice@example.com

@@ -252,7 +252,7 @@ snit::type taco_account {
     }
 
     # Stable per-account resource (tacky.<hex>). Generated and persisted on
-    # first use, reused across reconnects. See rerollResource for conflicts.
+    # first use, reused across reconnects. See reroll_resource for conflicts.
     tackymethod resource {args} {
         set jid [dict get $args -acc]
         if {![$self exists -acc $jid]} {
@@ -266,7 +266,7 @@ snit::type taco_account {
         return $res
     }
 
-    tackymethod rerollResource {args} {
+    tackymethod reroll_resource {args} {
         set jid [dict get $args -acc]
         if {![$self exists -acc $jid]} {
             error "Account doesn't exist: $jid"
@@ -319,8 +319,8 @@ snit::type taco_account {
     }
 
     # Server-side password change (XEP-0077), delegates to client.
-    # tacky account changePassword -acc $jid -password $new ?-command $cb? ?-onerror $ecb?
-    tackymethod -async changePassword {args} {
+    # tacky account change_password -acc $jid -password $new ?-command $cb? ?-onerror $ecb?
+    tackymethod -async change_password {args} {
         set jid [dict get $args -acc]
         set client [$options(-taco) client $jid]
         $client changePassword {*}[dict remove $args -acc]

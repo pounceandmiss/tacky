@@ -768,7 +768,7 @@ test groupcall-start-hosted {start makes a room of the call's own, lets the chat
             if {$item ne ""} { lappend affil [xsearch $item -get @jid] [xsearch $item -get @affiliation] }
         }
         lassign [gc_invite_sent $ROOM invite] type id invite
-        list [jid domain $call] [c muc isHidden -jid $call] \
+        list [jid domain $call] [c muc is_hidden -jid $call] \
             [dict get $submitted muc#roomconfig_membersonly] \
             [dict get $submitted muc#roomconfig_whois] \
             $affil $type [regexp {^[0-9a-f]{32}$} $id] \
@@ -840,7 +840,7 @@ test groupcall-hosted-join {joining a hosted call: hidden, a nick of our own, an
         c.conn feed [gc_presence [jid resource $to] -room call@muc.example.com -self 1 \
             -jid user@test.example.com/res]
         lassign [gc_invite_sent $ROOM accept] type id
-        list [c muc isHidden -jid call@muc.example.com] $type $id \
+        list [c muc is_hidden -jid call@muc.example.com] $type $id \
             [expr {[xsearch [gc_muji_written] preparing -get node] ne ""}]
     } -result {1 groupchat inv42 1}
 
@@ -1125,7 +1125,7 @@ test groupcall-join-own-room-refused {an invite naming a room we are joining or 
         c.conn clear
         list [catch {c.groupcall join -chat bob@example.com -id $rowid1} err1] $err1 \
             [catch {c.groupcall join -chat carol@example.com -id $rowid2} err2] $err2 \
-            [c muc isHidden -jid $ROOM] [gc_last_join]
+            [c muc is_hidden -jid $ROOM] [gc_last_join]
     } -result [list 1 "join: $ROOM is one of your group chats, not a call's room" \
         1 "join: marked@muc.example.com is one of your group chats, not a call's room" 0 ""]
 
@@ -1237,7 +1237,7 @@ test groupcall-preview-camera-switch {a new preferred camera reaches the self-vi
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        c.groupcall applyPreferredCamera -id cam2
+        c.groupcall apply_preferred_camera -id cam2
         list [expr {[lindex [mockmedia::calls SetVideoDevice] 0 0] eq [lindex [mockmedia::calls OpenPreview] 0 0]}] \
             [lrange [lindex [mockmedia::calls SetVideoDevice] 0] 1 end]
     } -result {1 {-id cam2}}
@@ -2070,7 +2070,7 @@ test groupcall-rejoin-ignores-stale-leave-echo {leaving and joining again at onc
         c.groupcall join -jid $ROOM
         # The room shows the leave, then the new <preparing/>.
         c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
-        set still [c.groupcall inCall -jid $ROOM]
+        set still [c.groupcall in_call -jid $ROOM]
         gc_echo_preparing
         list $still [lrange [gc_event_names] end-2 end] [dict get [gc_status $ROOM] joined]
     } -result {1 {<Joined> <Left> <Joined>} 1}
@@ -2081,7 +2081,7 @@ test groupcall-own-clear-after-echo-still-leaves {once the new join was echoed, 
         c.groupcall join -jid $ROOM
         gc_echo_preparing
         c.conn feed [gc_presence me -self 1 -jid user@test.example.com/res]
-        list [c.groupcall inCall -jid $ROOM] [lindex [gc_event_args <Left>] end]
+        list [c.groupcall in_call -jid $ROOM] [lindex [gc_event_args <Left>] end]
     } -result [list 0 [list -jid $ROOM -reason left -chat $ROOM]]
 
 test groupcall-tie-break-error-is-not-a-refusal {a <tie-break/> reply to our initiate raises no "does not see you" warning} \
@@ -2179,7 +2179,7 @@ test groupcall-own-rename-counts-once {renaming ourselves mid-call counts us onc
             }
         }]
         gc_echo_announce me2
-        list [c.groupcall inCall -jid $ROOM] [gc_status $ROOM] [llength [gc_session_sids]] \
+        list [c.groupcall in_call -jid $ROOM] [gc_status $ROOM] [llength [gc_session_sids]] \
             [expr {"<Left>" in [gc_event_names]}]
     } -result {1 {active 1 joined 1 count 2} 1 0}
 
@@ -2207,7 +2207,7 @@ test groupcall-room-destroyed-ends-call {the room destroyed mid-call ends the ca
                 j status -code 110
             }
         }]
-        list [c.groupcall inCall -jid $ROOM] [lindex [gc_event_args <Left>] end] \
+        list [c.groupcall in_call -jid $ROOM] [lindex [gc_event_args <Left>] end] \
             [llength [c.calls list]]
     } -result [list 0 [list -jid $ROOM -reason "left the room"] 0]
 
@@ -2369,12 +2369,12 @@ test groupcall-state-failed-join {a hosted call that is over: one ended state sa
             [lsearch -inline -all [lmap s [gc_states] { dict get $s reason }] ?*]
     } -result {joining 1 bob@example.com {joining ended idle} {{the call has ended}}}
 
-test groupcall-state-camera {setVideo turns the camera field, not video} \
+test groupcall-state-camera {set_video turns the camera field, not video} \
     {*}$groupcall_env -body {
         gc_room
         c.groupcall join -jid $ROOM -video 1
         gc_echo_preparing
-        c.groupcall setVideo -jid $ROOM -on 0
+        c.groupcall set_video -jid $ROOM -on 0
         set st [gc_state]
         list [dict get $st video] [dict get $st camera]
     } -result {1 0}

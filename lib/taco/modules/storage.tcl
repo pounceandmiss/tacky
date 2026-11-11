@@ -16,7 +16,7 @@
 # failed or interrupted migration is always safe to retry from scratch.
 #
 # encrypt/decrypt only ever run at the pre-boot gate, never mid-session:
-# requestEncrypt/requestDecrypt just record intent in a $configDir/
+# request_encrypt/request_decrypt just record intent in a $configDir/
 # .storage-pending marker (direction only, never the passphrase - that's
 # entered fresh at the gate on the next launch, same principle as never
 # putting a passphrase on process argv). taco_type's constructor gate (see
@@ -148,19 +148,19 @@ snit::type taco_storage {
         $self MarkerWrite $direction
     }
 
-    tackymethod requestEncrypt {args} {
+    tackymethod request_encrypt {args} {
         $self RequestMigration encrypt plaintext
         return
     }
 
-    tackymethod requestDecrypt {args} {
+    tackymethod request_decrypt {args} {
         $self RequestMigration decrypt unlocked
         return
     }
 
     # A resolved gate is a normal boot: run the CompleteUnlock the constructor
     # or unlock deferred. Not while locked - unlock completes the boot itself.
-    tackymethod cancelPending {args} {
+    tackymethod cancel_pending {args} {
         if {[$self MarkerRead] eq ""} {
             error "nothing is pending"
         }
@@ -211,7 +211,7 @@ snit::type taco_storage {
     # and may be mid-send, and nothing here may swap files beneath them.
     method RequireGate {direction} {
         if {[$self MarkerRead] ne $direction || [$options(-taco) booted]} {
-            error "storage $direction runs only at startup, after request[string totitle $direction]"
+            error "storage $direction runs only at startup, after request_$direction"
         }
     }
 

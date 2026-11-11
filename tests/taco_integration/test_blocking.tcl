@@ -83,7 +83,7 @@ namespace eval ::test::blocking_int {
     proc clearBlocklist {} {
         variable ROMEO
         if {[llength [[tacky client $ROMEO] blocking list]] == 0} return
-        [tacky client $ROMEO] blocking unblockAll
+        [tacky client $ROMEO] blocking unblock_all
         blocklistBecomes $ROMEO {}
     }
 

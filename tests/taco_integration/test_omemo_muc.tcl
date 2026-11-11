@@ -140,11 +140,11 @@ namespace eval ::test::omemo_muc_int {
             [tacky client $acc] muc join -jid $ROOM -nick $nick
         }
         if {[pollUntil {
-            dict get [tacky omemo roomStatus -acc $acc -jid $CHAT] eligible
+            dict get [tacky omemo room_status -acc $acc -jid $CHAT] eligible
         }] eq ""} {
             error "$acc: $ROOM never said it is private"
         }
-        tacky omemo setEnabled -acc $acc -jid $CHAT -value 1
+        tacky omemo set_enabled -acc $acc -jid $CHAT -value 1
     }
 
     proc setAffiliation {target affil} {
@@ -180,7 +180,7 @@ namespace eval ::test::omemo_muc_int {
             ownKeysUp $acc
         }
 
-        call muc createRoom -acc $ANNA -jid $ROOM -nick anna -config {
+        call muc create_room -acc $ANNA -jid $ROOM -nick anna -config {
             muc#roomconfig_membersonly 1
             muc#roomconfig_whois anyone
             muc#roomconfig_enablearchiving 1
@@ -189,11 +189,11 @@ namespace eval ::test::omemo_muc_int {
         setAffiliation $BEA member
         setAffiliation $CY member
         if {[pollUntil {
-            dict get [tacky omemo roomStatus -acc $ANNA -jid $CHAT] eligible
+            dict get [tacky omemo room_status -acc $ANNA -jid $CHAT] eligible
         }] eq ""} {
             error "$ROOM never said it is private"
         }
-        tacky omemo setEnabled -acc $ANNA -jid $CHAT -value 1
+        tacky omemo set_enabled -acc $ANNA -jid $CHAT -value 1
         join $BEA bea
         join $CY cy
         foreach acc [list $ANNA $BEA $CY] {
@@ -239,7 +239,7 @@ namespace eval ::test::omemo_muc_int {
             set mine [rowOfBody $ANNA "hello room"]
             list $got [dict get $confirmed -server_status] \
                 [dict get $mine encryption] \
-                [string match "*OMEMO*" [[tacky client $ANNA] message rawxml \
+                [string match "*OMEMO*" [[tacky client $ANNA] message raw_xml \
                     -chat $CHAT -id [dict get $mine id]]]
         } -result {{{hello room} omemo {hello room} omemo} {} omemo 1}
 
@@ -338,7 +338,7 @@ namespace eval ::test::omemo_muc_int {
             }
             # Its devices, fetched now it is a member, before Anna writes.
             if {[pollUntil {
-                expr {[llength [[tacky client $ANNA] omemo devicelist -jid $bot]] > 0}
+                expr {[llength [[tacky client $ANNA] omemo device_list -jid $bot]] > 0}
             }] eq ""} {
                 error "Anna never had the bot's devicelist"
             }

@@ -5,7 +5,7 @@
 # - Nick entry (pre-filled from bookmarks default nick)
 # - Password entry (optional)
 # - MUC service entry + "Discover" button
-# - Room list treeview (populated by discoverRooms)
+# - Room list treeview (populated by discover_rooms)
 # - Join / Cancel buttons
 #
 # Usage:
@@ -48,7 +48,7 @@ snit::widget joinroomdialog {
 
         # Derive defaults
         set service "conference.[jid domain $options(-acc)]"
-        ::tacky bookmarks defaultNick -acc $options(-acc) \
+        ::tacky bookmarks default_nick -acc $options(-acc) \
             -tag $self -command [mymethod OnDefaultNick]
 
         # Listen for join success/error
@@ -131,7 +131,7 @@ snit::widget joinroomdialog {
         foreach item [$roomlist children {}] {
             $roomlist delete $item
         }
-        ::tacky muc discoverRooms \
+        ::tacky muc discover_rooms \
             -acc $options(-acc) -jid $service \
             -tag $self -command [mymethod OnDiscoverResult] \
             -onerror [mymethod OnDiscoverError]

@@ -84,7 +84,7 @@ snit::type app_type {
         set active [expr {[focus] ne ""}]
         if {$active == $reportedActive} return
         set reportedActive $active
-        catch {::tacky app setActive -active $active}
+        catch {::tacky app set_active -active $active}
     }
 
     # `setting` (like every module but `storage`) doesn't exist yet while
@@ -143,26 +143,26 @@ snit::type app_type {
     method ApplyLogFile {ev} {
         set val [dict get $ev -value]
         if {$val eq ""} return
-        ::tacky log setenabled -enabled [expr {!!$val}]
+        ::tacky log set_enabled -enabled [expr {!!$val}]
     }
 
     method ApplyLogRedact {ev} {
         set val [dict get $ev -value]
         if {$val eq ""} return
-        ::tacky log setredact -enabled [expr {!!$val}]
+        ::tacky log set_redact -enabled [expr {!!$val}]
     }
 
     method ApplyLogLevel {ev} {
         set val [dict get $ev -value]
         if {$val eq ""} return
-        ::tacky log setlevel -level $val
+        ::tacky log set_level -level $val
     }
 
     # The menu offers a switch; the native loggers take a level.
     method ApplyLogNative {ev} {
         set val [dict get $ev -value]
         if {$val eq ""} return
-        ::tacky log setnativelevel -level [expr {$val ? "debug" : "none"}]
+        ::tacky log set_native_level -level [expr {$val ? "debug" : "none"}]
     }
 
     # `.` (withdrawn, per wm withdraw . above) is passed as -parent even

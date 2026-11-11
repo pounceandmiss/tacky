@@ -82,7 +82,7 @@ snit::widget searchwindow {
 
         if {!$wholeAccount} {
             $self Authors $options(-jid)
-            ::tacky mam fulltextSupported -acc $options(-acc) \
+            ::tacky mam fulltext_supported -acc $options(-acc) \
                 -chat $options(-jid) -tag $searchTag \
                 -command [mymethod OnRemoteCapability] \
                 -onerror [mymethod OnRemoteCapability 0]

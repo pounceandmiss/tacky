@@ -127,12 +127,12 @@ test omemoroomkeys-lock-turns-room-on {the lock switches the room on} \
     -setup {ork_panel_up $::ork_PRIVATE [list romeo@montague.lit member]} -body {
     [$::_ork.paned.left.entry accessory].lock invoke
     wait
-    tacky omemo isEnabled -acc $::ork_acc -jid $::ork_chat
+    tacky omemo is_enabled -acc $::ork_acc -jid $::ork_chat
 } -cleanup {ork_panel_down} -result 1
 
 test omemoroomkeys-unreachable-banner {a send stopped by a member raises a banner naming them, and the room's keys} \
     -setup {ork_panel_up $::ork_PRIVATE [list romeo@montague.lit member]} -body {
-    tacky omemo setEnabled -acc $::ork_acc -jid $::ork_chat -value 1
+    tacky omemo set_enabled -acc $::ork_acc -jid $::ork_chat -value 1
     ork_own_devicelist
     $::_client omemo UpdatePeerDevicelist romeo@montague.lit {}
     tacky message send -acc $::ork_acc -chat $::ork_chat -body secret
@@ -146,18 +146,18 @@ test omemoroomkeys-unreachable-banner {a send stopped by a member raises a banne
 
 test omemoroomkeys-banner-off-turns-room-off {the banner's "Turn off encryption" switches the room off and goes} \
     -setup {ork_panel_up $::ork_PRIVATE [list romeo@montague.lit member]} -body {
-    tacky omemo setEnabled -acc $::ork_acc -jid $::ork_chat -value 1
+    tacky omemo set_enabled -acc $::ork_acc -jid $::ork_chat -value 1
     $::_ork ShowUnreachable romeo@montague.lit
     [$::_ork BannerBody omemo].off invoke
     wait
-    list [tacky omemo isEnabled -acc $::ork_acc -jid $::ork_chat] \
+    list [tacky omemo is_enabled -acc $::ork_acc -jid $::ork_chat] \
         [$::_ork HasBanner omemo]
 } -cleanup {ork_panel_down} -result {0 0}
 
 proc ork_keys_up {members} {
     mock_backend_up
     ork_join $::ork_PRIVATE $members
-    tacky omemo setEnabled -acc $::ork_acc -jid $::ork_chat -value 1
+    tacky omemo set_enabled -acc $::ork_acc -jid $::ork_chat -value 1
     set ::_orkw [omemoroomkeys open $::ork_acc $::ork_chat]
     wait
 }
@@ -180,7 +180,7 @@ proc ork_member_panel {jid} {
 test omemoroomkeys-attention-first {members needing attention come first and open; the rest are folded} \
     -setup {ork_keys_up [list romeo@montague.lit member mercutio@verona.lit member \
         tybalt@capulet.lit member]} -body {
-    tacky omemo setBlindTrust -acc $::ork_acc -value 0
+    tacky omemo set_blind_trust -acc $::ork_acc -value 0
     ork_key romeo@montague.lit 11 trusted
     ork_key tybalt@capulet.lit 31 undecided
     wait
@@ -193,7 +193,7 @@ test omemoroomkeys-attention-first {members needing attention come first and ope
 
 test omemoroomkeys-blind-trust-calms-new-keys {with blind trust on, an undecided key needs no decision} \
     -setup {ork_keys_up [list tybalt@capulet.lit member]} -body {
-    tacky omemo setBlindTrust -acc $::ork_acc -value 1
+    tacky omemo set_blind_trust -acc $::ork_acc -value 1
     ork_key tybalt@capulet.lit 31 undecided
     wait
     list [$::_orkw Shown] [$::_orkw.banner cget -text]
@@ -202,7 +202,7 @@ test omemoroomkeys-blind-trust-calms-new-keys {with blind trust on, an undecided
 
 test omemoroomkeys-set-all-is-per-member {trusting all of one member's devices touches only that member} \
     -setup {ork_keys_up [list romeo@montague.lit member tybalt@capulet.lit member]} -body {
-    tacky omemo setBlindTrust -acc $::ork_acc -value 0
+    tacky omemo set_blind_trust -acc $::ork_acc -value 0
     ork_key romeo@montague.lit 11 undecided
     ork_key romeo@montague.lit 12 undecided
     ork_key tybalt@capulet.lit 31 undecided
@@ -231,7 +231,7 @@ test omemoroomkeys-turn-off {"Turn off encryption" switches the room off} \
     -setup {ork_keys_up [list romeo@montague.lit member]} -body {
     $::_orkw.bar.off invoke
     wait
-    list [tacky omemo isEnabled -acc $::ork_acc -jid $::ork_chat] \
+    list [tacky omemo is_enabled -acc $::ork_acc -jid $::ork_chat] \
         [$::_orkw.banner cget -text] [$::_orkw.bar.off cget -state]
 } -cleanup {ork_keys_down} -result {0 {Encryption is off for this room.} disabled}
 

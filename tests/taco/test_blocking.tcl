@@ -107,7 +107,7 @@ test blocking-unblock-empty-means-all \
     {*}$blocking_common \
     -body {
         c.conn clear
-        c blocking unblockAll
+        c blocking unblock_all
         set iq [lindex [c.conn get_written] end]
         list [xsearch $iq -get @type] \
             [llength [xsearch $iq unblock -ns urn:xmpp:blocking item]]

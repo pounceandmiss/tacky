@@ -85,7 +85,7 @@ test json-backend-callback-search-result {a search result's flags and cursor are
 test json-backend-callback-list {callback with list of ints} -setup {
     _test_clear
 } -body {
-    _test_on_result 7 omemo/devicelist {10 20 30}
+    _test_on_result 7 omemo/device_list {10 20 30}
     lindex [_test_sent] 0
 } -result [json::write array \
     {"result"} 7 \
@@ -94,7 +94,7 @@ test json-backend-callback-list {callback with list of ints} -setup {
 test json-backend-callback-bool {callback with scalar bool} -setup {
     _test_clear
 } -body {
-    _test_on_result 3 presence/isOnline 1
+    _test_on_result 3 presence/is_online 1
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 3 true]
 
@@ -157,10 +157,10 @@ test json-type-map-named {map of a named type coerces nested objects} -body {
     laptop [json::write object priority 5] \
     phone [json::write object priority 3]]
 
-test json-backend-callback-volume {getVolume result is a JSON number} -setup {
+test json-backend-callback-volume {get_volume result is a JSON number} -setup {
     _test_clear
 } -body {
-    _test_on_result 8 audio/getVolume 0.75
+    _test_on_result 8 audio/get_volume 0.75
     lindex [_test_sent] 0
 } -result [json::write array {"result"} 8 0.75]
 
@@ -180,10 +180,10 @@ test json-backend-callback-resources {resources is a map of presence objects} -s
             client [json::write object name {"Dino"} features \
                 [json::write array {"urn:xmpp:ping"} {"urn:xmpp:time"}]]]]]
 
-test json-backend-callback-software-version {softwareVersion is an object} -setup {
+test json-backend-callback-software-version {software_version is an object} -setup {
     _test_clear
 } -body {
-    _test_on_result 12 caps/softwareVersion \
+    _test_on_result 12 caps/software_version \
         [dict create name Dino version 0.5 os Linux]
     lindex [_test_sent] 0
 } -result [json::write array \
@@ -234,7 +234,7 @@ test json-type-reactions {reactions serialize as an object keyed by emoji} -body
 
 # -- goto tests --------------------------------------------------------------
 #
-# goto and gotoReply return the same dict; gotoReply delegates to goto.
+# goto and goto_reply return the same dict; goto_reply delegates to goto.
 
 test json-type-goto {goto is a dict, not a bare list of messages} -body {
     jsonify convert message/goto \
@@ -246,15 +246,15 @@ test json-type-goto {goto is a dict, not a bare list of messages} -body {
         [json::write object timestamp 1700 body {"hi"}]] \
     anchor 1700 bounded_before false bounded_after true]
 
-test json-type-gotoreply {gotoReply serializes identically to goto} -body {
+test json-type-gotoreply {goto_reply serializes identically to goto} -body {
     set r [dict create \
         messages [list [dict create timestamp 1700 body hi]] \
         anchor 1700 bounded_before 0 bounded_after 1]
-    expr {[jsonify convert message/goto $r] eq [jsonify convert message/gotoReply $r]}
+    expr {[jsonify convert message/goto $r] eq [jsonify convert message/goto_reply $r]}
 } -result 1
 
 test json-type-goto-unresolved {unresolved goto emits a null anchor} -body {
-    jsonify convert message/gotoReply [dict create messages {} anchor ""]
+    jsonify convert message/goto_reply [dict create messages {} anchor ""]
 } -result [json::write object messages [json::write array] anchor null]
 
 # -- groupcall tests ---------------------------------------------------------

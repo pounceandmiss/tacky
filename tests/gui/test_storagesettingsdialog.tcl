@@ -37,10 +37,10 @@ test storagesettingsdialog-button-tracks-status \
 # Cancel needs no confirmation dialog (unlike Request*, which show a real
 # tk_messageBox this suite doesn't drive), so it's the one Action path
 # exercisable end-to-end here: a real pending-encrypt marker, Action calls
-# through to the backend's cancelPending, and the dialog re-fetches and
+# through to the backend's cancel_pending, and the dialog re-fetches and
 # reflects the real resulting status.
 test storagesettingsdialog-action-cancel-round-trips-through-backend \
-    {Action on a pending status calls the backend's cancelPending and refreshes} \
+    {Action on a pending status calls the backend's cancel_pending and refreshes} \
     -setup {
         set cfg [file tempdir tacky-sswtest]
         set data [file join $cfg data]
@@ -48,7 +48,7 @@ test storagesettingsdialog-action-cancel-round-trips-through-backend \
         file mkdir $data $cache
         tacky_type create tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
     } -body {
         storagesettingsdialog .sswtest2 -tacky tacky
         pack .sswtest2

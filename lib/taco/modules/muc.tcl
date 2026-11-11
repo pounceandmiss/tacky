@@ -9,42 +9,42 @@
 # tacky muc subject -acc $jid -jid $room -body $text
 # tacky muc invite -acc $jid -jid $room -to $jid ?-reason $text?
 # tacky muc decline -acc $jid -jid $room -to $inviterJid ?-reason $text?
-# tacky muc acceptInvite -acc $jid -chat $chatJid -id $id
-# tacky muc declineInvite -acc $jid -chat $chatJid -id $id ?-reason $text?
-# tacky muc requestVoice -acc $jid -jid $room
+# tacky muc accept_invite -acc $jid -chat $chatJid -id $id
+# tacky muc decline_invite -acc $jid -chat $chatJid -id $id ?-reason $text?
+# tacky muc request_voice -acc $jid -jid $room
 # tacky muc kick -acc $jid -jid $room -nick $nick ?-reason $text? ?-command $cb?
 # tacky muc role -acc $jid -jid $room -nick $nick -role $role ?-reason $text? ?-command $cb?
 # tacky muc affiliation -acc $jid -jid $room -target $bareJid -affiliation $a ?-reason $t? ?-nick $n? ?-command $cb?
-# tacky muc getList -acc $jid -jid $room -what $what ?-command $cb? ?-onerror $ecb?
-# tacky muc configGet -acc $jid -jid $room ?-command $cb? ?-onerror $ecb?   ;# cb gets a form dict
-# tacky muc configSet -acc $jid -jid $room -form $formDict ?-command $cb?
-# tacky muc configCancel -acc $jid -jid $room ?-command $cb?
-# tacky muc createInstant -acc $jid -jid $room ?-command $cb?
-# tacky muc createRoom -acc $jid -jid $room -nick $nick ?-hidden 0|1? ?-config {var value ...}? ?-command $cb? ?-onerror $ecb?
+# tacky muc get_list -acc $jid -jid $room -what $what ?-command $cb? ?-onerror $ecb?
+# tacky muc get_config -acc $jid -jid $room ?-command $cb? ?-onerror $ecb?   ;# cb gets a form dict
+# tacky muc set_config -acc $jid -jid $room -form $formDict ?-command $cb?
+# tacky muc cancel_config -acc $jid -jid $room ?-command $cb?
+# tacky muc create_instant -acc $jid -jid $room ?-command $cb?
+# tacky muc create_room -acc $jid -jid $room -nick $nick ?-hidden 0|1? ?-config {var value ...}? ?-command $cb? ?-onerror $ecb?
 #   ;# a new room, configured before anyone can enter; cb gets the room JID,
 #   ;# ecb a reason. An existing room is an error.
-# tacky muc destroyRoom -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
-# tacky muc registerGet -acc $jid -jid $room ?-command $cb? ?-onerror $ecb? ;# cb gets a form dict
-# tacky muc registerSet -acc $jid -jid $room -form $formDict ?-command $cb?
-# tacky muc discoverRooms -acc $jid -jid $serviceJid ?-command $cb? ?-onerror $ecb?
-# tacky muc findService -acc $jid -command $cb   ;# cb gets our server's MUC service JID, "" if none
-# tacky muc reservedNick -acc $jid -jid $room ?-command $cb?
+# tacky muc destroy_room -acc $jid -jid $room ?-altRoom $jid? ?-reason $t? ?-password $pw? ?-command $cb?
+# tacky muc get_registration -acc $jid -jid $room ?-command $cb? ?-onerror $ecb? ;# cb gets a form dict
+# tacky muc set_registration -acc $jid -jid $room -form $formDict ?-command $cb?
+# tacky muc discover_rooms -acc $jid -jid $serviceJid ?-command $cb? ?-onerror $ecb?
+# tacky muc find_service -acc $jid -command $cb   ;# cb gets our server's MUC service JID, "" if none
+# tacky muc reserved_nick -acc $jid -jid $room ?-command $cb?
 #
-# tacky muc getSubject -acc $jid -jid $room
+# tacky muc get_subject -acc $jid -jid $room
 # tacky muc occupants -acc $jid -jid $room
 # tacky muc occupant -acc $jid -jid $room -nick $nick
 #   ;# occupant: nick jid jids role affiliation show status occupant_id caps, plus
 #   ;# public fields from addOccupantField. Internal ones (groupcall's call)
 #   ;# only reach tacky's modules, through Occupants and the bus.
-# tacky muc myNick -acc $jid -jid $room
-# tacky muc myRole -acc $jid -jid $room
-# tacky muc myAffiliation -acc $jid -jid $room
-# tacky muc haveVoice -acc $jid -jid $room
-# tacky muc isJoined -acc $jid -jid $room
-# tacky muc isHidden -acc $jid -jid $room   ;# remembered after leaving, until rejoined
+# tacky muc my_nick -acc $jid -jid $room
+# tacky muc my_role -acc $jid -jid $room
+# tacky muc my_affiliation -acc $jid -jid $room
+# tacky muc has_voice -acc $jid -jid $room
+# tacky muc is_joined -acc $jid -jid $room
+# tacky muc is_hidden -acc $jid -jid $room   ;# remembered after leaving, until rejoined
 # tacky muc rooms -acc $jid                  ;# joined rooms, hidden ones left out
-# tacky muc roomInfo -acc $jid -jid $room    ;# {known live members_only non_anonymous occupant_id}
-# tacky muc roomPrivacy -acc $jid -jid $room ;# why its readers aren't known, {} when they are
+# tacky muc room_info -acc $jid -jid $room    ;# {known live members_only non_anonymous occupant_id}
+# tacky muc room_privacy -acc $jid -jid $room ;# why its readers aren't known, {} when they are
 # tacky muc members -acc $jid -jid $room     ;# {list $status members {$realJid $affiliation ...}}
 # tacky muc people -acc $jid -jid $room      ;# {list groups me people}: who to show (see "People")
 # tacky muc person -acc $jid -jid $room -occupant $room/$nick ?-occupant_id $id?
@@ -99,7 +99,7 @@ snit::type taco_muc {
     variable MembersPending -array {}
     variable MembersSerial 0
 
-    # roomJid -> hidden flag of a room no longer tracked (isHidden); cleared
+    # roomJid -> hidden flag of a room no longer tracked (is_hidden); cleared
     # on rejoin.
     variable WasHidden -array {}
 
@@ -422,7 +422,7 @@ snit::type taco_muc {
             occupant_id [expr {"urn:xmpp:occupant-id:0" in $feats}]]
     }
 
-    tackymethod roomInfo {args} {
+    tackymethod room_info {args} {
         $self RoomInfoOf [dict get $args -jid]
     }
 
@@ -438,7 +438,7 @@ snit::type taco_muc {
         return $out
     }
 
-    tackymethod roomPrivacy {args} {
+    tackymethod room_privacy {args} {
         $self RoomReasons [dict get $args -jid]
     }
 
@@ -865,7 +865,7 @@ snit::type taco_muc {
 
     # Bookmark the room with autojoin and the invite's password, undoing an
     # earlier decline.
-    tackymethod -online -noreturn acceptInvite {args} {
+    tackymethod -online -noreturn accept_invite {args} {
         set chatJid [dict get $args -chat]
         set id [dict get $args -id]
         set row [$client message messagestore inviteAt $chatJid $id]
@@ -885,7 +885,7 @@ snit::type taco_muc {
     # A relayed invite's decline goes to the inviter through the room; a
     # direct one (XEP-0249 has no decline) is only marked. A room chat left
     # holding only declined invites is dropped, and leaves the chat list.
-    tackymethod -noreturn declineInvite {args} {
+    tackymethod -noreturn decline_invite {args} {
         array set opts {-reason ""}
         array set opts $args
         set chatJid $opts(-chat)
@@ -913,7 +913,7 @@ snit::type taco_muc {
     # Voice
     # =====================================================================
 
-    tackymethod -noreturn requestVoice {args} {
+    tackymethod -noreturn request_voice {args} {
         set jid [dict get $args -jid]
         $client write [j message -to $jid {
             j x -ns jabber:x:data -type submit {
@@ -981,7 +981,7 @@ snit::type taco_muc {
     # List queries
     # =====================================================================
 
-    method getList {args} {
+    method get_list {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -998,7 +998,7 @@ snit::type taco_muc {
     # Room configuration (muc#owner)
     # =====================================================================
 
-    method configGet {args} {
+    method get_config {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -1007,7 +1007,7 @@ snit::type taco_muc {
             -payload [j query -ns http://jabber.org/protocol/muc#owner]
     }
 
-    method configSet {args} {
+    method set_config {args} {
         array set opts {-form "" -command ""}
         array set opts $args
 
@@ -1018,7 +1018,7 @@ snit::type taco_muc {
             }]
     }
 
-    method configCancel {args} {
+    method cancel_config {args} {
         array set opts {-command ""}
         array set opts $args
 
@@ -1029,7 +1029,7 @@ snit::type taco_muc {
             }]
     }
 
-    tackymethod -async createInstant {args} {
+    tackymethod -async create_instant {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -1040,7 +1040,7 @@ snit::type taco_muc {
             }]
     }
 
-    method createRoom {args} {
+    method create_room {args} {
         array set opts {-jid "" -nick "" -hidden 0 -config {} -command "" -onerror ""}
         array set opts $args
         set room [jid norm $opts(-jid)]
@@ -1059,7 +1059,7 @@ snit::type taco_muc {
             $self CreateFailed $room $done "room already exists" 1
             return
         }
-        $self configGet -jid $room \
+        $self get_config -jid $room \
             -command [mymethod OnCreateForm $room $config $done] \
             -onerror [mymethod OnCreateNoForm $room $done]
     }
@@ -1074,7 +1074,7 @@ snit::type taco_muc {
             return
         }
         # Fields the service does not offer are skipped, not errors.
-        $self configSet -jid $room -form [::tacky::forms::apply $form $config] \
+        $self set_config -jid $room -form [::tacky::forms::apply $form $config] \
             -command [mymethod OnCreateConfigured $room $done]
     }
 
@@ -1102,7 +1102,7 @@ snit::type taco_muc {
 
     # The first of the server's disco items that is a text conference
     # service.
-    method findService {args} {
+    method find_service {args} {
         array set opts {-command ""}
         array set opts $args
         if {$ServiceFound} {
@@ -1169,7 +1169,7 @@ snit::type taco_muc {
     # Room destruction (muc#owner)
     # =====================================================================
 
-    tackymethod -async destroyRoom {args} {
+    tackymethod -async destroy_room {args} {
         array set opts {-altRoom "" -reason "" -password "" -command "" -onerror ""}
         array set opts $args
 
@@ -1196,7 +1196,7 @@ snit::type taco_muc {
     # Registration (jabber:iq:register)
     # =====================================================================
 
-    method registerGet {args} {
+    method get_registration {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -1205,7 +1205,7 @@ snit::type taco_muc {
             -payload [j query -ns jabber:iq:register]
     }
 
-    method registerSet {args} {
+    method set_registration {args} {
         array set opts {-form "" -command ""}
         array set opts $args
 
@@ -1220,7 +1220,7 @@ snit::type taco_muc {
     # Discovery helpers
     # =====================================================================
 
-    tackymethod -async discoverRooms {args} {
+    tackymethod -async discover_rooms {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
 
@@ -1229,7 +1229,7 @@ snit::type taco_muc {
             -payload [j query -ns http://jabber.org/protocol/disco#items]
     }
 
-    method reservedNick {args} {
+    method reserved_nick {args} {
         array set opts {-command ""}
         array set opts $args
 
@@ -1243,7 +1243,7 @@ snit::type taco_muc {
     # Local state queries
     # =====================================================================
 
-    tackymethod getSubject {args} {
+    tackymethod get_subject {args} {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return ""}
         return [dict get $Rooms($jid) subject]
@@ -1279,7 +1279,7 @@ snit::type taco_muc {
         return ""
     }
 
-    tackymethod myNick {args} {
+    tackymethod my_nick {args} {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return ""}
         return [dict get $Rooms($jid) nick]
@@ -1288,26 +1288,26 @@ snit::type taco_muc {
     # Our own XEP-0421 occupant-id in the room, captured from self-presence.
     # Non-empty iff the service stamps occupant-ids (i.e. the room supports
     # XEP-0421); "" otherwise.
-    tackymethod myOccupantId {args} {
+    tackymethod my_occupant_id {args} {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return ""}
         return [dict get $Rooms($jid) myOccupantId]
     }
 
-    tackymethod myRole {args} {
+    tackymethod my_role {args} {
         $self MyOccupantField [jid norm [dict get $args -jid]] role
     }
 
-    tackymethod myAffiliation {args} {
+    tackymethod my_affiliation {args} {
         $self MyOccupantField [jid norm [dict get $args -jid]] affiliation
     }
 
-    tackymethod haveVoice {args} {
+    tackymethod has_voice {args} {
         set role [$self MyOccupantField [jid norm [dict get $args -jid]] role]
         expr {$role ne "" && $role ni {visitor none}}
     }
 
-    tackymethod isJoined {args} {
+    tackymethod is_joined {args} {
         set jid [jid norm [dict get $args -jid]]
         if {![info exists Rooms($jid)]} {return 0}
         return [dict get $Rooms($jid) joined]
@@ -1333,7 +1333,7 @@ snit::type taco_muc {
     # Whether $jid is a room we know of: joined now, bookmarked, or with
     # room history stored. For telling a room's (or an occupant's) stanza
     # from a contact's when nothing in the stanza can be trusted to say so.
-    tackymethod isKnownRoom {args} {
+    tackymethod is_known_room {args} {
         set room [jid norm [jid bare [dict get $args -jid]]]
         if {[info exists Rooms($room)] && [dict get $Rooms($room) joined]} {
             return 1
@@ -1346,13 +1346,13 @@ snit::type taco_muc {
     }
 
     # Whether we are in $room or joining it (join sent, no answer yet).
-    tackymethod isTracked {args} {
+    tackymethod is_tracked {args} {
         info exists Rooms([jid norm [jid bare [dict get $args -jid]]])
     }
 
     # Whether $room was joined -hidden; remembered after leaving, until
     # rejoined, so the events reporting it gone can be told apart.
-    tackymethod isHidden {args} {
+    tackymethod is_hidden {args} {
         set room [jid norm [dict get $args -jid]]
         if {[info exists Rooms($room)]} { return [dict get $Rooms($room) hidden] }
         expr {[info exists WasHidden($room)] && $WasHidden($room)}
@@ -1850,7 +1850,7 @@ snit::type taco_muc {
     }
 
     method OnPrivateMessage {roomJid nick stanza} {
-        if {[$self isHidden -jid $roomJid]} return
+        if {[$self is_hidden -jid $roomJid]} return
         $client message ingestLive ${roomJid}/${nick} $stanza
     }
 
@@ -1926,7 +1926,7 @@ snit::type taco_muc {
         }
     }
 
-    # createInstant/destroyRoom: "" on success, error text on failure.
+    # create_instant/destroy_room: "" on success, error text on failure.
     method OnOwnerResult {command onerror stanza} {
         if {[xsearch $stanza -get @type] eq "error"} {
             if {$onerror ne ""} { {*}$onerror [stanza_error_text $stanza] }
@@ -2145,7 +2145,7 @@ snit::type taco_muc {
             revoke_voice 0 grant_membership 0 revoke_membership 0}
     }
 
-    # Moderation actions the current user (myRole/myAffil) may take against one
+    # Moderation actions the current user (my_role/myAffil) may take against one
     # occupant, per XEP-0045 role/affiliation rules. Computed here so the GUI
     # reads flags rather than re-deriving the authorization policy.
     method OccupantCaps {myRole myAffil target} {
@@ -2203,7 +2203,7 @@ snit::type taco_muc {
     # notice (110 with role none): some servers report putting us out this
     # way instead of with the <presence type='unavailable'> XEP-0045 7.14
     # asks for. Unhandled, the room stays marked joined for the session, so
-    # isJoined holds every rejoin path off it and its messages are lost.
+    # is_joined holds every rejoin path off it and its messages are lost.
     # Only the room's word counts: the notice from its bare JID or our own
     # nick. From another occupant's nick it may be that occupant's own
     # error, relayed by the service, so it leaves a joined room alone.
@@ -2241,7 +2241,7 @@ snit::type taco_muc {
     }
 
     # Same events for every room. Modules that file rooms (bookmarks,
-    # message, author) skip hidden ones via isHidden.
+    # message, author) skip hidden ones via is_hidden.
     # An occupant goes whole on the bus, without internal fields to frontends.
     method Emit {roomJid event args} {
         if {[llength $InternalFields] && [dict exists $args -occupant]} {
@@ -2257,7 +2257,7 @@ snit::type taco_muc {
         }
     }
 
-    # Stop tracking a room; keep its hidden flag for isHidden.
+    # Stop tracking a room; keep its hidden flag for is_hidden.
     method ForgetRoom {roomJid} {
         if {![info exists Rooms($roomJid)]} return
         set WasHidden($roomJid) [dict get $Rooms($roomJid) hidden]

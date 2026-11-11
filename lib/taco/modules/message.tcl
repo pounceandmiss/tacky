@@ -221,7 +221,7 @@ snit::type taco_message {
     # and pagination reaches the rest. A voluntary leave has no gap to record.
     method OnMucLeft {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         array set opts {-jid "" -involuntary 0}
         array set opts $args
         if {!$opts(-involuntary)} return
@@ -990,7 +990,7 @@ snit::type taco_message {
 
     # A call row's `active`: whether we are in the call held in $room.
     method InCall {room} {
-        if {[catch {$client groupcall inCall -jid $room} in]} { return 0 }
+        if {[catch {$client groupcall in_call -jid $room} in]} { return 0 }
         return $in
     }
 
@@ -1075,7 +1075,7 @@ snit::type taco_message {
         if {[llength [xsearch $x invite]] || [llength [xsearch $x decline]]} {
             return ""
         }
-        if {![$client muc isKnownRoom -jid $peer]} { return "" }
+        if {![$client muc is_known_room -jid $peer]} { return "" }
         return "[jid norm [jid bare $peer]]/[jid resource $peer]"
     }
 
@@ -1428,7 +1428,7 @@ snit::type taco_message {
         if {[string match {*\?join} $chatJid]} {
             set msgType groupchat
             regsub {\?join$} $chatJid {} toJid
-            set nick [$client muc myNick -jid $toJid]
+            set nick [$client muc my_nick -jid $toJid]
             return [list $msgType $toJid $toJid/$nick ""]
         }
         return [list chat $chatJid \
@@ -1663,7 +1663,7 @@ snit::type taco_message {
     #   3. on success promote to 'pending' with the public URL + OOB stanza and
     #      transmit (echo/ack then confirms);
     #   4. on failure mark 'failed' (the file module's <Update> shows it).
-    tackymethod sendFile {args} {
+    tackymethod send_file {args} {
         array set opts $args
         set chatJid $opts(-chat)
         set path $opts(-path)
@@ -1735,7 +1735,7 @@ snit::type taco_message {
     # Re-attempt a failed upload using the local file recorded on the row. A
     # missing source surfaces as a `file <Update>` failed (file upload checks
     # readability), so no separate guard is needed here.
-    tackymethod -noreturn retryUpload {args} {
+    tackymethod -noreturn retry_upload {args} {
         array set opts $args
         set chatJid $opts(-chat)
         set id $opts(-id)
@@ -1836,7 +1836,7 @@ snit::type taco_message {
             # settles is sent then (FlushRoomRetry).
             if {[string match {*\?join} $chatJid]} {
                 regsub {\?join$} $chatJid {} roomJid
-                if {[$client muc isJoined -jid $roomJid]
+                if {[$client muc is_joined -jid $roomJid]
                         && ![dict exists $CatchupInFlight $chatJid]} {
                     lappend joinedNow $roomJid
                 } else {
@@ -1907,7 +1907,7 @@ snit::type taco_message {
     # replay; whichever lands second dedups.
     method OnMucJoined {args} {
         # A hidden room (see muc join -hidden) is none of ours.
-        if {[$client muc isHidden -jid [dict get $args -jid]]} return
+        if {[$client muc is_hidden -jid [dict get $args -jid]]} return
         set roomJid [dict get $args -jid]
         $self DoMucCatchup ${roomJid}?join
     }
@@ -1917,7 +1917,7 @@ snit::type taco_message {
     method FlushRoomRetry {roomChatJid} {
         regsub {\?join$} $roomChatJid {} roomJid
         if {![info exists PendingRetry($roomJid)]} return
-        if {![$client muc isJoined -jid $roomJid]} return
+        if {![$client muc is_joined -jid $roomJid]} return
         unset PendingRetry($roomJid)
         $self RetryRoom $roomJid
     }
@@ -2109,8 +2109,8 @@ snit::type taco_message {
             -id $id -server_status failed -fail_reason delivery
     }
 
-    # rawxml -chat $chatJid -id $id -command $cb
-    tackymethod rawxml {args} {
+    # raw_xml -chat $chatJid -id $id -command $cb
+    tackymethod raw_xml {args} {
         array set opts $args
         $client db onecolumn {
             SELECT raw_xml FROM chat_message
@@ -2149,14 +2149,14 @@ snit::type taco_message {
         }
     }
 
-    # markDisplayed -chat $chatJid -id $id ?-after $afterId?
+    # mark_displayed -chat $chatJid -id $id ?-after $afterId?
     # Send a `displayed` marker for the last of the peer's messages up to
     # row $id and past row $afterId, which marks everything up to it read.
     # A marker for a message of our own means nothing, so with ours on
     # screen below theirs it is theirs that is named. No-op for MUC, when
     # disabled, to who may not see our presence, or when there is no such
     # message with an origin id to reference.
-    tackymethod markDisplayed {args} {
+    tackymethod mark_displayed {args} {
         set opts(-after) ""
         array set opts $args
         if {![$self MarkersEnabled]} return
@@ -2178,19 +2178,19 @@ snit::type taco_message {
         $self SendMarker $opts(-chat) displayed urn:xmpp:chat-markers:0 $originId
     }
 
-    # markOwnRead -chat $chatJid -id $id
+    # mark_own_read -chat $chatJid -id $id
     # Record that we have read this chat up to row $id. Local state only (the
-    # wire marker is markDisplayed's job), and applies to MUC as well.
+    # wire marker is mark_displayed's job), and applies to MUC as well.
     # Forward-only, so it is safe to call on every focus and scroll.
-    tackymethod markOwnRead {args} {
+    tackymethod mark_own_read {args} {
         array set opts $args
         $self AdvanceOwnRead $opts(-chat) $opts(-id)
     }
 
-    # ownRead -chat $chatJid
+    # own_read -chat $chatJid
     # Our read watermark for one chat (the id of the last row read, "" for
     # none) and what is still unread past it.
-    tackymethod ownRead {args} {
+    tackymethod own_read {args} {
         array set opts $args
         return [dict create \
             id [dict get [$messagestore ownRead $opts(-chat)] id] \
@@ -2217,8 +2217,8 @@ snit::type taco_message {
         $self SetReactions $opts(-chat) $target $current
     }
 
-    # reactClear -chat $chatJid -id $id — drop all our reactions.
-    tackymethod reactClear {args} {
+    # clear_reactions -chat $chatJid -id $id — drop all our reactions.
+    tackymethod clear_reactions {args} {
         array set opts $args
         $self SetReactions $opts(-chat) $opts(-id) {}
     }
@@ -2418,9 +2418,9 @@ snit::type taco_message {
         if {[IsMucChatJid $chatJid]} {
             regsub {\?join$} $chatJid {} roomJid
             set roomJid [jid bare $roomJid]
-            set myOcc [$client muc myOccupantId -jid $roomJid]
+            set myOcc [$client muc my_occupant_id -jid $roomJid]
             if {$myOcc ne ""} { return $myOcc }
-            return [$client muc myNick -jid $roomJid]
+            return [$client muc my_nick -jid $roomJid]
         }
         return [jid bare [$client cget -jid]]
     }
@@ -2430,7 +2430,7 @@ snit::type taco_message {
     method OwnReactionLabel {chatJid} {
         if {[IsMucChatJid $chatJid]} {
             regsub {\?join$} $chatJid {} roomJid
-            return [$client muc myNick -jid [jid bare $roomJid]]
+            return [$client muc my_nick -jid [jid bare $roomJid]]
         }
         return [jid bare [$client cget -jid]]
     }
@@ -2833,12 +2833,12 @@ snit::type taco_message {
         {*}$callback $result
     }
 
-    # gotoReply -chat $jid -reply_id $rid ?-reply_to $jid? ?-limit 50?
+    # goto_reply -chat $jid -reply_id $rid ?-reply_to $jid? ?-limit 50?
     #           ?-tag $tag? -command $cb
     # Resolve an XEP-0461 reply target in the local store and jump to it
     # via `goto`. An uncached target yields an empty result; remote fetch
     # by stanza-id is not implemented.
-    tackymethod -async gotoReply {args} {
+    tackymethod -async goto_reply {args} {
         set defaults [dict create -limit 50 -tag "" -reply_to ""]
         set opts [dict merge $defaults $args]
 
@@ -3288,14 +3288,14 @@ snit::type taco_message {
         regsub {\?join$} $chatJid {} roomJid
         set roomJid [jid bare $roomJid]
         set occ [xsearch $msgNode occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
-        set myOcc [$client muc myOccupantId -jid $roomJid]
+        set myOcc [$client muc my_occupant_id -jid $roomJid]
         set nick [jid resource $rawFrom]
         # Compare by occupant-id only when both ours and the stanza's are
         # known; otherwise fall back to nick equality.
         if {$occ ne "" && $myOcc ne ""} {
             set isOwn [expr {$occ eq $myOcc}]
         } else {
-            set isOwn [expr {$nick eq [$client muc myNick -jid $roomJid]
+            set isOwn [expr {$nick eq [$client muc my_nick -jid $roomJid]
                 && [$self NickIsOurs $chatJid $msgNode]}]
         }
         # Key on the occupant-id whenever the stanza carries one (stable, ours
@@ -3670,7 +3670,7 @@ snit::type taco_message {
     method IsOwnByOccupant {chatJid msgNode} {
         regsub {\?join$} $chatJid {} roomJid
         set occ [xsearch $msgNode occupant-id -ns urn:xmpp:occupant-id:0 -get @id]
-        set myOcc [$client muc myOccupantId -jid [jid bare $roomJid]]
+        set myOcc [$client muc my_occupant_id -jid [jid bare $roomJid]]
         expr {$occ ne "" && $occ eq $myOcc}
     }
 
@@ -3787,7 +3787,7 @@ snit::type taco_message {
     method MentionsMe {chatJid body ownId senderNick} {
         if {$ownId ne "" || $body eq ""} { return 0 }
         if {![string match {*\?join} $chatJid]} { return 0 }
-        set nick [$client muc myNick -jid [regsub {\?join$} $chatJid {}]]
+        set nick [$client muc my_nick -jid [regsub {\?join$} $chatJid {}]]
         if {$nick eq "" || $senderNick eq $nick} { return 0 }
         set quoted [regsub -all {\W} $nick {\\&}]
         return [regexp -nocase -- "\\y$quoted\\y" $body]

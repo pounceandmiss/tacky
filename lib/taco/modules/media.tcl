@@ -5,8 +5,8 @@
 # tacky media backend      ?-command $cb?  ;# active backend's name
 # tacky media list         ?-command $cb?  ;# backends this build offers
 # tacky media capabilities ?-command $cb?  ;# flag -> bool, see lib/media/media.tcl
-# tacky media payloadTypes ?-command $cb?  ;# kind -> payload dicts, what a group call is announced with
-# tacky media hostEvent    -pc $pc -type $t ...  ;# host backend only
+# tacky media payload_types ?-command $cb?  ;# kind -> payload dicts, what a group call is announced with
+# tacky media host_event    -pc $pc -type $t ...  ;# host backend only
 #
 # tacky listen media <Warning>     $cmd  ;# -name $requested -reason $text
 # tacky listen media <HostCommand> $cmd  ;# -op $verb -pc $pc ...
@@ -21,7 +21,7 @@
 #
 # On the `host` backend the media half is the frontend's: every command
 # leaves as a <HostCommand> event and every answer comes back through
-# `hostEvent`. See lib/media/media_host.tcl.
+# `host_event`. See lib/media/media_host.tcl.
 
 package require tacky::media
 # rtc is the libdatachannel backend, and only a build that carries the
@@ -75,15 +75,15 @@ snit::type taco_media {
         return [::tacky::media capabilities]
     }
 
-    tackymethod payloadTypes {args} {
+    tackymethod payload_types {args} {
         return [::tacky::media payloadTypes]
     }
 
     # The frontend's half of the host backend. On any other backend this is
     # a mistake worth an error: nothing asked the frontend for it.
-    tackymethod hostEvent {args} {
+    tackymethod host_event {args} {
         if {[::tacky::media backend] ne "host"} {
-            error "media hostEvent: the host backend is not open"
+            error "media host_event: the host backend is not open"
         }
         set ev {}
         foreach {key value} $args {

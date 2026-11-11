@@ -322,7 +322,7 @@ namespace eval ::test::calls_int {
         {without blind trust, trusting each other's key mid-call turns the call verified, and the next one is from the start} \
         {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
             foreach acc [list $::test::calls_int::ROMEO $::test::calls_int::JULIET] {
-                tacky omemo setBlindTrust -acc $acc -value 0
+                tacky omemo set_blind_trust -acc $acc -value 0
             }
             ::test::calls_int::activeCall {
                 set before [::test::calls_int::verdicts]
@@ -337,7 +337,7 @@ namespace eval ::test::calls_int {
     test calls-int-plain-with-omemo-off \
         {with OMEMO off for the chat on one side, the call is plain both ways and still connects} \
         {*}$common -constraints {withServer && notMongoose && notEjabberd && !wasm} -body {
-            tacky omemo setEnabled -acc $::test::calls_int::JULIET \
+            tacky omemo set_enabled -acc $::test::calls_int::JULIET \
                 -jid $::test::calls_int::ROMEO -value 0
             ::test::calls_int::activeCall
             ::test::calls_int::verdicts

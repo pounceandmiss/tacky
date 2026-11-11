@@ -30,9 +30,9 @@ test storagegatedialog-no-transient-for-withdrawn-parent \
 
 # Unlike StorageUnlockDialog, there's always a safe fallback here (stay in
 # the current, not-yet-migrated state), so Cancel is offered and must
-# actually call the backend's cancelPending rather than just closing.
+# actually call the backend's cancel_pending rather than just closing.
 test storagegatedialog-cancel-calls-cancelpending-without-migrating \
-    {Cancel calls the backend's cancelPending and closes without ever migrating} \
+    {Cancel calls the backend's cancel_pending and closes without ever migrating} \
     -setup {
         set cfg [file tempdir tacky-sgdtest]
         set data [file join $cfg data]
@@ -40,7 +40,7 @@ test storagegatedialog-cancel-calls-cancelpending-without-migrating \
         file mkdir $data $cache
         tacky_type create tacky -transient 0 \
             -config-dir $cfg -data-dir $data -cache-dir $cache
-        tacky storage requestEncrypt
+        tacky storage request_encrypt
         after idle {
             .storagegate.inner.btns.cancel invoke
         }

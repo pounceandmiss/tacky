@@ -153,12 +153,12 @@ snit::type taco_mam {
         return ""
     }
 
-    # fulltextSupported -chat $jid -command cb ?-onerror cb?
+    # fulltext_supported -chat $jid -command cb ?-onerror cb?
     # Whether this chat's archive advertises a fulltext field, discovering
     # and caching it first when unknown. Routes like queryChat: a room asks
     # its own archive, a DM the user's. Callback receives a boolean; an IQ
     # error goes to -onerror and isn't cached.
-    tackymethod -async fulltextSupported {args} {
+    tackymethod -async fulltext_supported {args} {
         set defaults [dict create -chat "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
         set callback [dict get $opts -command]
@@ -380,12 +380,12 @@ snit::type taco_mam {
             end_id $endId end_timestamp $endTs]
     }
 
-    # formfields ?-to jid? -command cmd ?-onerror cmd?
+    # form_fields ?-to jid? -command cmd ?-onerror cmd?
     # Queries the MAM archive for supported query filter fields.
     # Callback receives a list of field var names
     # (e.g. {with start end {{urn:xmpp:fulltext:0}fulltext}}).
     # IQ error: -onerror, with the server's text or condition.
-    tackymethod -async formfields {args} {
+    tackymethod -async form_fields {args} {
         set defaults [dict create -to "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
         $self RequestFields [dict get $opts -to] \

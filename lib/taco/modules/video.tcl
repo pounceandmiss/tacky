@@ -2,13 +2,13 @@
 # the machine, not an XMPP account, so enumeration and the preferred
 # camera live here on taco_type.
 #
-# tacky video enumerateCameras   ?-command $cb?
+# tacky video enumerate_cameras   ?-command $cb?
 #   ;# $cb receives a list of {name <str> id <str> facing <int>}. Empty on a
 #   ;# backend that does not declare the `cameras` capability.
-# tacky video getPreferredCamera ?-command $cb?
+# tacky video get_preferred_camera ?-command $cb?
 #   ;# "" means "let the backend pick" (rtc-mv takes the first V4L2 device,
 #   ;# or the test source).
-# tacky video setPreferredCamera -id $id
+# tacky video set_preferred_camera -id $id
 #   ;# persists, hot-swaps the camera on every live video call, emits
 #   ;# <PreferredCamera>.
 #
@@ -24,15 +24,15 @@ snit::type taco_video {
     option -db   -default ""
     option -taco -default ""
 
-    # Where a synchronous backend's camera list lands, see enumerateCameras.
+    # Where a synchronous backend's camera list lands, see enumerate_cameras.
     variable Enumerated {}
 
     constructor args {
         $self configurelist $args
     }
 
-    # -async, for the reasons in taco_audio's enumerateDevices.
-    tackymethod -async enumerateCameras {args} {
+    # -async, for the reasons in taco_audio's enumerate_devices.
+    tackymethod -async enumerate_cameras {args} {
         set cmd ""
         if {[dict exists $args -command]} { set cmd [dict get $args -command] }
         set Enumerated {}
@@ -54,19 +54,19 @@ snit::type taco_video {
         set Enumerated $result
     }
 
-    tackymethod getPreferredCamera {args} {
+    tackymethod get_preferred_camera {args} {
         return [$options(-taco) setting get -key video_camera]
     }
 
-    tackymethod setPreferredCamera {args} {
+    tackymethod set_preferred_camera {args} {
         array set opts {-id ""}
         array set opts $args
         $options(-taco) setting set -key video_camera -value $opts(-id)
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set client [$options(-taco) account liveClient -acc $jid]
             if {$client eq ""} continue
-            $client calls applyPreferredCamera -id $opts(-id)
-            $client groupcall applyPreferredCamera -id $opts(-id)
+            $client calls apply_preferred_camera -id $opts(-id)
+            $client groupcall apply_preferred_camera -id $opts(-id)
         }
         $options(-taco) emit video <PreferredCamera> -id $opts(-id)
         return

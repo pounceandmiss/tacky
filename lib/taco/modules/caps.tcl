@@ -14,7 +14,7 @@ if 0 {
         $client caps discoFor $ver  - get cached identity + features for a ver hash
 
     Tacky API:
-        tacky caps softwareVersion -acc $acc -to $fullJid -command $cb
+        tacky caps software_version -acc $acc -to $fullJid -command $cb
 }
 
 snit::type taco_caps {
@@ -104,10 +104,10 @@ snit::type taco_caps {
         array unset Others
     }
 
-    # softwareVersion -to jid -command cmd ?-onerror cmd?
+    # software_version -to jid -command cmd ?-onerror cmd?
     # Queries XEP-0092 Software Version of a target entity.
     # Callback receives dict: name version os; failures go to -onerror.
-    tackymethod -async softwareVersion {args} {
+    tackymethod -async software_version {args} {
         set defaults [dict create -to "" -command "" -onerror ""]
         set opts [dict merge $defaults $args]
 

@@ -6,7 +6,7 @@ package require tacky::testhelpers
 set acc user@test.example.com
 
 set chat_common [tacky_env -mock conn -account $acc -extra-setup {
-    [$::_client cget -taco] app setActive -active 1
+    [$::_client cget -taco] app set_active -active 1
 }]
 
 # Helper: a message from alice, stored as if it had arrived.
@@ -46,7 +46,7 @@ proc chat_displayed_ids {} {
 
 # The id of the last row read, "" for none.
 proc chat_read_id {} {
-    dict get [tacky message ownRead -acc $::acc -chat alice@example.com] id
+    dict get [tacky message own_read -acc $::acc -chat alice@example.com] id
 }
 
 proc chat_displayed_count {} {
@@ -60,28 +60,28 @@ proc chat_displayed_count {} {
 }
 
 proc chat_active {on} {
-    [$::_client cget -taco] app setActive -active $on
+    [$::_client cget -taco] app set_active -active $on
 }
 
 test chat-open-close {open and close track membership, not a count} \
     {*}$chat_common \
     -body {
         set out {}
-        lappend out [tacky chat isOpen -acc $acc -chat alice@example.com]
+        lappend out [tacky chat is_open -acc $acc -chat alice@example.com]
         tacky chat open -acc $acc -chat alice@example.com
         tacky chat open -acc $acc -chat alice@example.com
-        lappend out [tacky chat isOpen -acc $acc -chat alice@example.com]
+        lappend out [tacky chat is_open -acc $acc -chat alice@example.com]
         tacky chat close -acc $acc -chat alice@example.com
-        lappend out [tacky chat isOpen -acc $acc -chat alice@example.com]
+        lappend out [tacky chat is_open -acc $acc -chat alice@example.com]
     } -result {0 1 0}
 
 test chat-looking-needs-active-app {a chat is looked at only while the app is active} \
     {*}$chat_common \
     -body {
         tacky chat open -acc $acc -chat alice@example.com
-        set out [tacky chat isLooking -acc $acc -chat alice@example.com]
+        set out [tacky chat is_looking -acc $acc -chat alice@example.com]
         chat_active 0
-        lappend out [tacky chat isLooking -acc $acc -chat alice@example.com]
+        lappend out [tacky chat is_looking -acc $acc -chat alice@example.com]
     } -result {1 0}
 
 test chat-view-reads-up-to-the-row {a view reads up to the row on screen, not past it} \
@@ -92,7 +92,7 @@ test chat-view-reads-up-to-the-row {a view reads up to the row on screen, not pa
         tacky chat open -acc $acc -chat alice@example.com
         tacky chat view -acc $acc -chat alice@example.com -id $a
         list [expr {[chat_read_id] eq $a}] \
-            [dict get [tacky message ownRead -acc $acc -chat alice@example.com] unread]
+            [dict get [tacky message own_read -acc $acc -chat alice@example.com] unread]
     } -result {1 1}
 
 test chat-view-forward-only {a view behind the watermark moves nothing} \
@@ -175,25 +175,25 @@ test chat-view-room-no-displayed {a room view moves the watermark and sends no m
             body hi server_id "" own_id "" raw_xml "" origin_id oid2]]] inserted] 0]
         tacky chat open -acc $acc -chat $room
         tacky chat view -acc $acc -chat $room -id $a
-        list [expr {[dict get [tacky message ownRead -acc $acc -chat $room] id] eq $a}] \
+        list [expr {[dict get [tacky message own_read -acc $acc -chat $room] id] eq $a}] \
             [chat_displayed_count]
     } -result {1 0}
 
 test chat-client-data-roundtrip {client data comes back as stored, open or not} \
     {*}$chat_common \
     -body {
-        set out [list [tacky chat clientData -acc $acc -chat alice@example.com]]
-        tacky chat setClientData -acc $acc -chat alice@example.com \
+        set out [list [tacky chat client_data -acc $acc -chat alice@example.com]]
+        tacky chat set_client_data -acc $acc -chat alice@example.com \
             -data {{"view":{"ts":100}}}
-        lappend out [tacky chat clientData -acc $acc -chat alice@example.com]
-        lappend out [tacky chat clientData -acc $acc -chat bob@example.com]
+        lappend out [tacky chat client_data -acc $acc -chat alice@example.com]
+        lappend out [tacky chat client_data -acc $acc -chat bob@example.com]
     } -result {{} {{"view":{"ts":100}}} {}}
 
 test chat-client-data-empty-drops {storing an empty string drops the row} \
     {*}$chat_common \
     -body {
-        tacky chat setClientData -acc $acc -chat alice@example.com -data x
-        tacky chat setClientData -acc $acc -chat alice@example.com -data ""
+        tacky chat set_client_data -acc $acc -chat alice@example.com -data x
+        tacky chat set_client_data -acc $acc -chat alice@example.com -data ""
         $::_client db eval {SELECT count(*) FROM chat_client_data}
     } -result 0
 
@@ -201,7 +201,7 @@ test chat-client-data-forgotten-with-history {forgetting a chat forgets its clie
     {*}$chat_common \
     -body {
         chat_theirs 100
-        tacky chat setClientData -acc $acc -chat alice@example.com -data x
+        tacky chat set_client_data -acc $acc -chat alice@example.com -data x
         $::_client message messagestore forgetChat alice@example.com
-        tacky chat clientData -acc $acc -chat alice@example.com
+        tacky chat client_data -acc $acc -chat alice@example.com
     } -result {}

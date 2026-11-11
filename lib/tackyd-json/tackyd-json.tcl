@@ -200,30 +200,30 @@ jsonify_type jsonify \
     } \
     -schemas {
         message/send            int
-        message/sendFile        int
+        message/send_file       int
         message/history         {list message}
         message/goto            goto_result
-        message/gotoReply       goto_result
+        message/goto_reply      goto_result
         message/search          {dict {messages {list message} complete bool last int last_archive string}}
-        muc/getList             {list {dict {}}}
-        muc/discoverRooms       {list {dict {occupants int}}}
-        muc/reservedNick        string
-        muc/getSubject          string
-        muc/myNick              string
-        muc/myRole              string
-        muc/myAffiliation       string
-        muc/haveVoice           bool
-        muc/isJoined            bool
-        muc/isHidden            bool
-        muc/findService         string
-        muc/createRoom          string
+        muc/get_list            {list {dict {}}}
+        muc/discover_rooms      {list {dict {occupants int}}}
+        muc/reserved_nick       string
+        muc/get_subject         string
+        muc/my_nick             string
+        muc/my_role             string
+        muc/my_affiliation      string
+        muc/has_voice           bool
+        muc/is_joined           bool
+        muc/is_hidden           bool
+        muc/find_service        string
+        muc/create_room         string
         muc/occupant            occupant
         muc/occupants           {list occupant}
         muc/rooms               list
-        muc/configGet           form
-        muc/registerGet         form
-        muc/roomInfo            muc_room_info
-        muc/roomPrivacy         list
+        muc/get_config          form
+        muc/get_registration    form
+        muc/room_info           muc_room_info
+        muc/room_privacy        list
         muc/members             {dict {members {map string}}}
         muc/people              {dict {groups {map int} me {dict {request_voice bool destroy bool}} people {list person}}}
         muc/person              person
@@ -233,28 +233,28 @@ jsonify_type jsonify \
         blocking/list           list
         bookmarks/get           {list bookmark}
         bookmarks/autojoin      bool
-        bookmarks/defaultNick   string
+        bookmarks/default_nick  string
         account/list            list
         account/exists          bool
         account/get             {dict {enabled bool port int srv bool}}
-        chat/isOpen             bool
-        chat/isLooking          bool
-        chat/clientData         string
+        chat/is_open            bool
+        chat/is_looking         bool
+        chat/client_data        string
         presence/get            presence
-        presence/isOnline       bool
+        presence/is_online      bool
         presence/resources      {map presence}
-        caps/softwareVersion    {dict {}}
-        audio/getVolume         double
-        audio/getPreferredDevice string
-        audio/enumerateDevices  {dict {capture {list audio_device} playback {list audio_device}}}
-        video/enumerateCameras  {list camera}
-        video/getPreferredCamera string
+        caps/software_version   {dict {}}
+        audio/get_volume        double
+        audio/get_preferred_device string
+        audio/enumerate_devices {dict {capture {list audio_device} playback {list audio_device}}}
+        video/enumerate_cameras {list camera}
+        video/get_preferred_camera string
         media/list              list
         media/capabilities      {map bool}
-        media/payloadTypes      {map {list payload}}
+        media/payload_types     {map {list payload}}
         calls/start             string
         calls/list              {list call_row}
-        groupcall/inCall        bool
+        groupcall/in_call       bool
         groupcall/list          {list groupcall_row}
         groupcall/get           {list groupcall_state}
         author/get              {dict {}}
@@ -266,28 +266,28 @@ jsonify_type jsonify \
         nick/get                string
         vcard/nick              string
         setting/list            list
-        log/getlevel            string
-        log/getfile             string
-        log/getredact           bool
+        log/get_level           string
+        log/get_file            string
+        log/get_redact          bool
         debugtap/on             int
-        app/isActive            bool
-        app/idleSeconds         int
-        message/rawxml          string
-        message/ownRead         {dict {id int unread int}}
+        app/is_active           bool
+        app/idle_seconds        int
+        message/raw_xml         string
+        message/own_read        {dict {id int unread int}}
         mam/query               {dict {messages list complete bool}}
         mam/metadata            {dict {start_timestamp int end_timestamp int}}
-        mam/formfields          list
-        mam/fulltextSupported   bool
-        omemo/trustList         {list omemo_trust}
-        omemo/devicelist        {list int}
+        mam/form_fields         list
+        mam/fulltext_supported  bool
+        omemo/trust_list        {list omemo_trust}
+        omemo/device_list       {list int}
         omemo/own_fingerprint   string
         omemo/device_id         int
         omemo/account_jid       string
-        omemo/blindTrust        bool
-        omemo/isEnabled         bool
-        omemo/setBlindTrust     bool
-        omemo/setEnabled        bool
-        omemo/roomStatus        omemo_room_status
+        omemo/blind_trust       bool
+        omemo/is_enabled        bool
+        omemo/set_blind_trust   bool
+        omemo/set_enabled       bool
+        omemo/room_status       omemo_room_status
         chatlist/get            {list chat_entry}
         notify/get              {dict {muted bool mentions bool}}
 
@@ -344,16 +344,16 @@ jsonify_type jsonify \
         chatlist/pin            {pinned bool}
         message/resend          {plaintext bool}
         notify/set              {muted bool mentions bool}
-        omemo/setBlindTrust     {value bool}
-        omemo/setEnabled        {value bool}
+        omemo/set_blind_trust   {value bool}
+        omemo/set_enabled       {value bool}
         file/download           {auto bool}
         calls/start             {video bool}
-        calls/setVideo          {on bool}
+        calls/set_video         {on bool}
         groupcall/start         {video bool}
         groupcall/join          {video bool}
-        groupcall/setVideo      {on bool}
-        log/setenabled          {enabled bool}
-        log/setredact           {enabled bool}
+        groupcall/set_video     {on bool}
+        log/set_enabled         {enabled bool}
+        log/set_redact          {enabled bool}
     }
 
 # -- helpers shared with entry-point dispatch ---------------------------
@@ -496,7 +496,7 @@ proc tackyd_dispatch {msg} {
     if {$token ne ""} {
         # Only a known schema is worth recording: an unknown key serialises
         # the same either way, and a method that never replies (send,
-        # sendFile, retryUpload) would pin its entry forever.
+        # send_file, retry_upload) would pin its entry forever.
         if {[jsonify has_schema $module/$method]} {
             # A `field` request answers one value of the dict the schema
             # describes: recorded with the field, to type just that.

@@ -40,11 +40,11 @@ snit::type taco_nick {
     tackymethod -online -async set {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
-        $client vcard setNick -nick $opts(-nick)
+        $client vcard set_nick -nick $opts(-nick)
         if {[dict getdef $args -bookmarks ""] eq "skip"} {
-            $client bookmarks defaultNick -nick $opts(-nick)
+            $client bookmarks default_nick -nick $opts(-nick)
         } else {
-            $client bookmarks setNickAll -nick $opts(-nick)
+            $client bookmarks set_nick_all -nick $opts(-nick)
         }
         # Last: an error above must not answer the caller twice.
         $self publish -nick $opts(-nick) \

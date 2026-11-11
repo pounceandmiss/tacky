@@ -326,7 +326,7 @@ test client-stanza-unaddressed-does-not-throw \
              [catch {c.conn feed [j presence -from @@@]}]
     } -result {0 0 0}
 
-# -- changePassword ---------------------------------------------------------
+# -- change_password ---------------------------------------------------------
 
 set pw_common [tacky_env -mock conn -account user@test.example.com]
 

@@ -248,7 +248,7 @@ test omemo-unit-offline-getters-answer {getters work without OnReady} -setup {
 } -body {
     list dev_match [expr {[c2 omemo device_id] == $d1}] \
         fp_match [expr {[c2 omemo own_fingerprint] eq $fp1}] \
-        rows [llength [c2 omemo trustList -jid juliet@capulet.lit]]
+        rows [llength [c2 omemo trust_list -jid juliet@capulet.lit]]
 } -cleanup {
     c2 destroy
     omemodb2 close
@@ -626,7 +626,7 @@ test omemo-unit-blindtrust-setting-error-fails-closed \
         rename ::c.db {}
         rename ::c.db.real ::c.db
     }] -body {
-        c omemo blindTrust
+        c omemo blind_trust
     } -result {0}
 
 # IsDeviceBlocked with no trust row: was a blanket allow (return 0).
@@ -642,7 +642,7 @@ test omemo-unit-isdeviceblocked-no-row-btbv-on-allows \
 test omemo-unit-isdeviceblocked-no-row-btbv-off-blocks \
     {IsDeviceBlocked with no trust row blocks when BTBV is off (fail closed)} \
     {*}$jid_common -body {
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         c omemo IsDeviceBlocked $::test::omemo_unit::ROMEO 42
     } -result {1}
 
@@ -660,7 +660,7 @@ test omemo-unit-isdeviceblocked-verified-peer-stops-blind-trust \
                 identity_pk, trust, active, last_activation)
             VALUES('juliet@capulet.lit', $jid, 1, 'ik', 'trusted', 1, 0)
         }
-        list blind_trust_on [c omemo blindTrust] \
+        list blind_trust_on [c omemo blind_trust] \
             before_verify $before after_verify [c omemo IsDeviceBlocked $jid 42]
     } -result {blind_trust_on 1 before_verify 0 after_verify 1}
 
@@ -759,7 +759,7 @@ test omemo-unit-devicelist-error-caches-empty \
         c omemo OnFetchedDevicelist $::test::omemo_unit::ROMEO $errStanza
         # Empty list now cached (so the next encrypt TERMINAL-fails) and
         # the blocked sender is woken.
-        list cached [c omemo devicelist -jid $::test::omemo_unit::ROMEO] \
+        list cached [c omemo device_list -jid $::test::omemo_unit::ROMEO] \
             resolved $::_resolved
     } -result {cached {} resolved 1}
 
@@ -1437,7 +1437,7 @@ test omemo-unit-self-chat-keys-other-own-devices \
 # Opening a self-chat warms our other devices, never this one: no bundle
 # fetch (and so no trust row) for our own current device.
 test omemo-unit-prepare-self-chat-skips-own-device \
-    {prepareChat for our own jid fetches no bundle of this device} \
+    {prepare_chat for our own jid fetches no bundle of this device} \
     {*}[tacky_env -mock conn -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
@@ -1789,15 +1789,15 @@ test omemo-unit-devicelist-ids-canonical \
     } -result {16 5 2147483647}
 
 test omemo-unit-event-blindtrust \
-    {setBlindTrust persists value and emits <BlindTrust>} \
+    {set_blind_trust persists value and emits <BlindTrust>} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         set ::_emitted {}
     }] -body {
-        set v1 [c omemo blindTrust]
-        c omemo setBlindTrust -value 0
-        set v2 [c omemo blindTrust]
+        set v1 [c omemo blind_trust]
+        c omemo set_blind_trust -value 0
+        set v2 [c omemo blind_trust]
         list before $v1 after $v2 \
             emits [::test::omemo_unit::emittedOmemo <BlindTrust>]
     } -result {before 1 after 0 emits {{-acc juliet@capulet.lit -value 0}}}
@@ -1878,7 +1878,7 @@ test omemo-unit-pull-blindtrust \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         set ::_emitted {}
     }] -body {
         c omemo pull -event <BlindTrust>
@@ -1911,51 +1911,51 @@ test omemo-unit-enabled-default-off-for-room-pm \
     {*}$jid_common -body {
         set pm room@muc.example.com/alice
         set dflt [c omemo IsEnabled $pm]
-        c omemo setEnabled -jid $pm -value 1
+        c omemo set_enabled -jid $pm -value 1
         list $dflt [c omemo IsEnabled $pm]
     } -result {0 1}
 
 test omemo-unit-enabled-explicit-overrides \
-    {explicit setEnabled wins over the default-on} \
+    {explicit set_enabled wins over the default-on} \
     {*}$jid_common -body {
-        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
+        c omemo set_enabled -jid $::test::omemo_unit::ROMEO -value 0
         set off [c omemo IsEnabled $::test::omemo_unit::ROMEO]
-        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 1
+        c omemo set_enabled -jid $::test::omemo_unit::ROMEO -value 1
         set on [c omemo IsEnabled $::test::omemo_unit::ROMEO]
         list off $off on $on
     } -result {off 0 on 1}
 
 test omemo-unit-isenabled-getter \
-    {isEnabled answers the same toggle IsEnabled reads} \
+    {is_enabled answers the same toggle IsEnabled reads} \
     {*}$jid_common -body {
-        set dflt [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
-        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
-        set off [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
-        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 1
-        set on [c omemo isEnabled -jid $::test::omemo_unit::ROMEO]
+        set dflt [c omemo is_enabled -jid $::test::omemo_unit::ROMEO]
+        c omemo set_enabled -jid $::test::omemo_unit::ROMEO -value 0
+        set off [c omemo is_enabled -jid $::test::omemo_unit::ROMEO]
+        c omemo set_enabled -jid $::test::omemo_unit::ROMEO -value 1
+        set on [c omemo is_enabled -jid $::test::omemo_unit::ROMEO]
         list default $dflt off $off on $on
     } -result {default 1 off 0 on 1}
 
 # A getter answers the caller and nobody else; the event is for the change.
 test omemo-unit-isenabled-emits-nothing \
-    {isEnabled is a read, so it emits no <Enabled>} \
+    {is_enabled is a read, so it emits no <Enabled>} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         set ::_emitted {}
     }] -body {
-        c omemo isEnabled -jid $::test::omemo_unit::ROMEO
+        c omemo is_enabled -jid $::test::omemo_unit::ROMEO
         ::test::omemo_unit::emittedOmemo <Enabled>
     } -result {}
 
 test omemo-unit-event-enabled \
-    {setEnabled emits <Enabled>; pull re-emits current effective value} \
+    {set_enabled emits <Enabled>; pull re-emits current effective value} \
     {*}[tacky_env -capture-emit 1 -taco-client {-db-path :memory:} -extra-setup {
         c configure -jid $::test::omemo_unit::JULIET
         c omemo OnReady
         set ::_emitted {}
     }] -body {
-        c omemo setEnabled -jid $::test::omemo_unit::ROMEO -value 0
+        c omemo set_enabled -jid $::test::omemo_unit::ROMEO -value 0
         set onSet [::test::omemo_unit::emittedOmemo <Enabled>]
         set ::_emitted {}
         c omemo pull -event <Enabled> -jid $::test::omemo_unit::ROMEO
@@ -2023,7 +2023,7 @@ test omemo-unit-devicelist-publish-error-not-cached \
         c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
         c omemo OnDevicelistPublished [list 77 $dev] 1 \
             [::test::omemo_unit::publishError]
-        c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE
+        c omemo device_list -jid $::test::omemo_unit::JULIET_BARE
     } -result {77}
 
 test omemo-unit-devicelist-publish-ack-caches \
@@ -2035,7 +2035,7 @@ test omemo-unit-devicelist-publish-ack-caches \
         set dev [c omemo device_id]
         c omemo AfterOwnDevicelistFetch $::test::omemo_unit::JULIET_BARE {77}
         c omemo OnDevicelistPublished [list 77 $dev] 1 [j iq -type result]
-        expr {[c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE]
+        expr {[c omemo device_list -jid $::test::omemo_unit::JULIET_BARE]
               eq [list 77 $dev]}
     } -result {1}
 
@@ -2178,7 +2178,7 @@ test omemo-unit-trustlist \
             VALUES('juliet@capulet.lit','romeo@montague.lit',2,$::ik2,'untrusted',0,1)
         }
     }] -body {
-        set rows [c omemo trustList -jid romeo@montague.lit]
+        set rows [c omemo trust_list -jid romeo@montague.lit]
         list \
             count [llength $rows] \
             r0 [dict get [lindex $rows 0] device] \
@@ -2241,7 +2241,7 @@ test omemo-unit-own-devicelist-retraction-publishes-nothing \
         set written [lrange [c conn get_written] $before end]
         list publishes [::test::omemo_unit::ownListPublishes $written] \
             fetches [::test::omemo_unit::ownListFetches $written] \
-            still [expr {7 in [c omemo devicelist -jid $::test::omemo_unit::JULIET_BARE]}]
+            still [expr {7 in [c omemo device_list -jid $::test::omemo_unit::JULIET_BARE]}]
     } -result {publishes {} fetches 1 still 1}
 
 test omemo-unit-peer-devicelist-without-payload-keeps-devices \
@@ -2267,7 +2267,7 @@ test omemo-unit-peer-devicelist-without-payload-keeps-devices \
                 incr asked
             }
         }
-        list devices [c omemo devicelist -jid $::test::omemo_unit::ROMEO] asked $asked
+        list devices [c omemo device_list -jid $::test::omemo_unit::ROMEO] asked $asked
     } -result {devices {1 2} asked 1}
 
 test omemo-unit-devicelist-takes-current-item {the item `current` wins over another} \
@@ -2429,7 +2429,7 @@ test omemo-unit-device-accepted-follows-message-rule \
         c omemo decryptFrom $enc $::test::omemo_unit::ROMEO
         set R $::test::omemo_unit::ROMEO
         set blind [c omemo deviceAccepted $R 111]
-        c omemo setBlindTrust -value 0
+        c omemo set_blind_trust -value 0
         set strict [c omemo deviceAccepted $R 111]
         c omemo trust -jid $R -device 111 -state trusted
         set trusted [c omemo deviceAccepted $R 111]

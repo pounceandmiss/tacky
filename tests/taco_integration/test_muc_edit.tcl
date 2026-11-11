@@ -62,7 +62,7 @@ namespace eval ::test::muc_edit_int {
             variable TIMEOUT
             set done [namespace current]::_unlock_[incr [namespace current]::_awaitCounter]
             set ${done} 0
-            [tacky client $acc] muc createInstant -jid $ROOM \
+            [tacky client $acc] muc create_instant -jid $ROOM \
                 -command [list apply {{dv args} { set $dv 1 }} $done]
             wait_var $done $TIMEOUT
         }
@@ -253,7 +253,7 @@ namespace eval ::test::muc_edit_int {
                     "первое" { incr nFirst }
                     "второе" {
                         incr nSecond
-                        set rawxml [[tacky client $ROMEO] message rawxml \
+                        set rawxml [[tacky client $ROMEO] message raw_xml \
                             -chat $CHAT -id [dict get $m id]]
                     }
                 }

@@ -163,11 +163,11 @@ tacky_test account-resource-persisted {resource is stored in the resource column
         expr {$r eq [wait_call tacky account get -acc user@example.com -field resource]}
     } -result 1
 
-tacky_test account-reroll-changes {rerollResource yields a new persisted resource} \
+tacky_test account-reroll-changes {reroll_resource yields a new persisted resource} \
     {*}$common \
     -body {
         set a [wait_call tacky account resource -acc user@example.com]
-        set b [wait_call tacky account rerollResource -acc user@example.com]
+        set b [wait_call tacky account reroll_resource -acc user@example.com]
         set c [wait_call tacky account resource -acc user@example.com]
         expr {$a ne $b && $b eq $c}
     } -result 1
@@ -435,7 +435,7 @@ test account-disable-keeps-declarations {the avatars shown and the chats open ou
         tacky account enable -acc user@example.com
         set c [tacky client user@example.com]
         list [$c avatar IsVisible bob@example.com] \
-            [$c chat isOpen -chat bob@example.com]
+            [$c chat is_open -chat bob@example.com]
     } -result {1 1}
 
 test account-disable-keeps-debug-taps {a debug tap on the account still hears it after a disable} \

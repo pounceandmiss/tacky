@@ -403,11 +403,11 @@ test file-failstaleuploads {failStaleUploads turns leftover uploading rows into 
         [up_fail_reason bob@example.com 7200000]
 } -result {failed upload}
 
-test file-sendfile-optimistic-row {sendFile stores the message immediately as uploading} {*}$file_env -body {
+test file-sendfile-optimistic-row {send_file stores the message immediately as uploading} {*}$file_env -body {
     set tmp /tmp/uptest_[pid].bin
     set f [open $tmp w]; puts -nonewline $f "data"; close $f
     # Upload stalls at discovery (mock server never replies) -> stays uploading.
-    tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
+    tacky message send_file -acc $acc -chat bob@example.com -path $tmp
     set msgs [dict get \
         [$::_client message messagestore get latest bob@example.com] messages]
     set m [lindex $msgs 0]
@@ -422,7 +422,7 @@ test file-sendfile-optimistic-row {sendFile stores the message immediately as up
 test file-sendfile-records-its-origin-id {a share's row carries an origin id} {*}$file_env -body {
     set tmp /tmp/uporigin_[pid].bin
     set f [open $tmp w]; puts -nonewline $f "data"; close $f
-    tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
+    tacky message send_file -acc $acc -chat bob@example.com -path $tmp
     lassign [$::_client db eval {
         SELECT own_id, origin_id FROM chat_message
         WHERE chat_jid='bob@example.com'
@@ -485,7 +485,7 @@ test file-upload-failure-patches-failed {a failed upload emits a <Status> flippi
     }
 } -result failed
 
-test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping the failed row back to uploading} {*}$file_env -body {
+test file-retryupload-patches-uploading {retry_upload emits a <Status> flipping the failed row back to uploading} {*}$file_env -body {
     # A readable source file lets the retry stall at slot discovery (the mock
     # server never replies) instead of failing straight back on an unreadable
     # path, so the only transition is failed -> uploading.
@@ -493,7 +493,7 @@ test file-retryupload-patches-uploading {retryUpload emits a <Status> flipping t
     set id [up_store_uploading bob@example.com 7500000]
     up_ms markUploadFailed bob@example.com 7500000
     set res [up_patch_statuses {
-        tacky message retryUpload -acc $acc -chat bob@example.com -id $id
+        tacky message retry_upload -acc $acc -chat bob@example.com -id $id
     }]
     file delete /tmp/a.png
     set res
@@ -511,7 +511,7 @@ test file-upload-status-carries-fail-reason {failure names the upload; retry cle
     }}}]
     $::_client message OnUploaded bob@example.com 7600000 $id \
         /tmp/a.png "" ""
-    tacky message retryUpload -acc $acc -chat bob@example.com -id $id
+    tacky message retry_upload -acc $acc -chat bob@example.com -id $id
     tacky unlisten $tag
     file delete /tmp/a.png
     set ::_up_reasons
@@ -1262,7 +1262,7 @@ test file-endsession-fails-upload-row {a share still uploading is marked failed,
     {*}[tacky_env -mock conn -account $acc -capture-emit 1] -body {
         set tmp [file join $::_upcache row.bin]
         set f [open $tmp w]; puts -nonewline $f "data"; close $f
-        tacky message sendFile -acc $acc -chat bob@example.com -path $tmp
+        tacky message send_file -acc $acc -chat bob@example.com -path $tmp
         set m [lindex [dict get \
             [$::_client message messagestore get latest bob@example.com] messages] 0]
         $::_client endSession "account disabled"

@@ -2,21 +2,21 @@
 #
 # Mics and speakers belong to the machine, not to an XMPP account, so
 # enumeration and the preferred device + volume prefs live here on
-# taco_type instead of on per-account taco_calls. `tacky calls setDevices`
+# taco_type instead of on per-account taco_calls. `tacky calls set_devices`
 # is a per-call device override that still lives on the calls module;
 # volume has no per-call override — there's one gain per kind, period.
 #
-# tacky audio enumerateDevices    ?-command $cb?
+# tacky audio enumerate_devices    ?-command $cb?
 #   ;# $cb receives {capture {...} playback {...}}, each value a list of
 #   ;# {name <str> id <str> default 0|1}. Both lists are empty on a backend
 #   ;# that does not declare the `audioDevices` capability.
-# tacky audio getPreferredDevice  -kind capture|playback ?-command $cb?
-# tacky audio setPreferredDevice  -kind capture|playback -id $id
+# tacky audio get_preferred_device  -kind capture|playback ?-command $cb?
+# tacky audio set_preferred_device  -kind capture|playback -id $id
 #   ;# persists, hot-swaps every live call on every account, emits
 #   ;# <PreferredDevice>.
-# tacky audio getVolume           -kind capture|playback ?-command $cb?
+# tacky audio get_volume           -kind capture|playback ?-command $cb?
 #   ;# returns linear gain in [0.0, 1.0]; "1.0" if unset.
-# tacky audio setVolume           -kind capture|playback -volume $v
+# tacky audio set_volume           -kind capture|playback -volume $v
 #   ;# persists, hot-swaps every live call on every account, emits
 #   ;# <Volume>.
 #
@@ -36,7 +36,7 @@ snit::type taco_audio {
     option -db   -default ""
     option -taco -default ""
 
-    # Where a synchronous backend's device list lands, see enumerateDevices.
+    # Where a synchronous backend's device list lands, see enumerate_devices.
     variable Enumerated {}
 
     constructor args {
@@ -51,7 +51,7 @@ snit::type taco_audio {
     # the same frame, which the in-process ones do; a host backend needs the
     # callback form. Every caller on the wire has one, since a tokenized
     # request always carries -command.
-    tackymethod -async enumerateDevices {args} {
+    tackymethod -async enumerate_devices {args} {
         set cmd ""
         if {[dict exists $args -command]} { set cmd [dict get $args -command] }
         set Enumerated [dict create capture {} playback {}]
@@ -73,7 +73,7 @@ snit::type taco_audio {
         set Enumerated $result
     }
 
-    tackymethod getPreferredDevice {args} {
+    tackymethod get_preferred_device {args} {
         array set opts {-kind ""}
         array set opts $args
         set key [$self DeviceSettingKey $opts(-kind)]
@@ -83,7 +83,7 @@ snit::type taco_audio {
     # Persist the preference, hot-swap every live call on every account
     # (skipping dormant clients), and emit <PreferredDevice> so sibling
     # pickers stay in sync.
-    tackymethod setPreferredDevice {args} {
+    tackymethod set_preferred_device {args} {
         array set opts {-kind "" -id ""}
         array set opts $args
         set key [$self DeviceSettingKey $opts(-kind)]
@@ -91,7 +91,7 @@ snit::type taco_audio {
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set client [$options(-taco) account liveClient -acc $jid]
             if {$client eq ""} continue
-            $client calls applyPreferredDevice \
+            $client calls apply_preferred_device \
                 -kind $opts(-kind) -id $opts(-id)
         }
         $options(-taco) emit audio <PreferredDevice> \
@@ -101,7 +101,7 @@ snit::type taco_audio {
 
     # Default 1.0 (unity) when never set — matches rtcma's own default so
     # AttachMedia can apply unconditionally without first checking.
-    tackymethod getVolume {args} {
+    tackymethod get_volume {args} {
         array set opts {-kind ""}
         array set opts $args
         set key [$self VolumeSettingKey $opts(-kind)]
@@ -110,10 +110,10 @@ snit::type taco_audio {
         return $v
     }
 
-    # Same broadcast/hot-swap pattern as setPreferredDevice. Range
+    # Same broadcast/hot-swap pattern as set_preferred_device. Range
     # validation lives in rtcma; bad values surface as <Warning> from
     # taco_calls.applyVolume rather than blocking the preference write.
-    tackymethod setVolume {args} {
+    tackymethod set_volume {args} {
         array set opts {-kind "" -volume ""}
         array set opts $args
         set key [$self VolumeSettingKey $opts(-kind)]
@@ -121,7 +121,7 @@ snit::type taco_audio {
         foreach jid [$options(-db) eval {SELECT jid FROM account}] {
             set client [$options(-taco) account liveClient -acc $jid]
             if {$client eq ""} continue
-            $client calls applyVolume \
+            $client calls apply_volume \
                 -kind $opts(-kind) -volume $opts(-volume)
         }
         $options(-taco) emit audio <Volume> \

@@ -28,7 +28,7 @@ namespace eval ::test::muc_reconnect_int {
         [tacky client $acc] muc join -jid $ROOM -nick $nick
         wait_expected $seen
         if {$unlock} {
-            wait_call [tacky client $acc] muc createInstant -jid $ROOM
+            wait_call [tacky client $acc] muc create_instant -jid $ROOM
         }
     }
 
@@ -118,7 +118,7 @@ namespace eval ::test::muc_reconnect_int {
             set seen [expect_events [list [list message <New> -acc $JULIET -jid $CHAT]]]
             [tacky client $ROMEO] message send -chat $CHAT -body "after the drop"
             wait_expected $seen
-            list [[tacky client $JULIET] muc isJoined -jid $ROOM] \
+            list [[tacky client $JULIET] muc is_joined -jid $ROOM] \
                 [said $JULIET "after the drop"]
         } -result {1 1}
 
@@ -145,7 +145,7 @@ namespace eval ::test::muc_reconnect_int {
             [tacky client $ROMEO] message send -chat $CHAT -body "after enable"
             wait_expected $seen
             list [dict get [[[tacky client $JULIET] conn sm] getInfo] resumed] \
-                [[tacky client $JULIET] muc isJoined -jid $ROOM] \
+                [[tacky client $JULIET] muc is_joined -jid $ROOM] \
                 [said $JULIET "after enable"]
         } -result {0 1 1}
 
@@ -156,7 +156,7 @@ namespace eval ::test::muc_reconnect_int {
             variable ROMEO
             variable JULIET
 
-            tacky omemo setEnabled -acc $JULIET -jid $ROMEO -value 0
+            tacky omemo set_enabled -acc $JULIET -jid $ROMEO -value 0
             tacky account disable -acc $JULIET
             [tacky client $JULIET] message send -chat $ROMEO -body "while disabled"
             settleWithServer $ROMEO
@@ -198,7 +198,7 @@ namespace eval ::test::muc_reconnect_int {
             tacky unlisten reconnect-left
             list [dict get [[[tacky client $JULIET] conn sm] getInfo] resumed] \
                 $::test::muc_reconnect_int::left \
-                [[tacky client $JULIET] muc isJoined -jid $ROOM] \
+                [[tacky client $JULIET] muc is_joined -jid $ROOM] \
                 [said $JULIET "after the resume"]
         } -result {1 0 1 1}
 }

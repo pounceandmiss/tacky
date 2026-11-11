@@ -76,7 +76,7 @@ proc StorageGateDialog {parent direction} {
 }
 
 proc StorageGateCancel {w doneVar} {
-    catch {::tacky storage cancelPending}
+    catch {::tacky storage cancel_pending}
     set $doneVar 1
 }
 

@@ -172,11 +172,11 @@ test embed-threaded-debug-file {--debug-file at init routes records to the file}
 
 # The log module is the one surface a JSON frontend drives with no account and
 # no stanza: dashless args in, a scalar string reply out.
-test embed-threaded-log-level {log setlevel then getlevel round-trips over JSON} \
+test embed-threaded-log-level {log set_level then getlevel round-trips over JSON} \
     {*}$embed_common -body {
     thread::send -async $::be {
-        tackyd_dispatch {["log","setlevel",{"obj":"::probe","level":"verbose"}]}
-        tackyd_dispatch {["log","getlevel",{"obj":"::probe.child"},1]}
+        tackyd_dispatch {["log","set_level",{"obj":"::probe","level":"verbose"}]}
+        tackyd_dispatch {["log","get_level",{"obj":"::probe.child"},1]}
     }
     set timeout [await_reply]
     if {$timeout ne ""} { return $timeout }

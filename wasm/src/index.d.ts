@@ -84,7 +84,7 @@ export function connect(
 ): Promise<InboundFrame | null>;
 
 export interface MediaHostOptions {
-    /** Post one frame to the backend: the `media hostEvent` requests this makes. */
+    /** Post one frame to the backend: the `media host_event` requests this makes. */
     send: (frame: OutboundFrame) => void;
     /** A peer's media arrived on call `sid`; `kind` is `audio` or `video`. */
     onRemoteStream?: (sid: string, stream: MediaStream, kind: string) => void;

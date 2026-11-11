@@ -111,7 +111,7 @@ snit::widget maminfo {
         } else {
             set versionTo [jid domain $options(-acc)]
         }
-        ::tacky caps softwareVersion -acc $options(-acc) \
+        ::tacky caps software_version -acc $options(-acc) \
             -to $versionTo -tag $win -command [mymethod OnVersion] \
             -onerror [mymethod OnVersionError]
 
@@ -123,7 +123,7 @@ snit::widget maminfo {
         ::tacky mam metadata {*}$mamArgs \
             -tag $win -command [mymethod OnMetadata] \
             -onerror [mymethod OnMetadataError]
-        ::tacky mam formfields {*}$mamArgs \
+        ::tacky mam form_fields {*}$mamArgs \
             -tag $win -command [mymethod OnFields] \
             -onerror [mymethod OnFieldsError]
     }

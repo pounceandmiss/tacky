@@ -12,7 +12,7 @@ if 0 {
             -> blocked JIDs (bare, full or domain), sorted; kept while offline
         tacky blocking block -acc $acc -jid {j1 j2 ...} ?-command $cb? ?-onerror $ecb?
         tacky blocking unblock -acc $acc -jid {j1 j2 ...} ?-command $cb? ?-onerror $ecb?
-        tacky blocking unblockAll -acc $acc ?-command $cb? ?-onerror $ecb?
+        tacky blocking unblock_all -acc $acc ?-command $cb? ?-onerror $ecb?
             Callback: {*}$cb "" | {*}$ecb $message
 
     Events:
@@ -116,7 +116,7 @@ snit::type taco_blocking {
             -command [mymethod OnOperationResult $opts(-command) $opts(-onerror)]
     }
 
-    tackymethod -async unblockAll {args} {
+    tackymethod -async unblock_all {args} {
         array set opts {-command "" -onerror ""}
         array set opts $args
         $self unblock -command $opts(-command) -onerror $opts(-onerror)

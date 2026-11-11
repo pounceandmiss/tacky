@@ -214,9 +214,9 @@ test reply-dispatch-forwarding-answers-once {roster add hands its work to item a
         rsRequest roster add [list acc $::rsAcc jid bob@example.com name Bob] 1
     } -result {{result {}}}
 
-test reply-dispatch-prepare-chat {omemo prepareChat answers with one value} \
+test reply-dispatch-prepare-chat {omemo prepare_chat answers with one value} \
     -setup rsSetup -cleanup rsCleanup -body {
-        rsRequest omemo prepareChat \
+        rsRequest omemo prepare_chat \
             [list acc $::rsAcc jid room@conference.example.com?join] 1
     } -result {{result {}}}
 

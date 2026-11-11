@@ -33,7 +33,7 @@ test vcard-failed-fetch-publishes-nothing {a vCard that could not be read is not
     -body {
         c.conn clear
         set ::_vcard_cb {}
-        c vcard setNick -nick Juliet -command {apply {{args} {
+        c vcard set_nick -nick Juliet -command {apply {{args} {
             set ::_vcard_cb $args
         }}}
         lassign [lindex [vcard_requests] 0] type id
@@ -45,7 +45,7 @@ test vcard-none-yet-publishes-new {item-not-found is no vCard yet: the nick goes
     {*}$vcard_common \
     -body {
         c.conn clear
-        c vcard setNick -nick Juliet
+        c vcard set_nick -nick Juliet
         lassign [lindex [vcard_requests] 0] type id
         vcard_refuse $id item-not-found
         lmap r [vcard_requests] {lindex $r 0}

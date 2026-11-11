@@ -85,7 +85,7 @@ snit::widget changepassworddialog {
         if {$busy || $newpass eq ""} return
         $self Busy 1
         $win.msg configure -text "Changing\u2026" -foreground ""
-        $options(-tacky) account changePassword \
+        $options(-tacky) account change_password \
             -acc $options(-acc) -password $newpass \
             -tag $win -command [mymethod OnChanged] \
             -onerror [mymethod OnError]

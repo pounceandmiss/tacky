@@ -1,6 +1,6 @@
 # tacky presence get -acc $jid -jid $bareJid
 # tacky presence resources -acc $jid -jid $bareJid
-# tacky presence isOnline -acc $jid -jid $bareJid
+# tacky presence is_online -acc $jid -jid $bareJid
 #
 # tacky listen presence <Changed> -acc $jid $command
 #   -action clear           (all presence wiped on disconnect)
@@ -18,7 +18,7 @@ if 0 {
         Instantiated by Client, not directly.
         $client presence get -jid $bareJid        - best-resource presence dict
         $client presence resources -jid $bareJid  - full resource dict
-        $client presence isOnline -jid $bareJid   - 1/0
+        $client presence is_online -jid $bareJid   - 1/0
 
     Events (via $client emit presence ...):
         <Changed> -action clear                   - all presence wiped on disconnect
@@ -127,7 +127,7 @@ snit::type taco_presence {
     }
 
     # Returns 1 if any resource is available, 0 otherwise
-    tackymethod isOnline {args} {
+    tackymethod is_online {args} {
         set bareJid [jid norm [dict get $args -jid]]
         info exists Presence($bareJid)
     }
@@ -136,7 +136,7 @@ snit::type taco_presence {
     method Vouched {bare} {
         if {$bare eq [jid norm [jid bare [$client cget -jid]]]} { return 1 }
         if {[$client roster subscription -jid $bare] ne ""} { return 1 }
-        return [$client muc isKnownRoom -jid $bare]
+        return [$client muc is_known_room -jid $bare]
     }
 
     method OnPresence {stanza} {

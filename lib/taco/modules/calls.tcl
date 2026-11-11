@@ -195,7 +195,7 @@ snit::type taco_calls {
 
     # Mute / unmute the local camera on a live video call. Video is
     # negotiated at start/answer; this only toggles capture.
-    tackymethod setVideo {args} {
+    tackymethod set_video {args} {
         array set opts {-sid "" -on 1}
         array set opts $args
         set call [$self Call $opts(-sid)]
@@ -204,7 +204,7 @@ snit::type taco_calls {
     }
 
     # Hot-swap mic / speaker for a live call. Empty id = system default.
-    tackymethod setDevices {args} {
+    tackymethod set_devices {args} {
         array set opts {-sid ""}
         array set opts $args
         set call [$self Call $opts(-sid)]
@@ -217,7 +217,7 @@ snit::type taco_calls {
 
     # Hook called by the global `video` module after the preferred
     # camera changes - hot-swap the camera on every live video call.
-    tackymethod applyPreferredCamera {args} {
+    tackymethod apply_preferred_camera {args} {
         array set opts {-id ""}
         array set opts $args
         if {[::tacky::media capability videoDevice]} {
@@ -228,7 +228,7 @@ snit::type taco_calls {
 
     # Hook called by the global `audio` module after the preferred
     # device changes — hot-swap every live call on this client.
-    tackymethod applyPreferredDevice {args} {
+    tackymethod apply_preferred_device {args} {
         array set opts {-kind "" -id ""}
         array set opts $args
         $self Each SetAudioDevice $opts(-kind) $opts(-id)
@@ -239,7 +239,7 @@ snit::type taco_calls {
     # hot-swap every live call on this client. Values in [0.0, 1.0]. A call
     # with no audio attached yet is a no-op in the backend; a value the
     # backend rejects surfaces as <Warning> and the call keeps running.
-    tackymethod applyVolume {args} {
+    tackymethod apply_volume {args} {
         array set opts {-kind "" -volume ""}
         array set opts $args
         if {[::tacky::media capability audioVolume]} {
@@ -286,7 +286,7 @@ snit::type taco_calls {
     method OwnDevice {peer} {
         if {[catch {
             set dev [$client omemo listed_device_id]
-            set on [$client omemo isEnabled -jid [jid bare $peer]]
+            set on [$client omemo is_enabled -jid [jid bare $peer]]
         }]} { return "" }
         expr {$on && [string is integer -strict $dev] && $dev > 0 ? $dev : ""}
     }
@@ -326,8 +326,8 @@ snit::type taco_calls {
         # not a caller: anyone in a public room could ring us and learn
         # from our <ringing/> that we are online. Dropped unanswered.
         if {[jid resource $from] ne ""
-                && ([$client muc isTracked -jid $from]
-                    || [$client muc isKnownRoom -jid $from])} {
+                && ([$client muc is_tracked -jid $from]
+                    || [$client muc is_known_room -jid $from])} {
             jlog debug "call propose from $from dropped: a room occupant"
             return
         }

@@ -25,7 +25,7 @@ snit::widget chatpanel {
     variable showParticipants 0
     variable showJidIn1to1 0
     variable omemoEnabled 1
-    # A room's OMEMO state (omemo roomStatus), {} until it arrives; and the
+    # A room's OMEMO state (omemo room_status), {} until it arrives; and the
     # chat it is asked by (room@service?join).
     variable roomOmemo {}
     variable omemoChat ""
@@ -188,7 +188,7 @@ snit::widget chatpanel {
     }
 
     method ToggleOmemo {} {
-        ::tacky omemo setEnabled -acc $options(-acc) \
+        ::tacky omemo set_enabled -acc $options(-acc) \
             -jid $omemoChat -value $omemoEnabled \
             -tag $win -onerror [mymethod OnToggleOmemoError]
     }
@@ -385,7 +385,7 @@ snit::widget chatpanel {
         set path [tk_getOpenFile -title "Attach File" \
             -parent [winfo toplevel $win]]
         if {$path eq ""} return
-        ::tacky message sendFile -acc $options(-acc) \
+        ::tacky message send_file -acc $options(-acc) \
             -chat $options(-jid) -path $path
     }
 
@@ -416,7 +416,7 @@ snit::widget chatpanel {
         $self DropLeave $w
         foreach path $files {
             if {![file isfile $path]} continue
-            ::tacky message sendFile -acc $options(-acc) \
+            ::tacky message send_file -acc $options(-acc) \
                 -chat $options(-jid) -path $path
         }
         return copy
@@ -499,7 +499,7 @@ snit::widget chatpanel {
             -command [mymethod LeaveRoomKeepBookmark]
 
         # Permission-gated items — fetched asynchronously and inserted
-        ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
+        ::tacky muc my_nick -acc $options(-acc) -jid $roomJid \
             -tag $win -command [mymethod OnMyNickForMenu]
     }
 
@@ -589,7 +589,7 @@ snit::widget chatpanel {
         if {$answer eq "yes"} {
             # TODO: room config UI
         } else {
-            ::tacky muc createInstant -acc $options(-acc) -jid $roomJid
+            ::tacky muc create_instant -acc $options(-acc) -jid $roomJid
         }
     }
 
@@ -606,7 +606,7 @@ snit::widget chatpanel {
     }
 
     method ChangeNickname {} {
-        ::tacky muc myNick -acc $options(-acc) -jid $roomJid \
+        ::tacky muc my_nick -acc $options(-acc) -jid $roomJid \
             -tag $win -command [mymethod OnMyNickForChange]
     }
 
@@ -629,7 +629,7 @@ snit::widget chatpanel {
     }
 
     method RequestVoice {} {
-        ::tacky muc requestVoice -acc $options(-acc) -jid $roomJid
+        ::tacky muc request_voice -acc $options(-acc) -jid $roomJid
     }
 
     method StartCall {} {
@@ -719,7 +719,7 @@ snit::widget chatpanel {
             -parent [winfo toplevel $win] \
             -message "Are you sure you want to permanently destroy this room?\n\n$roomJid"]
         if {$answer ne "yes"} return
-        ::tacky muc destroyRoom -acc $options(-acc) -jid $roomJid
+        ::tacky muc destroy_room -acc $options(-acc) -jid $roomJid
     }
 
     method LeaveRoom {} {

@@ -159,7 +159,7 @@ and cache in `~/config/cache/tacky`.
 config holds `accounts.db`. data holds one `<jid>.db` per account - its state
 and message history with downloaded attachments. cache holds only what can
 be regenerated: upload staging, video frame streams, the log file
-`log setenabled` picks, and decrypted scratch copies of attachments where
+`log set_enabled` picks, and decrypted scratch copies of attachments where
 `/dev/shm` isn't available.
 
 `-transient 1`, the default, keeps the per-account databases in RAM, and
@@ -197,6 +197,8 @@ either comes back as an error reply.
 
     ["account", "add", {"acc": "user@example.com", "password": "secret"}]
     ["account", "list", {}, 1]
+
+Method names, argument names and fields are all snake_case.
 
 A request with a token gets exactly one reply: a result if it worked, an
 error if it didn't. A method shown here without `->` replies `""` once it
@@ -270,7 +272,7 @@ takes `acc`, the account's bare JID, which most signatures below leave out.
     account remove {acc: string}
     account enable {acc: string}
     account disable {acc: string}
-    account changePassword {acc: string, password: string}   -> ""
+    account change_password {acc: string, password: string}   -> ""
 
     account_fields = {jid: string, username: string, domain: string, host: string,
                       port: int, tls: string, srv: bool, password: string,
@@ -287,7 +289,7 @@ deletes the account row and its per-account database. Downloaded attachments
 are shared across accounts and are left alone. `set` with `password` changes
 only the stored password Tacky logs in with: a running client takes it at
 once, and an enabled account that is offline (after an auth error, say)
-connects again with it; an online one keeps its session. `changePassword`
+connects again with it; an online one keeps its session. `change_password`
 changes the password on the server (XEP-0077) and, if that works, updates
 the stored one - the reply is `""` on success or an `["error", ...]`.
 `enabled` on `add` or `set` does what `enable` or `disable` does. See
@@ -473,9 +475,9 @@ reached is retried, and so is a server the proxy can't reach.
 
 Facts the frontend reports about the app as a whole.
 
-    app setActive {active: bool}
-    app isActive {}                -> bool
-    app idleSeconds {}             -> int
+    app set_active {active: bool}
+    app is_active {}                -> bool
+    app idle_seconds {}             -> int
 
 `active` is whether the user is using the app: focused on the desktop, in
 the foreground on mobile. Until a frontend reports otherwise it counts as
@@ -483,7 +485,7 @@ active. On becoming active, connected accounts check their link
 (`conn probe`). Accounts whose server supports Client State Indication
 (XEP-0352) also tell it each change, so while the app is inactive the
 server can hold back presence updates and typing notifications.
-`idleSeconds` is how long the app has been inactive, 0 while active.
+`idle_seconds` is how long the app has been inactive, 0 while active.
 Becoming active also applies views [chat](#chat) held.
 
 ## setting
@@ -511,7 +513,7 @@ account - they are about what the account tells its contacts:
 - `answer_time`: `1` answers Entity Time queries (XEP-0202) with the local
   time and timezone offset.
 - `answer_last_activity`: `1` answers Last Activity queries (XEP-0012)
-  with `app idleSeconds`.
+  with `app idle_seconds`.
 
 Both are off when unset. When on, they are answered only to the account's
 own resources and to contacts with a presence subscription to it (`from`
@@ -533,9 +535,9 @@ Local storage encryption - off by default.
 
     storage status         {}                    -> string   plaintext|pending-encrypt|locked|pending-decrypt|unlocked
     storage unlock         {passphrase: string}
-    storage requestEncrypt {}
-    storage requestDecrypt {}
-    storage cancelPending  {}
+    storage request_encrypt {}
+    storage request_decrypt {}
+    storage cancel_pending  {}
     storage encrypt        {passphrase: string}
     storage decrypt        {}
 
@@ -549,10 +551,10 @@ Events:
 `unlock` verifies the passphrase - retryable in place on failure, no restart.
 `<Unlocked>` follows a successful `unlock`, and an `encrypt`.
 
-Turning encryption on/off is two-step, not live: `requestEncrypt`/
-`requestDecrypt` (from `plaintext`/`unlocked`) just flag intent - no
+Turning encryption on/off is two-step, not live: `request_encrypt`/
+`request_decrypt` (from `plaintext`/`unlocked`) just flag intent - no
 passphrase yet, nothing on disk changes - reflected as `pending-encrypt`/
-`pending-decrypt`; `cancelPending` reverts it. The actual migration
+`pending-decrypt`; `cancel_pending` reverts it. The actual migration
 (`encrypt {passphrase}` / `decrypt {}`) belongs at the next startup, before
 any account connects, when status shows the pending request - `encrypt`
 collects the passphrase there (never persisted from the request) and drops
@@ -561,9 +563,9 @@ They run only there: with the matching request pending and before normal
 boot. Called at any other time they error and change nothing; a request takes
 effect at the next launch, never in the session that made it.
 
-`requestEncrypt` and `requestDecrypt` error without a config dir (storage is
+`request_encrypt` and `request_decrypt` error without a config dir (storage is
 transient, so there is nothing to encrypt) and when a request is already
-pending; `cancelPending` errors when none is.
+pending; `cancel_pending` errors when none is.
 Cancelling at that startup gate also drops into normal operation: the
 remaining modules come up and the enabled accounts connect.
 
@@ -581,7 +583,7 @@ it, and another `encrypt`/`decrypt` until then is refused.
 
     chatlist get       {}                         -> [chat_entry]
     chatlist pin       {jid: string, pinned: bool}
-    chatlist setPinned {jids: [string]}
+    chatlist set_pinned {jids: [string]}
 
 The entire chat list as one flat, unordered array: the roster, bookmarked
 rooms, any chat that has message history, any pinned chat, and the chat
@@ -621,7 +623,7 @@ an `<Item>`. Pinned chats always sort above unpinned ones. It stays below
 
 `pinned` is `true` for a chat you pinned. Pins are local to this device.
 `pin` pins a chat on top of the others, or unpins it; pinning a pinned
-chat does nothing. `setPinned` takes the whole pinned list, top first: a
+chat does nothing. `set_pinned` takes the whole pinned list, top first: a
 pinned chat left out of it is unpinned,
 and naming a chat twice is an error (`TACO_CHATLIST_DUPLICATE`). A pinned
 chat stays listed with no history or source; unpinned, such a chat is
@@ -668,17 +670,17 @@ Which chats the frontend shows, and how far down.
     chat open  {acc, chat}
     chat close {acc, chat}
     chat view  {acc, chat, id}
-    chat isOpen    {acc, chat}   -> bool
-    chat isLooking {acc, chat}   -> bool
-    chat setClientData {acc, chat, data: string}
-    chat clientData    {acc, chat}   -> string
+    chat is_open    {acc, chat}   -> bool
+    chat is_looking {acc, chat}   -> bool
+    chat set_client_data {acc, chat, data: string}
+    chat client_data    {acc, chat}   -> string
 
 `open`/`close` are membership, not a count: open a chat once however many
-windows show it. A chat is looked at (`isLooking`) while open and the
+windows show it. A chat is looked at (`is_looking`) while open and the
 [app](#app) is active.
 
 `view` gives the `id` of the last message on screen. While the chat is looked
-at it reads up to there: `markOwnRead`, plus `markDisplayed` in a 1:1. Call it
+at it reads up to there: `mark_own_read`, plus `mark_displayed` in a 1:1. Call it
 on every scroll and arrival; a message at or before the watermark is ignored.
 Views sent while the app is inactive are held until it is active again;
 views of a chat that isn't open are dropped.
@@ -686,8 +688,8 @@ views of a chat that isn't open are dropped.
 [notify](#notify) never alerts for a chat being looked at. Messages below the
 fold stay unread, so `chatlist`'s `unread` counts them until scrolled to.
 
-`setClientData` stores an opaque per-chat string for the frontend (scroll
-position, drafts); the chat need not be open. `clientData` returns it, `""` if
+`set_client_data` stores an opaque per-chat string for the frontend (scroll
+position, drafts); the chat need not be open. `client_data` returns it, `""` if
 none; storing `""` deletes it. It lives in the account's database: encrypted
 with it, removed with the account and when the chat's history is forgotten.
 
@@ -697,10 +699,10 @@ with it, removed with the account and when the chat's history is forgotten.
                     nick?: string, password?: string}
     bookmarks leave {jid: string}
     bookmarks remove {jid: string, leave?: bool}
-    bookmarks forceJoin {jid: string}
+    bookmarks force_join {jid: string}
     bookmarks nick {jid: string, nick: string}
     bookmarks autojoin {jid: string}         -> bool     that room's flag
-    bookmarks defaultNick {nick?: string}    -> string   read, or set with `nick`
+    bookmarks default_nick {nick?: string}    -> string   read, or set with `nick`
     bookmarks request {}                                 refetch from the server
 
 XEP-0402 room membership, and the write side of the room half of
@@ -708,14 +710,14 @@ XEP-0402 room membership, and the write side of the room half of
 `jid` is the bare room JID; a chat JID's `?join` suffix is stripped for you.
 
 `item` upserts and is how a room is joined: omitted fields keep their stored
-values, a new bookmark with no `nick` takes `defaultNick`, and setting
+values, a new bookmark with no `nick` takes `default_nick`, and setting
 `autojoin: true` joins the room as a side effect. `leave` is the inverse pair -
 clear autojoin and part - while `remove` parts, deletes the bookmark, and
-retracts it from the server; `leave: false` keeps you in the room. `forceJoin` re-sends the join with the stored nick
+retracts it from the server; `leave: false` keeps you in the room. `force_join` re-sends the join with the stored nick
 and password without touching autojoin, for a room dropped underneath you (an
 IRC gateway going down). `nick` renames you in one room and stores it - in a
 joined room only once the room accepts the new nick, so a refused one is never
-stored; `defaultNick` is the account-wide fallback for new bookmarks, itself
+stored; `default_nick` is the account-wide fallback for new bookmarks, itself
 falling back to the JID's localpart. `autojoin` reads one room's flag, for a menu that
 has to show its state before it opens.
 
@@ -774,7 +776,7 @@ whole roster was replaced, so refetch. `type` is `subscribe`, `subscribed`,
     blocking list {}                    -> [string]
     blocking block {jid: [string]}
     blocking unblock {jid?: [string]}
-    blocking unblockAll {}
+    blocking unblock_all {}
 
 XEP-0191: the server drops everything from a blocked JID. The list is
 per account and kept on its server.
@@ -797,7 +799,7 @@ clients.
 
     presence get {jid: string}         -> presence      best resource
     presence resources {jid: string}   -> {*: presence}  per-resource
-    presence isOnline {jid: string}    -> bool
+    presence is_online {jid: string}    -> bool
 
     presence = {show: string, status: string, priority: int,
                 idle_since: int, client: client_info}
@@ -827,7 +829,7 @@ next connect.
 
 ## caps
 
-    caps softwareVersion {to: string} -> {name: string, version: string,
+    caps software_version {to: string} -> {name: string, version: string,
                                           os: string}
 
 XEP-0092: what software an entity runs, self-reported as a free-text name and
@@ -842,11 +844,11 @@ carries it in `client`.
 ## message
 
     message send {chat: string, body: string, reply_to_id?: int}            -> int   the new row's id
-    message sendFile {chat: string, path: string}                           -> int   the new row's id
+    message send_file {chat: string, path: string}                           -> int   the new row's id
     message history {chat: string, limit?: int, before?: int, after?: int, tag?: string}           -> [message]
     message goto {chat: string, date: int, source?: "local" | "remote", limit?: int, tag?: string} -> goto_result
     message goto {chat: string, id: int, limit?: int, tag?: string}                                -> goto_result
-    message gotoReply {chat: string, reply_id: string, reply_to?: string, limit?: int, tag?: string} -> goto_result
+    message goto_reply {chat: string, reply_id: string, reply_to?: string, limit?: int, tag?: string} -> goto_result
     message search {chat?: string, query: string, source?: "local" | "remote" | "both", limit?: int,
                     before?: int, before_archive?: string,
                     field?: string, tag?: string}                                       -> search_result
@@ -854,14 +856,14 @@ carries it in `client`.
     message retract {chat: string, id: int}
     message moderate {chat: string, id: int, reason?: string}
     message react {chat: string, id: int, emoji: string}
-    message reactClear {chat: string, id: int}
+    message clear_reactions {chat: string, id: int}
     message resend {chat: string, id: int, plaintext?: bool}
-    message retryUpload {chat: string, id: int}
+    message retry_upload {chat: string, id: int}
     message cancel {tag: string}
-    message rawxml {chat: string, id: int} -> string  raw stanza (debug)
-    message markDisplayed {chat: string, id: int, after?: int}
-    message markOwnRead {chat: string, id: int}
-    message ownRead {chat: string} -> {id: int | "", unread: int}
+    message raw_xml {chat: string, id: int} -> string  raw stanza (debug)
+    message mark_displayed {chat: string, id: int, after?: int}
+    message mark_own_read {chat: string, id: int}
+    message own_read {chat: string} -> {id: int | "", unread: int}
 
     message = {id: int, pos: string, timestamp: int,
                chat_jid: string, from_jid: string,
@@ -932,7 +934,7 @@ becomes `caption`, and the files are listed in `attachments`.
   live ones. It is for display only - neither unique nor an order, so the
   times of neighbouring rows can look out of order when clocks disagree.
 - `limit` defaults to 50 on `history`,
-  `goto` and `gotoReply`, and to 20 on `search`; `goto`'s `source` defaults
+  `goto` and `goto_reply`, and to 20 on `search`; `goto`'s `source` defaults
   to `local`.
 - `from_resource` is the sender's resource. `server_id` is the XEP-0359
   stanza-id the server (or room) gave the message, `""` until it has one;
@@ -956,7 +958,7 @@ becomes `caption`, and the files are listed in `attachments`.
 - `encryption` is `"omemo"` or `""`.
 - `sender_fp` is the identity-key fingerprint of the peer device whose OMEMO
   session decrypted the message; `""` on a cleartext row and on your own sends.
-  It matches the `fingerprint` of an `omemo trustList` row, which is how you
+  It matches the `fingerprint` of an `omemo trust_list` row, which is how you
   resolve it to a device id and its trust state.
 - `content` is the typed payload: `type: "text"` carries a `body`,
   `type: "media"` carries an `attachments` list plus a `caption` (grouped
@@ -1024,8 +1026,8 @@ one per chat, by its place in the chat rather than its time. Unread is every
 message after it, and history backfilled behind it does not become unread. (`remote_status` on a message is the other direction, the
 peer's read state of something you sent.)
 
-`markOwnRead` sets it, forward-only - a message at or before it is ignored. It is
-local state and applies to group chats; `markDisplayed` is the separate wire
+`mark_own_read` sets it, forward-only - a message at or before it is ignored. It is
+local state and applies to group chats; `mark_displayed` is the separate wire
 half (a XEP-0333 `<displayed>`, 1:1 only, only to a contact who may see
 our presence, as for delivery receipts, and never with the
 [`send_chat_markers`](#setting) setting at `0`). It names the newest of the peer's
@@ -1035,34 +1037,34 @@ watermark also advances on its own on [chat](#chat) `view`, when you send a
 message from any of your devices, and when another device's `<displayed>`
 marker reaches this one.
 
-`<OwnRead>` fires on every move, from any of those sources. `ownRead` gives one
+`<OwnRead>` fires on every move, from any of those sources. `own_read` gives one
 chat's watermark (`id` is `""` when nothing is read) and unread count. See [Read state and
 alerts](#read-state-and-alerts).
 
 ## muc
 
-    muc acceptInvite  {chat: string, id: int}
-    muc declineInvite {chat: string, id: int, reason?: string}
+    muc accept_invite  {chat: string, id: int}
+    muc decline_invite {chat: string, id: int, reason?: string}
     muc invite        {jid: string, to: string, reason?: string}
-    muc requestVoice  {jid: string}
+    muc request_voice  {jid: string}
     muc kick          {jid: string, nick: string, reason?: string}
     muc role          {jid: string, nick: string, role: string, reason?: string}
     muc affiliation   {jid: string, target: string, affiliation: string, reason?: string, nick?: string}
-    muc createInstant {jid: string}        create the room with its default config
-    muc destroyRoom   {jid: string, reason?: string, altRoom?: string, password?: string}
-    muc discoverRooms {jid: string}     -> [room_item]   rooms a service lists
-    muc roomInfo      {jid: string} -> muc_room_info
-    muc roomPrivacy   {jid: string} -> [string]   why its readers are not known; [] when they are
+    muc create_instant {jid: string}        create the room with its default config
+    muc destroy_room   {jid: string, reason?: string, altRoom?: string, password?: string}
+    muc discover_rooms {jid: string}     -> [room_item]   rooms a service lists
+    muc room_info      {jid: string} -> muc_room_info
+    muc room_privacy   {jid: string} -> [string]   why its readers are not known; [] when they are
     muc members       {jid: string} -> {list: string, members: {jid: affiliation}}
     muc people        {jid: string} -> {list: string, groups: {group: int},
                                         me: room_caps, people: [person]}
     muc person        {jid: string, occupant: string, occupant_id?: string} -> person
     muc occupants     {jid: string} -> [occupant]
     muc occupant      {jid: string, nick: string} -> occupant   ({} if not there)
-    muc myNick        {jid: string} -> string     your nick in the room
-    muc myRole        {jid: string} -> string     your role in the room
-    muc myAffiliation {jid: string} -> string     your affiliation with it
-    muc getSubject    {jid: string} -> string     the room's subject
+    muc my_nick        {jid: string} -> string     your nick in the room
+    muc my_role        {jid: string} -> string     your role in the room
+    muc my_affiliation {jid: string} -> string     your affiliation with it
+    muc get_subject    {jid: string} -> string     the room's subject
 
     muc_room_info = {known: bool, live: bool, members_only: bool,
                      non_anonymous: bool, occupant_id: bool}
@@ -1112,16 +1114,16 @@ the room put out, you included, with the `actor` who did it and why. `<NickError
 
 `<Subject>` is the room's subject, on join and when someone (`nick`) changes
 it. `<Decline>` is `from` turning down an invite you sent. `<VoiceRequest>`
-reaches a moderator when a visitor asks for voice (`requestVoice`): `from` and
+reaches a moderator when a visitor asks for voice (`request_voice`): `from` and
 `nick` are who, and `form` (as in [register](#register)) is the room's
 approval form.
 
 `affiliation`'s `nick` names the occupant the change is about, for a room that
-wants one. `kick`, `role`, `affiliation`, `createInstant` and `destroyRoom` answer
+wants one. `kick`, `role`, `affiliation`, `create_instant` and `destroy_room` answer
 `""` once the room has accepted, and an error reply with a reason when it
 refuses.
 
-`roomInfo` is what the room's disco#info said: on this connection (`live`),
+`room_info` is what the room's disco#info said: on this connection (`live`),
 or the last time it was asked (`known`). `members` is everyone with an
 owner, admin or member affiliation, by real JID, whether in the room or not:
 asked of the room at each join of a private room and kept current from
@@ -1140,7 +1142,7 @@ sorted by group, then by nick, the absent by JID, and `groups` counts each.
 `occupant` the room/nick JID, "" for someone absent. `caps` are an
 occupant's as below, all off for the absent and for yourself; `me` is what
 you may do about the room itself. `keys` is the person's
-[OMEMO keys](#group-chats) as `roomStatus` gives them, for a member of a
+[OMEMO keys](#group-chats) as `room_status` gives them, for a member of a
 room that can be encrypted, else `{}` (and always `{}` for yourself). `list` is the member list's state
 as for `members`: where the room refused the lists, the absent are not
 known and only those present are listed. `<PeopleChanged>` says the answer
@@ -1179,8 +1181,8 @@ with `autojoin`, through this invite or not), else `declined` if you turned
 it down, else `pending`. A change arrives as `message <Edited>` with the
 whole row, for every invite to the room at once when membership changes.
 
-`acceptInvite` bookmarks the room with `autojoin` and the invite's password
-(never shown to the frontend), undoing any earlier decline. `declineInvite`
+`accept_invite` bookmarks the room with `autojoin` and the invite's password
+(never shown to the frontend), undoing any earlier decline. `decline_invite`
 marks it `declined` and, for a relayed invite, sends a decline through the
 room (a direct invite has none to send). The row stays as a record, unless
 the room's chat then holds only declined invites (a room you never joined):
@@ -1242,25 +1244,25 @@ chats start muted, 1:1 chats do not, `mentions` starts on for both.
 
 ## mam
 
-    mam fulltextSupported {chat: string}  -> bool    archive can run a text search
+    mam fulltext_supported {chat: string}  -> bool    archive can run a text search
     mam metadata {to?: string}            -> {start_id: string, start_timestamp: int,
                                               end_id: string, end_timestamp: int}
-    mam formfields {to?: string}          -> [string]   query fields the archive offers
+    mam form_fields {to?: string}          -> [string]   query fields the archive offers
 
 What the archive itself can do, for gating a UI on it. Nothing here fetches
 messages - history and search go through `message`, which drives MAM for you.
 
-`chat` is a chat JID (`room@host?join` for a room), which `fulltextSupported`
+`chat` is a chat JID (`room@host?join` for a room), which `fulltext_supported`
 resolves to whichever archive would answer it: the room's own, or yours. `to`
 names an archive directly and defaults to yours, so pass a room JID for that
 room's.
 
-- `fulltextSupported` - whether a server-side search is worth offering (see
+- `fulltext_supported` - whether a server-side search is worth offering (see
   [The chat window](#the-chat-window)).
 - `metadata` - the oldest and newest entries. For an empty archive the ids
   are `""` and the timestamps `null` (`""` in Tcl).
-- `formfields` - the filter fields the archive advertises. A fulltext field
-  among them is what `fulltextSupported` checks for.
+- `form_fields` - the filter fields the archive advertises. A fulltext field
+  among them is what `fulltext_supported` checks for.
 
 An archive that refuses or can't be reached is an error reply for all three.
 
@@ -1269,15 +1271,15 @@ An archive that refuses or can't be reached is an error reply for all three.
     omemo device_id {}                -> int
     omemo account_jid {}              -> string
     omemo own_fingerprint {}          -> string    hex identity-key fingerprint
-    omemo devicelist {jid: string}    -> [int]      raw PEP devicelist cache
-    omemo trustList {jid: string}     -> [omemo_trust]
-    omemo blindTrust {}               -> bool
+    omemo device_list {jid: string}    -> [int]      raw PEP devicelist cache
+    omemo trust_list {jid: string}     -> [omemo_trust]
+    omemo blind_trust {}               -> bool
     omemo trust {jid: string, device: int, state: string}      validates the transition; emits <TrustChanged>, <TrustList>
-    omemo setBlindTrust {value: bool}            -> bool   emits <BlindTrust>
-    omemo setEnabled {jid: string, value: bool}  -> bool   emits <Enabled>
-    omemo isEnabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room or a room PM
-    omemo prepareChat {jid: string}   -> ""    warm devicelist + bundles
-    omemo roomStatus {jid: string}    -> omemo_room_status   jid is a room chat (room?join)
+    omemo set_blind_trust {value: bool}            -> bool   emits <BlindTrust>
+    omemo set_enabled {jid: string, value: bool}  -> bool   emits <Enabled>
+    omemo is_enabled {jid: string}                -> bool   on for a 1:1 chat never set, off for a room or a room PM
+    omemo prepare_chat {jid: string}   -> ""    warm devicelist + bundles
+    omemo room_status {jid: string}    -> omemo_room_status   jid is a room chat (room?join)
 
     omemo_trust = {device: int, trust: string, active: bool, fingerprint: string}
     omemo_room_status = {jid: string, eligible: bool, reasons: [string],
@@ -1293,16 +1295,16 @@ the system can move a device to `compromised`, and nothing moves it back. A
 bad transition errors with `OMEMO TRUST_TRANSITION`; a `(jid, device)` pair
 that doesn't exist errors with `OMEMO TRUST_NO_DEVICE`. Those codes are the
 Tcl binding's `-errorcode`; a JSON error reply carries only the message.
-`device` is an opaque row handle from `trustList` - don't show it to the user.
-`prepareChat` replies once the devicelist is in and the bundle fetches have
+`device` is an opaque row handle from `trust_list` - don't show it to the user.
+`prepare_chat` replies once the devicelist is in and the bundle fetches have
 started (for a room, at once), not when they finish. See
 [OMEMO](#omemo-1).
 
-`trustList`, `isEnabled`, `setEnabled` and `prepareChat` take a room chat
+`trust_list`, `is_enabled`, `set_enabled` and `prepare_chat` take a room chat
 (`room?join`) too; see [Group chats](#group-chats). For a room, each
-`trustList` row also has `jid`, the member whose device it is - pass that,
+`trust_list` row also has `jid`, the member whose device it is - pass that,
 not the room, as `trust`'s `jid` - and
-`setEnabled {value: true}` on a room that doesn't qualify errors with
+`set_enabled {value: true}` on a room that doesn't qualify errors with
 `OMEMO ROOM_NOT_ELIGIBLE`.
 
 Events:
@@ -1467,8 +1469,8 @@ source: the `url` you passed, or the `path` when you passed no `url`.
     calls accept {sid: string}
     calls reject {sid: string, reason?: string}                    reason default: decline
     calls hangup {sid: string, reason?: string}                    reason default: success
-    calls setDevices {sid: string, input?: string, output?: string}
-    calls setVideo {sid: string, on?: bool}                        on default: true
+    calls set_devices {sid: string, input?: string, output?: string}
+    calls set_video {sid: string, on?: bool}                        on default: true
     calls list {}                                                  -> [call_row]
 
     call_row = {sid: string, peer: string, direction: string, state: string,
@@ -1479,8 +1481,8 @@ source: the `url` you passed, or the `path` when you passed no `url`.
 
 `start` rings the peer; `video: true` offers a video track alongside audio.
 Take the session id from `<Outgoing>`.
-`setDevices` overrides the mic and speaker for a single call; an empty id means the system default.
-`setVideo` mutes or unmutes the local camera on a call that already
+`set_devices` overrides the mic and speaker for a single call; an empty id means the system default.
+`set_video` mutes or unmutes the local camera on a call that already
 negotiated video - it doesn't add video to a call that didn't. See
 [Voice and video calls](#voice-and-video-calls) below.
 
@@ -1558,7 +1560,7 @@ turned away because the account goes through a proxy, both with no
 calls](#voice-and-video-calls) for how a call is verified). `verified`
 is true when the peer's device is one we would encrypt messages to: trusted,
 or undecided while [blind trust](#omemo) is on. `fingerprint` is that
-device's OMEMO key in the format [`omemo trustList`](#omemo) uses, or `""`
+device's OMEMO key in the format [`omemo trust_list`](#omemo) uses, or `""`
 for a plain call (OMEMO off for the chat, or the peer doesn't support
 this). The event comes before `<Active>` and again whenever the result
 changes during the call: the key gets trusted or distrusted, another of the
@@ -1570,7 +1572,7 @@ doesn't decrypt, or comes from an untrusted key, the call ends with
 `<VideoTrack>` (`direction: "incoming"`) and `<VideoPreview>`
 (`direction: "preview"`, the local camera) each name a stream of I420 frames
 the frontend connects to. `<VideoEnded>` (its `mid` always `video`) fires
-alongside `<Ended>`/`<Failed>` for any call that had video negotiated - `setVideo` only mutes the camera, it doesn't
+alongside `<Ended>`/`<Failed>` for any call that had video negotiated - `set_video` only mutes the camera, it doesn't
 tear the video half down on its own. See
 [Voice and video calls](#voice-and-video-calls) for the stream's format.
 
@@ -1581,10 +1583,10 @@ tear the video half down on its own. See
     groupcall join     {chat: string, id: int, video?: bool}          answer an invite
     groupcall decline  {chat: string, id: int}
     groupcall leave    {jid: string}
-    groupcall setVideo {jid: string, on?: bool}                on default: true
+    groupcall set_video {jid: string, on?: bool}                on default: true
     groupcall invite   {jid: string, to: string}               XEP-0482, to a bare JID
     groupcall get      {jid?: string, chat?: string}           -> [call_state]
-    groupcall inCall   {jid: string}                           -> bool
+    groupcall in_call   {jid: string}                           -> bool
 
     call_state  = {jid: string, chat: string, hosted: bool,
                    phase: "idle" | "joining" | "live" | "ended",
@@ -1655,8 +1657,8 @@ need none of them. See [Group calls](#group-calls).
     media backend      {}                                  -> string   active backend
     media list         {}                                  -> [string] backends this build has
     media capabilities {}                                  -> {string: bool}
-    media hostEvent    {pc: string, type: string, ...}     host backend only
-    media payloadTypes {}                                  -> {audio: [payload], video: [payload]}
+    media host_event    {pc: string, type: string, ...}     host backend only
+    media payload_types {}                                  -> {audio: [payload], video: [payload]}
 
     payload = {id: int, name: string, clockrate: int, channels?: int}
 
@@ -1683,11 +1685,11 @@ there is no `rtc`) and leaves the setting as it was.
 `capabilities` is what the active backend can do. A frontend needs them only
 to grey out a control it would otherwise offer:
 
-    audioDevices  `audio enumerateDevices` lists anything, and
-                  `setPreferredDevice` reaches live calls
-    audioVolume   `audio setVolume` reaches live calls
-    cameras       `video enumerateCameras` returns anything
-    videoDevice   `video setPreferredCamera` reaches live calls
+    audioDevices  `audio enumerate_devices` lists anything, and
+                  `set_preferred_device` reaches live calls
+    audioVolume   `audio set_volume` reaches live calls
+    cameras       `video enumerate_cameras` returns anything
+    videoDevice   `video set_preferred_camera` reaches live calls
     videoChannel  video arrives as `<VideoTrack>` / `<VideoPreview>`
     preview       a group call keeps a self-view of its own (`groupcall
                   <VideoPreview>`), on one camera shared by every session
@@ -1710,7 +1712,7 @@ and did not run. Nothing announces the ordinary case - ask `media backend`.
 
 On `host`, tacky has no peer connection: every step it would have taken
 leaves as a `<HostCommand>` event, and everything the frontend's own peer
-connection reports comes back as a `hostEvent` request. Both carry flat
+connection reports comes back as a `host_event` request. Both carry flat
 dicts of strings and numbers, so the same conversation works over the JSON
 channel, JNI or JS.
 
@@ -1783,11 +1785,11 @@ does, and do not close the peer connection on either.
 
 ## audio
 
-    audio enumerateDevices {}                              -> {capture: [audio_device], playback: [audio_device]}
-    audio getPreferredDevice {kind: string}                -> string   device id ("" = system default)
-    audio setPreferredDevice {kind: string, id: string}    -> ""
-    audio getVolume {kind: string}                         -> double   linear gain, 1.0 if unset
-    audio setVolume {kind: string, volume: double}         -> ""
+    audio enumerate_devices {}                              -> {capture: [audio_device], playback: [audio_device]}
+    audio get_preferred_device {kind: string}                -> string   device id ("" = system default)
+    audio set_preferred_device {kind: string, id: string}    -> ""
+    audio get_volume {kind: string}                         -> double   linear gain, 1.0 if unset
+    audio set_volume {kind: string, volume: double}         -> ""
 
     audio_device = {name: string, id: string, default: bool}
 
@@ -1796,7 +1798,7 @@ these belong to the host, not an account, so they live here rather than on
 `calls`. `kind` is `capture` or `playback`. Setting a device or volume
 persists it and hot-swaps every live call on every account. Volume is a
 linear gain in `[0.0, 1.0]`. Per-call device overrides are
-`calls setDevices`; there's no per-call volume.
+`calls set_devices`; there's no per-call volume.
 
 A preference outlives the backend that produced the id in it. One the active
 backend doesn't recognise falls back to that backend's default device, and
@@ -1812,9 +1814,9 @@ Events:
 
 ## video
 
-    video enumerateCameras {}                              -> [camera]
-    video getPreferredCamera {}                            -> string   camera id ("" = let the backend pick)
-    video setPreferredCamera {id: string}                  -> ""
+    video enumerate_cameras {}                              -> [camera]
+    video get_preferred_camera {}                            -> string   camera id ("" = let the backend pick)
+    video set_preferred_camera {id: string}                  -> ""
 
     camera = {name: string, id: string, facing: int}
 
@@ -1850,15 +1852,15 @@ Event:
 ## log
 
     log write    {level: string, text: string, obj?: string, acc?: string}  -> ""
-    log setlevel {level: string, obj?: string}                              -> ""
-    log getlevel {obj?: string}                                             -> string
-    log setnativelevel {level: string, source?: string}                     -> ""
-    log getnativelevel {source: string}                                     -> string   "none" when off
-    log setfile    {path: string}                                           -> ""
-    log setenabled {enabled: boolean}                                       -> ""
-    log getfile    {}                                                       -> string   "" when logging to stderr
-    log setredact  {enabled: boolean}                                       -> ""
-    log getredact  {}                                                       -> boolean
+    log set_level {level: string, obj?: string}                              -> ""
+    log get_level {obj?: string}                                             -> string
+    log set_native_level {level: string, source?: string}                     -> ""
+    log get_native_level {source: string}                                     -> string   "none" when off
+    log set_file    {path: string}                                           -> ""
+    log set_enabled {enabled: boolean}                                       -> ""
+    log get_file    {}                                                       -> string   "" when logging to stderr
+    log set_redact  {enabled: boolean}                                       -> ""
+    log get_redact  {}                                                       -> boolean
 
 The backend's logger. The frontend's lines land in the same file as the backend's
 own, set by `--debug-file` at startup, otherwise to stderr. 
@@ -1873,43 +1875,43 @@ at `warning`, and a SASL or bind failure at `error`. What it dialled and when it
 will retry next are `info`.
 
 `obj` names the source, as a dotted hierarchy: an object with no level of its
-own inherits from its nearest ancestor, so `setlevel {obj: "gui", level:
+own inherits from its nearest ancestor, so `set_level {obj: "gui", level:
 "debug"}` covers `gui.chatlist` and everything else under `gui`. Omit `obj` to
 read or move the default the rest inherit. Backend objects are already named
 this way (`::taco.client(<jid>)`, `libdatachannel`, `rtcma`, `rtcmv`, `webrtc`). `write` without `obj` records `frontend`.
 
-`setnativelevel` drives the native loggers, `libdatachannel`, `rtcma`,
+`set_native_level` drives the native loggers, `libdatachannel`, `rtcma`,
 `rtcmv` and `webrtc` (libwebrtc, when that media backend is loaded); omit
 `source` to set all four. They start off, and `none` turns one off again;
 `--libdatachannel-debug-level`, `--rtcma-debug-level`, `--rtcmv-debug-level` and
 `--webrtc-debug-level` set them at startup.
 Their output is voluminous, so the ordinary level does not affect them, and jlog
-does not re-filter what the library already did. `getnativelevel` takes one
+does not re-filter what the library already did. `get_native_level` takes one
 `source`, since the three can differ.
 
-`setfile` moves the sink at runtime, for a debug toggle or an export; an empty
+`set_file` moves the sink at runtime, for a debug toggle or an export; an empty
 `path` goes back to stderr. The file is held open only for the length of one
 record, so it can be truncated underneath the backend and the next record
 recreates it.
 
 At 4 MB the log rotates to `<path>.1`, replacing any previous one; both are 0600.
 
-`setenabled` is the same switch by boolean, with the backend choosing the path:
+`set_enabled` is the same switch by boolean, with the backend choosing the path:
 `tacky.log` in the cache directory taco was given, created 0600 in a 0700
 directory. An embedded host's sandbox and `-transient`'s temp root both apply.
 
-`getfile` returns that path, the same handoff as an attachment's `localpath`. It
+`get_file` returns that path, the same handoff as an attachment's `localpath`. It
 is `""` whenever records are going to stderr.
 
 All the setters are per process and not persisted; see
 [Accounts and sign-in](#accounts-and-sign-in) for keeping them.
 
 `none` is a threshold, never a severity: `write` drops a record at that level, so
-a caller may pipe a level straight from `getlevel` back into `write`.
+a caller may pipe a level straight from `get_level` back into `write`.
 
 At `debug` and below every stanza in and out is logged. Credentials are always
 replaced: SASL exchanges, `<password/>`, password and secret form fields, and
-upload slot headers. `setredact` (default on) also replaces message content:
+upload slot headers. `set_redact` (default on) also replaces message content:
 `<body>` and `<subject>` text (as `[redacted N chars]`), reactions, XHTML-IM,
 out-of-band URLs and upload slot URLs. This is best effort; JIDs, nicks, the
 roster, presence, room names and the IP addresses in call candidates and native
@@ -2096,7 +2098,7 @@ tail, and re-runs this.
 already in the window, otherwise clear and apply `messages`. A jump gives up the tail
 until the user returns to it. `bounded_before` and `bounded_after` mark a side
 cut off at a hole - there's more history that way, and paging fills it in.
-`gotoReply` (XEP-0461) jumps to a reply's target and returns the same shape.
+`goto_reply` (XEP-0461) jumps to a reply's target and returns the same shape.
 
 **Replies.** `message send` takes an optional `reply_to_id` - the `id` of the
 message being answered. The backend resolves that row to the id a peer
@@ -2121,7 +2123,7 @@ the way `from_jid` is - an occupant JID in a room, a bare JID in a 1:1 - so it
 resolves through `author get` like any other author. It is read off the resolved
 row rather than off `reply_to`, which peers get wrong; with no row to read it
 falls back to `reply_to`. Jump to it by passing `reply_id` and `reply_to` to
-`gotoReply`, which resolves the id locally and then behaves like `goto`. An
+`goto_reply`, which resolves the id locally and then behaves like `goto`. An
 uncached target comes back with no `messages` and an empty `anchor` - there is
 no fetch-by-stanza-id, so a target beyond a hole is not reachable this way.
 
@@ -2173,7 +2175,7 @@ so `<Edited>` arrives without waiting for the echo - except in an OMEMO chat
 whose encryption can't go out now, where it does nothing at all. `react` (XEP-0444) toggles
 one emoji in your own reaction set rather than adding it; call it again with
 the same emoji to take it back. The set is sent whole because the
-protocol has no delta, and `reactClear` drops all of yours at once.
+protocol has no delta, and `clear_reactions` drops all of yours at once.
 
 Deleting splits by chat kind, so pick by chat rather than offering both.
 `retract` (XEP-0424) withdraws one of your own 1:1 messages and tombstones it
@@ -2187,7 +2189,7 @@ also answers `onerror` for a message the room hasn't given an id yet (your own
 send before its echo).
 
 **Outgoing.** Your own messages show up right away on `<New>`
-(optimistically) after the chat's last row; `send` and `sendFile` answer
+(optimistically) after the chat's last row; `send` and `send_file` answer
 the new row's `id`. Once they're confirmed - a MUC echo, or your own message
 coming back via MAM - a `<Confirmed>` clears `server_status` and, when the
 copy carries a stamp, gives the time to show. `send` is fire-and-forget,
@@ -2224,7 +2226,7 @@ Retracted messages never match.
 
 `source: remote` is server-side MAM full-text (XEP-0431): page through it with
 `before_archive: last_archive`, the archive's own cursor.
-Few servers implement the field, so check first with `mam fulltextSupported
+Few servers implement the field, so check first with `mam fulltext_supported
 {chat: string} -> bool`; a search against an archive that advertises none is an
 error reply rather than a silent match of everything. `field` names the
 archive's full-text form field outright, skipping the lookup of which one it
@@ -2288,11 +2290,11 @@ for you as long as it knows what is on screen.
 the last message on screen on every scroll and arrival. While the app is active that
 reads the chat up to there - the watermark, plus a `<displayed>` to a 1:1
 peer - and keeps [notify](#notify) quiet for it. Report focus with `app
-setActive`, so a chat left on screen behind another window isn't read.
+set_active`, so a chat left on screen behind another window isn't read.
 Messages below the fold stay unread until scrolled to.
 
 **A chat not on screen.** To mark one read from a menu, call `message
-markOwnRead` with its last message's `id`, plus `markDisplayed` in a 1:1. Both
+mark_own_read` with its last message's `id`, plus `mark_displayed` in a 1:1. Both
 are safe to repeat.
 
 **The chat list.** Each `chatlist` entry carries `unread` and
@@ -2321,13 +2323,13 @@ cannot fetch is not an attachment at all - the message arrives as plain text.
 `name` is the sender's filename with control characters and bidi overrides
 stripped, so it is safe to display; `url` keeps the wire bytes.
 
-**Sending.** `message sendFile` is optimistic: the message shows up right
+**Sending.** `message send_file` is optimistic: the message shows up right
 away via `<New>` with `server_status: "uploading"`, the attachment's `path`
 set to the local file and its `url` still empty. The backend uploads the file,
 sends the real message with the public URL, and confirmation carries on like
 any other send. A failed upload marks the row `failed` with `fail_reason:
 "upload"` - so does one a restart cut off, since a PUT can't resume - and
-`message retryUpload` runs it again from the `path` it recorded. Each
+`message retry_upload` runs it again from the `path` it recorded. Each
 upload transition rides `message <Status>` as a `server_status` change:
 `uploading -> pending` on success, `uploading -> failed` on error, and
 `failed -> uploading` on retry. Byte-level progress and terminal state come
@@ -2370,7 +2372,7 @@ OMEMO 0.3 (XEP-0384) for 1:1 chats, and for group chats that allow it (see
 **Trust** - each device has one of four states: `undecided` (where new
 devices start), `trusted` and `untrusted` (set by the user, and freely
 swappable), and `compromised` (set by the system when an identity key
-rotates; it sticks). The account-wide `blindTrust` decides whether
+rotates; it sticks). The account-wide `blind_trust` decides whether
 `undecided` devices can be sent to: on (the default), new devices are
 included as recipients (TOFU/BTBV); off, they're left out until you've
 `trusted` them yourself.
@@ -2392,7 +2394,7 @@ the row's `<Status>` as an `encryption` field, so a displayed message never
 keeps a lock it no longer has.
 
 **Message origin** - a decrypted row carries `sender_fp`, the fingerprint of
-the peer device that sent it. Join it against `trustList` for that device's id
+the peer device that sent it. Join it against `trust_list` for that device's id
 and trust state. Messages are decrypted and stored whatever the sender's trust;
 flag an `untrusted` or `compromised` sender at draw time, so a later trust
 change applies to old messages too. A `compromised` device's messages arrive as
@@ -2402,12 +2404,12 @@ an "identity key changed" placeholder rather than their text.
 
 A room can use OMEMO when it is members-only and non-anonymous: only then
 does the room tell everyone its members' real JIDs, which is what the keys
-are made for. `roomStatus` says whether a room qualifies (`eligible`, and
+are made for. `room_status` says whether a room qualifies (`eligible`, and
 `reasons` when not: `unknown`, `not_members_only`, `anonymous`), whether it
 is on, and who a message to it is keyed for. `offered` is whether there is
 a switch to show: the room qualifies, or it is on and can be turned off.
 
-- **Off by default.** A room is encrypted only after `setEnabled` turns it
+- **Off by default.** A room is encrypted only after `set_enabled` turns it
   on, which a room that doesn't qualify refuses. A room that stops
   qualifying while on stays on: its sends fail (`fail_reason: "encrypt"`)
   rather than going out in the clear.
@@ -2417,7 +2419,7 @@ a switch to show: the room qualifies, or it is on and can be turned off.
   whose devices can be used (no OMEMO, every device untrusted) fails the
   send, and `<MembersUnreachable>` names them with a `reason`
   (`no_devices`, `no_usable_device`); the last such list stays in
-  `roomStatus` as `unreachable` until a send goes through. Show who, and
+  `room_status` as `unreachable` until a send goes through. Show who, and
   offer to review their keys or turn encryption off. A member whose keys
   are still being fetched holds the send until they arrive.
 - **Who wrote it.** A room message is decrypted as the member the room
@@ -2426,7 +2428,7 @@ a switch to show: the room qualifies, or it is on and can be turned off.
   message the room gives no sender for, and that none of the sessions
   tacky holds opens, is stored as a placeholder and told as
   `<DecryptFailed>` with `room`.
-- **Keys.** `trustList` with the room lists every member's devices, each
+- **Keys.** `trust_list` with the room lists every member's devices, each
   row naming its member in `jid`; `<TrustList>` for the room follows them.
   Blind trust works as in 1:1 chats.
 - **Who needs attention.** `members` gives each member's keys counted by
@@ -2440,9 +2442,9 @@ a switch to show: the room qualifies, or it is on and can be turned off.
 
 A room's private messages (`room@service/nick`) are not encrypted.
 
-**UI.** For the encryption switch, read `isEnabled` for the peer before you
+**UI.** For the encryption switch, read `is_enabled` for the peer before you
 draw it, subscribe to `omemo <Enabled>` to follow it after that, and call
-`setEnabled` when it's toggled. Read rather than assume: the default is on,
+`set_enabled` when it's toggled. Read rather than assume: the default is on,
 so a switch drawn before the answer arrives can show a padlock over a chat
 that is going out in the clear. For the key panel, subscribe
 to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
@@ -2450,7 +2452,7 @@ to `omemo <TrustList>`, draw the rows, and call `trust` with a row's
 leads with "resend as plaintext" (`message resend {plaintext: 1}`), while
 "keys arrived, retry" is a plain `message resend`. `fail_reason:
 "delivery"` offers only the plain `message resend` - the encryption was
-never the problem - and `fail_reason: "upload"` offers `message retryUpload`. `<FingerprintChanged>`
+never the problem - and `fail_reason: "upload"` offers `message retry_upload`. `<FingerprintChanged>`
 (a peer's identity key rotated, so trust auto-drops to compromised) is
 per-peer, and a single handler subscribed by `acc` covers every chat at
 once.
@@ -2487,7 +2489,7 @@ WebRTC stack belongs to the host and cannot be linked in - a browser's
 `RTCPeerConnection`, `WebRTC.xcframework`, Android's `org.webrtc`. Tacky
 creates no peer connection of its own. Every step it would have taken leaves
 as a `media <HostCommand>` event, and the frontend answers with
-`media hostEvent` as its own stack produces a description, a candidate, a
+`media host_event` as its own stack produces a description, a candidate, a
 state or a track. Tacky turns those into Jingle and back exactly as it does
 for its own backends, so call state and every `calls` event are unchanged.
 There the devices and the rendering are the frontend's: enumeration comes
@@ -2595,7 +2597,7 @@ tacky does mesh group calls, as Dino does: a Jingle session between every
 pair, so a handful of people is the practical limit.
 
 A hosted call lives in a hidden MUC made for it: not bookmarked, archived or
-listed, its messages dropped; `muc isHidden` tells it apart. Calls held in a
+listed, its messages dropped; `muc is_hidden` tells it apart. Calls held in a
 group chat itself, as Movim's are, can be joined too.
 
 Using the API:

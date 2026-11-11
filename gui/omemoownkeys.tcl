@@ -36,6 +36,6 @@ snit::widget omemoownkeys {
     method OnBlindTrust {ev} { set blindTrust [dict get $ev -value] }
 
     method ToggleBlindTrust {} {
-        ::tacky omemo setBlindTrust -acc $options(-acc) -value $blindTrust
+        ::tacky omemo set_blind_trust -acc $options(-acc) -value $blindTrust
     }
 }

@@ -132,14 +132,14 @@ test muc-not-joined-before-presence {not joined before self-presence arrives} \
     {*}$muc_common \
     -body {
         c muc join -jid room@muc.example.com -nick me
-        c muc isJoined -jid room@muc.example.com
+        c muc is_joined -jid room@muc.example.com
     } -result {0}
 
 test muc-joined-after-self-presence {joined after self-presence with 110} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
-        c muc isJoined -jid room@muc.example.com
+        c muc is_joined -jid room@muc.example.com
     } -result {1}
 
 test muc-joining-event {<Joining> event fires when a join is requested} \
@@ -204,7 +204,7 @@ test muc-hidden-join-error-stays-out-of-bookmarks {a refused join to a hidden ro
         c.conn feed [j presence -type error -from call@muc.example.com/abc123 {
             j error -type auth { j registration-required -ns urn:ietf:params:xml:ns:xmpp-stanzas }
         }]
-        list $::got [c muc isHidden -jid call@muc.example.com]
+        list $::got [c muc is_hidden -jid call@muc.example.com]
     } -result {{} 1}
 
 test muc-hidden-join-over-own-room-refused {a hidden join of a room we are joining as ourselves is refused, and our join goes on} \
@@ -216,22 +216,22 @@ test muc-hidden-join-over-own-room-refused {a hidden join of a room we are joini
         set written [llength [c.conn get_written]]
         c.conn feed [muc_presence from room@muc.example.com/me self 1]
         list $r $err $written \
-            [c muc isHidden -jid room@muc.example.com] \
-            [c muc isJoined -jid room@muc.example.com]
+            [c muc is_hidden -jid room@muc.example.com] \
+            [c muc is_joined -jid room@muc.example.com]
     } -result {1 {muc join: room@muc.example.com is a room we are in or joining} 0 0 1}
 
-test muc-hidden-known-after-leaving {isHidden still answers for a room just left, until it is joined again} \
+test muc-hidden-known-after-leaving {is_hidden still answers for a room just left, until it is joined again} \
     {*}$muc_common \
     -body {
         set ::during {}
         tacky listen muc <Left> {apply {{ev} {
-            set ::during [c muc isHidden -jid [dict get $ev -jid]]
+            set ::during [c muc is_hidden -jid [dict get $ev -jid]]
         }}}
         muc_hidden_lifecycle
         c.conn feed [muc_presence from call@muc.example.com/abc123 type unavailable self 1]
-        set after [c muc isHidden -jid call@muc.example.com]
+        set after [c muc is_hidden -jid call@muc.example.com]
         c muc join -jid call@muc.example.com -nick me
-        list $::during $after [c muc isHidden -jid call@muc.example.com]
+        list $::during $after [c muc is_hidden -jid call@muc.example.com]
     } -result {1 1 0}
 
 test muc-hidden-state {a hidden room is joined, hidden, and not among rooms} \
@@ -239,9 +239,9 @@ test muc-hidden-state {a hidden room is joined, hidden, and not among rooms} \
     -body {
         muc_join room@muc.example.com me
         muc_hidden_lifecycle
-        list [c muc isJoined -jid call@muc.example.com] \
-            [c muc isHidden -jid call@muc.example.com] \
-            [c muc isHidden -jid room@muc.example.com] \
+        list [c muc is_joined -jid call@muc.example.com] \
+            [c muc is_hidden -jid call@muc.example.com] \
+            [c muc is_hidden -jid room@muc.example.com] \
             [c muc rooms] \
             [dict get [c muc occupant -jid call@muc.example.com -nick other] jid]
     } -result {1 1 0 room@muc.example.com other@example.com/x}
@@ -291,7 +291,7 @@ test muc-create-room-configures-then-opens {a created room is configured before 
     {*}$muc_common \
     -body {
         set ::got {}
-        c muc createRoom -jid call@muc.example.com -nick me -hidden 1 \
+        c muc create_room -jid call@muc.example.com -nick me -hidden 1 \
             -config {muc#roomconfig_membersonly 1 muc#roomconfig_whois anyone} \
             -command {apply {{room} { set ::got [list done $room] }}} \
             -onerror {apply {{why} { set ::got [list failed $why] }}}
@@ -307,14 +307,14 @@ test muc-create-room-configures-then-opens {a created room is configured before 
         muc_reply_last ""
         list $before [dict get $fields muc#roomconfig_membersonly] \
             [dict get $fields muc#roomconfig_whois] $::got \
-            [c muc isHidden -jid call@muc.example.com]
+            [c muc is_hidden -jid call@muc.example.com]
     } -result {{} 1 anyone {done call@muc.example.com} 1}
 
 test muc-create-room-existing-is-an-error {a room that was already there is left, not taken over} \
     {*}$muc_common \
     -body {
         set ::got {}
-        c muc createRoom -jid call@muc.example.com -nick me \
+        c muc create_room -jid call@muc.example.com -nick me \
             -command {apply {{room} { set ::got done }}} \
             -onerror {apply {{why} { set ::got $why }}}
         c.conn feed [muc_presence from call@muc.example.com/me self 1]
@@ -329,7 +329,7 @@ test muc-create-room-refused-config {a configuration the service refuses fails t
     {*}$muc_common \
     -body {
         set ::got {}
-        c muc createRoom -jid call@muc.example.com -nick me \
+        c muc create_room -jid call@muc.example.com -nick me \
             -command {apply {{room} { set ::got done }}} \
             -onerror {apply {{why} { set ::got $why }}}
         c.conn feed [muc_presence from call@muc.example.com/me self 1 \
@@ -353,8 +353,8 @@ test muc-find-service {the first of the server's items that is a text conference
     {*}$muc_common \
     -body {
         set ::got {}
-        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
-        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
+        c muc find_service -command {apply {{jid} { lappend ::got $jid }}}
+        c muc find_service -command {apply {{jid} { lappend ::got $jid }}}
         set asked [llength [c.conn get_written]]
         muc_reply_to [lindex [c.conn get_written] end] \
             [j query -ns http://jabber.org/protocol/disco#items {
@@ -371,7 +371,7 @@ test muc-find-service {the first of the server's items that is a text conference
             }]
         # Cached: no more asking.
         set n [llength [c.conn get_written]]
-        c muc findService -command {apply {{jid} { lappend ::got $jid }}}
+        c muc find_service -command {apply {{jid} { lappend ::got $jid }}}
         list $asked $::got [expr {[llength [c.conn get_written]] == $n}]
     } -result {1 {conference.test.example.com conference.test.example.com conference.test.example.com} 1}
 
@@ -379,7 +379,7 @@ test muc-find-service-none {a server with no conference service answers ""} \
     {*}$muc_common \
     -body {
         set ::got unset
-        c muc findService -command {apply {{jid} { set ::got $jid }}}
+        c muc find_service -command {apply {{jid} { set ::got $jid }}}
         muc_reply_to [lindex [c.conn get_written] end] \
             [j query -ns http://jabber.org/protocol/disco#items {}]
         set ::got
@@ -421,51 +421,51 @@ test muc-not-joined-after-leave {not joined after leave} \
         muc_join room@muc.example.com me
         c.conn feed [muc_presence \
             from room@muc.example.com/me type unavailable self 1]
-        c muc isJoined -jid room@muc.example.com
+        c muc is_joined -jid room@muc.example.com
     } -result {0}
 
 # -- State queries ------------------------------------------------------------
 
-test muc-mynick {myNick returns our nick} \
+test muc-mynick {my_nick returns our nick} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
-        c muc myNick -jid room@muc.example.com
+        c muc my_nick -jid room@muc.example.com
     } -result {me}
 
-test muc-myrole {myRole returns our role} \
+test muc-myrole {my_role returns our role} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -role moderator
-        c muc myRole -jid room@muc.example.com
+        c muc my_role -jid room@muc.example.com
     } -result {moderator}
 
-test muc-myaffiliation {myAffiliation returns our affiliation} \
+test muc-myaffiliation {my_affiliation returns our affiliation} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -affiliation owner
-        c muc myAffiliation -jid room@muc.example.com
+        c muc my_affiliation -jid room@muc.example.com
     } -result {owner}
 
 test muc-havevoice-participant {participant has voice} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -role participant
-        c muc haveVoice -jid room@muc.example.com
+        c muc has_voice -jid room@muc.example.com
     } -result {1}
 
 test muc-havevoice-moderator {moderator has voice} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -role moderator
-        c muc haveVoice -jid room@muc.example.com
+        c muc has_voice -jid room@muc.example.com
     } -result {1}
 
 test muc-havevoice-visitor {visitor does not have voice} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -role visitor
-        c muc haveVoice -jid room@muc.example.com
+        c muc has_voice -jid room@muc.example.com
     } -result {0}
 
 test muc-rooms {rooms returns list of joined rooms} \
@@ -673,7 +673,7 @@ test muc-nick-changed-event {<NickChanged> event fires on 303} \
         list [dict get $got -oldNick] [dict get $got -newNick] [dict get $got -self]
     } -result {me newme 1}
 
-test muc-nick-changed-updates-mynick {nick change updates myNick} \
+test muc-nick-changed-updates-mynick {nick change updates my_nick} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
@@ -684,7 +684,7 @@ test muc-nick-changed-updates-mynick {nick change updates myNick} \
                 j status -code 110
             }
         }]
-        c muc myNick -jid room@muc.example.com
+        c muc my_nick -jid room@muc.example.com
     } -result {newme}
 
 # -- Occupant fields, item JIDs, renames, replays ---------------------------------
@@ -826,7 +826,7 @@ test muc-subject-sends {subject sends groupchat with subject element} \
         list [xsearch $m -get @type] [xsearch $m subject -get body]
     } -result {groupchat {new topic}}
 
-test muc-subject-event {<Subject> event fires and updates getSubject} \
+test muc-subject-event {<Subject> event fires and updates get_subject} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
@@ -836,7 +836,7 @@ test muc-subject-event {<Subject> event fires and updates getSubject} \
             j subject -body "welcome"
         }]
         list [dict get $got -nick] [dict get $got -subject] \
-             [c muc getSubject -jid room@muc.example.com]
+             [c muc get_subject -jid room@muc.example.com]
     } -result {admin welcome welcome}
 
 # -- Kick / Ban ---------------------------------------------------------------
@@ -990,7 +990,7 @@ test muc-accept-invite-joins {accepting bookmarks the room with the invite's pas
     -body {
         c.conn feed [muc_invite sid inv-5]
         muc_watch_edits
-        c muc acceptInvite -chat room@muc.example.com?join \
+        c muc accept_invite -chat room@muc.example.com?join \
             -id [muc_invite_id room@muc.example.com?join]
         list [c db eval {SELECT autojoin, password FROM bookmark
                          WHERE jid='room@muc.example.com'}] \
@@ -1020,7 +1020,7 @@ test muc-decline-invite-forgets-room {declining tells the inviter and drops the 
         set ::gone {}
         tacky listen chatlist <Remove> {apply {{ev} { lappend ::gone [dict get $ev -jid] }}}
         c.conn feed [muc_invite sid inv-3]
-        c muc declineInvite -chat room@muc.example.com?join \
+        c muc decline_invite -chat room@muc.example.com?join \
             -id [muc_invite_id room@muc.example.com?join] -reason "not now"
         set m [lindex [c.conn get_written] end]
         list [xsearch $m -get @to] \
@@ -1040,7 +1040,7 @@ test muc-decline-invite-keeps-history {declining in a room with history keeps th
             body earlier server_id r-1 own_id "" raw_xml ""]]
         c.conn feed [muc_invite sid inv-4]
         muc_watch_edits
-        c muc declineInvite -chat room@muc.example.com?join \
+        c muc decline_invite -chat room@muc.example.com?join \
             -id [muc_invite_id room@muc.example.com?join]
         list $::edits \
              [c db eval {SELECT count(*) FROM chat_message
@@ -1058,8 +1058,8 @@ test muc-accept-takes-back-a-decline {accepting a declined invite joins and clea
             body earlier server_id r-1 own_id "" raw_xml ""]]
         c.conn feed [muc_invite sid inv-7]
         set id [muc_invite_id room@muc.example.com?join]
-        c muc declineInvite -chat room@muc.example.com?join -id $id
-        c muc acceptInvite -chat room@muc.example.com?join -id $id
+        c muc decline_invite -chat room@muc.example.com?join -id $id
+        c muc accept_invite -chat room@muc.example.com?join -id $id
         c bookmarks leave -jid room@muc.example.com
         dict get [muc_latest room@muc.example.com?join] content state
     } -result pending
@@ -1072,7 +1072,7 @@ test muc-decline-direct-invite {declining a direct invite sends nothing and keep
             j x -ns jabber:x:conference -jid room@muc.example.com
         }]
         set before [llength [c.conn get_written]]
-        c muc declineInvite -chat bob@example.com \
+        c muc decline_invite -chat bob@example.com \
             -id [muc_invite_id bob@example.com]
         list [expr {[llength [c.conn get_written]] - $before}] \
              [dict get [muc_latest bob@example.com] content state]
@@ -1084,7 +1084,7 @@ test muc-invited-room-listed {an unjoined room with a waiting invite is marked i
         c.conn feed [muc_invite sid inv-8]
         set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
         set before [list [dict get $entry source] [dict get $entry invited]]
-        c muc acceptInvite -chat room@muc.example.com?join \
+        c muc accept_invite -chat room@muc.example.com?join \
             -id [muc_invite_id room@muc.example.com?join]
         set entry [lsearch -inline -index 1 [c chatlist get] room@muc.example.com?join]
         list $before [list [dict get $entry source] [dict get $entry invited]]
@@ -1097,8 +1097,8 @@ test muc-answer-ignores-other-rows {accept and decline leave a row that is no in
             chat_jid room@muc.example.com?join from_jid room@muc.example.com/bob \
             body earlier server_id r-1 own_id "" raw_xml ""]]] inserted] 0]
         set before [llength [c.conn get_written]]
-        c muc acceptInvite -chat room@muc.example.com?join -id $id
-        c muc declineInvite -chat room@muc.example.com?join -id $id
+        c muc accept_invite -chat room@muc.example.com?join -id $id
+        c muc decline_invite -chat room@muc.example.com?join -id $id
         list [expr {[llength [c.conn get_written]] - $before}] \
              [c db onecolumn {SELECT count(*) FROM bookmark}]
     } -result {0 0}
@@ -1144,7 +1144,7 @@ test muc-error-cleans-up-room {error before join cleans up room state} \
                 j not-authorized
             }
         }]
-        c muc isJoined -jid room@muc.example.com
+        c muc is_joined -jid room@muc.example.com
     } -result {0}
 
 test muc-join-callback-on-error {join -command callback fires on error} \
@@ -1194,7 +1194,7 @@ test muc-nick-refused-stays-joined {a refused nick change is a <NickError>: the 
                 j conflict -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
-        list $::got [c muc isJoined -jid room@muc.example.com] \
+        list $::got [c muc is_joined -jid room@muc.example.com] \
             [lindex [bm_state_muc] 0] [muc_nick_bookmark]
     } -result {{taken conflict} 1 joined me}
 
@@ -1216,7 +1216,7 @@ test muc-nick-accepted-saved {a nick the room accepts (303) is saved to the book
             }
         }]
         c.conn feed [muc_presence from room@muc.example.com/newme self 1]
-        list $before [muc_nick_bookmark] [c muc myNick -jid room@muc.example.com]
+        list $before [muc_nick_bookmark] [c muc my_nick -jid room@muc.example.com]
     } -result {me newme newme}
 
 # -- Room avatar (XEP-0153 presence, XEP-0486 disco#info) -----------------
@@ -1331,7 +1331,7 @@ test muc-room-avatar-presence {the room's own presence updates or clears its ava
         set fetched [muc_vcard_asks]
         muc_room_avatar_presence room@muc.example.com ""
         list $fetched [c avatar metadata -jid room@muc.example.com] \
-            [c presence isOnline -jid room@muc.example.com]
+            [c presence is_online -jid room@muc.example.com]
     } -result {{{room@muc.example.com vcard}} {} 0}
 
 test muc-room-avatar-presence-only-from-a-room-of-ours {a room presence we are not in, or a hidden one, sets no avatar} \
@@ -1412,7 +1412,7 @@ test muc-destroyed-cleans-up {destroyed cleans up room state} \
                 j status -code 110
             }
         }]
-        c muc isJoined -jid room@muc.example.com
+        c muc is_joined -jid room@muc.example.com
     } -result {0}
 
 # The destroy notice need not carry 110 (XEP-0045 §10.9's example has none).
@@ -1448,7 +1448,7 @@ test muc-join-error-from-bare-room {a join refused from the bare room jid fails 
                 j item-not-found -ns urn:ietf:params:xml:ns:xmpp-stanzas
             }
         }]
-        list $::_join [c muc isJoined -jid gone@muc.example.com]
+        list $::_join [c muc is_joined -jid gone@muc.example.com]
     } -result {item-not-found 0}
 
 # -- Room created (201) ------------------------------------------------------
@@ -1484,10 +1484,10 @@ test muc-config-changed-event {<ConfigChanged> fires on status codes in groupcha
 
 # -- Voice request ------------------------------------------------------------
 
-test muc-request-voice-sends {requestVoice sends form submission} \
+test muc-request-voice-sends {request_voice sends form submission} \
     {*}$muc_common \
     -body {
-        c muc requestVoice -jid room@muc.example.com
+        c muc request_voice -jid room@muc.example.com
         set m [lindex [c.conn get_written] end]
         list [xsearch $m -get @to] \
              [xsearch $m x -ns jabber:x:data -get @type] \
@@ -1518,11 +1518,11 @@ test muc-voice-request-event {<VoiceRequest> event fires} \
 
 # -- Room configuration -------------------------------------------------------
 
-test muc-config-get-returns-form {configGet delivers a parsed form dict} \
+test muc-config-get-returns-form {get_config delivers a parsed form dict} \
     {*}$muc_common \
     -body {
         set got {}
-        c muc configGet -jid room@muc.example.com \
+        c muc get_config -jid room@muc.example.com \
             -command [list apply {{form} { set ::got $form }}]
         set req [lindex [c.conn get_written] end]
         c.conn feed [j iq -type result -id [xsearch $req -get @id] \
@@ -1542,11 +1542,11 @@ test muc-config-get-returns-form {configGet delivers a parsed form dict} \
              [lmap f [dict get $got fields] {dict get $f var}]
     } -result {form {FORM_TYPE muc#roomconfig_roomname}}
 
-test muc-discover-rooms-occupants-from-form {discoverRooms reads occupancy from the disco form} \
+test muc-discover-rooms-occupants-from-form {discover_rooms reads occupancy from the disco form} \
     {*}$muc_common \
     -body {
         set got {}
-        c muc discoverRooms -jid muc.example.com \
+        c muc discover_rooms -jid muc.example.com \
             -command [list apply {{rooms} { set ::got $rooms }}]
         set req [lindex [c.conn get_written] end]
         c.conn feed [j iq -type result -id [xsearch $req -get @id] \
@@ -1572,7 +1572,7 @@ test muc-discover-rooms-error {a rejected discovery reports through -onerror} \
     {*}$muc_common \
     -body {
         set ::muc_err ""
-        c muc discoverRooms -jid muc.example.com \
+        c muc discover_rooms -jid muc.example.com \
             -command [list apply {{rooms} {set ::muc_err unexpected}}] \
             -onerror [list apply {{msg} {set ::muc_err $msg}}]
         set req [lindex [c.conn get_written] end]
@@ -1587,17 +1587,17 @@ test muc-discover-rooms-error {a rejected discovery reports through -onerror} \
 
 # -- Role/affiliation change via presence ------------------------------------
 
-test muc-role-change-updates-state {role change via presence updates haveVoice} \
+test muc-role-change-updates-state {role change via presence updates has_voice} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -role visitor
-        set before [c muc haveVoice -jid room@muc.example.com]
+        set before [c muc has_voice -jid room@muc.example.com]
         # Moderator grants voice (role changes to participant)
         c.conn feed [muc_presence \
             from room@muc.example.com/me \
             role participant affiliation member \
             self 1]
-        set after [c muc haveVoice -jid room@muc.example.com]
+        set after [c muc has_voice -jid room@muc.example.com]
         list $before $after
     } -result {0 1}
 
@@ -1609,8 +1609,8 @@ test muc-disconnect-clears-rooms {disconnect clears all room state} \
         muc_join room1@muc.example.com me
         muc_join room2@muc.example.com me
         c.conn fire_disconnect "gone"
-        list [c muc isJoined -jid room1@muc.example.com] \
-             [c muc isJoined -jid room2@muc.example.com] \
+        list [c muc is_joined -jid room1@muc.example.com] \
+             [c muc is_joined -jid room2@muc.example.com] \
              [llength [c muc rooms]]
     } -result {0 0 0}
 
@@ -1621,7 +1621,7 @@ test muc-fresh-stream-clears-rooms {a reconnect that could not resume leaves no 
         c.conn fire_ready 0
         muc_join room1@muc.example.com me
         c.conn fire_ready 0
-        list [c muc isJoined -jid room1@muc.example.com] [llength [c muc rooms]]
+        list [c muc is_joined -jid room1@muc.example.com] [llength [c muc rooms]]
     } -result {0 0}
 
 test muc-session-end-reports-rooms-left {a session end says Left for rooms joined and still joining} \
@@ -1693,8 +1693,8 @@ test muc-jid-case-insensitive {room JID is case-insensitive} \
     {*}$muc_common \
     -body {
         muc_join Room@MUC.Example.Com me
-        list [c muc isJoined -jid room@muc.example.com] \
-             [c muc myNick -jid ROOM@MUC.EXAMPLE.COM]
+        list [c muc is_joined -jid room@muc.example.com] \
+             [c muc my_nick -jid ROOM@MUC.EXAMPLE.COM]
     } -result {1 me}
 
 # -- Message storage -----------------------------------------------------------
@@ -1797,7 +1797,7 @@ test muc-groupchat-occupant-id-not-own-without-self-id \
     {a stanza with an occupant-id is not own while our own occupant-id is unknown} \
     {*}$muc_common \
     -body {
-        # join sent, self-presence not back yet: myOccupantId still ""
+        # join sent, self-presence not back yet: my_occupant_id still ""
         c muc join -jid room@muc.example.com -nick me
         c.conn feed [j message -type groupchat -id spoof-id \
             -from room@muc.example.com/me {
@@ -1922,7 +1922,7 @@ test muc-groupchat-unknown-room-dropped {groupchat from a room we never joined i
             j body -body "injected"
         }]
         list [llength [dict get [c message messagestore get latest evil@muc.evil.example?join] messages]] \
-            [c muc getSubject -jid evil@muc.evil.example]
+            [c muc get_subject -jid evil@muc.evil.example]
     } -result {0 {}}
 
 # -- Reactions (XEP-0444) -----------------------------------------------------
@@ -1966,14 +1966,14 @@ test muc-self-occupant-id-tracked {self-presence occupant-id is captured and exp
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me -occupant occ-me
-        c muc myOccupantId -jid room@muc.example.com
+        c muc my_occupant_id -jid room@muc.example.com
     } -result {occ-me}
 
 test muc-self-occupant-id-absent {no occupant-id in self-presence leaves it empty (non-0421 room)} \
     {*}$muc_common \
     -body {
         muc_join room@muc.example.com me
-        c muc myOccupantId -jid room@muc.example.com
+        c muc my_occupant_id -jid room@muc.example.com
     } -result {}
 
 test muc-own-message-by-occupant-id-despite-nick \
@@ -2582,7 +2582,7 @@ test muc-error-removal-leaves-room {110 with role none in an error puts us out} 
         c.conn feed [muc_error]
         list [dict get $::got -jid] [dict get $::got -nick] \
              [dict get $::got -involuntary] \
-             [c muc isJoined -jid room@muc.example.com]
+             [c muc is_joined -jid room@muc.example.com]
     } -result {room@muc.example.com me 1 0}
 
 test muc-error-removal-from-the-room-leaves-at-once {110 with role none in an error from the room's bare JID puts us out} \
@@ -2592,7 +2592,7 @@ test muc-error-removal-from-the-room-leaves-at-once {110 with role none in an er
         tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
         muc_join room@muc.example.com me
         c.conn feed [muc_error from room@muc.example.com]
-        list [dict get $::got -involuntary] [c muc isJoined -jid room@muc.example.com]
+        list [dict get $::got -involuntary] [c muc is_joined -jid room@muc.example.com]
     } -result {1 0}
 
 # From another occupant's room JID the notice may be that occupant's own
@@ -2604,7 +2604,7 @@ test muc-error-from-an-occupant-does-not-remove-us {110 with role none in an err
         tacky listen muc <Left> {apply {{ev} { set ::got $ev }}}
         muc_join room@muc.example.com me
         c.conn feed [muc_error from room@muc.example.com/mallory]
-        list $::got [c muc isJoined -jid room@muc.example.com] \
+        list $::got [c muc is_joined -jid room@muc.example.com] \
              [c db onecolumn {SELECT count(*) FROM chat_message}]
     } -result {{} 1 0}
 
@@ -2613,7 +2613,7 @@ test muc-error-without-removal-notice-stays {an error with no 110 leaves us join
     -body {
         muc_join room@muc.example.com me
         c.conn feed [muc_error codes {} body "bounced"]
-        list [c muc isJoined -jid room@muc.example.com] \
+        list [c muc is_joined -jid room@muc.example.com] \
              [c db onecolumn {SELECT count(*) FROM chat_message}]
     } -result {1 0}
 
@@ -2708,7 +2708,7 @@ test muc-left-kick-without-110 {a kick from our own nick without status 110 (Mon
         c.conn feed [muc_presence from room@muc.example.com/me \
                          type unavailable role none self 0 codes 307]
         list [dict get $::got -involuntary] [dict get $::got -codes] \
-            [c muc isJoined -jid room@muc.example.com]
+            [c muc is_joined -jid room@muc.example.com]
     } -result {1 307 0}
 
 test muc-left-kick-not-rejoined {a kick is an answer, not a failure to retry} \
@@ -2738,7 +2738,7 @@ test muc-left-voluntary-writes-no-rejoin {leaving an autojoin room on purpose st
         c.conn feed [muc_presence from room@muc.example.com/me \
                          type unavailable role none self 1]
         list [llength [c.conn get_written]] \
-             [c muc isJoined -jid room@muc.example.com]
+             [c muc is_joined -jid room@muc.example.com]
     } -result {0 0}
 
 test muc-error-after-leave-not-rejoined {a room answering our leave with an error stays left} \
@@ -2769,7 +2769,7 @@ test muc-join-times-out {a room that never answers fails the join} \
         set ::taco_muc::JoinTimeoutMs $saved
         after 80 {set ::_muc_waited 1}
         vwait ::_muc_waited
-        list $::_join [c muc isJoined -jid quiet@muc.example.com]
+        list $::_join [c muc is_joined -jid quiet@muc.example.com]
     } -result {remote-server-timeout 0}
 
 test muc-join-asked-twice-answers-both {a join asked again while the first is pending answers both callers} \

@@ -210,7 +210,7 @@ returns, so re-check state after every media call, as a call (`taco_calls::call`
 Codec, m-line and device specifics belong in the backend. Where `taco_calls`
 has to vary it asks: `capability sdpSanitize` for the SDP strip, `capability
 autoAnswer` for who generates the callee's answer, `codecs` for which payload
-types survive `FilterCodecs`, `payloadTypes` for what `taco_groupcall`
+types survive `FilterCodecs`, `payload_types` for what `taco_groupcall`
 announces a Muji conference with. `media_rtc.tcl` is the reference backend;
 `lib/taco/modules/media.tcl` picks which one runs and falls back to rtc.
 

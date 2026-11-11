@@ -61,7 +61,7 @@ proc conform_drive_rtc {what pc args} {
 }
 
 # The host backend's driver is the embedding app: every event it produces is
-# one the app sends back through the same entry point taco's `media hostEvent`
+# one the app sends back through the same entry point taco's `media host_event`
 # uses.
 proc conform_drive_host {what pc args} {
     switch -- $what {
