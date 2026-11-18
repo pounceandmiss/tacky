@@ -246,6 +246,70 @@ snit::type taco_messagestore {
         }
     }
 
+    # Clear a chat's history on this device, for good: forget it, its
+    # reactions and held patches too, and set its floor at the newest
+    # message it held (or the newest server stamp it saw), so the archive's
+    # copies at or before that are never stored again (`store`). Returns
+    # {floor urls}: the urls of its attachments no other chat names, whose
+    # files can go.
+    method clearChat {jid} {
+        set db $options(-db)
+        set floor [$db onecolumn {
+            SELECT max(COALESCE((SELECT MAX(timestamp) FROM chat_message
+                                 WHERE chat_jid=$jid AND kind='message'), 0),
+                       COALESCE((SELECT max(ts, floor) FROM chat_archive_mark
+                                 WHERE chat_jid=$jid), 0))
+        }]
+        set urls {}
+        foreach atts [$db eval {
+            SELECT attachments FROM chat_message
+            WHERE chat_jid=$jid AND kind='message' AND attachments != ''
+        }] {
+            foreach att $atts {
+                if {[catch {dict get $att url} url] || $url eq ""
+                    || $url in $urls} continue
+                if {[$db exists {
+                    SELECT 1 FROM chat_message
+                    WHERE chat_jid != $jid AND attachments != ''
+                      AND instr(attachments, $url) > 0
+                }]} continue
+                lappend urls $url
+            }
+        }
+        $db transaction {
+            $self forgetChat $jid
+            $db eval {
+                DELETE FROM message_reaction WHERE chat_jid=$jid;
+                DELETE FROM pending_patch WHERE chat_jid=$jid;
+                INSERT INTO chat_archive_mark(chat_jid, ts, floor)
+                VALUES($jid, $floor, $floor);
+            }
+        }
+        list $floor $urls
+    }
+
+    # The stamp a chat's history was cleared up to, 0 when it never was.
+    method clearFloor {jid} {
+        set floor [$options(-db) onecolumn {
+            SELECT floor FROM chat_archive_mark WHERE chat_jid=$jid
+        }]
+        expr {$floor eq "" ? 0 : $floor}
+    }
+
+    # Lift a chat's floor, so the archive's copies are stored again. A hole
+    # below its oldest row (one that came after the clear) lets paging
+    # back reach them; an empty chat's first page is the archive's newest.
+    method restoreChat {jid} {
+        $options(-db) eval {
+            UPDATE chat_archive_mark SET floor=0 WHERE chat_jid=$jid
+        }
+        set oldest [$options(-db) onecolumn {
+            SELECT MIN(pos) FROM chat_message
+            WHERE chat_jid=$jid AND kind='message'
+        }]
+        if {$oldest ne ""} { $self hole addBefore $jid $oldest }
+    }
+
     # --- Holes ------------------------------------------------------
 
     # A hole right after the row at $pos (the gap on its newer side), unless
@@ -501,8 +565,8 @@ snit::type taco_messagestore {
     # --- Store ----------------------------------------------------------
 
     # Insert messages, skipping any already stored (by server_id/own_id, or
-    # content for id-less ones), e.g. one repeated within a MAM page.
-    # Confirming our own sends is `reconcile`'s job. Where each goes: its
+    # content for id-less ones), e.g. one repeated within a MAM page, and
+    # any at or before the chat's clear floor (clearChat). Confirming our own sends is `reconcile`'s job. Where each goes: its
     # `pos` when it has one, else by $placement: `append` after the chat's
     # last row (a live message), `ts` among the rows by timestamp (one with
     # nothing better to go by; a batch keeps its own order). Returns dict
@@ -515,9 +579,11 @@ snit::type taco_messagestore {
         set positions {}
         set deferred {}
         set prev ""
+        set floor [$self clearFloor $jid]
 
         $options(-db) transaction {
             foreach msg $messages {
+                if {$floor > 0 && [dict get $msg timestamp] <= $floor} continue
                 if {[$self IsDuplicate $jid $msg]} continue
                 array unset m
                 array set m $msg

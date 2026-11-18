@@ -2144,6 +2144,61 @@ test message-history-mam-default-cursor {default (no timestamp) with empty local
     } -result {0 0 1 {}}
 
 # =============================================================================
+# Clearing a chat's local history
+# =============================================================================
+
+test message-clear-local-history-stays-cleared {a cleared chat says so, and the archive does not refill it} \
+    {*}$msg_common \
+    -body {
+        set ::_events {}
+        tacky listen message <Cleared> {apply {{ev} {
+            lappend ::_events [dict get $ev -jid]
+        }}}
+        msg_catchup [dict create complete 1 messages [list \
+            [mam_result id arch-1 from alice@example.com to $acc \
+                body old stamp 2024-01-01T10:00:00Z]]]
+        tacky message clear_local_history -acc $acc -chat alice@example.com
+        update
+        msg_catchup [dict create complete 1 messages [list \
+            [mam_result id arch-1 from alice@example.com to $acc \
+                body old stamp 2024-01-01T10:00:00Z] \
+            [mam_result id arch-2 from alice@example.com to $acc \
+                body new stamp 2024-01-01T11:00:00Z]]]
+        list $::_events \
+             [lmap m [msg_store_latest alice@example.com] {dict get $m server_id}]
+    } -result {alice@example.com arch-2}
+
+test message-clear-local-history-bounds-the-archive {a cleared chat asks the archive only for what came after} \
+    {*}$msg_common \
+    -body {
+        msg_catchup [dict create complete 1 messages [list \
+            [mam_result id arch-1 from alice@example.com to $acc \
+                body old stamp 2024-01-01T10:00:00Z]]]
+        tacky message clear_local_history -acc $acc -chat alice@example.com
+        update
+        tacky message history -acc $acc -chat alice@example.com -limit 10 \
+            -command [list apply {{r} { set ::result $r }}]
+        update
+        set iqStanza [lindex [$::_client conn get_written] end]
+        set qnode [lindex [xsearch $iqStanza query -ns urn:xmpp:mam:2] 0]
+        xsearch $qnode x field @var start value -get body
+    } -result {2024-01-01T10:00:00.000001Z}
+
+test message-restore-history-refills {restoring a cleared chat lets the archive refill it} \
+    {*}$msg_common \
+    -body {
+        set page [dict create complete 1 messages [list \
+            [mam_result id arch-1 from alice@example.com to $acc \
+                body old stamp 2024-01-01T10:00:00Z]]]
+        msg_catchup $page
+        tacky message clear_local_history -acc $acc -chat alice@example.com
+        tacky message restore_history -acc $acc -chat alice@example.com
+        update
+        msg_catchup $page
+        lmap m [msg_store_latest alice@example.com] {dict get $m server_id}
+    } -result {arch-1}
+
+# =============================================================================
 # History: dead-cursor recovery (item-not-found -> retry by time)
 # =============================================================================
 

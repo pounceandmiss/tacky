@@ -594,7 +594,8 @@ with your own bare JID (even with no history), all merged. No querying.
                   order: int, autojoin: bool, last_activity: int,
                   last_message?: message,
                   unread: int, unread_mentions: int, muted: bool,
-                  mentions: bool, invited: bool, blocked: bool}
+                  mentions: bool, invited: bool, blocked: bool,
+                  cleared_before: int}
 
 `jid` is the chat JID, used verbatim when you open it: `contact@host` for
 1:1, `room@muc?join` for a group, `room@muc/nick` for a MUC private
@@ -615,6 +616,8 @@ default when it was never set; a `notify set` arrives as `<Item>`.
 `pending` invite, usually why an unjoined room is listed at all (see
 [muc](#muc)). `blocked` is `true` when the chat JID is on the
 [blocking](#blocking) list; a change arrives as `<Item>`.
+`cleared_before` is the time, in microseconds, up to which the chat's history
+was cleared on this device, or `0` (see [Clearing history](#clearing-history)).
 
 `order` is opaque: sort entries by it, largest first, and break ties by
 `jid`. It changes with a new message, a pin or a reorder, each arriving as
@@ -691,7 +694,7 @@ fold stay unread, so `chatlist`'s `unread` counts them until scrolled to.
 `set_client_data` stores an opaque per-chat string for the frontend (scroll
 position, drafts); the chat need not be open. `client_data` returns it, `""` if
 none; storing `""` deletes it. It lives in the account's database: encrypted
-with it, removed with the account and when the chat's history is forgotten.
+with it, removed with the account and when the chat's history is cleared.
 
 ## bookmarks
 
@@ -864,6 +867,8 @@ carries it in `client`.
     message mark_displayed {chat: string, id: int, after?: int}
     message mark_own_read {chat: string, id: int}
     message own_read {chat: string} -> {id: int | "", unread: int}
+    message clear_local_history {chat: string}
+    message restore_history {chat: string}
 
     message = {id: int, pos: string, timestamp: int,
                chat_jid: string, from_jid: string,
@@ -1009,6 +1014,7 @@ Events:
     message <CatchupStarted> {jid: string}
     message <CatchupDone> {jid: string, count: int}
     message <Tail>        {jid: string, id: int, timestamp: int}      pullable
+    message <Cleared>     {jid: string}
 
 `<Status>`, `<Confirmed>`, `<Reactions>`, `<Edited>` and `<Retracted>` each
 change a message already on screen, found by `id` - drop one whose target
@@ -1016,8 +1022,32 @@ isn't displayed. `<Status>` carries only the fields that changed, plus
 `encryption` when a resend rewrote the row to cleartext. `<Confirmed>` is the
 only event that clears `server_status` to `""`; the message keeps its place,
 and `timestamp`, when present, is the stamp it shows now (an XEP-0198 ack
-carries none). `<Tail>` names the chat's last message. What to do with each is
-in [The chat window](#the-chat-window).
+carries none). `<Tail>` names the chat's last message. `<Cleared>` means the
+chat's history was cleared or restored: drop what is displayed and load it
+again. What to do with each is in [The chat window](#the-chat-window).
+
+### Clearing history
+
+`clear_local_history` removes a chat's history from this device: its
+messages, reactions, read state and client data, and the downloaded files of
+its attachments unless another chat shows the same file. Its notify policy
+and pin stay. XMPP gives a client no way to delete the server's archive, so
+the archive and your other devices keep their copies.
+
+To keep the archive from filling the chat again, the chat remembers when it
+was cleared - the time of the newest message it held, given as
+`cleared_before` on its [chatlist](#chatlist) entry. Nothing the archive or a
+room's join history holds from at or before that time is stored or even read
+again, whether by catch-up, paging back, `goto` or `search`. Messages after it
+arrive as usual.
+
+`restore_history` forgets that time: paging back fetches the chat's history
+from the archive again. Encrypted (OMEMO) messages can be read only once, so
+the archive's copies of those come back as messages that could not be
+decrypted, or not at all.
+
+Both fire `<Cleared>`, then `<Tail>` and a [chatlist](#chatlist) `<Item>` - or
+`<Remove>` for a chat listed only for its history.
 
 ### Read state
 

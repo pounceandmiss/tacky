@@ -269,6 +269,8 @@ snit::type taco_chatlist {
         }
         if {![dict exists $entry autojoin]} { dict set entry autojoin 0 }
         dict set entry blocked [expr {$chatJid in [$client blocking list]}]
+        dict set entry cleared_before \
+            [$client message messagestore clearFloor $chatJid]
         dict set entry invited [expr {[dict get $entry groupchat]
             && ![dict get $entry autojoin]
             && [$client message messagestore pendingInvite $chatJid]}]

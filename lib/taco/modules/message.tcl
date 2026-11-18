@@ -45,6 +45,8 @@
 #   <Edited>    re-send a full row to redraw an edited message in place
 #   <Retracted> flip a displayed entry to a tombstone (jid + id only)
 #   <OwnRead>   our own read watermark moved (this device or another one)
+#   <Cleared>   the chat's history was cleared on this device, or restored:
+#               drop what is displayed and load it again
 #
 snit::type taco_message {
     option -client -readonly yes
@@ -1216,6 +1218,10 @@ snit::type taco_message {
         } else {
             set tsClock server
             $messagestore noteArchiveTs $chatJid $ts
+            # History a room replays on join, from before a clear: not
+            # read, as for the archive's copies (ParseResultNode).
+            set floor [$messagestore clearFloor $chatJid]
+            if {$floor > 0 && $ts <= $floor} return
         }
         if {$ts eq "" || $ts > $now} { set ts $now }
         set idArgs {}
@@ -2281,6 +2287,48 @@ snit::type taco_message {
         if {$target ne ""} { $self EmitRetracted $chatJid $target }
     }
 
+    # clear_local_history -chat $chatJid
+    # Drop the chat's history from this device and keep the archive from
+    # bringing it back (messagestore clearChat), with the downloaded files
+    # no other chat shows. The server's archive and our other devices keep
+    # theirs; restore_history fetches it again.
+    tackymethod -noreturn clear_local_history {args} {
+        set chatJid [dict get $args -chat]
+        lassign [$messagestore clearChat $chatJid] _ urls
+        foreach url $urls {
+            if {[catch {$client file uncache -url $url} err]} {
+                jlog warn "message: a cleared chat's file stays: $err"
+            }
+        }
+        $client chatlist forget $chatJid
+        $self EmitCleared $chatJid
+    }
+
+    # restore_history -chat $chatJid
+    # Lift a clear: the archive's copies are fetched again as the chat is
+    # paged. Encrypted ones were read once and cannot be read again.
+    tackymethod -noreturn restore_history {args} {
+        set chatJid [dict get $args -chat]
+        $messagestore restoreChat $chatJid
+        $self EmitCleared $chatJid
+    }
+
+    method EmitCleared {chatJid} {
+        $client emit message <Cleared> -jid $chatJid
+        $self EmitTail $chatJid
+        $client chatlist EmitEntry $chatJid
+    }
+
+    # The ISO stamp an archive query of $chatJid starts at: $us ("" for
+    # none), raised past the chat's clear floor; "" when neither bounds it.
+    method StartPast {chatJid {us ""}} {
+        set floor [$messagestore clearFloor $chatJid]
+        if {$floor > 0 && ($us eq "" || $us <= $floor)} {
+            set us [expr {$floor + 1}]
+        }
+        expr {$us eq "" ? "" : [FormatTimestampISO $us]}
+    }
+
     # Tombstone row $target and drop the downloaded files of its attachments
     # with their at-rest keys (file uncache), so a retracted picture is not
     # left on disk, readable with its key. The row's id, or "" when there
@@ -2578,10 +2626,15 @@ snit::type taco_message {
             lappend mamArgs -end [FormatTimestampISO \
                 [$self RowStamp $chatJid $before]] -before ""
         } elseif {$after ne ""} {
-            lappend mamArgs -start [FormatTimestampISO \
+            lappend mamArgs -start [$self StartPast $chatJid \
                 [$self RowStamp $chatJid $after]]
         } else {
             lappend mamArgs -before ""
+        }
+        # Nothing from before a clear: paging back ends at it, complete.
+        if {![dict exists $mamArgs -start]} {
+            set start [$self StartPast $chatJid]
+            if {$start ne ""} { lappend mamArgs -start $start }
         }
         # Where the page goes: next to the cursor's row; at the chat's end
         # for its newest page; by time when the query was by time.
@@ -2695,7 +2748,11 @@ snit::type taco_message {
                 ? [dict get $mamResult first] : [dict get $mamResult last]}]
             if {$nextCursor ne ""} {
                 set rsmFlag [expr {$direction eq "older" ? "-before" : "-after"}]
+                set bound {}
+                set start [$self StartPast $chatJid]
+                if {$start ne ""} { set bound [list -start $start] }
                 $client mam queryChat $chatJid -max $limit $rsmFlag $nextCursor \
+                    {*}$bound \
                     -command [mymethod OnFetch $chatJid $before $after $limit \
                         $callback $onerror $tag $direction $wasBounded "" \
                         $place [expr {$page + 1}]]
@@ -2794,7 +2851,7 @@ snit::type taco_message {
 
         # remote: fetch from server first, then get around
         $client mam queryChat $chatJid \
-            -start [FormatTimestampISO $date] -max $limit \
+            -start [$self StartPast $chatJid $date] -max $limit \
             -command [mymethod OnGoto $chatJid $date $limit $callback $onerror \
                 $tag]
     }
@@ -2978,6 +3035,9 @@ snit::type taco_message {
     method MamSearch {chatJid query limit before field callback} {
         # An empty -before is RSM's "newest page" marker, not an absent cursor.
         set mamArgs [list -fulltext $query -max $limit -before $before]
+        # Hits from before a clear would only be dropped (ParseResultNode).
+        set start [$self StartPast $chatJid]
+        if {$start ne ""} { lappend mamArgs -start $start }
         if {$field ne ""} {
             lappend mamArgs -field-var $field
         }
@@ -3063,6 +3123,12 @@ snit::type taco_message {
         } else {
             set tsClock server
             $messagestore noteArchiveTs $chatJid $ts
+            # History cleared on this device: not even read, so an
+            # encrypted copy is never tried (and, failing, healed over).
+            set floor [$messagestore clearFloor $chatJid]
+            if {$floor > 0 && $ts <= $floor} {
+                return [dict create verdict drop timestamp $ts]
+            }
         }
         # A result this chat already holds under its archive id is a
         # duplicate before anything else is read: a reconnect gets the

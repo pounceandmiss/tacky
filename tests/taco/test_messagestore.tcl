@@ -1615,6 +1615,60 @@ test messagestore-forget-chat-drops-aliases {forgetting a chat drops its aliases
         testdb onecolumn {SELECT COUNT(*) FROM message_alias}
     } -result {0}
 
+test messagestore-clear-chat-sets-floor {clearing a chat empties it and floors it at its newest message} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 100 server_id sidA] \
+                       [ms_msg timestamp 200 server_id sidB]]
+        store applyReaction alice@example.com sidA bob@x bob@x 0 {👍} 150
+        lassign [store clearChat alice@example.com] floor
+        list $floor [store clearFloor alice@example.com] [ms_count] \
+             [testdb onecolumn {SELECT COUNT(*) FROM message_reaction}]
+    } -result {200 200 0 0}
+
+test messagestore-clear-chat-keeps-history-out {a cleared chat stores nothing from before its floor} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 200 server_id sidB]]
+        store clearChat alice@example.com
+        ms_batch [list [ms_msg timestamp 100 server_id sidA] \
+                       [ms_msg timestamp 200 server_id sidB] \
+                       [ms_msg timestamp 300 server_id sidC]]
+        testdb eval {SELECT server_id FROM chat_message WHERE kind='message'}
+    } -result {sidC}
+
+test messagestore-clear-chat-only-its-floor {clearing one chat leaves the others' storing alone} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 200 server_id sidB]]
+        store clearChat alice@example.com
+        ms_batch [list [ms_msg timestamp 100 chat_jid bob@example.com server_id sidX]]
+        list [store clearFloor bob@example.com] [ms_count message bob@example.com]
+    } -result {0 1}
+
+test messagestore-clear-chat-unshared-urls {clearing returns the attachment urls no other chat shows} \
+    {*}$ms_common \
+    -body {
+        set a [list [dict create url https://x/a.jpg type image]]
+        set b [list [dict create url https://x/b.jpg type image]]
+        ms_batch [list [ms_msg timestamp 100 server_id s1 attachments $a] \
+                       [ms_msg timestamp 200 server_id s2 attachments $b]]
+        ms_batch [list [ms_msg timestamp 300 chat_jid bob@example.com \
+                       server_id s3 attachments $b]]
+        lindex [store clearChat alice@example.com] 1
+    } -result {https://x/a.jpg}
+
+test messagestore-restore-chat-lifts-floor {restoring lifts the floor and opens a hole below what came since} \
+    {*}$ms_common \
+    -body {
+        ms_batch [list [ms_msg timestamp 200 server_id sidB]]
+        store clearChat alice@example.com
+        ms_batch [list [ms_msg timestamp 300 server_id sidC]]
+        store restoreChat alice@example.com
+        ms_batch [list [ms_msg timestamp 100 server_id sidA]]
+        list [store clearFloor alice@example.com] [ms_count] [ms_count hole]
+    } -result {0 2 1}
+
 test messagestore-reaction-own-set {ownReactions returns our current set for toggling} \
     {*}$ms_common \
     -body {
